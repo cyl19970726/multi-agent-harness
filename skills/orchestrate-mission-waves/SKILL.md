@@ -284,8 +284,10 @@ provider is disabled. `close-member` cancels only that Team's current provider
 turn and closes its MemberRun; it never closes the machine Session or rewrites
 bindings. An unknown native
 effect is visible as `RecoveryRequired` in the Operator view and must be
-resolved with evidence; never blindly replay it or treat a static capability
-claim as four-provider conformance.
+resolved with evidence. Native interrupt/close must cross the single executable
+provider-adapter seam (durable prepare → native effect → terminal ack → settle
+or recovery); never blindly replay it or treat a static capability claim or
+faithful shim as a live four-provider PASS.
 
 ## Review Work Explicitly
 

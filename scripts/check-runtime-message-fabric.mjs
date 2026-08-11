@@ -108,7 +108,13 @@ for (const token of [
   "ProviderControlAction",
   "NativeControlPrimitive",
   "control_plan",
-  "execute_codex_team_control",
+  "ProviderNativeControl",
+  "execute_team_control",
+  "settle_team_control",
+  "CodexNativeControl",
+  "ClaudeNativeControl",
+  "KimiNativeControl",
+  "PiNativeControl",
   "provider_availability",
   "PROVIDER_CONTROL_FAILED",
 ]) {
@@ -116,6 +122,15 @@ for (const token of [
 }
 if (providerAdapter.includes("execute_control_plan")) {
   failures.push("provider conformance must use concrete adapters, not an injected control closure");
+}
+for (const leakedNativeControl of [
+  'PromptControl::Cancel',
+  'PromptControl::TerminateRuntime',
+  '"command": "interrupt"',
+]) {
+  if (server.includes(leakedNativeControl)) {
+    failures.push(`provider-native control leaked outside the closed adapter seam: ${leakedNativeControl}`);
+  }
 }
 if (!store.includes("AgentSession RuntimeCommand requires exact self or exact machine NodeDaemon/Operator authority; Team Host authority is Team-scoped only")) {
   failures.push("Store does not enforce machine-scoped AgentSession control authority under lock");

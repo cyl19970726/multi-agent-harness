@@ -60,6 +60,151 @@ pub(crate) struct ProviderControlPlan {
     pub requires_terminal_ack: bool,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PendingProviderControl {
+    admission: ProviderEffectAdmission,
+    pub action: ProviderControlAction,
+    pub provider: String,
+}
+
+impl PendingProviderControl {
+    #[cfg(test)]
+    pub(crate) fn command_id(&self) -> &str {
+        &self.admission.command_id
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ProviderControlDispatch {
+    Pending(Box<PendingProviderControl>),
+    Replayed,
+}
+
+/// The one executable boundary between AgentFirm's durable RuntimeCommand and
+/// provider-native control. Implementations must perform the real native
+/// operation; capability declarations and injected success closures do not
+/// satisfy this contract.
+pub(crate) trait ProviderNativeControl {
+    fn provider(&self) -> &'static str;
+    fn dispatch(&mut self, plan: &ProviderControlPlan) -> CliResult<()>;
+}
+
+pub(crate) struct CodexNativeControl<'a> {
+    pub client: &'a mut CodexAppServerClient,
+    pub turn_id: &'a str,
+}
+
+impl ProviderNativeControl for CodexNativeControl<'_> {
+    fn provider(&self) -> &'static str {
+        "codex"
+    }
+
+    fn dispatch(&mut self, plan: &ProviderControlPlan) -> CliResult<()> {
+        if plan.primitive != NativeControlPrimitive::CodexTurnInterrupt {
+            return Err(CliError::Usage(format!(
+                "PROVIDER_CONTROL_UNPROVEN: Codex adapter received {:?}",
+                plan.primitive
+            )));
+        }
+        self.client.interrupt(self.turn_id)
+    }
+}
+
+pub(crate) struct ClaudeNativeControl<'a, F>
+where
+    F: FnMut(serde_json::Value) -> CliResult<()>,
+{
+    pub send: &'a mut F,
+    pub reason: &'a str,
+}
+
+impl<F> ProviderNativeControl for ClaudeNativeControl<'_, F>
+where
+    F: FnMut(serde_json::Value) -> CliResult<()>,
+{
+    fn provider(&self) -> &'static str {
+        "claude"
+    }
+
+    fn dispatch(&mut self, plan: &ProviderControlPlan) -> CliResult<()> {
+        if plan.primitive != NativeControlPrimitive::ClaudeAgentSdkInterrupt {
+            return Err(CliError::Usage(format!(
+                "PROVIDER_CONTROL_UNPROVEN: Claude adapter received {:?}",
+                plan.primitive
+            )));
+        }
+        let command = match plan.action {
+            ProviderControlAction::CancelProviderTurn => {
+                serde_json::json!({"command": "interrupt", "payload": {}})
+            }
+            ProviderControlAction::CloseSession => serde_json::json!({
+                "command": "close",
+                "payload": {"reason": self.reason},
+            }),
+        };
+        (self.send)(command)
+    }
+}
+
+/// Test-idle retirement is not a user RuntimeCommand, but it is still a
+/// provider-native control and therefore stays behind the same closed adapter
+/// module rather than leaking Agent SDK protocol JSON into the Team loop.
+pub(crate) fn retire_idle_claude_runtime(
+    send: &mut impl FnMut(serde_json::Value) -> CliResult<()>,
+) -> CliResult<()> {
+    send(serde_json::json!({
+        "command": "close",
+        "payload": {"reason": "test_idle_timeout"},
+    }))
+}
+
+pub(crate) struct KimiNativeControl<'a> {
+    pub control: &'a mut crate::kimi_acp::PromptControl,
+}
+
+impl ProviderNativeControl for KimiNativeControl<'_> {
+    fn provider(&self) -> &'static str {
+        "kimi"
+    }
+
+    fn dispatch(&mut self, plan: &ProviderControlPlan) -> CliResult<()> {
+        if plan.primitive != NativeControlPrimitive::KimiAcpCancel {
+            return Err(CliError::Usage(format!(
+                "PROVIDER_CONTROL_UNPROVEN: Kimi adapter received {:?}",
+                plan.primitive
+            )));
+        }
+        *self.control = match plan.action {
+            ProviderControlAction::CancelProviderTurn => crate::kimi_acp::PromptControl::Cancel,
+            ProviderControlAction::CloseSession => crate::kimi_acp::PromptControl::TerminateRuntime,
+        };
+        Ok(())
+    }
+}
+
+pub(crate) struct PiNativeControl<'a> {
+    pub close: &'a mut bool,
+    pub interrupt: &'a mut bool,
+}
+
+impl ProviderNativeControl for PiNativeControl<'_> {
+    fn provider(&self) -> &'static str {
+        "pi"
+    }
+
+    fn dispatch(&mut self, plan: &ProviderControlPlan) -> CliResult<()> {
+        if plan.primitive != NativeControlPrimitive::PiRpcInterrupt {
+            return Err(CliError::Usage(format!(
+                "PROVIDER_CONTROL_UNPROVEN: Pi adapter received {:?}",
+                plan.primitive
+            )));
+        }
+        *self.interrupt = true;
+        *self.close = plan.action == ProviderControlAction::CloseSession;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ProviderAvailability {
     pub provider: String,
@@ -284,45 +429,51 @@ pub(crate) fn prepare_team_control_effect(
 /// the same durable RuntimeCommand. This is deliberately not an injected
 /// closure: the canonical adapter owns the provider-native interrupt mapping,
 /// and an exact replay never re-enters the provider transport.
-pub(crate) fn execute_codex_team_control(
+pub(crate) fn execute_team_control(
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,
     source_record_id: &str,
     reason: &str,
     close: bool,
-    client: &mut CodexAppServerClient,
-    turn_id: &str,
-) -> CliResult<()> {
+    adapter: &mut impl ProviderNativeControl,
+) -> CliResult<ProviderControlDispatch> {
     let admission =
         match prepare_team_control_effect(ledger, member, source_record_id, reason, close) {
             Ok(admission) => admission,
             Err(CliError::Usage(detail))
                 if detail.starts_with("RUNTIME_COMMAND_REPLAY_APPLIED:") =>
             {
-                return Ok(())
+                return Ok(ProviderControlDispatch::Replayed)
             }
             Err(error) => return Err(error),
         };
-    let plan = admission.control_plan.as_ref().ok_or_else(|| {
+    let plan = admission.control_plan.clone().ok_or_else(|| {
         CliError::Usage("PROVIDER_CONTROL_UNPROVEN: missing frozen control plan".into())
     })?;
-    if plan.provider != "codex" || plan.primitive != NativeControlPrimitive::CodexTurnInterrupt {
-        return Err(CliError::Usage(format!(
-            "PROVIDER_CONTROL_UNPROVEN: Codex adapter received {:?}",
-            plan.primitive
-        )));
-    }
-    match client.interrupt(turn_id) {
-        Ok(()) => crate::settle_provider_effect(
+    if plan.provider != adapter.provider() {
+        crate::settle_provider_effect_not_applied(
             ledger,
             &admission,
-            true,
-            Some(serde_json::json!({
-                "control": if close { "close" } else { "interrupt" },
-                "provider_ack": "accepted",
-            })),
-            None,
-        ),
+            format!(
+                "PROVIDER_CONTROL_ADAPTER_MISMATCH: planned {} but executed {}",
+                plan.provider,
+                adapter.provider()
+            ),
+        )?;
+        return Err(CliError::Usage(format!(
+            "PROVIDER_CONTROL_ADAPTER_MISMATCH: planned {} but executed {}",
+            plan.provider,
+            adapter.provider()
+        )));
+    }
+    match adapter.dispatch(&plan) {
+        Ok(()) => Ok(ProviderControlDispatch::Pending(Box::new(
+            PendingProviderControl {
+                admission,
+                action: plan.action,
+                provider: plan.provider.clone(),
+            },
+        ))),
         Err(error) => {
             let error = format!(
                 "PROVIDER_CONTROL_FAILED:{}:{:?}:{error}",
@@ -331,6 +482,42 @@ pub(crate) fn execute_codex_team_control(
             crate::settle_provider_effect(ledger, &admission, false, None, Some(error.clone()))?;
             Err(CliError::Usage(error))
         }
+    }
+}
+
+/// Settle only from an observed provider-terminal acknowledgement. A dispatch
+/// acknowledgement is deliberately insufficient because a transport loss in
+/// between must remain RecoveryRequired rather than fabricating success.
+pub(crate) fn settle_team_control(
+    ledger: &TeamRunLedger,
+    pending: &PendingProviderControl,
+    terminal_ack: Option<&str>,
+) -> CliResult<()> {
+    match terminal_ack {
+        Some(ack) => crate::settle_provider_effect(
+            ledger,
+            &pending.admission,
+            true,
+            Some(serde_json::json!({
+                "provider": pending.provider,
+                "control": match pending.action {
+                    ProviderControlAction::CancelProviderTurn => "interrupt",
+                    ProviderControlAction::CloseSession => "close",
+                },
+                "provider_ack": ack,
+            })),
+            None,
+        ),
+        None => crate::settle_provider_effect(
+            ledger,
+            &pending.admission,
+            false,
+            None,
+            Some(format!(
+                "PROVIDER_CONTROL_TERMINAL_ACK_MISSING:{}:{:?}",
+                pending.provider, pending.action
+            )),
+        ),
     }
 }
 

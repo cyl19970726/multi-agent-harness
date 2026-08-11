@@ -155,9 +155,15 @@ Codex, Claude, Kimi, and Pi expose separate, closed capability tuples:
   safe point;
 - unsupported or unprovable permission, queue, interrupt, resume, or stop
   behavior fails closed;
-- every interrupt/close path freezes an executable provider-native control
-  plan before RuntimeCommand admission and settles only from the observed
-  provider acknowledgement;
+- every interrupt/close path crosses one closed executable provider-adapter
+  seam: it freezes the native plan, durably prepares RuntimeCommand, performs
+  the actual native control, waits for terminal acknowledgement, then settles;
+  exact replay cannot repeat the native effect, and ambiguous dispatch becomes
+  `RecoveryRequired`;
+- one table-driven faithful-shim harness applies that lifecycle to Codex,
+  Claude, Kimi, and Pi, including permission mapping, safe-injection downgrade,
+  terminal acknowledgement, replay, and recovery. It is contract evidence,
+  not a claim that an unavailable provider passed a live run;
 - Codex has a proven NodeDaemon-owned app-server start/resume/stop path;
   standalone cancel remains disabled until a native turn is bound;
 - Claude, Kimi, and Pi remain disabled for standalone AgentSession lifecycle

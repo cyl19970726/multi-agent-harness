@@ -17469,10 +17469,13 @@ fn prepare_provider_effect_kind(
         required_capability: required_capability.into(),
         idempotency_key: idempotency_key.clone(),
         expected_version: 0,
-        expires_unix_ms: current_unix_ms_u64().saturating_add(30_000),
+        // Exact replay must reproduce the same full envelope. Bind expiry to
+        // the already-frozen daemon lease and use an idempotency-derived
+        // observation marker instead of sampling a new wall clock.
+        expires_unix_ms: lease.expires_unix_ms,
         payload,
         payload_fingerprint: payload_fingerprint.clone(),
-        issued_at: now_string(),
+        issued_at: format!("runtime-command:{idempotency_key}"),
     };
     let command_fingerprint = harness_store::runtime_command_envelope_fingerprint(&command)?;
     let admission_context = harness_core::agentfirm_api::MutationContext {
@@ -22949,6 +22952,8 @@ fn run_codex_app_server_turn(
     let mut last_live_activity = Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE;
     let mut interrupt_requested = false;
     let mut close_requested = false;
+    let mut pending_native_controls =
+        Vec::<Box<crate::provider_adapter::PendingProviderControl>>::new();
     let mut tool_call_count: u32 = 0;
     loop {
         require_provider_session_authority(ledger, &member.agent_member_id, true)?;
@@ -22999,16 +23004,24 @@ fn run_codex_app_server_turn(
                     requested_by,
                     reply,
                 } => {
-                    let result = crate::provider_adapter::execute_codex_team_control(
+                    let mut adapter = crate::provider_adapter::CodexNativeControl {
+                        client,
+                        turn_id: &turn_id,
+                    };
+                    let result = crate::provider_adapter::execute_team_control(
                         ledger,
                         member,
                         &format!("codex-interrupt:{turn_id}"),
                         &reason,
                         false,
-                        client,
-                        &turn_id,
+                        &mut adapter,
                     )
-                    .and_then(|()| {
+                    .and_then(|dispatch| {
+                        if let crate::provider_adapter::ProviderControlDispatch::Pending(pending) =
+                            dispatch
+                        {
+                            pending_native_controls.push(pending);
+                        }
                         interrupt_requested = true;
                         ledger.append_action(
                             &member.id,
@@ -23030,16 +23043,24 @@ fn run_codex_app_server_turn(
                     requested_by,
                     reply,
                 } => {
-                    let result = crate::provider_adapter::execute_codex_team_control(
+                    let mut adapter = crate::provider_adapter::CodexNativeControl {
+                        client,
+                        turn_id: &turn_id,
+                    };
+                    let result = crate::provider_adapter::execute_team_control(
                         ledger,
                         member,
                         &format!("codex-close:{turn_id}"),
                         &reason,
                         true,
-                        client,
-                        &turn_id,
+                        &mut adapter,
                     )
-                    .and_then(|()| {
+                    .and_then(|dispatch| {
+                        if let crate::provider_adapter::ProviderControlDispatch::Pending(pending) =
+                            dispatch
+                        {
+                            pending_native_controls.push(pending);
+                        }
                         interrupt_requested = true;
                         close_requested = true;
                         ledger.append_action(
@@ -23159,6 +23180,14 @@ fn run_codex_app_server_turn(
                         }
                         let interrupted = interrupt_requested
                             || matches!(status, "interrupted" | "cancelled" | "canceled");
+                        for pending in pending_native_controls.drain(..) {
+                            crate::provider_adapter::settle_team_control(
+                                ledger,
+                                &pending,
+                                matches!(status, "interrupted" | "cancelled" | "canceled")
+                                    .then_some(status),
+                            )?;
+                        }
                         if !interrupted && status != "completed" {
                             return Err(CliError::Usage(format!(
                                 "codex app-server turn {turn_id} ended as {status}"
@@ -23193,15 +23222,23 @@ fn run_codex_app_server_turn(
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 if last_activity.elapsed() >= idle_timeout {
-                    crate::provider_adapter::execute_codex_team_control(
+                    let mut adapter = crate::provider_adapter::CodexNativeControl {
+                        client,
+                        turn_id: &turn_id,
+                    };
+                    let dispatch = crate::provider_adapter::execute_team_control(
                         ledger,
                         member,
                         &format!("codex-timeout:{turn_id}"),
                         "provider turn idle timeout",
                         false,
-                        client,
-                        &turn_id,
+                        &mut adapter,
                     )?;
+                    if let crate::provider_adapter::ProviderControlDispatch::Pending(pending) =
+                        dispatch
+                    {
+                        pending_native_controls.push(pending);
+                    }
                     interrupt_requested = true;
                     last_activity = Instant::now();
                 }
@@ -23432,7 +23469,8 @@ fn run_claude_agent_sdk_team_member(
     let mut delivered_messages = HashMap::<String, TeamMessageProjection>::new();
     let mut handoffs_before_by_message = HashMap::<String, HashSet<String>>::new();
     let mut inflight_effects = HashMap::<String, ProviderEffectAdmission>::new();
-    let mut pending_control_effects = Vec::<(ProviderEffectAdmission, bool)>::new();
+    let mut pending_control_effects =
+        Vec::<Box<crate::provider_adapter::PendingProviderControl>>::new();
 
     send(serde_json::json!({
         "command": "start",
@@ -23610,45 +23648,39 @@ fn run_claude_agent_sdk_team_member(
                         })));
                         continue;
                     }
-                    let control_effect = crate::provider_adapter::prepare_team_control_effect(
+                    let mut adapter = crate::provider_adapter::ClaudeNativeControl {
+                        send: &mut send,
+                        reason: &reason,
+                    };
+                    let result = crate::provider_adapter::execute_team_control(
                         ledger,
                         &member_row,
                         &format!("claude-interrupt:{}:{}", member.id, round),
                         &reason,
                         false,
-                    );
-                    let result = control_effect
-                        .and_then(|control_effect| {
-                            if let Err(error) = send(serde_json::json!({
-                                "command": "interrupt",
-                                "payload": {}
-                            })) {
-                                settle_provider_effect(
-                                    ledger,
-                                    &control_effect,
-                                    false,
-                                    None,
-                                    Some(error.to_string()),
-                                )?;
-                                return Err(error);
-                            }
-                            pending_control_effects.push((control_effect, false));
-                            Ok(())
-                        })
-                        .and_then(|()| {
-                            ledger.append_action(
-                                &member.id,
-                                "interrupt_requested",
-                                MemberActionStatus::Progress,
-                                "Claude turn interruption requested",
-                                &format!("{requested_by}: {reason}"),
-                            )?;
-                            Ok(serde_json::json!({
-                                "member_run_id": member.id,
-                                "status": "interrupt_requested",
-                                "provider_ack": "agent_sdk_interrupt_dispatched",
-                            }))
-                        });
+                        &mut adapter,
+                    )
+                    .map(|dispatch| {
+                        if let crate::provider_adapter::ProviderControlDispatch::Pending(pending) =
+                            dispatch
+                        {
+                            pending_control_effects.push(pending);
+                        }
+                    })
+                    .and_then(|()| {
+                        ledger.append_action(
+                            &member.id,
+                            "interrupt_requested",
+                            MemberActionStatus::Progress,
+                            "Claude turn interruption requested",
+                            &format!("{requested_by}: {reason}"),
+                        )?;
+                        Ok(serde_json::json!({
+                            "member_run_id": member.id,
+                            "status": "interrupt_requested",
+                            "provider_ack": "agent_sdk_interrupt_dispatched",
+                        }))
+                    });
                     let _ = reply.send(result);
                 }
                 MemberControlCommand::Close {
@@ -23656,47 +23688,41 @@ fn run_claude_agent_sdk_team_member(
                     requested_by,
                     reply,
                 } => {
-                    let control_effect = crate::provider_adapter::prepare_team_control_effect(
+                    let mut adapter = crate::provider_adapter::ClaudeNativeControl {
+                        send: &mut send,
+                        reason: &reason,
+                    };
+                    let result = crate::provider_adapter::execute_team_control(
                         ledger,
                         &member_row,
                         &format!("claude-close:{}:{}", member.id, round),
                         &reason,
                         true,
-                    );
-                    let result = control_effect
-                        .and_then(|control_effect| {
-                            if let Err(error) = send(serde_json::json!({
-                                "command": "close",
-                                "payload": { "reason": reason }
-                            })) {
-                                settle_provider_effect(
-                                    ledger,
-                                    &control_effect,
-                                    false,
-                                    None,
-                                    Some(error.to_string()),
-                                )?;
-                                return Err(error);
-                            }
-                            pending_control_effects.push((control_effect, true));
-                            Ok(())
-                        })
-                        .and_then(|()| {
-                            ledger.append_action(
-                                &member.id,
-                                "close_requested",
-                                MemberActionStatus::Progress,
-                                "Claude member close requested",
-                                &format!("{requested_by}: explicit Host close"),
-                            )?;
-                            closing = true;
-                            closed_by_host = true;
-                            Ok(serde_json::json!({
-                                "member_run_id": member.id,
-                                "status": "close_requested",
-                                "provider_ack": "agent_sdk_close_dispatched",
-                            }))
-                        });
+                        &mut adapter,
+                    )
+                    .map(|dispatch| {
+                        if let crate::provider_adapter::ProviderControlDispatch::Pending(pending) =
+                            dispatch
+                        {
+                            pending_control_effects.push(pending);
+                        }
+                    })
+                    .and_then(|()| {
+                        ledger.append_action(
+                            &member.id,
+                            "close_requested",
+                            MemberActionStatus::Progress,
+                            "Claude member close requested",
+                            &format!("{requested_by}: explicit Host close"),
+                        )?;
+                        closing = true;
+                        closed_by_host = true;
+                        Ok(serde_json::json!({
+                            "member_run_id": member.id,
+                            "status": "close_requested",
+                            "provider_ack": "agent_sdk_close_dispatched",
+                        }))
+                    });
                     let _ = reply.send(result);
                 }
                 MemberControlCommand::Steer { reply, .. } => {
@@ -23941,20 +23967,16 @@ fn run_claude_agent_sdk_team_member(
                 }
                 "interrupted" => {
                     let mut retained = Vec::new();
-                    for (effect, close) in pending_control_effects.drain(..) {
-                        if close {
-                            retained.push((effect, close));
+                    for pending in pending_control_effects.drain(..) {
+                        if pending.action
+                            == crate::provider_adapter::ProviderControlAction::CloseSession
+                        {
+                            retained.push(pending);
                         } else {
-                            settle_provider_effect(
+                            crate::provider_adapter::settle_team_control(
                                 ledger,
-                                &effect,
-                                true,
-                                Some(serde_json::json!({
-                                    "provider": "claude",
-                                    "control": "interrupt",
-                                    "provider_ack": "interrupted",
-                                })),
-                                None,
+                                &pending,
+                                Some("interrupted"),
                             )?;
                         }
                     }
@@ -23981,21 +24003,13 @@ fn run_claude_agent_sdk_team_member(
                     turn_lease.take();
                 }
                 "member_closed" => {
-                    for (effect, close) in pending_control_effects.drain(..) {
-                        settle_provider_effect(
+                    for pending in pending_control_effects.drain(..) {
+                        crate::provider_adapter::settle_team_control(
                             ledger,
-                            &effect,
-                            close,
-                            close.then(|| {
-                                serde_json::json!({
-                                    "provider": "claude",
-                                    "control": "close",
-                                    "provider_ack": "member_closed",
-                                })
-                            }),
-                            (!close).then(|| {
-                                "member closed before interrupt acknowledgement".to_string()
-                            }),
+                            &pending,
+                            (pending.action
+                                == crate::provider_adapter::ProviderControlAction::CloseSession)
+                                .then_some("member_closed"),
                         )?;
                     }
                     transition_provider_session_for_member(
@@ -24140,10 +24154,7 @@ fn run_claude_agent_sdk_team_member(
                 && !active_work_continuation_inflight
                 && since.elapsed() >= grace
             {
-                send(serde_json::json!({
-                    "command": "close",
-                    "payload": { "reason": "test_idle_timeout" }
-                }))?;
+                crate::provider_adapter::retire_idle_claude_runtime(&mut send)?;
                 closing = true;
             }
         }
@@ -24823,7 +24834,9 @@ fn run_kimi_member(
             active_assignment_for_round(active_assignment.as_ref(), &accepted_messages);
         let handoffs_before_round = member_handoff_ids(ledger, &member.id)?;
         let mut close_requested = false;
-        let mut pending_control_effect: Option<(ProviderEffectAdmission, bool)> = None;
+        let mut pending_control_effect: Option<
+            Box<crate::provider_adapter::PendingProviderControl>,
+        > = None;
         let expected_round = member_row.clone();
         let mut mapper = MemberUpdateMapper::new(ledger, member_row.clone(), live_sink.clone());
         let source_record_id = active_work
@@ -24891,15 +24904,21 @@ fn run_kimi_member(
                                 requested_by,
                                 reply,
                             } => {
-                                let control_effect =
-                                    crate::provider_adapter::prepare_team_control_effect(
-                                        ledger,
-                                        &member_row,
-                                        &format!("kimi-interrupt:{}:{round}", member.id),
-                                        &reason,
-                                        false,
-                                    )?;
-                                pending_control_effect = Some((control_effect, false));
+                                let mut adapter = crate::provider_adapter::KimiNativeControl {
+                                    control: &mut control,
+                                };
+                                if let crate::provider_adapter::ProviderControlDispatch::Pending(
+                                    pending,
+                                ) = crate::provider_adapter::execute_team_control(
+                                    ledger,
+                                    &member_row,
+                                    &format!("kimi-interrupt:{}:{round}", member.id),
+                                    &reason,
+                                    false,
+                                    &mut adapter,
+                                )? {
+                                    pending_control_effect = Some(pending);
+                                }
                                 ledger.append_action(
                                     &member.id,
                                     "interrupt_requested",
@@ -24907,7 +24926,6 @@ fn run_kimi_member(
                                     "Kimi cancellation requested",
                                     &format!("{requested_by}: {reason}"),
                                 )?;
-                                control = kimi_acp::PromptControl::Cancel;
                                 let _ = reply.send(Ok(serde_json::json!({
                                     "member_run_id": member.id,
                                     "status": "cancel_requested",
@@ -24923,15 +24941,21 @@ fn run_kimi_member(
                                 requested_by,
                                 reply,
                             } => {
-                                let control_effect =
-                                    crate::provider_adapter::prepare_team_control_effect(
-                                        ledger,
-                                        &member_row,
-                                        &format!("kimi-close:{}:{round}", member.id),
-                                        &reason,
-                                        true,
-                                    )?;
-                                pending_control_effect = Some((control_effect, true));
+                                let mut adapter = crate::provider_adapter::KimiNativeControl {
+                                    control: &mut control,
+                                };
+                                if let crate::provider_adapter::ProviderControlDispatch::Pending(
+                                    pending,
+                                ) = crate::provider_adapter::execute_team_control(
+                                    ledger,
+                                    &member_row,
+                                    &format!("kimi-close:{}:{round}", member.id),
+                                    &reason,
+                                    true,
+                                    &mut adapter,
+                                )? {
+                                    pending_control_effect = Some(pending);
+                                }
                                 ledger.append_action(
                                     &member.id,
                                     "close_requested",
@@ -24940,7 +24964,6 @@ fn run_kimi_member(
                                     &format!("{requested_by}: {reason}"),
                                 )?;
                                 close_requested = true;
-                                control = kimi_acp::PromptControl::TerminateRuntime;
                                 let _ = reply.send(Ok(serde_json::json!({
                                     "member_run_id": member.id,
                                     "status": "close_requested",
@@ -25008,32 +25031,20 @@ fn run_kimi_member(
                 return Err(error);
             }
         };
-        if let Some((control_effect, close)) = pending_control_effect.take() {
-            let acknowledged = if close {
-                matches!(
-                    outcome.stop_reason.as_str(),
-                    "harness_runtime_closed" | "cancelled" | "canceled"
-                )
-            } else {
-                matches!(outcome.stop_reason.as_str(), "cancelled" | "canceled")
-            };
-            settle_provider_effect(
-                ledger,
-                &control_effect,
-                acknowledged,
-                acknowledged.then(|| {
-                    serde_json::json!({
-                        "provider": "kimi",
-                        "control": if close { "close" } else { "interrupt" },
-                        "provider_ack": outcome.stop_reason,
-                    })
-                }),
-                (!acknowledged).then(|| {
-                    format!(
-                        "provider control returned without a terminal acknowledgement: {}",
-                        outcome.stop_reason
+        if let Some(pending) = pending_control_effect.take() {
+            let acknowledged =
+                if pending.action == crate::provider_adapter::ProviderControlAction::CloseSession {
+                    matches!(
+                        outcome.stop_reason.as_str(),
+                        "harness_runtime_closed" | "cancelled" | "canceled"
                     )
-                }),
+                } else {
+                    matches!(outcome.stop_reason.as_str(), "cancelled" | "canceled")
+                };
+            crate::provider_adapter::settle_team_control(
+                ledger,
+                &pending,
+                acknowledged.then_some(outcome.stop_reason.as_str()),
             )?;
         }
         let round_trigger = accepted_messages.last().cloned();
@@ -25597,7 +25608,9 @@ fn run_pi_team_member(
             .unwrap_or_else(|| format!("continuation:{}:{round}", member_row.id));
         let source_record_id = format!("{source_record_id}:turn:{round}");
         let effect = prepare_provider_effect(ledger, &member_row, &source_record_id, &prompt)?;
-        let mut pending_control_effect: Option<(ProviderEffectAdmission, bool)> = None;
+        let mut pending_control_effect: Option<
+            Box<crate::provider_adapter::PendingProviderControl>,
+        > = None;
         let mut control_prepare_error: Option<String> = None;
 
         let turn_result = {
@@ -25621,34 +25634,58 @@ fn run_pi_team_member(
                     while let Ok(command) = live_control.try_recv() {
                         match command {
                             MemberControlCommand::Close { reason, .. } => {
-                                match crate::provider_adapter::prepare_team_control_effect(
+                                let mut close = false;
+                                let mut interrupt = false;
+                                let mut adapter = crate::provider_adapter::PiNativeControl {
+                                    close: &mut close,
+                                    interrupt: &mut interrupt,
+                                };
+                                match crate::provider_adapter::execute_team_control(
                                     ledger,
                                     &member_row,
                                     &format!("pi-close:{}:{round}", member.id),
                                     &reason,
                                     true,
+                                    &mut adapter,
                                 ) {
-                                    Ok(admission) => {
-                                        pending_control_effect = Some((admission, true))
-                                    }
+                                    Ok(
+                                        crate::provider_adapter::ProviderControlDispatch::Pending(
+                                            pending,
+                                        ),
+                                    ) => pending_control_effect = Some(pending),
+                                    Ok(
+                                        crate::provider_adapter::ProviderControlDispatch::Replayed,
+                                    ) => {}
                                     Err(error) => control_prepare_error = Some(error.to_string()),
                                 }
-                                return (true, true);
+                                return (close, interrupt);
                             }
                             MemberControlCommand::Interrupt { reason, .. } => {
-                                match crate::provider_adapter::prepare_team_control_effect(
+                                let mut close = false;
+                                let mut interrupt = false;
+                                let mut adapter = crate::provider_adapter::PiNativeControl {
+                                    close: &mut close,
+                                    interrupt: &mut interrupt,
+                                };
+                                match crate::provider_adapter::execute_team_control(
                                     ledger,
                                     &member_row,
                                     &format!("pi-interrupt:{}:{round}", member.id),
                                     &reason,
                                     false,
+                                    &mut adapter,
                                 ) {
-                                    Ok(admission) => {
-                                        pending_control_effect = Some((admission, false))
-                                    }
+                                    Ok(
+                                        crate::provider_adapter::ProviderControlDispatch::Pending(
+                                            pending,
+                                        ),
+                                    ) => pending_control_effect = Some(pending),
+                                    Ok(
+                                        crate::provider_adapter::ProviderControlDispatch::Replayed,
+                                    ) => {}
                                     Err(error) => control_prepare_error = Some(error.to_string()),
                                 }
-                                return (false, true);
+                                return (close, interrupt);
                             }
                             _ => {}
                         }
@@ -25680,20 +25717,11 @@ fn run_pi_team_member(
         if let Some(error) = control_prepare_error {
             return Err(CliError::Usage(error));
         }
-        if let Some((control_effect, close)) = pending_control_effect.take() {
-            settle_provider_effect(
+        if let Some(pending) = pending_control_effect.take() {
+            crate::provider_adapter::settle_team_control(
                 ledger,
-                &control_effect,
-                turn.interrupted,
-                turn.interrupted.then(|| {
-                    serde_json::json!({
-                        "provider": "pi",
-                        "control": if close { "close" } else { "interrupt" },
-                        "provider_ack": "interrupted",
-                    })
-                }),
-                (!turn.interrupted)
-                    .then(|| "Pi returned without interrupt acknowledgement".to_string()),
+                &pending,
+                turn.interrupted.then_some("interrupted"),
             )?;
         }
 
@@ -49460,6 +49488,20 @@ package:com.tencent.mm
     }
 
     fn create_two_member_team_run(store: &HarnessStore) -> CreatedTeamRun {
+        create_two_member_team_run_for_provider(store, "codex")
+    }
+
+    fn create_two_member_team_run_for_provider(
+        store: &HarnessStore,
+        provider: &str,
+    ) -> CreatedTeamRun {
+        let execution_mode = match provider {
+            "codex" => "codex_app_server",
+            "claude" => "claude_agent_sdk",
+            "kimi" => "kimi_acp",
+            "pi" => "pi_rpc",
+            _ => panic!("unsupported test provider {provider}"),
+        };
         create_team_run(
             store,
             None,
@@ -49478,8 +49520,8 @@ package:com.tencent.mm
                     agent_member_id: "agent-builder-a".into(),
                     name: "BuilderA".into(),
                     role: "module_a".into(),
-                    provider: "codex".into(),
-                    execution_mode: Some("codex_app_server".into()),
+                    provider: provider.into(),
+                    execution_mode: Some(execution_mode.into()),
                     model: None,
                     effort: None,
                     service_tier: None,
@@ -49492,8 +49534,8 @@ package:com.tencent.mm
                     agent_member_id: "agent-builder-b".into(),
                     name: "BuilderB".into(),
                     role: "module_b".into(),
-                    provider: "codex".into(),
-                    execution_mode: Some("codex_app_server".into()),
+                    provider: provider.into(),
+                    execution_mode: Some(execution_mode.into()),
                     model: None,
                     effort: None,
                     service_tier: None,
@@ -49545,6 +49587,198 @@ package:com.tencent.mm
             lease.node_daemon_generation,
         )
         .expect("materialize canonical test AgentSessions and TeamMemberships");
+    }
+
+    struct FaithfulProviderControlShim {
+        provider: &'static str,
+        primitive: crate::provider_adapter::NativeControlPrimitive,
+        native_effects: usize,
+        fail_after_dispatch: bool,
+    }
+
+    impl crate::provider_adapter::ProviderNativeControl for FaithfulProviderControlShim {
+        fn provider(&self) -> &'static str {
+            self.provider
+        }
+
+        fn dispatch(
+            &mut self,
+            plan: &crate::provider_adapter::ProviderControlPlan,
+        ) -> CliResult<()> {
+            if plan.primitive != self.primitive {
+                return Err(CliError::Usage("faithful shim primitive mismatch".into()));
+            }
+            self.native_effects += 1;
+            if self.fail_after_dispatch {
+                Err(CliError::Usage(
+                    "faithful shim transport lost after native dispatch".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn four_provider_native_control_seam_is_durable_replay_safe_and_fail_closed() {
+        use harness_core::agentfirm_api::{
+            AgentSessionStatus, PermissionCeiling, RuntimeCommandStatus, RuntimeDispatchMode,
+            RuntimeEffectCertainty,
+        };
+
+        let cases = [
+            (
+                "codex",
+                crate::provider_adapter::NativeControlPrimitive::CodexTurnInterrupt,
+            ),
+            (
+                "claude",
+                crate::provider_adapter::NativeControlPrimitive::ClaudeAgentSdkInterrupt,
+            ),
+            (
+                "kimi",
+                crate::provider_adapter::NativeControlPrimitive::KimiAcpCancel,
+            ),
+            (
+                "pi",
+                crate::provider_adapter::NativeControlPrimitive::PiRpcInterrupt,
+            ),
+        ];
+
+        for (provider, primitive) in cases {
+            let (store, root) = temp_store(&format!("provider-control-seam-{provider}"));
+            let created = create_two_member_team_run_for_provider(&store, provider);
+            let member = created.member_runs[0].clone();
+            let lease = store
+                .acquire_test_supervisor_lease(
+                    &created.team_run.id,
+                    &format!("provider-control-{provider}"),
+                    std::process::id(),
+                    "test://provider-control",
+                    current_unix_ms_u64(),
+                    60_000,
+                )
+                .expect("acquire provider-control Supervisor");
+            ensure_test_runtime_fabric(&store, &created, &lease);
+            let ledger = TeamRunLedger::new(
+                &store,
+                &created.team_run.id,
+                &lease.supervisor_id,
+                lease.generation,
+                Arc::new(AtomicBool::new(true)),
+            );
+            transition_provider_session_for_member(&ledger, &member, AgentSessionStatus::Active)
+                .expect("activate provider session");
+
+            let mapping = crate::provider_adapter::map_permission(
+                provider,
+                PermissionCeiling::WorkspaceWrite,
+            )
+            .expect("provider permission mapping");
+            assert_eq!(mapping.effective, PermissionCeiling::WorkspaceWrite);
+            assert_eq!(
+                crate::provider_adapter::effective_delivery_mode(
+                    provider,
+                    RuntimeDispatchMode::InjectIfSafe,
+                    AgentSessionStatus::Active,
+                    false,
+                )
+                .expect("safe-injection decision"),
+                RuntimeDispatchMode::QueueOnly,
+                "{provider} must downgrade unproven injection"
+            );
+
+            let mut shim = FaithfulProviderControlShim {
+                provider,
+                primitive,
+                native_effects: 0,
+                fail_after_dispatch: false,
+            };
+            let pending = match crate::provider_adapter::execute_team_control(
+                &ledger,
+                &member,
+                &format!("{provider}-control-source"),
+                "operator requested interrupt",
+                false,
+                &mut shim,
+            )
+            .expect("durably prepare and dispatch provider-native control")
+            {
+                crate::provider_adapter::ProviderControlDispatch::Pending(pending) => pending,
+                crate::provider_adapter::ProviderControlDispatch::Replayed => {
+                    panic!("first dispatch cannot be replay")
+                }
+            };
+            assert_eq!(shim.native_effects, 1);
+            crate::provider_adapter::settle_team_control(
+                &ledger,
+                &pending,
+                Some("faithful_shim_terminal_ack"),
+            )
+            .expect("settle terminal provider acknowledgement");
+            let applied = store
+                .runtime_commands(&lease.execution_space_id)
+                .expect("runtime commands")
+                .into_iter()
+                .rev()
+                .find(|command| command.id == pending.command_id())
+                .expect("durable provider control command");
+            assert_eq!(applied.status, RuntimeCommandStatus::Applied);
+            assert_eq!(applied.effect_certainty, RuntimeEffectCertainty::Applied);
+
+            assert!(matches!(
+                crate::provider_adapter::execute_team_control(
+                    &ledger,
+                    &member,
+                    &format!("{provider}-control-source"),
+                    "operator requested interrupt",
+                    false,
+                    &mut shim,
+                )
+                .expect("exact replay"),
+                crate::provider_adapter::ProviderControlDispatch::Replayed
+            ));
+            assert_eq!(shim.native_effects, 1, "replay repeated {provider} effect");
+
+            shim.fail_after_dispatch = true;
+            let error = crate::provider_adapter::execute_team_control(
+                &ledger,
+                &member,
+                &format!("{provider}-uncertain-source"),
+                "transport loss exercise",
+                false,
+                &mut shim,
+            )
+            .expect_err("uncertain native effect must fail closed");
+            assert!(error.to_string().contains("PROVIDER_CONTROL_FAILED"));
+            let uncertain = store
+                .runtime_commands(&lease.execution_space_id)
+                .expect("runtime commands after transport loss")
+                .into_iter()
+                .find(|command| {
+                    command.status == RuntimeCommandStatus::RecoveryRequired
+                        && command.effect_certainty == RuntimeEffectCertainty::Unknown
+                })
+                .expect("uncertain provider control enters recovery inventory");
+            assert!(uncertain.failure_code.as_deref().is_some_and(|failure| {
+                failure.contains("faithful shim transport lost after native dispatch")
+            }));
+            let before_retry = shim.native_effects;
+            let replay_error = crate::provider_adapter::execute_team_control(
+                &ledger,
+                &member,
+                &format!("{provider}-uncertain-source"),
+                "transport loss exercise",
+                false,
+                &mut shim,
+            )
+            .expect_err("uncertain replay requires governed recovery");
+            assert!(replay_error
+                .to_string()
+                .contains("RUNTIME_COMMAND_RECOVERY_REQUIRED"));
+            assert_eq!(shim.native_effects, before_retry);
+            std::fs::remove_dir_all(root).expect("cleanup");
+        }
     }
 
     #[test]
