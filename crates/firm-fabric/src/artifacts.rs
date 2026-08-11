@@ -101,6 +101,12 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                     "artifact source Node is foreign or revoked",
                 ));
             }
+            if !node.allowed_capabilities.contains("artifact-transfer") {
+                return Err(FabricError::none(
+                    FabricErrorCode::FeatureIncompatible,
+                    "artifact source Node lacks artifact-transfer capability",
+                ));
+            }
             if state.artifacts.contains_key(artifact_id)
                 || size_bytes > limits.max_artifact_bytes
                 || sha256.len() != 64
@@ -284,6 +290,12 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                 return Err(FabricError::none(
                     FabricErrorCode::NodeRevoked,
                     "artifact target Node is foreign or revoked",
+                ));
+            }
+            if !target.allowed_capabilities.contains("artifact-transfer") {
+                return Err(FabricError::none(
+                    FabricErrorCode::FeatureIncompatible,
+                    "artifact target Node lacks artifact-transfer capability",
                 ));
             }
             issue_capability(

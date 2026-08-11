@@ -186,12 +186,14 @@ pub(crate) fn consume_enrollment(
     enrollment.consumed_at_unix_ms = Some(now_unix_ms);
     enrollment.consumed_by_node_id = Some(node_id.into());
     enrollment.updated_at_unix_ms = now_unix_ms;
+    let allowed_capabilities = enrollment.allowed_capabilities.clone();
     let node = CompanyNode {
         id: node_id.into(),
         company_id: company_id.into(),
         display_name: display_name.into(),
         public_key_fingerprint: public_key_fingerprint.clone(),
         certificate_serial: certificate_serial.into(),
+        allowed_capabilities,
         administrative_status: NodeAdministrativeStatus::Active,
         node_revision: 1,
         enrolled_at_unix_ms: now_unix_ms,

@@ -147,7 +147,7 @@ fn enroll_nodes<K: ArtifactKeyBackend>(control: &ControlPlane<'_, K>, generation
                 enrollment,
                 token,
                 node,
-                BTreeSet::from(["durable-routing".into()]),
+                BTreeSet::from(["durable-routing".into(), "artifact-transfer".into()]),
                 500_000,
                 10,
             )
@@ -298,6 +298,16 @@ fn durable_route_replays_exactly_and_fences_stale_source_generation() {
     .expect("target connect");
     let request = operation(source.gateway_generation, lease.control_plane_generation);
     let request_digest = json_digest(&request).expect("request digest");
+    let mut unsupported = request.clone();
+    unsupported.id = "operation-unsupported-capability".into();
+    unsupported.idempotency_key = "idempotency-unsupported-capability".into();
+    unsupported.kind = "runtime_command.reference.v1".into();
+    let before_unsupported = store.snapshot().expect("snapshot");
+    let unavailable = control
+        .accept_operation(lease.control_plane_generation, unsupported, 99)
+        .expect_err("operation capability must be authorized on both Nodes");
+    assert_eq!(unavailable.code, FabricErrorCode::FeatureIncompatible);
+    assert_eq!(store.snapshot().expect("snapshot"), before_unsupported);
     let (_, attempt, accepted, replayed) = control
         .accept_operation(lease.control_plane_generation, request.clone(), 100)
         .expect("accept operation");
@@ -605,6 +615,21 @@ fn enrollment_proof_and_certificate_rotation_are_cryptographic_and_generation_fe
     let lease = control.acquire_lease("cp-lease", 0, 1).expect("lease");
     enroll_nodes(&control, lease.control_plane_generation);
     let first_hello = hello("node-a", "gateway-a-1", "cert-a", &fingerprint("node-a"));
+    let mut unauthorized_feature_hello = first_hello.clone();
+    unauthorized_feature_hello
+        .features
+        .insert("remote-runtime".into());
+    let before_feature = store.snapshot().expect("snapshot");
+    let feature_error = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &unauthorized_feature_hello,
+        &signing_key("node-a"),
+        28,
+    )
+    .expect_err("Node cannot widen enrollment capabilities in NodeHello");
+    assert_eq!(feature_error.code, FabricErrorCode::FeatureIncompatible);
+    assert_eq!(store.snapshot().expect("snapshot"), before_feature);
     let before_impersonation = store.snapshot().expect("snapshot");
     let impersonation = control
         .connect_gateway(

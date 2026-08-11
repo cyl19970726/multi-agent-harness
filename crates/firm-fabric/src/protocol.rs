@@ -164,6 +164,7 @@ pub struct CompanyNode {
     pub display_name: String,
     pub public_key_fingerprint: String,
     pub certificate_serial: String,
+    pub allowed_capabilities: BTreeSet<String>,
     pub administrative_status: NodeAdministrativeStatus,
     pub node_revision: u64,
     pub enrolled_at_unix_ms: u64,

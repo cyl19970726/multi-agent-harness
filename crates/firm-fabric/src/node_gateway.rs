@@ -48,6 +48,12 @@ pub(crate) fn connect(
             "Node schema bundle does not match enrolled contract",
         ));
     }
+    if !hello.features.is_subset(&node.allowed_capabilities) {
+        return Err(FabricError::none(
+            FabricErrorCode::FeatureIncompatible,
+            "NodeHello advertises capabilities that enrollment did not authorize",
+        ));
+    }
     if node.certificate_serial != hello.certificate_serial
         || node.public_key_fingerprint != hello.public_key_fingerprint
         || state

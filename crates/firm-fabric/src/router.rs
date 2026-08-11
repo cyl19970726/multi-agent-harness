@@ -671,6 +671,13 @@ fn validate_operation(
             "operation kind is not in the versioned Remote Fabric registry",
         ));
     }
+    let required_capability = match operation.kind.as_str() {
+        "fabric.probe.v1" | "fabric.reconcile_probe.v1" => "durable-routing",
+        "runtime_command.reference.v1" => "remote-runtime",
+        "message.reference.v1" | "delivery_intent.reference.v1" => "remote-message",
+        "artifact.reference.v1" => "artifact-transfer",
+        _ => unreachable!("closed operation registry was checked above"),
+    };
     for node_id in [&operation.source_node_id, &operation.target_node_id] {
         let node = state.nodes.get(node_id).ok_or_else(|| {
             FabricError::none(
@@ -684,6 +691,12 @@ fn validate_operation(
             return Err(FabricError::none(
                 FabricErrorCode::NodeRevoked,
                 "operation source or target Node is revoked or foreign",
+            ));
+        }
+        if !node.allowed_capabilities.contains(required_capability) {
+            return Err(FabricError::none(
+                FabricErrorCode::FeatureIncompatible,
+                format!("operation Node {node_id} lacks {required_capability} capability"),
             ));
         }
     }

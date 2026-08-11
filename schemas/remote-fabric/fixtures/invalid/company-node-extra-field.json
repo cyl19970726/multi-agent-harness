@@ -1,6 +1,7 @@
 {
   "id": "node-a", "company_id": "company-a", "display_name": "Node A",
   "public_key_fingerprint": "fingerprint-a", "certificate_serial": "cert-a",
+  "allowed_capabilities": ["durable-routing"],
   "administrative_status": "active", "node_revision": 1,
   "enrolled_at_unix_ms": 10, "last_seen_at_unix_ms": null,
   "revoked_at_unix_ms": null, "revoke_reason": null,
