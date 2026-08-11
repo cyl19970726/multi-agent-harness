@@ -1183,3 +1183,84 @@ fn control_plane_successor_immediately_fences_prior_live_gateway_generation() {
     assert_eq!(stale.code, FabricErrorCode::ControlPlaneStaleGeneration);
     assert_eq!(store.snapshot().expect("snapshot"), before);
 }
+
+#[test]
+fn draining_rejects_new_target_work_but_preserves_inflight_completion() {
+    let root = TestRoot::new("draining");
+    let store = FabricStore::open(root.path()).expect("open store");
+    let keys = InMemoryArtifactKeyBackend::default();
+    keys.insert(COMPANY, [7; 32]);
+    let control = ControlPlane::new(COMPANY, "control-1", &store, &keys, [9; 32]);
+    let lease = control.acquire_lease("cp-lease", 0, 1).expect("lease");
+    enroll_nodes(&control, lease.control_plane_generation);
+    let source_hello = hello("node-a", "gateway-a", "cert-a", &fingerprint("node-a"));
+    let source = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &source_hello,
+        &signing_key("node-a"),
+        30,
+    )
+    .expect("source connect");
+    let target_hello = hello("node-b", "gateway-b", "cert-b", &fingerprint("node-b"));
+    let target = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &target_hello,
+        &signing_key("node-b"),
+        30,
+    )
+    .expect("target connect");
+    let first = operation(source.gateway_generation, lease.control_plane_generation);
+    let first_digest = json_digest(&first).expect("request digest");
+    let (_, attempt, _, _) = control
+        .accept_operation(lease.control_plane_generation, first.clone(), 100)
+        .expect("accept inflight operation before drain");
+    let host = actor("host", &["company_host"]);
+    let drained = control
+        .set_node_administrative_status(
+            &host,
+            lease.control_plane_generation,
+            "node-b",
+            1,
+            NodeAdministrativeStatus::Draining,
+            101,
+        )
+        .expect("drain target Node");
+    assert_eq!(
+        drained.administrative_status,
+        NodeAdministrativeStatus::Draining
+    );
+    let before_new = store.snapshot().expect("snapshot");
+    let mut second = first.clone();
+    second.id = "operation-after-drain".into();
+    second.idempotency_key = "idempotency-after-drain".into();
+    let rejected = control
+        .accept_operation(lease.control_plane_generation, second, 102)
+        .expect_err("draining target rejects new operation");
+    assert_eq!(rejected.code, FabricErrorCode::TargetNotPlaced);
+    assert_eq!(store.snapshot().expect("snapshot"), before_new);
+    control
+        .persist_target_inbox(
+            lease.control_plane_generation,
+            "node-b",
+            target.gateway_generation,
+            &first.id,
+            &first_digest,
+            attempt.route_seq,
+            103,
+        )
+        .expect("drain does not corrupt inflight operation");
+    control
+        .record_application_result(
+            lease.control_plane_generation,
+            "node-b",
+            target.gateway_generation,
+            &first.id,
+            "agentfirm.remote_fabric.probe_result.v1",
+            json!({"reachable": true}),
+            true,
+            104,
+        )
+        .expect("inflight operation reaches terminal state during drain");
+}

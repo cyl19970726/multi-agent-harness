@@ -734,6 +734,16 @@ fn validate_operation(
             ));
         }
     }
+    if state
+        .nodes
+        .get(&operation.target_node_id)
+        .is_some_and(|node| node.administrative_status == NodeAdministrativeStatus::Draining)
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::TargetNotPlaced,
+            "draining Node does not accept new routed operations",
+        ));
+    }
     require_current_gateway(
         state,
         company_id,

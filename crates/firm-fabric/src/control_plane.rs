@@ -534,6 +534,61 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         })
     }
 
+    pub fn set_node_administrative_status(
+        &self,
+        actor: &AuthenticatedActor,
+        generation: u64,
+        node_id: &str,
+        expected_revision: u64,
+        status: NodeAdministrativeStatus,
+        now_unix_ms: u64,
+    ) -> Result<CompanyNode, FabricError> {
+        if status == NodeAdministrativeStatus::Revoked {
+            return Err(FabricError::none(
+                FabricErrorCode::InvalidPayload,
+                "revocation requires the irreversible revoke_node operation",
+            ));
+        }
+        self.store.transact(|state| {
+            require_active_control_plane(
+                state,
+                &self.company_id,
+                &self.instance_id,
+                generation,
+                now_unix_ms,
+            )?;
+            actor.require_company_and_role(&self.company_id, "company_host", now_unix_ms)?;
+            let node = state.nodes.get(node_id).cloned().ok_or_else(|| {
+                FabricError::none(FabricErrorCode::SourceMismatch, "Node does not exist")
+            })?;
+            if node.company_id != self.company_id {
+                return Err(FabricError::none(
+                    FabricErrorCode::WrongCompany,
+                    "Node belongs to another Company",
+                ));
+            }
+            if node.administrative_status == NodeAdministrativeStatus::Revoked {
+                return Err(FabricError::none(
+                    FabricErrorCode::NodeRevoked,
+                    "revoked Node cannot be reactivated",
+                ));
+            }
+            if node.node_revision != expected_revision {
+                return Err(revision_conflict(
+                    "Node revision mismatch",
+                    expected_revision,
+                    node.node_revision,
+                ));
+            }
+            let mut next = node;
+            next.administrative_status = status;
+            next.node_revision = next.node_revision.saturating_add(1);
+            next.updated_at_unix_ms = now_unix_ms;
+            state.nodes.insert(node_id.into(), next.clone());
+            Ok(next)
+        })
+    }
+
     pub(crate) fn artifact_keys(&self) -> &K {
         self.artifact_keys
     }
