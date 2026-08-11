@@ -999,14 +999,36 @@ fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
         let status = query_value(target, "status");
         let mut nodes = state.nodes.values().cloned().collect::<Vec<_>>();
         nodes.sort_by(|left, right| left.id.cmp(&right.id));
+        let cursor_node_id = cursor
+            .as_ref()
+            .map(|cursor| {
+                nodes
+                    .iter()
+                    .find(|node| {
+                        fabric_node_cursor(control.company_id(), &node.id, state.revision)
+                            == *cursor
+                    })
+                    .map(|node| node.id.clone())
+                    .ok_or_else(|| {
+                        FabricError::none(
+                            FabricErrorCode::ExpectedRevisionConflict,
+                            "Fabric node cursor is invalid or belongs to an older snapshot",
+                        )
+                    })
+            })
+            .transpose()?;
         nodes.retain(|node| {
-            cursor.as_ref().is_none_or(|cursor| node.id > *cursor)
+            cursor_node_id
+                .as_ref()
+                .is_none_or(|cursor_node_id| node.id > *cursor_node_id)
                 && status.as_ref().is_none_or(|status| {
                     format!("{:?}", node.administrative_status).to_ascii_lowercase() == *status
                 })
         });
         let page = nodes.into_iter().take(limit).collect::<Vec<_>>();
-        let next_cursor = page.last().map(|node| node.id.clone());
+        let next_cursor = page
+            .last()
+            .map(|node| fabric_node_cursor(control.company_id(), &node.id, state.revision));
         let diagnostics = harness_fabric::diagnostics::inspect_fabric(
             control.store(),
             control.company_id(),
@@ -1165,6 +1187,12 @@ fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
     Err(FabricError::none(
         FabricErrorCode::InvalidPayload,
         "unknown Remote Fabric Host REST endpoint",
+    ))
+}
+
+fn fabric_node_cursor(company_id: &str, node_id: &str, snapshot_revision: u64) -> String {
+    harness_fabric::sha256_hex(format!(
+        "agentfirm.remote-fabric.node-cursor.v1\n{company_id}\n{node_id}\n{snapshot_revision}"
     ))
 }
 
@@ -1536,6 +1564,39 @@ mod tests {
         assert_eq!(
             enrolled["node"]["public_key_fingerprint"],
             csr.public_key_fingerprint
+        );
+        let listed = route_host_http(
+            "GET",
+            "/v1/fabric/nodes",
+            "/v1/fabric/nodes?limit=1",
+            &serde_json::Value::Null,
+            Some(&actor),
+            &control,
+            lease.control_plane_generation,
+            &ca,
+            now + 2,
+            "host-token-00000000000000000000000000000000",
+        )
+        .expect("list Nodes with opaque snapshot cursor");
+        let cursor = listed["next_cursor"].as_str().expect("next cursor");
+        assert_ne!(cursor, "node-a");
+        assert_eq!(cursor.len(), 64);
+        assert_eq!(
+            route_host_http(
+                "GET",
+                "/v1/fabric/nodes",
+                "/v1/fabric/nodes?cursor=browser-selected-node-a",
+                &serde_json::Value::Null,
+                Some(&actor),
+                &control,
+                lease.control_plane_generation,
+                &ca,
+                now + 2,
+                "host-token-00000000000000000000000000000000",
+            )
+            .expect_err("raw or forged Node cursor fails closed")
+            .code,
+            FabricErrorCode::ExpectedRevisionConflict
         );
         let before = store.snapshot().expect("before replay");
         let replay = route_host_http(
