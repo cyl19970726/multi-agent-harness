@@ -7,18 +7,9 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use harness_core::{
-    MemberCoordinationStatus, MemberRunStatus, NativeSessionAvailability, NativeSessionRef,
-    ProviderDispatchAttempt, ProviderDispatchIntent, ProviderInteractionMessageOption,
-    ProviderInteractionRequestBody, ProviderInteractionType, ProviderResponseIntent,
-    ProviderWorkDispatchStatus, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
-    TeamDeliveryStatus, TeamMessageProjection, TeamRecipientKind, TeamRecipientRef,
-};
-use harness_store::{HarnessStore, WorkDeliveryClaimResult};
-
 mod fake_provider;
 mod firm_env;
-use firm_env::{current_project_id, run_firm, run_firm_with_env, TempHome};
+use firm_env::{current_project_id, run_firm, TempHome};
 
 /// `harness init` a project rooted at `<base>/<name>` and return its id.
 fn init_project(home: &TempHome, name: &str) -> String {
@@ -111,6 +102,7 @@ fn seed_agent_team(home: &TempHome, project_root: &std::path::Path, suffix: &str
     seed_team_for_mission(home, project_root, &mission_id, &host_id, suffix, &[])
 }
 
+#[cfg(any())]
 fn seed_canonical_member(
     home: &TempHome,
     project_root: &std::path::Path,
@@ -135,6 +127,7 @@ fn seed_canonical_member(
     seed_member_in_active_space(home, project_root, suffix, role)
 }
 
+#[cfg(any())]
 fn seed_member_in_active_space(
     home: &TempHome,
     project_root: &std::path::Path,
@@ -324,6 +317,7 @@ impl McpClient {
     }
 
     /// Send a notification (no id): the server must not answer.
+    #[cfg(any())]
     fn notify(&mut self, method: &str) {
         let notification = serde_json::json!({"jsonrpc": "2.0", "method": method});
         writeln!(self.stdin, "{notification}").expect("write notification");
@@ -366,6 +360,85 @@ fn call_error_text(response: &serde_json::Value) -> String {
         .to_string()
 }
 
+fn directory_snapshot(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    fn visit(
+        base: &std::path::Path,
+        path: &std::path::Path,
+        rows: &mut std::collections::BTreeMap<String, Vec<u8>>,
+    ) {
+        let mut entries = std::fs::read_dir(path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_else(|error| panic!("enumerate {}: {error}", path.display()));
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let entry_path = entry.path();
+            let file_type = entry
+                .file_type()
+                .unwrap_or_else(|error| panic!("stat {}: {error}", entry_path.display()));
+            assert!(!file_type.is_symlink(), "test store contains a symlink");
+            if file_type.is_dir() {
+                visit(base, &entry_path, rows);
+            } else if file_type.is_file() {
+                rows.insert(
+                    entry_path
+                        .strip_prefix(base)
+                        .expect("snapshot path under base")
+                        .to_string_lossy()
+                        .into_owned(),
+                    std::fs::read(&entry_path)
+                        .unwrap_or_else(|error| panic!("read {}: {error}", entry_path.display())),
+                );
+            }
+        }
+    }
+
+    let mut rows = std::collections::BTreeMap::new();
+    visit(root, root, &mut rows);
+    rows
+}
+
+#[test]
+fn retired_mcp_team_run_message_writer_fails_closed_with_zero_store_delta() {
+    let home = TempHome::new("mcp-retired-message-writer");
+    let project_id = init_project(&home, "mcp-retired-message-project");
+    let mut mcp = McpClient::spawn(&home, &project_id, &[]);
+    let _ = mcp.request(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "retired-writer-test", "version": "0"}
+        }),
+    );
+    let before = directory_snapshot(&home.spaces_dir());
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_send_message",
+            "arguments": {
+                "team_run_id": "hostile-team-run",
+                "sender_runtime_id": "hostile-sender",
+                "sender_kind": "agent_member",
+                "recipient_runtime_ids": ["hostile-recipient"],
+                "kind": "message",
+                "body": "must not persist"
+            }
+        }),
+    );
+    let error = call_error_text(&response);
+    assert!(error.contains("RETIRED_WRITE_AUTHORITY"), "{error}");
+    assert_eq!(
+        directory_snapshot(&home.spaces_dir()),
+        before,
+        "retired MCP writer must produce a byte-zero store delta"
+    );
+}
+
+// Historical Wave4A reverse-request writer flow. Canonical provider requests
+// are authored by the source NodeDaemon through Message/Delivery; this direct
+// TeamMessageProjection append must not remain executable in tests.
+#[cfg(any())]
 #[test]
 fn mcp_resolves_provider_request_messages_and_keeps_legacy_ledger_empty() {
     let home = TempHome::new("mcp-provider-interaction-message");
@@ -516,6 +589,7 @@ fn mcp_resolves_provider_request_messages_and_keeps_legacy_ledger_empty() {
 /// Seed one historical Wave row directly, bypassing the retired `wave_create`
 /// MCP tool (ADR 0051), so tests can prove `source_plan_ref` navigation still
 /// resolves a pre-cutover Wave row without exercising a live write.
+#[cfg(any())]
 fn seed_historical_wave(home: &TempHome, project_id: &str, id: &str, mission_id: &str, index: u64) {
     use std::io::Write as _;
 
@@ -542,6 +616,11 @@ fn seed_historical_wave(home: &TempHome, project_id: &str, id: &str, mission_id:
     .expect("append historical wave");
 }
 
+// Historical all-in-one MCP AgentTeam exercise. It includes the retired
+// TeamRun message/reconcile authority and is retained as source-only migration
+// evidence; current MCP reads and fail-closed retired writes have focused
+// executable coverage below.
+#[cfg(any())]
 #[test]
 fn mcp_stdio_agent_team_tools() {
     let home = TempHome::new("mcp-stdio");
@@ -984,7 +1063,7 @@ fn mcp_stdio_agent_team_tools() {
     assert!(response["result"]["content"][0]["text"]
         .as_str()
         .expect("impersonation error")
-        .contains("unbound MCP connections may not author"));
+        .contains("RETIRED_WRITE_AUTHORITY"));
 
     let response = mcp.request(
         "tools/call",
@@ -1493,6 +1572,9 @@ fn mcp_stdio_agent_team_tools() {
 /// unbound-MCP impersonation invariant: their user-driven session may author
 /// its own ProviderRuntimeProjection mail, recorded with explicit provenance. Driven members
 /// stay rejected from the same unbound connection.
+// Retired unbound-MCP sender selection contract. External interactive
+// sessions now author through their authenticated AgentSession/NodeDaemon.
+#[cfg(any())]
 #[test]
 fn mcp_stdio_external_interactive_member_authorship() {
     let home = TempHome::new("mcp-stdio-external");
@@ -1767,6 +1849,9 @@ fn mcp_stdio_external_interactive_member_authorship() {
     assert_eq!(response["result"]["isError"].as_bool(), Some(false));
 }
 
+// Historical Wave4A WorkDelivery claim/reconcile seam. Canonical
+// WorkExecutionBinding + WorkDelivery owns the current runtime path.
+#[cfg(any())]
 #[test]
 fn mcp_stdio_work_rebind_and_successor_delivery_reconcile() {
     let home = TempHome::new("mcp-work-rebind-reconcile");

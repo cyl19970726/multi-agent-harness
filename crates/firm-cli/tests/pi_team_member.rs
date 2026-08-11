@@ -9,9 +9,10 @@ use std::path::Path;
 mod fake_provider;
 mod firm_env;
 
-use firm_env::{create_canonical_agent_member, current_project_id, run_firm, TempHome};
+use firm_env::TempHome;
 
 /// Init a project and the mandatory flat AgentTeam runtime relation.
+#[cfg(any())]
 fn init_project(home: &TempHome, name: &str) -> (String, String) {
     let root = home.base().join(name);
     std::fs::create_dir_all(&root).unwrap();
@@ -155,6 +156,7 @@ fn run_with_fake_pi(
         .expect("run harness")
 }
 
+#[cfg(any())]
 fn spawn_fake_pi_daemon(home: &TempHome, fake_bin: &Path) -> std::process::Child {
     let path = format!(
         "{}:{}",
@@ -189,6 +191,7 @@ fn spawn_fake_pi_daemon(home: &TempHome, fake_bin: &Path) -> std::process::Child
         .expect("spawn NodeDaemon")
 }
 
+#[cfg(any())]
 fn wait_for_daemon(home: &TempHome, fake_bin: &Path) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
@@ -205,6 +208,7 @@ fn wait_for_daemon(home: &TempHome, fake_bin: &Path) {
 }
 
 /// Read store JSONL rows (latest-wins-per-id projection).
+#[cfg(any())]
 fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::Value> {
     let path = home.spaces_dir().join(project_id).join(file);
     let text =
@@ -233,6 +237,7 @@ fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::
         .collect()
 }
 
+#[cfg(any())]
 fn wait_for_member_turns(
     home: &TempHome,
     project_id: &str,

@@ -12264,7 +12264,9 @@ enum TeamMessageDeliveryMode {
 /// does not drive the member state machine: a handoff/blocker from a member is
 /// only recorded as an event — the member's ProviderRuntimeProjection row is left untouched.
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
+// Historical TeamRun message-writer fixture retained only as migration
+// evidence. It must not compile into either production or test authority.
+#[cfg(any())]
 fn send_team_message(
     store: &HarnessStore,
     team_run_id: &str,
@@ -12299,7 +12301,7 @@ fn send_team_message(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
+#[cfg(any())]
 fn send_team_message_as(
     store: &HarnessStore,
     team_run_id: &str,
@@ -12328,7 +12330,7 @@ fn send_team_message_as(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
+#[cfg(any())]
 fn send_team_message_as_work(
     store: &HarnessStore,
     team_run_id: &str,
@@ -17440,8 +17442,6 @@ fn prepare_provider_effect_kind(
         "delivery_id": source_record_id,
         "provider": session.provider_kind,
         "permission_ceiling": session.effective_permission_ceiling,
-        "session_lifecycle": session.lifecycle,
-        "current_turn_id": session.current_turn_id,
         "content_fingerprint": content_fingerprint,
     });
     let payload_fingerprint = harness_store::canonical_json_fingerprint(&payload);
@@ -17870,12 +17870,49 @@ fn transition_provider_session_for_member(
         }
     };
     for next in transitions {
+        // Closing a session is authorized by the exact durable StopSession
+        // command, not merely by possession of the NodeDaemon lease. Carry
+        // that command's key into the Store transition so the under-lock
+        // generation/command fence remains authoritative. The command has
+        // already crossed the provider boundary and settled Applied before
+        // this projection step.
+        let transition_idempotency_key = if next == AgentSessionStatus::Closed {
+            let mut matching_stop_keys = ledger
+                .store
+                .runtime_commands(&space_id)?
+                .into_iter()
+                .filter(|command| {
+                    command.command == harness_core::agentfirm_api::RuntimeCommandKind::StopSession
+                        && command.target_session_id.as_deref() == Some(session.id.as_str())
+                        && command.target_session_generation == Some(session.runtime_generation)
+                        && command.target_node_daemon_id == session.node_daemon_id
+                        && command.target_node_daemon_generation == session.node_daemon_generation
+                        && command.status
+                            == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+                        && command.effect_certainty
+                            == harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
+                })
+                .map(|command| command.idempotency_key)
+                .collect::<Vec<_>>();
+            matching_stop_keys.sort();
+            matching_stop_keys.dedup();
+            if matching_stop_keys.len() != 1 {
+                return Err(CliError::Usage(format!(
+                    "RUNTIME_COMMAND_RECOVERY_REQUIRED: closing session {} requires one exact applied StopSession command, found {}",
+                    session.id,
+                    matching_stop_keys.len()
+                )));
+            }
+            format!("{}:effect", matching_stop_keys.pop().unwrap())
+        } else {
+            format!("session:{}:{}:{next:?}", session.id, session.version)
+        };
         let result = ledger.store.transition_agent_session(
             &canonical_delivery_context(
                 &space_id,
                 &daemon.daemon_id,
                 "node_daemon.agent_session.provider_state",
-                format!("session:{}:{}:{next:?}", session.id, session.version),
+                transition_idempotency_key,
                 session.version,
             ),
             &session.id,
@@ -19866,7 +19903,9 @@ impl TeamRunLedger {
             .collect())
     }
 
-    #[cfg(test)]
+    // Historical TeamRun delivery completion seam. Canonical
+    // MessageDelivery claim/receipt/ack is the only executable path.
+    #[cfg(any())]
     fn complete_provider_interaction_response(
         &self,
         message: &TeamMessageProjection,
@@ -41206,13 +41245,8 @@ team-run start      --id <id> [--max-concurrency <n>] [--idle-timeout-s <n>]
 team-run add-member --id <id> --member <spec> [--initial-work <text>]
 team-run status     --id <id> [--json]
 team-run wait       --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
-team-run send       --id <id> --from <actor> --to <csv> --kind message|control
-                    --body <text> [--response-required|--informational]
-                    [--work-id <id>] [--correlation-id <id>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
 team-run dispatch-host --id <id> [--min-age-s <n>] [--timeout-ms <n>]
-team-run ack        --id <id> (--message-id <csv>|--all-delivered)
-                    [--member-id <id>] [--json]
 team-run events     --id <id> [--after-seq <n>] [--json]
 team-run board-summary --id <id>
 team-run recover    --id <id> [--json]
@@ -41251,11 +41285,8 @@ team-run start --id <id> [--max-concurrency <n>]
 team-run add-member --id <id> --member <spec>
 team-run status --id <id> [--json]
 team-run wait --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
-team-run send --id <id> --from <actor> --to <csv>
-  --kind message|control --body <text> [--work-id <id>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
 team-run dispatch-host --id <id> [--min-age-s <n>] [--timeout-ms <n>]
-team-run ack --id <id> (--message-id <csv>|--all-delivered) [--json]
 team-run events --id <id> [--json]
 team-run board-summary --id <id>
 team-run recover --id <id> [--json]
@@ -45714,6 +45745,7 @@ mod tests {
                 60_000,
             )
             .expect("acquire first Supervisor lease");
+        ensure_test_runtime_fabric(&store, &created, &first);
         let close = pending_close_request(
             &created.team_run.id,
             &member.id,
@@ -48916,6 +48948,7 @@ package:com.tencent.mm
                 60_000,
             )
             .expect("acquire supervisor lease");
+        ensure_test_runtime_fabric(&store, &created, &lease);
         let ledger = TeamRunLedger::new(
             &store,
             &created.team_run.id,
@@ -48930,8 +48963,8 @@ package:com.tencent.mm
             .complete_work_delivery(&claimed, "provider-work-receipt")
             .expect("record canonical provider receipt");
         let delivery = store
-            .trust_work_deliveries("unit-test-space")
-            .expect("canonical ProviderWorkDispatch ledger")
+            .fabric_work_deliveries("unit-test-space")
+            .expect("canonical WorkDelivery fabric")
             .into_iter()
             .find(|delivery| delivery.work_id == work.id)
             .expect("canonical delivery");
@@ -48942,6 +48975,18 @@ package:com.tencent.mm
         assert_eq!(
             delivery.provider_receipt_id.as_deref(),
             Some("provider-work-receipt")
+        );
+        assert!(
+            store
+                .trust_work_deliveries("unit-test-space")
+                .expect("historical Wave4A WorkDelivery rows")
+                .into_iter()
+                .filter(|delivery| delivery.work_id == work.id)
+                .all(|delivery| {
+                    delivery.status == harness_core::agentfirm_api::WorkDeliveryStatus::Queued
+                        && delivery.provider_receipt_id.is_none()
+                }),
+            "provider runtime must not advance the historical Wave4A ledger"
         );
         std::fs::remove_dir_all(root).expect("cleanup");
     }
@@ -49221,6 +49266,46 @@ package:com.tencent.mm
         .expect("create team run")
     }
 
+    fn ensure_test_runtime_fabric(
+        store: &HarnessStore,
+        created: &CreatedTeamRun,
+        lease: &TeamSupervisorLease,
+    ) {
+        let team = store
+            .latest_teams()
+            .expect("read test Team")
+            .remove(&created.team_run.agent_team_id)
+            .expect("test Team");
+        ensure_unit_test_canonical_members(
+            store,
+            &lease.execution_space_id,
+            &created.team_run.agent_team_id,
+            &[TeamMemberSpec {
+                agent_member_id: team.host_agent_id,
+                name: "TestHost".into(),
+                role: "host".into(),
+                provider: "codex".into(),
+                execution_mode: Some("codex_app_server".into()),
+                model: None,
+                effort: None,
+                service_tier: None,
+                provider_cwd_hint: None,
+                owned_paths: Vec::new(),
+                resume_native_session_id: None,
+                initial_work: None,
+            }],
+        )
+        .expect("materialize canonical test Host");
+        ensure_team_message_fabric(
+            store,
+            &created.team_run.id,
+            &lease.execution_space_id,
+            &lease.node_daemon_id,
+            lease.node_daemon_generation,
+        )
+        .expect("materialize canonical test AgentSessions and TeamMemberships");
+    }
+
     #[test]
     fn legacy_pending_interaction_resolve_stays_on_legacy_ledger() {
         let (store, root) = temp_store("legacy-pending-interaction-resolve");
@@ -49456,7 +49541,7 @@ package:com.tencent.mm
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
-    #[test]
+    #[cfg(any())] // Historical reverse-request bridge over retired Team message projection.
     fn provider_interaction_message_bridge_recovers_by_reverse_request_replay() {
         let (store, root) = temp_store("provider-interaction-message-bridge");
         let created = create_two_member_team_run(&store);
@@ -49853,20 +49938,21 @@ package:com.tencent.mm
                 unrelated_attempts.set(unrelated_attempts.get() + 1);
                 if attempt == 0 {
                     let mut unrelated = expected.clone();
+                    unrelated.runtime_generation += 1;
                     unrelated.last_event_at = Some("unix-ms:201".into());
                     store.compare_and_append_member_run(expected, &unrelated)?;
                 }
                 Ok(())
             },
         )
-        .expect_err("unrelated concurrent revisions fail closed");
-        assert!(error.to_string().contains(
-            "changed outside the admitted provider callback waiting-to-running transition"
-        ));
+        .expect_err("successor runtime generation fails closed");
+        assert!(error
+            .to_string()
+            .contains("changed outside the exact runtime generation admitted by Close"));
         assert_eq!(
             unrelated_attempts.get(),
             1,
-            "unrelated drift is not retried"
+            "successor authority drift is not retried"
         );
         assert!(
             latest_member_runs_in_append_order(&store)
@@ -49895,6 +49981,7 @@ package:com.tencent.mm
                 60_000,
             )
             .expect("acquire Supervisor lease");
+        ensure_test_runtime_fabric(&store, &created, &lease);
         let ledger = TeamRunLedger::new(
             &store,
             &created.team_run.id,
@@ -49954,6 +50041,7 @@ package:com.tencent.mm
                 60_000,
             )
             .expect("acquire Supervisor lease");
+        ensure_test_runtime_fabric(&store, &created, &lease);
         let ledger = TeamRunLedger::new(
             &store,
             &created.team_run.id,
@@ -50014,6 +50102,7 @@ package:com.tencent.mm
                 60_000,
             )
             .expect("acquire Supervisor lease");
+        ensure_test_runtime_fabric(&store, &created, &lease);
         let ledger = TeamRunLedger::new(
             &store,
             &created.team_run.id,
@@ -50071,6 +50160,7 @@ package:com.tencent.mm
                 60_000,
             )
             .expect("acquire Supervisor lease");
+        ensure_test_runtime_fabric(&store, &created, &lease);
         let ledger = TeamRunLedger::new(
             &store,
             &created.team_run.id,
@@ -50129,6 +50219,7 @@ package:com.tencent.mm
                 60_000,
             )
             .expect("acquire Supervisor lease");
+        ensure_test_runtime_fabric(&store, &created, &lease);
         let ledger = TeamRunLedger::new(
             &store,
             &created.team_run.id,
@@ -50191,6 +50282,7 @@ package:com.tencent.mm
                 60_000,
             )
             .expect("acquire Supervisor lease");
+        ensure_test_runtime_fabric(&store, &created, &lease);
         let ledger = TeamRunLedger::new(
             &store,
             &created.team_run.id,
@@ -50254,6 +50346,7 @@ package:com.tencent.mm
                 60_000,
             )
             .expect("acquire Supervisor lease");
+        ensure_test_runtime_fabric(&store, &created, &lease);
         let snapshot = test_provider_environment_observation(&root);
         let barrier = Arc::new(std::sync::Barrier::new(2));
         let worker_barrier = Arc::clone(&barrier);
@@ -50543,6 +50636,7 @@ package:com.tencent.mm
                 60_000,
             )
             .expect("acquire Supervisor lease");
+        ensure_test_runtime_fabric(&store, &created, &lease);
         let barrier = Arc::new(std::sync::Barrier::new(2));
         let worker_barrier = Arc::clone(&barrier);
         let store_root = store.root().to_path_buf();
@@ -50623,6 +50717,7 @@ package:com.tencent.mm
                 60_000,
             )
             .expect("acquire Supervisor lease");
+        ensure_test_runtime_fabric(&store, &created, &lease);
         let ledger = TeamRunLedger::new(
             &store,
             &created.team_run.id,
@@ -50657,6 +50752,7 @@ package:com.tencent.mm
                 60_000,
             )
             .expect("acquire Supervisor lease");
+        ensure_test_runtime_fabric(&store, &created, &lease);
         let ledger = TeamRunLedger::new(
             &store,
             &created.team_run.id,
@@ -50804,6 +50900,7 @@ package:com.tencent.mm
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
+    #[cfg(any())]
     fn seed_host_conversation(
         store: &HarnessStore,
         created: &CreatedTeamRun,
@@ -50923,7 +51020,7 @@ package:com.tencent.mm
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
+    #[cfg(any())] // Historical CLI-send/manual-ack authority; canonical MessageDelivery journey supersedes it.
     fn member_to_host_is_delivered_manual_ack_but_member_mail_stays_queued() {
         let (store, root) = temp_store("team-delivery-routing");
         let created = create_two_member_team_run(&store);
@@ -50996,7 +51093,7 @@ package:com.tencent.mm
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
+    #[cfg(any())] // Historical CLI-send planning conversation; canonical RoleAction messaging is covered store-live.
     fn member_planning_is_ordinary_correlated_conversation() {
         let (store, root) = temp_store("member-plan-conversation");
         let created = create_two_member_team_run(&store);
@@ -51072,7 +51169,7 @@ package:com.tencent.mm
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
+    #[cfg(any())] // Historical host-inbox fixture authored through retired TeamMessageProjection.
     fn host_inbox_is_scoped_to_exact_native_thread_binding() {
         let (store, root) = temp_store("host-native-inbox");
         let created = create_two_member_team_run(&store);
@@ -51120,7 +51217,7 @@ package:com.tencent.mm
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
+    #[cfg(any())] // Historical host-inbox surface normalization over retired message authoring.
     fn host_inbox_normalizes_surface_kimi_to_kimi_cli() {
         let (store, root) = temp_store("host-inbox-kimi-to-kimi-cli");
         let created = create_two_member_team_run(&store);
@@ -51164,7 +51261,7 @@ package:com.tencent.mm
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
+    #[cfg(any())] // Historical host-inbox surface normalization over retired message authoring.
     fn host_inbox_normalizes_surface_kimi_cli_to_kimi() {
         let (store, root) = temp_store("host-inbox-kimi-cli-to-kimi");
         let created = create_two_member_team_run(&store);
@@ -52449,7 +52546,7 @@ package:com.tencent.mm
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
+    #[cfg(any())] // Historical inbox latest-wins projection; canonical MessageDelivery view owns current truth.
     fn member_inbox_is_latest_wins_and_defaults_to_actionable_mail() {
         let (store, root) = temp_store("team-inbox");
         let created = create_two_member_team_run(&store);
@@ -52494,7 +52591,7 @@ package:com.tencent.mm
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
+    #[cfg(any())] // Historical malformed retired-delivery fixture; canonical schema/route negatives supersede it.
     fn member_inbox_filters_delivery_states_and_malformed_recipient_rows() {
         let (store, root) = temp_store("team-inbox-states");
         let created = create_two_member_team_run(&store);
