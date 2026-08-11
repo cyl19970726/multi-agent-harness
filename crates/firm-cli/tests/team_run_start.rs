@@ -1,8 +1,17 @@
-//! Integration coverage for `harness team-run start` (Agent Team v0
+#![cfg(any())]
+
+//! Historical integration coverage for `harness team-run start` (Agent Team v0
 //! orchestration): a fake `kimi acp` shim on PATH answers the ACP handshake
 //! and streams canned `session/update` frames, so the full loop — member
 //! threads, the ACP driver, ledger journaling, queued-delivery rounds — runs
 //! deterministically against a temp HOME. No real kimi binary is invoked.
+//!
+//! Wave 4C compile-quarantines this suite because it depends on the retired
+//! run-addressed TeamMessageProjection writer and a test-only implicit
+//! supervisor retirement knob. Current executable coverage lives in
+//! `team_run_api`, `team_run_daemon`, `role_views_api`, the RuntimeCommand
+//! trust-kernel tests, and the live Message/Delivery acceptance gate. Keeping
+//! these flows executable would preserve a second runtime/message authority.
 
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
