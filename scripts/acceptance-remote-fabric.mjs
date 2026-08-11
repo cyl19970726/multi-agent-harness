@@ -151,6 +151,25 @@ const tests = spawnSync(
 if (tests.status !== 0) {
   process.exit(tests.status ?? 1);
 }
+for (const [packageName, args] of [
+  [
+    "firm-store",
+    ["test", "-p", "firm-store", "remote_message_persists_before_delivery_and_replays_without_route_duplication"],
+  ],
+  [
+    "firm-cli",
+    ["test", "-p", "firm-cli", "--test", "node_gateway", "--", "--test-threads=1"],
+  ],
+]) {
+  const integration = spawnSync("cargo", args, {
+    stdio: "inherit",
+    env: { ...process.env, CARGO_TERM_COLOR: "never" },
+  });
+  if (integration.status !== 0) {
+    console.error(`Remote Fabric ${packageName} integration gate failed`);
+    process.exit(integration.status ?? 1);
+  }
+}
 
 const processEvidenceRoot = process.env.FABRIC_ACCEPTANCE_OUTPUT
   ? process.env.FABRIC_ACCEPTANCE_OUTPUT
