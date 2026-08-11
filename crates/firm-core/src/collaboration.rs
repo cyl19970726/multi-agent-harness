@@ -343,6 +343,19 @@ pub struct RoutedBusinessOperation {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutedBusinessReceipt {
+    pub operation_id: String,
+    pub kind: RoutedBusinessKind,
+    pub target_node_id: String,
+    pub target_placement_generation: u64,
+    pub effect_certainty: FabricEffectCertainty,
+    pub result: serde_json::Value,
+    pub result_digest: String,
+    pub applied_at: String,
+}
+
 pub fn collaboration_business_registry_v1() -> Vec<RoutedBusinessDescriptor> {
     use RoutedBusinessKind::*;
     [

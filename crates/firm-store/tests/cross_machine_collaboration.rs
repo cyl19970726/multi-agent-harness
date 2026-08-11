@@ -6,16 +6,19 @@ use firm_core::collaboration::{
     CancellationDecisionKind, CancellationRequestState, DelegationCancellationDecision,
     DelegationCancellationRequest, DelegationDecision, DelegationDecisionKind,
     DelegationInboundMode, DelegationInboundPolicy, DelegationState, DelegationTerminalOutcome,
-    RemoteFactKind, RemoteFactPublication, RemoteFactSnapshot, RemoteWorkRef, TargetPlacementRef,
-    WorkOperationalDecisionRef,
+    FabricEffectCertainty, FabricError, FabricErrorCode, RemoteFactKind, RemoteFactPublication,
+    RemoteFactSnapshot, RemoteWorkRef, RoutedBusinessOperation, RoutedBusinessReceipt,
+    TargetPlacementRef, WorkOperationalDecisionRef,
 };
 use firm_store::{
-    canonical_json_fingerprint, project_cross_node_deliveries, CollaborationMutationContext,
+    canonical_json_fingerprint, project_cross_node_deliveries, CollaborationApplicationService,
+    CollaborationDelegationFilter, CollaborationFabricPort, CollaborationMutationContext,
     HarnessStore, ProposeDelegationRequest, ResolvedCollaborationAuthority,
 };
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
 
@@ -140,6 +143,76 @@ fn proposal() -> ProposeDelegationRequest {
     }
 }
 
+#[derive(Default)]
+struct FaithfulFabric {
+    effects: Mutex<BTreeMap<String, (String, RoutedBusinessReceipt)>>,
+}
+
+impl FaithfulFabric {
+    fn effect_count(&self) -> usize {
+        self.effects.lock().unwrap().len()
+    }
+}
+
+impl CollaborationFabricPort for FaithfulFabric {
+    fn dispatch(
+        &self,
+        operation: &RoutedBusinessOperation,
+    ) -> Result<RoutedBusinessReceipt, FabricError> {
+        let mut effects = self.effects.lock().unwrap();
+        if let Some((fingerprint, receipt)) = effects.get(&operation.id) {
+            if fingerprint != &operation.payload_digest {
+                return Err(FabricError {
+                    code: FabricErrorCode::IdempotencyConflict,
+                    message: "operation id was reused with a different payload".into(),
+                    retryable: false,
+                    effect_certainty: FabricEffectCertainty::None,
+                    resource_kind: "routed_operation".into(),
+                    resource_id: operation.id.clone(),
+                    current_revision: Some(operation.expected_revision),
+                });
+            }
+            return Ok(receipt.clone());
+        }
+        let target = work_ref("node-b", "team-b", "work-b", 1);
+        let result = serde_json::json!({"target_work_ref": target});
+        let receipt = RoutedBusinessReceipt {
+            operation_id: operation.id.clone(),
+            kind: operation.kind,
+            target_node_id: operation.target_placement.node_id.clone(),
+            target_placement_generation: operation.target_placement.placement_generation,
+            effect_certainty: FabricEffectCertainty::Applied,
+            result_digest: canonical_json_fingerprint(&result),
+            result,
+            applied_at: "2026-08-11T00:00:02Z".into(),
+        };
+        effects.insert(
+            operation.id.clone(),
+            (operation.payload_digest.clone(), receipt.clone()),
+        );
+        Ok(receipt)
+    }
+}
+
+struct UnknownFabric;
+
+impl CollaborationFabricPort for UnknownFabric {
+    fn dispatch(
+        &self,
+        operation: &RoutedBusinessOperation,
+    ) -> Result<RoutedBusinessReceipt, FabricError> {
+        Err(FabricError {
+            code: FabricErrorCode::RecoveryRequired,
+            message: "transport lost after dispatch".into(),
+            retryable: false,
+            effect_certainty: FabricEffectCertainty::Unknown,
+            resource_kind: "routed_operation".into(),
+            resource_id: operation.id.clone(),
+            current_revision: Some(operation.expected_revision),
+        })
+    }
+}
+
 fn active_delegation(store: &HarnessStore) -> RemoteWorkRef {
     install_policy(store);
     let auth = authority();
@@ -214,6 +287,134 @@ fn active_delegation(store: &HarnessStore) -> RemoteWorkRef {
     assert_eq!(active.projection.source_work_ref, request.source_work_ref);
     assert_eq!(active.projection.target_work_ref.as_ref(), Some(&target));
     target
+}
+
+#[test]
+fn faithful_fabric_replays_exact_effect_and_unknown_never_folds_business_truth() {
+    let test = TestStore::new("faithful-fabric");
+    install_policy(&test.store);
+    let auth = authority();
+    test.store
+        .propose_collaboration_delegation(
+            &context(
+                auth.source_host.clone(),
+                "delegation.propose",
+                "fabric-propose",
+                0,
+            ),
+            &proposal(),
+            &auth,
+            &policy(),
+        )
+        .expect("fabric proposal");
+    let decision = DelegationDecision {
+        id: "fabric-accept".into(),
+        delegation_id: "delegation-1".into(),
+        expected_delegation_revision: 1,
+        decision: DelegationDecisionKind::Accept,
+        decided_by_target_host: auth.target_host.clone(),
+        reason: "accepted".into(),
+        created_at: "2026-08-11T00:00:01Z".into(),
+    };
+    test.store
+        .decide_collaboration_delegation(
+            &context(
+                auth.target_host.clone(),
+                "delegation.decide",
+                "fabric-accept",
+                1,
+            ),
+            "delegation-1",
+            &decision,
+            &auth,
+            &placement(13),
+        )
+        .expect("fabric accepted");
+
+    let route = test
+        .store
+        .target_work_create_operation(
+            "company-1",
+            "delegation-1",
+            &auth.target_host,
+            "2026-08-11T00:00:02Z",
+        )
+        .unwrap();
+    let fabric = FaithfulFabric::default();
+    let first_receipt = fabric.dispatch(&route).unwrap();
+    let replay_receipt = fabric.dispatch(&route).unwrap();
+    assert_eq!(first_receipt, replay_receipt);
+    assert_eq!(fabric.effect_count(), 1);
+
+    let service = CollaborationApplicationService::new(&test.store, &fabric);
+    let applied = service
+        .provision_target_work(
+            &context(
+                actor(ActorKind::Service, "fabric-control-plane"),
+                "target_work.applied",
+                "fabric-fold-1",
+                2,
+            ),
+            "delegation-1",
+            &auth.target_host,
+            &placement(13),
+        )
+        .expect("fold faithful applied receipt");
+    assert_eq!(applied.projection.state, DelegationState::Active);
+    assert_eq!(fabric.effect_count(), 1);
+
+    let second = TestStore::new("unknown-fabric");
+    install_policy(&second.store);
+    second
+        .store
+        .propose_collaboration_delegation(
+            &context(
+                auth.source_host.clone(),
+                "delegation.propose",
+                "unknown-propose",
+                0,
+            ),
+            &proposal(),
+            &auth,
+            &policy(),
+        )
+        .unwrap();
+    second
+        .store
+        .decide_collaboration_delegation(
+            &context(
+                auth.target_host.clone(),
+                "delegation.decide",
+                "unknown-accept",
+                1,
+            ),
+            "delegation-1",
+            &decision,
+            &auth,
+            &placement(13),
+        )
+        .unwrap();
+    let before = second.store.collaboration_operations().unwrap();
+    let unknown_fabric = UnknownFabric;
+    let unknown = CollaborationApplicationService::new(&second.store, &unknown_fabric);
+    assert!(unknown
+        .provision_target_work(
+            &context(
+                actor(ActorKind::Service, "fabric-control-plane"),
+                "target_work.applied",
+                "unknown-fold-1",
+                2,
+            ),
+            "delegation-1",
+            &auth.target_host,
+            &placement(13),
+        )
+        .is_err());
+    assert_eq!(second.store.collaboration_operations().unwrap(), before);
+    assert_eq!(
+        second.store.collaboration_delegations("company-1").unwrap()[0].state,
+        DelegationState::ProvisioningTargetWork
+    );
 }
 
 #[test]
@@ -455,6 +656,75 @@ fn torn_tail_is_ignored_and_exact_replay_repairs_atomic_ledger() {
             .len(),
         1
     );
+}
+
+#[test]
+fn delegation_list_cursor_freezes_snapshot_and_filters_exact_scope() {
+    let test = TestStore::new("cursor");
+    install_policy(&test.store);
+    let auth = authority();
+    for ordinal in 1..=3 {
+        let mut request = proposal();
+        request.delegation_id = format!("delegation-{ordinal}");
+        request.operation_id = format!("route-propose-{ordinal}");
+        test.store
+            .propose_collaboration_delegation(
+                &context(
+                    auth.source_host.clone(),
+                    "delegation.propose",
+                    &format!("cursor-propose-{ordinal}"),
+                    0,
+                ),
+                &request,
+                &auth,
+                &policy(),
+            )
+            .expect("cursor proposal");
+    }
+    let filter = CollaborationDelegationFilter {
+        source_team_id: Some("team-a".into()),
+        target_team_id: Some("team-b".into()),
+        node_id: Some("node-b".into()),
+        state: Some(DelegationState::AwaitingTargetDecision),
+    };
+    let first = test
+        .store
+        .list_collaboration_delegations("company-1", &filter, None, 2)
+        .expect("first frozen page");
+    assert_eq!(first.items.len(), 2);
+    let cursor = first.next_cursor.expect("third item remains");
+
+    let mut fourth = proposal();
+    fourth.delegation_id = "delegation-4".into();
+    fourth.operation_id = "route-propose-4".into();
+    test.store
+        .propose_collaboration_delegation(
+            &context(
+                auth.source_host.clone(),
+                "delegation.propose",
+                "cursor-propose-4",
+                0,
+            ),
+            &fourth,
+            &auth,
+            &policy(),
+        )
+        .expect("fourth proposal after first page");
+
+    let second = test
+        .store
+        .list_collaboration_delegations("company-1", &filter, Some(cursor), 2)
+        .expect("second page from frozen sequence");
+    assert_eq!(second.items.len(), 1);
+    assert!(second.next_cursor.is_none());
+    assert_eq!(second.as_of_store_sequence, first.as_of_store_sequence);
+
+    let fresh = test
+        .store
+        .list_collaboration_delegations("company-1", &filter, None, 10)
+        .expect("fresh view includes later proposal");
+    assert_eq!(fresh.items.len(), 4);
+    assert!(fresh.as_of_store_sequence > first.as_of_store_sequence);
 }
 
 #[test]

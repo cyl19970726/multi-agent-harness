@@ -6,8 +6,8 @@ use firm_core::collaboration::{
     DelegationDecisionKind, DelegationInboundMode, DelegationInboundPolicy,
     DelegationInboundPolicySnapshot, DelegationState, DelegationTerminalOutcome,
     FabricEffectCertainty, FabricError, FabricErrorCode, RemoteFactPublication, RemoteWorkRef,
-    RoutedBusinessKind, RoutedBusinessOperation, TargetPlacementRef, WorkDelegationV1,
-    COLLABORATION_STORE_VERSION,
+    RoutedBusinessKind, RoutedBusinessOperation, RoutedBusinessReceipt, TargetPlacementRef,
+    WorkDelegationV1, COLLABORATION_STORE_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,6 +27,7 @@ pub struct CollaborationOperation {
     pub request_fingerprint: String,
     pub aggregate_kind: String,
     pub aggregate_id: String,
+    pub store_sequence: u64,
     pub resulting_revision: u64,
     pub resulting_projection: Value,
     pub immutable_side_records: Vec<Value>,
@@ -74,6 +75,108 @@ pub struct CollaborationMutationResult<T> {
     pub projection: T,
     pub operation: CollaborationOperation,
     pub replayed: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CollaborationDelegationFilter {
+    pub source_team_id: Option<String>,
+    pub target_team_id: Option<String>,
+    pub node_id: Option<String>,
+    pub state: Option<DelegationState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollaborationCursor {
+    pub as_of_store_sequence: u64,
+    pub offset: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollaborationPage<T> {
+    pub items: Vec<T>,
+    pub as_of_store_sequence: u64,
+    pub next_cursor: Option<CollaborationCursor>,
+}
+
+pub trait CollaborationFabricPort {
+    fn dispatch(
+        &self,
+        operation: &RoutedBusinessOperation,
+    ) -> Result<RoutedBusinessReceipt, FabricError>;
+}
+
+/// Transport-neutral business orchestration. The fabric may route/reconcile
+/// the effect, but only this service folds an applied receipt into the central
+/// Delegation relationship. Unknown/failed effects never fabricate Work or
+/// Delegation outcomes.
+pub struct CollaborationApplicationService<'a, F> {
+    store: &'a HarnessStore,
+    fabric: &'a F,
+}
+
+impl<'a, F: CollaborationFabricPort> CollaborationApplicationService<'a, F> {
+    pub fn new(store: &'a HarnessStore, fabric: &'a F) -> Self {
+        Self { store, fabric }
+    }
+
+    pub fn provision_target_work(
+        &self,
+        fold_context: &CollaborationMutationContext,
+        delegation_id: &str,
+        actor: &ActorRef,
+        observed_target_placement: &TargetPlacementRef,
+    ) -> StoreResult<CollaborationMutationResult<WorkDelegationV1>> {
+        let routed = self.store.target_work_create_operation(
+            &fold_context.company_id,
+            delegation_id,
+            actor,
+            &fold_context.occurred_at,
+        )?;
+        let receipt = self.fabric.dispatch(&routed).map_err(|error| {
+            StoreError::Conflict(
+                serde_json::to_string(&error)
+                    .unwrap_or_else(|_| "routed collaboration operation failed".into()),
+            )
+        })?;
+        if receipt.operation_id != routed.id
+            || receipt.kind != routed.kind
+            || receipt.target_node_id != routed.target_placement.node_id
+            || receipt.target_placement_generation != routed.target_placement.placement_generation
+            || receipt.effect_certainty != FabricEffectCertainty::Applied
+            || receipt.result_digest != canonical_json_fingerprint(&receipt.result)
+        {
+            return Err(collaboration_error(
+                FabricErrorCode::RecoveryRequired,
+                "fabric receipt is unknown, forged, or outside the exact routed operation",
+                "routed_operation",
+                &routed.id,
+                Some(routed.expected_revision),
+            ));
+        }
+        let target_work_ref = serde_json::from_value::<RemoteWorkRef>(
+            receipt
+                .result
+                .get("target_work_ref")
+                .cloned()
+                .ok_or_else(|| {
+                    collaboration_error(
+                        FabricErrorCode::TargetWorkCreateFailed,
+                        "applied target Work receipt lacks target_work_ref",
+                        "routed_operation",
+                        &routed.id,
+                        Some(routed.expected_revision),
+                    )
+                })?,
+        )?;
+        self.store.apply_target_work_created(
+            fold_context,
+            delegation_id,
+            &target_work_ref,
+            observed_target_placement,
+            &receipt.operation_id,
+        )
+    }
 }
 
 fn collaboration_error(
@@ -230,6 +333,95 @@ impl HarnessStore {
             .collect())
     }
 
+    pub fn list_collaboration_delegations(
+        &self,
+        company_id: &str,
+        filter: &CollaborationDelegationFilter,
+        cursor: Option<CollaborationCursor>,
+        limit: usize,
+    ) -> StoreResult<CollaborationPage<WorkDelegationV1>> {
+        if limit == 0 || limit > 500 {
+            return Err(collaboration_error(
+                FabricErrorCode::ProtocolMismatch,
+                "collaboration list limit must be between 1 and 500",
+                "collaboration_cursor",
+                company_id,
+                None,
+            ));
+        }
+        let operations = self.collaboration_operations_unlocked()?;
+        let latest_sequence = operations
+            .iter()
+            .map(|operation| operation.store_sequence)
+            .max()
+            .unwrap_or(0);
+        let as_of = cursor
+            .map(|value| value.as_of_store_sequence)
+            .unwrap_or(latest_sequence);
+        if as_of > latest_sequence {
+            return Err(collaboration_error(
+                FabricErrorCode::RevisionConflict,
+                "collaboration cursor points beyond the current Store sequence",
+                "collaboration_cursor",
+                company_id,
+                Some(latest_sequence),
+            ));
+        }
+        let mut latest = BTreeMap::<String, WorkDelegationV1>::new();
+        for operation in operations.into_iter().filter(|operation| {
+            operation.company_id == company_id
+                && operation.aggregate_kind == "work_delegation_v1"
+                && operation.store_sequence <= as_of
+        }) {
+            let delegation: WorkDelegationV1 =
+                serde_json::from_value(operation.resulting_projection)?;
+            latest.insert(delegation.id.clone(), delegation);
+        }
+        let filtered = latest
+            .into_values()
+            .filter(|delegation| {
+                filter
+                    .source_team_id
+                    .as_ref()
+                    .is_none_or(|team_id| &delegation.source_team_id == team_id)
+                    && filter
+                        .target_team_id
+                        .as_ref()
+                        .is_none_or(|team_id| &delegation.target_placement.team_id == team_id)
+                    && filter.node_id.as_ref().is_none_or(|node_id| {
+                        &delegation.source_node_id == node_id
+                            || &delegation.target_placement.node_id == node_id
+                    })
+                    && filter.state.is_none_or(|state| delegation.state == state)
+            })
+            .collect::<Vec<_>>();
+        let offset = cursor.map(|value| value.offset).unwrap_or(0);
+        if offset > filtered.len() {
+            return Err(collaboration_error(
+                FabricErrorCode::RevisionConflict,
+                "collaboration cursor offset is outside the frozen snapshot",
+                "collaboration_cursor",
+                company_id,
+                Some(as_of),
+            ));
+        }
+        let items = filtered
+            .iter()
+            .skip(offset)
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>();
+        let next_offset = offset + items.len();
+        Ok(CollaborationPage {
+            items,
+            as_of_store_sequence: as_of,
+            next_cursor: (next_offset < filtered.len()).then_some(CollaborationCursor {
+                as_of_store_sequence: as_of,
+                offset: next_offset,
+            }),
+        })
+    }
+
     pub fn put_collaboration_inbound_policy(
         &self,
         context: &CollaborationMutationContext,
@@ -346,6 +538,12 @@ impl HarnessStore {
             request_fingerprint: fingerprint,
             aggregate_kind: aggregate_kind.into(),
             aggregate_id: aggregate_id.into(),
+            store_sequence: operations
+                .iter()
+                .map(|operation| operation.store_sequence)
+                .max()
+                .unwrap_or(0)
+                + 1,
             resulting_revision: current_revision + 1,
             resulting_projection: serde_json::to_value(resulting_projection)?,
             immutable_side_records,
