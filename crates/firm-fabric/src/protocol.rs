@@ -557,11 +557,8 @@ fn validate_closed_body(
                 .as_ref()
                 .is_some_and(|envelope| {
                     let body_value = envelope.get("body").and_then(Value::as_str);
-                    let computed_body_digest = body_value.and_then(|message_body| {
-                        crate::canonical_digest(&serde_json::json!({"body": message_body}))
-                            .ok()
-                            .map(|digest| format!("sha256:{digest}"))
-                    });
+                    let computed_body_digest = body_value
+                        .map(|message_body| format!("sha256:{}", crate::sha256_hex(message_body)));
                     envelope.get("id").and_then(Value::as_str) == Some(body.message_id.as_str())
                         && envelope.get("body_digest").and_then(Value::as_str)
                             == Some(body.body_digest.as_str())

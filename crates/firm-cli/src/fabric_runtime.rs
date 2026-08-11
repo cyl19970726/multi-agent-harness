@@ -289,6 +289,9 @@ fn node_gateway_command(
     let mut application = Wave4cApplication {
         probe: ProbeApplication,
         firm_home: layout.firm_home().to_path_buf(),
+        node_id: gateway.session.node_id.clone(),
+        daemon_id: gateway.session.node_daemon_id.clone(),
+        daemon_generation: gateway.session.node_daemon_generation,
     };
     loop {
         gateway.heartbeat().map_err(fabric_error)?;
@@ -315,6 +318,9 @@ fn node_gateway_command(
 struct Wave4cApplication {
     probe: ProbeApplication,
     firm_home: PathBuf,
+    node_id: String,
+    daemon_id: String,
+    daemon_generation: u64,
 }
 
 impl NodeApplication for Wave4cApplication {
@@ -372,10 +378,67 @@ impl NodeApplication for Wave4cApplication {
                 ))
             }
             harness_fabric::ClosedOperationBody::Message(_) => {
-                super::remote_fabric::resolved_message_from_operation(operation)?;
-                Err(FabricError::unknown(
-                    operation.id.clone(),
-                    "Message envelope verified but target persistence is not yet connected",
+                let message = super::remote_fabric::resolved_message_from_operation(operation)?;
+                let execution_space_id = operation
+                    .target_execution_space_id
+                    .as_deref()
+                    .ok_or_else(|| {
+                        FabricError::none(
+                            FabricErrorCode::TargetNotPlaced,
+                            "Message route has no target Execution Space",
+                        )
+                    })?;
+                let space =
+                    super::execution_space::context_for_id(&self.firm_home, execution_space_id)
+                        .map_err(|error| {
+                            FabricError::none(
+                                FabricErrorCode::StoreUnavailable,
+                                format!("Execution Space registry failed: {error}"),
+                            )
+                        })?
+                        .ok_or_else(|| {
+                            FabricError::none(
+                                FabricErrorCode::TargetNotPlaced,
+                                "Message target Execution Space is not registered on this Node",
+                            )
+                        })?;
+                let store = HarnessStore::new(space.store_root);
+                let context = harness_core::agentfirm_api::MutationContext {
+                    execution_space_id: execution_space_id.into(),
+                    authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                        kind: harness_core::agentfirm_api::ActorKind::Service,
+                        id: self.daemon_id.clone(),
+                    },
+                    authority_actor: None,
+                    command_name: "remote_message_persist".into(),
+                    idempotency_key: operation.id.clone(),
+                    expected_version: 0,
+                    request_fingerprint: Some(harness_fabric::json_digest(operation).map_err(
+                        |error| {
+                            FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
+                        },
+                    )?),
+                };
+                let persisted = store
+                    .persist_remote_message(
+                        &context,
+                        operation,
+                        message,
+                        &self.node_id,
+                        &self.daemon_id,
+                        self.daemon_generation,
+                    )
+                    .map_err(|error| {
+                        FabricError::none(FabricErrorCode::UnauthorizedActor, error.to_string())
+                    })?;
+                Ok((
+                    "agentfirm.remote_fabric.message_persisted.v1".into(),
+                    serde_json::json!({
+                        "message_id": persisted.projection.id,
+                        "canonical_event_id": persisted.event.id,
+                        "replayed": persisted.replayed,
+                    }),
+                    harness_fabric::EffectCertainty::Applied,
                 ))
             }
             _ => Err(FabricError::none(

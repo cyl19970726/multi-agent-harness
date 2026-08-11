@@ -311,10 +311,7 @@ fn canonical_json_v1_is_key_order_independent_and_rejects_floats() {
 
 #[test]
 fn message_route_requires_verified_immutable_payload_not_identity_only() {
-    let message_body_digest = format!(
-        "sha256:{}",
-        json_digest(&json!({"body": "hello"})).expect("message body digest")
-    );
+    let message_body_digest = format!("sha256:{}", sha256_hex("hello"));
     let mut request = operation(1, 1);
     request.kind = MESSAGE_REFERENCE_KIND.into();
     request.body_schema = MESSAGE_REFERENCE_SCHEMA.into();

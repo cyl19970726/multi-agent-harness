@@ -1,10 +1,10 @@
 {
   "message_id": "message:remote-1",
-  "body_digest": "sha256:1da63ae1d1c64f4549cece58555b23ef253aa7bb2c5ca6c48c12918863cff51a",
+  "body_digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
   "canonical_message_envelope": {
     "id": "message:remote-1",
     "body": "hello",
-    "body_digest": "sha256:1da63ae1d1c64f4549cece58555b23ef253aa7bb2c5ca6c48c12918863cff51a"
+    "body_digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
   },
   "message_object_ref": null
 }
