@@ -104,6 +104,36 @@ fn enrollment_proof(enrollment_id: &str, node: &str, cert: &str) -> EnrollmentPr
     }
 }
 
+fn hello_proof(
+    hello: &NodeHello,
+    control_plane_generation: u64,
+    key: &SigningKey,
+) -> NodeHelloProof {
+    let challenge =
+        firm_fabric::node_gateway::node_hello_challenge(COMPANY, control_plane_generation, hello)
+            .expect("hello challenge");
+    NodeHelloProof {
+        public_key: key.verifying_key().to_bytes().to_vec(),
+        signature: key.sign(challenge.as_bytes()).to_bytes().to_vec(),
+        challenge,
+    }
+}
+
+fn connect_node<K: ArtifactKeyBackend>(
+    control: &ControlPlane<'_, K>,
+    generation: u64,
+    hello: &NodeHello,
+    key: &SigningKey,
+    now_unix_ms: u64,
+) -> Result<NodeWelcome, FabricError> {
+    control.connect_gateway(
+        generation,
+        hello,
+        &hello_proof(hello, generation, key),
+        now_unix_ms,
+    )
+}
+
 fn enroll_nodes<K: ArtifactKeyBackend>(control: &ControlPlane<'_, K>, generation: u64) {
     let host = actor("host", &["company_host"]);
     for (enrollment, token, node, cert) in [
@@ -248,20 +278,24 @@ fn durable_route_replays_exactly_and_fences_stale_source_generation() {
     let control = ControlPlane::new(COMPANY, "control-1", &store, &keys, [9; 32]);
     let lease = control.acquire_lease("cp-lease", 0, 1).expect("lease");
     enroll_nodes(&control, lease.control_plane_generation);
-    let source = control
-        .connect_gateway(
-            lease.control_plane_generation,
-            &hello("node-a", "gateway-a-1", "cert-a", &fingerprint("node-a")),
-            30,
-        )
-        .expect("source connect");
-    let target = control
-        .connect_gateway(
-            lease.control_plane_generation,
-            &hello("node-b", "gateway-b-1", "cert-b", &fingerprint("node-b")),
-            30,
-        )
-        .expect("target connect");
+    let source_hello = hello("node-a", "gateway-a-1", "cert-a", &fingerprint("node-a"));
+    let source = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &source_hello,
+        &signing_key("node-a"),
+        30,
+    )
+    .expect("source connect");
+    let target_hello = hello("node-b", "gateway-b-1", "cert-b", &fingerprint("node-b"));
+    let target = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &target_hello,
+        &signing_key("node-b"),
+        30,
+    )
+    .expect("target connect");
     let request = operation(source.gateway_generation, lease.control_plane_generation);
     let request_digest = json_digest(&request).expect("request digest");
     let (_, attempt, accepted, replayed) = control
@@ -344,13 +378,15 @@ fn durable_route_replays_exactly_and_fences_stale_source_generation() {
     control
         .heartbeat_lease(lease.control_plane_generation, lease.revision, 29_000)
         .expect("keep Control Plane alive");
-    let successor = control
-        .connect_gateway(
-            lease.control_plane_generation,
-            &hello("node-a", "gateway-a-2", "cert-a", &fingerprint("node-a")),
-            30_031,
-        )
-        .expect("source successor after lease expiry");
+    let successor_hello = hello("node-a", "gateway-a-2", "cert-a", &fingerprint("node-a"));
+    let successor = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &successor_hello,
+        &signing_key("node-a"),
+        30_031,
+    )
+    .expect("source successor after lease expiry");
     assert_eq!(successor.gateway_generation, source.gateway_generation + 1);
     let before = store.snapshot().expect("snapshot");
     let mut stale = operation(source.gateway_generation, lease.control_plane_generation);
@@ -568,13 +604,30 @@ fn enrollment_proof_and_certificate_rotation_are_cryptographic_and_generation_fe
     let control = ControlPlane::new(COMPANY, "control-1", &store, &keys, [9; 32]);
     let lease = control.acquire_lease("cp-lease", 0, 1).expect("lease");
     enroll_nodes(&control, lease.control_plane_generation);
-    let welcome = control
+    let first_hello = hello("node-a", "gateway-a-1", "cert-a", &fingerprint("node-a"));
+    let before_impersonation = store.snapshot().expect("snapshot");
+    let impersonation = control
         .connect_gateway(
             lease.control_plane_generation,
-            &hello("node-a", "gateway-a-1", "cert-a", &fingerprint("node-a")),
-            30,
+            &first_hello,
+            &hello_proof(
+                &first_hello,
+                lease.control_plane_generation,
+                &signing_key("node-b"),
+            ),
+            29,
         )
-        .expect("connect with enrolled certificate");
+        .expect_err("Node body cannot impersonate another mTLS identity");
+    assert_eq!(impersonation.code, FabricErrorCode::UnauthorizedActor);
+    assert_eq!(store.snapshot().expect("snapshot"), before_impersonation);
+    let welcome = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &first_hello,
+        &signing_key("node-a"),
+        30,
+    )
+    .expect("connect with enrolled certificate");
     let next_key = SigningKey::from_bytes(&[4; 32]);
     let challenge = firm_fabric::enrollment::certificate_rotation_challenge(
         COMPANY,
@@ -628,31 +681,35 @@ fn enrollment_proof_and_certificate_rotation_are_cryptographic_and_generation_fe
         certificate.public_key_fingerprint,
         sha256_hex(next_key.verifying_key().to_bytes())
     );
-    let old = control
-        .connect_gateway(
-            lease.control_plane_generation,
-            &hello(
-                "node-a",
-                "gateway-old-cert",
-                "cert-a",
-                &fingerprint("node-a"),
-            ),
-            42,
-        )
-        .expect_err("revoked certificate cannot reconnect");
+    let old_hello = hello(
+        "node-a",
+        "gateway-old-cert",
+        "cert-a",
+        &fingerprint("node-a"),
+    );
+    let old = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &old_hello,
+        &signing_key("node-a"),
+        42,
+    )
+    .expect_err("revoked certificate cannot reconnect");
     assert_eq!(old.code, FabricErrorCode::UnauthorizedActor);
-    let successor = control
-        .connect_gateway(
-            lease.control_plane_generation,
-            &hello(
-                "node-a",
-                "gateway-a-2",
-                "cert-a-rotated",
-                &sha256_hex(next_key.verifying_key().to_bytes()),
-            ),
-            42,
-        )
-        .expect("rotated certificate reconnects");
+    let rotated_hello = hello(
+        "node-a",
+        "gateway-a-2",
+        "cert-a-rotated",
+        &sha256_hex(next_key.verifying_key().to_bytes()),
+    );
+    let successor = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &rotated_hello,
+        &next_key,
+        42,
+    )
+    .expect("rotated certificate reconnects");
     assert_eq!(successor.gateway_generation, welcome.gateway_generation + 1);
 }
 

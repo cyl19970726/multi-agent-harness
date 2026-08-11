@@ -198,6 +198,7 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         &self,
         generation: u64,
         hello: &NodeHello,
+        proof: &NodeHelloProof,
         now_unix_ms: u64,
     ) -> Result<NodeWelcome, FabricError> {
         self.store.transact(|state| {
@@ -208,7 +209,14 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                 generation,
                 now_unix_ms,
             )?;
-            node_gateway::connect(state, &self.company_id, generation, hello, now_unix_ms)
+            node_gateway::connect(
+                state,
+                &self.company_id,
+                generation,
+                hello,
+                proof,
+                now_unix_ms,
+            )
         })
     }
 

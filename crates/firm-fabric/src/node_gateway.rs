@@ -3,12 +3,14 @@ use std::collections::BTreeSet;
 use crate::protocol::*;
 use crate::store::FabricState;
 use crate::{FabricError, FabricErrorCode, FABRIC_PROTOCOL_VERSION, FABRIC_SCHEMA_VERSION};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
 pub(crate) fn connect(
     state: &mut FabricState,
     company_id: &str,
     control_plane_generation: u64,
     hello: &NodeHello,
+    proof: &NodeHelloProof,
     now_unix_ms: u64,
 ) -> Result<NodeWelcome, FabricError> {
     if hello.company_id != company_id {
@@ -27,6 +29,7 @@ pub(crate) fn connect(
     let node = state.nodes.get(&hello.node_id).cloned().ok_or_else(|| {
         FabricError::none(FabricErrorCode::SourceMismatch, "Node is not enrolled")
     })?;
+    verify_hello_proof(company_id, control_plane_generation, hello, proof)?;
     if node.company_id != company_id {
         return Err(FabricError::none(
             FabricErrorCode::WrongCompany,
@@ -139,6 +142,58 @@ pub(crate) fn connect(
         required_reconcile_ids,
         schema_version: FABRIC_SCHEMA_VERSION.into(),
     })
+}
+
+pub fn node_hello_challenge(
+    company_id: &str,
+    control_plane_generation: u64,
+    hello: &NodeHello,
+) -> Result<String, FabricError> {
+    Ok(format!(
+        "agentfirm.remote_fabric.v1:hello:{company_id}:{control_plane_generation}:{}",
+        crate::json_digest(hello)?
+    ))
+}
+
+fn verify_hello_proof(
+    company_id: &str,
+    control_plane_generation: u64,
+    hello: &NodeHello,
+    proof: &NodeHelloProof,
+) -> Result<(), FabricError> {
+    let expected = node_hello_challenge(company_id, control_plane_generation, hello)?;
+    if proof.challenge != expected {
+        return Err(FabricError::none(
+            FabricErrorCode::UnauthorizedActor,
+            "NodeHello proof does not bind the exact connection challenge",
+        ));
+    }
+    let public_key: [u8; 32] = proof.public_key.as_slice().try_into().map_err(|_| {
+        FabricError::none(
+            FabricErrorCode::UnauthorizedActor,
+            "NodeHello Ed25519 public key must contain exactly 32 bytes",
+        )
+    })?;
+    let signature: [u8; 64] = proof.signature.as_slice().try_into().map_err(|_| {
+        FabricError::none(
+            FabricErrorCode::UnauthorizedActor,
+            "NodeHello Ed25519 signature must contain exactly 64 bytes",
+        )
+    })?;
+    if crate::sha256_hex(public_key) != hello.public_key_fingerprint {
+        return Err(FabricError::none(
+            FabricErrorCode::UnauthorizedActor,
+            "NodeHello public key does not match its certificate fingerprint",
+        ));
+    }
+    VerifyingKey::from_bytes(&public_key)
+        .and_then(|key| key.verify(expected.as_bytes(), &Signature::from_bytes(&signature)))
+        .map_err(|_| {
+            FabricError::none(
+                FabricErrorCode::UnauthorizedActor,
+                "NodeHello proof-of-possession signature is invalid",
+            )
+        })
 }
 
 #[allow(clippy::too_many_arguments)]

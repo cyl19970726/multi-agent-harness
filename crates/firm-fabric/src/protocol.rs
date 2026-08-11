@@ -293,6 +293,14 @@ pub struct NodeHello {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct NodeHelloProof {
+    pub public_key: Vec<u8>,
+    pub signature: Vec<u8>,
+    pub challenge: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NodeWelcome {
     pub company_id: String,
     pub node_id: String,
