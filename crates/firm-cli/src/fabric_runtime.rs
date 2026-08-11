@@ -242,10 +242,39 @@ fn route_command(
 }
 
 fn control_plane_command(resolved: &ResolvedStore, args: &[String]) -> CliResult<()> {
-    if args.first().map(String::as_str) != Some("serve") {
-        return Err(CliError::Usage(
-            "fabric control-plane serve --company <id> --http-addr <host:port> --gateway-addr <host:port> --server-cert <path> --server-key <path> --node-ca <path> --ca-cert <path> --ca-key <path> --artifact-key-file <0600 path> --capability-key-file <0600 path> --host-token-file <0600 path>".into(),
-        ));
+    match args.first().map(String::as_str) {
+        Some("backup") => {
+            let company_id = required(args, "--company")?;
+            let output = required_path(args, "--output")?;
+            let layout =
+                RemoteFabricStoreLayout::open(firm_home(resolved, args)?).map_err(fabric_error)?;
+            let manifest = layout
+                .open_control_plane(&company_id)
+                .map_err(fabric_error)?
+                .create_backup(&output)
+                .map_err(fabric_error)?;
+            println!("{}", serde_json::to_string_pretty(&manifest)?);
+            return Ok(());
+        }
+        Some("restore") => {
+            let company_id = required(args, "--company")?;
+            let backup = required_path(args, "--backup")?;
+            let layout =
+                RemoteFabricStoreLayout::open(firm_home(resolved, args)?).map_err(fabric_error)?;
+            let target = layout
+                .control_plane_root(&company_id)
+                .map_err(fabric_error)?;
+            let manifest = harness_fabric::FabricStore::restore_backup(&backup, &target)
+                .map_err(fabric_error)?;
+            println!("{}", serde_json::to_string_pretty(&manifest)?);
+            return Ok(());
+        }
+        Some("serve") => {}
+        _ => {
+            return Err(CliError::Usage(
+                "fabric control-plane requires serve|backup|restore; backup --company <id> --output <new-dir>; restore --company <id> --backup <dir> [--firm-home <dir>]".into(),
+            ))
+        }
     }
     let company_id = required(args, "--company")?;
     let gateway_addr = required(args, "--gateway-addr")?;

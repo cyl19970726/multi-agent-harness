@@ -8,7 +8,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use crate::protocol::*;
-use crate::{canonical_digest, FabricError, FabricErrorCode};
+use crate::{canonical_digest, sha256_hex, FabricError, FabricErrorCode, FABRIC_SCHEMA_VERSION};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FabricBackupManifest {
+    pub schema_version: String,
+    pub transaction_sequence: u64,
+    pub state_digest: String,
+    pub journal_digest: String,
+    pub journal_bytes: u64,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FabricStoreLimits {
@@ -177,6 +187,151 @@ impl FabricStore {
         Ok(inner.state.clone())
     }
 
+    /// Export one validated, transaction-boundary Control Plane backup. The
+    /// Store lock prevents a concurrent append from splitting the snapshot.
+    pub fn create_backup(
+        &self,
+        backup_root: impl AsRef<Path>,
+    ) -> Result<FabricBackupManifest, FabricError> {
+        self.require_available()?;
+        let backup_root = backup_root.as_ref();
+        if backup_root.exists() {
+            return Err(FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "Fabric backup destination must not already exist",
+            ));
+        }
+        let lock = open_lock(&self.lock_path)?;
+        lock.lock_exclusive().map_err(store_error)?;
+        let (state, _, valid_length) = load_journal(&self.journal)?;
+        let mut journal_bytes = Vec::new();
+        if valid_length > 0 {
+            let mut journal = File::open(&self.journal).map_err(store_error)?;
+            journal
+                .read_to_end(&mut journal_bytes)
+                .map_err(store_error)?;
+            journal_bytes.truncate(valid_length as usize);
+        }
+        fs::create_dir(backup_root).map_err(store_error)?;
+        if fs::symlink_metadata(backup_root)
+            .map_err(store_error)?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "Fabric backup destination may not be a symlink",
+            ));
+        }
+        let manifest = FabricBackupManifest {
+            schema_version: FABRIC_SCHEMA_VERSION.into(),
+            transaction_sequence: state.revision,
+            state_digest: canonical_digest(&state)?,
+            journal_digest: sha256_hex(&journal_bytes),
+            journal_bytes: journal_bytes.len() as u64,
+        };
+        write_new_synced(
+            &backup_root.join("fabric-transactions.jsonl"),
+            &journal_bytes,
+        )?;
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                format!("failed to encode Fabric backup manifest: {error}"),
+            )
+        })?;
+        write_new_synced(&backup_root.join("backup-manifest.json"), &manifest_bytes)?;
+        File::open(backup_root)
+            .and_then(|directory| directory.sync_all())
+            .map_err(store_error)?;
+        Ok(manifest)
+    }
+
+    /// Restore a validated backup only into a new empty Store root. Existing
+    /// authority is never overwritten by this API.
+    pub fn restore_backup(
+        backup_root: impl AsRef<Path>,
+        target_root: impl AsRef<Path>,
+    ) -> Result<FabricBackupManifest, FabricError> {
+        let backup_root = backup_root.as_ref();
+        if !backup_root.is_dir()
+            || fs::symlink_metadata(backup_root)
+                .map_err(store_error)?
+                .file_type()
+                .is_symlink()
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "Fabric backup source must be a real directory",
+            ));
+        }
+        let manifest: FabricBackupManifest = serde_json::from_slice(
+            &fs::read(backup_root.join("backup-manifest.json")).map_err(store_error)?,
+        )
+        .map_err(|error| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                format!("Fabric backup manifest is invalid: {error}"),
+            )
+        })?;
+        if manifest.schema_version != FABRIC_SCHEMA_VERSION {
+            return Err(FabricError::none(
+                FabricErrorCode::ProtocolIncompatible,
+                "Fabric backup schema version is unsupported",
+            ));
+        }
+        let journal_bytes =
+            fs::read(backup_root.join("fabric-transactions.jsonl")).map_err(store_error)?;
+        if journal_bytes.len() as u64 != manifest.journal_bytes
+            || sha256_hex(&journal_bytes) != manifest.journal_digest
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "Fabric backup journal digest or length changed",
+            ));
+        }
+        let validation_root = backup_root;
+        let (state, _, valid_length) =
+            load_journal(&validation_root.join("fabric-transactions.jsonl"))?;
+        if valid_length != journal_bytes.len() as u64
+            || state.revision != manifest.transaction_sequence
+            || canonical_digest(&state)? != manifest.state_digest
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "Fabric backup does not end at its declared durable transaction boundary",
+            ));
+        }
+        let target_root = target_root.as_ref();
+        if target_root.exists() {
+            if !target_root.is_dir()
+                || fs::symlink_metadata(target_root)
+                    .map_err(store_error)?
+                    .file_type()
+                    .is_symlink()
+                || fs::read_dir(target_root)
+                    .map_err(store_error)?
+                    .next()
+                    .is_some()
+            {
+                return Err(FabricError::none(
+                    FabricErrorCode::StoreUnavailable,
+                    "Fabric restore target must be a new empty real directory",
+                ));
+            }
+        } else {
+            fs::create_dir_all(target_root).map_err(store_error)?;
+        }
+        write_new_synced(
+            &target_root.join("fabric-transactions.jsonl"),
+            &journal_bytes,
+        )?;
+        File::open(target_root)
+            .and_then(|directory| directory.sync_all())
+            .map_err(store_error)?;
+        Ok(manifest)
+    }
+
     pub fn set_available_for_test(&self, available: bool) {
         self.available.store(available, Ordering::SeqCst);
     }
@@ -281,6 +436,16 @@ fn append_frame(path: &Path, frame: &JournalFrame) -> Result<(), FabricError> {
             .map_err(store_error)?;
     }
     Ok(())
+}
+
+fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), FabricError> {
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map_err(store_error)?;
+    file.write_all(bytes).map_err(store_error)?;
+    file.sync_all().map_err(store_error)
 }
 
 fn load_journal(path: &Path) -> Result<(FabricState, String, u64), FabricError> {
