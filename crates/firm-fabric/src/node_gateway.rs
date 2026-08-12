@@ -164,6 +164,14 @@ fn connect_verified(
     state
         .gateway_leases
         .insert(hello.node_id.clone(), lease.clone());
+    rebind_effect_none_attempts_to_successor(
+        state,
+        company_id,
+        control_plane_generation,
+        &hello.node_id,
+        gateway_generation,
+        now_unix_ms,
+    )?;
     if let Some(node) = state.nodes.get_mut(&hello.node_id) {
         node.last_seen_at_unix_ms = Some(now_unix_ms);
         node.updated_at_unix_ms = now_unix_ms;
@@ -189,6 +197,61 @@ fn connect_verified(
         required_reconcile_ids,
         schema_version: FABRIC_SCHEMA_VERSION.into(),
     })
+}
+
+fn rebind_effect_none_attempts_to_successor(
+    state: &mut FabricState,
+    company_id: &str,
+    control_plane_generation: u64,
+    node_id: &str,
+    gateway_generation: u64,
+    now_unix_ms: u64,
+) -> Result<(), FabricError> {
+    let operation_ids = state
+        .operations
+        .values()
+        .filter(|operation| {
+            operation.company_id == company_id
+                && operation.target_node_id == node_id
+                && operation.expires_at_unix_ms > now_unix_ms
+        })
+        .filter_map(|operation| {
+            let mut attempts = state
+                .attempts
+                .values()
+                .filter(|attempt| attempt.operation_id == operation.id)
+                .collect::<Vec<_>>();
+            attempts.sort_by_key(|attempt| attempt.attempt_no);
+            let latest = attempts.last()?;
+            let has_persisted_or_terminal = state.receipts.values().any(|receipt| {
+                receipt.operation_id == operation.id
+                    && matches!(
+                        receipt.kind,
+                        ReceiptKind::TargetPersisted
+                            | ReceiptKind::OperationApplied
+                            | ReceiptKind::OperationRejected
+                    )
+            });
+            (latest.target_gateway_generation != gateway_generation
+                && latest.effect == EffectCertainty::None
+                && matches!(
+                    latest.state,
+                    RouteAttemptState::Queued | RouteAttemptState::Sent
+                )
+                && !has_persisted_or_terminal)
+                .then(|| operation.id.clone())
+        })
+        .collect::<Vec<_>>();
+    for operation_id in operation_ids {
+        crate::router::retry_operation(
+            state,
+            company_id,
+            control_plane_generation,
+            &operation_id,
+            now_unix_ms,
+        )?;
+    }
+    Ok(())
 }
 
 pub fn node_hello_challenge(

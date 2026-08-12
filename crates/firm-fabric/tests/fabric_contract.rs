@@ -1803,10 +1803,20 @@ fn retry_requires_a_new_target_generation_and_reconcile_never_blind_replays() {
         successor.gateway_generation,
         lease.control_plane_generation,
     );
+    let rebound_state = store.snapshot().expect("successor rebound snapshot");
+    let auto_rebound = rebound_state
+        .attempts
+        .values()
+        .find(|attempt| attempt.operation_id == request.id && attempt.attempt_no == 2)
+        .expect("successor connect atomically rebinds effect-none attempt");
+    assert_eq!(
+        auto_rebound.target_gateway_generation,
+        successor.gateway_generation
+    );
     let (second_attempt, _, replayed) = control
         .retry_operation(lease.control_plane_generation, &request.id, 30_032)
-        .expect("retry effect-none operation on successor");
-    assert!(!replayed);
+        .expect("explicit retry replays automatic successor binding");
+    assert!(replayed);
     assert_eq!(second_attempt.attempt_no, 2);
     assert_eq!(
         second_attempt.target_gateway_generation,
