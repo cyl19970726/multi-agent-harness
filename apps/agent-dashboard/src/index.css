@@ -40,14 +40,13 @@
   }
 
   .agent-team-recessed {
-    border: 1px solid var(--border);
-    background: color-mix(in srgb, var(--secondary) 58%, var(--card));
+    background: color-mix(in srgb, var(--secondary) 44%, transparent);
   }
 
   .agent-team-selected {
-    border-color: color-mix(in srgb, var(--primary) 38%, var(--border));
-    background: color-mix(in srgb, var(--primary) 5%, var(--card));
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 7%, transparent);
+    border-color: color-mix(in srgb, var(--primary) 26%, var(--border));
+    background: color-mix(in srgb, var(--primary) 6%, var(--card));
+    box-shadow: inset 3px 0 0 color-mix(in srgb, var(--primary) 82%, transparent);
   }
 
   .agent-team-eyebrow {
@@ -73,6 +72,38 @@
     background: color-mix(in srgb, var(--primary) 2%, var(--card));
   }
 
+  .agent-team-attention {
+    background: color-mix(in srgb, var(--primary) 4%, var(--background));
+    box-shadow: inset 3px 0 0 color-mix(in srgb, var(--primary) 78%, transparent);
+  }
+
+  .agent-team-section {
+    border-top: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+    padding-block: 1rem;
+  }
+
+  .agent-team-section-recessed {
+    background: color-mix(in srgb, var(--secondary) 46%, transparent);
+  }
+
+  .agent-team-section-decision {
+    border: 1px solid color-mix(in srgb, var(--primary) 44%, var(--border));
+    background: color-mix(in srgb, var(--primary) 3%, var(--background));
+    border-radius: 0.625rem;
+    padding: 1rem;
+  }
+
+  .agent-team-metric-strip {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    border-block: 1px solid var(--border);
+  }
+
+  .agent-team-tabs [data-state="active"] {
+    color: var(--foreground);
+  }
+
   .agent-team-chat-canvas {
     background:
       linear-gradient(180deg, rgb(255 255 255 / 0.72), rgb(251 250 248 / 0.94)),
@@ -93,7 +124,7 @@
 
   .agent-team-surface [role="tab"]:focus-visible {
     outline: none;
-    box-shadow: none;
+    box-shadow: none !important;
     color: var(--foreground);
   }
 
