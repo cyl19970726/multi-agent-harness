@@ -1,441 +1,147 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { CheckCircle2, ListFilter, ListTodo, MessageSquare, SendHorizontal, Users, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowRight, CheckCircle2, CircleSlash, FileCheck2, Flag, ListFilter, Search, ShieldCheck, Users, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar } from "@/components/workbench/Avatar";
 import { Markdown } from "@/components/workbench/Markdown";
-import { StatusDot, type StatusTone } from "@/components/workbench/atoms";
-import { Select, TextArea } from "@/components/workbench/OperatorForms";
+import type { MemberCapacitySummary, WorkSummary } from "../../../model/roleViews";
 
-import {
-  canMemberAcceptWork,
-  selectFilteredTeamWorks,
-  selectWorkOwnerMember,
-  type TeamWorksAttentionFilter,
-  type TeamWorksOwnerFilter,
-} from "../../../model/teamSelectors";
-import { assignTeamWork, createTeamWork, reviewTeamWork, type ActionDescriptor } from "../../../api/actions";
-import { workIsTerminal, workLifecycleLabel, type MemberRun, type Work, type WorkDelivery, type WorkEvent } from "../../../types";
-import { formatTime, memberTone, shortId, workTone } from "./teamFormat";
+type OwnerFilter = "all" | "unassigned" | string;
+type AttentionFilter = "all" | "blocked" | "review";
+const LANES = [
+  { id: "open", label: "Open", matches: (work: WorkSummary) => work.phase === "open" },
+  { id: "active", label: "Active", matches: (work: WorkSummary) => work.phase === "active" },
+  { id: "review", label: "Review", matches: (work: WorkSummary) => work.phase === "review" },
+  { id: "closed", label: "Closed", matches: (work: WorkSummary) => work.phase === "closed" },
+] as const;
 
-type WorkLane = "open" | "assigned" | "doing" | "review" | "done";
-
-const WORK_LANES: Array<{ id: WorkLane; label: string; statuses: string[]; tone: StatusTone }> = [
-  { id: "open", label: "Open · unassigned", statuses: ["open"], tone: "idle" },
-  { id: "assigned", label: "Open · assigned", statuses: ["open"], tone: "info" },
-  { id: "doing", label: "Active & blocked", statuses: ["active", "blocked", "on_hold"], tone: "running" },
-  { id: "review", label: "Review", statuses: ["review"], tone: "warn" },
-  { id: "done", label: "Closed", statuses: ["accepted", "failed", "cancelled", "closed"], tone: "good" },
-];
-
-/** Focusable descendants used to keep Tab inside the modal Work sheet. */
-function focusableWithin(root: HTMLElement): HTMLElement[] {
-  return Array.from(
-    root.querySelectorAll<HTMLElement>(
-      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    ),
-  ).filter((element) => element.offsetParent !== null || element === document.activeElement);
+function memberLabel(member: MemberCapacitySummary | undefined, fallback?: string | null) {
+  return member?.display_name || fallback || "Unassigned";
 }
 
-/**
- * The shared Works board.
- *
- * Lanes are one projection over Work lifecycle and ownership, rendered exactly
- * once: the same lane sections reflow from five desktop columns to a stacked
- * mobile status list through CSS, so a large board never duplicates its cards
- * into a second hidden container.
- */
-export function TeamWorksBoard({
-  works,
-  workEvents,
-  workDeliveries,
-  members,
-  selectedWorkId,
-  actionsEnabled,
-  teamRunId,
-  onSelectWork,
-  onOpenMember,
-  onDiscuss,
-  onAction,
-}: {
-  works: Work[];
-  workEvents: WorkEvent[];
-  workDeliveries: WorkDelivery[];
-  members: MemberRun[];
+export function TeamWorksBoard({ works, members, selectedWorkId, onSelectWork, onOpenMember, onOpenHost, ownerFilter, attentionFilter, queryFilter, onFiltersChange, onOpenHostTools }: {
+  works: WorkSummary[];
+  members: MemberCapacitySummary[];
   selectedWorkId?: string;
-  actionsEnabled: boolean;
-  teamRunId: string;
-  onSelectWork: (id: string | undefined) => void;
-  onOpenMember: (member: MemberRun) => void;
-  onDiscuss: (work: Work) => void;
-  onAction: (descriptor: ActionDescriptor) => void;
+  onSelectWork: (workId: string | undefined) => void;
+  onOpenMember: (memberRunId: string) => void;
+  onOpenHost?: (workId: string) => void;
+  ownerFilter?: OwnerFilter;
+  attentionFilter?: AttentionFilter;
+  queryFilter?: string;
+  onFiltersChange?: (filters:{owner:OwnerFilter;attention:AttentionFilter;query:string})=>void;
+  onOpenHostTools?: () => void;
 }) {
-  const [creating, setCreating] = useState(false);
-  const [title, setTitle] = useState("");
-  const [criteria, setCriteria] = useState("");
-  const [ownerId, setOwnerId] = useState("");
-  const [reviewNote, setReviewNote] = useState("");
-  const [ownerFilter, setOwnerFilter] = useState<TeamWorksOwnerFilter>("all");
-  const [attentionFilter, setAttentionFilter] = useState<TeamWorksAttentionFilter>("all");
+  const [localOwner, setLocalOwner] = useState<OwnerFilter>("all");
+  const [localAttention, setLocalAttention] = useState<AttentionFilter>("all");
+  const [localQuery, setLocalQuery] = useState("");
+  const owner = ownerFilter ?? localOwner;
+  const attention = attentionFilter ?? localAttention;
+  const query = queryFilter ?? localQuery;
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const dialogRef = useRef<HTMLElement>(null);
-  const returnFocusRef = useRef<HTMLElement | null>(null);
-  const selected = works.find((work) => work.id === selectedWorkId);
-  const active = works.filter((work) => !workIsTerminal(work)).length;
-  const assignableMembers = members.filter(canMemberAcceptWork);
-  const ownerFor = (work: Work) => selectWorkOwnerMember(work, members);
-  const visibleWorks = selectFilteredTeamWorks(works, members, ownerFilter, attentionFilter);
-  const ownerCount = (filter: TeamWorksOwnerFilter) =>
-    selectFilteredTeamWorks(works, members, filter, attentionFilter).length;
-  const attentionCount = (filter: TeamWorksAttentionFilter) =>
-    selectFilteredTeamWorks(works, members, ownerFilter, filter).length;
+  const [compactSheet, setCompactSheet] = useState(false);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const sheetRef = useRef<HTMLElement>(null);
+  const workCardRefs = useRef(new Map<string, HTMLButtonElement>());
+  const focusReturnWorkId = useRef<string>();
+  const selected = works.find((work) => work.work_id === selectedWorkId);
+  const membersById = useMemo(() => new Map(members.map((member) => [member.agent_member_ref.id, member])), [members]);
+  const visible = works.filter((work) => {
+    const ownerMatch = owner === "all" || (owner === "unassigned" ? !work.owner_actor_ref : work.owner_actor_ref?.id === owner);
+    const attentionMatch = attention === "all" || (attention === "blocked" ? work.condition === "blocked" : work.phase === "review");
+    const searchable = [work.work_id, work.title, work.context_markdown, work.completion_criteria_markdown, work.owner_actor_ref?.id].filter(Boolean).join(" ").toLowerCase();
+    return ownerMatch && attentionMatch && (!query.trim() || searchable.includes(query.trim().toLowerCase()));
+  });
 
   useEffect(() => {
-    if (!selected) return undefined;
-    closeButtonRef.current?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onSelectWork(undefined);
-        return;
-      }
-      // `aria-modal` promises the rest of the page is inert; without a trap the
-      // next Tab silently escapes into the board behind the sheet.
-      if (event.key !== "Tab" || !dialogRef.current) return;
-      const focusable = focusableWithin(dialogRef.current);
-      if (focusable.length === 0) return;
+    const media = window.matchMedia("(max-width: 1023px)");
+    const sync = () => setCompactSheet(media.matches);
+    sync();
+    media.addEventListener("change",sync);
+    return () => media.removeEventListener("change",sync);
+  },[]);
+
+  useEffect(() => {
+    if (selected) {
+      focusReturnWorkId.current = selected.work_id;
+      closeRef.current?.focus();
+      return;
+    }
+    if (focusReturnWorkId.current) {
+      const workId=focusReturnWorkId.current;
+      const visibleCard=[...document.querySelectorAll<HTMLButtonElement>(`[data-work-card="${CSS.escape(workId)}"], [data-priority-work="${CSS.escape(workId)}"]`)].find((node) => node.offsetParent !== null);
+      visibleCard?.focus();
+      focusReturnWorkId.current = undefined;
+    }
+  }, [selected?.work_id]);
+  useEffect(() => {
+    if (!selected) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); onSelectWork(undefined); return; }
+      if (!compactSheet) return;
+      if (event.key !== "Tab") return;
+      const focusable = [...(sheetRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') ?? [])];
+      if (!focusable.length) return;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
-      const current = document.activeElement as HTMLElement | null;
-      if (!event.shiftKey && current === last) {
-        event.preventDefault();
-        first.focus();
-      } else if (event.shiftKey && current === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (current && !dialogRef.current.contains(current)) {
-        event.preventDefault();
-        first.focus();
-      }
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [selected?.id, onSelectWork]);
+    document.addEventListener("keydown", close);
+    return () => document.removeEventListener("keydown", close);
+  }, [selected, onSelectWork, compactSheet]);
 
-  // Restore focus to the card that opened the sheet, so keyboard position is
-  // never lost on close.
-  useEffect(() => {
-    if (selected) return;
-    const target = returnFocusRef.current;
-    returnFocusRef.current = null;
-    if (target && document.contains(target)) target.focus();
-  }, [selected?.id]);
-
-  const openWork = (workId: string, trigger: HTMLElement | null) => {
-    returnFocusRef.current = trigger;
-    onSelectWork(workId);
+  const updateFilters = (next:Partial<{owner:OwnerFilter;attention:AttentionFilter;query:string}>) => {
+    const filters={owner:next.owner ?? owner,attention:next.attention ?? attention,query:next.query ?? query};
+    if(onFiltersChange)onFiltersChange(filters);else {setLocalOwner(filters.owner);setLocalAttention(filters.attention);setLocalQuery(filters.query);}
   };
-
-  const create = () => {
-    if (!title.trim() || !criteria.trim()) return;
-    onAction(createTeamWork(teamRunId, {
-      title: title.trim(),
-      contextMarkdown: "Created from the Team Works board.",
-      completionCriteriaMarkdown: criteria.trim(),
-      activeMemberRunId: ownerId || undefined,
-      claimMode: ownerId ? "host_assign" : "team_claim",
-    }));
-    setTitle("");
-    setCriteria("");
-    setOwnerId("");
-    setCreating(false);
-  };
-
-  const laneWorksFor = (lane: (typeof WORK_LANES)[number]) => visibleWorks.filter((work) =>
-    lane.statuses.includes(workLifecycleLabel(work))
-    && (lane.id === "open"
-      ? !work.owner_member_id && !work.active_member_run_id
-      : lane.id === "assigned"
-        ? Boolean(work.owner_member_id || work.active_member_run_id)
-        : true),
-  );
-
-  const workCard = (work: Work) => {
-    const owner = ownerFor(work);
-    return (
-      <button
-        key={work.id}
-        type="button"
-        data-work-card={work.id}
-        onClick={(event) => openWork(work.id, event.currentTarget)}
-        className={cn(
-          "w-full rounded-lg border bg-card p-2 text-left shadow-[0_12px_26px_-26px_rgba(15,23,42,.75)] transition hover:-translate-y-px hover:border-primary/30 hover:shadow-md sm:p-2.5",
-          selectedWorkId === work.id ? "border-primary/40 ring-1 ring-primary/15" : "border-border/75",
-        )}
-      >
-        <div className="flex items-start justify-between gap-2"><Badge tone={workTone(workLifecycleLabel(work))}>{workLifecycleLabel(work).replace(/_/g, " ")}</Badge><span className="text-[9px] uppercase tracking-wider text-muted-foreground">{work.priority}</span></div>
-        {/* The title is the card's primary fact; a two-line clamp hid the rest
-            of long Host-written titles behind an ellipsis, which read as an
-            incomplete card. The full title wraps and long tokens break. */}
-        <h3 className="mt-1.5 break-words text-[12px] font-semibold leading-snug text-foreground">{work.title}</h3>
-        <p className="mt-1 line-clamp-1 text-[10px] leading-relaxed text-muted-foreground sm:line-clamp-2">{work.completion_criteria_markdown || "No completion criteria"}</p>
-        <div className="mt-1.5 flex items-center gap-1.5 border-t border-border/55 pt-1.5">{owner ? <><Avatar name={owner.name ?? owner.id} tone={memberTone(owner.status)} /><span className="min-w-0 flex-1 break-words text-[10px] leading-snug text-foreground" title={owner.name ?? owner.id}>{owner.name ?? owner.id}</span></> : <><span className="grid size-6 shrink-0 place-items-center rounded-full border border-dashed border-border text-muted-foreground"><Users className="size-3" /></span><span className="text-[10px] text-muted-foreground">Unassigned</span></>}<span className="ml-auto shrink-0 font-mono text-[9px] text-muted-foreground">v{work.version}</span></div>
-      </button>
-    );
-  };
-
+  const clearFilters = () => updateFilters({owner:"all",attention:"all",query:""});
+  const filtersApplied = owner !== "all" || attention !== "all" || Boolean(query);
+  const priorityWork = [...visible].sort((left,right) => workAttentionRank(right) - workAttentionRank(left))[0];
   return (
-    <section className="py-2" aria-label="Shared team Works board" data-testid="team-works-board">
-      <header className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2"><ListTodo className="size-4 text-primary" /><h2 className="text-sm font-semibold text-foreground">Shared Works</h2><Badge tone="info" title="Works not done or cancelled; the filter line below counts all Works including done ones">{active} active</Badge></div>
-          <p className="mt-1 hidden text-[11px] text-muted-foreground sm:block">Durable ownership lives here. Messages discuss Work; they never create ownership.</p>
-        </div>
-        <div className="flex min-w-0 items-center gap-2">
-          {/* The filter toggle shares the header row on mobile: as its own band
-              it pushed the first Work card past the 320px first viewport. */}
-          <Button
-            size="sm"
-            variant="secondary"
-            className="min-h-11 sm:hidden"
-            aria-expanded={filtersOpen}
-            aria-controls="team-works-filters"
-            onClick={() => setFiltersOpen((value) => !value)}
-          >
-            <ListFilter className="size-3.5" /> Filter
-          </Button>
-          <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground sm:hidden" aria-live="polite">
-            {visibleWorks.length}/{works.length}
-          </span>
-          <Button size="sm" className="min-h-11 sm:min-h-0" disabled={!actionsEnabled} onClick={() => setCreating((value) => !value)}>
-            <ListTodo className="size-3.5" /> New Work
-          </Button>
-        </div>
+    <section aria-labelledby="team-works-title" data-testid="role-view-team-works">
+      <header className="flex flex-wrap items-end justify-between gap-2 pt-4 md:hidden">
+        <div><h2 id="team-works-title" className="text-base font-semibold">Shared Works</h2><p className="text-xs text-muted-foreground">Durable responsibility grouped by canonical lifecycle.</p></div>
+        <Button size="sm" variant="secondary" className="min-h-11 sm:min-h-0" aria-expanded={filtersOpen} onClick={() => setFiltersOpen((open) => !open)}><ListFilter className="size-3.5" /> Filters</Button>
       </header>
 
-      {creating && (
-        <div className="mb-3 grid gap-2 rounded-xl border border-primary/20 bg-primary/[0.025] p-3 sm:grid-cols-[1.2fr_1.2fr_.8fr_auto] sm:items-end">
-          <label className="space-y-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Title<input className="mt-1 h-11 w-full rounded-md border border-border bg-background px-2.5 text-[12px] font-normal normal-case tracking-normal text-foreground outline-none focus:border-primary/50 sm:h-9" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="What outcome is needed?" /></label>
-          <label className="space-y-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Completion criteria<input className="mt-1 h-11 w-full rounded-md border border-border bg-background px-2.5 text-[12px] font-normal normal-case tracking-normal text-foreground outline-none focus:border-primary/50 sm:h-9" value={criteria} onChange={(event) => setCriteria(event.target.value)} placeholder="Evidence required for acceptance" /></label>
-          <label className="space-y-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Owner<Select className="mt-1 text-[12px] font-normal normal-case tracking-normal" value={ownerId} onChange={(event) => setOwnerId(event.target.value)}><option value="">Unassigned pool</option>{assignableMembers.map((member) => <option key={member.id} value={member.id}>{member.name ?? member.id}</option>)}</Select></label>
-          <div className="flex gap-1"><Button size="sm" className="min-h-11 sm:min-h-0" onClick={create} disabled={!title.trim() || !criteria.trim()}>Create</Button><Button size="sm" variant="secondary" className="min-h-11 sm:min-h-0" onClick={() => setCreating(false)}>Cancel</Button></div>
-        </div>
-      )}
-
-      <div
-        id="team-works-filters"
-        className={cn(
-          "mb-2 space-y-2 rounded-xl border border-border/65 bg-muted/[0.12] p-2.5",
-          !filtersOpen && "hidden sm:block",
-        )}
-        aria-label="Filter Works board"
-      >
-        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter Works by owner">
-          <span className="mr-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Owner</span>
-          <WorkFilterChip
-            active={ownerFilter === "all"}
-            count={ownerCount("all")}
-            label="All"
-            onClick={() => setOwnerFilter("all")}
-          />
-          <WorkFilterChip
-            active={ownerFilter === "unassigned"}
-            count={ownerCount("unassigned")}
-            label="Unassigned"
-            icon={<Users className="size-3" />}
-            onClick={() => setOwnerFilter("unassigned")}
-          />
-          {members.map((member) => {
-            const filter: TeamWorksOwnerFilter = `member:${member.id}`;
-            return (
-              <WorkFilterChip
-                key={member.id}
-                active={ownerFilter === filter}
-                count={ownerCount(filter)}
-                label={member.name ?? member.id}
-                icon={<Avatar name={member.name ?? member.id} tone={memberTone(member.status)} size="xs" />}
-                onClick={() => setOwnerFilter(filter)}
-              />
-            );
-          })}
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter Works by attention state">
-          <span className="mr-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Attention</span>
-          <WorkFilterChip active={attentionFilter === "all"} count={attentionCount("all")} label="All statuses" onClick={() => setAttentionFilter("all")} />
-          <WorkFilterChip active={attentionFilter === "review"} count={attentionCount("review")} label="Needs review" onClick={() => setAttentionFilter("review")} />
-          <WorkFilterChip active={attentionFilter === "blocked"} count={attentionCount("blocked")} label="Blocked" onClick={() => setAttentionFilter("blocked")} />
-        </div>
-        <p className="hidden text-[10px] leading-relaxed text-muted-foreground sm:block" aria-live="polite">
-          Showing {visibleWorks.length} of {works.length} Works. Responsibility comes from Work ownership; activity messages do not assign it.
-        </p>
+      <div className={cn("grid gap-2 border-b border-border/80 bg-card/70 py-3 md:grid-cols-[minmax(18rem,1fr)_12rem_12rem]", !filtersOpen && "hidden md:grid")} aria-label="Work filters">
+        <label className="relative min-w-0"><span className="sr-only">Search Works</span><Search className="pointer-events-none absolute left-3 top-3 size-4 text-muted-foreground"/><input value={query} onChange={(event) => updateFilters({query:event.target.value})} placeholder="Search title, context or ID" className="agent-team-control h-10 w-full pl-9 pr-3 text-sm outline-none focus:border-primary" /></label>
+        <label><span className="sr-only">Owner</span><select value={owner} onChange={(event) => updateFilters({owner:event.target.value})} className="agent-team-control h-10 w-full px-3 text-xs"><option value="all">All owners</option><option value="unassigned">Unassigned</option>{members.map((member) => <option key={member.agent_member_ref.id} value={member.agent_member_ref.id}>{member.display_name}</option>)}</select></label>
+        <div className="agent-team-control flex min-w-0 gap-0.5 p-0.5" role="group" aria-label="Attention filter">{(["all", "blocked", "review"] as const).map((value) => <button key={value} type="button" data-active={attention === value} className="agent-team-filter-choice min-w-0 flex-1 px-2 text-xs font-medium" onClick={() => updateFilters({attention:value})}>{value}</button>)}</div>
       </div>
 
-      {/* One board. Five desktop columns and the stacked mobile status list are
-          the same DOM reflowed, never two renderings of the same Work. */}
-      <div className="grid gap-2 pb-2 lg:grid-cols-5" data-testid="team-works-lanes">
-        {WORK_LANES.map((lane) => {
-          const laneWorks = laneWorksFor(lane);
-          return (
-            <section
-              key={lane.id}
-              data-work-lane={lane.id}
-              className="rounded-xl border border-border/70 bg-muted/[0.18] p-2"
-              aria-label={`${lane.label} Works`}
-            >
-              <header className="mb-1.5 flex items-center justify-between px-1">
-                <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground"><StatusDot tone={lane.tone} />{lane.label}</span>
-                <span className="text-[10px] tabular-nums text-muted-foreground">{laneWorks.length}</span>
-              </header>
-              <div className="space-y-2 sm:grid sm:grid-cols-2 sm:gap-2 sm:space-y-0 lg:block lg:space-y-2">
-                {laneWorks.map(workCard)}
-                {laneWorks.length === 0 && (
-                  <div className="hidden min-h-20 place-items-center rounded-lg border border-dashed border-border/75 px-2 text-center text-[10px] text-muted-foreground sm:grid sm:col-span-2 lg:col-span-1">No Works</div>
-                )}
-                {/* A single card in a two-column lane left an unexplained blank
-                    half. The slot is stated rather than left ambiguous, and it
-                    exists only in the 640-1023px two-column regime. */}
-                {laneWorks.length % 2 === 1 && (
-                  <div
-                    data-work-empty-slot={lane.id}
-                    aria-hidden="true"
-                    className="hidden min-h-20 place-items-center rounded-lg border border-dashed border-border/60 px-2 text-center text-[10px] text-muted-foreground/70 sm:grid lg:hidden"
-                  >
-                    No further {lane.label.toLowerCase()} Work
-                  </div>
-                )}
-              </div>
-            </section>
-          );
-        })}
-      </div>
+      {visible.length ? <>
+      {priorityWork && <section className="mt-3 border-y border-border py-3 lg:hidden" aria-labelledby="priority-work-title"><div className="mb-2 flex items-center gap-2"><Flag className="size-3.5 text-primary"/><h3 id="priority-work-title" className="text-[10px] font-semibold uppercase tracking-[.13em]">Attention preview</h3><span className="ml-auto text-[9px] text-muted-foreground">Display ordering · canonical phase below</span></div><WorkCard work={priorityWork} ownerMember={priorityWork.owner_actor_ref ? membersById.get(priorityWork.owner_actor_ref.id) : undefined} selected={selectedWorkId === priorityWork.work_id} onSelect={onSelectWork} register={(node) => { if (node) workCardRefs.current.set(priorityWork.work_id,node); else workCardRefs.current.delete(priorityWork.work_id); }} prominent/></section>}
+      <div className="mt-2 space-y-2 lg:hidden" data-testid="team-work-mobile-phases">{LANES.map((lane) => { const laneWorks=visible.filter(lane.matches); return <details key={lane.id} className="border-b border-border" open={lane.id === "open" || lane.id === "review"}><summary className="flex min-h-11 cursor-pointer list-none items-center text-xs font-semibold uppercase tracking-[.1em]"><span>{lane.label}</span><span className="ml-auto tabular-nums text-muted-foreground">{laneWorks.length}</span></summary><div className="space-y-2 pb-3">{lane.id === "open" && <OpenGroupCounts works={laneWorks}/>} {laneWorks.map((work) => <WorkCard key={work.work_id} work={work} ownerMember={work.owner_actor_ref ? membersById.get(work.owner_actor_ref.id) : undefined} selected={selectedWorkId === work.work_id} onSelect={onSelectWork} register={(node) => { if(node) workCardRefs.current.set(work.work_id,node); else workCardRefs.current.delete(work.work_id); }}/>)}</div></details>;})}</div>
+      <div className="hidden min-h-[590px] grid-cols-4 items-start bg-[color-mix(in_srgb,var(--secondary)_30%,transparent)] lg:grid" data-testid="team-work-lanes">{LANES.map((lane) => {
+        const laneWorks = visible.filter(lane.matches);
+        const orderedLaneWorks = lane.id === "open" ? [...laneWorks].sort((left,right) => Number(Boolean(left.owner_actor_ref)) - Number(Boolean(right.owner_actor_ref))) : laneWorks;
+        return <section key={lane.id} data-work-lane={lane.id} className="min-w-0 border-l border-border px-3 py-4 first:border-l-0"><header className="mb-3 flex items-center border-b border-border pb-2"><h3 className="company-editorial-title text-[17px] uppercase tracking-[.07em]">{lane.label}</h3><span className="ml-2 text-xs tabular-nums text-muted-foreground">{laneWorks.length}</span></header><div className="grid content-start gap-3">{orderedLaneWorks.map((work,index) => {
+          const ownerMember = work.owner_actor_ref ? membersById.get(work.owner_actor_ref.id) : undefined;
+          const firstAssigned = lane.id === "open" && Boolean(work.owner_actor_ref) && (index === 0 || !orderedLaneWorks[index-1]?.owner_actor_ref);
+          return <div key={work.work_id} className="contents">{lane.id === "open" && (index === 0 || firstAssigned) && <p className="px-1 pt-1 text-[9px] font-semibold uppercase tracking-[.12em] text-muted-foreground">{work.owner_actor_ref ? "Assigned" : "Unassigned"}</p>}<WorkCard work={work} ownerMember={ownerMember} selected={selectedWorkId === work.work_id} onSelect={onSelectWork} register={(node) => { if(node) workCardRefs.current.set(work.work_id,node); else workCardRefs.current.delete(work.work_id); }}/></div>;
+        })}{!laneWorks.length && <p className="py-4 text-center text-[10px] text-muted-foreground">No {lane.label.toLowerCase()} Work</p>}</div></section>;
+      })}</div></> : <div className="mt-3 border-y border-dashed border-border px-5 py-12 text-center"><CircleSlash className="mx-auto size-6 text-muted-foreground"/><h3 className="mt-3 text-sm font-medium">{works.length ? "No Work matches these filters" : "This Team has no durable Work yet"}</h3><p className="mt-1 text-xs text-muted-foreground">{works.length ? "Reset the filters to return to the Team's full responsibility view." : "Open Host tools to create the first Work or coordinate with an available member."}</p>{filtersApplied ? <Button className="mt-4" size="sm" variant="secondary" onClick={clearFilters}>Reset filters</Button> : onOpenHostTools ? <Button className="mt-4" size="sm" onClick={onOpenHostTools}><ShieldCheck className="size-3.5"/>Open Host tools</Button> : null}</div>}
 
-      {selected && (
-        <div className="fixed inset-0 z-50 bg-foreground/15 backdrop-blur-[1px]" onMouseDown={(event) => { if (event.target === event.currentTarget) onSelectWork(undefined); }}>
-          <aside
-            ref={dialogRef}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="selected-work-title"
-            data-testid="work-detail-sheet"
-            className="absolute inset-x-0 bottom-0 max-h-[86vh] overflow-y-auto rounded-t-2xl border border-border bg-background p-4 shadow-2xl lg:inset-y-0 lg:left-auto lg:right-0 lg:max-h-none lg:w-[34rem] lg:rounded-none lg:border-y-0 lg:border-r-0 lg:p-5"
-          >
-            <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-border lg:hidden" />
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2"><Badge tone={workTone(workLifecycleLabel(selected))}>{workLifecycleLabel(selected).replace(/_/g, " ")}</Badge><span className="font-mono text-[9px] text-muted-foreground">{selected.id}</span></div>
-                <h3 id="selected-work-title" className="mt-2 text-lg font-semibold text-foreground">{selected.title}</h3>
-              </div>
-              <button ref={closeButtonRef} type="button" className="grid size-11 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground sm:size-8" onClick={() => onSelectWork(undefined)} aria-label="Close Work details"><X className="size-4" /></button>
-            </div>
-
-            <div className="mt-4 space-y-4">
-              <section><p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">Context</p>{selected.context_markdown ? <Markdown source={selected.context_markdown} compact /> : <p className="text-[11px] text-muted-foreground">No context recorded.</p>}</section>
-              <section><p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">Completion criteria</p><Markdown source={selected.completion_criteria_markdown || "Not declared"} compact /></section>
-              {selected.blocker_reason && <section className="rounded-lg border border-status-bad/25 bg-status-bad/[0.045] p-3"><p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-status-bad">Blocker</p><Markdown source={selected.blocker_reason} compact /></section>}
-              {selected.result_summary && <section><p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">Result</p><Markdown source={selected.result_summary} compact /></section>}
-
-              <div className="grid grid-cols-2 gap-2 text-[10px] sm:grid-cols-3">
-                <WorkFact label="Owner" value={ownerFor(selected)?.name ?? "Unassigned"} />
-                <WorkFact label="Claim mode" value={selected.claim_mode} />
-                <WorkFact label="Priority" value={selected.priority} />
-                <WorkFact label="Parent" value={selected.parent_work_id ? shortId(selected.parent_work_id) : "None"} />
-                <WorkFact label="Prerequisites" value={selected.prerequisite_work_ids?.length ? String(selected.prerequisite_work_ids.length) : "None"} />
-                <WorkFact label="Artifacts" value={String(selected.artifact_refs?.length ?? 0)} />
-                <WorkFact label="Checks" value={String(selected.check_refs?.length ?? 0)} />
-                <WorkFact label="Version" value={`v${selected.version}`} />
-              </div>
-
-              {(selected.prerequisite_work_ids?.length ?? 0) > 0 && (
-                <section><p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">Prerequisite Works</p><div className="flex flex-wrap gap-1.5">{selected.prerequisite_work_ids?.map((id) => <button type="button" key={id} onClick={() => onSelectWork(id)} className="rounded-md border border-border px-2 py-1 font-mono text-[9px] text-primary hover:bg-accent">{shortId(id)}</button>)}</div></section>
-              )}
-
-              <section className="space-y-2 rounded-xl border border-border/70 bg-muted/[0.16] p-3">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Lead controls</p>
-                {selected.phase === "open" && selected.condition === "normal" && !selected.owner_member_id && !selected.active_member_run_id && <label className="block text-[10px] text-muted-foreground">Assign owner<Select className="mt-1" value="" disabled={!actionsEnabled || assignableMembers.length === 0} onChange={(event) => { if (event.target.value) onAction(assignTeamWork(teamRunId, selected.id, event.target.value, selected.version)); }}><option value="">{assignableMembers.length ? "Choose member…" : "No active members available"}</option>{assignableMembers.map((member) => <option key={member.id} value={member.id}>{member.name ?? member.id}</option>)}</Select></label>}
-                {selected.phase === "review" && <><TextArea value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} placeholder="Optional review note" className="min-h-16" /><div className="flex flex-wrap gap-2"><Button size="sm" className="min-h-11 sm:min-h-0" disabled={!actionsEnabled} onClick={() => onAction(reviewTeamWork(teamRunId, selected.id, selected.version, "accept", reviewNote))}><CheckCircle2 className="size-3.5" />Accept</Button><Button size="sm" variant="secondary" className="min-h-11 sm:min-h-0" disabled={!actionsEnabled || !reviewNote.trim()} onClick={() => onAction(reviewTeamWork(teamRunId, selected.id, selected.version, "request-changes", reviewNote))}>Request changes</Button></div></>}
-                <div className="flex flex-wrap gap-2">
-                  <Button size="sm" variant="secondary" className="min-h-11 sm:min-h-0" onClick={() => onDiscuss(selected)}><MessageSquare className="size-3.5" /> Discuss Work</Button>
-                  {ownerFor(selected) && <Button size="sm" variant="secondary" className="min-h-11 sm:min-h-0" onClick={() => onOpenMember(ownerFor(selected)!)}>Open member</Button>}
-                  {!workIsTerminal(selected) && <Button size="sm" variant="secondary" className="min-h-11 sm:min-h-0" disabled={!actionsEnabled} onClick={() => onAction({ method: "POST", path: `/v1/team-runs/${encodeURIComponent(teamRunId)}/works/${encodeURIComponent(selected.id)}/cancel`, body: { expected_version: selected.version, reason: "Cancelled by Host" } })}>Cancel Work</Button>}
-                </div>
-              </section>
-
-              <WorkRecordHistory
-                events={workEvents.filter((event) => event.work_id === selected.id)}
-                deliveries={workDeliveries.filter((delivery) => delivery.work_id === selected.id)}
-              />
-            </div>
-          </aside>
-        </div>
-      )}
+      {selected && <div className="fixed inset-0 z-50 bg-foreground/15 lg:static lg:z-auto lg:mt-3 lg:bg-transparent" onMouseDown={(event) => { if (compactSheet && event.target === event.currentTarget) onSelectWork(undefined); }}><aside ref={sheetRef} role="dialog" aria-modal={compactSheet || undefined} aria-labelledby="selected-work-title" data-testid="role-view-work-sheet" className="agent-team-sheet-enter absolute inset-x-0 bottom-0 max-h-[88dvh] overflow-y-auto rounded-t-xl border border-border bg-background p-4 shadow-xl lg:static lg:max-h-none lg:w-full lg:rounded-xl lg:shadow-none lg:animate-none">
+        <div className="flex items-start gap-3"><div className="min-w-0 flex-1"><div className="flex flex-wrap gap-2"><Badge>{selected.phase}</Badge>{selected.condition !== "normal" && <Badge tone={selected.condition === "blocked" ? "bad" : "warn"}>{selected.condition.replace(/_/g," ")}</Badge>}{selected.phase === "closed" && selected.resolution && <Badge tone={selected.resolution === "accepted" ? "good" : selected.resolution === "failed" ? "bad" : "muted"}>{selected.resolution}</Badge>}<span className="font-mono text-[10px] text-muted-foreground">{selected.work_id} · v{selected.work_revision}</span></div><h2 id="selected-work-title" className="mt-2 break-words text-lg font-semibold">{selected.title || selected.work_id}</h2></div><button ref={closeRef} className="grid size-11 shrink-0 place-items-center rounded-md hover:bg-muted" onClick={() => onSelectWork(undefined)} aria-label="Close Work details"><X className="size-4"/></button></div>
+        <div className="mt-5 space-y-4 text-sm"><Detail title="Context" source={selected.context_markdown}/><Detail title="Completion criteria" source={selected.completion_criteria_markdown}/><FactGrid work={selected}/>{selected.blocker_reason && <Detail title="Blocker" source={selected.blocker_reason} tone="warn"/>}{selected.result_summary && <Detail title="Submitted result" source={selected.result_summary}/>}<ReferenceList title="Artifacts" refs={selected.artifact_refs}/><ReferenceList title="Checks and evidence" refs={selected.check_refs}/>{selected.latest_event && <section><h3 className="text-[10px] font-semibold uppercase tracking-[.12em] text-muted-foreground">Latest Work event</h3><p className="mt-1 rounded-lg bg-muted/35 p-3 text-xs">{selected.latest_event.kind.replace(/_/g, " ")} · {new Date(selected.latest_event.created_at).toLocaleString()}</p></section>}</div>
+        <div className="mt-5 flex flex-wrap gap-2 border-t border-border pt-4">{selected.current_member_run_ref && <Button size="sm" variant="secondary" onClick={() => onOpenMember(selected.current_member_run_ref!)}>Open member context <ArrowRight className="size-3.5"/></Button>}{onOpenHost && <Button size="sm" onClick={() => onOpenHost(selected.work_id)}><ShieldCheck className="size-3.5"/>Host controls</Button>}</div>
+      </aside></div>}
     </section>
   );
 }
 
-function WorkFilterChip({
-  active,
-  count,
-  label,
-  icon,
-  onClick,
-}: {
-  active: boolean;
-  count: number;
-  label: string;
-  icon?: ReactNode;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      className={cn(
-        "flex max-w-full items-center gap-1.5 rounded-full border px-2 py-1 text-[10px] font-medium transition-colors",
-        active
-          ? "border-primary/35 bg-primary/[0.08] text-primary"
-          : "border-border/70 bg-background text-muted-foreground hover:border-primary/25 hover:text-foreground",
-      )}
-    >
-      {icon}
-      <span className="max-w-36 truncate" title={label}>{label}</span>
-      <span className="tabular-nums opacity-70">{count}</span>
-    </button>
-  );
-}
-
-function WorkFact({ label, value }: { label: string; value: string }) {
-  return <div className="rounded-md bg-muted/45 px-2 py-1.5"><span className="block text-[8px] uppercase tracking-wider text-muted-foreground">{label}</span><span className="mt-0.5 block truncate text-foreground">{value}</span></div>;
-}
-
-function WorkRecordHistory({ events, deliveries }: { events: WorkEvent[]; deliveries: WorkDelivery[] }) {
-  const orderedEvents = [...events].sort((left, right) => left.sequence - right.sequence);
-  return (
-    <section>
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Durable history</p>
-        <span className="text-[9px] text-muted-foreground">{events.length} events · {deliveries.length} deliveries</span>
-      </div>
-      {orderedEvents.length === 0 && deliveries.length === 0 ? (
-        <p className="rounded-lg border border-dashed border-border px-3 py-3 text-[10px] text-muted-foreground">No Work events or deliveries are present in this snapshot.</p>
-      ) : (
-        <div className="divide-y divide-border/60 overflow-hidden rounded-lg border border-border/70 bg-card">
-          {orderedEvents.slice(-8).map((event) => (
-            <div key={event.id} className="flex items-start gap-2 px-3 py-2 text-[10px]">
-              <StatusDot tone={event.kind.includes("block") || event.kind.includes("cancel") ? "bad" : event.kind.includes("accept") || event.kind.includes("complete") ? "good" : "info"} />
-              <div className="min-w-0 flex-1"><p className="font-medium text-foreground">{event.kind.replace(/_/g, " ")}</p><p className="mt-0.5 text-muted-foreground">sequence {event.sequence} · v{event.expected_version} → v{event.resulting_version} · {formatTime(event.created_at)}</p></div>
-            </div>
-          ))}
-          {deliveries.slice(-6).map((delivery) => (
-            <div key={delivery.id} className="flex items-start gap-2 px-3 py-2 text-[10px]">
-              <SendHorizontal className="mt-0.5 size-3 shrink-0 text-primary" />
-              <div className="min-w-0 flex-1"><p className="font-medium text-foreground">Delivery · {delivery.status.replace(/_/g, " ")}</p><p className="mt-0.5 truncate text-muted-foreground">to {shortId(delivery.recipient_member_run_id)} · Work v{delivery.work_version} · attempt {delivery.attempt}</p></div>
-            </div>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
+function CircleDotLabel({ text }: { text: string }) { return <span className="min-w-0 truncate">{text}</span>; }
+function workAttentionRank(work:WorkSummary) { return (work.condition === "blocked" ? 100 : 0) + (work.phase === "review" ? 80 : work.phase === "active" ? 40 : work.phase === "open" ? 20 : 0) + (work.priority === "critical" ? 12 : work.priority === "high" ? 8 : 0); }
+function OpenGroupCounts({works}:{works:WorkSummary[]}) { const assigned=works.filter((work) => work.owner_actor_ref).length; return <div className="grid grid-cols-2 gap-px border-y border-border py-2 text-[10px]"><span>Unassigned <b className="ml-1">{works.length-assigned}</b></span><span>Assigned <b className="ml-1">{assigned}</b></span></div>; }
+function WorkCard({work,ownerMember,selected,onSelect,register,prominent=false}:{work:WorkSummary;ownerMember?:MemberCapacitySummary;selected:boolean;onSelect:(id:string)=>void;register:(node:HTMLButtonElement|null)=>void;prominent?:boolean}) { return <button ref={register} type="button" {...(prominent ? {"data-priority-work":work.work_id} : {"data-work-card":work.work_id})} onClick={() => onSelect(work.work_id)} className={cn("agent-team-panel min-w-0 rounded-[10px] p-3.5 text-left hover:-translate-y-px hover:border-primary/25 hover:shadow-[0_10px_28px_rgb(83_57_38_/_0.065)]",selected && "agent-team-selected",prominent && "w-full bg-accent/35")}><div className="flex flex-wrap items-center justify-between gap-2"><PhaseMark work={work}/><span className="text-[9px] font-semibold uppercase tracking-[.09em] text-muted-foreground">{work.priority}</span></div><h4 className="company-editorial-title mt-2.5 break-words text-[17px] leading-[1.18]">{work.title || work.work_id}</h4><p className="mt-1 line-clamp-2 text-[12px] leading-[1.45] text-muted-foreground">{work.completion_criteria_markdown || "No projected completion criteria."}</p><div className="mt-3 grid grid-cols-3 gap-2 text-[10px] text-muted-foreground"><span className="flex items-center gap-1.5"><FileCheck2 className="size-3.5"/>{work.artifact_refs.length + work.check_refs.length}</span><span className="flex items-center gap-1.5"><CheckCircle2 className="size-3.5"/>{work.gate_summary.passed}/{work.gate_summary.required}</span><span className="text-right">v{work.work_revision}</span></div><div className="mt-3 flex min-w-0 items-center gap-2 border-t border-border/75 pt-2.5 text-[10px] text-muted-foreground">{ownerMember ? <><Avatar name={ownerMember.display_name} identity={`${ownerMember.agent_member_ref.id} ${ownerMember.role}`} size="xs" tone={ownerMember.runtime_state === "running" ? "running" : ownerMember.capacity === "available" ? "good" : "idle"}/><CircleDotLabel text={memberLabel(ownerMember)}/></> : <><Users className="size-3.5"/>Unassigned</>}<span className="ml-auto flex items-center gap-1.5 font-medium"><WorkStateMark work={work}/></span></div></button>; }
+function PhaseMark({work}:{work:WorkSummary}) { const tone=work.condition === "blocked" ? "bad" : work.phase === "review" ? "warn" : work.phase === "active" ? "running" : work.phase === "closed" && work.resolution === "accepted" ? "good" : undefined; const label=work.condition !== "normal" ? work.condition : work.phase === "closed" && work.resolution ? work.resolution : work.phase; return <span className={tone ? "agent-team-state-label" : "agent-team-phase-label"} data-tone={tone}>{label.replace(/_/g," ")}</span>; }
+function WorkStateMark({work}:{work:WorkSummary}) { if(work.condition === "blocked")return <><CircleSlash className="size-3.5 text-status-bad"/><span className="text-status-bad">Blocked</span></>; if(work.phase === "closed" && work.resolution)return <><CheckCircle2 className={cn("size-3.5",work.resolution === "accepted" ? "text-status-good" : work.resolution === "failed" ? "text-status-bad" : "text-muted-foreground")}/><span className={work.resolution === "accepted" ? "text-status-good" : work.resolution === "failed" ? "text-status-bad" : "text-muted-foreground"}>{work.resolution[0].toUpperCase()+work.resolution.slice(1)}</span></>; if(work.phase === "review")return <><CheckCircle2 className="size-3.5 text-status-warn"/><span className="text-status-warn">Awaiting review</span></>; if(work.gate_summary.required > 0 && work.gate_summary.passed === work.gate_summary.required)return <><CheckCircle2 className="size-3.5 text-status-good"/><span className="text-status-good">Gates satisfied</span></>; return <><CheckCircle2 className="size-3.5 text-muted-foreground"/><span className="text-muted-foreground">{work.phase === "active" ? "In execution" : "Ready for responsibility"}</span></>; }
+function Detail({ title, source, tone }: { title:string; source:string; tone?:"warn" }) { return <section className={cn(tone === "warn" && "rounded-lg border border-status-warn/30 bg-status-warn/5 p-3")}><h3 className="mb-1 text-[10px] font-semibold uppercase tracking-[.12em] text-muted-foreground">{title}</h3>{source ? <Markdown source={source} compact/> : <p className="text-xs text-muted-foreground">Not provided.</p>}</section>; }
+function ReferenceList({ title, refs }: {title:string;refs:string[]}) { if (!refs.length) return null; return <section><h3 className="text-[10px] font-semibold uppercase tracking-[.12em] text-muted-foreground">{title}</h3><ul className="mt-1 space-y-1">{refs.map((ref) => <li key={ref} className="break-all rounded-md bg-muted/35 px-2 py-1.5 font-mono text-[10px]">{ref}</li>)}</ul></section>; }
+function FactGrid({ work }: {work:WorkSummary}) { return <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border text-xs sm:grid-cols-3"><Fact label="Phase" value={work.phase}/><Fact label="Condition" value={work.condition}/><Fact label="Resolution" value={work.phase === "closed" ? work.resolution ?? "not recorded" : "not applicable"}/><Fact label="Owner" value={work.owner_actor_ref?.id ?? "Unassigned"}/><Fact label="Claim" value={work.claim_mode}/><Fact label="Parent" value={work.parent_work_id ?? "None"}/><Fact label="Prerequisites" value={`${work.prerequisite_work_ids.length}`}/><Fact label="Gates" value={`${work.gate_summary.passed}/${work.gate_summary.required} passed`}/><Fact label="Delivery" value={String(work.delivery_summary.recovery_class ?? "not observed")}/></dl>; }
+function Fact({label,value}:{label:string;value:string}) { return <div className="min-w-0 bg-card p-2.5"><dt className="text-[9px] uppercase tracking-wider text-muted-foreground">{label}</dt><dd className="mt-1 break-words font-medium">{value}</dd></div>; }

@@ -1,10 +1,10 @@
 # MemberRun Focus Page Spec
 
 ```text
-status: implemented candidate; Works redesign accepted and pending
+status: authenticated Agent Conversation implemented; full profile retained
 owner_role: dashboard
 canonical_for: one autonomous MemberRun working within one AgentTeamRun
-route_or_surface: Agent Teams -> TeamRun -> MemberRun (Mission/Wave optional)
+route_or_surface: Agent Teams -> TeamRun -> Agent Conversation -> Full profile
 ```
 
 ## User Problem
@@ -13,19 +13,29 @@ An operator needs to understand one agent's work without reconstructing it
 from separate message, action, session, and evidence tabs. They need to answer
 four questions in the first viewport:
 
-1. What Mission/Team context and current Host-plan Wave is this member serving?
+1. What Mission/Team context and current Host judgment is this member serving?
 2. Which Work does it own, what is queued, and under which boundaries?
 3. What is it doing or waiting for now?
-4. What output supports its contribution to the Wave?
+4. What output supports its contribution to the Mission and current Work?
 
-The page is a focused, continuous working surface: durable Harness
-coordination, My Works, on-demand native provider activity, artifacts, and review
-requests appear in one chronological presentation. It is not a copied provider
-transcript or a duplicate Team Kanban.
+The default selected-member experience is a focused, continuous Agent
+Conversation: durable Harness coordination, relevant Works, on-demand native
+provider activity and messages appear in one chronological presentation. It is
+not a copied provider transcript or a duplicate Team Kanban. A separate Full
+Profile deep link carries durable identity and expanded historical detail.
 
 ## Canonical Data And Semantics
 
-Required data:
+The following is the full target contract. The issue #444 authenticated Agent
+Conversation slice currently ships TeamWorkspace messages and delivery
+lineage, all Works exactly bound to the selected MemberRun, current member
+runtime/session summary, read-on-demand native activity, and HostConsole
+allowed actions. PendingInteraction resolution, pending Close-request
+projection, recipient ACK action, Steer/Interrupt safe-point state and the full
+runtime/reconnect matrix remain server-projection gaps; the UI does not infer
+them.
+
+Full-contract required data:
 
 - optional `Mission`, selected/current Wave context, and Host judgment/advance
   projection;
@@ -78,35 +88,33 @@ is accepted. The older Workbench V2 image is historical baseline only.
 
 ### Desktop — `1440x1000`
 
-Use the shared Workbench shell: product sidebar about 230px, central work
-surface about 800px, and Context Rail about 340px. The central stream, not a
-tab bar, owns the page.
+Use the shared Workbench shell: compact product rail, a 240–256px Team agent
+navigator, dominant central conversation, and a conditional 260–288px fact
+rail. The central stream, not a tab bar, owns the page. When no current fact or
+authorized action exists, omit the right rail and give that width to chat.
 
 ```text
 +----------------------+--------------------------------------+------------------+
-| Product sidebar      | Member header                        | Context Rail     |
-| Missions / Agents    | role · provider/model · status       | Wave compact     |
-| Workflows / Knowledge| Mission > Wave > Team > Member       | Team compact     |
-| Active context tree  +--------------------------------------+ Current Work     |
-|                      | unified chronological activity        | Outputs/evidence |
-|                      | host/member messages                  | Runtime          |
-|                      | actions / file changes / reviews      | Delegations      |
-|                      | live preview (when currently present) |                  |
-|                      +--------------------------------------+                  |
-|                      | Message this member… (sticky)         |                  |
+| Product rail         | Team agents | Member header + source-labelled stream |
+|                      | Host Agent  | messages / Work / native read-on-demand |
+|                      | Members     |                                      | facts |
+|                      | portraits   |                                      | only  |
+|                      | pressure    | Message this member… (sticky)         | when  |
+|                      |             |                                      | useful|
 +----------------------+--------------------------------------+------------------+
 ```
 
 The header exposes identity, status, role, provider/model, and a compact
 breadcrumb. It must not turn the center into an overview dashboard. The
 composer remains visible when the member can receive messages; it identifies
-the recipient and permits a reply, clarification, or review request.
+the fixed recipient and permits an ordinary message. Steer remains a separate
+server-authorized runtime control.
 
 ### Tablet — `900x1180`
 
 - Keep a narrow/collapsed product sidebar and a full-width main stream.
-- Context modules move into a right sheet or an ordered inline section; only
-  `Wave`, `Current Work`, and `Needs You` are initially visible.
+- Team agents and contextual facts move into separate sheets; `Current Work`
+  and exact execution provenance are the only default contextual facts.
 - Header stays above the stream; the composer stays sticky at the bottom.
 - A selected module opens without hiding the activity stream permanently.
 
@@ -116,27 +124,26 @@ the recipient and permits a reply, clarification, or review request.
   context button.
 - Preserve one vertical stream and fixed composer; do not create separate
   Chat and Activity tabs.
-- Context modules are a bottom sheet in this priority: `Needs You`,
-  `Current Work`, `Wave`, `Outputs`, `Runtime`, `Delegations`.
+- Agent navigation and contextual facts are separate bottom sheets. Current
+  Work, exact execution provenance and allowed controls take priority.
 - Long paths, IDs, and raw data truncate or disclose progressively; no
   horizontal page overflow.
 
-## Context Rail Modules
+## Conditional Context
 
-The rail uses shared density variants (`micro`, `compact`, `panel`) rather
-than page-specific cards. Its default order is:
+The contextual rail is not a required third column. It appears only when at
+least one selected/current fact or authorized action exists, and uses shared
+density variants rather than page-specific decorative cards. Its order is:
 
-1. **WaveCompact** — the selected Host-plan Wave's title/index, objective,
-   revision, judgment state, and open-Wave action. For a Mission-scoped
-   TeamRun this is navigation/Work context, not a parent runtime.
-2. **TeamCompact** — run identity, member status roll-up, one blocked or
-   waiting signal, and open-war-room action.
-3. **CurrentWork** — Work id/version, creator/owner, status/readiness, context,
+1. **BoundWorks** — every Work bound to the selected exact MemberRun
+   (`current_member_run_ref` / server-projected execution binding), with
+   id/version, creator/owner, phase/condition/resolution,
+   readiness, context,
    completion criteria, owned paths, permissions, blockers, child progress and
-   applicable constraints; queued and eligible Works remain one action away.
-4. **OutputsEvidence** — artifacts, checks, report, and contribution to the
-   Host's current judgment. It must label absent evidence honestly.
-5. **RuntimeSummary** — provider/model/native-session binding, availability,
+   applicable constraints. No single Work is called current unless a future
+   server projection says so. Other durable AgentMember-owned Works are shown
+   separately and never guessed to be the selected execution.
+2. **RuntimeSummary** — exact MemberRun, provider/model/native-session binding, availability,
    resume compatibility, selected execution driver, continuation state,
    Team Supervisor generation/heartbeat, provider-transport and reconnect
    state, Close latch, worktree lease, permission posture, and actionable
@@ -148,10 +155,12 @@ than page-specific cards. Its default order is:
    "not started, Work delivery still queued", not as a failed member. `unknown`
    renders as unknown; it must never render as healthy, and an absent snapshot
    renders as "not observed".
-6. **DelegationSummary** — observed provider-native or orchestrated child work,
-   with attribution and control limits made explicit.
-7. **CollaborationThread** — Host and same-Team peer messages linked to the
-   current Work, including queued/delivered/acknowledged state.
+3. **AllowedControls** — only current server-projected actions with their
+   disabled reasons. Message, Steer, runtime control and Work transition stay
+   separate.
+4. **FullProfileLink** — durable identity/configuration and broader history.
+   Mission Log, Team summary, outputs and delegation inventories stay behind
+   entity deep links instead of repeating the center conversation.
 
 The first module group is labeled **Current Work (Member Goal)**. It is a
 derived projection, not a Goal record: Work context and completion standard,
@@ -205,7 +214,8 @@ it sends the selected adapter's real close/cancel protocol and must not be
 presented as ordinary turn completion. Completion of the MemberRun is an
 execution fact, not an implicit Wave advance.
 
-Render the latest `TeamMemberCloseRequest` beside those controls. `pending`
+Full-contract follow-up: render the latest `TeamMemberCloseRequest` beside
+those controls once HostConsole projects it. `pending`
 disables duplicate Close actions and remains visible across Supervisor restart;
 `applied` is retained as lifecycle evidence.
 

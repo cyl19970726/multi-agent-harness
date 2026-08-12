@@ -1,257 +1,68 @@
-import type { ReactNode } from "react";
-import {
-  Activity,
-  ArrowRight,
-  BadgeCheck,
-  BrainCircuit,
-  CheckCircle2,
-  CircleCheckBig,
-  CircleHelp,
-  FileCheck2,
-  Handshake,
-  ListTodo,
-  Megaphone,
-  MessageCircleWarning,
-  MessageSquare,
-  MessageSquareReply,
-  OctagonAlert,
-  ScanSearch,
-  ShieldAlert,
-  Wrench,
-} from "lucide-react";
+import { useMemo, useState } from "react";
+import { Activity, ArrowRight, CheckCircle2, FileCheck2, Inbox, ListFilter, MessageSquare, RadioTower, Search, ShieldCheck } from "lucide-react";
 
-import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Avatar } from "@/components/workbench/Avatar";
 import { Markdown } from "@/components/workbench/Markdown";
-import type { StatusTone } from "@/components/workbench/atoms";
-import type { WorkbenchActivityItem } from "@/components/workbench/activity/ActivityStream";
+import type { MemberCapacitySummary, MessageSummary, TeamActivitySummary } from "../../../model/roleViews";
 
-import type { TeamActivityItem } from "./teamActivityItems";
-import { formatAbsolute, isoTime, messageTone, shortId } from "./teamFormat";
-
-/**
- * One source-aware Team conversation. Every row keeps its durable identity
- * route (sender → full recipient list), its source/status, and an absolute
- * time on disclosure; nothing here rewrites the underlying record.
- */
-export function TeamConversationStream({ items, empty, onOpenWork }: { items: TeamActivityItem[]; empty: ReactNode; onOpenWork: (workId: string) => void }) {
-  if (!items.length) return <div className="grid min-h-48 place-items-center px-6 py-10 text-center">{empty}</div>;
-  return (
-    <ol data-testid="team-conversation-list" className="relative py-1 before:absolute before:bottom-5 before:left-[1.05rem] before:top-5 before:w-px before:bg-border/80">
-      {items.map((item) => <li key={item.id} data-conversation-row="true"><TeamConversationRow item={item} onOpenWork={onOpenWork} /></li>)}
-    </ol>
-  );
-}
-
-function TeamConversationRow({ item, onOpenWork }: { item: TeamActivityItem; onOpenWork: (workId: string) => void }) {
-  const kind = item.messageKind ?? item.kind;
-  const tone = item.tone ?? "idle";
-  const plan = kind === "plan_proposal";
-  const pressure = ["blocker", "review_request", "plan_feedback"].includes(kind);
-  const accepted = ["plan_approval", "review_result"].includes(kind);
-  const handoff = kind === "handoff";
-  const execution = item.kind === "action" || item.kind === "evidence";
-  const absolute = formatAbsolute(item.occurredAt);
-  return (
-    <article className="relative grid grid-cols-[2.25rem_4.25rem_minmax(0,1fr)] gap-x-2.5 py-1.5">
-      <ConversationNode kind={kind} tone={tone} avatarName={item.actorAvatarName} avatarTone={item.actorTone} onActorClick={item.onActorClick} />
-      <time
-        dateTime={isoTime(item.occurredAt)}
-        title={absolute}
-        className="pt-1 text-right text-[10px] font-medium text-muted-foreground"
-      >
-        {item.timestamp}
-        <span className="sr-only"> ({absolute})</span>
-      </time>
-      <div className="min-w-0">
-        <ConversationMeta item={item} label={conversationLabel(kind)} />
-        <div className={cn(
-          "mt-1 overflow-hidden rounded-lg border bg-card/75 shadow-[0_18px_42px_-38px_rgba(15,23,42,.75)]",
-          plan && "border-[#8b5cf6]/30 bg-[linear-gradient(145deg,hsl(var(--card)),rgba(139,92,246,.035))]",
-          pressure && "border-status-warn/35 bg-[linear-gradient(145deg,hsl(var(--card)),hsl(var(--status-warn)/.045))]",
-          accepted && "border-status-good/30 bg-[linear-gradient(145deg,hsl(var(--card)),hsl(var(--status-good)/.04))]",
-          handoff && "border-primary/30 bg-[linear-gradient(145deg,hsl(var(--card)),hsl(var(--primary)/.035))]",
-          execution && "border-status-info/25",
-        )}>
-          <div className="flex min-w-0 items-center gap-2 border-b border-border/55 px-2.5 py-1.5">
-            <div className="min-w-0 flex-1">
-              {item.messageKind ? <ConversationRoute item={item} /> : <div className="text-[11px] font-semibold text-foreground">{item.title}</div>}
-            </div>
-            {item.workId && <button type="button" onClick={() => onOpenWork(item.workId!)} className="shrink-0 rounded-full border border-primary/20 bg-primary/[0.055] px-2 py-1 font-mono text-[9px] text-primary hover:bg-primary/10">Work · {shortId(item.workId)}</button>}
-            {item.action && <div className="shrink-0">{item.action}</div>}
-          </div>
-          <div className="px-2.5 py-2">
-            {plan && item.bodySource
-              ? <PlanProposalBody source={item.bodySource} />
-              : <div className="text-[11px] leading-relaxed text-foreground/85">{item.body}</div>}
-            {(item.evidenceRefs?.length ?? 0) > 0 && (
-              <div className="mt-2 grid gap-1 border-t border-border/55 pt-2 sm:grid-cols-2">
-                {item.evidenceRefs?.map((ref) => (
-                  <span key={ref} className="inline-flex min-w-0 items-center gap-1.5 rounded-md bg-muted/45 px-2 py-1 text-[9px] text-muted-foreground">
-                    <FileCheck2 className="size-3 shrink-0 text-status-good" />
-                    <span className="truncate">{ref}</span>
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border/50 bg-muted/20 px-2.5 py-1 text-[9px] text-muted-foreground">
-            {item.actor && <span>{item.actor}</span>}
-            {item.source === "provider-native" && <span>native session</span>}
-            {item.statusLabel && <span className={accepted ? "text-status-good" : undefined}>{item.statusLabel}</span>}
-            <span className="ml-auto">{item.kind === "message" || item.kind === "blocker" || item.kind === "decision" ? "coordination record" : "Harness evidence"}</span>
-          </div>
-        </div>
-      </div>
-    </article>
-  );
-}
-
-function ConversationMeta({ item, label }: { item: WorkbenchActivityItem; label: string }) {
-  return (
-    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[9px] uppercase tracking-[0.11em] text-muted-foreground">
-      <span className="font-semibold text-foreground/75">{label}</span>
-      {item.actorLabel && <span className="normal-case tracking-normal">{item.actorLabel}</span>}
-    </div>
-  );
-}
-
-function ConversationRoute({ item }: { item: WorkbenchActivityItem }) {
-  const presentation = messagePresentation(item.messageKind);
-  const TypeIcon = presentation.icon;
-  const recipients = item.recipientLabels ?? [];
-  const overflow = recipients.slice(3);
-  return (
-    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-foreground">
-        <span className={cn("size-1.5 rounded-full", presentation.dotClass)} />
-        {item.actorLabel ?? "Host"}
-      </span>
-      <ArrowRight className="size-3 shrink-0 text-muted-foreground" />
-      <span className="flex min-w-0 items-center gap-1">
-        {recipients.slice(0, 3).map((recipient) => (
-          <span key={recipient} className="inline-flex items-center gap-1 rounded-full bg-muted/45 py-0.5 pl-0.5 pr-1.5">
-            <Avatar name={recipient} tone="idle" size="xs" />
-            <span className="max-w-28 truncate text-[10px] font-medium text-foreground/80">{recipient}</span>
-          </span>
-        ))}
-        {overflow.length > 0 && (
-          // The visible `+N` stays compact, but the complete recipient route
-          // must remain available to assistive technology rather than being
-          // collapsed into an opaque count.
-          <span className="text-[9px] text-muted-foreground" title={overflow.join(", ")}>
-            +{overflow.length}
-            <span className="sr-only"> more recipients: {overflow.join(", ")}</span>
-          </span>
-        )}
-      </span>
-      <Badge tone={messageTone(item.messageKind)}>
-        <TypeIcon className="mr-1 size-3" />
-        {presentation.label}
-      </Badge>
-    </div>
-  );
-}
-
-function ConversationNode({ kind, tone, avatarName, avatarTone, onActorClick }: {
-  kind: string;
-  tone: StatusTone;
-  avatarName?: string;
-  avatarTone?: StatusTone;
-  onActorClick?: () => void;
+export function TeamConversationStream({ activity, messages, members=[], truncated, onOpenWork, onReply }: {
+  activity:TeamActivitySummary[];
+  messages:MessageSummary[];
+  members?:MemberCapacitySummary[];
+  truncated:boolean;
+  onOpenWork:(workId:string)=>void;
+  onReply?:(message:MessageSummary)=>void;
 }) {
-  if (avatarName) {
-    // The timeline identity is always the sender portrait; the corner mark
-    // communicates message type without replacing or obscuring authorship.
-    const presentation = messagePresentation(kind);
-    const TypeIcon = presentation.icon;
-    return (
-      <button type="button" disabled={!onActorClick} onClick={onActorClick} className="relative z-[1] rounded-full ring-4 ring-background focus-visible:outline-none focus-visible:ring-primary">
-        <Avatar name={avatarName} tone={avatarTone ?? tone} />
-        <span className={cn(
-          "absolute -bottom-1 -right-1 grid size-4 place-items-center rounded-full border border-background text-white shadow-sm",
-          presentation.iconClass,
-        )}>
-          <TypeIcon className="size-2.5" strokeWidth={2.4} />
-        </span>
-      </button>
-    );
-  }
-  const Icon = kind === "plan_proposal" ? BrainCircuit
-      : kind === "plan_feedback" || kind === "blocker" ? ShieldAlert
-        : kind === "plan_approval" || kind === "review_result" ? CheckCircle2
-          : kind === "handoff" ? ArrowRight
-            : kind === "evidence" ? FileCheck2
-              : kind === "action" ? Wrench
-                : MessageSquare;
-  return (
-    <span className={cn(
-      "relative z-[1] grid size-8 place-items-center rounded-xl border ring-4 ring-background",
-      tone === "bad" && "border-status-bad/25 bg-status-bad/8 text-status-bad",
-      tone === "warn" && "border-status-warn/25 bg-status-warn/8 text-status-warn",
-      tone === "good" && "border-status-good/25 bg-status-good/8 text-status-good",
-      tone === "decision" && "border-[#8b5cf6]/25 bg-[#8b5cf6]/[0.08] text-[#7653c6]",
-      ["info", "running"].includes(tone) && "border-status-info/25 bg-status-info/8 text-status-info",
-      tone === "idle" && "border-border bg-card text-muted-foreground",
-    )}>
-      <Icon className="size-3.5" />
-    </span>
-  );
+  const [filtersOpen,setFiltersOpen] = useState(false);
+  const [query,setQuery] = useState("");
+  const [source,setSource] = useState("all");
+  const [participant,setParticipant] = useState("all");
+  const [workId,setWorkId] = useState("all");
+  const membersById = useMemo(() => new Map(members.map((member) => [member.agent_member_ref.id,member])),[members]);
+  const workIds = Array.from(new Set([...messages.map((message) => message.work_id),...activity.map((item) => item.work_id)].filter(Boolean) as string[]));
+  const sourceKinds = Array.from(new Set(["message",...activity.map((item) => item.source)]));
+  const matches = (row:{source:string;participants:string[];workId?:string|null;search:string}) =>
+    (source === "all" || row.source === source) &&
+    (participant === "all" || row.participants.includes(participant)) &&
+    (workId === "all" || row.workId === workId) &&
+    (!query.trim() || row.search.toLowerCase().includes(query.trim().toLowerCase()));
+  const visibleMessages = messages.filter((message) => matches({source:"message",participants:[message.sender.id,...message.recipients.map((recipient) => recipient.id)],workId:message.work_id,search:[message.body,message.kind,message.sender.id,...message.recipients.map((recipient) => recipient.id)].join(" ")}));
+  const visibleActivity = activity.filter((item) => matches({source:item.source,participants:item.actor_ref ? [item.actor_ref.id] : [],workId:item.work_id,search:[item.summary,item.status,item.source,item.actor_ref?.id,item.id].filter(Boolean).join(" ")}));
+  const messageIds = new Set(visibleMessages.map((message) => message.message_id));
+  const nonMessageActivity = visibleActivity.filter((item) => item.source !== "message" || !messageIds.has(item.id));
+  const rows = [
+    ...visibleMessages.map((message) => ({key:`message:${message.message_id}`,at:message.created_at,node:<MessageRow message={message} membersById={membersById} onOpenWork={onOpenWork} onReply={onReply}/>})),
+    ...nonMessageActivity.map((item) => ({key:`${item.source}:${item.id}`,at:item.created_at,node:<ActivityRow item={item} membersById={membersById} onOpenWork={onOpenWork}/>})),
+  ].sort((left,right) => right.at.localeCompare(left.at));
+  const hasCanonicalRows = messages.length > 0 || activity.length > 0;
+  return <section aria-labelledby="team-activity-title" className="pt-2">
+    <header className="flex flex-wrap items-end justify-between gap-3"><div><div className="flex items-baseline gap-2"><h2 id="team-activity-title" className="company-editorial-title text-[21px]">Team timeline</h2><span className="text-[10px] tabular-nums text-muted-foreground">{rows.length} records</span></div><p className="mt-0.5 text-[11px] text-muted-foreground">Authored coordination and durable facts. Provider transcripts stay native.</p></div><div className="flex items-center gap-2">{truncated && <Badge tone="warn">latest bounded page</Badge>}<Button size="sm" variant="ghost" aria-expanded={filtersOpen} onClick={() => setFiltersOpen((value) => !value)}><ListFilter className="size-3.5"/>Filter activity</Button></div></header>
+    <div className={`${filtersOpen ? "grid" : "hidden"} mt-3 gap-2 border-y border-border py-3 md:grid-cols-[minmax(13rem,1fr)_auto_auto_auto]`} aria-label="Activity filters"><label className="relative min-w-0"><span className="sr-only">Search Activity</span><Search className="pointer-events-none absolute left-3 top-2.5 size-3.5 text-muted-foreground"/><input aria-label="Search Activity" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search activity by keyword…" className="agent-team-control h-9 w-full pl-9 pr-3 text-xs"/></label><FilterSelect label="Source" value={source} onChange={setSource} options={sourceKinds}/><FilterSelect label="Participant" value={participant} onChange={setParticipant} options={members.map((member) => member.agent_member_ref.id)} labels={membersById}/><FilterSelect label="Related Work" value={workId} onChange={setWorkId} options={workIds}/></div>
+    {rows.length ? <div className="mt-3 overflow-hidden border-t border-border"><div className="hidden grid-cols-[7rem_minmax(9rem,.72fr)_minmax(15rem,2fr)_minmax(7rem,.7fr)_7rem] gap-4 border-b border-border px-3 py-2.5 text-[9px] font-semibold uppercase tracking-[.12em] text-muted-foreground lg:grid"><span>Record</span><span>Actor / direction</span><span>What changed</span><span>Related Work</span><span className="text-right">Time / state</span></div><ol data-testid="role-view-team-activity">{rows.map((row) => <li key={row.key}>{row.node}</li>)}</ol></div> : <div className="mt-3 border-y border-dashed border-border px-5 py-14 text-center"><Activity className="mx-auto size-7 text-muted-foreground"/><h3 className="mt-3 text-sm font-semibold">{hasCanonicalRows ? "No activity matches these filters" : "No canonical Team activity yet"}</h3><p className="mx-auto mt-1 max-w-md text-xs leading-relaxed text-muted-foreground">{hasCanonicalRows ? "Adjust source, participant, Work or keyword filters." : "Authored Messages, Work events, delivery facts and explicit outcomes will appear here. Native provider transcripts remain in their source session."}</p></div>}
+  </section>;
 }
 
-function PlanProposalBody({ source }: { source: string }) {
-  const sections = source.split(/^##\s+/m).map((value) => value.trim()).filter(Boolean).map((value) => {
-    const [heading, ...lines] = value.split("\n");
-    return { heading, body: lines.join("\n").trim() };
-  });
-  return (
-    <div className="grid gap-2 sm:grid-cols-2">
-      {sections.map((section) => (
-        <section key={section.heading} className="rounded-lg border border-[#8b5cf6]/15 bg-background/75 px-2.5 py-2">
-          <h3 className="mb-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-[#7653c6]">{section.heading}</h3>
-          <Markdown source={section.body} compact />
-        </section>
-      ))}
-    </div>
-  );
+function FilterSelect({label,value,onChange,options,labels}:{label:string;value:string;onChange:(value:string)=>void;options:string[];labels?:Map<string,MemberCapacitySummary>}) {
+  return <label><span className="sr-only">{label}</span><select aria-label={label} value={value} onChange={(event) => onChange(event.target.value)} className="agent-team-control h-9 min-w-36 px-2 text-xs font-normal"><option value="all">All {label.toLowerCase()}</option>{options.map((option) => <option key={option} value={option}>{labels?.get(option)?.display_name ?? option.replace(/_/g," ")}</option>)}</select></label>;
 }
 
-export function conversationLabel(kind: string): string {
-  if (kind === "plan_request") return "Plan request";
-  if (kind === "plan_proposal") return "Plan proposal";
-  if (kind === "plan_feedback") return "Host challenge";
-  if (kind === "plan_approval") return "Plan approved";
-  if (kind === "review_request") return "Lead inbox";
-  if (kind === "review_result") return "Review decision";
-  if (kind === "handoff") return "Handoff";
-  if (kind === "blocker") return "Blocker";
-  if (kind === "evidence") return "Evidence";
-  if (kind === "action") return "Execution";
-  return kind.replace(/_/g, " ");
+function MessageRow({message,membersById,onOpenWork,onReply}:{message:MessageSummary;membersById:Map<string,MemberCapacitySummary>;onOpenWork:(id:string)=>void;onReply?:(message:MessageSummary)=>void}) {
+  const statuses = Array.from(new Set(message.deliveries.map((delivery) => delivery.status)));
+  const sender = membersById.get(message.sender.id);
+  const senderLabel = sender?.display_name ?? message.sender.id;
+  const recipientLabels = message.recipients.map((recipient) => membersById.get(recipient.id)?.display_name ?? recipient.id);
+  return <article className="agent-team-record-row grid min-w-0 gap-3 px-3 py-3.5 lg:grid-cols-[7rem_minmax(9rem,.72fr)_minmax(15rem,2fr)_minmax(7rem,.7fr)_7rem] lg:items-start"><RecordType icon={MessageSquare} label="Message" detail={message.kind.replace(/_/g," ")} tone="coral"/><div className="flex min-w-0 items-center gap-2">{sender ? <Avatar name={sender.display_name} identity={`${sender.agent_member_ref.id} ${sender.role}`} size="sm" tone={sender.runtime_state === "running" ? "running" : "idle"}/> : <span className="grid size-8 shrink-0 place-items-center rounded-full bg-primary/10 text-primary"><Inbox className="size-3.5"/></span>}<div className="min-w-0"><p className="truncate text-xs font-semibold">{senderLabel}</p><p className="mt-0.5 flex items-center gap-1 truncate text-[10px] text-muted-foreground"><ArrowRight className="size-3"/>{recipientLabels.join(", ") || "Team"}</p></div></div><div className="min-w-0"><div className="text-[13px] leading-relaxed"><Markdown source={message.body} compact/></div><div className="mt-2 flex flex-wrap items-center gap-2 text-[9px] text-muted-foreground"><span className="font-mono">chain {message.correlation_id}</span>{message.causation_id && <span>reply to {message.causation_id}</span>}<details><summary className="cursor-pointer text-primary">{statuses.length ? statuses.join(" · ") : "no delivery rows"}</summary>{message.deliveries.length > 0 && <ul className="mt-1 space-y-1 bg-secondary p-2">{message.deliveries.map((delivery) => <li key={delivery.id} className="break-all">recipient {delivery.recipient_member_run_id} · {delivery.status} · v{delivery.version}{delivery.provider_receipt_id ? ` · receipt ${delivery.provider_receipt_id}` : ""}</li>)}</ul>}</details>{onReply && message.reply_eligible && <button type="button" className="font-semibold text-primary hover:underline" onClick={() => onReply(message)}>Reply</button>}</div></div><div>{message.work_id ? <button type="button" className="max-w-full truncate text-[10px] text-muted-foreground hover:text-primary" onClick={() => onOpenWork(message.work_id!)}>Work · {message.work_id}</button> : <span className="text-[10px] text-muted-foreground">No Work link</span>}</div><div className="text-left lg:text-right"><time className="block text-[10px] text-muted-foreground" dateTime={message.created_at}>{formatActivityTime(message.created_at)}</time><Badge className="mt-1" tone={statuses.includes("provider_received") ? "good" : statuses.length ? "info" : "muted"}>{statuses.join(" · ") || "authored"}</Badge></div></article>;
 }
 
-export function messagePresentation(kind?: string | null): {
-  label: string;
-  icon: typeof MessageSquare;
-  iconClass: string;
-  dotClass: string;
-} {
-  const normalized = kind ?? "message";
-  if (normalized === "message") return { label: "Message", icon: MessageSquare, iconClass: "bg-[#64748b]", dotClass: "bg-[#64748b]" };
-  if (normalized === "broadcast") return { label: "Broadcast", icon: Megaphone, iconClass: "bg-status-info", dotClass: "bg-status-info" };
-  if (normalized === "question") return { label: "Question", icon: CircleHelp, iconClass: "bg-[#7c5bd6]", dotClass: "bg-[#7c5bd6]" };
-  if (normalized === "answer") return { label: "Answer", icon: MessageSquareReply, iconClass: "bg-status-good", dotClass: "bg-status-good" };
-  if (normalized === "progress") return { label: "Progress", icon: Activity, iconClass: "bg-status-info", dotClass: "bg-status-info" };
-  if (normalized === "blocker") return { label: "Blocker", icon: OctagonAlert, iconClass: "bg-status-bad", dotClass: "bg-status-bad" };
-  if (normalized === "review_request") return { label: "Lead inbox", icon: ScanSearch, iconClass: "bg-status-warn", dotClass: "bg-status-warn" };
-  if (normalized === "review_result") return { label: "Review decision", icon: BadgeCheck, iconClass: "bg-status-good", dotClass: "bg-status-good" };
-  if (normalized === "plan_request") return { label: "Plan request", icon: ListTodo, iconClass: "bg-status-info", dotClass: "bg-status-info" };
-  if (normalized === "plan_proposal") return { label: "Plan proposal", icon: BrainCircuit, iconClass: "bg-[#7c5bd6]", dotClass: "bg-[#7c5bd6]" };
-  if (normalized === "plan_feedback") return { label: "Host challenge", icon: MessageCircleWarning, iconClass: "bg-status-warn", dotClass: "bg-status-warn" };
-  if (normalized === "plan_approval") return { label: "Plan approved", icon: CircleCheckBig, iconClass: "bg-status-good", dotClass: "bg-status-good" };
-  if (normalized === "handoff") return { label: "Handoff", icon: Handshake, iconClass: "bg-[#ff725e]", dotClass: "bg-[#ff725e]" };
-  if (normalized === "evidence") return { label: "Evidence", icon: FileCheck2, iconClass: "bg-status-good", dotClass: "bg-status-good" };
-  if (normalized === "action") return { label: "Tool activity", icon: Wrench, iconClass: "bg-status-info", dotClass: "bg-status-info" };
-  return { label: conversationLabel(normalized), icon: MessageSquare, iconClass: "bg-muted-foreground", dotClass: "bg-muted-foreground" };
+function ActivityRow({item,membersById,onOpenWork}:{item:TeamActivitySummary;membersById:Map<string,MemberCapacitySummary>;onOpenWork:(id:string)=>void}) {
+  const actor = item.actor_ref ? membersById.get(item.actor_ref.id) : undefined;
+  const source=sourcePresentation(item.source,item.status);
+  const SourceIcon=source.icon;
+  return <article className="agent-team-record-row grid min-w-0 gap-3 px-3 py-3.5 lg:grid-cols-[7rem_minmax(9rem,.72fr)_minmax(15rem,2fr)_minmax(7rem,.7fr)_7rem] lg:items-start"><RecordType icon={source.icon} label={source.label} detail={item.source.replace(/_/g," ")} tone={source.tone}/><div className="flex min-w-0 items-center gap-2">{actor ? <Avatar name={actor.display_name} identity={`${actor.agent_member_ref.id} ${actor.role}`} size="sm" tone={actor.runtime_state === "running" ? "running" : "idle"}/> : <span className="grid size-8 shrink-0 place-items-center rounded-full bg-secondary text-muted-foreground"><SourceIcon className="size-3.5"/></span>}<div className="min-w-0"><p className="truncate text-xs font-semibold">{actor?.display_name ?? item.actor_ref?.id ?? "System"}</p><p className="truncate text-[10px] text-muted-foreground">{actor?.role ?? "canonical record"}</p></div></div><div className="min-w-0"><p className="text-[13px] font-medium leading-relaxed">{item.summary || source.label}</p><p className="mt-1 truncate font-mono text-[9px] text-muted-foreground">{item.id}</p></div><div>{item.work_id ? <button type="button" className="max-w-full truncate text-[10px] text-muted-foreground hover:text-primary" onClick={() => onOpenWork(item.work_id!)}>Work · {item.work_id}</button> : <span className="text-[10px] text-muted-foreground">No Work link</span>}</div><div className="text-left lg:text-right"><time className="block text-[10px] text-muted-foreground" dateTime={item.created_at}>{formatActivityTime(item.created_at)}</time><Badge className="mt-1" tone={source.badgeTone}>{item.status?.replace(/_/g," ") || "recorded"}</Badge></div></article>;
 }
+
+function RecordType({icon:Icon,label,detail,tone}:{icon:typeof Activity;label:string;detail:string;tone:"coral"|"blue"|"green"|"amber"|"violet"}) { const colors={coral:"text-primary bg-primary/10",blue:"text-status-running bg-status-running/10",green:"text-status-good bg-status-good/10",amber:"text-status-warn bg-status-warn/10",violet:"text-status-decision bg-status-decision/10"}; return <div className="flex min-w-0 items-center gap-2"><span className={`grid size-8 shrink-0 place-items-center rounded-lg ${colors[tone]}`}><Icon className="size-4"/></span><div className="min-w-0"><p className="truncate text-[10px] font-semibold">{label}</p><p className="truncate text-[9px] text-muted-foreground">{detail}</p></div></div>; }
+function sourcePresentation(source:string,status:string|null) { const value=source.toLowerCase(); if(value.includes("delivery"))return {icon:RadioTower,label:"Delivery",tone:"green" as const,badgeTone:"good" as const}; if(value.includes("gate"))return {icon:ShieldCheck,label:"Gate evaluation",tone:"green" as const,badgeTone:status === "failed" ? "bad" as const : "good" as const}; if(value.includes("report")||value.includes("finding")||value.includes("evidence"))return {icon:FileCheck2,label:"Work evidence",tone:"amber" as const,badgeTone:"warn" as const}; if(value.includes("runtime")||value.includes("command"))return {icon:RadioTower,label:"Runtime",tone:"violet" as const,badgeTone:"info" as const}; if(value.includes("work"))return {icon:CheckCircle2,label:"Work event",tone:"blue" as const,badgeTone:"info" as const}; return {icon:Activity,label:"Activity",tone:"blue" as const,badgeTone:"muted" as const}; }
+function formatActivityTime(value:string) { const date=new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString([], {month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}); }

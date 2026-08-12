@@ -35,7 +35,7 @@ export function Avatar({
       aria-label={name}
     >
       {portrait ? (
-        <img src={portrait} alt="" className="size-full object-cover saturate-[.88] contrast-[.98]" />
+        <img src={portrait} alt="" className="size-full object-cover saturate-[.98] contrast-[1.015]" />
       ) : initials(name)}
       <StatusDot
         tone={tone}

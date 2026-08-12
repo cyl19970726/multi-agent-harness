@@ -90,7 +90,9 @@ Work is the responsibility kernel connecting Organization to Execution:
 Work
   -> one Team scope
   -> optional assignee AgentMember
-  -> status: open, in_progress, blocked, review, done, cancelled
+  -> phase: open, active, review, closed
+  -> condition: normal, blocked, on_hold
+  -> resolution when closed: accepted, cancelled, failed
   -> optional document_refs (links to Docs)
   -> optional labels (filtering)
 ```
