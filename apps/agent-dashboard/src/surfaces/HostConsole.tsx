@@ -25,7 +25,10 @@ export function HostConsole({apiUrl,space,project,teamId,teamRunId,selectedWorkI
   const allWorks = view.data.all_works;
   const resolvedTeamRunId = teamRunId ?? view.data.team_supervisor?.team_run_id;
   const runScopeMismatch = Boolean(resolvedTeamRunId && view.allowed_actions.some((action) => action.target_ref.kind === "team_run" && action.target_ref.id !== resolvedTeamRunId));
-  const selectedWork = allWorks.find((work) => work.work_id === selectedWorkId);
+  const selectedWork = allWorks.find((work) => work.work_id === selectedWorkId)
+    ?? allWorks.find((work) => view.data.host_inbox.some((message) => message.work_id === work.work_id))
+    ?? allWorks.find((work) => work.condition === "blocked")
+    ?? allWorks.find((work) => work.phase === "review");
   const selectedMember = view.data.member_runtime.find((member) => member.current_member_run_ref === selectedMemberRunId);
   const messageKinds=new Set(["send_message","reply_message","request_decision"]);
   const workActions=view.allowed_actions.filter((action) => action.target_ref.kind === "work" && (!selectedWork || action.target_ref.id === selectedWork.work_id));

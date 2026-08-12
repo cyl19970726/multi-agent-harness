@@ -134,6 +134,8 @@ export function AgentConversationWorkspace({apiUrl,space,project,routeIdentity,v
           </div>
         </header>
 
+        {boundWork[0] && <button type="button" onClick={() => setMobileContextOpen(true)} className="flex min-h-11 items-center gap-2 border-b border-border bg-accent/25 px-3 text-left text-[10px] lg:hidden"><BriefcaseBusiness className="size-3.5 text-primary"/><span className="min-w-0 flex-1 truncate"><b>Current Work</b> · {boundWork[0].title || boundWork[0].work_id}</span><Badge tone={boundWork[0].condition === "blocked" ? "bad" : boundWork[0].phase === "review" ? "warn" : "muted"}>{boundWork[0].condition !== "normal" ? boundWork[0].condition : boundWork[0].phase}</Badge><ArrowRight className="size-3.5"/></button>}
+
         <div className="agent-team-chat-canvas min-h-0 flex-1 overflow-y-auto px-3 py-4 sm:px-6" tabIndex={0} aria-label={`Conversation with ${targetLabel}`}>
           <div className="mx-auto max-w-4xl space-y-3">
             {timeline.map((row,index) => <ConversationRow key={`${row.kind}:${row.at}:${index}`} row={row} members={view.data.members} hostId={team.host_agent_id} onOpenWork={(workId) => onSelectionChange({teamConversation:undefined,memberRunId:undefined,teamTab:"works",teamWorkId:workId})} onReply={canCompose ? setReplyTo : undefined}/>) }
