@@ -293,7 +293,7 @@ function ProfileDialog({data,onClose,closeRef,openerRef}:{data:AgentWorkspaceDat
     return()=>{
       window.cancelAnimationFrame(focusFrame);
       document.removeEventListener("keydown",onKeyDown);
-      window.requestAnimationFrame(()=>openerRef.current?.focus());
+      openerRef.current?.focus();
     };
   },[closeRef,openerRef]);
   return <div className="fixed inset-0 z-50 bg-[#3b2f27]/12" role="presentation" onMouseDown={event=>{if(event.target===event.currentTarget)onClose();}}><section ref={dialogRef} role="dialog" aria-modal="true" aria-label={`${selected.display_name} configuration`} tabIndex={-1} className="agent-profile-drawer absolute inset-y-0 right-0 w-[min(92vw,29rem)] overflow-y-auto border-l border-border bg-background shadow-[0_0_28px_rgb(55_43_35_/_0.04)]">
