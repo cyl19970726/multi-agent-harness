@@ -35,14 +35,22 @@ struct TargetWorkCreatePayload {
 pub struct CollaborationFabricRouteContext {
     pub authenticated_actor: AuthenticatedActor,
     pub resolved_business_actor: ActorRef,
-    pub source_gateway_generation: u64,
-    pub source_node_daemon_id: String,
-    pub source_node_daemon_generation: u64,
+    pub source: CollaborationFabricSource,
     pub control_plane_generation: u64,
-    pub source_execution_space_id: String,
     pub target_execution_space_id: Option<String>,
     pub created_at_unix_ms: u64,
     pub expires_at_unix_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub enum CollaborationFabricSource {
+    Node {
+        source_execution_space_id: String,
+        source_gateway_generation: u64,
+        source_node_daemon_id: String,
+        source_node_daemon_generation: u64,
+    },
+    ControlPlane,
 }
 
 /// Minimal execution seam implemented by the NodeDaemon's accepted Wave 5
@@ -117,19 +125,64 @@ pub fn route_collaboration_business_operation(
             &operation.authenticated_actor,
             &context.resolved_business_actor,
         )
-        || context.authenticated_actor.actor_kind != ActorKind::Service
-        || context.authenticated_actor.actor_id != operation.source_node_id
-        || context.source_gateway_generation == 0
-        || context.source_node_daemon_id.trim().is_empty()
-        || context.source_node_daemon_generation == 0
         || context.control_plane_generation == 0
-        || context.source_execution_space_id.trim().is_empty()
         || context.expires_at_unix_ms <= context.created_at_unix_ms
     {
         return Err(invalid(
             "collaboration business operation disagrees with server-resolved actor, placement, capability, payload, or generation",
         ));
     }
+
+    let (
+        source_authority,
+        source_node_id,
+        source_gateway_generation,
+        source_node_daemon_id,
+        source_node_daemon_generation,
+        source_execution_space_id,
+    ) = match &context.source {
+        CollaborationFabricSource::Node {
+            source_execution_space_id,
+            source_gateway_generation,
+            source_node_daemon_id,
+            source_node_daemon_generation,
+        } if context.authenticated_actor.actor_kind == ActorKind::Service
+            && context.authenticated_actor.actor_id == operation.source_node_id
+            && !matches!(
+                operation.kind,
+                firm_core::collaboration::RoutedBusinessKind::TargetWorkCreate
+                    | firm_core::collaboration::RoutedBusinessKind::ArtifactGrant
+            )
+            && !source_execution_space_id.trim().is_empty()
+            && *source_gateway_generation > 0
+            && !source_node_daemon_id.trim().is_empty()
+            && *source_node_daemon_generation > 0 =>
+        {
+            (
+                OperationSourceAuthority::Node,
+                Some(operation.source_node_id.clone()),
+                Some(*source_gateway_generation),
+                Some(source_node_daemon_id.clone()),
+                Some(*source_node_daemon_generation),
+                Some(source_execution_space_id.clone()),
+            )
+        }
+        CollaborationFabricSource::ControlPlane
+            if context.authenticated_actor.actor_kind == ActorKind::Service
+                && matches!(
+                    operation.kind,
+                    firm_core::collaboration::RoutedBusinessKind::TargetWorkCreate
+                        | firm_core::collaboration::RoutedBusinessKind::ArtifactGrant
+                ) =>
+        {
+            (OperationSourceAuthority::ControlPlane, None, None, None, None, None)
+        }
+        _ => {
+            return Err(invalid(
+                "collaboration source authority is not the exact current Node gateway or allowed Control Plane service",
+            ))
+        }
+    };
 
     let business_actor_kind = match context.resolved_business_actor.kind {
         CoreActorKind::Human => "human",
@@ -183,14 +236,14 @@ pub fn route_collaboration_business_operation(
         id: operation.id.clone(),
         company_id: operation.company_id.clone(),
         kind: COLLABORATION_BUSINESS_OPERATION_KIND.into(),
-        source_authority: OperationSourceAuthority::Node,
-        source_node_id: Some(operation.source_node_id.clone()),
+        source_authority,
+        source_node_id,
         target_node_id: operation.target_placement.node_id.clone(),
-        source_gateway_generation: Some(context.source_gateway_generation),
-        source_node_daemon_id: Some(context.source_node_daemon_id.clone()),
-        source_node_daemon_generation: Some(context.source_node_daemon_generation),
+        source_gateway_generation,
+        source_node_daemon_id,
+        source_node_daemon_generation,
         control_plane_generation: context.control_plane_generation,
-        source_execution_space_id: Some(context.source_execution_space_id.clone()),
+        source_execution_space_id,
         target_execution_space_id: context.target_execution_space_id.clone(),
         actor: context.authenticated_actor.clone(),
         actor_runtime_generation: None,

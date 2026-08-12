@@ -26,9 +26,10 @@ use firm_store::{
     project_cross_node_deliveries, queue_remote_message_transfer,
     route_collaboration_business_operation, validate_message_collaboration_scope,
     CollaborationApplicationService, CollaborationDelegationFilter, CollaborationFabricPort,
-    CollaborationFabricRouteContext, CollaborationMutationContext, CollaborationRouteClient,
-    HarnessStore, ProposeDelegationRequest, RemoteFabricCollaborationPort,
-    RemoteMessageReplicaExpectation, RemoteMessageReplicaPort, ResolvedCollaborationAuthority,
+    CollaborationFabricRouteContext, CollaborationFabricSource, CollaborationMutationContext,
+    CollaborationRouteClient, HarnessStore, ProposeDelegationRequest,
+    RemoteFabricCollaborationPort, RemoteMessageReplicaExpectation, RemoteMessageReplicaPort,
+    ResolvedCollaborationAuthority,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -529,11 +530,8 @@ fn faithful_fabric_replays_exact_effect_and_unknown_never_folds_business_truth()
                 expires_at_unix_ms: 10_000,
             },
             resolved_business_actor: actor(ActorKind::AgentMember, "host-b"),
-            source_gateway_generation: 8,
-            source_node_daemon_id: "daemon-a".into(),
-            source_node_daemon_generation: 4,
+            source: CollaborationFabricSource::ControlPlane,
             control_plane_generation: 3,
-            source_execution_space_id: "space-node-a".into(),
             target_execution_space_id: Some("space-node-b".into()),
             created_at_unix_ms: 100,
             expires_at_unix_ms: 5_000,
@@ -1669,11 +1667,13 @@ fn all_frozen_business_kinds_use_the_wave5_route_and_terminal_receipt_contract()
             expires_at_unix_ms: 10_000,
         },
         resolved_business_actor: actor(ActorKind::AgentMember, "host-a"),
-        source_gateway_generation: 8,
-        source_node_daemon_id: "daemon-a".into(),
-        source_node_daemon_generation: 4,
+        source: CollaborationFabricSource::Node {
+            source_execution_space_id: "space-node-a".into(),
+            source_gateway_generation: 8,
+            source_node_daemon_id: "daemon-a".into(),
+            source_node_daemon_generation: 4,
+        },
         control_plane_generation: 3,
-        source_execution_space_id: "space-node-a".into(),
         target_execution_space_id: Some("space-node-b".into()),
         created_at_unix_ms: 100,
         expires_at_unix_ms: 5_000,
@@ -1697,7 +1697,15 @@ fn all_frozen_business_kinds_use_the_wave5_route_and_terminal_receipt_contract()
             ordering_key: "delegation:d-1".into(),
             created_at: "2026-08-13T00:00:00Z".into(),
         };
-        let routed = route_collaboration_business_operation(&operation, &context)
+        let mut route_context = context.clone();
+        if matches!(
+            kind,
+            RoutedBusinessKind::TargetWorkCreate | RoutedBusinessKind::ArtifactGrant
+        ) {
+            route_context.source = CollaborationFabricSource::ControlPlane;
+            route_context.authenticated_actor.actor_id = "control-plane-1".into();
+        }
+        let routed = route_collaboration_business_operation(&operation, &route_context)
             .expect("frozen collaboration kind must use the Wave5 envelope");
         assert_eq!(routed.kind, COLLABORATION_BUSINESS_OPERATION_KIND);
         routed.closed_body().expect("closed transport registry");
@@ -1791,11 +1799,8 @@ fn target_work_create_applies_once_through_native_work_authority() {
                 expires_at_unix_ms: 10_000,
             },
             resolved_business_actor: actor(ActorKind::AgentMember, "host-b"),
-            source_gateway_generation: 8,
-            source_node_daemon_id: "daemon-a".into(),
-            source_node_daemon_generation: 4,
+            source: CollaborationFabricSource::ControlPlane,
             control_plane_generation: 3,
-            source_execution_space_id: "space-node-a".into(),
             target_execution_space_id: Some("space-node-b".into()),
             created_at_unix_ms: 100,
             expires_at_unix_ms: 5_000,
