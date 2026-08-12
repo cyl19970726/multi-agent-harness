@@ -508,7 +508,8 @@
   }
 
   @media (prefers-reduced-motion: no-preference) {
-    .responsive-context-sheet[open] {
+    .responsive-context-sheet[open],
+    .agent-team-sheet-enter {
       animation: agent-team-sheet-enter 180ms cubic-bezier(0.16, 1, 0.3, 1);
     }
 

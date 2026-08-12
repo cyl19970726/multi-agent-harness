@@ -1,6 +1,8 @@
 {
   "version": 1,
   "workstream": "agent-team-war-room-roleviews",
+  "captured_source_sha": "fe4b4e005c52f1830d9379619fd133557da1770a",
+  "evidence_policy": "The browser is built from captured_source_sha with FIRM_BUILD_GIT_REV pinned and asserted. A following evidence-only commit may add these screenshots without changing runtime source.",
   "artifact_policy": {
     "expected": "durable",
     "selected_comparisons": "durable",
