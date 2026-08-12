@@ -68,4 +68,20 @@ corrected source commit is frozen.
 
 ## Final review
 
-Pending independent PM/real-user re-review of the corrected exact SHA.
+The earlier engineering-complete and review-ready conclusions are superseded.
+User comparison against the approved concepts found a visual P0: the candidate
+kept a generic administration-dashboard composition, excessive bordered panels,
+weak first-screen density and insufficient chat dominance. Passing product
+checks, screenshot capture and interaction checks did not prove visual parity.
+
+The replacement visual contract and seven immutable candidate frames live in
+`../visual-rebaseline-v2.md` and `../expected-v2/`. Final review remains pending
+until an exact source SHA has all of the following:
+
+- deterministic product, authority, accessibility and responsive gates;
+- viewport-matched implemented evidence at desktop, tablet, mobile and 320 px;
+- explicit reference/expected/implemented comparison by an independent visual
+  reviewer who inspected the named files rather than screenshot existence;
+- independent PM and real-user/operator review of that same SHA;
+- visual and product P0/P1 findings reduced to zero without overwriting the
+  approved expected images to make a diff pass.
