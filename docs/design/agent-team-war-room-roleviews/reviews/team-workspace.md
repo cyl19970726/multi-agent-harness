@@ -147,6 +147,14 @@ compact the 320 px Attention caption, remove the unused final Work-detail fact
 cell, optionally add a direct My Work jump, and continue small mobile Activity
 density and portrait-temperature refinement.
 
+The CI follow-up candidate `e3549544` additionally narrows evolving ledger
+actor objects to closed RoleView `kind` / `id` references and updates Store-live
+browser waits to the shipped Team surface and accessible disabled-reason
+contract. It changes no visual composition or product hierarchy. The full live
+five-view check then passed 31/31. Visual evidence was recaptured with the exact
+new runtime provenance; the independent `387a2992` product and visual findings
+therefore remain applicable to this non-visual projection-boundary fix.
+
 Because this review and the implemented screenshots are evidence-only changes
-after the reviewed runtime source, `387a2992` remains the source-of-runtime
-authority named by the visual contract.
+after the runtime source, `e3549544` is the final source-of-runtime authority
+named by the visual contract.
