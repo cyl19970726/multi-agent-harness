@@ -20,16 +20,18 @@
 | 4 | Work action | control | server-provided Role Action | selected Work and exact revision | success/error status, then refetched Work |
 | 5 | Activity message | control/link | select thread or linked Work | Team, filters, message lineage | message/thread heading |
 | 6 | Reply | control | correlated authenticated Role Action | source message correlation/causation | composer, then sent row |
-| 7 | Member identity | link | `memberRun=<id>` | Mission, TeamRun, filters, selected Work | Member Workbench heading |
-| 8 | Context disclosure | control | desktop rail / tablet sheet / mobile sheet | all URL state | first context heading |
+| 7 | Host/Member identity | control | `conversation=host:<id>` or `conversation=member:<id>` | Mission, TeamRun, filters | Agent Conversation heading |
+| 8 | Context disclosure | control | compact disclosure / tablet sheet / mobile sheet | all URL state | first context heading |
 | 9 | Supervisor/runtime | display/control | inspect current generation and allowed controls | TeamRun | selected runtime fact/action |
+| 10 | Full Member profile | link | `memberRun=<id>` without Team conversation selection | space, project, durable AgentMember | Member profile heading |
+| 11 | Conversation composer | control | authenticated fixed-recipient Message action | selected Agent, related Work, reply lineage | sent row after refetch |
 
 ## Scroll owners
 
 | Viewport | Region | Owner | Sticky/fixed elements | Reachability assertion |
 | --- | --- | --- | --- | --- |
 | 1440x1000 | primary Works/Activity/Members | center work surface | Team header/tabs; composer only in Activity | final item and selected drawer controls reachable without body clipping |
-| 1440x1000 | context | right context rail | independently sticky below shell header | every module reachable by wheel and keyboard |
+| 1440x1000 | Agent Conversation | agent navigator + center stream + conditional fact rail | center header and compact composer | final event and every real control reachable; absent facts consume no empty column |
 | 900x1180 | page | primary surface | compact header/tabs | context follows inline or opens sheet; no hidden gate/pressure |
 | 390x844 | page | one document flow | compact tabs; collapsed Activity composer | grouped Work list, final content and composer remain reachable |
 | 320x720 | page | one document flow | no fixed element may cover content | `scrollWidth === clientWidth`; 44px actions remain usable |
@@ -43,6 +45,8 @@
 | Open Work/member/context | visible source | immediate selection feedback | URL/drawer/page updates | source remains selected | none |
 | Work/message/member action | exact allowed action | control disabled + progress | authoritative refetch and status | typed CAS/auth/recovery error | canonical server mutation only |
 | Reply | source message selected | composer pending | correlated message appears after refetch | draft and source retained | canonical Message/Delivery |
+| Select Agent | Team view or another conversation | immediate selected portrait | URL-owned conversation and source stream update | prior selection remains | none |
+| Load native activity | Member conversation | source-specific loading row | provider-native activity labelled read-on-demand | explicit unavailable/error row | none; never mirrored |
 
 ## Motion
 
@@ -59,7 +63,9 @@
 - Enter/Space opens rows and disclosures; Escape closes drawer/sheet/composer
   disclosure and restores focus to its trigger.
 - Status and CAS/conflict errors use an announced live region.
-- Context and long Activity regions are keyboard-scrollable with visible focus.
+- Context and long Activity/conversation regions are keyboard-scrollable with visible focus.
+- Agent list selection is keyboard operable; mobile sheets restore focus to
+  their trigger and the composer never traps navigation.
 
 ## Browser journeys
 
@@ -67,6 +73,7 @@
 | --- | --- | --- | --- |
 | content-reachability | populated store-live Team | open each tab, scroll longest region | first and final content reachable; no overlapping composer |
 | entity-deep-link | populated Team | open a member and linked Mission | exact ids in URL and headings; no inferred join |
+| agent-conversation | populated Team | select Member, send message, select Host, return to Team | fixed recipient, source labels, Host read-only boundary, URL selection preserved |
 | return-context | populated Team | Browser Back and explicit return | tab, filters, TeamRun, selected Work/member and scroll anchor preserved |
 | keyboard-path | populated Team | tabs -> Work -> non-drag action -> close | same result as pointer; focus restored |
 | responsive-path | all four viewports | open Work, context and composer | correct drawer/sheet/inline transformation; no overflow |

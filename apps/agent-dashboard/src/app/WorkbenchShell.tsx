@@ -1033,12 +1033,10 @@ function SurfaceSwitch({
         <WorkflowsList {...shared} />
       );
     case "team":
-      return selection.teamId && selection.teamMode ? (
+      return selection.teamId ? (
         <TeamWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} teamId={selection.teamId} refreshKey={model.snapshot.generated_at} selection={selection} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} onSelectionChange={onSelectionChange} />
       ) : selection.memberRunId ? (
         <MemberWorkbench apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} memberRunId={selection.memberRunId} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} />
-      ) : selection.teamId ? (
-        <TeamWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} teamId={selection.teamId} refreshKey={model.snapshot.generated_at} selection={selection} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} onSelectionChange={onSelectionChange} />
       ) : (
         <AgentTeamsHome {...shared} />
       );

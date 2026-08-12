@@ -60,10 +60,13 @@ acceptance decisions are control-plane actions; they do not create an implicit
 Lead `MemberRun`. If the Lead also executes a lane, that requires an explicit
 member with its own native-session binding.
 
-## Desktop Layout
+## Product Composition
 
 Use the shared Workbench shell with the compact execution rail, a primary Works
-surface, Activity conversation, Members capacity, and flexible context modules.
+surface, Activity conversation, Members capacity, and an Agent Conversation
+workspace. Team context is an on-demand disclosure, not a permanent third
+column. A right rail appears only inside Agent Conversation and only when it
+has current Work, execution provenance, or authorized controls to show.
 The active page composes authenticated `TeamWorkspace` shared truth with
 authenticated `HostConsole` Host-only truth. It never reconstructs this page
 from the global snapshot.
@@ -76,25 +79,18 @@ Wave-as-executor/gate UI, Assignment Message or legacy ACK paths, browser-side
 authority joins/writers, provider transcript mirrors, parent/child Team
 topology, or any second Team/Message/Delivery/Work model.
 
-```text
-+----------------------+--------------------------------------+------------------+
-| Compact exec rail    | Team header                          | Mission context  |
-|                      | definition · Lead · run · actions    | Mission Log      |
-|                      +--------------------------------------+ Selected member  |
-|                      | Works | Activity | Members           | Runtime          |
-|                      | Assigned · Unassigned · Review      | Artifacts        |
-|                      +--------------------------------------+                  |
-|                      | Kanban/list or selected activity     |                  |
-|                      | Work drawer / group conversation     |                  |
-+----------------------+--------------------------------------+------------------+
-```
+The Host Console is an independent Host-only surface. It is not appended below
+the Team tabs. A full Member Profile is a separate deep link for identity and
+history; it does not replace the live conversation workspace.
 
 `Works` is the default view. `Owned by me` appears only for a current actor
 bound to a participating MemberRun; Host/Operator views use `By owner`. It
-offers Unassigned, Assigned, Blocked, Review, and All filters; Open, Assigned,
-In progress, Review, and Done Kanban columns; and an optional dense list.
-Blocked is a canonical Work state rendered with explicit red/amber pressure in
-the active-work region rather than a sixth ownership lane. Cards expose owner portrait, readiness,
+offers Unassigned, Assigned, Blocked, Review, and All filters; the four
+canonical phase lanes Open, Active, Review, and Closed; and an optional dense
+list. Open may be grouped into Unassigned and Assigned without inventing an
+Assigned phase. `blocked` and `on_hold` are orthogonal Work conditions rendered
+as pressure, while Closed cards show `accepted`, `cancelled`, or `failed`
+resolution. Cards expose owner portrait, readiness,
 criteria preview, blockers, child progress, source TeamWork, unread discussion,
 and update time. Kanban is a projection over Work, never separate state.
 
@@ -136,20 +132,21 @@ renderer rather than displaying raw Markdown syntax.
 ### Desktop — 1440x1000
 
 ```text
-+----------+-----------------------------------------------+-------------------+
-| product  | Team identity · run · Supervisor · pressure  | Mission + Log     |
-| rail     +-----------------------------------------------+ Attempt/runtime   |
-|          | Works | Activity | Members                    | Selected member   |
-|          +-----------------------------------------------+ Artifacts/gates   |
-|          | primary board/list or source-aware timeline   |                   |
-|          | selected Work drawer within center surface    | independent scroll|
-|          +-----------------------------------------------+                   |
-|          | Activity composer (only when Activity active) | provenance        |
-+----------+-----------------------------------------------+-------------------+
++----------+----------------------------------------------------------------+
+| product  | Team identity · run · Supervisor · pressure · Context          |
+| rail     +----------------------------------------------------------------+
+|          | Works | Activity | Members                                     |
+|          +----------------------------------------------------------------+
+|          | primary board/list or source-aware timeline                    |
+|          | selected Work drawer within center surface                     |
+|          +----------------------------------------------------------------+
+|          | Activity composer (only when Activity active)                  |
++----------+----------------------------------------------------------------+
 ```
 
 - The center surface is visually dominant and owns its long-content scroll.
-- The 272–320px context rail remains factual and independently reachable.
+- Mission, runtime and provenance facts open from the compact Context
+  disclosure; they do not consume a permanently empty right column.
 - Works/Activity/Members tabs and current pressure remain above the fold.
 - The selected Work uses a non-modal drawer inside the center surface; it does
   not replace entity deep links.
@@ -208,14 +205,44 @@ renderer rather than displaying raw Markdown syntax.
 - Partial-source, unavailable Supervisor/native session, CAS conflict and
   authorization failure remain distinct visible states.
 
-## Context Modules
+## Agent Conversation Workspace
+
+Selecting the Host Agent or a Member keeps the user inside the Team and opens
+a Codex-like conversation workspace:
+
+```text
++----------+----------------+--------------------------------+---------------+
+| product  | Team agents    | selected Agent conversation    | current facts |
+| rail     | Host + Members | source-labelled event stream   | only when any |
+|          | portrait/state | provider-native read on demand | fact/action   |
+|          | pressure       | sticky Message composer        | exists        |
++----------+----------------+--------------------------------+---------------+
+```
+
+- The center conversation is the dominant surface. It combines authored Team
+  Messages, relevant Work activity, and read-on-demand provider-native
+  activity without copying native transcripts into Harness state.
+- Selecting a Member fixes the authenticated Message recipient. Ordinary
+  Message and Steer remain separate actions.
+- Selecting the Host uses exact `host_agent_id`. Until an authenticated
+  operator-to-Host authoring action is projected, the Host conversation is
+  honestly read-only; the client must not fabricate a Host MemberRun.
+- The conditional right rail contains only selected/current Work, exact
+  execution provenance, a full-profile deep link, and server-authorized
+  controls. If none exist it is absent.
+- On tablet the agent navigator and contextual facts become sheets. On mobile
+  the navigator opens from an Agent-list control, the center remains one
+  scrollable stream, and the compact composer never covers the final row.
+
+## Context Disclosures
 
 1. **MissionCompact** — optional Mission relation and open-Mission action.
 2. **CurrentHostJudgment** — latest append-only Mission Log entries for
    orientation. Historical Wave context may be shown read-only; it never owns
    runtime or accepts new judgment.
-3. **SelectedMember** — identity, active/queued Works, capability, message, steer,
-   interrupt, resume, and open-member actions supported by the real adapter.
+3. **SelectedMember** — lives in Agent Conversation rather than a duplicate
+   Team-level mini-card; it shows identity, current Work, exact execution
+   provenance and actions supported by the real adapter.
 4. **Runtime** — worktree, native session id, provider mode/version,
    permission/budget, current Supervisor generation, transport/reconnect
    health, and honest control availability.

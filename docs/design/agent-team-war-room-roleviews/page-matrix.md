@@ -1,7 +1,8 @@
 # Page matrix
 
-The Agent Team War Room is the only P0 page in issue #444. Product-truth and
-visual-fidelity are separate gates. Exact browser artifacts use device scale
+The Agent Team page family contains two P0 working surfaces in issue #444:
+shared Team Workspace and Agent Conversation. Product-truth and visual-fidelity
+are separate gates. Exact browser artifacts use device scale
 factor 1, light theme, reduced motion and `domcontentloaded` plus a visible
 `Team Workspace` readiness assertion.
 
@@ -11,6 +12,10 @@ factor 1, light theme, reduced motion and `domcontentloaded` plus a visible
 | P0 | Team Workspace | populated active + Host pressure | tablet 900x1180 | current regression + historical War Room | canonical layout contract | implemented | product truth + visual fidelity |
 | P0 | Team Workspace | populated active + Host pressure | mobile 390x844 | current regression + historical War Room | canonical layout contract | implemented | product truth + visual fidelity |
 | P0 | Team Workspace | populated active + Host pressure | mobile 320x844 | current regression + historical War Room | canonical overflow contract | implemented | overflow + keyboard/touch |
+| P0 | Agent Conversation | selected Member + active native session | desktop 1440x1000 | simplified Member Workbench + historical MemberRun Focus | approved conversation-workspace direction + administrative-model review | pending | product truth + visual fidelity |
+| P0 | Agent Conversation | selected Member + active native session | tablet 900x1180 | simplified Member Workbench | responsive contract | pending | sheet navigation + sticky composer |
+| P0 | Agent Conversation | selected Member + active native session | mobile 390x844 and 320px gate | simplified Member Workbench | responsive contract | pending | agents/context sheets + overflow |
+| P0 | Agent Conversation | selected Host Agent | desktop/mobile | no current composed surface | same conversation shell, Host identity without fabricated MemberRun | pending | addressability + authority boundary |
 | P0 | Team Workspace | useful empty Team | desktop/mobile | `.visual-evidence/agent-team-war-room-roleviews/baseline-exact/` | canonical empty hierarchy | implemented | no blank canvas |
 | P1 | Team Workspace | loading / last-good stale / error | desktop/mobile | current `ViewState` | interaction contract | implemented | recoverability |
 | P1 | Team Workspace | completed run with live member runtime | desktop | historical War Room | canonical lifecycle contract | implemented | honest controls |
@@ -26,6 +31,10 @@ factor 1, light theme, reduced motion and `domcontentloaded` plus a visible
   session summaries.
 - Writes: only authenticated `allowed_actions` with exact CAS and idempotency.
 
+The generated concept review and explicit keep/merge/disclose/delete decisions
+are frozen in `admin-model-visual-review.md`. In particular, permanent Team
+context rails and duplicate selected-member cards are no longer expected UI.
+
 ## Baseline decision
 
 The exact-size current-regression baseline is ignored runtime evidence. The
@@ -38,10 +47,11 @@ captures, comparisons and two iterations.
 
 ## Implemented evidence
 
-The deterministic authenticated fixture covers a populated Team with Open,
-Assigned, In progress, blocked, Review and Done responsibility; its shared
-Works/Activity/Members views; selected Work and member context; the exact-self
-Member home; embedded Host tools; and a useful empty Team at desktop, mobile,
+The deterministic authenticated fixture covers a populated Team with Open
+(unassigned and assigned subgroups), Active, blocked condition, Review and
+Closed/accepted responsibility; its shared
+Works/Activity/Members views; selected Work and Agent Conversation; independent
+Host tools; and a useful empty Team at desktop, mobile,
 and the 320px overflow gate. It
 negotiates the RoleView protocol, supplies a memory-only capability, exercises
 SSE invalidation/refetch, proves Browser Back and URL-owned Team filters,

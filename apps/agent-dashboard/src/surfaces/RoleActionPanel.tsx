@@ -58,12 +58,14 @@ export function RoleActionPanel({
   context,
   actionsCurrent = true,
   onCompleted,
+  compact = false,
 }: {
   actions: AllowedAction[];
   onAction: RoleActionExecutor;
   context: { teamId?: string; teamRunId?: string; nodeId?: string };
   actionsCurrent?: boolean;
   onCompleted?: () => void;
+  compact?: boolean;
 }) {
   const [selected, setSelected] = useState<AllowedAction | null>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
@@ -110,12 +112,12 @@ export function RoleActionPanel({
       : "Canonical service rejected the action.");
   };
 
-  return <section className="rounded-xl border border-border p-4" aria-labelledby="role-actions-title">
+  return <section className={compact ? "" : "rounded-xl border border-border p-4"} aria-labelledby="role-actions-title">
     <div className="flex items-center justify-between gap-3">
-      <div><h2 id="role-actions-title" className="font-medium">Authorized actions</h2><p className="text-xs text-muted-foreground">Closed semantic intent; identity, authority, CAS and idempotency are transport-bound.</p></div>
+      <div><h2 id="role-actions-title" className={compact ? "sr-only" : "font-medium"}>Authorized actions</h2>{!compact && <p className="text-xs text-muted-foreground">Closed semantic intent; identity, authority, CAS and idempotency are transport-bound.</p>}</div>
       <ShieldAlert className="size-4 text-primary" />
     </div>
-    {actions.length ? <div className="mt-3 flex flex-wrap gap-2">{actions.map((action, index) => {
+    {actions.length ? <div className={compact ? "flex flex-wrap gap-2" : "mt-3 flex flex-wrap gap-2"}>{actions.map((action, index) => {
       const unsupported = !EXECUTABLE.has(action.kind);
       const unresolved = !roleActionRoute(action, context);
       const missingVersion = !Number.isSafeInteger(action.required_version);

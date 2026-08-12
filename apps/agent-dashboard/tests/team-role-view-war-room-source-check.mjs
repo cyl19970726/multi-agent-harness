@@ -10,6 +10,7 @@ const activeFiles = [
   "src/surfaces/TeamWorkspace.tsx",
   "src/surfaces/HostConsole.tsx",
   "src/surfaces/HostActivityComposer.tsx",
+  "src/surfaces/AgentConversationWorkspace.tsx",
   "src/surfaces/RoleViewPrimitives.tsx",
   "src/components/workbench/team/TeamCapacityStrip.tsx",
   "src/components/workbench/team/TeamWorksBoard.tsx",
@@ -32,14 +33,20 @@ assert.match(sources["src/components/workbench/team/TeamWorksBoard.tsx"], /event
 assert.match(sources["src/surfaces/HostConsole.tsx"], /view\.data\.team_supervisor/, "Host-only supervisor truth is not rendered");
 assert.match(sources["src/surfaces/HostConsole.tsx"], /view\.data\.host_inbox/, "Host-only Lead Inbox is not rendered");
 assert.match(sources["src/surfaces/TeamWorkspace.tsx"], /team\.viewer_role === "host"/, "member Team views expose an unscoped Host Console entry");
-assert.match(workbenchShell, /selection\.teamId && selection\.teamMode/, "selected Team member context is routed into exact-self MemberWorkbench");
+assert.match(workbenchShell, /selection\.teamId \?/, "selected Team context is not retained while opening Agent Conversation");
 const teamRouteSource=workbenchShell.split('case "team":')[1].split('case "operator":')[0];
 assert.doesNotMatch(teamRouteSource,/model\.snapshot\.team_runs/,"active Team route still joins global snapshot TeamRun rows");
 assert.doesNotMatch(teamRouteSource,/TeamWorkspace key=/,"snapshot generation remounts and destroys last-good TeamWorkspace state");
 assert.match(sources["src/surfaces/TeamWorkspace.tsx"],/<HostConsole\s+embedded/,"Host-only truth replaces instead of composing the shared War Room");
 assert.match(sources["src/surfaces/TeamWorkspace.tsx"],/<HostActivityComposer /,"Activity lacks an authenticated same-surface composer");
-assert.match(sources["src/components/workbench/team/TeamWorksBoard.tsx"],/label: "Assigned"/,"assigned Work is collapsed into an ambiguous lane");
-assert.match(sources["src/components/workbench/team/TeamWorksBoard.tsx"],/label: "In progress"/,"in-progress Work is not explicit");
+assert.doesNotMatch(sources["src/components/workbench/team/TeamWorksBoard.tsx"],/id: "assigned"/,"Assigned is incorrectly modeled as a canonical lifecycle lane");
+assert.match(sources["src/components/workbench/team/TeamWorksBoard.tsx"],/label: "Active"/,"active Work phase is not explicit");
+assert.match(sources["src/components/workbench/team/TeamWorksBoard.tsx"],/label: "Closed"/,"closed Work phase is not explicit");
+assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/fetchNativeMemberActivity/,"Agent conversation does not read provider-native activity on demand");
+assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/Host execution is not fabricated as a MemberRun/,"Host conversation fabricates MemberRun execution truth");
+assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/Ordinary messages|Messages, runtime controls and Work transitions remain separate/,"conversation UI collapses Message and control authority");
+assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/role="dialog" aria-modal="true"/,"responsive Agent/context sheets are missing");
+assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/selection\.teamConversation === "host"/,"an explicit Host Member is mistaken for the Host conversation target");
 assert.match(sources["src/components/workbench/team/TeamMembersCapacity.tsx"],/<Avatar /,"mature member portraits are not reused");
 assert.match(sources["src/components/workbench/team/TeamMessageComposer.tsx"], /prepareRoleAction/, "compact composer bypasses closed Role Actions");
 assert.match(sources["src/surfaces/TeamWorkspace.tsx"], /Last authoritative view|last authoritative view|last-good truth|Showing the last authoritative view/, "last-good refresh state is missing");

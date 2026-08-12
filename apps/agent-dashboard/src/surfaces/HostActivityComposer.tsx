@@ -10,7 +10,7 @@ import {
 } from "../model/roleViews";
 
 /** Keeps Activity conversational without weakening TeamWorkspace read authority. */
-export function HostActivityComposer({apiUrl,space,project,routeIdentity,teamRunId,replyTo,refreshKey,actionsCurrent,onAction,onClearReply}:{
+export function HostActivityComposer({apiUrl,space,project,routeIdentity,teamRunId,replyTo,refreshKey,actionsCurrent,onAction,onClearReply,fixedRecipient,variant="panel"}:{
   apiUrl:string;
   space:string;
   project:string;
@@ -21,6 +21,8 @@ export function HostActivityComposer({apiUrl,space,project,routeIdentity,teamRun
   actionsCurrent:boolean;
   onAction:RoleActionExecutor;
   onClearReply:()=>void;
+  fixedRecipient?:{id:string;label:string};
+  variant?:"panel"|"conversation";
 }) {
   const [view,setView] = useState<RoleView<HostConsoleData>|null>(null);
   const [error,setError] = useState<string|null>(null);
@@ -37,5 +39,5 @@ export function HostActivityComposer({apiUrl,space,project,routeIdentity,teamRun
   const resolvedRunId = teamRunId ?? view.data.team_supervisor?.team_run_id;
   const scopeMismatch = Boolean(resolvedRunId && view.allowed_actions.some((action) => action.target_ref.kind === "team_run" && action.target_ref.id !== resolvedRunId));
   if (scopeMismatch) return <p role="alert" className="rounded-lg border border-destructive/35 bg-destructive/5 p-3 text-xs">Message actions do not match the selected TeamRun. Activity writes are disabled.</p>;
-  return <TeamMessageComposer actions={view.allowed_actions} members={view.data.member_capacity} works={view.data.all_works} replyTo={replyTo} teamId={view.data.team_ref} teamRunId={resolvedRunId} actionsCurrent={actionsCurrent && view.freshness === "current"} onAction={onAction} onClearReply={onClearReply} onCompleted={() => setRefresh((value) => value+1)}/>;
+  return <TeamMessageComposer collapsibleOnMobile={variant !== "conversation"} variant={variant} fixedRecipient={fixedRecipient} actions={view.allowed_actions} members={view.data.member_capacity} works={view.data.all_works} replyTo={replyTo} teamId={view.data.team_ref} teamRunId={resolvedRunId} actionsCurrent={actionsCurrent && view.freshness === "current"} onAction={onAction} onClearReply={onClearReply} onCompleted={() => setRefresh((value) => value+1)}/>;
 }
