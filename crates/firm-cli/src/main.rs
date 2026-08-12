@@ -28674,6 +28674,8 @@ struct RuntimeDispatchIntent {
 #[serde(deny_unknown_fields)]
 struct RuntimeAuthorMessageIntent {
     draft: harness_core::agentfirm_api::MessageDraft,
+    #[serde(default)]
+    remote_transfer: Option<fabric_runtime::QueueCollaborationMessageRequest>,
 }
 
 fn runtime_command_capability(
@@ -29079,7 +29081,10 @@ fn handle_http_connection(
                 (
                     target_node_id,
                     None,
-                    serde_json::json!({"draft": intent.draft}),
+                    serde_json::json!({
+                        "draft": intent.draft,
+                        "remote_transfer": intent.remote_transfer,
+                    }),
                 )
             }
             RuntimeCommandKind::StartSession => {
@@ -29304,7 +29309,7 @@ fn handle_http_connection(
             };
             actor
         } else {
-            credential.actor
+            credential.actor.clone()
         };
         let server_payload = if request.command == RuntimeCommandKind::StartSession {
             let mut payload = server_payload;
@@ -29344,7 +29349,58 @@ fn handle_http_connection(
             &envelope.target_node_id,
             &envelope,
         ) {
-            Ok(response) => write_http_json(&mut stream, "200 OK", &response)?,
+            Ok(response) => {
+                if envelope.command == RuntimeCommandKind::AuthorMessage {
+                    if let Some(remote_transfer) = envelope
+                        .payload
+                        .get("remote_transfer")
+                        .filter(|value| !value.is_null())
+                    {
+                        let request = serde_json::from_value::<
+                            fabric_runtime::QueueCollaborationMessageRequest,
+                        >(remote_transfer.clone())
+                        .map_err(|error| {
+                            CliError::Usage(format!(
+                                "INVALID_COLLABORATION_MESSAGE_TRANSFER: {error}"
+                            ))
+                        })?;
+                        let message = serde_json::from_value::<harness_core::agentfirm_api::Message>(
+                            response.get("result").cloned().ok_or_else(|| {
+                                CliError::Usage("COLLABORATION_MESSAGE_RESULT_MISSING".into())
+                            })?,
+                        )?;
+                        match fabric_runtime::queue_collaboration_message(
+                            &firm_home,
+                            &project_id,
+                            &envelope.target_node_id,
+                            &credential,
+                            &envelope.idempotency_key,
+                            &message,
+                            &request,
+                            current_unix_ms_u64(),
+                        ) {
+                            Ok(queued) => write_http_json(
+                                &mut stream,
+                                "202 Accepted",
+                                &serde_json::json!({
+                                    "ok": true,
+                                    "message": message,
+                                    "remote_transfer": queued,
+                                }),
+                            )?,
+                            Err(error) => write_http_json(
+                                &mut stream,
+                                "409 Conflict",
+                                &serde_json::json!({"ok":false,"error":{"code":format!("{:?}",error.code).to_ascii_uppercase(),"message":error.message}}),
+                            )?,
+                        }
+                    } else {
+                        write_http_json(&mut stream, "200 OK", &response)?;
+                    }
+                } else {
+                    write_http_json(&mut stream, "200 OK", &response)?;
+                }
+            }
             Err(error) => write_http_json(
                 &mut stream,
                 "503 Service Unavailable",
