@@ -133,26 +133,20 @@ fn route_command(
         "runtime" => {
             let reference: harness_fabric::RuntimeCommandReference =
                 serde_json::from_value(body.clone())?;
-            let envelope: harness_core::agentfirm_api::ControlCommandEnvelope =
-                serde_json::from_value(reference.canonical_command_envelope.clone())?;
-            if envelope.target_node_id != target_node_id
-                || envelope.execution_space_id != target_execution_space_id
-                || envelope.authenticated_actor.kind
-                    != harness_core::agentfirm_api::ActorKind::Service
-                || envelope.authenticated_actor.id != envelope.target_node_daemon_id
-            {
+            let intent = reference.canonical_command_intent.clone();
+            if intent.target_execution_space_id != target_execution_space_id {
                 return Err(CliError::Usage(
-                        "remote RuntimeCommand must bind the source route to the current source Node and the canonical command to the exact target NodeDaemon service authority"
-                            .into(),
-                    ));
+                    "remote RuntimeCommand intent must match the exact target Execution Space; target identity and capability are server-resolved"
+                        .into(),
+                ));
             }
             (
                 harness_fabric::RUNTIME_COMMAND_REFERENCE_KIND,
                 harness_fabric::RUNTIME_COMMAND_REFERENCE_SCHEMA,
                 value(args, "--source-space"),
-                Some(envelope.expected_version),
+                Some(intent.expected_version),
                 harness_fabric::OperationPriority::Control,
-                envelope.expires_unix_ms,
+                intent.expires_unix_ms,
             )
         }
         "message" => {
@@ -287,9 +281,9 @@ fn route_command(
     };
     operation.closed_body().map_err(fabric_error)?;
     if kind == "runtime" {
-        let envelope = super::remote_fabric::resolved_runtime_command_from_operation(&operation)
+        let intent = super::remote_fabric::runtime_intent_from_operation(&operation)
             .map_err(fabric_error)?;
-        if envelope.expires_unix_ms <= now {
+        if intent.expires_unix_ms <= now {
             return Err(CliError::Usage(
                 "remote RuntimeCommand expired before local durable queueing".into(),
             ));
@@ -746,19 +740,20 @@ impl NodeApplication for Wave4cApplication {
             harness_fabric::ClosedOperationBody::Probe(_)
             | harness_fabric::ClosedOperationBody::ReconcileProbe(_) => self.probe.apply(operation),
             harness_fabric::ClosedOperationBody::RuntimeCommand(_) => {
-                let envelope =
-                    super::remote_fabric::resolved_runtime_command_from_operation(operation)?;
-                if envelope.target_node_id != self.node_id
-                    || envelope.target_node_daemon_id != self.daemon_id
-                    || envelope.target_node_daemon_generation != self.daemon_generation
-                {
-                    return Err(FabricError::none(
-                        FabricErrorCode::NodeStaleGeneration,
-                        "RuntimeCommand is not fenced to this exact NodeGateway/NodeDaemon parent",
-                    ));
-                }
-                let (result, effect) =
-                    dispatch_resolved_runtime_command(&self.firm_home, operation, &envelope)?;
+                let envelope = super::remote_fabric::resolved_runtime_command_from_operation(
+                    operation,
+                    &self.node_id,
+                    &self.daemon_id,
+                    self.daemon_generation,
+                )?;
+                let (result, effect) = dispatch_resolved_runtime_command(
+                    &self.firm_home,
+                    operation,
+                    &envelope,
+                    &self.node_id,
+                    &self.daemon_id,
+                    self.daemon_generation,
+                )?;
                 Ok((
                     "agentfirm.remote_fabric.runtime_command_result.v1".into(),
                     result,
@@ -841,10 +836,19 @@ fn dispatch_resolved_runtime_command(
     firm_home: &Path,
     operation: &harness_fabric::RoutedOperation,
     envelope: &harness_core::agentfirm_api::ControlCommandEnvelope,
+    target_node_id: &str,
+    target_node_daemon_id: &str,
+    target_node_daemon_generation: u64,
 ) -> Result<(serde_json::Value, harness_fabric::EffectCertainty), FabricError> {
     use harness_core::agentfirm_api::{RuntimeCommandStatus, RuntimeEffectCertainty};
 
-    super::remote_fabric::validate_resolved_runtime_command(operation, envelope)?;
+    super::remote_fabric::validate_resolved_runtime_command(
+        operation,
+        envelope,
+        target_node_id,
+        target_node_daemon_id,
+        target_node_daemon_generation,
+    )?;
     let transport = super::supervisor_daemon::runtime_command_via_socket(
         firm_home,
         &envelope.target_node_id,

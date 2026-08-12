@@ -24,6 +24,25 @@ pub struct LocalApplicationResult {
     pub schema_version: String,
 }
 
+/// Durable proof that one ordered operation was consumed without crossing
+/// the target application boundary. A tombstone advances only its exact
+/// ordering key under the current Gateway session fence and never creates an
+/// inbox, native result, or applied-effect claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalOrderingTombstone {
+    pub operation_id: String,
+    pub ordering_key: String,
+    pub ordering_seq: u64,
+    pub route_seq: u64,
+    pub request_digest: String,
+    pub reason: FabricErrorCode,
+    pub gateway_generation: u64,
+    pub control_plane_generation: u64,
+    pub consumed_at_unix_ms: u64,
+    pub schema_version: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeLocalFabricState {
@@ -35,6 +54,8 @@ pub struct NodeLocalFabricState {
     pub outboxes: BTreeMap<String, LocalRemoteOutbox>,
     pub inboxes: BTreeMap<String, LocalRemoteInbox>,
     pub persisted_ordering_sequences: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub ordering_tombstones: BTreeMap<String, LocalOrderingTombstone>,
     pub results: BTreeMap<String, LocalApplicationResult>,
 }
 
@@ -631,6 +652,103 @@ impl NodeLocalFabricStore {
                 .insert(ordering_index, attempt.ordering_seq);
             state.inboxes.insert(operation.id.clone(), inbox.clone());
             Ok((inbox, false))
+        })
+    }
+
+    /// Consume one expired ordered delivery without persisting an inbox or
+    /// invoking application code. This prevents a terminal NotApplied #1 from
+    /// permanently blocking valid #2 while retaining explicit durable truth
+    /// that the skipped sequence never reached the native boundary.
+    pub fn consume_expired_ordering_tombstone(
+        &self,
+        session: &FabricSessionFence,
+        operation: &RoutedOperation,
+        attempt: &RouteAttempt,
+        now_unix_ms: u64,
+    ) -> Result<(LocalOrderingTombstone, bool), FabricError> {
+        self.require_session(session)?;
+        operation.validate_digest()?;
+        operation.closed_body()?;
+        if operation.expires_at_unix_ms > now_unix_ms {
+            return Err(FabricError::none(
+                FabricErrorCode::ExpectedRevisionConflict,
+                "ordering tombstone requires an expired routed operation",
+            ));
+        }
+        if operation.company_id != self.company_id
+            || operation.target_node_id != self.node_id
+            || attempt.company_id != self.company_id
+            || attempt.target_node_id != self.node_id
+            || attempt.operation_id != operation.id
+            || !matches!(
+                attempt.state,
+                RouteAttemptState::Queued | RouteAttemptState::Sent
+            )
+            || operation.control_plane_generation != session.control_plane_generation
+            || attempt.target_gateway_generation != session.gateway_generation
+            || attempt.control_plane_generation != session.control_plane_generation
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::NodeStaleGeneration,
+                "expired ordering tombstone does not match the authenticated target generation",
+            ));
+        }
+        let request_digest = canonical_digest(operation)?;
+        let ordering_key = operation.ordering_key.clone();
+        self.transact_session(session, |state| {
+            if state.inboxes.contains_key(&operation.id)
+                || state.results.contains_key(&operation.id)
+            {
+                return Err(FabricError::none(
+                    FabricErrorCode::IdempotencyConflict,
+                    "persisted or applied operation cannot become an ordering tombstone",
+                ));
+            }
+            if let Some(existing) = state.ordering_tombstones.get(&operation.id) {
+                if existing.request_digest != request_digest
+                    || existing.ordering_key != ordering_key
+                    || existing.ordering_seq != attempt.ordering_seq
+                    || existing.route_seq != attempt.route_seq
+                    || existing.gateway_generation != session.gateway_generation
+                    || existing.control_plane_generation != session.control_plane_generation
+                {
+                    return Err(FabricError::none(
+                        FabricErrorCode::IdempotencyConflict,
+                        "expired ordering tombstone replay changed its fingerprint",
+                    ));
+                }
+                return Ok((existing.clone(), true));
+            }
+            let prior = state
+                .persisted_ordering_sequences
+                .get(&ordering_key)
+                .copied()
+                .unwrap_or(0);
+            if attempt.ordering_seq != prior.saturating_add(1) {
+                return Err(FabricError::none(
+                    FabricErrorCode::ExpectedRevisionConflict,
+                    "expired ordering tombstone is out of order for its ordering key",
+                ));
+            }
+            let tombstone = LocalOrderingTombstone {
+                operation_id: operation.id.clone(),
+                ordering_key: ordering_key.clone(),
+                ordering_seq: attempt.ordering_seq,
+                route_seq: attempt.route_seq,
+                request_digest,
+                reason: FabricErrorCode::OperationExpired,
+                gateway_generation: session.gateway_generation,
+                control_plane_generation: session.control_plane_generation,
+                consumed_at_unix_ms: now_unix_ms,
+                schema_version: FABRIC_SCHEMA_VERSION.into(),
+            };
+            state
+                .persisted_ordering_sequences
+                .insert(ordering_key, attempt.ordering_seq);
+            state
+                .ordering_tombstones
+                .insert(operation.id.clone(), tombstone.clone());
+            Ok((tombstone, false))
         })
     }
 

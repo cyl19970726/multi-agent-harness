@@ -375,21 +375,35 @@ pub struct FabricProbeBody {
     pub probe: String,
 }
 
-/// Immutable reference to the Wave 4C RuntimeCommand envelope. The target
-/// application must independently resolve and verify `command_fingerprint`
-/// before asking the exact NodeDaemon generation to execute it. Fabric never
-/// interprets or mutates the command payload.
+/// Restricted cross-node RuntimeCommand intent. A source Node may select the
+/// semantic command and immutable payload, but it cannot select a target
+/// Operator, NodeDaemon identity/generation, or capability. The target
+/// NodeDaemon resolves those authority fields from its authenticated Gateway
+/// session before constructing the canonical Wave 4C command envelope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeCommandIntent {
+    pub id: String,
+    pub target_execution_space_id: String,
+    pub command: String,
+    pub idempotency_key: String,
+    pub expected_version: u64,
+    pub expires_unix_ms: u64,
+    pub payload: Value,
+    pub payload_fingerprint: String,
+    pub issued_at: String,
+}
+
+/// Immutable reference to a restricted RuntimeCommand intent. Transport
+/// validates the exact intent fingerprint and route scope; target application
+/// authority is intentionally absent from this source-authored object.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeCommandReference {
     pub runtime_command_id: String,
-    pub command_fingerprint: String,
+    pub intent_fingerprint: String,
     pub target_execution_space_id: String,
-    pub target_node_daemon_id: String,
-    pub target_node_daemon_generation: u64,
-    /// Exact Wave4C command authority transported to the target. Identity and
-    /// fingerprint alone are not executable across independent Stores.
-    pub canonical_command_envelope: Value,
+    pub canonical_command_intent: RuntimeCommandIntent,
 }
 
 /// Wave 4C Message authority remains on the source NodeDaemon. Cross-node
@@ -552,13 +566,26 @@ fn validate_closed_body(
         }
         ClosedOperationBody::RuntimeCommand(body) => {
             non_empty(&body.runtime_command_id)
-                && fingerprint(&body.command_fingerprint)
+                && fingerprint(&body.intent_fingerprint)
                 && non_empty(&body.target_execution_space_id)
                 && operation.target_execution_space_id.as_deref()
                     == Some(body.target_execution_space_id.as_str())
-                && non_empty(&body.target_node_daemon_id)
-                && body.target_node_daemon_generation > 0
-                && body.canonical_command_envelope.is_object()
+                && body.runtime_command_id == body.canonical_command_intent.id
+                && body.target_execution_space_id
+                    == body.canonical_command_intent.target_execution_space_id
+                && matches!(
+                    body.canonical_command_intent.command.as_str(),
+                    "author_message"
+                        | "start_session"
+                        | "stop_session"
+                        | "resume_session"
+                        | "dispatch_provider"
+                        | "cancel_provider_turn"
+                )
+                && non_empty(&body.canonical_command_intent.idempotency_key)
+                && body.canonical_command_intent.expires_unix_ms > 0
+                && fingerprint(&body.canonical_command_intent.payload_fingerprint)
+                && non_empty(&body.canonical_command_intent.issued_at)
         }
         ClosedOperationBody::Message(body) => {
             let embedded = body

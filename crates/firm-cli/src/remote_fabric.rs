@@ -7,11 +7,14 @@
 
 #![allow(clippy::result_large_err, dead_code)]
 
-use harness_core::agentfirm_api::{ActorKind as RuntimeActorKind, ControlCommandEnvelope, Message};
+use harness_core::agentfirm_api::{
+    ActorKind as RuntimeActorKind, ActorRef, ControlCommandEnvelope, Message, RuntimeCommandKind,
+};
 use harness_core::{ExecutionNodeStatus, NodeDaemonLease, NodeDaemonLeaseStatus};
 use harness_fabric::{
     ActorKind as FabricActorKind, ClosedOperationBody, CompanyNode, FabricError, FabricErrorCode,
-    MessageReference, NodeAdministrativeStatus, RoutedOperation, RuntimeCommandReference,
+    MessageReference, NodeAdministrativeStatus, RoutedOperation, RuntimeCommandIntent,
+    RuntimeCommandReference,
 };
 
 pub(crate) fn runtime_reference_from_operation(
@@ -26,52 +29,126 @@ pub(crate) fn runtime_reference_from_operation(
     }
 }
 
-pub(crate) fn validate_resolved_runtime_command(
+pub(crate) fn runtime_intent_from_operation(
     operation: &RoutedOperation,
-    envelope: &ControlCommandEnvelope,
-) -> Result<(), FabricError> {
+) -> Result<RuntimeCommandIntent, FabricError> {
     let reference = runtime_reference_from_operation(operation)?;
-    let fingerprint =
-        harness_store::runtime_command_envelope_fingerprint(envelope).map_err(|error| {
-            FabricError::none(
-                FabricErrorCode::InvalidPayload,
-                format!("resolved RuntimeCommand cannot be fingerprinted: {error}"),
-            )
-        })?;
-    if reference.runtime_command_id != envelope.id
-        || reference.command_fingerprint != fingerprint
-        || reference.target_execution_space_id != envelope.execution_space_id
-        || reference.target_node_daemon_id != envelope.target_node_daemon_id
-        || reference.target_node_daemon_generation != envelope.target_node_daemon_generation
-        || operation.target_node_id != envelope.target_node_id
+    let intent = reference.canonical_command_intent;
+    let intent_fingerprint = format!(
+        "sha256:{}",
+        harness_fabric::json_digest(&intent).map_err(|error| FabricError::none(
+            FabricErrorCode::InvalidPayload,
+            format!("RuntimeCommand intent cannot be fingerprinted: {error}"),
+        ))?
+    );
+    if reference.runtime_command_id != intent.id
+        || reference.intent_fingerprint != intent_fingerprint
+        || reference.target_execution_space_id != intent.target_execution_space_id
         || operation.target_execution_space_id.as_deref()
-            != Some(envelope.execution_space_id.as_str())
-        || operation.expected_target_revision != Some(envelope.expected_version)
-        || operation.expires_at_unix_ms != envelope.expires_unix_ms
-        || operation.idempotency_key != envelope.idempotency_key
-        || !runtime_authority_chain_matches(operation, envelope)
+            != Some(intent.target_execution_space_id.as_str())
+        || operation.expected_target_revision != Some(intent.expected_version)
+        || operation.expires_at_unix_ms != intent.expires_unix_ms
+        || operation.idempotency_key != intent.idempotency_key
+        || intent.payload_fingerprint != harness_store::canonical_json_fingerprint(&intent.payload)
+        || !runtime_source_authority_matches(operation)
     {
         return Err(FabricError::none(
             FabricErrorCode::SourceMismatch,
-            "resolved RuntimeCommand disagrees with its immutable routed authority/fingerprint",
+            "RuntimeCommand intent disagrees with its immutable route, payload, or source authority",
         ));
     }
-    Ok(())
+    Ok(intent)
 }
 
 pub(crate) fn resolved_runtime_command_from_operation(
     operation: &RoutedOperation,
+    target_node_id: &str,
+    target_node_daemon_id: &str,
+    target_node_daemon_generation: u64,
 ) -> Result<ControlCommandEnvelope, FabricError> {
-    let reference = runtime_reference_from_operation(operation)?;
-    let envelope: ControlCommandEnvelope =
-        serde_json::from_value(reference.canonical_command_envelope.clone()).map_err(|error| {
-            FabricError::none(
-                FabricErrorCode::InvalidPayload,
-                format!("canonical RuntimeCommand envelope is invalid: {error}"),
-            )
-        })?;
-    validate_resolved_runtime_command(operation, &envelope)?;
-    Ok(envelope)
+    let intent = runtime_intent_from_operation(operation)?;
+    if operation.target_node_id != target_node_id
+        || target_node_daemon_id.trim().is_empty()
+        || target_node_daemon_generation == 0
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::NodeStaleGeneration,
+            "target RuntimeCommand resolution requires the exact authenticated NodeDaemon generation",
+        ));
+    }
+    let command: RuntimeCommandKind = serde_json::from_value(serde_json::Value::String(
+        intent.command.clone(),
+    ))
+    .map_err(|error| {
+        FabricError::none(
+            FabricErrorCode::InvalidPayload,
+            format!("RuntimeCommand intent command is unsupported: {error}"),
+        )
+    })?;
+    let required_capability = match command {
+        RuntimeCommandKind::AuthorMessage => "message.author",
+        RuntimeCommandKind::StartSession => "agent_session.start",
+        RuntimeCommandKind::StopSession => "agent_session.stop",
+        RuntimeCommandKind::ResumeSession => "agent_session.resume",
+        RuntimeCommandKind::DispatchProvider => "provider.dispatch",
+        RuntimeCommandKind::CancelProviderTurn => "provider.cancel",
+    };
+    Ok(ControlCommandEnvelope {
+        id: intent.id,
+        execution_space_id: intent.target_execution_space_id,
+        target_node_id: target_node_id.into(),
+        target_node_daemon_id: target_node_daemon_id.into(),
+        target_node_daemon_generation,
+        authenticated_actor: ActorRef {
+            kind: RuntimeActorKind::Service,
+            id: target_node_daemon_id.into(),
+        },
+        command,
+        required_capability: required_capability.into(),
+        idempotency_key: intent.idempotency_key,
+        expected_version: intent.expected_version,
+        expires_unix_ms: intent.expires_unix_ms,
+        payload: intent.payload,
+        payload_fingerprint: intent.payload_fingerprint,
+        issued_at: intent.issued_at,
+    })
+}
+
+pub(crate) fn validate_resolved_runtime_command(
+    operation: &RoutedOperation,
+    envelope: &ControlCommandEnvelope,
+    target_node_id: &str,
+    target_node_daemon_id: &str,
+    target_node_daemon_generation: u64,
+) -> Result<(), FabricError> {
+    let intent = runtime_intent_from_operation(operation)?;
+    let expected: ControlCommandEnvelope = resolved_runtime_command_from_operation(
+        operation,
+        target_node_id,
+        target_node_daemon_id,
+        target_node_daemon_generation,
+    )?;
+    if *envelope != expected
+        || envelope.id != intent.id
+        || envelope.execution_space_id != intent.target_execution_space_id
+        || envelope.authenticated_actor
+            != (ActorRef {
+                kind: RuntimeActorKind::Service,
+                id: envelope.target_node_daemon_id.clone(),
+            })
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::UnauthorizedActor,
+            "resolved RuntimeCommand authority was not constructed by the target NodeDaemon",
+        ));
+    }
+    harness_store::runtime_command_envelope_fingerprint(envelope).map_err(|error| {
+        FabricError::none(
+            FabricErrorCode::InvalidPayload,
+            format!("resolved RuntimeCommand cannot be fingerprinted: {error}"),
+        )
+    })?;
+    Ok(())
 }
 
 /// Join the Company directory Node to the one Wave 4C machine identity and
@@ -227,16 +304,10 @@ fn store_error(error: harness_store::StoreError) -> FabricError {
     )
 }
 
-fn runtime_authority_chain_matches(
-    operation: &RoutedOperation,
-    envelope: &ControlCommandEnvelope,
-) -> bool {
+fn runtime_source_authority_matches(operation: &RoutedOperation) -> bool {
     operation.source_authority == harness_fabric::OperationSourceAuthority::Node
         && operation.actor.actor_kind == FabricActorKind::Service
         && operation.source_node_id.as_deref() == Some(operation.actor.actor_id.as_str())
         && operation.source_node_daemon_id.is_some()
         && operation.source_node_daemon_generation.is_some()
-        && envelope.authenticated_actor.kind == RuntimeActorKind::Service
-        && envelope.authenticated_actor.id == envelope.target_node_daemon_id
-        && envelope.target_node_id == operation.target_node_id
 }

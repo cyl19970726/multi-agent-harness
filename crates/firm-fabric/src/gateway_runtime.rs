@@ -616,6 +616,38 @@ impl NodeGatewayConnection {
             }
         };
         let persist_now = now_unix_ms()?;
+        if delivery.operation.expires_at_unix_ms <= persist_now {
+            local_store.consume_expired_ordering_tombstone(
+                &self.session,
+                &delivery.operation,
+                &delivery.attempt,
+                persist_now,
+            )?;
+            let error = FabricError::none(
+                FabricErrorCode::OperationExpired,
+                "routed operation expired before target inbox persistence",
+            );
+            send_payload(
+                &mut self.socket,
+                &self.session,
+                &delivery.operation.correlation_id,
+                FabricPayload::OperationResult(TargetApplicationResult {
+                    operation_id: delivery.operation.id,
+                    result_schema: "agentfirm.remote_fabric.expired.v1".into(),
+                    result: serde_json::to_value(error).map_err(|encode_error| {
+                        FabricError::unknown(
+                            "expired-operation-result",
+                            format!(
+                                "expired operation result could not be encoded: {encode_error}"
+                            ),
+                        )
+                    })?,
+                    effect: EffectCertainty::NotApplied,
+                }),
+                now_unix_ms()?,
+            )?;
+            return self.read_receipt();
+        }
         let (inbox, _) = local_store.persist_inbox(
             &self.session,
             &delivery.operation,

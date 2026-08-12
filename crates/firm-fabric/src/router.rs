@@ -593,10 +593,19 @@ pub(crate) fn record_application_receipt(
             "application receipt attempt disappeared",
         )
     })?;
-    if attempt.state != RouteAttemptState::TargetPersisted {
+    let expired_not_applied = effect == EffectCertainty::NotApplied
+        && operation.expires_at_unix_ms <= now_unix_ms
+        && matches!(
+            attempt.state,
+            RouteAttemptState::Queued | RouteAttemptState::Sent
+        )
+        && result_schema == "agentfirm.remote_fabric.expired.v1"
+        && serde_json::from_value::<FabricError>(result.clone())
+            .is_ok_and(|error| error.code == FabricErrorCode::OperationExpired);
+    if attempt.state != RouteAttemptState::TargetPersisted && !expired_not_applied {
         return Err(FabricError::none(
             FabricErrorCode::ExpectedRevisionConflict,
-            "application receipt requires prior target_persisted receipt",
+            "application receipt requires prior target_persisted or exact expired NotApplied proof",
         ));
     }
     attempt.state = if effect == EffectCertainty::Unknown {
@@ -622,7 +631,12 @@ pub(crate) fn record_application_receipt(
         result_schema: Some(result_schema.into()),
         result: Some(result),
         result_digest: Some(result_digest),
-        error: None,
+        error: expired_not_applied.then(|| {
+            FabricError::none(
+                FabricErrorCode::OperationExpired,
+                "routed operation expired before target inbox persistence",
+            )
+        }),
         created_at_unix_ms: now_unix_ms,
         schema_version: FABRIC_SCHEMA_VERSION.into(),
     };

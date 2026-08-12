@@ -26,7 +26,9 @@ pub mod transport;
 pub use artifacts::{ArtifactKeyBackend, InMemoryArtifactKeyBackend};
 pub use control_plane::ControlPlane;
 pub use diagnostics::{inspect_fabric, FabricDiagnostics, NodeFabricDiagnostics};
-pub use local_store::{LocalApplicationResult, NodeLocalFabricState, NodeLocalFabricStore};
+pub use local_store::{
+    LocalApplicationResult, LocalOrderingTombstone, NodeLocalFabricState, NodeLocalFabricStore,
+};
 pub use protocol::*;
 pub use store::{FabricStore, FabricStoreLimits};
 

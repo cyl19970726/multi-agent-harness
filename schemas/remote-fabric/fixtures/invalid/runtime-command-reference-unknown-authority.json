@@ -1,9 +1,17 @@
 {
   "runtime_command_id": "runtime-command:remote-1",
-  "command_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "intent_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "target_execution_space_id": "space-b",
-  "target_node_daemon_id": "node-daemon:node-b",
-  "target_node_daemon_generation": 4,
-  "canonical_command_envelope": {},
-  "actor_id": "browser-selected-host"
+  "canonical_command_intent": {
+    "id": "runtime-command:remote-1",
+    "target_execution_space_id": "space-b",
+    "command": "resume_session",
+    "idempotency_key": "remote-runtime-1",
+    "expected_version": 4,
+    "expires_unix_ms": 90000,
+    "payload": {"session_id": "session-b", "session_generation": 3},
+    "payload_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "issued_at": "unix-ms:100",
+    "authenticated_actor": {"kind": "service", "id": "forged-target-daemon"}
+  }
 }

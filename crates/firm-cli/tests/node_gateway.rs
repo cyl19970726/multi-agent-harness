@@ -9,8 +9,8 @@ use harness_core::agentfirm_api::{
 use harness_core::{ExecutionNode, ExecutionNodeStatus};
 use harness_fabric::{
     json_digest, ActorKind, AuthenticatedActor, CompanyNode, NodeAdministrativeStatus,
-    OperationPriority, RoutedOperation, RUNTIME_COMMAND_REFERENCE_KIND,
-    RUNTIME_COMMAND_REFERENCE_SCHEMA,
+    OperationPriority, RoutedOperation, RuntimeCommandIntent, RuntimeCommandReference,
+    RUNTIME_COMMAND_REFERENCE_KIND, RUNTIME_COMMAND_REFERENCE_SCHEMA,
 };
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -39,16 +39,28 @@ fn envelope() -> ControlCommandEnvelope {
 }
 
 fn operation(envelope: &ControlCommandEnvelope) -> RoutedOperation {
-    let command_fingerprint =
-        harness_store::runtime_command_envelope_fingerprint(envelope).expect("fingerprint");
-    let body = json!({
-        "runtime_command_id": envelope.id,
-        "command_fingerprint": command_fingerprint,
-        "target_execution_space_id": envelope.execution_space_id,
-        "target_node_daemon_id": envelope.target_node_daemon_id,
-        "target_node_daemon_generation": envelope.target_node_daemon_generation,
-        "canonical_command_envelope": envelope,
-    });
+    let intent = RuntimeCommandIntent {
+        id: envelope.id.clone(),
+        target_execution_space_id: envelope.execution_space_id.clone(),
+        command: serde_json::to_value(envelope.command)
+            .expect("command value")
+            .as_str()
+            .expect("command string")
+            .into(),
+        idempotency_key: envelope.idempotency_key.clone(),
+        expected_version: envelope.expected_version,
+        expires_unix_ms: envelope.expires_unix_ms,
+        payload: envelope.payload.clone(),
+        payload_fingerprint: envelope.payload_fingerprint.clone(),
+        issued_at: envelope.issued_at.clone(),
+    };
+    let reference = RuntimeCommandReference {
+        runtime_command_id: intent.id.clone(),
+        intent_fingerprint: format!("sha256:{}", json_digest(&intent).expect("intent digest")),
+        target_execution_space_id: intent.target_execution_space_id.clone(),
+        canonical_command_intent: intent,
+    };
+    let body = serde_json::to_value(reference).expect("runtime intent reference");
     RoutedOperation {
         id: "operation-runtime-1".into(),
         company_id: "company-a".into(),
@@ -94,11 +106,22 @@ fn operation(envelope: &ControlCommandEnvelope) -> RoutedOperation {
 fn exact_runtime_reference_resolves_to_wave4c_node_daemon_contract() {
     let envelope = envelope();
     let operation = operation(&envelope);
-    remote_fabric::validate_resolved_runtime_command(&operation, &envelope)
-        .expect("exact immutable reference");
+    remote_fabric::validate_resolved_runtime_command(
+        &operation,
+        &envelope,
+        &envelope.target_node_id,
+        &envelope.target_node_daemon_id,
+        envelope.target_node_daemon_generation,
+    )
+    .expect("exact immutable reference");
     assert_eq!(
-        remote_fabric::resolved_runtime_command_from_operation(&operation)
-            .expect("target decodes the exact immutable envelope"),
+        remote_fabric::resolved_runtime_command_from_operation(
+            &operation,
+            &envelope.target_node_id,
+            &envelope.target_node_daemon_id,
+            envelope.target_node_daemon_generation,
+        )
+        .expect("target resolves exact immutable intent under its own authority"),
         envelope
     );
 }
@@ -125,18 +148,44 @@ fn hostile_runtime_resolution_fails_before_node_daemon_effect() {
             value
         },
     ] {
-        assert!(remote_fabric::validate_resolved_runtime_command(&operation, &hostile).is_err());
+        assert!(remote_fabric::validate_resolved_runtime_command(
+            &operation,
+            &hostile,
+            &envelope.target_node_id,
+            &envelope.target_node_daemon_id,
+            envelope.target_node_daemon_generation,
+        )
+        .is_err());
     }
+    let before = operation.clone();
     let mut rewritten_route = operation;
-    rewritten_route.body["canonical_command_envelope"]["payload"]["session_id"] =
+    rewritten_route.body["canonical_command_intent"]["payload"]["session_id"] =
         json!("session-other");
     rewritten_route.body_digest =
         harness_fabric::json_digest(&rewritten_route.body).expect("hostile body digest");
     assert_eq!(
-        remote_fabric::resolved_runtime_command_from_operation(&rewritten_route)
-            .expect_err("embedded command cannot diverge from its frozen fingerprint")
-            .code,
+        remote_fabric::resolved_runtime_command_from_operation(
+            &rewritten_route,
+            &envelope.target_node_id,
+            &envelope.target_node_daemon_id,
+            envelope.target_node_daemon_generation,
+        )
+        .expect_err("embedded command cannot diverge from its frozen fingerprint")
+        .code,
         harness_fabric::FabricErrorCode::SourceMismatch
+    );
+    let mut forged_actor = before;
+    forged_actor.body["canonical_command_intent"]["authenticated_actor"] = json!({
+        "kind": "service",
+        "id": envelope.target_node_daemon_id,
+    });
+    forged_actor.body_digest = json_digest(&forged_actor.body).expect("hostile body digest");
+    assert_eq!(
+        forged_actor
+            .closed_body()
+            .expect_err("source-authored target Operator identity must fail closed")
+            .code,
+        harness_fabric::FabricErrorCode::InvalidPayload
     );
 }
 
