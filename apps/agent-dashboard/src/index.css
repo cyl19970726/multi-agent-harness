@@ -75,6 +75,11 @@
     transition: background-color 120ms ease, border-color 120ms ease;
   }
 
+  .agent-team-authored-turn {
+    background: linear-gradient(90deg, color-mix(in srgb, var(--primary) 4.8%, var(--background)), color-mix(in srgb, var(--primary) 1.4%, var(--background)) 58%, transparent);
+    box-shadow: inset 2px 0 0 color-mix(in srgb, var(--primary) 48%, transparent);
+  }
+
   .agent-team-state-label {
     display: inline-flex;
     align-items: center;
