@@ -40,7 +40,7 @@ const emptyHostConsole={...hostConsole,data:{...hostConsole.data,host_inbox:[],p
 const completedLiveMember={...member,runtime_state:"running",capacity:"busy",active_work_count:1,review_work_count:0};
 const completedTeamWorkspace={...teamWorkspace,data:{...teamWorkspace.data,team:{...teamWorkspace.data.team,latest_run:{...teamWorkspace.data.team.latest_run,status:"completed",completed_at:"2026-08-11T01:03:00Z"}},members:[completedLiveMember]}};
 const completedHostConsole={...hostConsole,data:{...hostConsole.data,member_runtime:[completedLiveMember],member_capacity:[completedLiveMember]},allowed_actions:[closeMemberAction]};
-const memberWorkbench=envelope("member_workbench",{agent_member:{id:"member-roleview-1",role:"worker",organization_status:"active"},member_run:{id:"member-run-roleview-1",agent_member_id:"member-roleview-1",team_run_id:"run-roleview-1",coordination_status:"active",runtime_status:"idle",runtime_generation:2,native_session_health:"available"},my_works:[work],eligible_ready_pool:[],unread_messages:[message],queued_deliveries:[],workspace_binding:null,native_session_health:"available",pending_provider_interactions:[],report_history:[],finding_history:[],failure_history:[],gate_requirements:[]});
+const memberWorkbench=envelope("member_workbench",{agent_member:{id:"member-roleview-1",role:"worker",organization_status:"active"},member_run:{id:"member-run-roleview-1",agent_member_id:"member-roleview-1",team_run_id:"run-roleview-1",coordination_status:"active",runtime_status:"idle",runtime_generation:2,native_session_health:"available"},my_works:[work],eligible_ready_pool:[],unread_messages:[message],queued_deliveries:[],workspace_binding:null,native_session_health:"available",pending_provider_interactions:[],report_history:[],finding_history:[],failure_history:[],gate_requirements:[],runtime_fabric:{agent_identities:[],agent_sessions:[],team_memberships:[],work_execution_bindings:[],messages:[],message_deliveries:[]}});
 
 const vite=await createServer({configFile:join(dashboardRoot,"vite.config.ts"),server:{host:"127.0.0.1",port:0},logLevel:"silent"});
 await vite.listen();
@@ -115,6 +115,7 @@ try {
     if(scenario.kind==="populated")await page.screenshot({path:join(evidenceDir,`war-room-host-tools--${viewport.width}x${viewport.height}.png`),animations:"disabled"});else await page.screenshot({path:join(evidenceDir,`war-room-empty-host-tools--${viewport.width}x${viewport.height}.png`),animations:"disabled"});
     await page.getByRole("button",{name:"Hide Host tools"}).click();
     if(scenario.kind==="populated"&&viewport.width===1440)assert.equal(await page.getByPlaceholder("Search title, context or ID").inputValue(),"Ship","Host tools toggle lost URL-owned Work filters");
+    if(scenario.kind==="populated"&&viewport.width===1440){await page.goto(`${base}/?surface=team&memberRun=member-run-roleview-1&space=fixture-space&project=fixture-project`,{waitUntil:"networkidle"});await page.getByRole("heading",{name:"Member Workbench"}).waitFor();await page.getByTestId("member-home").waitFor();await page.screenshot({path:join(evidenceDir,"war-room-member-home--1440x1000.png"),animations:"disabled"});}
     assert.deepEqual(responseErrors,[],`HTTP errors at ${viewport.width}px`);
     assert.deepEqual(consoleErrors,[],`console errors at ${viewport.width}px`);
     await page.close();
