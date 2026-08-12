@@ -114,6 +114,8 @@ marketing UI.
 | Secondary ink | `#77726D` | labels, timestamps, provenance |
 | Peach coral | `#FC7B5C` | active navigation, primary Host action, unread |
 | Peach wash | `#FFF3EF` | selected Agent/Work and protected context |
+| Deep coral ink | `#A6422C` | small links and action labels on light surfaces |
+| Peach foreground | `#51251B` | legible text and icons on peach-filled controls |
 | Green | `#2F9D62` | ready, available, accepted, healthy |
 | Amber | `#D88915` | review, waiting, on-hold, attention |
 | Red | `#E6494F` | blocked, failed, destructive control |

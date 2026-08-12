@@ -16,7 +16,8 @@
     --accent: #fff3ef;
     --accent-foreground: #312824;
     --primary: #fc7b5c;
-    --primary-foreground: #fff;
+    --primary-foreground: #51251b;
+    --agent-team-action-ink: #a6422c;
     --border: #eae7e3;
     --input: #ddd9d4;
     --ring: #fc7b5c;
@@ -50,11 +51,17 @@
   }
 
   .agent-team-eyebrow {
-    color: var(--primary);
+    color: var(--agent-team-action-ink);
     font-size: 0.625rem;
     font-weight: 700;
     letter-spacing: 0.16em;
     text-transform: uppercase;
+  }
+
+  /* Peach remains the reference fill/focus color. Small action text uses a
+     deeper sibling so links stay legible without drifting back to warning red. */
+  .agent-team-surface .text-primary {
+    color: var(--agent-team-action-ink);
   }
 
   .agent-team-record-row {
