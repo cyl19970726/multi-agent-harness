@@ -104,6 +104,7 @@ try{
   if(liveConfig)await hostPage.locator(".agent-roster-row").filter({hasNotText:"Host"}).first().click();
   else await hostPage.getByRole("button",{name:/Mira Chen/}).first().click();
   await hostPage.getByText(/Public Agent context/).waitFor();
+  if(liveConfig)await hostPage.locator(".agent-authored-turn").first().waitFor();
   assert.equal(await hostPage.getByText("Validated owner-bound native Session",{exact:true}).count(),0,"Host-selected Member leaked provider-private activity");
   await hostPage.screenshot({path:join(evidenceDir,`host-member-public--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   assert.deepEqual(consoleErrors,[],`console errors: ${consoleErrors.join(" | ")}`);
