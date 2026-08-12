@@ -7,32 +7,39 @@
   .agent-team-surface {
     --background: #fffdf9;
     --foreground: #211e1b;
-    --card: #fffefa;
+    --card: #fffdfa;
     --card-foreground: #211e1b;
-    --secondary: #faf7f2;
+    --secondary: #f8f4ee;
     --secondary-foreground: #302b27;
-    --muted: #f5f1eb;
+    --muted: #f3eee7;
     --muted-foreground: #625c56;
     --accent: #fff0e9;
     --accent-foreground: #2d211d;
     --primary: #ff5c3b;
     --primary-foreground: #ffffff;
     --agent-team-action-ink: #d94324;
-    --border: #e7e0d8;
+    --border: #e5ddd4;
     --input: #d8d0c8;
     --ring: #ff5c3b;
     --status-running: #3f82d1;
     --status-good: #2f9d62;
     --status-warn: #d88915;
     --status-bad: #e6494f;
-    background: var(--background);
+    background:
+      radial-gradient(circle at 68% -15%, rgb(255 238 228 / 0.24), transparent 34rem),
+      var(--background);
     -webkit-font-smoothing: antialiased;
   }
 
   .agent-team-panel {
-    border: 1px solid var(--border);
-    background: var(--card);
-    box-shadow: 0 1px 1px rgb(48 38 32 / 0.018);
+    border: 1px solid color-mix(in srgb, var(--border) 88%, white);
+    background:
+      linear-gradient(180deg, rgb(255 255 255 / 0.56), transparent 48%),
+      var(--card);
+    box-shadow:
+      0 1px 1px rgb(65 44 30 / 0.035),
+      0 7px 22px rgb(83 57 38 / 0.035),
+      inset 0 1px 0 rgb(255 255 255 / 0.72);
     transition: background-color 140ms ease, border-color 140ms ease,
       box-shadow 140ms ease, transform 140ms cubic-bezier(0.16, 1, 0.3, 1);
   }
@@ -44,7 +51,9 @@
   .agent-team-selected {
     border-color: color-mix(in srgb, var(--primary) 32%, var(--border));
     background: color-mix(in srgb, var(--primary) 5%, var(--card));
-    box-shadow: inset 2px 0 0 var(--primary);
+    box-shadow:
+      inset 2px 0 0 var(--primary),
+      0 8px 24px rgb(133 70 40 / 0.055);
   }
 
   .agent-team-eyebrow {
@@ -64,6 +73,44 @@
   .agent-team-record-row {
     border-bottom: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
     transition: background-color 120ms ease, border-color 120ms ease;
+  }
+
+  .agent-team-state-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    color: var(--muted-foreground);
+    font-size: 0.6875rem;
+    font-weight: 560;
+    line-height: 1;
+  }
+
+  .agent-team-state-label::before {
+    width: 0.38rem;
+    height: 0.38rem;
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    content: "";
+  }
+
+  .agent-team-state-label[data-tone="bad"] { color: var(--status-bad); }
+  .agent-team-state-label[data-tone="warn"] { color: var(--status-warn); }
+  .agent-team-state-label[data-tone="good"] { color: var(--status-good); }
+  .agent-team-state-label[data-tone="running"] { color: var(--status-running); }
+
+  .agent-team-phase-label {
+    color: var(--muted-foreground);
+    font-size: 0.625rem;
+    font-weight: 650;
+    letter-spacing: 0.055em;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+
+  .agent-team-surface [data-ui="badge"] {
+    border-radius: 0.3rem;
+    border-color: transparent;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 12%, transparent);
   }
 
   .agent-team-record-row:hover {
@@ -111,14 +158,18 @@
 
   .agent-team-chat-canvas {
     background:
-      linear-gradient(180deg, rgb(255 254 250 / 0.94), rgb(252 249 244 / 0.92)),
+      radial-gradient(circle at 48% 76%, rgb(255 241 233 / 0.22), transparent 27rem),
+      linear-gradient(180deg, rgb(255 254 250 / 0.94), rgb(252 248 242 / 0.94)),
       var(--background);
   }
 
   .agent-team-composer {
     border: 1px solid color-mix(in srgb, var(--border) 92%, var(--foreground));
     background: var(--card);
-    box-shadow: 0 -10px 32px rgb(55 43 35 / 0.04), 0 2px 8px rgb(55 43 35 / 0.025);
+    box-shadow:
+      0 -14px 38px rgb(55 43 35 / 0.055),
+      0 2px 8px rgb(55 43 35 / 0.035),
+      inset 0 1px 0 rgb(255 255 255 / 0.8);
   }
 
   .agent-team-surface :where(button, a, input, textarea, select, summary):focus-visible {
@@ -147,8 +198,10 @@
   }
 
   .company-editorial-title {
-    font-family: Georgia, "Times New Roman", serif;
+    font-family: "Newsreader", "Iowan Old Style", "Palatino Linotype", serif;
+    font-optical-sizing: auto;
     font-weight: 500;
+    letter-spacing: -0.018em;
   }
 
   .company-workbench {
@@ -179,7 +232,7 @@
   .company-art-field > span:nth-child(3) { width: 4px; height: 4px; right: 7.25rem; top: 3.2rem; background: var(--primary); border: 0; box-shadow: -5rem 4rem 0 color-mix(in srgb, var(--primary) 55%, transparent), 4rem 2rem 0 color-mix(in srgb, var(--primary) 55%, transparent); }
 
   .company-emblem { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--background) 60%, transparent), 0 8px 30px color-mix(in srgb, var(--primary) 8%, transparent); }
-  .company-avatar img { filter: saturate(.88) contrast(.98); }
+  .company-avatar img { filter: saturate(.98) contrast(1.015); }
 }
 
 @custom-variant dark (&:is(.dark *));
