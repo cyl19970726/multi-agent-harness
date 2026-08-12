@@ -233,6 +233,12 @@
       inset 0 1px 0 rgb(255 255 255 / 0.8);
   }
 
+  @media (min-width: 640px) {
+    .agent-team-composer > div:first-of-type {
+      grid-template-columns: 9rem minmax(11rem, 12.5rem) minmax(8rem, 1fr) auto;
+    }
+  }
+
   /* DEV-14 Quiet Operations Console V2. Surfaces stay flat and are separated
      by paper tone, rhythm and hairlines; only overlays may float. */
   .agent-workspace {

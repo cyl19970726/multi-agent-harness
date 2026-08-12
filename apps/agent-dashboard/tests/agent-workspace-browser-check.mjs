@@ -99,6 +99,7 @@ try{
   await page.getByRole("button",{name:"Close Agent configuration"}).click();
   const hostPage=await makePage(liveConfig?.hostToken??"fixture-host-token");
   await open(hostPage,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.host}&space=${routeState.space}&project=${routeState.project}`);
+  if(liveConfig)await hostPage.locator(".agent-authored-turn").first().waitFor();
   if(!liveConfig){assert.equal(await hostPage.getByText("Validated owner-bound native Session",{exact:true}).count(),0,"Member-private provider event leaked into Host Session");assert.equal(await hostPage.getByText("Read Lead inbox",{exact:true}).count(),1,"Host-native event missing");}
   await hostPage.screenshot({path:join(evidenceDir,`host-session--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   if(liveConfig)await hostPage.locator(".agent-roster-row").filter({hasNotText:"Host"}).first().click();
