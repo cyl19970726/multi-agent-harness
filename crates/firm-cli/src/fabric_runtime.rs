@@ -553,7 +553,10 @@ fn node_gateway_command(
         gateway
             .set_read_timeout(Some(GATEWAY_FRAME_READ_TIMEOUT))
             .map_err(fabric_error)?;
-        gateway.heartbeat().map_err(fabric_error)?;
+        gateway.heartbeat().map_err(|mut error| {
+            error.message = format!("gateway heartbeat failed: {}", error.message);
+            fabric_error(error)
+        })?;
         loop {
             match gateway.apply_next(&local, &mut application) {
                 Ok(receipt) => println!(
@@ -569,7 +572,10 @@ fn node_gateway_command(
                 {
                     break
                 }
-                Err(error) => return Err(fabric_error(error)),
+                Err(mut error) => {
+                    error.message = format!("gateway pending delivery failed: {}", error.message);
+                    return Err(fabric_error(error));
+                }
             }
         }
         for mut operation in local.pending_outbox_operations().map_err(fabric_error)? {

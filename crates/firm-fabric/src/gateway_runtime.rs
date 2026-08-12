@@ -430,12 +430,6 @@ impl NodeGatewayConnection {
         let welcome_frame = read_frame(&mut socket)?;
         let welcome = match &welcome_frame.payload {
             FabricPayload::Welcome(welcome) => welcome.clone(),
-            FabricPayload::PendingBatchComplete { .. } => {
-                return Err(FabricError::none(
-                    FabricErrorCode::TargetOffline,
-                    "pending delivery batch is complete",
-                ))
-            }
             _ => {
                 return Err(FabricError::none(
                     FabricErrorCode::ProtocolIncompatible,
@@ -603,6 +597,12 @@ impl NodeGatewayConnection {
                 return Err(FabricError::none(
                     FabricErrorCode::NodeStaleGeneration,
                     reason,
+                ))
+            }
+            FabricPayload::PendingBatchComplete { .. } => {
+                return Err(FabricError::none(
+                    FabricErrorCode::TargetOffline,
+                    "pending delivery batch is complete",
                 ))
             }
             _ => {

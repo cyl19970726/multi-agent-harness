@@ -2393,6 +2393,12 @@ fn two_outbound_gateways_route_one_operation_through_durable_target_apply() {
         .expect("Node A local Store");
     let local_b = NodeLocalFabricStore::open(root.path().join("node-b"), company, "node-b")
         .expect("Node B local Store");
+    node_b.heartbeat().expect("empty target heartbeat");
+    let empty_batch = node_b
+        .apply_next(&local_b, &mut ProbeApplication)
+        .expect_err("empty pending batch is explicit, not a timeout");
+    assert_eq!(empty_batch.code, FabricErrorCode::TargetOffline);
+    assert_eq!(empty_batch.message, "pending delivery batch is complete");
     let source_actor = AuthenticatedActor {
         company_id: company.into(),
         actor_id: "node-a".into(),
