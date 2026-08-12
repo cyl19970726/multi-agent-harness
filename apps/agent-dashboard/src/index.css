@@ -1,6 +1,80 @@
 @import "tailwindcss";
 
 @layer components {
+  /* Agent Team visual contract: warm operational paper, coral focus and
+     restrained semantic state. These classes intentionally stay page-local so
+     the Company OS surfaces can evolve independently. */
+  .agent-team-surface {
+    --background: #fbfaf8;
+    --foreground: #242220;
+    --card: #fffefc;
+    --card-foreground: #242220;
+    --secondary: #f7f5f2;
+    --secondary-foreground: #35312e;
+    --muted: #f4f1ed;
+    --muted-foreground: #77726d;
+    --accent: #fff0f2;
+    --accent-foreground: #2a2523;
+    --primary: #ff3b57;
+    --primary-foreground: #fff;
+    --border: #e7e2dc;
+    --input: #ded8d1;
+    --ring: #ff3b57;
+    --status-running: #3f82d1;
+    --status-good: #2f9d62;
+    --status-warn: #d88915;
+    --status-bad: #e6494f;
+    background:
+      radial-gradient(circle at 42% -15%, rgb(255 255 255 / 0.92), transparent 34rem),
+      var(--background);
+  }
+
+  .agent-team-panel {
+    border: 1px solid var(--border);
+    background: color-mix(in srgb, var(--card) 96%, transparent);
+    box-shadow: 0 1px 1px rgb(64 48 34 / 0.025);
+  }
+
+  .agent-team-recessed {
+    border: 1px solid var(--border);
+    background: color-mix(in srgb, var(--secondary) 72%, var(--card));
+  }
+
+  .agent-team-selected {
+    border-color: color-mix(in srgb, var(--primary) 48%, var(--border));
+    background: color-mix(in srgb, var(--primary) 5%, var(--card));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 10%, transparent);
+  }
+
+  .agent-team-eyebrow {
+    color: var(--primary);
+    font-size: 0.625rem;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+
+  .agent-team-record-row {
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+    transition: background-color 120ms ease, border-color 120ms ease;
+  }
+
+  .agent-team-record-row:hover {
+    background: color-mix(in srgb, var(--primary) 2.5%, var(--card));
+  }
+
+  .agent-team-chat-canvas {
+    background:
+      linear-gradient(180deg, rgb(255 255 255 / 0.72), rgb(251 250 248 / 0.94)),
+      var(--background);
+  }
+
+  .agent-team-composer {
+    border: 1px solid color-mix(in srgb, var(--border) 92%, var(--foreground));
+    background: var(--card);
+    box-shadow: 0 -8px 30px rgb(64 48 34 / 0.055), 0 2px 8px rgb(64 48 34 / 0.035);
+  }
+
   .company-editorial-title {
     font-family: Georgia, "Times New Roman", serif;
     font-weight: 500;

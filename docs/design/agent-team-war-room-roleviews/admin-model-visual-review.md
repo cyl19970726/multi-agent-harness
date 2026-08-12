@@ -4,6 +4,11 @@ Status: implementation decision for issue #444
 Authority: `docs/mental/agent-firm-mental-model.md`, current schemas and
 authenticated RoleViews override generated concept text.
 
+The complete visual and implementation contract, including stable links to all
+seven reference images and per-image keep/adapt/remove/add decisions, is
+[visual-product-spec.md](visual-product-spec.md). This shorter review remains a
+decision summary only.
+
 ## Frontend doctrine
 
 The page family exposes one Company through three distinct concerns without

@@ -112,11 +112,11 @@ export function RoleActionPanel({
       : "Canonical service rejected the action.");
   };
 
-  return <section className={compact ? "" : "rounded-xl border border-border p-4"} aria-labelledby="role-actions-title">
-    <div className="flex items-center justify-between gap-3">
-      <div><h2 id="role-actions-title" className={compact ? "sr-only" : "font-medium"}>Authorized actions</h2>{!compact && <p className="text-xs text-muted-foreground">Closed semantic intent; identity, authority, CAS and idempotency are transport-bound.</p>}</div>
+  return <section className={compact ? "" : "rounded-xl border border-border p-4"} aria-label={compact ? "Authorized actions" : undefined} aria-labelledby={compact ? undefined : "role-actions-title"}>
+    {!compact && <div className="flex items-center justify-between gap-3">
+      <div><h2 id="role-actions-title" className="font-medium">Authorized actions</h2><p className="text-xs text-muted-foreground">Closed semantic intent; identity, authority, CAS and idempotency are transport-bound.</p></div>
       <ShieldAlert className="size-4 text-primary" />
-    </div>
+    </div>}
     {actions.length ? <div className={compact ? "flex flex-wrap gap-2" : "mt-3 flex flex-wrap gap-2"}>{actions.map((action, index) => {
       const unsupported = !EXECUTABLE.has(action.kind);
       const unresolved = !roleActionRoute(action, context);
