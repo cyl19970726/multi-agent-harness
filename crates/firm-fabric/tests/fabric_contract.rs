@@ -349,6 +349,52 @@ fn operation_registry_requires_closed_kind_schema_and_body_scope() {
         FabricErrorCode::InvalidPayload
     );
 
+    let mut collaboration = operation(3, 2);
+    let collaboration_payload = json!({"delegation_id": "delegation-1"});
+    let collaboration_payload_digest = format!(
+        "sha256:{}",
+        json_digest(&collaboration_payload).expect("collaboration payload digest")
+    );
+    collaboration.kind = COLLABORATION_BUSINESS_OPERATION_KIND.into();
+    collaboration.body_schema = COLLABORATION_BUSINESS_OPERATION_SCHEMA.into();
+    collaboration.expected_target_revision = Some(7);
+    collaboration.authorization_context = BTreeMap::from([
+        ("target_team_id".into(), "team-b".into()),
+        ("target_team_revision".into(), "9".into()),
+        ("placement_generation".into(), "1".into()),
+        (
+            "required_capability".into(),
+            "collaboration.delegation_decide".into(),
+        ),
+    ]);
+    collaboration.body = json!({
+        "business_kind": "delegation_decide",
+        "required_capability": "collaboration.delegation_decide",
+        "target_team_id": "team-b",
+        "target_team_revision": 9,
+        "placement_generation": 1,
+        "expected_revision": 7,
+        "payload_digest": collaboration_payload_digest,
+        "payload": collaboration_payload,
+    });
+    collaboration.body_digest = json_digest(&collaboration.body).expect("body digest");
+    assert!(matches!(
+        collaboration
+            .closed_body()
+            .expect("closed collaboration operation"),
+        ClosedOperationBody::CollaborationBusiness(_)
+    ));
+    let mut widened = collaboration;
+    widened.body["required_capability"] = json!("collaboration.artifact_grant");
+    widened.body_digest = json_digest(&widened.body).expect("widened body digest");
+    assert_eq!(
+        widened
+            .closed_body()
+            .expect_err("business kind cannot widen its capability")
+            .code,
+        FabricErrorCode::InvalidPayload
+    );
+
     let mut mismatched_schema = request;
     mismatched_schema.body_schema = MESSAGE_REFERENCE_SCHEMA.into();
     assert_eq!(

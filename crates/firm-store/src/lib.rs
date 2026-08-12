@@ -34,7 +34,9 @@ mod trust_kernel;
 pub use trust_kernel::*;
 
 mod collaboration;
+mod collaboration_fabric;
 pub use collaboration::*;
+pub use collaboration_fabric::*;
 pub mod remote_fabric_store;
 
 mod company_os;

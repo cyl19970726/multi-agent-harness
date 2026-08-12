@@ -1,0 +1,10 @@
+{
+  "business_kind": "target_work_create",
+  "required_capability": "collaboration.target_work_create",
+  "target_team_id": "team-b",
+  "target_team_revision": 7,
+  "placement_generation": 1,
+  "expected_revision": 2,
+  "payload_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "payload": { "delegation_id": "delegation-1" }
+}

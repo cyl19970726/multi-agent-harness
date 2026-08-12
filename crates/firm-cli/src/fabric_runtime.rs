@@ -589,6 +589,7 @@ fn node_gateway_command(
             "remote-runtime".into(),
             "remote-message".into(),
             "artifact-transfer".into(),
+            "cross-team-collaboration".into(),
         ]),
         build_sha: super::build_git_rev().to_string(),
         last_persisted_route_seq: local
@@ -760,7 +761,8 @@ impl NodeApplication for Wave4cApplication {
                     effect,
                 ))
             }
-            harness_fabric::ClosedOperationBody::Message(_) => {
+            harness_fabric::ClosedOperationBody::Message(_)
+            | harness_fabric::ClosedOperationBody::CollaborationBusiness(_) => {
                 let message = super::remote_fabric::resolved_message_from_operation(operation)?;
                 let execution_space_id = operation
                     .target_execution_space_id

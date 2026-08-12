@@ -448,6 +448,25 @@ pub enum RoutedBusinessKind {
     ArtifactGrant,
 }
 
+impl RoutedBusinessKind {
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::DelegationPropose => "delegation_propose",
+            Self::DelegationDecide => "delegation_decide",
+            Self::TargetWorkCreate => "target_work_create",
+            Self::DelegationCancelRequest => "delegation_cancel_request",
+            Self::DelegationCancelDecide => "delegation_cancel_decide",
+            Self::TeamMessageDeliver => "team_message_deliver",
+            Self::RemoteFactPublish => "remote_fact_publish",
+            Self::ArtifactGrant => "artifact_grant",
+        }
+    }
+
+    pub fn required_capability(self) -> String {
+        format!("collaboration.{}", self.wire_name())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoutedBusinessDescriptor {
@@ -605,7 +624,7 @@ pub fn collaboration_business_registry_v1() -> Vec<RoutedBusinessDescriptor> {
                     "expected_revision".into(),
                     "payload_digest".into(),
                 ],
-                required_capability: format!("collaboration.{kind:?}").to_ascii_lowercase(),
+                required_capability: kind.required_capability(),
             }
         },
     )

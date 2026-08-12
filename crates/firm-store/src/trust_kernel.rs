@@ -5247,6 +5247,24 @@ impl HarnessStore {
             )
         })? {
             firm_fabric::ClosedOperationBody::Message(reference) => reference,
+            firm_fabric::ClosedOperationBody::CollaborationBusiness(reference)
+                if reference.business_kind == "team_message_deliver"
+                    && reference.required_capability == "collaboration.team_message_deliver" =>
+            {
+                serde_json::from_value::<firm_fabric::MessageReference>(reference.payload).map_err(
+                    |error| {
+                        trust_error(
+                            TrustErrorCode::InvalidStateTransition,
+                            format!(
+                                "team_message_deliver payload is not a MessageReference: {error}"
+                            ),
+                            "message",
+                            &message.id,
+                            None,
+                        )
+                    },
+                )?
+            }
             _ => {
                 return Err(trust_error(
                     TrustErrorCode::InvalidStateTransition,
