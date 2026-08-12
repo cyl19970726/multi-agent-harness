@@ -132,8 +132,8 @@
     },
     "configuration":{
       "type":"object","additionalProperties":false,
-      "required":["description","prompt_ref","prompt_projection","skill_refs","capabilities","provider_profile_ref","model_preference","workspace_policy","permission_ceiling","forbidden_actions","forbidden_actions_projection","workspace_binding"],
-      "properties":{"description":{"type":["string","null"]},"prompt_ref":{"type":["string","null"]},"prompt_projection":{"type":"string"},"skill_refs":{"type":"array","items":{"type":"string"}},"capabilities":{"type":"array","items":{"type":"string"}},"provider_profile_ref":{"type":["string","null"]},"model_preference":{"type":["string","null"]},"workspace_policy":{"type":["string","null"]},"permission_ceiling":{"type":["string","null"]},"forbidden_actions":{"type":"array","items":{"type":"string"}},"forbidden_actions_projection":{"type":"string"},"workspace_binding":{"anyOf":[{"$ref":"common.schema.json#/$defs/recordSummary"},{"type":"null"}]}}
+      "required":["description","prompt_ref","prompt_projection","skill_refs","capabilities","tool_refs","tools_projection","provider_profile_ref","model_preference","workspace_policy","permission_ceiling","forbidden_actions","forbidden_actions_projection","workspace_binding"],
+      "properties":{"description":{"type":["string","null"]},"prompt_ref":{"type":["string","null"]},"prompt_projection":{"type":"string"},"skill_refs":{"type":"array","items":{"type":"string"}},"capabilities":{"type":"array","items":{"type":"string"}},"tool_refs":{"type":"array","items":{"type":"string"}},"tools_projection":{"type":"string"},"provider_profile_ref":{"type":["string","null"]},"model_preference":{"type":["string","null"]},"workspace_policy":{"type":["string","null"]},"permission_ceiling":{"type":["string","null"]},"forbidden_actions":{"type":"array","items":{"type":"string"}},"forbidden_actions_projection":{"type":"string"},"workspace_binding":{"anyOf":[{"$ref":"common.schema.json#/$defs/recordSummary"},{"type":"null"}]}}
     },
     "publicConfiguration":{
       "allOf":[
@@ -146,6 +146,7 @@
             "model_preference":{"type":"null"},
             "workspace_policy":{"type":"null"},
             "permission_ceiling":{"type":"null"},
+            "tool_refs":{"type":"array","maxItems":0},
             "forbidden_actions":{"type":"array","maxItems":0},
             "workspace_binding":{"type":"null"}
           }

@@ -470,6 +470,30 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         serde_json::Value::Null,
         "Host-selected Member must not receive the private MemberRun binding"
     );
+    for key in ["provider", "execution_mode", "runtime_status"] {
+        assert!(
+            host_selected_member["data"]["selected_agent"][key].is_null(),
+            "Host-selected Member leaked selected_agent.{key}"
+        );
+    }
+    assert!(host_selected_member["data"]["selected_session_id"].is_null());
+    for key in [
+        "provider_profile_ref",
+        "model_preference",
+        "workspace_policy",
+        "permission_ceiling",
+        "workspace_binding",
+    ] {
+        assert!(
+            host_selected_member["data"]["configuration"][key].is_null(),
+            "Host-selected Member leaked configuration.{key}"
+        );
+    }
+    assert_eq!(
+        host_selected_member["data"]["configuration"]["tool_refs"],
+        serde_json::json!([]),
+        "Host-selected Member leaked configured tools"
+    );
     assert!(host_selected_member["data"].get("runtime_fabric").is_none());
     assert!(host_selected_member["data"]["messages"]
         .as_array()

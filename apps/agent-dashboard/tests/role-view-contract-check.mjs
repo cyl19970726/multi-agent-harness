@@ -36,7 +36,7 @@ Object.assign(publicAgentWorkspaceFixture.data.selected_agent,{current_member_ru
 publicAgentWorkspaceFixture.data.sessions=[];
 publicAgentWorkspaceFixture.data.selected_session_id=null;
 Object.assign(publicAgentWorkspaceFixture.data.session_activity,{native_session_id:null,provider:null,execution_mode:null,availability:"unavailable",items:[],truncated:false,disabled_reason:"Provider-private Session events are visible only to the exact selected Agent identity."});
-Object.assign(publicAgentWorkspaceFixture.data.configuration,{prompt_ref:null,provider_profile_ref:null,model_preference:null,workspace_policy:null,permission_ceiling:null,forbidden_actions:[],workspace_binding:null});
+Object.assign(publicAgentWorkspaceFixture.data.configuration,{prompt_ref:null,tool_refs:[],provider_profile_ref:null,model_preference:null,workspace_policy:null,permission_ceiling:null,forbidden_actions:[],workspace_binding:null});
 assert.equal(agentWorkspaceValidate(publicAgentWorkspaceFixture),true,`public Agent Workspace projection: ${ajv.errorsText(agentWorkspaceValidate.errors)}`);
 for(const [label,mutate] of [
   ["Session list",fixture=>fixture.data.sessions.push(privateAgentWorkspaceFixture.data.sessions[0])],
@@ -51,6 +51,7 @@ for(const [label,mutate] of [
   ["native activity item",fixture=>fixture.data.session_activity.items.push(privateAgentWorkspaceFixture.data.session_activity.items[0])],
   ["provider profile",fixture=>{fixture.data.configuration.provider_profile_ref="private-profile"}],
   ["model preference",fixture=>{fixture.data.configuration.model_preference="private-model"}],
+  ["configured tools",fixture=>{fixture.data.configuration.tool_refs=["private-tool"]}],
   ["workspace policy",fixture=>{fixture.data.configuration.workspace_policy="private-policy"}],
   ["permission ceiling",fixture=>{fixture.data.configuration.permission_ceiling="private-permission"}],
   ["workspace binding",fixture=>{fixture.data.configuration.workspace_binding={kind:"workspace_binding",id:"private-workspace",work_id:null,member_run_id:"private-member-run",requirement_id:null,status:"active",version:1,actor_ref:null,summary:null,created_at:null,source_id:null,target_id:null,locator:"/private"}}],

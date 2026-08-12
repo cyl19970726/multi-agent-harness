@@ -260,7 +260,7 @@ interface AgentWorkspaceSessionActivity {
   native_session_id:string|null;provider:string|null;execution_mode:string|null;availability:string;items:AgentWorkspaceActivityItem[];truncated:boolean;disabled_reason:string|null;
 }
 interface AgentWorkspaceConfiguration {
-  description:string|null;prompt_ref:string|null;prompt_projection:string;skill_refs:string[];capabilities:string[];provider_profile_ref:string|null;model_preference:string|null;workspace_policy:string|null;permission_ceiling:string|null;forbidden_actions:string[];forbidden_actions_projection:string;workspace_binding:RoleRecordSummary|null;
+  description:string|null;prompt_ref:string|null;prompt_projection:string;skill_refs:string[];capabilities:string[];tool_refs:string[];tools_projection:string;provider_profile_ref:string|null;model_preference:string|null;workspace_policy:string|null;permission_ceiling:string|null;forbidden_actions:string[];forbidden_actions_projection:string;workspace_binding:RoleRecordSummary|null;
 }
 interface AgentWorkspaceDataBase {
   team:{team_id:string;display_name:string;team_revision:number;mission_id:string;host_agent_id:string;viewer_role:"host"|"member";status:string;latest_run_id:string|null};
@@ -283,7 +283,7 @@ export type AgentWorkspaceHostMemberPublicData=AgentWorkspaceDataBase&{
   sessions:[];
   selected_session_id:null;
   session_activity:AgentWorkspaceSessionActivity&{native_session_id:null;provider:null;execution_mode:null;availability:"unavailable";items:[];truncated:false;disabled_reason:string};
-  configuration:AgentWorkspaceConfiguration&{prompt_ref:null;provider_profile_ref:null;model_preference:null;workspace_policy:null;permission_ceiling:null;forbidden_actions:[];workspace_binding:null};
+  configuration:AgentWorkspaceConfiguration&{prompt_ref:null;tool_refs:[];provider_profile_ref:null;model_preference:null;workspace_policy:null;permission_ceiling:null;forbidden_actions:[];workspace_binding:null};
 };
 export type AgentWorkspaceData=AgentWorkspacePrivateData|AgentWorkspaceHostMemberPublicData;
 export interface MemberWorkbenchData {

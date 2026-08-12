@@ -2235,6 +2235,8 @@ fn agent_workspace_view(
         "prompt_projection":"not_modeled",
         "skill_refs":selected_member.and_then(|member|member["skill_refs"].as_array()).cloned().unwrap_or_default(),
         "capabilities":selected_member.and_then(|member|member["capabilities"].as_array()).cloned().unwrap_or_default(),
+        "tool_refs":[],
+        "tools_projection":"not_modeled_by_agent_member",
         "provider_profile_ref":if may_read_private_session {selected_member.and_then(|member|member["provider_profile_ref"].as_str())} else {None},
         "model_preference":if may_read_private_session {selected_member.and_then(|member|member["model_preference"].as_str())} else {None},
         "workspace_policy":if may_read_private_session {selected_member.and_then(|member|member["workspace_policy"].as_str())} else {None},

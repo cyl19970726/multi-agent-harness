@@ -235,7 +235,7 @@
 
   @media (min-width: 640px) {
     .agent-team-composer > div:first-of-type {
-      grid-template-columns: 9rem minmax(11rem, 12.5rem) minmax(8rem, 1fr) auto;
+      grid-template-columns: 8.25rem 14rem minmax(8.5rem, 1fr) auto !important;
     }
   }
 

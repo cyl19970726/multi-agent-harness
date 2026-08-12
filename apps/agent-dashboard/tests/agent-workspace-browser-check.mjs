@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import {mkdir} from "node:fs/promises";
+import {createHash} from "node:crypto";
+import {mkdir,readFile,writeFile} from "node:fs/promises";
 import {dirname,join,resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 import {chromium} from "playwright";
@@ -42,7 +43,7 @@ const actions=[
   {kind:"request_gate_evaluation",target_ref:{kind:"work",id:works[1].work_id},required_version:2,disabled_reason:null},
   {kind:"close_member_run",target_ref:{kind:"member_run",id:"member-run-mira"},required_version:3,disabled_reason:null},
 ];
-const configuration={description:"Owns the frontend implementation and exact-source validation.",prompt_ref:null,prompt_projection:"not_modeled",skill_refs:["harness-frontend-product-design","frontend-visual-contract"],capabilities:["workspace_write","browser_acceptance","source_review"],provider_profile_ref:"codex-app-server-v1",model_preference:"gpt-5",workspace_policy:"isolated_worktree",permission_ceiling:"full_access",forbidden_actions:[],forbidden_actions_projection:"not_modeled",workspace_binding:{kind:"workspace_binding",id:"workspace-mira",work_id:baseWork.work_id,member_run_id:"member-run-mira",requirement_id:null,status:"attached",version:2,actor_ref:null,summary:null,created_at:"2026-08-12T07:00:00Z",source_id:null,target_id:null,locator:"/fixture/worktree"}};
+const configuration={description:"Owns the frontend implementation and exact-source validation.",prompt_ref:null,prompt_projection:"not_modeled",skill_refs:["harness-frontend-product-design","frontend-visual-contract"],capabilities:["workspace_write","browser_acceptance","source_review"],tool_refs:[],tools_projection:"not_modeled_by_agent_member",provider_profile_ref:"codex-app-server-v1",model_preference:"gpt-5",workspace_policy:"isolated_worktree",permission_ceiling:"full_access",forbidden_actions:[],forbidden_actions_projection:"not_modeled",workspace_binding:{kind:"workspace_binding",id:"workspace-mira",work_id:baseWork.work_id,member_run_id:"member-run-mira",requirement_id:null,status:"attached",version:2,actor_ref:null,summary:null,created_at:"2026-08-12T07:00:00Z",source_id:null,target_id:null,locator:"/fixture/worktree"}};
 const memberActivity=[
   {event_id:"native-0",kind:"message",status:"completed",title:"Mira",summary:"I mapped the Agent Workspace read model to the approved composition and started with the privacy boundary.",occurred_at:"2026-08-12T07:58:00Z"},
   {event_id:"native-1",kind:"tool",status:"completed",title:"Inspected canonical RoleView contracts",summary:"Read the current TeamWorkspace, HostConsole and MemberWorkbench projections without creating a second task or message model.",occurred_at:"2026-08-12T08:01:00Z"},
@@ -55,7 +56,7 @@ memberView.data.team={team_id:team.team_id,display_name:team.display_name,team_r
 const hostMessages=[messages[0],messages[2]];
 const hostView=envelope("agent_workspace",{...memberView.data,selected_agent:{agent_member_ref:{kind:"agent_member",id:"agent-host"},display_name:"Host Agent",role:"Team Lead",organization_status:"active",is_host:true,current_member_run_ref:null,provider:"codex",execution_mode:"host_native",runtime_status:"active"},selected_session_id:"host-thread-current",sessions:[{session_id:"host-thread-current",member_run_id:null,team_run_id:team.latest_run.id,provider:"codex",execution_mode:"host_native",coordination_status:"active",runtime_status:"active",runtime_generation:null,started_at:"2026-08-12T06:00:00Z",last_active_at:"2026-08-12T08:09:00Z",ended_at:null}],session_activity:{native_session_id:"host-thread-current",provider:"codex",execution_mode:"host_native",availability:"available",items:[{event_id:"host-native-0",kind:"message",status:"completed",title:"Host Agent",summary:"I reviewed the current decision surface and sent the next bounded assignment.",occurred_at:"2026-08-12T08:05:00Z"},{event_id:"host-native-1",kind:"tool",status:"completed",title:"Read Lead inbox",summary:"Provider-native Host event; no Member tool or thinking event is present.",occurred_at:"2026-08-12T08:08:00Z"}],truncated:false,disabled_reason:null},messages:hostMessages,configuration:{...configuration,description:"Owns Team judgment and assignment authority."},context_summary:{current_work_id:works[1].work_id,message_count:hostMessages.length,unread_count:0,last_activity_at:"2026-08-12T08:08:00Z",authorization_count:actions.length}},actions);
 hostView.data.projection_scope="host_self_private";
-const hostMemberPublic=envelope("agent_workspace",{...memberView.data,projection_scope:"host_member_public",selected_agent:{...memberView.data.selected_agent,current_member_run_ref:null,provider:null,execution_mode:null,runtime_status:null},sessions:[],selected_session_id:null,session_activity:{native_session_id:null,provider:null,execution_mode:null,availability:"unavailable",items:[],truncated:false,disabled_reason:"Provider-private Session events are visible only to the exact selected Agent identity."},configuration:{...configuration,provider_profile_ref:null,model_preference:null,workspace_policy:null,permission_ceiling:null,workspace_binding:null},messages:messages.map(message=>({...message,deliveries:[]})),works:works.map(work=>({...work,current_member_run_ref:null,runtime_summary:{state:"not_projected",generation:null,freshness:"unknown"},workspace_summary:{binding_id:null,lifecycle:"not_projected",safety:"unknown"}}))},actions);
+const hostMemberPublic=envelope("agent_workspace",{...memberView.data,projection_scope:"host_member_public",selected_agent:{...memberView.data.selected_agent,current_member_run_ref:null,provider:null,execution_mode:null,runtime_status:null},sessions:[],selected_session_id:null,session_activity:{native_session_id:null,provider:null,execution_mode:null,availability:"unavailable",items:[],truncated:false,disabled_reason:"Provider-private Session events are visible only to the exact selected Agent identity."},configuration:{...configuration,tool_refs:[],provider_profile_ref:null,model_preference:null,workspace_policy:null,permission_ceiling:null,workspace_binding:null},messages:messages.map(message=>({...message,deliveries:[]})),works:works.map(work=>({...work,current_member_run_ref:null,runtime_summary:{state:"not_projected",generation:null,freshness:"unknown"},workspace_summary:{binding_id:null,lifecycle:"not_projected",safety:"unknown"}}))},actions);
 const teamWorkspace=envelope("team_workspace",{team,pressure_summary:{active_turns:1,ready_members:1,total_members:2,ready_work:1,review_work:1,blocked_work:0},works,members:[member,analyst],messages,activity:[],activity_truncated:false,reports:[],findings:[],failures:[],gate_requirements:[],gate_evaluations:[],gate_waivers:[],workspace_attention:[],delegation_provenance:[],page:{as_of_event_sequence:72,item_count:works.length,next_cursor:null}});
 
 const vite=await createServer({configFile:join(dashboardRoot,"vite.config.ts"),server:{host:"127.0.0.1",port:0},logLevel:"silent"});
@@ -170,5 +171,24 @@ try{
     await open(page,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.member}&memberRun=${routeState.memberRun}&space=${routeState.space}&project=${routeState.project}`);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true,`${viewport.width}px horizontal overflow`);
   }
+  const captures=[];
+  for(const name of ["member-session","member-messages","member-work","member-configuration","host-session","host-member-public"]){
+    const file=`${name}--1440x1000--${capturedSourceSha}.png`;
+    captures.push({name,file,viewport:{width:1440,height:1000},sha256:createHash("sha256").update(await readFile(join(evidenceDir,file))).digest("hex")});
+  }
+  const liveMemberEvidence=liveConfig?await fetch(`${liveConfig.api}/v1/views/agent-workspace/${encodeURIComponent(liveConfig.teamRun)}?space=${encodeURIComponent(liveConfig.space)}&project=${encodeURIComponent(liveConfig.project)}&agent_id=${encodeURIComponent(liveConfig.member)}`,{headers:{"X-AgentFirm-Token":liveConfig.memberToken}}).then(async response=>{assert.equal(response.ok,true,`live evidence RoleView ${response.status}`);return response.json();}):null;
+  const manifest={
+    evidence_kind:liveConfig?"canonical_store_live":"automated_contract_fixture",
+    captured_source_sha:capturedSourceSha,
+    captured_at:new Date().toISOString(),
+    execution_space_id:liveConfig?.space??"fixture-space",
+    project_binding_id:liveConfig?.project??"fixture-project",
+    source_store_identity:liveMemberEvidence?.source_store_identity??"fixture-store",
+    as_of_event_sequence:liveMemberEvidence?.as_of_event_sequence??72,
+    canonical_objects:liveConfig?{team_run_id:liveConfig.teamRun,host_agent_member_id:liveConfig.host,member_agent_member_id:liveConfig.member,member_run_id:liveConfig.memberRun}:null,
+    native_session_claim:liveConfig?{availability:liveMemberEvidence?.data?.session_activity?.availability??"unknown",native_session_id:liveMemberEvidence?.data?.selected_session_id??null,claim:liveMemberEvidence?.data?.selected_session_id?"owner-bound native Session captured":"not claimed: no bound provider-native Session in the canonical store"}:"deterministic fixture only",
+    captures,
+  };
+  await writeFile(join(evidenceDir,"evidence-manifest.json"),`${JSON.stringify(manifest,null,2)}\n`);
   console.log(`agent workspace browser check: PASS (${liveConfig?"store-live":"fixture"}; ${evidenceDir})`);
 }finally{await browser.close();await vite.close();}

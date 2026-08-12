@@ -16,7 +16,7 @@
     "session_activity":{"native_session_id":"session-1","provider":"codex","execution_mode":"codex_app_server","availability":"available","items":[{"event_id":"native-event-0","kind":"tool","status":"completed","title":"Inspected RoleView contract","summary":"Provider recorded a source-linked tool result.","occurred_at":"2026-08-12T00:01:00Z"}],"truncated":false,"disabled_reason":null},
     "messages":[],
     "works":[],
-    "configuration":{"description":"Builds the selected product slice.","prompt_ref":null,"prompt_projection":"not_modeled","skill_refs":["harness-frontend-product-design"],"capabilities":["workspace_write"],"provider_profile_ref":"codex-app-server-v1","model_preference":null,"workspace_policy":"isolated_worktree","permission_ceiling":"full_access","forbidden_actions":[],"forbidden_actions_projection":"not_modeled","workspace_binding":null},
+    "configuration":{"description":"Builds the selected product slice.","prompt_ref":null,"prompt_projection":"not_modeled","skill_refs":["harness-frontend-product-design"],"capabilities":["workspace_write"],"tool_refs":[],"tools_projection":"not_modeled_by_agent_member","provider_profile_ref":"codex-app-server-v1","model_preference":null,"workspace_policy":"isolated_worktree","permission_ceiling":"full_access","forbidden_actions":[],"forbidden_actions_projection":"not_modeled","workspace_binding":null},
     "context_summary":{"current_work_id":null,"message_count":0,"unread_count":0,"last_activity_at":"2026-08-12T00:01:00Z","authorization_count":0}
   },
   "attention":[],
