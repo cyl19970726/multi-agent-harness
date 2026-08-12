@@ -262,7 +262,39 @@ fn find_file(root: &Path, suffix: &str, depth: usize) -> CliResult<Option<PathBu
 }
 
 fn find_kimi_wire(root: &Path, session_dir: &str, depth: usize) -> CliResult<Option<PathBuf>> {
-    if depth == 0 || !root.is_dir() {
+    if depth == 0 {
+        return Ok(None);
+    }
+    let canonical_root = match fs::canonicalize(root) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if !fs::symlink_metadata(&canonical_root)?.is_dir() {
+        return Ok(None);
+    }
+    let expected = if session_dir.starts_with("session_") {
+        session_dir.to_string()
+    } else {
+        format!("session_{session_dir}")
+    };
+    find_kimi_wire_beneath(
+        &canonical_root,
+        &canonical_root,
+        &expected,
+        session_dir,
+        depth,
+    )
+}
+
+fn find_kimi_wire_beneath(
+    root: &Path,
+    canonical_root: &Path,
+    expected_session_dir: &str,
+    requested_session: &str,
+    depth: usize,
+) -> CliResult<Option<PathBuf>> {
+    if depth == 0 {
         return Ok(None);
     }
     let mut found = None;
@@ -273,26 +305,49 @@ fn find_kimi_wire(root: &Path, session_dir: &str, depth: usize) -> CliResult<Opt
             continue;
         }
         if metadata.is_dir() {
-            let expected = if session_dir.starts_with("session_") {
-                session_dir.to_string()
-            } else {
-                format!("session_{session_dir}")
-            };
-            if path.file_name().and_then(|name| name.to_str()) == Some(expected.as_str()) {
+            if path.file_name().and_then(|name| name.to_str()) == Some(expected_session_dir) {
                 let wire = path.join("agents/main/wire.jsonl");
-                if wire.is_file() {
-                    let candidate = fs::canonicalize(wire)?;
-                    if found.replace(candidate).is_some() {
-                        return Err(CliError::Usage(format!(
-                            "multiple Kimi Session candidates name `{session_dir}`"
-                        )));
+                match fs::symlink_metadata(&wire) {
+                    Ok(wire_metadata) => {
+                        if wire_metadata.file_type().is_symlink() {
+                            return Err(CliError::Usage(format!(
+                                "Kimi wire candidate is a symbolic link: {}",
+                                wire.display()
+                            )));
+                        }
+                        if !wire_metadata.is_file() {
+                            return Err(CliError::Usage(format!(
+                                "Kimi wire candidate is not a regular file: {}",
+                                wire.display()
+                            )));
+                        }
+                        let candidate = fs::canonicalize(&wire)?;
+                        if !candidate.starts_with(canonical_root) {
+                            return Err(CliError::Usage(format!(
+                                "Kimi wire candidate escapes the canonical sessions root: {}",
+                                wire.display()
+                            )));
+                        }
+                        if found.replace(candidate).is_some() {
+                            return Err(CliError::Usage(format!(
+                                "multiple Kimi Session candidates name `{requested_session}`"
+                            )));
+                        }
                     }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
                 }
             }
-            if let Some(nested) = find_kimi_wire(&path, session_dir, depth - 1)? {
+            if let Some(nested) = find_kimi_wire_beneath(
+                &path,
+                canonical_root,
+                expected_session_dir,
+                requested_session,
+                depth - 1,
+            )? {
                 if found.replace(nested).is_some() {
                     return Err(CliError::Usage(format!(
-                        "multiple Kimi Session candidates name `{session_dir}`"
+                        "multiple Kimi Session candidates name `{requested_session}`"
                     )));
                 }
             }
@@ -513,6 +568,16 @@ mod tests {
         root
     }
 
+    fn kimi_sessions(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "firm-kimi-sessions-{label}-{}-{}",
+            std::process::id(),
+            NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).expect("Kimi sessions root");
+        root
+    }
+
     #[test]
     fn drops_provider_thinking_from_native_projection() {
         let codex = serde_json::json!({"timestamp":"t", "type":"event_msg", "payload":{"type":"agent_reasoning", "text":"secret"}});
@@ -595,5 +660,78 @@ mod tests {
             assert!(discover_codex_rollout(&home, session_id).is_err());
             fs::remove_dir_all(home).expect("cleanup");
         }
+    }
+
+    #[test]
+    fn discovers_exact_kimi_wire_beneath_canonical_sessions_root() {
+        let root = kimi_sessions("valid");
+        let wire = root.join("workspace/session_019f-kimi-valid/agents/main/wire.jsonl");
+        fs::create_dir_all(wire.parent().expect("wire parent")).expect("wire parent");
+        fs::write(&wire, "{\"type\":\"turn.prompt\"}\n").expect("wire");
+
+        assert_eq!(
+            find_kimi_wire(&root, "019f-kimi-valid", 4).expect("discovery"),
+            Some(fs::canonicalize(&wire).expect("canonical wire"))
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn duplicate_exact_kimi_session_directories_are_rejected() {
+        let root = kimi_sessions("duplicate");
+        for parent in ["workspace-a", "workspace-b"] {
+            let wire = root
+                .join(parent)
+                .join("session_019f-kimi-duplicate/agents/main/wire.jsonl");
+            fs::create_dir_all(wire.parent().expect("wire parent")).expect("wire parent");
+            fs::write(wire, "{}\n").expect("wire");
+        }
+
+        let error = find_kimi_wire(&root, "019f-kimi-duplicate", 4)
+            .expect_err("duplicate candidates reject");
+        assert!(error
+            .to_string()
+            .contains("multiple Kimi Session candidates"));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kimi_wire_symbolic_link_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let root = kimi_sessions("wire-symlink");
+        let outside = kimi_sessions("wire-symlink-outside").join("wire.jsonl");
+        fs::write(&outside, "{}\n").expect("outside wire");
+        let wire = root.join("session_019f-kimi-link/agents/main/wire.jsonl");
+        fs::create_dir_all(wire.parent().expect("wire parent")).expect("wire parent");
+        symlink(&outside, &wire).expect("wire symlink");
+
+        let error = find_kimi_wire(&root, "019f-kimi-link", 4).expect_err("symlink rejects");
+        assert!(error.to_string().contains("symbolic link"));
+        fs::remove_dir_all(root).expect("cleanup root");
+        fs::remove_dir_all(outside.parent().expect("outside parent")).expect("cleanup outside");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kimi_wire_through_intermediate_symlink_cannot_escape_sessions_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = kimi_sessions("escape");
+        let outside = kimi_sessions("escape-outside");
+        let outside_main = outside.join("main");
+        fs::create_dir_all(&outside_main).expect("outside main");
+        fs::write(outside_main.join("wire.jsonl"), "{}\n").expect("outside wire");
+        let session = root.join("session_019f-kimi-escape");
+        fs::create_dir_all(&session).expect("session");
+        symlink(&outside, session.join("agents")).expect("agents symlink");
+
+        let error = find_kimi_wire(&root, "019f-kimi-escape", 4).expect_err("root escape rejects");
+        assert!(error
+            .to_string()
+            .contains("escapes the canonical sessions root"));
+        fs::remove_dir_all(root).expect("cleanup root");
+        fs::remove_dir_all(outside).expect("cleanup outside");
     }
 }
