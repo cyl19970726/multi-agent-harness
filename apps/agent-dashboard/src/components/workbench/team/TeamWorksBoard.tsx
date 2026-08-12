@@ -10,6 +10,8 @@ import type { MemberCapacitySummary, WorkSummary } from "../../../model/roleView
 
 type OwnerFilter = "all" | "unassigned" | string;
 type AttentionFilter = "all" | "blocked" | "review";
+type ConditionFilter = "all" | string;
+type PriorityFilter = "all" | string;
 const LANES = [
   { id: "open", label: "Open", matches: (work: WorkSummary) => work.phase === "open" },
   { id: "active", label: "Active", matches: (work: WorkSummary) => work.phase === "active" },
@@ -37,6 +39,8 @@ export function TeamWorksBoard({ works, members, selectedWorkId, onSelectWork, o
   const [localOwner, setLocalOwner] = useState<OwnerFilter>("all");
   const [localAttention, setLocalAttention] = useState<AttentionFilter>("all");
   const [localQuery, setLocalQuery] = useState("");
+  const [condition, setCondition] = useState<ConditionFilter>("all");
+  const [priority, setPriority] = useState<PriorityFilter>("all");
   const owner = ownerFilter ?? localOwner;
   const attention = attentionFilter ?? localAttention;
   const query = queryFilter ?? localQuery;
@@ -44,15 +48,22 @@ export function TeamWorksBoard({ works, members, selectedWorkId, onSelectWork, o
   const [compactSheet, setCompactSheet] = useState(false);
   const closeRef = useRef<HTMLButtonElement>(null);
   const sheetRef = useRef<HTMLElement>(null);
+  const filterTriggerRef = useRef<HTMLButtonElement>(null);
+  const filterCloseRef = useRef<HTMLButtonElement>(null);
+  const filterSheetRef = useRef<HTMLDivElement>(null);
   const workCardRefs = useRef(new Map<string, HTMLButtonElement>());
   const focusReturnWorkId = useRef<string>();
   const selected = works.find((work) => work.work_id === selectedWorkId);
   const membersById = useMemo(() => new Map(members.map((member) => [member.agent_member_ref.id, member])), [members]);
+  const conditions = useMemo(() => Array.from(new Set(works.map((work) => work.condition?.trim()).filter((value): value is string => Boolean(value)))), [works]);
+  const priorities = useMemo(() => Array.from(new Set(works.map((work) => work.priority?.trim()).filter((value): value is string => Boolean(value)))), [works]);
   const visible = works.filter((work) => {
     const ownerMatch = owner === "all" || (owner === "unassigned" ? !work.owner_actor_ref : work.owner_actor_ref?.id === owner);
     const attentionMatch = attention === "all" || (attention === "blocked" ? work.condition === "blocked" : work.phase === "review");
+    const conditionMatch = condition === "all" || work.condition === condition;
+    const priorityMatch = priority === "all" || work.priority === priority;
     const searchable = [work.work_id, work.title, work.context_markdown, work.completion_criteria_markdown, work.owner_actor_ref?.id].filter(Boolean).join(" ").toLowerCase();
-    return ownerMatch && attentionMatch && (!query.trim() || searchable.includes(query.trim().toLowerCase()));
+    return ownerMatch && attentionMatch && conditionMatch && priorityMatch && (!query.trim() || searchable.includes(query.trim().toLowerCase()));
   });
 
   useEffect(() => {
@@ -92,30 +103,54 @@ export function TeamWorksBoard({ works, members, selectedWorkId, onSelectWork, o
     document.addEventListener("keydown", close);
     return () => document.removeEventListener("keydown", close);
   }, [selected, onSelectWork, compactSheet]);
+  const closeFilters = () => {
+    setFiltersOpen(false);
+    filterTriggerRef.current?.focus();
+  };
+  useEffect(() => {
+    if (!compactSheet || !filtersOpen) return;
+    filterCloseRef.current?.focus();
+    const handleKeyDown = (event:KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); closeFilters(); return; }
+      if (event.key !== "Tab") return;
+      const focusable = [...(filterSheetRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])') ?? [])];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown",handleKeyDown);
+    return () => document.removeEventListener("keydown",handleKeyDown);
+  },[compactSheet,filtersOpen]);
 
   const updateFilters = (next:Partial<{owner:OwnerFilter;attention:AttentionFilter;query:string}>) => {
     const filters={owner:next.owner ?? owner,attention:next.attention ?? attention,query:next.query ?? query};
     if(onFiltersChange)onFiltersChange(filters);else {setLocalOwner(filters.owner);setLocalAttention(filters.attention);setLocalQuery(filters.query);}
   };
-  const clearFilters = () => updateFilters({owner:"all",attention:"all",query:""});
-  const filtersApplied = owner !== "all" || attention !== "all" || Boolean(query);
+  const clearFilters = () => { updateFilters({owner:"all",attention:"all",query:""}); setCondition("all"); setPriority("all"); };
+  const filtersApplied = owner !== "all" || attention !== "all" || condition !== "all" || priority !== "all" || Boolean(query);
   const priorityWork = [...visible].sort((left,right) => workAttentionRank(right) - workAttentionRank(left))[0];
   return (
     <section aria-labelledby="team-works-title" data-testid="role-view-team-works">
-      <header className="flex flex-wrap items-end justify-between gap-2 pt-4 md:hidden">
+      <header className="flex flex-wrap items-end justify-between gap-2 pt-4 lg:hidden">
         <div><h2 id="team-works-title" className="text-base font-semibold">Shared Works</h2><p className="text-xs text-muted-foreground">Durable responsibility grouped by canonical lifecycle.</p></div>
-        <Button size="sm" variant="secondary" className="min-h-11 sm:min-h-0" aria-expanded={filtersOpen} onClick={() => setFiltersOpen((open) => !open)}><ListFilter className="size-3.5" /> Filters</Button>
+        <Button ref={filterTriggerRef} size="sm" variant="secondary" className="min-h-11 sm:min-h-0" aria-expanded={filtersOpen} aria-controls="team-work-filters" onClick={() => filtersOpen ? closeFilters() : setFiltersOpen(true)}><ListFilter className="size-3.5" /> Filters</Button>
       </header>
 
-      <div className={cn("grid gap-2 border-b border-border/80 bg-card/70 py-3 md:grid-cols-[minmax(18rem,1fr)_12rem_12rem]", !filtersOpen && "hidden md:grid")} aria-label="Work filters">
+      {filtersOpen && compactSheet && <button type="button" aria-label="Close Work filters" className="fixed inset-0 z-40 bg-foreground/15" onClick={closeFilters}/>}
+      <div ref={filterSheetRef} id="team-work-filters" role={compactSheet ? "dialog" : undefined} aria-modal={compactSheet && filtersOpen ? true : undefined} className={cn("grid gap-2 border-b border-border/80 bg-card/70 py-3 lg:grid-cols-[minmax(16rem,1fr)_10rem_9rem_9rem_12rem]", !filtersOpen && "hidden lg:grid", compactSheet && filtersOpen && "agent-team-sheet-enter fixed inset-x-0 bottom-0 z-50 max-h-[88dvh] overflow-y-auto rounded-t-xl border bg-background p-4 shadow-xl")} aria-label="Work filters">
+        <div className="mb-1 flex items-center lg:hidden"><h3 className="text-sm font-semibold">Filter Works</h3><button ref={filterCloseRef} type="button" className="ml-auto grid size-11 place-items-center rounded-md" aria-label="Close Work filters" onClick={closeFilters}><X className="size-4"/></button></div>
         <label className="relative min-w-0"><span className="sr-only">Search Works</span><Search className="pointer-events-none absolute left-3 top-3 size-4 text-muted-foreground"/><input value={query} onChange={(event) => updateFilters({query:event.target.value})} placeholder="Search title, context or ID" className="agent-team-control h-10 w-full pl-9 pr-3 text-sm outline-none focus:border-primary" /></label>
         <label><span className="sr-only">Owner</span><select value={owner} onChange={(event) => updateFilters({owner:event.target.value})} className="agent-team-control h-10 w-full px-3 text-xs"><option value="all">All owners</option><option value="unassigned">Unassigned</option>{members.map((member) => <option key={member.agent_member_ref.id} value={member.agent_member_ref.id}>{member.display_name}</option>)}</select></label>
+        <label><span className="sr-only">Condition</span><select value={condition} onChange={(event) => setCondition(event.target.value as ConditionFilter)} className="agent-team-control h-10 w-full px-3 text-xs"><option value="all">All conditions</option>{conditions.map((value) => <option key={value} value={value}>{value.replace(/_/g," ")}</option>)}</select></label>
+        <label><span className="sr-only">Priority</span><select value={priority} onChange={(event) => setPriority(event.target.value as PriorityFilter)} className="agent-team-control h-10 w-full px-3 text-xs"><option value="all">All priorities</option>{priorities.map((value) => <option key={value} value={value}>{value.replace(/_/g," ")}</option>)}</select></label>
         <div className="agent-team-control flex min-w-0 gap-0.5 p-0.5" role="group" aria-label="Attention filter">{(["all", "blocked", "review"] as const).map((value) => <button key={value} type="button" data-active={attention === value} className="agent-team-filter-choice min-w-0 flex-1 px-2 text-xs font-medium" onClick={() => updateFilters({attention:value})}>{value}</button>)}</div>
       </div>
 
       {visible.length ? <>
       {priorityWork && <section className="mt-3 border-y border-border py-3 lg:hidden" aria-labelledby="priority-work-title"><div className="mb-2 flex items-center gap-2"><Flag className="size-3.5 text-primary"/><h3 id="priority-work-title" className="text-[10px] font-semibold uppercase tracking-[.13em]">Attention preview</h3><span className="ml-auto text-[9px] text-muted-foreground">Display ordering · canonical phase below</span></div><WorkCard work={priorityWork} ownerMember={priorityWork.owner_actor_ref ? membersById.get(priorityWork.owner_actor_ref.id) : undefined} selected={selectedWorkId === priorityWork.work_id} onSelect={onSelectWork} register={(node) => { if (node) workCardRefs.current.set(priorityWork.work_id,node); else workCardRefs.current.delete(priorityWork.work_id); }} prominent/></section>}
-      <div className="mt-2 space-y-2 lg:hidden" data-testid="team-work-mobile-phases">{LANES.map((lane) => { const laneWorks=visible.filter(lane.matches); return <details key={lane.id} className="border-b border-border" open={lane.id === "open" || lane.id === "review"}><summary className="flex min-h-11 cursor-pointer list-none items-center text-xs font-semibold uppercase tracking-[.1em]"><span>{lane.label}</span><span className="ml-auto tabular-nums text-muted-foreground">{laneWorks.length}</span></summary><div className="space-y-2 pb-3">{lane.id === "open" && <OpenGroupCounts works={laneWorks}/>} {laneWorks.map((work) => <WorkCard key={work.work_id} work={work} ownerMember={work.owner_actor_ref ? membersById.get(work.owner_actor_ref.id) : undefined} selected={selectedWorkId === work.work_id} onSelect={onSelectWork} register={(node) => { if(node) workCardRefs.current.set(work.work_id,node); else workCardRefs.current.delete(work.work_id); }}/>)}</div></details>;})}</div>
+      <div className="mt-2 grid gap-x-4 lg:hidden md:grid-cols-2" data-testid="team-work-mobile-phases">{LANES.map((lane) => { const laneWorks=visible.filter(lane.matches); return <details key={lane.id} className="border-b border-border" open><summary className="flex min-h-11 cursor-pointer list-none items-center text-xs font-semibold uppercase tracking-[.1em]"><span>{lane.label}</span><span className="ml-auto tabular-nums text-muted-foreground">{laneWorks.length}</span></summary><div className="space-y-2 pb-3">{lane.id === "open" && <OpenGroupCounts works={laneWorks}/>} {laneWorks.map((work) => <WorkCard key={work.work_id} work={work} ownerMember={work.owner_actor_ref ? membersById.get(work.owner_actor_ref.id) : undefined} selected={selectedWorkId === work.work_id} onSelect={onSelectWork} register={(node) => { if(node) workCardRefs.current.set(work.work_id,node); else workCardRefs.current.delete(work.work_id); }}/>)}</div></details>;})}</div>
       <div className="hidden min-h-[590px] grid-cols-4 items-start bg-[color-mix(in_srgb,var(--secondary)_30%,transparent)] lg:grid" data-testid="team-work-lanes">{LANES.map((lane) => {
         const laneWorks = visible.filter(lane.matches);
         const orderedLaneWorks = lane.id === "open" ? [...laneWorks].sort((left,right) => Number(Boolean(left.owner_actor_ref)) - Number(Boolean(right.owner_actor_ref))) : laneWorks;
