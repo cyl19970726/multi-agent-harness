@@ -27,6 +27,9 @@ use harness_store::HarnessStore;
 
 use super::{CliError, CliResult, ResolvedStore};
 
+const GATEWAY_HEARTBEAT_READ_TIMEOUT: Duration = Duration::from_secs(5);
+const GATEWAY_IDLE_POLL_READ_TIMEOUT: Duration = Duration::from_millis(250);
+
 pub(crate) fn fabric_command(
     store: &HarnessStore,
     resolved: &ResolvedStore,
@@ -528,9 +531,6 @@ fn node_gateway_command(
     local
         .bind_gateway_session(&gateway.session)
         .map_err(fabric_error)?;
-    gateway
-        .set_read_timeout(Some(Duration::from_millis(250)))
-        .map_err(fabric_error)?;
     println!(
         "Remote Fabric NodeGateway connected node={} gateway_generation={} control_plane_generation={}",
         gateway.session.node_id,
@@ -546,7 +546,18 @@ fn node_gateway_command(
         daemon_generation: gateway.session.node_daemon_generation,
     };
     loop {
+        // A real two-machine mTLS heartbeat includes a durable lease CAS and
+        // must not inherit the short idle-poll timeout used while waiting for
+        // routed work. Otherwise normal LAN scheduling jitter fabricates an
+        // offline transition and the reconnect collides with its still-live
+        // generation lease.
+        gateway
+            .set_read_timeout(Some(GATEWAY_HEARTBEAT_READ_TIMEOUT))
+            .map_err(fabric_error)?;
         gateway.heartbeat().map_err(fabric_error)?;
+        gateway
+            .set_read_timeout(Some(GATEWAY_IDLE_POLL_READ_TIMEOUT))
+            .map_err(fabric_error)?;
         loop {
             match gateway.apply_next(&local, &mut application) {
                 Ok(receipt) => println!(
@@ -1634,6 +1645,14 @@ fn fabric_error(error: FabricError) -> CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn real_gateway_heartbeat_timeout_is_bounded_but_not_an_idle_poll() {
+        assert_eq!(GATEWAY_IDLE_POLL_READ_TIMEOUT, Duration::from_millis(250));
+        assert_eq!(GATEWAY_HEARTBEAT_READ_TIMEOUT, Duration::from_secs(5));
+        assert!(GATEWAY_HEARTBEAT_READ_TIMEOUT > GATEWAY_IDLE_POLL_READ_TIMEOUT);
+        assert!(GATEWAY_HEARTBEAT_READ_TIMEOUT < Duration::from_secs(30));
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
