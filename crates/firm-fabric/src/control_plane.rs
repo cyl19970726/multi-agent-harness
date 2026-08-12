@@ -136,6 +136,7 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_enrollment(
         &self,
         actor: &AuthenticatedActor,

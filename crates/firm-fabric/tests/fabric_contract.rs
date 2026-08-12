@@ -242,6 +242,7 @@ fn fabric_session(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rotate_gateway_certificate(
     control: &ControlPlane<'_, InMemoryArtifactKeyBackend>,
     store: &FabricStore,
@@ -1456,7 +1457,7 @@ fn offline_source_outbox_rebinds_only_after_empty_current_generation_reconcile()
     };
     let before = store.snapshot().unwrap();
     let error = store
-        .rebind_unaccepted_outbox(&successor, &request.id, &[accepted.clone()])
+        .rebind_unaccepted_outbox(&successor, &request.id, std::slice::from_ref(&accepted))
         .expect_err("accepted route truth cannot be rebound");
     assert_eq!(error.code, FabricErrorCode::IdempotencyConflict);
     assert_eq!(error.effect, EffectCertainty::None);

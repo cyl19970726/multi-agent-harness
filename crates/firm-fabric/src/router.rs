@@ -232,24 +232,6 @@ pub(crate) fn accept_and_enqueue(
     Ok((operation, attempt, receipt, false))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::queue_capacity_exceeded;
-    use crate::store::FabricStoreLimits;
-
-    #[test]
-    fn default_offline_queue_boundaries_are_exact() {
-        let limits = FabricStoreLimits::default();
-        assert!(!queue_capacity_exceeded(9_999, 0, 1, limits));
-        assert!(queue_capacity_exceeded(10_000, 0, 1, limits));
-
-        let one_gib = 1024_u64 * 1024 * 1024;
-        assert!(!queue_capacity_exceeded(0, one_gib - 1, 1, limits));
-        assert!(queue_capacity_exceeded(0, one_gib, 1, limits));
-        assert!(queue_capacity_exceeded(0, u64::MAX, 1, limits));
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn retry_operation(
     state: &mut FabricState,
@@ -984,4 +966,22 @@ fn receipt_for(
                 "durable receipt is missing",
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::queue_capacity_exceeded;
+    use crate::store::FabricStoreLimits;
+
+    #[test]
+    fn default_offline_queue_boundaries_are_exact() {
+        let limits = FabricStoreLimits::default();
+        assert!(!queue_capacity_exceeded(9_999, 0, 1, limits));
+        assert!(queue_capacity_exceeded(10_000, 0, 1, limits));
+
+        let one_gib = 1024_u64 * 1024 * 1024;
+        assert!(!queue_capacity_exceeded(0, one_gib - 1, 1, limits));
+        assert!(queue_capacity_exceeded(0, one_gib, 1, limits));
+        assert!(queue_capacity_exceeded(0, u64::MAX, 1, limits));
+    }
 }
