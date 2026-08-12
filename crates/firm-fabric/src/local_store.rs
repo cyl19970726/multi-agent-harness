@@ -1074,21 +1074,38 @@ fn load_local_journal(path: &Path) -> Result<(NodeLocalFabricState, String, u64)
             break;
         };
         let end = offset + relative_end;
-        let frame: LocalJournalFrame =
-            serde_json::from_slice(&bytes[offset..end]).map_err(|error| {
+        let committed = &bytes[offset..end];
+        let frame: LocalJournalFrame = serde_json::from_slice(committed).map_err(|error| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                format!("Node local committed frame is invalid: {error}"),
+            )
+        })?;
+        // Verify the canonical bytes that were actually committed, not a
+        // re-serialization through today's Rust structs. A later compatible
+        // reader may add a `#[serde(default)]` field; materializing that field
+        // before hashing would falsely classify a valid historical chain as
+        // corrupt. Closed-schema deserialization still rejects unknown fields.
+        let mut wire: serde_json::Value = serde_json::from_slice(committed).map_err(|error| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                format!("Node local committed frame is invalid: {error}"),
+            )
+        })?;
+        let wire_digest = wire
+            .as_object_mut()
+            .and_then(|object| object.remove("frame_digest"))
+            .and_then(|value| value.as_str().map(str::to_string))
+            .ok_or_else(|| {
                 FabricError::none(
                     FabricErrorCode::StoreUnavailable,
-                    format!("Node local committed frame is invalid: {error}"),
+                    "Node local committed frame is missing frame_digest",
                 )
             })?;
-        let core = LocalJournalCore {
-            transaction_sequence: frame.transaction_sequence,
-            previous_digest: frame.previous_digest.clone(),
-            state: frame.state.clone(),
-        };
         if frame.transaction_sequence != expected_sequence
             || frame.previous_digest != expected_previous
-            || frame.frame_digest != canonical_digest(&core)?
+            || frame.frame_digest != wire_digest
+            || wire_digest != canonical_digest(&wire)?
             || frame.state.revision != frame.transaction_sequence
         {
             return Err(FabricError::none(

@@ -420,7 +420,10 @@ impl ControlPlaneReceiptApplication for Wave6ControlPlaneApplication {
                 company_id: self.company_id.clone(),
                 actor_id: self.actor_id.clone(),
                 actor_kind: harness_fabric::ActorKind::Service,
-                role_bindings: BTreeSet::from(["company_control_plane".into()]),
+                role_bindings: BTreeSet::from([
+                    "company_control_plane".into(),
+                    "fabric_submit".into(),
+                ]),
                 session_id: format!("control-plane:{}", operation.control_plane_generation),
                 issued_at_unix_ms: observed_at_unix_ms,
                 expires_at_unix_ms: observed_at_unix_ms.saturating_add(30_000),
@@ -2670,6 +2673,17 @@ struct CollaborationDecisionHttpRequest {
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+struct CollaborationInboundPolicyHttpRequest {
+    policy_id: String,
+    target_team_id: String,
+    source_team_id: String,
+    mode: harness_core::collaboration::DelegationInboundMode,
+    allowed_outcome_classes: Vec<String>,
+    max_active_delegations: u64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CollaborationCancellationRequestHttpRequest {
     reason: String,
     target_execution_space_id: String,
@@ -2795,6 +2809,101 @@ fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend
             "next_cursor": page.next_cursor,
         }));
     }
+    if method == "POST" && path == "/v1/collaboration/inbound-policies" {
+        let idempotency_key = headers
+            .get("idempotency-key")
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::IdempotencyConflict,
+                    "Idempotency-Key is required",
+                )
+            })?;
+        let expected_revision = headers
+            .get("if-match")
+            .and_then(|value| value.trim_matches('"').parse::<u64>().ok())
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::ExpectedRevisionConflict,
+                    "If-Match exact policy revision is required",
+                )
+            })?;
+        let request = serde_json::from_slice::<CollaborationInboundPolicyHttpRequest>(body)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
+            })?;
+        if request.policy_id.trim().is_empty()
+            || request.target_team_id.trim().is_empty()
+            || request.source_team_id.trim().is_empty()
+            || request.allowed_outcome_classes.is_empty()
+            || request.max_active_delegations == 0
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::UnauthorizedActor,
+                "inbound policy requires an authenticated AgentMember target Host and bounded policy scope",
+            ));
+        }
+        let teams = store.teams().map_err(|error| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                format!("target AgentTeam lookup failed: {error}"),
+            )
+        })?;
+        let target_team = teams
+            .iter()
+            .rev()
+            .find(|team| team.id == request.target_team_id)
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::ExpectedRevisionConflict,
+                    "target AgentTeam does not exist",
+                )
+            })?;
+        let resolved_target_host = harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+            id: target_team.host_agent_id.clone(),
+        };
+        if credential.actor != resolved_target_host {
+            return Err(FabricError::none(
+                FabricErrorCode::UnauthorizedActor,
+                "only the server-resolved exact target Host may author inbound policy",
+            ));
+        }
+        let now = now_unix_ms()?;
+        let policy = harness_core::collaboration::DelegationInboundPolicy {
+            id: request.policy_id,
+            company_id: control.company_id().into(),
+            target_team_id: request.target_team_id,
+            source_team_id: request.source_team_id,
+            mode: request.mode,
+            allowed_outcome_classes: request.allowed_outcome_classes,
+            max_active_delegations: request.max_active_delegations,
+            created_by_target_host: credential.actor.clone(),
+            revision: expected_revision.saturating_add(1),
+            created_at: format!("unix-ms:{now}"),
+            revoked_at: None,
+        };
+        let written = store
+            .put_collaboration_inbound_policy(
+                &harness_store::CollaborationMutationContext {
+                    company_id: control.company_id().into(),
+                    authenticated_actor: credential.actor.clone(),
+                    command_name: "delegation_inbound_policy.put".into(),
+                    idempotency_key: idempotency_key.clone(),
+                    expected_revision,
+                    occurred_at: format!("unix-ms:{now}"),
+                },
+                &policy,
+                &resolved_target_host,
+            )
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
+            })?;
+        return Ok(serde_json::json!({
+            "policy": written.projection,
+            "replayed": written.replayed,
+        }));
+    }
     let suffix = path
         .strip_prefix("/v1/collaboration/delegations/")
         .ok_or_else(|| {
@@ -2880,7 +2989,11 @@ fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend
         company_id: control.company_id().into(),
         actor_id: format!("control-plane:{generation}"),
         actor_kind: harness_fabric::ActorKind::Service,
-        role_bindings: BTreeSet::from(["company_control_plane".into()]),
+        // This is the server's exact Control Plane generation, not the
+        // browser credential. It owns transport submission while the
+        // resolved business actor remains separately frozen in the closed
+        // collaboration envelope.
+        role_bindings: BTreeSet::from(["company_control_plane".into(), "fabric_submit".into()]),
         session_id: format!("control-plane:{generation}"),
         issued_at_unix_ms: now,
         expires_at_unix_ms: now.saturating_add(30_000),
