@@ -55,6 +55,61 @@ impl ArtifactKeyBackend for InMemoryArtifactKeyBackend {
 }
 
 impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
+    pub fn artifact_manifest(
+        &self,
+        artifact_id: &str,
+    ) -> Result<Option<RemoteArtifactManifest>, FabricError> {
+        Ok(self.store().snapshot()?.artifacts.get(artifact_id).cloned())
+    }
+
+    pub fn replay_collaboration_upload_capability(
+        &self,
+        actor: &AuthenticatedActor,
+        generation: u64,
+        artifact_id: &str,
+        now_unix_ms: u64,
+    ) -> Result<(RemoteArtifactManifest, ArtifactCapability), FabricError> {
+        let company_id = self.company_id().to_string();
+        let signing_key = *self.capability_signing_key();
+        self.store().transact(|state| {
+            require_active_control_plane(
+                state,
+                &company_id,
+                self.instance_id(),
+                generation,
+                now_unix_ms,
+            )?;
+            actor.require_company_and_role(&company_id, "artifact_write", now_unix_ms)?;
+            let manifest = state.artifacts.get(artifact_id).cloned().ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::ArtifactInvalid,
+                    "artifact manifest does not exist",
+                )
+            })?;
+            if manifest.initiator != actor.actor_id
+                || manifest.source_team_id.is_none()
+                || manifest.source_work_id.is_none()
+                || manifest.completed_at_unix_ms.is_some()
+                || manifest.deleted_at_unix_ms.is_some()
+            {
+                return Err(FabricError::none(
+                    FabricErrorCode::ArtifactInvalid,
+                    "collaboration upload is not replayable",
+                ));
+            }
+            let capability = issue_capability(
+                &signing_key,
+                &manifest,
+                &manifest.source_node_id,
+                ArtifactCapabilityPurpose::Upload,
+                &actor.actor_id,
+                manifest.created_at_unix_ms,
+                true,
+            )?;
+            Ok((manifest, capability))
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn initiate_artifact(
         &self,
@@ -62,6 +117,77 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         generation: u64,
         artifact_id: &str,
         source_node_id: &str,
+        operation_id: Option<&str>,
+        media_type: &str,
+        size_bytes: u64,
+        sha256: &str,
+        classification: ArtifactClassification,
+        authorized_readers: BTreeSet<String>,
+        now_unix_ms: u64,
+    ) -> Result<(RemoteArtifactManifest, ArtifactCapability), FabricError> {
+        self.initiate_artifact_internal(
+            actor,
+            generation,
+            artifact_id,
+            source_node_id,
+            None,
+            operation_id,
+            media_type,
+            size_bytes,
+            sha256,
+            classification,
+            authorized_readers,
+            now_unix_ms,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn initiate_collaboration_artifact(
+        &self,
+        actor: &AuthenticatedActor,
+        generation: u64,
+        artifact_id: &str,
+        source_node_id: &str,
+        source_team_id: &str,
+        source_work_id: &str,
+        operation_id: Option<&str>,
+        media_type: &str,
+        size_bytes: u64,
+        sha256: &str,
+        classification: ArtifactClassification,
+        authorized_readers: BTreeSet<String>,
+        now_unix_ms: u64,
+    ) -> Result<(RemoteArtifactManifest, ArtifactCapability), FabricError> {
+        if source_team_id.trim().is_empty() || source_work_id.trim().is_empty() {
+            return Err(FabricError::none(
+                FabricErrorCode::ArtifactInvalid,
+                "collaboration artifact requires exact source Team and Work",
+            ));
+        }
+        self.initiate_artifact_internal(
+            actor,
+            generation,
+            artifact_id,
+            source_node_id,
+            Some((source_team_id, source_work_id)),
+            operation_id,
+            media_type,
+            size_bytes,
+            sha256,
+            classification,
+            authorized_readers,
+            now_unix_ms,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn initiate_artifact_internal(
+        &self,
+        actor: &AuthenticatedActor,
+        generation: u64,
+        artifact_id: &str,
+        source_node_id: &str,
+        collaboration_scope: Option<(&str, &str)>,
         operation_id: Option<&str>,
         media_type: &str,
         size_bytes: u64,
@@ -137,8 +263,8 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                 id: artifact_id.into(),
                 company_id: company_id.clone(),
                 source_node_id: source_node_id.into(),
-                source_team_id: None,
-                source_work_id: None,
+                source_team_id: collaboration_scope.map(|(team_id, _)| team_id.to_string()),
+                source_work_id: collaboration_scope.map(|(_, work_id)| work_id.to_string()),
                 operation_id: operation_id.map(str::to_string),
                 media_type: media_type.into(),
                 size_bytes,
@@ -245,6 +371,112 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn bind_collaboration_artifact_scope(
+        &self,
+        actor: &AuthenticatedActor,
+        generation: u64,
+        artifact_id: &str,
+        expected_revision: u64,
+        source_team_id: &str,
+        source_work_id: &str,
+        authorized_readers: BTreeSet<String>,
+        now_unix_ms: u64,
+    ) -> Result<RemoteArtifactManifest, FabricError> {
+        let company_id = self.company_id().to_string();
+        self.store().transact(|state| {
+            require_active_control_plane(
+                state,
+                &company_id,
+                self.instance_id(),
+                generation,
+                now_unix_ms,
+            )?;
+            actor.require_company_and_role(&company_id, "artifact_write", now_unix_ms)?;
+            let manifest = state.artifacts.get(artifact_id).cloned().ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::ArtifactInvalid,
+                    "artifact manifest does not exist",
+                )
+            })?;
+            if manifest.revision != expected_revision
+                || manifest.initiator != actor.actor_id
+                || manifest.completed_at_unix_ms.is_some()
+                || manifest.deleted_at_unix_ms.is_some()
+                || manifest.source_team_id.is_some()
+                || manifest.source_work_id.is_some()
+                || source_team_id.trim().is_empty()
+                || source_work_id.trim().is_empty()
+                || authorized_readers.is_empty()
+            {
+                return Err(FabricError::none(
+                    FabricErrorCode::ArtifactInvalid,
+                    "collaboration artifact scope is stale, incomplete, or already bound",
+                ));
+            }
+            let mut next = manifest;
+            next.source_team_id = Some(source_team_id.into());
+            next.source_work_id = Some(source_work_id.into());
+            next.authorized_readers = authorized_readers;
+            next.revision = next.revision.saturating_add(1);
+            state.artifacts.insert(next.id.clone(), next.clone());
+            Ok(next)
+        })
+    }
+
+    pub fn schedule_collaboration_artifact_retention(
+        &self,
+        actor: &AuthenticatedActor,
+        generation: u64,
+        artifact_id: &str,
+        expected_revision: u64,
+        retain_until_unix_ms: u64,
+        now_unix_ms: u64,
+    ) -> Result<RemoteArtifactManifest, FabricError> {
+        let company_id = self.company_id().to_string();
+        self.store().transact(|state| {
+            require_active_control_plane(
+                state,
+                &company_id,
+                self.instance_id(),
+                generation,
+                now_unix_ms,
+            )?;
+            actor.require_company_and_role(&company_id, "artifact_write", now_unix_ms)?;
+            let manifest = state.artifacts.get(artifact_id).cloned().ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::ArtifactInvalid,
+                    "artifact manifest does not exist",
+                )
+            })?;
+            if manifest.initiator == actor.actor_id
+                && manifest.revision == expected_revision.saturating_add(1)
+                && manifest.expires_at_unix_ms == Some(retain_until_unix_ms)
+            {
+                return Ok(manifest);
+            }
+            if manifest.revision != expected_revision
+                || manifest.initiator != actor.actor_id
+                || manifest.source_team_id.is_none()
+                || manifest.source_work_id.is_none()
+                || manifest.completed_at_unix_ms.is_none()
+                || manifest.deleted_at_unix_ms.is_some()
+                || manifest.expires_at_unix_ms.is_some()
+                || retain_until_unix_ms <= now_unix_ms
+            {
+                return Err(FabricError::none(
+                    FabricErrorCode::ArtifactInvalid,
+                    "artifact retention requires a complete scoped manifest and future safe anchor",
+                ));
+            }
+            let mut next = manifest;
+            next.expires_at_unix_ms = Some(retain_until_unix_ms);
+            next.revision = next.revision.saturating_add(1);
+            state.artifacts.insert(next.id.clone(), next.clone());
+            Ok(next)
+        })
+    }
+
     pub fn issue_download_capability(
         &self,
         actor: &AuthenticatedActor,
@@ -271,6 +503,73 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                 artifact_id,
                 node_id,
                 now_unix_ms,
+            )
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn issue_delegated_download_capability(
+        &self,
+        grantor: &AuthenticatedActor,
+        generation: u64,
+        artifact_id: &str,
+        authorized_reader_id: &str,
+        node_id: &str,
+        now_unix_ms: u64,
+    ) -> Result<ArtifactCapability, FabricError> {
+        let company_id = self.company_id().to_string();
+        let signing_key = *self.capability_signing_key();
+        self.store().transact(|state| {
+            require_active_control_plane(
+                state,
+                &company_id,
+                self.instance_id(),
+                generation,
+                now_unix_ms,
+            )?;
+            grantor.require_company_and_role(&company_id, "artifact_write", now_unix_ms)?;
+            let manifest = state.artifacts.get(artifact_id).ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::ArtifactInvalid,
+                    "artifact manifest does not exist",
+                )
+            })?;
+            if manifest.initiator != grantor.actor_id
+                || manifest.completed_at_unix_ms.is_none()
+                || manifest.deleted_at_unix_ms.is_some()
+                || manifest
+                    .expires_at_unix_ms
+                    .is_some_and(|expires| expires <= now_unix_ms)
+                || !manifest.authorized_readers.contains(authorized_reader_id)
+            {
+                return Err(FabricError::none(
+                    FabricErrorCode::UnauthorizedActor,
+                    "artifact grantor, reader, or lifecycle is not authorized",
+                ));
+            }
+            let target = state.nodes.get(node_id).ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::TargetNotPlaced,
+                    "artifact target Node is not enrolled",
+                )
+            })?;
+            if target.company_id != company_id
+                || target.administrative_status == NodeAdministrativeStatus::Revoked
+                || !target.allowed_capabilities.contains("artifact-transfer")
+            {
+                return Err(FabricError::none(
+                    FabricErrorCode::NodeRevoked,
+                    "artifact target Node is foreign, revoked, or incapable",
+                ));
+            }
+            issue_capability(
+                &signing_key,
+                manifest,
+                node_id,
+                ArtifactCapabilityPurpose::Download,
+                authorized_reader_id,
+                now_unix_ms,
+                true,
             )
         })
     }
@@ -355,6 +654,16 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                         "artifact manifest does not exist",
                     )
                 })?;
+            if manifest.deleted_at_unix_ms.is_some()
+                || manifest
+                    .expires_at_unix_ms
+                    .is_some_and(|expires| expires <= now_unix_ms)
+            {
+                return Err(FabricError::none(
+                    FabricErrorCode::ArtifactInvalid,
+                    "artifact retention window is closed",
+                ));
+            }
             let encrypted = state
                 .encrypted_artifacts
                 .get(&capability.artifact_id)
@@ -406,6 +715,9 @@ fn issue_download_capability_from_state(
     })?;
     if manifest.completed_at_unix_ms.is_none()
         || manifest.deleted_at_unix_ms.is_some()
+        || manifest
+            .expires_at_unix_ms
+            .is_some_and(|expires| expires <= now_unix_ms)
         || !manifest.authorized_readers.contains(&actor.actor_id)
     {
         return Err(FabricError::none(

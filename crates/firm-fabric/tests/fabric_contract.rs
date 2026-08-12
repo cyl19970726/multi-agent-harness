@@ -1742,10 +1742,78 @@ fn artifact_digest_scope_encryption_and_one_use_capability_fail_closed() {
             100,
         )
         .expect("initiate artifact");
+    let scoped = control
+        .bind_collaboration_artifact_scope(
+            &writer,
+            lease.control_plane_generation,
+            &manifest.id,
+            manifest.revision,
+            "team-b",
+            "work-b",
+            BTreeSet::from(["reader".into()]),
+            100,
+        )
+        .expect("server binds exact collaboration Team/Work/readers before upload");
+    assert_eq!(scoped.source_team_id.as_deref(), Some("team-b"));
+    assert_eq!(scoped.source_work_id.as_deref(), Some("work-b"));
+    assert_eq!(
+        control.artifact_manifest(&manifest.id).unwrap(),
+        Some(scoped.clone())
+    );
+    let before_rebind = store.snapshot().unwrap();
+    assert!(control
+        .bind_collaboration_artifact_scope(
+            &writer,
+            lease.control_plane_generation,
+            &manifest.id,
+            scoped.revision,
+            "team-c",
+            "work-c",
+            BTreeSet::from(["attacker".into()]),
+            100,
+        )
+        .is_err());
+    assert_eq!(store.snapshot().unwrap(), before_rebind);
     let completed = control
         .complete_artifact(lease.control_plane_generation, &upload, bytes, 101)
         .expect("complete artifact");
     assert_eq!(completed.id, manifest.id);
+    let retained = control
+        .schedule_collaboration_artifact_retention(
+            &writer,
+            lease.control_plane_generation,
+            &manifest.id,
+            completed.revision,
+            1_000_000,
+            102,
+        )
+        .expect("safe collaboration retention anchor schedules future expiry");
+    assert_eq!(retained.expires_at_unix_ms, Some(1_000_000));
+    let delegated = control
+        .issue_delegated_download_capability(
+            &writer,
+            lease.control_plane_generation,
+            &manifest.id,
+            "reader",
+            "node-b",
+            102,
+        )
+        .expect("exact artifact initiator grants one-use download to frozen reader and Node");
+    assert_eq!(delegated.issued_to, "reader");
+    assert_eq!(delegated.node_id, "node-b");
+    let before_hostile_grant = store.snapshot().unwrap();
+    let hostile_grantor = actor("other-writer", &["artifact_write"]);
+    assert!(control
+        .issue_delegated_download_capability(
+            &hostile_grantor,
+            lease.control_plane_generation,
+            &manifest.id,
+            "reader",
+            "node-b",
+            102,
+        )
+        .is_err());
+    assert_eq!(store.snapshot().unwrap(), before_hostile_grant);
     let replay = control
         .complete_artifact(lease.control_plane_generation, &upload, bytes, 102)
         .expect_err("upload capability is one-use");

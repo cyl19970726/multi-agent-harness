@@ -11,6 +11,7 @@ use firm_core::collaboration::{
     SourceRemoteMessageTransfer, SourceWorkAttestation, TargetPlacementRef, WorkDelegationV1,
     COLLABORATION_STORE_VERSION,
 };
+use firm_fabric::{ArtifactCapability, ArtifactCapabilityPurpose, RemoteArtifactManifest};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1678,6 +1679,103 @@ impl HarnessStore {
             payload_digest: canonical_json_fingerprint(&payload),
             payload,
             required_capability: RoutedBusinessKind::DelegationCancelDecide.required_capability(),
+            ordering_key: format!("delegation:{delegation_id}"),
+            created_at: context.occurred_at.clone(),
+        })
+    }
+
+    pub fn artifact_grant_operation(
+        &self,
+        context: &CollaborationMutationContext,
+        delegation_id: &str,
+        manifest: &RemoteArtifactManifest,
+        capability: &ArtifactCapability,
+    ) -> StoreResult<RoutedBusinessOperation> {
+        let delegation = self
+            .collaboration_delegation(&context.company_id, delegation_id)?
+            .ok_or_else(|| {
+                collaboration_error(
+                    FabricErrorCode::RevisionConflict,
+                    "artifact grant requires the central Delegation",
+                    "work_delegation_v1",
+                    delegation_id,
+                    None,
+                )
+            })?;
+        let source_attestation = self
+            .collaboration_source_work_attestation(
+                &context.company_id,
+                &delegation.source_work_attestation_id,
+            )?
+            .ok_or_else(|| {
+                collaboration_error(
+                    FabricErrorCode::SourceWorkAttestationInvalid,
+                    "artifact grant has no source Host attestation",
+                    "source_work_attestation",
+                    &delegation.source_work_attestation_id,
+                    None,
+                )
+            })?;
+        if context.expected_revision != delegation.revision
+            || !matches!(
+                delegation.state,
+                DelegationState::Active | DelegationState::ResultAvailable
+            )
+            || !exact_actor(&context.authenticated_actor, &delegation.target_host_ref)
+            || manifest.company_id != context.company_id
+            || manifest.source_node_id != delegation.target_placement.node_id
+            || manifest.source_team_id.as_deref()
+                != Some(delegation.target_placement.team_id.as_str())
+            || manifest.source_work_id.as_deref()
+                != delegation
+                    .target_work_ref
+                    .as_ref()
+                    .map(|work| work.work_id.as_str())
+            || manifest.completed_at_unix_ms.is_none()
+            || manifest.deleted_at_unix_ms.is_some()
+            || !manifest
+                .authorized_readers
+                .contains(&source_attestation.source_host_ref.id)
+            || capability.purpose != ArtifactCapabilityPurpose::Download
+            || capability.company_id != context.company_id
+            || capability.artifact_id != manifest.id
+            || capability.artifact_digest != manifest.sha256
+            || capability.node_id != delegation.source_node_id
+            || capability.issued_to != source_attestation.source_host_ref.id
+        {
+            return Err(collaboration_error(
+                FabricErrorCode::ArtifactScopeUnauthorized,
+                "artifact grant is not bound to the exact Delegation, complete manifest, source Host, and source Node",
+                "remote_artifact_manifest",
+                &manifest.id,
+                Some(manifest.revision),
+            ));
+        }
+        let source_placement = TargetPlacementRef {
+            team_id: delegation.source_team_id.clone(),
+            team_revision: delegation.source_work_ref.team_revision,
+            node_id: delegation.source_node_id.clone(),
+            placement_generation: delegation.source_work_ref.placement_generation,
+        };
+        let payload = serde_json::json!({
+            "delegation_id": delegation.id,
+            "manifest": manifest,
+            "read_capability": capability,
+            "source_placement": source_placement,
+        });
+        Ok(RoutedBusinessOperation {
+            id: format!("route-artifact-grant:{}:{}", delegation_id, manifest.id),
+            protocol_version: "agentfirm.fabric.v1".into(),
+            company_id: context.company_id.clone(),
+            kind: RoutedBusinessKind::ArtifactGrant,
+            authenticated_actor: context.authenticated_actor.clone(),
+            source_node_id: delegation.target_placement.node_id,
+            target_placement: source_placement,
+            expected_revision: context.expected_revision,
+            idempotency_key: context.idempotency_key.clone(),
+            payload_digest: canonical_json_fingerprint(&payload),
+            payload,
+            required_capability: RoutedBusinessKind::ArtifactGrant.required_capability(),
             ordering_key: format!("delegation:{delegation_id}"),
             created_at: context.occurred_at.clone(),
         })

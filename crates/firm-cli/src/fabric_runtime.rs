@@ -1893,7 +1893,8 @@ impl NodeApplication for Wave4cApplication {
                     | "delegation_decide"
                     | "delegation_cancel_request"
                     | "delegation_cancel_decide"
-                    | "remote_fact_publish" => {
+                    | "remote_fact_publish"
+                    | "artifact_grant" => {
                         let (_, store) = self.target_store(operation)?;
                         harness_store::apply_collaboration_target_operation(
                             &store,
@@ -2338,6 +2339,34 @@ struct CollaborationCancellationDecisionHttpRequest {
     expires_unix_ms: u64,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CollaborationArtifactGrantHttpRequest {
+    target_execution_space_id: String,
+    expires_unix_ms: u64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CollaborationArtifactInitiateHttpRequest {
+    artifact_id: String,
+    operation_id: Option<String>,
+    media_type: String,
+    size_bytes: u64,
+    sha256: String,
+    classification: harness_fabric::ArtifactClassification,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CollaborationArtifactRetentionHttpRequest {
+    expected_artifact_revision: u64,
+    terminal_transport_at_unix_ms: Option<u64>,
+    terminal_delegation_at_unix_ms: Option<u64>,
+    source_import_completed_at_unix_ms: Option<u64>,
+    retention_duration_ms: u64,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend>(
     method: &str,
@@ -2470,6 +2499,309 @@ fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend
         issued_at_unix_ms: now,
         expires_at_unix_ms: now.saturating_add(30_000),
     };
+    let path_parts = suffix.split('/').collect::<Vec<_>>();
+    if method == "POST"
+        && path_parts.len() == 3
+        && path_parts[1] == "artifacts"
+        && path_parts[2] == "initiate"
+    {
+        let delegation_id = path_parts[0];
+        let request = serde_json::from_slice::<CollaborationArtifactInitiateHttpRequest>(body)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
+            })?;
+        let delegation = store
+            .collaboration_delegation(control.company_id(), delegation_id)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+            })?
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::ExpectedRevisionConflict,
+                    "Delegation does not exist",
+                )
+            })?;
+        if delegation.revision != expected_revision
+            || !matches!(
+                delegation.state,
+                harness_core::collaboration::DelegationState::Active
+                    | harness_core::collaboration::DelegationState::ResultAvailable
+            )
+            || credential.actor != delegation.target_host_ref
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::UnauthorizedActor,
+                "only the exact target Host may initiate an artifact for current active Delegation",
+            ));
+        }
+        let target_work_ref = delegation.target_work_ref.as_ref().ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::ExpectedRevisionConflict,
+                "active Delegation has no exact target Work",
+            )
+        })?;
+        let attestation = store
+            .collaboration_source_work_attestation(
+                control.company_id(),
+                &delegation.source_work_attestation_id,
+            )
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+            })?
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::InvalidPayload,
+                    "Delegation lacks source Host attestation",
+                )
+            })?;
+        let writer = AuthenticatedActor {
+            company_id: control.company_id().into(),
+            actor_id: credential.actor.id,
+            actor_kind: harness_fabric::ActorKind::AgentMember,
+            role_bindings: BTreeSet::from(["artifact_write".into()]),
+            session_id: format!("collaboration-artifact-init:{idempotency_key}"),
+            issued_at_unix_ms: now,
+            expires_at_unix_ms: now.saturating_add(30_000),
+        };
+        if let Some(existing) = control.artifact_manifest(&request.artifact_id)? {
+            let exact = existing.company_id == control.company_id()
+                && existing.source_node_id == delegation.target_placement.node_id
+                && existing.source_team_id.as_deref()
+                    == Some(delegation.target_placement.team_id.as_str())
+                && existing.source_work_id.as_deref() == Some(target_work_ref.work_id.as_str())
+                && existing.operation_id == request.operation_id
+                && existing.media_type == request.media_type
+                && existing.size_bytes == request.size_bytes
+                && existing.sha256 == request.sha256
+                && existing.classification == request.classification
+                && existing.initiator == writer.actor_id
+                && existing.authorized_readers
+                    == BTreeSet::from([attestation.source_host_ref.id.clone()]);
+            if !exact {
+                return Err(FabricError::none(
+                    FabricErrorCode::IdempotencyConflict,
+                    "artifact identity was reused with a different collaboration scope or payload",
+                ));
+            }
+            let (manifest, upload_capability) = control.replay_collaboration_upload_capability(
+                &writer,
+                generation,
+                &request.artifact_id,
+                now,
+            )?;
+            return Ok(serde_json::json!({
+                "delegation_id": delegation_id,
+                "manifest": manifest,
+                "upload_capability": upload_capability,
+                "replayed": true,
+            }));
+        }
+        let (manifest, upload_capability) = control.initiate_collaboration_artifact(
+            &writer,
+            generation,
+            &request.artifact_id,
+            &delegation.target_placement.node_id,
+            &delegation.target_placement.team_id,
+            &target_work_ref.work_id,
+            request.operation_id.as_deref(),
+            &request.media_type,
+            request.size_bytes,
+            &request.sha256,
+            request.classification,
+            BTreeSet::from([attestation.source_host_ref.id]),
+            now,
+        )?;
+        return Ok(serde_json::json!({
+            "delegation_id": delegation_id,
+            "manifest": manifest,
+            "upload_capability": upload_capability,
+        }));
+    }
+    if method == "POST"
+        && path_parts.len() == 4
+        && path_parts[1] == "artifacts"
+        && path_parts[3] == "grant"
+    {
+        let delegation_id = path_parts[0];
+        let artifact_id = path_parts[2];
+        let request = serde_json::from_slice::<CollaborationArtifactGrantHttpRequest>(body)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
+            })?;
+        if request.target_execution_space_id.trim().is_empty() || request.expires_unix_ms <= now {
+            return Err(FabricError::none(
+                FabricErrorCode::InvalidPayload,
+                "artifact grant requires exact source Execution Space and future expiry",
+            ));
+        }
+        let delegation = store
+            .collaboration_delegation(control.company_id(), delegation_id)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+            })?
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::ExpectedRevisionConflict,
+                    "Delegation does not exist",
+                )
+            })?;
+        let attestation = store
+            .collaboration_source_work_attestation(
+                control.company_id(),
+                &delegation.source_work_attestation_id,
+            )
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+            })?
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::InvalidPayload,
+                    "Delegation lacks source Host attestation",
+                )
+            })?;
+        let manifest = control.artifact_manifest(artifact_id)?.ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::ArtifactInvalid,
+                "artifact manifest does not exist",
+            )
+        })?;
+        let grantor = AuthenticatedActor {
+            company_id: control.company_id().into(),
+            actor_id: credential.actor.id.clone(),
+            actor_kind: match credential.actor.kind {
+                harness_core::agentfirm_api::ActorKind::Human => harness_fabric::ActorKind::Human,
+                harness_core::agentfirm_api::ActorKind::AgentMember => {
+                    harness_fabric::ActorKind::AgentMember
+                }
+                harness_core::agentfirm_api::ActorKind::External => {
+                    harness_fabric::ActorKind::Service
+                }
+                harness_core::agentfirm_api::ActorKind::Service => {
+                    harness_fabric::ActorKind::Service
+                }
+            },
+            role_bindings: BTreeSet::from(["artifact_write".into()]),
+            session_id: format!("collaboration-artifact:{idempotency_key}"),
+            issued_at_unix_ms: now,
+            expires_at_unix_ms: request.expires_unix_ms,
+        };
+        let capability = control.issue_delegated_download_capability(
+            &grantor,
+            generation,
+            artifact_id,
+            &attestation.source_host_ref.id,
+            &delegation.source_node_id,
+            now,
+        )?;
+        let business = store
+            .artifact_grant_operation(
+                &harness_store::CollaborationMutationContext {
+                    company_id: control.company_id().into(),
+                    authenticated_actor: credential.actor.clone(),
+                    command_name: "artifact_grant".into(),
+                    idempotency_key: idempotency_key.clone(),
+                    expected_revision,
+                    occurred_at: format!("unix-ms:{now}"),
+                },
+                delegation_id,
+                &manifest,
+                &capability,
+            )
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::UnauthorizedActor, error.to_string())
+            })?;
+        let routed_actor = AuthenticatedActor {
+            expires_at_unix_ms: request.expires_unix_ms,
+            ..control_actor.clone()
+        };
+        let routed = harness_store::route_collaboration_business_operation(
+            &business,
+            &harness_store::CollaborationFabricRouteContext {
+                authenticated_actor: routed_actor.clone(),
+                resolved_business_actor: credential.actor,
+                source: harness_store::CollaborationFabricSource::ControlPlane,
+                control_plane_generation: generation,
+                target_execution_space_id: Some(request.target_execution_space_id),
+                created_at_unix_ms: now,
+                expires_at_unix_ms: request.expires_unix_ms,
+            },
+        )?;
+        let (_, _, receipt, replayed) =
+            control.accept_control_plane_operation(generation, &routed_actor, routed, now)?;
+        return Ok(serde_json::json!({
+            "delegation_id": delegation_id,
+            "artifact_id": artifact_id,
+            "operation_id": receipt.operation_id,
+            "receipt": receipt,
+            "replayed": replayed,
+        }));
+    }
+    if method == "POST"
+        && path_parts.len() == 4
+        && path_parts[1] == "artifacts"
+        && path_parts[3] == "retention"
+    {
+        let delegation_id = path_parts[0];
+        let artifact_id = path_parts[2];
+        let request = serde_json::from_slice::<CollaborationArtifactRetentionHttpRequest>(body)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
+            })?;
+        let delegation = store
+            .collaboration_delegation(control.company_id(), delegation_id)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+            })?
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::ExpectedRevisionConflict,
+                    "Delegation does not exist",
+                )
+            })?;
+        if delegation.revision != expected_revision
+            || credential.actor != delegation.target_host_ref
+            || delegation.state != harness_core::collaboration::DelegationState::Terminal
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::UnauthorizedActor,
+                "retention requires exact target Host and terminal Delegation revision",
+            ));
+        }
+        let retain_until = harness_core::collaboration::CollaborationRetentionAnchor {
+            terminal_transport_at_unix_ms: request.terminal_transport_at_unix_ms,
+            terminal_delegation_at_unix_ms: request.terminal_delegation_at_unix_ms,
+            source_import_completed_at_unix_ms: request.source_import_completed_at_unix_ms,
+        }
+        .retain_until_unix_ms(request.retention_duration_ms)
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::ArtifactInvalid,
+                "retention cannot start until transport, Delegation, and source durable import are all terminal",
+            )
+        })?;
+        let writer = AuthenticatedActor {
+            company_id: control.company_id().into(),
+            actor_id: credential.actor.id,
+            actor_kind: harness_fabric::ActorKind::AgentMember,
+            role_bindings: BTreeSet::from(["artifact_write".into()]),
+            session_id: format!("collaboration-artifact-retention:{idempotency_key}"),
+            issued_at_unix_ms: now,
+            expires_at_unix_ms: now.saturating_add(30_000),
+        };
+        let manifest = control.schedule_collaboration_artifact_retention(
+            &writer,
+            generation,
+            artifact_id,
+            request.expected_artifact_revision,
+            retain_until,
+            now,
+        )?;
+        return Ok(serde_json::json!({
+            "delegation_id": delegation_id,
+            "manifest": manifest,
+            "retention_start": retain_until.saturating_sub(request.retention_duration_ms),
+        }));
+    }
     if method == "POST" && suffix.ends_with("/cancellation-requests") {
         let delegation_id = suffix
             .strip_suffix("/cancellation-requests")
@@ -2589,7 +2921,7 @@ fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend
             "replayed": pending.replayed || replayed,
         }));
     }
-    let cancellation_parts = suffix.split('/').collect::<Vec<_>>();
+    let cancellation_parts = path_parts;
     if method == "POST"
         && cancellation_parts.len() == 4
         && cancellation_parts[1] == "cancellation-requests"

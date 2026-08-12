@@ -70,6 +70,15 @@ struct DelegationCancelDecidePayload {
     target_work_ref: Option<firm_core::collaboration::RemoteWorkRef>,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ArtifactGrantPayload {
+    delegation_id: String,
+    manifest: firm_fabric::RemoteArtifactManifest,
+    read_capability: firm_fabric::ArtifactCapability,
+    source_placement: firm_core::collaboration::TargetPlacementRef,
+}
+
 /// Server-resolved Wave 5 route authority. None of these fields may be copied
 /// from the public collaboration request body.
 #[derive(Debug, Clone)]
@@ -647,6 +656,78 @@ pub fn apply_collaboration_target_operation(
                 "delegation_id": payload.request.delegation_id,
                 "request_id": payload.request.id,
                 "target_placement": payload.target_placement,
+            }),
+            EffectCertainty::Applied,
+        ));
+    }
+    if reference.business_kind == "artifact_grant"
+        && reference.required_capability == "collaboration.artifact_grant"
+    {
+        let payload =
+            serde_json::from_value::<ArtifactGrantPayload>(reference.payload).map_err(|error| {
+                application_error(
+                    FabricErrorCode::InvalidPayload,
+                    format!("artifact_grant payload is invalid: {error}"),
+                    &operation.id,
+                )
+            })?;
+        let teams = store.teams().map_err(|error| {
+            application_error(
+                FabricErrorCode::StoreUnavailable,
+                format!("source AgentTeam lookup failed: {error}"),
+                &operation.id,
+            )
+        })?;
+        let team_revision = teams
+            .iter()
+            .filter(|team| team.id == reference.target_team_id)
+            .count() as u64;
+        let team = teams
+            .iter()
+            .rev()
+            .find(|team| team.id == reference.target_team_id)
+            .ok_or_else(|| {
+                application_error(
+                    FabricErrorCode::TargetNotPlaced,
+                    "source AgentTeam does not exist on artifact target Node",
+                    &operation.id,
+                )
+            })?;
+        if payload.delegation_id.trim().is_empty()
+            || payload.source_placement.team_id != reference.target_team_id
+            || payload.source_placement.team_revision != reference.target_team_revision
+            || payload.source_placement.node_id != operation.target_node_id
+            || payload.source_placement.placement_generation != reference.placement_generation
+            || team_revision != reference.target_team_revision
+            || team.node_id != operation.target_node_id
+            || team.status != AgentTeamStatus::Active
+            || payload.manifest.company_id != operation.company_id
+            || payload.manifest.completed_at_unix_ms.is_none()
+            || payload.manifest.deleted_at_unix_ms.is_some()
+            || !payload
+                .manifest
+                .authorized_readers
+                .contains(&team.host_agent_id)
+            || payload.read_capability.purpose != firm_fabric::ArtifactCapabilityPurpose::Download
+            || payload.read_capability.company_id != operation.company_id
+            || payload.read_capability.node_id != operation.target_node_id
+            || payload.read_capability.artifact_id != payload.manifest.id
+            || payload.read_capability.artifact_digest != payload.manifest.sha256
+            || payload.read_capability.issued_to != team.host_agent_id
+        {
+            return Err(application_error(
+                FabricErrorCode::UnauthorizedActor,
+                "artifact grant is not bound to the exact complete manifest, source Team Host, and source Node",
+                &operation.id,
+            ));
+        }
+        return Ok((
+            "agentfirm.collaboration.artifact_grant_validated.v1".into(),
+            serde_json::json!({
+                "delegation_id": payload.delegation_id,
+                "artifact_id": payload.manifest.id,
+                "artifact_digest": payload.manifest.sha256,
+                "read_capability": payload.read_capability,
             }),
             EffectCertainty::Applied,
         ));
