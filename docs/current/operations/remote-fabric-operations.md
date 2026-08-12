@@ -22,12 +22,13 @@ items under service `agentfirm.remote-fabric` with these exact accounts:
 - `<company>:<node>:client-certificate`
 - `<company>:<node>:client-private-key`
 - `<company>:<node>:control-plane-ca`
-- `<company>:<node>:certificate-serial`
-- `<company>:<node>:public-key-fingerprint`
 
 The CLI reads them directly into the TLS configuration; it does not write a
 temporary private-key file. Missing, empty or unsupported credentials fail
-closed before a Fabric frame is sent.
+closed before a Fabric frame is sent. Certificate serial and public-key
+fingerprint are public enrolled identity supplied explicitly through
+`--certificate-serial` and `--public-key-fingerprint`; keeping them outside
+Keychain avoids unnecessary per-item ACL prompts for login LaunchAgents.
 
 ## Enrollment and rotation
 

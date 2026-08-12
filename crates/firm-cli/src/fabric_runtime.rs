@@ -1497,6 +1497,11 @@ fn resolve_node_credentials(
                     "--keychain-service must be a bounded non-empty service name".into(),
                 ));
             }
+            // Validate the public enrolled identity before touching Keychain.
+            // Besides failing closed, this prevents avoidable ACL prompts when
+            // an incomplete login-agent command is installed.
+            let certificate_serial = required(args, "--certificate-serial")?;
+            let public_key_fingerprint = required(args, "--public-key-fingerprint")?;
             let prefix = format!("{company_id}:{node_id}");
             Ok(ResolvedNodeCredentials {
                 tls: ResolvedNodeTls::Material(NodeTlsIdentityMaterial {
@@ -1516,14 +1521,14 @@ fn resolve_node_credentials(
                     )?
                     .into_bytes(),
                 }),
-                certificate_serial: keychain_secret(
-                    &service,
-                    &format!("{prefix}:certificate-serial"),
-                )?,
-                public_key_fingerprint: keychain_secret(
-                    &service,
-                    &format!("{prefix}:public-key-fingerprint"),
-                )?,
+                // Serial and fingerprint are public certificate identity, not
+                // secret key material. Requiring five separate Keychain ACL
+                // prompts made a login LaunchAgent repeatedly block on user
+                // interaction. Keep only the three PEM materials in Keychain;
+                // the explicit public values are still checked by the
+                // generation-fenced mTLS welcome against the enrolled Node.
+                certificate_serial,
+                public_key_fingerprint,
             })
         }
         _ => Err(CliError::Usage(
@@ -1629,6 +1634,22 @@ fn fabric_error(error: FabricError) -> CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_keychain_credentials_require_public_identity_before_acl_access() {
+        let args = vec![
+            "--credential-backend".into(),
+            "macos-keychain".into(),
+            "--keychain-service".into(),
+            "agentfirm.test.must-not-be-read".into(),
+        ];
+        let error = match resolve_node_credentials(&args, "company-test", "node-test") {
+            Ok(_) => panic!("incomplete enrolled identity must fail before Keychain access"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("--certificate-serial"));
+    }
 
     #[test]
     fn artifact_complete_body_limit_matches_the_frozen_64_mib_contract_only() {
