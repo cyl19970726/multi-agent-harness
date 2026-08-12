@@ -19,6 +19,18 @@ export function AgentTeamMetricStrip({ className, children }: { className?:strin
   return <dl className={cn("agent-team-metric-strip",className)}>{children}</dl>;
 }
 
+export function AgentTeamFactStrip({ className, children, ...props }: { className?:string; children:ReactNode; [key:string]:unknown }) {
+  return <dl className={cn("agent-team-fact-strip",className)} {...props}>{children}</dl>;
+}
+
+export function AgentTeamDecisionSurface({ className, children, ...props }: { className?:string; children:ReactNode; [key:string]:unknown }) {
+  return <section className={cn("agent-team-decision-surface",className)} {...props}>{children}</section>;
+}
+
+export function AgentTeamAuthoredTurn({ className, children, ...props }: { className?:string; children:ReactNode; [key:string]:unknown }) {
+  return <article className={cn("agent-team-record-row agent-team-authored-turn",className)} {...props}>{children}</article>;
+}
+
 export function AgentTeamRecordRow({ selected=false, attention=false, className, children, ...props }: { selected?:boolean; attention?:boolean; className?:string; children:ReactNode; [key:string]:unknown }) {
   return <article className={cn("agent-team-record-row",selected && "agent-team-selected",attention && "agent-team-attention",className)} {...props}>{children}</article>;
 }
