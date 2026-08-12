@@ -628,6 +628,42 @@ impl HarnessStore {
             .collect())
     }
 
+    pub fn collaboration_delegation(
+        &self,
+        company_id: &str,
+        delegation_id: &str,
+    ) -> StoreResult<Option<WorkDelegationV1>> {
+        self.latest_collaboration_projection_unlocked(
+            company_id,
+            "work_delegation_v1",
+            delegation_id,
+        )
+    }
+
+    pub fn collaboration_source_work_attestation(
+        &self,
+        company_id: &str,
+        attestation_id: &str,
+    ) -> StoreResult<Option<SourceWorkAttestation>> {
+        self.latest_collaboration_projection_unlocked(
+            company_id,
+            "source_work_attestation",
+            attestation_id,
+        )
+    }
+
+    pub fn collaboration_inbound_policy(
+        &self,
+        company_id: &str,
+        policy_id: &str,
+    ) -> StoreResult<Option<DelegationInboundPolicy>> {
+        self.latest_collaboration_projection_unlocked(
+            company_id,
+            "delegation_inbound_policy",
+            policy_id,
+        )
+    }
+
     /// Persist a server-authored proof of exact source Work authority. The
     /// source WorkApplicationService is the only writer; a Host request can
     /// subsequently reference only this immutable attestation ID.
@@ -1291,6 +1327,67 @@ impl HarnessStore {
             required_capability: "collaboration.target_work_create".into(),
             ordering_key: format!("delegation:{}", delegation.id),
             created_at: created_at.into(),
+        })
+    }
+
+    /// Build the source Node-authored proposal envelope from the immutable
+    /// WorkApplicationService attestation. The public request contributes only
+    /// desired outcome and target identity; it cannot select Work/owner facts.
+    pub fn delegation_propose_operation(
+        &self,
+        context: &CollaborationMutationContext,
+        request: &ProposeDelegationRequest,
+        policy_id: &str,
+    ) -> StoreResult<RoutedBusinessOperation> {
+        let attestation = self
+            .collaboration_source_work_attestation(
+                &context.company_id,
+                &request.source_work_attestation_id,
+            )?
+            .ok_or_else(|| {
+                collaboration_error(
+                    FabricErrorCode::SourceWorkAttestationInvalid,
+                    "delegation route requires the server-authored source Work attestation",
+                    "source_work_attestation",
+                    &request.source_work_attestation_id,
+                    None,
+                )
+            })?;
+        if context.expected_revision != 0
+            || request.target_placement.placement_generation != 1
+            || attestation.source_work_ref.node_id == request.target_placement.node_id
+            || (!exact_actor(&context.authenticated_actor, &attestation.source_host_ref)
+                && !exact_actor(&context.authenticated_actor, &attestation.source_owner_ref))
+            || policy_id.trim().is_empty()
+        {
+            return Err(collaboration_error(
+                FabricErrorCode::UnauthorizedActor,
+                "delegation route is outside exact source Work actor or v1 target placement",
+                "work_delegation_v1",
+                &request.delegation_id,
+                None,
+            ));
+        }
+        let payload = serde_json::json!({
+            "request": request,
+            "source_work_attestation": attestation,
+            "policy_id": policy_id,
+        });
+        Ok(RoutedBusinessOperation {
+            id: request.operation_id.clone(),
+            protocol_version: "agentfirm.fabric.v1".into(),
+            company_id: context.company_id.clone(),
+            kind: RoutedBusinessKind::DelegationPropose,
+            authenticated_actor: context.authenticated_actor.clone(),
+            source_node_id: attestation.source_work_ref.node_id,
+            target_placement: request.target_placement.clone(),
+            expected_revision: 0,
+            idempotency_key: context.idempotency_key.clone(),
+            payload_digest: canonical_json_fingerprint(&payload),
+            payload,
+            required_capability: RoutedBusinessKind::DelegationPropose.required_capability(),
+            ordering_key: format!("delegation:{}", request.delegation_id),
+            created_at: context.occurred_at.clone(),
         })
     }
 

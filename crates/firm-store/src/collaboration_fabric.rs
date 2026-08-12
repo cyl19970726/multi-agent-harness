@@ -29,6 +29,14 @@ struct TargetWorkCreatePayload {
     target_placement: firm_core::collaboration::TargetPlacementRef,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DelegationProposePayload {
+    request: crate::ProposeDelegationRequest,
+    source_work_attestation: firm_core::collaboration::SourceWorkAttestation,
+    policy_id: String,
+}
+
 /// Server-resolved Wave 5 route authority. None of these fields may be copied
 /// from the public collaboration request body.
 #[derive(Debug, Clone)]
@@ -297,6 +305,87 @@ pub fn apply_collaboration_target_operation(
             ))
         }
     };
+    if reference.business_kind == "delegation_propose"
+        && reference.required_capability == "collaboration.delegation_propose"
+    {
+        let payload = serde_json::from_value::<DelegationProposePayload>(reference.payload)
+            .map_err(|error| {
+                application_error(
+                    FabricErrorCode::InvalidPayload,
+                    format!("delegation_propose payload is invalid: {error}"),
+                    &operation.id,
+                )
+            })?;
+        if payload.policy_id.trim().is_empty()
+            || payload.request.delegation_id.trim().is_empty()
+            || payload.request.operation_id != operation.id
+            || payload.request.target_placement.team_id != reference.target_team_id
+            || payload.request.target_placement.team_revision != reference.target_team_revision
+            || payload.request.target_placement.placement_generation
+                != reference.placement_generation
+            || payload.request.target_placement.node_id != operation.target_node_id
+            || payload.source_work_attestation.company_id != operation.company_id
+            || payload.source_work_attestation.source_work_ref.node_id
+                != operation.source_node_id.clone().unwrap_or_default()
+            || payload.source_work_attestation.source_gateway_generation
+                != operation.source_gateway_generation.unwrap_or_default()
+            || payload.source_work_attestation.source_host_ref.id != reference.business_actor_id
+                && payload.source_work_attestation.source_owner_ref.id
+                    != reference.business_actor_id
+        {
+            return Err(application_error(
+                FabricErrorCode::SourceMismatch,
+                "proposal source attestation, actor, operation, or target placement changed in transit",
+                &operation.id,
+            ));
+        }
+        let teams = store.teams().map_err(|error| {
+            application_error(
+                FabricErrorCode::StoreUnavailable,
+                format!("target AgentTeam lookup failed: {error}"),
+                &operation.id,
+            )
+        })?;
+        let team_revision = teams
+            .iter()
+            .filter(|team| team.id == reference.target_team_id)
+            .count() as u64;
+        let team = teams
+            .iter()
+            .rev()
+            .find(|team| team.id == reference.target_team_id)
+            .ok_or_else(|| {
+                application_error(
+                    FabricErrorCode::TargetNotPlaced,
+                    "target AgentTeam does not exist",
+                    &operation.id,
+                )
+            })?;
+        if team_revision != reference.target_team_revision
+            || team.node_id != operation.target_node_id
+            || team.status != AgentTeamStatus::Active
+            || reference.placement_generation != 1
+        {
+            return Err(application_error(
+                FabricErrorCode::NodeStaleGeneration,
+                "target Team revision, immutable Node, status, or placement changed",
+                &operation.id,
+            ));
+        }
+        return Ok((
+            "agentfirm.collaboration.delegation_proposal_validated.v1".into(),
+            serde_json::json!({
+                "delegation_id": payload.request.delegation_id,
+                "policy_id": payload.policy_id,
+                "target_host_ref": {
+                    "kind": "agent_member",
+                    "id": team.host_agent_id,
+                },
+                "target_placement": payload.request.target_placement,
+            }),
+            EffectCertainty::Applied,
+        ));
+    }
     if reference.business_kind != "target_work_create"
         || reference.required_capability != "collaboration.target_work_create"
     {

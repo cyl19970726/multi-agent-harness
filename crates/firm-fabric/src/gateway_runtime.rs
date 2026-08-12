@@ -20,6 +20,34 @@ use crate::transport::{read_frame, write_frame, FabricSessionFence, VerifiedMtls
 use crate::NodeLocalFabricStore;
 use crate::{canonical_digest, FabricError, FabricErrorCode};
 
+/// Higher-level business application invoked only after a generation-fenced
+/// target application receipt is durable in the FabricStore. The Fabric owns
+/// route truth; this seam lets Company-level application services fold that
+/// terminal evidence without making `firm-fabric` a business-state authority.
+pub trait ControlPlaneReceiptApplication: Send + Sync {
+    fn fold_target_application(
+        &self,
+        operation: &RoutedOperation,
+        result: &TargetApplicationResult,
+        receipt: &RouteReceipt,
+        observed_at_unix_ms: u64,
+    ) -> Result<(), FabricError>;
+}
+
+struct NoopControlPlaneReceiptApplication;
+
+impl ControlPlaneReceiptApplication for NoopControlPlaneReceiptApplication {
+    fn fold_target_application(
+        &self,
+        _operation: &RoutedOperation,
+        _result: &TargetApplicationResult,
+        _receipt: &RouteReceipt,
+        _observed_at_unix_ms: u64,
+    ) -> Result<(), FabricError> {
+        Ok(())
+    }
+}
+
 /// Serve one already mTLS-authenticated outbound connection until the peer
 /// closes it. A connection owns no authority beyond the exact durable leases.
 pub fn serve_control_plane_session<S, K>(
@@ -31,6 +59,27 @@ pub fn serve_control_plane_session<S, K>(
 where
     S: Read + Write,
     K: ArtifactKeyBackend,
+{
+    serve_control_plane_session_with_application(
+        socket,
+        peer,
+        control_plane,
+        control_plane_generation,
+        &NoopControlPlaneReceiptApplication,
+    )
+}
+
+pub fn serve_control_plane_session_with_application<S, K, A>(
+    socket: &mut WebSocket<S>,
+    peer: &VerifiedMtlsPeer,
+    control_plane: &ControlPlane<'_, K>,
+    control_plane_generation: u64,
+    application: &A,
+) -> Result<(), FabricError>
+where
+    S: Read + Write,
+    K: ArtifactKeyBackend,
+    A: ControlPlaneReceiptApplication + ?Sized,
 {
     let hello_frame = read_frame(socket)?;
     let hello = match &hello_frame.payload {
@@ -159,6 +208,19 @@ where
                 )?;
             }
             FabricPayload::OperationResult(result) => {
+                let application_result = result.clone();
+                let operation = control_plane
+                    .store()
+                    .snapshot()?
+                    .operations
+                    .get(&result.operation_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        FabricError::none(
+                            FabricErrorCode::OperationUnknown,
+                            "target application result references no accepted operation",
+                        )
+                    })?;
                 let (_, receipt, _) = control_plane.record_application_receipt(
                     control_plane_generation,
                     &session.node_id,
@@ -169,6 +231,12 @@ where
                     &result.result_schema,
                     result.result,
                     result.effect,
+                    now,
+                )?;
+                application.fold_target_application(
+                    &operation,
+                    &application_result,
+                    &receipt,
                     now,
                 )?;
                 send_payload(
