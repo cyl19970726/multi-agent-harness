@@ -4,6 +4,7 @@ import { ArrowRight, Inbox } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar } from "@/components/workbench/Avatar";
 import { TeamMessageComposer } from "@/components/workbench/team/TeamMessageComposer";
+import { AgentTeamFactStrip } from "@/components/workbench/team/AgentTeamVisualPrimitives";
 import {
   fetchRoleView,
   type HostConsoleData,
@@ -64,6 +65,9 @@ export function HostActivityLeadInbox({apiUrl,space,project,routeIdentity,refres
   const membersById=new Map(view.data.member_capacity.map((member) => [member.agent_member_ref.id,member]));
   return <section aria-labelledby="lead-inbox-title" className="agent-team-lead-inbox mt-4 border-y border-border">
     <header className="flex items-center gap-2 px-1 py-2.5"><Inbox className="size-3.5 text-primary"/><h2 id="lead-inbox-title" className="text-[11px] font-semibold uppercase tracking-[.12em]">Lead Inbox</h2><span className="hidden text-[10px] text-muted-foreground sm:inline">server-projected response pressure</span><span className="ml-auto text-xs font-semibold tabular-nums text-primary">{view.data.host_inbox.length}</span></header>
+    <AgentTeamFactStrip className="grid-cols-4"><PressureFact label="Replies" value={view.data.host_inbox.length}/><PressureFact label="Active turns" value={view.data.pressure_summary.active_turns}/><PressureFact label="Review" value={view.data.pressure_summary.review_work}/><PressureFact label="Blocked" value={view.data.pressure_summary.blocked_work}/></AgentTeamFactStrip>
     <ol>{view.data.host_inbox.slice(0,3).map((message) => { const sender=membersById.get(message.sender.id); return <li key={message.message_id} className="grid gap-2 border-t border-border/75 px-1 py-3 sm:grid-cols-[minmax(10rem,.65fr)_minmax(16rem,1.8fr)_auto] sm:items-center"><div className="flex min-w-0 items-center gap-2">{sender ? <Avatar name={sender.display_name} identity={`${sender.agent_member_ref.id} ${sender.role}`} size="sm" tone={sender.runtime_state === "running" ? "running" : "idle"}/> : <span className="grid size-8 shrink-0 place-items-center rounded-full bg-accent text-primary"><Inbox className="size-3.5"/></span>}<div className="min-w-0"><p className="truncate text-xs font-semibold">{sender?.display_name ?? message.sender.id}</p><p className="truncate text-[10px] text-muted-foreground">{message.kind.replace(/_/g," ")} · response required</p></div></div><p className="min-w-0 text-[13px] leading-relaxed text-foreground/85">{message.body}</p><div className="flex items-center gap-2 sm:justify-end">{message.work_id && <button type="button" className="max-w-32 truncate text-[10px] text-muted-foreground hover:text-primary" onClick={() => onOpenWork(message.work_id!)}>{message.work_id}</button>}<Button size="sm" variant="ghost" aria-label="Respond from Lead Inbox" onClick={() => onReply(message)}>Respond <ArrowRight className="size-3.5"/></Button></div></li>;})}</ol>
   </section>;
 }
+
+function PressureFact({label,value}:{label:string;value:number}) { return <div className="px-3 py-2"><dt className="text-[9px] uppercase tracking-wider text-muted-foreground">{label}</dt><dd className="mt-0.5 text-lg font-semibold tabular-nums">{value}</dd></div>; }

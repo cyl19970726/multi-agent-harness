@@ -642,6 +642,8 @@ fn member_run_summary(value: &Value) -> Value {
 fn agent_member_summary(value: &Value) -> Value {
     json!({
         "id":value["id"],
+        "display_name":value["name"],
+        "description":value["description"],
         "role":value["role"],
         "organization_status":value["organization_status"],
     })
@@ -1912,6 +1914,18 @@ fn member_view(
         .map(|message| message_summary(message, &facts.message_deliveries))
         .collect::<Vec<_>>();
     let workspace = current_workspace(&facts, member_run_id).cloned();
+    let mut member_run_history = facts
+        .member_runs
+        .iter()
+        .filter(|candidate| candidate["agent_member_id"] == member_id)
+        .map(member_run_summary)
+        .collect::<Vec<_>>();
+    member_run_history.sort_by(|left, right| {
+        right["runtime_generation"]
+            .as_u64()
+            .cmp(&left["runtime_generation"].as_u64())
+            .then_with(|| right["id"].as_str().cmp(&left["id"].as_str()))
+    });
     let mut actions = Vec::new();
     let addressed_generation_is_current =
         run["coordination_status"] == "active" && active_generations == 1;
@@ -2007,7 +2021,7 @@ fn member_view(
     Ok(envelope(
         "member_workbench",
         &facts,
-        json!({"agent_member":agent_member_summary(&member),"member_run":member_run_summary(run),"my_works":my,"eligible_ready_pool":pool,"unread_messages":unread,"queued_deliveries":record_summaries("message_delivery",queued),"workspace_binding":workspace.as_ref().map(|value|record_summary("workspace_binding",value)),"native_session_health":run["native_session"].get("availability").cloned().unwrap_or(json!("unknown")),"pending_provider_interactions":[],"report_history":record_summaries("work_report",records(&facts,|v|v["authored_by"]["id"]==member_id&&v.get("report_revision").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"finding_history":record_summaries("work_finding",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("detail_markdown").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"failure_history":record_summaries("failure_analysis",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("observed_failure").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"gate_requirements":record_summaries("gate_requirement",records(&facts,|v|v.get("requirement_set_fingerprint").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id))&&facts.works.iter().any(|work|v["work_id"]==work.id&&v["work_revision"].as_u64()==Some(work.version))))}),
+        json!({"agent_member":agent_member_summary(&member),"member_run":member_run_summary(run),"member_run_history":member_run_history,"my_works":my,"eligible_ready_pool":pool,"unread_messages":unread,"queued_deliveries":record_summaries("message_delivery",queued),"workspace_binding":workspace.as_ref().map(|value|record_summary("workspace_binding",value)),"native_session_health":run["native_session"].get("availability").cloned().unwrap_or(json!("unknown")),"pending_provider_interactions":[],"report_history":record_summaries("work_report",records(&facts,|v|v["authored_by"]["id"]==member_id&&v.get("report_revision").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"finding_history":record_summaries("work_finding",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("detail_markdown").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"failure_history":record_summaries("failure_analysis",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("observed_failure").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"gate_requirements":record_summaries("gate_requirement",records(&facts,|v|v.get("requirement_set_fingerprint").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id))&&facts.works.iter().any(|work|v["work_id"]==work.id&&v["work_revision"].as_u64()==Some(work.version))))}),
         vec![],
         actions,
     ))
