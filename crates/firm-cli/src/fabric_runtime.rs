@@ -303,9 +303,11 @@ fn control_plane_command(resolved: &ResolvedStore, args: &[String]) -> CliResult
         .unwrap_or_else(|| format!("control-plane:{}", std::process::id()));
     let firm_home = firm_home(resolved, args)?;
     let layout = RemoteFabricStoreLayout::open(&firm_home).map_err(fabric_error)?;
-    let store = layout
-        .open_control_plane(&company_id)
-        .map_err(fabric_error)?;
+    let store = Arc::new(
+        layout
+            .open_control_plane(&company_id)
+            .map_err(fabric_error)?,
+    );
     let artifact_key = required_key_file(args, "--artifact-key-file")?;
     let capability_key = required_key_file(args, "--capability-key-file")?;
     let keys = InMemoryArtifactKeyBackend::default();
@@ -357,9 +359,7 @@ fn control_plane_command(resolved: &ResolvedStore, args: &[String]) -> CliResult
     let listener = std::net::TcpListener::bind(&gateway_addr)?;
     let stop = Arc::new(AtomicBool::new(false));
     let http_stop = stop.clone();
-    let http_root = layout
-        .control_plane_root(&company_id)
-        .map_err(fabric_error)?;
+    let http_store = store.clone();
     let http_company = company_id.clone();
     let http_instance = instance_id.clone();
     std::thread::spawn(move || {
@@ -370,7 +370,7 @@ fn control_plane_command(resolved: &ResolvedStore, args: &[String]) -> CliResult
             &http_company,
             &http_instance,
             generation,
-            &http_root,
+            http_store,
             artifact_key,
             capability_key,
             &ca,
@@ -380,20 +380,16 @@ fn control_plane_command(resolved: &ResolvedStore, args: &[String]) -> CliResult
         }
     });
     let heartbeat_stop = stop.clone();
-    let heartbeat_root = layout
-        .control_plane_root(&company_id)
-        .map_err(fabric_error)?;
+    let heartbeat_store = store.clone();
     let heartbeat_company = company_id.clone();
     let heartbeat_instance = instance_id.clone();
     std::thread::spawn(move || {
-        let store = harness_fabric::FabricStore::open(heartbeat_root)
-            .expect("reopen Control Plane Store for heartbeat");
         let keys = InMemoryArtifactKeyBackend::default();
         keys.insert(&heartbeat_company, artifact_key);
         let control = ControlPlane::new(
             &heartbeat_company,
             &heartbeat_instance,
-            &store,
+            &heartbeat_store,
             &keys,
             capability_key,
         );
@@ -426,18 +422,16 @@ fn control_plane_command(resolved: &ResolvedStore, args: &[String]) -> CliResult
         }
         let tcp = incoming?;
         let tls = tls.clone();
-        let root = layout
-            .control_plane_root(&company_id)
-            .map_err(fabric_error)?;
+        let session_store = store.clone();
         let company = company_id.clone();
         let instance = instance_id.clone();
         std::thread::spawn(move || {
             let result = (|| -> Result<(), FabricError> {
                 let (mut socket, peer) = accept_control_plane_mtls(tcp, &tls)?;
-                let store = harness_fabric::FabricStore::open(root)?;
                 let keys = InMemoryArtifactKeyBackend::default();
                 keys.insert(&company, artifact_key);
-                let control = ControlPlane::new(&company, &instance, &store, &keys, capability_key);
+                let control =
+                    ControlPlane::new(&company, &instance, &session_store, &keys, capability_key);
                 serve_control_plane_session(&mut socket, &peer, &control, generation)
             })();
             if let Err(error) = result {
@@ -735,7 +729,7 @@ fn serve_host_http(
     company_id: &str,
     instance_id: &str,
     generation: u64,
-    store_root: &Path,
+    store: Arc<harness_fabric::FabricStore>,
     artifact_key: [u8; 32],
     capability_key: [u8; 32],
     ca: &harness_fabric::pki::FabricCaMaterial,
@@ -743,7 +737,6 @@ fn serve_host_http(
 ) -> CliResult<()> {
     let listener = TcpListener::bind(addr)?;
     listener.set_nonblocking(true)?;
-    let store = harness_fabric::FabricStore::open(store_root).map_err(fabric_error)?;
     let keys = InMemoryArtifactKeyBackend::default();
     keys.insert(company_id, artifact_key);
     let control = ControlPlane::new(company_id, instance_id, &store, &keys, capability_key);
@@ -1682,7 +1675,7 @@ mod tests {
             fabric_http_body_limit("POST", "/v1/fabric/artifacts/artifact-a/complete"),
             ARTIFACT_COMPLETE_HTTP_BODY_LIMIT
         );
-        assert!(ARTIFACT_COMPLETE_HTTP_BODY_LIMIT > MAX_FABRIC_ARTIFACT_BYTES * 2);
+        const { assert!(ARTIFACT_COMPLETE_HTTP_BODY_LIMIT > MAX_FABRIC_ARTIFACT_BYTES * 2) };
         assert_eq!(
             fabric_http_body_limit("POST", "/v1/fabric/artifacts/initiate"),
             STANDARD_FABRIC_HTTP_BODY_LIMIT
