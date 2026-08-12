@@ -675,6 +675,23 @@ fn node_gateway_command(
             }
         }
         for mut operation in local.pending_outbox_operations().map_err(fabric_error)? {
+            let now_unix_ms = now_unix_ms().map_err(fabric_error)?;
+            if operation.expires_at_unix_ms <= now_unix_ms {
+                if let Some(outbox) = local
+                    .expire_unaccepted_outbox(&gateway.session, &operation.id, now_unix_ms)
+                    .map_err(fabric_error)?
+                {
+                    println!(
+                        "Remote Fabric settled unaccepted expired operation={} truth={}",
+                        operation.id,
+                        outbox
+                            .terminal_receipt_ref
+                            .as_deref()
+                            .unwrap_or("local:not_applied:operation_expired")
+                    );
+                    continue;
+                }
+            }
             let receipts = gateway
                 .reconcile_operations(&local, BTreeSet::from([operation.id.clone()]))
                 .map_err(fabric_error)?;

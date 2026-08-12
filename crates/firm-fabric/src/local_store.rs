@@ -420,6 +420,85 @@ impl NodeLocalFabricStore {
         })
     }
 
+    /// Settle a source operation which expired before FabricStore accepted it.
+    ///
+    /// FabricStore remains the sole cross-node route truth, so this method does
+    /// not invent a Control Plane receipt. It only closes the Node-local
+    /// pre-acceptance outbox under the exact active session fence. This keeps a
+    /// durable offline operation from poisoning every later gateway reconnect
+    /// while preserving the truthful `not_applied` boundary: no route attempt
+    /// or target/native effect ever existed.
+    pub fn expire_unaccepted_outbox(
+        &self,
+        session: &FabricSessionFence,
+        operation_id: &str,
+        now_unix_ms: u64,
+    ) -> Result<Option<LocalRemoteOutbox>, FabricError> {
+        self.require_session(session)?;
+        let current = self.snapshot()?;
+        if current.active_session.as_ref() != Some(session) {
+            return Err(FabricError::none(
+                FabricErrorCode::NodeStaleGeneration,
+                "Node-local expiry requires the exact current active gateway session",
+            ));
+        }
+        if let Some(existing) = current.outboxes.get(operation_id) {
+            if existing.local_state == LocalOutboxState::Terminal {
+                return Ok(Some(existing.clone()));
+            }
+            if existing.local_state == LocalOutboxState::Accepted {
+                return Ok(None);
+            }
+        }
+        self.transact_session(session, |state| {
+            let mut outbox = state.outboxes.get(operation_id).cloned().ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::OperationUnknown,
+                    "source expiry requires a durable local outbox",
+                )
+            })?;
+            // A concurrent same-session settlement may have happened after
+            // the read-only fast path. Returning it is an idempotent replay;
+            // `transact_session` still guarantees no successor can interleave.
+            if outbox.local_state == LocalOutboxState::Terminal {
+                return Ok(Some(outbox));
+            }
+            if outbox.local_state == LocalOutboxState::Accepted {
+                return Ok(None);
+            }
+            if !matches!(
+                outbox.local_state,
+                LocalOutboxState::QueuedForControlPlane
+                    | LocalOutboxState::Submitted
+                    | LocalOutboxState::ReconcileRequired
+            ) {
+                return Err(FabricError::none(
+                    FabricErrorCode::IdempotencyConflict,
+                    "a Control Plane-accepted outbox cannot be settled as locally expired",
+                ));
+            }
+            let operation = outbox.operation.as_ref().ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::OperationUnknown,
+                    "source outbox lost its pre-acceptance operation envelope",
+                )
+            })?;
+            if operation.expires_at_unix_ms > now_unix_ms {
+                return Err(FabricError::none(
+                    FabricErrorCode::ExpectedRevisionConflict,
+                    "unaccepted source outbox has not expired",
+                ));
+            }
+            outbox.local_state = LocalOutboxState::Terminal;
+            outbox.terminal_receipt_ref = Some(format!(
+                "local:not_applied:operation_expired:{}",
+                operation.id
+            ));
+            state.outboxes.insert(operation_id.into(), outbox.clone());
+            Ok(Some(outbox))
+        })
+    }
+
     pub fn mark_outbox_receipt(
         &self,
         session: &FabricSessionFence,
