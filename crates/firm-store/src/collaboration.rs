@@ -1391,6 +1391,60 @@ impl HarnessStore {
         })
     }
 
+    pub fn delegation_decide_operation(
+        &self,
+        context: &CollaborationMutationContext,
+        delegation_id: &str,
+        decision: &DelegationDecision,
+    ) -> StoreResult<RoutedBusinessOperation> {
+        let delegation = self
+            .collaboration_delegation(&context.company_id, delegation_id)?
+            .ok_or_else(|| {
+                collaboration_error(
+                    FabricErrorCode::RevisionConflict,
+                    "delegation decision route requires the central relationship",
+                    "work_delegation_v1",
+                    delegation_id,
+                    None,
+                )
+            })?;
+        if context.expected_revision != delegation.revision
+            || decision.expected_delegation_revision != delegation.revision
+            || decision.delegation_id != delegation.id
+            || !exact_actor(&context.authenticated_actor, &delegation.target_host_ref)
+            || decision.decided_by_target_host != delegation.target_host_ref
+        {
+            return Err(collaboration_error(
+                FabricErrorCode::UnauthorizedActor,
+                "delegation decision route requires exact target Host and relationship revision",
+                "work_delegation_v1",
+                delegation_id,
+                Some(delegation.revision),
+            ));
+        }
+        let payload = serde_json::json!({
+            "delegation_id": delegation.id,
+            "decision": decision,
+            "target_placement": delegation.target_placement,
+        });
+        Ok(RoutedBusinessOperation {
+            id: decision.id.clone(),
+            protocol_version: "agentfirm.fabric.v1".into(),
+            company_id: context.company_id.clone(),
+            kind: RoutedBusinessKind::DelegationDecide,
+            authenticated_actor: context.authenticated_actor.clone(),
+            source_node_id: delegation.source_node_id,
+            target_placement: delegation.target_placement,
+            expected_revision: context.expected_revision,
+            idempotency_key: context.idempotency_key.clone(),
+            payload_digest: canonical_json_fingerprint(&payload),
+            payload,
+            required_capability: RoutedBusinessKind::DelegationDecide.required_capability(),
+            ordering_key: format!("delegation:{delegation_id}"),
+            created_at: context.occurred_at.clone(),
+        })
+    }
+
     pub fn apply_target_work_created(
         &self,
         context: &CollaborationMutationContext,

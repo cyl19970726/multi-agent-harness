@@ -31,7 +31,13 @@ pub trait ControlPlaneReceiptApplication: Send + Sync {
         result: &TargetApplicationResult,
         receipt: &RouteReceipt,
         observed_at_unix_ms: u64,
-    ) -> Result<(), FabricError>;
+    ) -> Result<Vec<ControlPlaneFollowUp>, FabricError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct ControlPlaneFollowUp {
+    pub authenticated_actor: AuthenticatedActor,
+    pub operation: RoutedOperation,
 }
 
 struct NoopControlPlaneReceiptApplication;
@@ -43,8 +49,8 @@ impl ControlPlaneReceiptApplication for NoopControlPlaneReceiptApplication {
         _result: &TargetApplicationResult,
         _receipt: &RouteReceipt,
         _observed_at_unix_ms: u64,
-    ) -> Result<(), FabricError> {
-        Ok(())
+    ) -> Result<Vec<ControlPlaneFollowUp>, FabricError> {
+        Ok(Vec::new())
     }
 }
 
@@ -233,12 +239,20 @@ where
                     result.effect,
                     now,
                 )?;
-                application.fold_target_application(
+                let follow_ups = application.fold_target_application(
                     &operation,
                     &application_result,
                     &receipt,
                     now,
                 )?;
+                for follow_up in follow_ups {
+                    control_plane.accept_control_plane_operation(
+                        control_plane_generation,
+                        &follow_up.authenticated_actor,
+                        follow_up.operation,
+                        now,
+                    )?;
+                }
                 send_payload(
                     socket,
                     &session,

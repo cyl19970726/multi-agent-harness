@@ -44,19 +44,19 @@ impl ControlPlaneReceiptApplication for Wave6ControlPlaneApplication {
         result: &TargetApplicationResult,
         receipt: &RouteReceipt,
         observed_at_unix_ms: u64,
-    ) -> Result<(), FabricError> {
+    ) -> Result<Vec<harness_fabric::gateway_runtime::ControlPlaneFollowUp>, FabricError> {
         if operation.kind != COLLABORATION_BUSINESS_OPERATION_KIND {
-            return Ok(());
+            return Ok(Vec::new());
         }
         if receipt.kind != ReceiptKind::OperationApplied
             || receipt.application_effect != Some(EffectCertainty::Applied)
             || result.effect != EffectCertainty::Applied
         {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let reference = match operation.closed_body()? {
             harness_fabric::ClosedOperationBody::CollaborationBusiness(reference) => reference,
-            _ => return Ok(()),
+            _ => return Ok(Vec::new()),
         };
         if reference.business_kind == "delegation_propose" {
             if result.result_schema != "agentfirm.collaboration.delegation_proposal_validated.v1" {
@@ -197,10 +197,158 @@ impl ControlPlaneReceiptApplication for Wave6ControlPlaneApplication {
                         format!("Control Plane delegation fold failed: {error}"),
                     )
                 })?;
-            return Ok(());
+            return Ok(Vec::new());
+        }
+        if reference.business_kind == "delegation_decide" {
+            if result.result_schema != "agentfirm.collaboration.delegation_decision_validated.v1" {
+                return Err(FabricError::unknown(
+                    operation.id.clone(),
+                    "delegation decision applied receipt has an unexpected result schema",
+                ));
+            }
+            let decision =
+                serde_json::from_value::<harness_core::collaboration::DelegationDecision>(
+                    result.result.get("decision").cloned().ok_or_else(|| {
+                        FabricError::unknown(
+                            operation.id.clone(),
+                            "delegation decision result lacks the frozen decision",
+                        )
+                    })?,
+                )
+                .map_err(|error| {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        format!("delegation decision result is invalid: {error}"),
+                    )
+                })?;
+            let observed =
+                serde_json::from_value::<harness_core::collaboration::TargetPlacementRef>(
+                    result
+                        .result
+                        .get("target_placement")
+                        .cloned()
+                        .ok_or_else(|| {
+                            FabricError::unknown(
+                                operation.id.clone(),
+                                "delegation decision result lacks target placement",
+                            )
+                        })?,
+                )
+                .map_err(|error| {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        format!("delegation decision placement is invalid: {error}"),
+                    )
+                })?;
+            let store = HarnessStore::new(&self.collaboration_root);
+            let delegation_id = result
+                .result
+                .get("delegation_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        "delegation decision result lacks delegation_id",
+                    )
+                })?;
+            let before = store
+                .collaboration_delegation(&self.company_id, delegation_id)
+                .map_err(|error| {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        format!("delegation lookup failed: {error}"),
+                    )
+                })?
+                .ok_or_else(|| {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        "delegation decision references no central relationship",
+                    )
+                })?;
+            let business_actor = harness_core::agentfirm_api::ActorRef {
+                kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+                id: reference.business_actor_id.clone(),
+            };
+            let authority = harness_store::ResolvedCollaborationAuthority {
+                source_host: before.source_owner_ref.clone(),
+                source_work_owner: before.source_owner_ref.clone(),
+                target_host: before.target_host_ref.clone(),
+                target_placement: before.target_placement.clone(),
+                source_work_application_service: harness_core::agentfirm_api::ActorRef {
+                    kind: harness_core::agentfirm_api::ActorKind::Service,
+                    id: format!("source-work-service:{}", before.source_node_id),
+                },
+                source_gateway_generation: operation.source_gateway_generation.unwrap_or_default(),
+            };
+            let context = harness_store::CollaborationMutationContext {
+                company_id: self.company_id.clone(),
+                authenticated_actor: business_actor,
+                command_name: "delegation_decide".into(),
+                idempotency_key: operation.idempotency_key.clone(),
+                expected_revision: reference.expected_revision,
+                occurred_at: format!("unix-ms:{observed_at_unix_ms}"),
+            };
+            let decided = store
+                .decide_collaboration_delegation(
+                    &context,
+                    delegation_id,
+                    &decision,
+                    &authority,
+                    &observed,
+                )
+                .map_err(|error| {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        format!("Control Plane delegation decision fold failed: {error}"),
+                    )
+                })?;
+            if decided.projection.state
+                != harness_core::collaboration::DelegationState::ProvisioningTargetWork
+            {
+                return Ok(Vec::new());
+            }
+            let target_work = store
+                .target_work_create_operation(
+                    &self.company_id,
+                    delegation_id,
+                    &format!("unix-ms:{observed_at_unix_ms}"),
+                )
+                .map_err(|error| {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        format!("target Work follow-up build failed: {error}"),
+                    )
+                })?;
+            let control_actor = AuthenticatedActor {
+                company_id: self.company_id.clone(),
+                actor_id: self.actor_id.clone(),
+                actor_kind: harness_fabric::ActorKind::Service,
+                role_bindings: BTreeSet::from(["company_control_plane".into()]),
+                session_id: format!("control-plane:{}", operation.control_plane_generation),
+                issued_at_unix_ms: observed_at_unix_ms,
+                expires_at_unix_ms: observed_at_unix_ms.saturating_add(30_000),
+            };
+            let routed = harness_store::route_collaboration_business_operation(
+                &target_work,
+                &harness_store::CollaborationFabricRouteContext {
+                    authenticated_actor: control_actor.clone(),
+                    resolved_business_actor: before.target_host_ref,
+                    source: harness_store::CollaborationFabricSource::ControlPlane,
+                    control_plane_generation: operation.control_plane_generation,
+                    target_execution_space_id: operation.target_execution_space_id.clone(),
+                    created_at_unix_ms: observed_at_unix_ms,
+                    expires_at_unix_ms: observed_at_unix_ms.saturating_add(10 * 60 * 1000),
+                },
+            )?;
+            return Ok(vec![
+                harness_fabric::gateway_runtime::ControlPlaneFollowUp {
+                    authenticated_actor: control_actor,
+                    operation: routed,
+                },
+            ]);
         }
         if reference.business_kind != "target_work_create" {
-            return Ok(());
+            return Ok(Vec::new());
         }
         if result.result_schema != "agentfirm.collaboration.target_work_created.v1" {
             return Err(FabricError::unknown(
@@ -273,7 +421,7 @@ impl ControlPlaneReceiptApplication for Wave6ControlPlaneApplication {
                     format!("Control Plane collaboration fold failed: {error}"),
                 )
             })?;
-        Ok(())
+        Ok(Vec::new())
     }
 }
 
@@ -1108,7 +1256,7 @@ impl NodeApplication for Wave4cApplication {
             harness_fabric::ClosedOperationBody::Message(_) => self.persist_message(operation),
             harness_fabric::ClosedOperationBody::CollaborationBusiness(reference) => {
                 match reference.business_kind.as_str() {
-                    "target_work_create" | "delegation_propose" => {
+                    "target_work_create" | "delegation_propose" | "delegation_decide" => {
                         let (_, store) = self.target_store(operation)?;
                         harness_store::apply_collaboration_target_operation(
                             &store,

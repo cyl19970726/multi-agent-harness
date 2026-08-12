@@ -37,6 +37,14 @@ struct DelegationProposePayload {
     policy_id: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DelegationDecidePayload {
+    delegation_id: String,
+    decision: firm_core::collaboration::DelegationDecision,
+    target_placement: firm_core::collaboration::TargetPlacementRef,
+}
+
 /// Server-resolved Wave 5 route authority. None of these fields may be copied
 /// from the public collaboration request body.
 #[derive(Debug, Clone)]
@@ -158,7 +166,9 @@ pub fn route_collaboration_business_operation(
             && context.authenticated_actor.actor_id == operation.source_node_id
             && !matches!(
                 operation.kind,
-                firm_core::collaboration::RoutedBusinessKind::TargetWorkCreate
+                firm_core::collaboration::RoutedBusinessKind::DelegationDecide
+                    | firm_core::collaboration::RoutedBusinessKind::TargetWorkCreate
+                    | firm_core::collaboration::RoutedBusinessKind::DelegationCancelDecide
                     | firm_core::collaboration::RoutedBusinessKind::ArtifactGrant
             )
             && !source_execution_space_id.trim().is_empty()
@@ -179,7 +189,9 @@ pub fn route_collaboration_business_operation(
             if context.authenticated_actor.actor_kind == ActorKind::Service
                 && matches!(
                     operation.kind,
-                    firm_core::collaboration::RoutedBusinessKind::TargetWorkCreate
+                    firm_core::collaboration::RoutedBusinessKind::DelegationDecide
+                        | firm_core::collaboration::RoutedBusinessKind::TargetWorkCreate
+                        | firm_core::collaboration::RoutedBusinessKind::DelegationCancelDecide
                         | firm_core::collaboration::RoutedBusinessKind::ArtifactGrant
                 ) =>
         {
@@ -382,6 +394,71 @@ pub fn apply_collaboration_target_operation(
                     "id": team.host_agent_id,
                 },
                 "target_placement": payload.request.target_placement,
+            }),
+            EffectCertainty::Applied,
+        ));
+    }
+    if reference.business_kind == "delegation_decide"
+        && reference.required_capability == "collaboration.delegation_decide"
+    {
+        let payload = serde_json::from_value::<DelegationDecidePayload>(reference.payload)
+            .map_err(|error| {
+                application_error(
+                    FabricErrorCode::InvalidPayload,
+                    format!("delegation_decide payload is invalid: {error}"),
+                    &operation.id,
+                )
+            })?;
+        let teams = store.teams().map_err(|error| {
+            application_error(
+                FabricErrorCode::StoreUnavailable,
+                format!("target AgentTeam lookup failed: {error}"),
+                &operation.id,
+            )
+        })?;
+        let team_revision = teams
+            .iter()
+            .filter(|team| team.id == reference.target_team_id)
+            .count() as u64;
+        let team = teams
+            .iter()
+            .rev()
+            .find(|team| team.id == reference.target_team_id)
+            .ok_or_else(|| {
+                application_error(
+                    FabricErrorCode::TargetNotPlaced,
+                    "target AgentTeam does not exist",
+                    &operation.id,
+                )
+            })?;
+        if payload.delegation_id.trim().is_empty()
+            || payload.decision.id != operation.id
+            || payload.decision.delegation_id != payload.delegation_id
+            || payload.decision.expected_delegation_revision != reference.expected_revision
+            || payload.target_placement.team_id != reference.target_team_id
+            || payload.target_placement.team_revision != reference.target_team_revision
+            || payload.target_placement.node_id != operation.target_node_id
+            || payload.target_placement.placement_generation != reference.placement_generation
+            || team_revision != reference.target_team_revision
+            || team.node_id != operation.target_node_id
+            || team.status != AgentTeamStatus::Active
+            || reference.placement_generation != 1
+            || reference.business_actor_kind != "agent_member"
+            || reference.business_actor_id != team.host_agent_id
+            || payload.decision.decided_by_target_host.id != team.host_agent_id
+        {
+            return Err(application_error(
+                FabricErrorCode::UnauthorizedActor,
+                "delegation decision is not bound to the exact current target Host, Team, placement, and revision",
+                &operation.id,
+            ));
+        }
+        return Ok((
+            "agentfirm.collaboration.delegation_decision_validated.v1".into(),
+            serde_json::json!({
+                "delegation_id": payload.delegation_id,
+                "decision": payload.decision,
+                "target_placement": payload.target_placement,
             }),
             EffectCertainty::Applied,
         ));
