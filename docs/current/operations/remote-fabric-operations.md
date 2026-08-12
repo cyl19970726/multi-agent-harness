@@ -161,3 +161,8 @@ keys between machines.
 If a second authorized Mac or a reachable trusted TLS endpoint is unavailable,
 report the real dogfood gate as blocked. Never substitute loopback processes or
 an extra process on one Mac while calling the result “two-Mac”.
+
+Secret-free submitted-run evidence is recorded under
+[`evidence/`](evidence/). Evidence pages are immutable after their exact review
+revision and CI run are bound; a later submission receives a new page or an
+explicit append-only revision section.
