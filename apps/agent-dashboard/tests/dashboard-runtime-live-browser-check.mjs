@@ -559,12 +559,17 @@ try {
   const memberContext = await browser.newContext({viewport:{width:1200,height:900},reducedMotion:"reduce"});
   const memberPage = await memberContext.newPage();
   await memberPage.addInitScript(({capabilityToken})=>{window.__AGENTFIRM_BOOTSTRAP__={capabilityToken}}, {capabilityToken:memberAgentFirmToken});
-  await memberPage.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"team",memberRun:liveMemberRunId})}`, {waitUntil:"domcontentloaded"});
-  await memberPage.getByRole("heading", {name:"Member Workbench"}).waitFor();
+  await memberPage.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"team",team:liveTeamRunId,conversation:"worker",memberRun:liveMemberRunId})}`, {waitUntil:"domcontentloaded"});
+  await memberPage.getByRole("button", {name:/Open .* configuration/}).waitFor();
+  await memberPage.getByRole("tab", {name:/Session/}).waitFor();
+  await memberPage.getByRole("tab", {name:/Work/}).click();
+  await waitForText(memberPage, "Real browser RoleAction loop");
+  await memberPage.getByLabel("Composer action").selectOption({label:"start work"});
   await memberPage.getByRole("button", {name:"start work"}).click();
   await memberPage.getByRole("button", {name:"Execute action"}).click();
+  await memberPage.getByLabel("Composer action").selectOption({label:"block work"});
   await memberPage.getByRole("button", {name:"block work",exact:true}).waitFor();
-  check(true, "Member browser executes authenticated start_work and refetches MemberWorkbench");
+  check(true, "Member browser executes authenticated start_work and refetches the unified Agent Workspace");
   await memberContext.close();
 
   const operatorContext = await browser.newContext({viewport:{width:1200,height:900},reducedMotion:"reduce"});
