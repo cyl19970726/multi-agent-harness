@@ -331,11 +331,44 @@ pub(crate) fn consume_enrollment_csr(
             "enrollment token expired",
         ));
     }
-    if state.nodes.contains_key(node_id) || state.certificates.contains_key(certificate_serial) {
+    if state.certificates.contains_key(certificate_serial) {
         return Err(FabricError::none(
             FabricErrorCode::EnrollmentInvalid,
-            "node identity or certificate already exists",
+            "certificate already exists",
         ));
+    }
+    let existing_node = state.nodes.get(node_id).cloned();
+    if let Some(existing) = existing_node.as_ref() {
+        if existing.company_id != company_id
+            || existing.administrative_status != NodeAdministrativeStatus::Active
+            || state.gateway_leases.get(node_id).is_some_and(|lease| {
+                lease.expires_at_unix_ms > now_unix_ms
+                    && lease.certificate_serial == existing.certificate_serial
+            })
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::EnrollmentInvalid,
+                "existing Node recovery requires the same active Company Node and no live predecessor Gateway",
+            ));
+        }
+        let prior_certificate = state
+            .certificates
+            .get(&existing.certificate_serial)
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::StoreUnavailable,
+                    "existing Node recovery lost its current certificate authority",
+                )
+            })?;
+        if enrollment.authorized_node_daemon_id != prior_certificate.node_daemon_id
+            || enrollment.authorized_node_daemon_generation
+                <= prior_certificate.node_daemon_generation
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::NodeStaleGeneration,
+                "existing Node recovery must bind a strict successor NodeDaemon generation",
+            ));
+        }
     }
     enrollment.status = EnrollmentStatus::Consumed;
     enrollment.revision = enrollment.revision.saturating_add(1);
@@ -350,8 +383,12 @@ pub(crate) fn consume_enrollment_csr(
         certificate_serial: certificate_serial.into(),
         allowed_capabilities: enrollment.allowed_capabilities.clone(),
         administrative_status: NodeAdministrativeStatus::Active,
-        node_revision: 1,
-        enrolled_at_unix_ms: now_unix_ms,
+        node_revision: existing_node
+            .as_ref()
+            .map_or(1, |node| node.node_revision.saturating_add(1)),
+        enrolled_at_unix_ms: existing_node
+            .as_ref()
+            .map_or(now_unix_ms, |node| node.enrolled_at_unix_ms),
         last_seen_at_unix_ms: None,
         revoked_at_unix_ms: None,
         revoke_reason: None,
@@ -359,9 +396,22 @@ pub(crate) fn consume_enrollment_csr(
         protocol_max: FABRIC_PROTOCOL_VERSION,
         schema_bundle_digest: schema_bundle_digest.into(),
         schema_version: FABRIC_SCHEMA_VERSION.into(),
-        created_at_unix_ms: now_unix_ms,
+        created_at_unix_ms: existing_node
+            .as_ref()
+            .map_or(now_unix_ms, |node| node.created_at_unix_ms),
         updated_at_unix_ms: now_unix_ms,
     };
+    if let Some(existing) = existing_node.as_ref() {
+        state
+            .revoked_certificate_serials
+            .insert(existing.certificate_serial.clone());
+        if let Some(prior) = state.certificates.get_mut(&existing.certificate_serial) {
+            prior.revoked_at_unix_ms = Some(now_unix_ms);
+        }
+        if let Some(gateway) = state.gateway_leases.get_mut(node_id) {
+            gateway.expires_at_unix_ms = now_unix_ms;
+        }
+    }
     let certificate = NodeCertificate {
         serial: certificate_serial.into(),
         company_id: company_id.into(),

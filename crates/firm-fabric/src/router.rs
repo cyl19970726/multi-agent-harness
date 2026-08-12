@@ -696,6 +696,113 @@ pub(crate) fn mark_unknown(
     Ok(())
 }
 
+/// Settle expired, never-persisted offline work when a successor Gateway
+/// reconnects. The Control Plane may prove only `not_applied`: no target inbox
+/// or native application authority was ever reached. This terminal receipt is
+/// durable reconciliation truth rather than a silent omission from the next
+/// delivery batch.
+pub(crate) fn expire_unapplied_for_successor(
+    state: &mut FabricState,
+    company_id: &str,
+    control_plane_generation: u64,
+    node_id: &str,
+    successor_gateway_generation: u64,
+    now_unix_ms: u64,
+) -> Result<Vec<RouteReceipt>, FabricError> {
+    let operation_ids = state
+        .operations
+        .values()
+        .filter(|operation| {
+            operation.company_id == company_id
+                && operation.target_node_id == node_id
+                && operation.expires_at_unix_ms <= now_unix_ms
+        })
+        .filter_map(|operation| {
+            let latest = state
+                .attempts
+                .values()
+                .filter(|attempt| attempt.operation_id == operation.id)
+                .max_by_key(|attempt| attempt.attempt_no)?;
+            let already_settled = state.receipts.values().any(|receipt| {
+                receipt.operation_id == operation.id
+                    && matches!(
+                        receipt.kind,
+                        ReceiptKind::TargetPersisted
+                            | ReceiptKind::RecoveryRequired
+                            | ReceiptKind::OperationApplied
+                            | ReceiptKind::OperationRejected
+                    )
+            });
+            (latest.effect == EffectCertainty::None
+                && matches!(
+                    latest.state,
+                    RouteAttemptState::Queued | RouteAttemptState::Sent
+                )
+                && !already_settled)
+                .then(|| operation.id.clone())
+        })
+        .collect::<Vec<_>>();
+    let mut receipts = Vec::new();
+    for operation_id in operation_ids {
+        let attempt_id = state
+            .attempts
+            .values()
+            .filter(|attempt| attempt.operation_id == operation_id)
+            .max_by_key(|attempt| attempt.attempt_no)
+            .map(|attempt| attempt.id.clone())
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::OperationUnknown,
+                    "expired operation has no route attempt",
+                )
+            })?;
+        let attempt = state.attempts.get_mut(&attempt_id).ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "expired route attempt disappeared",
+            )
+        })?;
+        attempt.state = RouteAttemptState::Ended;
+        attempt.error_code = Some(FabricErrorCode::OperationExpired);
+        attempt.effect = EffectCertainty::None;
+        attempt.ended_at_unix_ms = Some(now_unix_ms);
+        let error = FabricError::none(
+            FabricErrorCode::OperationExpired,
+            "offline routed operation expired before target persistence",
+        );
+        let result = serde_json::to_value(&error).map_err(|encode_error| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                format!("expired operation receipt could not be encoded: {encode_error}"),
+            )
+        })?;
+        let receipt = RouteReceipt {
+            id: receipt_id(
+                &operation_id,
+                ReceiptKind::OperationRejected,
+                successor_gateway_generation,
+            ),
+            company_id: company_id.into(),
+            operation_id: operation_id.clone(),
+            target_node_id: node_id.into(),
+            target_gateway_generation: successor_gateway_generation,
+            control_plane_generation,
+            route_seq: attempt.route_seq,
+            kind: ReceiptKind::OperationRejected,
+            application_effect: Some(EffectCertainty::NotApplied),
+            result_schema: Some("agentfirm.remote_fabric.expired.v1".into()),
+            result_digest: Some(canonical_digest(&result)?),
+            result: Some(result),
+            error: Some(error),
+            created_at_unix_ms: now_unix_ms,
+            schema_version: FABRIC_SCHEMA_VERSION.into(),
+        };
+        state.receipts.insert(receipt.id.clone(), receipt.clone());
+        receipts.push(receipt);
+    }
+    Ok(receipts)
+}
+
 fn validate_operation(
     state: &FabricState,
     company_id: &str,

@@ -177,6 +177,14 @@ fn connect_verified(
     state
         .gateway_leases
         .insert(hello.node_id.clone(), lease.clone());
+    crate::router::expire_unapplied_for_successor(
+        state,
+        company_id,
+        control_plane_generation,
+        &hello.node_id,
+        gateway_generation,
+        now_unix_ms,
+    )?;
     rebind_effect_none_attempts_to_successor(
         state,
         company_id,

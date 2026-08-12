@@ -2111,7 +2111,9 @@ mod tests {
             &serde_json::json!({
                 "enrollment_id":"enrollment-node-a",
                 "requested_name":"Node A",
-                "allowed_capabilities":["durable-routing","artifact-transfer"]
+                "allowed_capabilities":["durable-routing","artifact-transfer"],
+                "authorized_node_daemon_id":"node-daemon:node-a",
+                "authorized_node_daemon_generation":1
             }),
             Some(&actor),
             &control,
@@ -2204,6 +2206,55 @@ mod tests {
         .expect_err("one-use token cannot replay");
         assert_eq!(replay.code, FabricErrorCode::EnrollmentConsumed);
         assert_eq!(store.snapshot().expect("after replay"), before);
+
+        let recovery = route_host_http(
+            "POST",
+            "/v1/fabric/enrollments",
+            "/v1/fabric/enrollments",
+            &serde_json::json!({
+                "enrollment_id":"enrollment-node-a-recovery",
+                "requested_name":"Node A recovered",
+                "allowed_capabilities":["durable-routing","artifact-transfer"],
+                "authorized_node_daemon_id":"node-daemon:node-a",
+                "authorized_node_daemon_generation":2
+            }),
+            Some(&actor),
+            &control,
+            lease.control_plane_generation,
+            &ca,
+            now + 4,
+            "host-token-00000000000000000000000000000000",
+        )
+        .expect("Host grants exact successor recovery");
+        let recovery_csr = harness_fabric::pki::generate_node_csr("company-test", "node-a")
+            .expect("successor CSR");
+        let recovered = route_host_http(
+            "POST",
+            "/v1/fabric/nodes/enroll",
+            "/v1/fabric/nodes/enroll",
+            &serde_json::json!({
+                "raw_token":recovery["raw_token"],
+                "node_id":"node-a",
+                "display_name":"Node A recovered",
+                "csr_pem":recovery_csr.csr_pem,
+                "schema_bundle_digest":schema_bundle_digest
+            }),
+            None,
+            &control,
+            lease.control_plane_generation,
+            &ca,
+            now + 5,
+            "host-token-00000000000000000000000000000000",
+        )
+        .expect("existing Node recovers under Host-frozen successor daemon generation");
+        assert_eq!(recovered["node"]["node_revision"], 2);
+        assert_eq!(recovered["certificate"]["node_daemon_generation"], 2);
+        let recovery_state = store.snapshot().expect("recovery state");
+        assert!(recovery_state.revoked_certificate_serials.contains(
+            enrolled["certificate"]["serial"]
+                .as_str()
+                .expect("old serial")
+        ));
         std::fs::remove_dir_all(root).expect("remove test root");
     }
 }
