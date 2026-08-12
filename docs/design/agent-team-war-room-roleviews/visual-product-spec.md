@@ -148,6 +148,50 @@ large neutral areas are prohibited.
 - A permanent right rail exists only when it contains facts needed for the
   current decision. It disappears rather than showing filler.
 
+### 4.4 Interaction and motion contract
+
+Design read: a high-density, trust-first operator console using the warm-paper
+and coral reference language. The page-family dials are
+`DESIGN_VARIANCE: 4`, `MOTION_INTENSITY: 3`, and `VISUAL_DENSITY: 8`.
+Motion therefore explains interaction and state; it is not ambient decoration.
+
+| Moment | Required behavior | Model reason | Forbidden behavior |
+| --- | --- | --- | --- |
+| Work/member/target selection | 120-160ms border, surface and elevation transition; selected record stays visibly anchored | Communicates a browser selection only | Animating a Work phase, owner or runtime state that the server did not change |
+| Button press | Immediate focus ring plus a 1px pressed translation | Confirms the operator input before the authenticated result returns | Optimistic success color or fake completed state |
+| Context/work sheet open | 180ms transform/opacity entrance; focus moves into the sheet and returns to its trigger | Explains the spatial relationship between trigger and secondary context | Scroll hijack, bouncing, or keeping an invisible sheet focusable |
+| RoleView refetch | Spinner only while a real request is pending; existing truth remains readable and freshness stays explicit | Communicates transport activity, not Agent execution | Pulse/shimmer that implies a Member is thinking or Work is advancing |
+| New authenticated facts | Preserve stable row order and selection; use a restrained highlight only when the server identifies the changed record | Lets an operator locate a real update | Reordering, counting or synthesizing events in the browser for visual drama |
+| Composer/action submit | Disabled/pending feedback, then reconcile from the returned RoleView/invalidation | Keeps mutation authority server-owned | Clearing the composer or showing delivery success before settlement |
+
+All motion uses only `transform` and `opacity` where movement is required.
+Every animated path must collapse to an immediate, fully usable state under
+`prefers-reduced-motion: reduce`; loading spinners also become static status
+icons. Keyboard focus, disabled reasons and screen-reader status text remain
+the primary feedback, never animation alone. No perpetual card motion,
+marquee, parallax, auto-scrolling activity, fake typing indicator or decorative
+Agent pulse is permitted.
+
+Page-specific application:
+
+- **Works:** hover/pressed/selected feedback only. Lane changes arrive from a
+  newer RoleView and do not animate across columns as if the browser performed
+  the transition.
+- **Activity:** rows remain stable and readable. A live invalidation triggers a
+  bounded refetch; it does not fabricate an incoming event animation.
+- **Members:** capacity/runtime colors may transition when authenticated facts
+  change, but avatars never pulse merely because a runtime is `running`.
+- **Agent Conversation:** target changes retain the navigator and replace the
+  center stream without theatrical route transitions. Sending reconciles from
+  the authenticated Message result; provider-native observations remain
+  visually distinct.
+- **Host Console:** disclosure and protected-action sheets use the same short
+  spatial transition. Supervisor/runtime controls never animate into an
+  enabled state without a current `allowed_action`.
+- **Mobile:** bottom/side sheets use the sole directional entrance. There are
+  no drag-only controls; close button, Escape/back and focus restoration are
+  mandatory equivalents.
+
 ## 5. Reference-by-reference reconciliation
 
 ### 5.1 Team Workspace / Works — desktop
@@ -460,7 +504,12 @@ large neutral areas are prohibited.
 - Use bottom/side sheets with focus trap, Escape and trigger restoration.
 - Capture 390x844 plus explicit 320px overflow evidence.
 
-## 6. Current implementation gap matrix
+## 6. Pre-implementation gap matrix (resolved by this slice)
+
+This matrix records the audited baseline that motivated the implementation. It
+is not a description of the candidate shown in `implemented/`. Every P0 row
+below is addressed by slices 1-5 and the durable browser evidence; remaining
+server/API omissions are recorded separately in section 7.
 
 | Surface | Current gap | Required change | Priority |
 | --- | --- | --- | --- |
@@ -555,12 +604,17 @@ These gaps must not be hidden by client calculations or optimistic controls:
 - Center chat remains the dominant Agent Conversation surface.
 - No console errors or horizontal overflow.
 - Keyboard and non-drag paths work, including sheet focus return.
+- Hover, focus, pressed, disclosure and sheet motion follow section 4.4; no
+  animation invents product truth or obscures freshness.
+- Reduced-motion mode is complete, including pending-request indicators.
 
 ### Verification
 
 - Screenshot comparison against every applicable reference above.
 - Source checks for RoleView-only composition and forbidden legacy authority.
 - Browser checks for populated, empty, stale, error and action-disabled states.
+- Browser checks cover focus-visible/pressed feedback, sheet opening and a
+  reduced-motion run without horizontal overflow or lost controls.
 - Full frontend/schema/Rust gates on the final exact SHA.
 - Independent PM/product-logic and real-user/operator reviews; P0/P1 must be
   zero before merge.
