@@ -64,7 +64,10 @@ const base=`http://127.0.0.1:${vite.httpServer.address().port}`;
 const browser=await chromium.launch({headless:true});
 try{
   const consoleErrors=[];
-  const makePage=async token=>{const next=await browser.newPage({viewport:{width:1440,height:1000}});next.on("console",message=>{if(message.type()==="error")consoleErrors.push(message.text());});next.on("pageerror",error=>consoleErrors.push(error.message));await next.addInitScript(({token})=>{window.__AGENTFIRM_BOOTSTRAP__={capabilityToken:token};class QuietEventSource{addEventListener(){}close(){}}Object.defineProperty(window,"EventSource",{value:QuietEventSource,configurable:true});},{token});if(!liveConfig)await next.route("**/v1/**",async route=>{
+  let failMemberRefresh=false;
+  let failHostMemberProjection=false;
+  let hostMemberProjectionGate=null;
+  const makePage=async token=>{const next=await browser.newPage({viewport:{width:1440,height:1000}});next.on("console",message=>{if(message.type()==="error")consoleErrors.push(message.text());});next.on("pageerror",error=>consoleErrors.push(error.message));await next.addInitScript(({token,fixture})=>{window.__AGENTFIRM_BOOTSTRAP__={capabilityToken:token};class QuietEventSource{addEventListener(type,listener){if(fixture&&type==="snapshot")queueMicrotask(()=>listener({data:JSON.stringify({generated_at:"2026-08-12T08:10:00Z",execution_space_id:"fixture-space"})}));}close(){}}Object.defineProperty(window,"EventSource",{value:QuietEventSource,configurable:true});},{token,fixture:!liveConfig});if(!liveConfig)await next.route("**/v1/**",async route=>{
     const request=route.request(),url=new URL(request.url());
     const token=request.headers()["x-agentfirm-token"];
     if(request.method()==="POST")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})});
@@ -76,7 +79,15 @@ try{
     else if(url.pathname==="/v1/workflows")body={workflows:[]};
     else if(url.pathname==="/v1/snapshot"||url.pathname.includes("/snapshot"))body={generated_at:"2026-08-12T08:10:00Z",execution_space_id:"fixture-space",teams:[],team_runs:[],member_runs:[],execution_nodes:[],company_os:{}};
     else if(url.pathname.includes("team-workspace"))body=teamWorkspace;
-    else if(url.pathname.includes("agent-workspace"))body=url.searchParams.get("agent_id")==="agent-mira"||url.pathname.endsWith("member-run-mira")?(token==="fixture-member-token"?memberView:hostMemberPublic):hostView;
+    else if(url.pathname.includes("agent-workspace")){
+      const memberSelected=url.searchParams.get("agent_id")==="agent-mira"||url.pathname.endsWith("member-run-mira");
+      if(memberSelected&&token==="fixture-member-token"&&failMemberRefresh)return route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:{message:"fixture member refresh failed"}})});
+      if(memberSelected&&token==="fixture-host-token"){
+        if(hostMemberProjectionGate)await hostMemberProjectionGate;
+        if(failHostMemberProjection)return route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:{message:"fixture public projection failed"}})});
+      }
+      body=memberSelected?(token==="fixture-member-token"?memberView:hostMemberPublic):hostView;
+    }
     else return route.fulfill({status:404,contentType:"application/json",body:JSON.stringify({error:{message:url.pathname}})});
     return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(body)});
   });return next;};
@@ -87,28 +98,72 @@ try{
   await page.getByRole("button",{name:/Open .* configuration/}).waitFor();
   if(!liveConfig){await page.getByText(/Implemented the owner-bound Session projection/).waitFor();await page.getByText("Validated owner-bound native Session",{exact:true}).waitFor();}
   await page.screenshot({path:join(evidenceDir,`member-session--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
-  if(!liveConfig){const toolRow=page.getByRole("button",{name:/Validated owner-bound native Session/});await toolRow.focus();await page.keyboard.press("Enter");assert.equal(await toolRow.getAttribute("aria-expanded"),"true","event row keyboard expansion");}
+  if(!liveConfig){
+    const authoredMessage=page.getByRole("button",{name:/Open authored Message from Host Agent/}).first();
+    await authoredMessage.focus();await page.keyboard.press("Enter");await page.getByText("Selected Message",{exact:true}).waitFor();
+    const providerReply=page.getByRole("button",{name:/Open provider-authored reply from Mira Chen/}).first();
+    await providerReply.focus();await page.keyboard.press("Space");await page.getByText("Selected Event",{exact:true}).waitFor();
+    const toolRow=page.getByRole("button",{name:/Validated owner-bound native Session/});await toolRow.focus();await page.keyboard.press("Enter");assert.equal(await toolRow.getAttribute("aria-expanded"),"true","event row keyboard expansion");
+  }
   await page.getByRole("tab",{name:/Messages/}).click();await page.getByRole("button",{name:"inbox",exact:true}).waitFor();
   await page.screenshot({path:join(evidenceDir,`member-messages--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   await page.getByRole("tab",{name:/Work/}).click();
   if(!liveConfig)await page.getByRole("button",{name:/Restore authored conversation dominance/}).waitFor();
   else await page.getByRole("button",{name:/Implement unified Host and Member Agent Workspace/}).waitFor();
   await page.screenshot({path:join(evidenceDir,`member-work--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
-  await page.getByRole("button",{name:/Open .* configuration/}).click();await page.getByRole("dialog").waitFor();
+  const profileOpener=page.getByRole("button",{name:/Open .* configuration/});
+  await profileOpener.click();await page.getByRole("dialog").waitFor();
+  const profileClose=page.getByRole("button",{name:"Close Agent configuration"});
+  await profileClose.waitFor();assert.equal(await profileClose.evaluate(node=>node===document.activeElement),true,"Profile dialog moves focus inside");
+  await page.keyboard.press("Tab");assert.equal(await profileClose.evaluate(node=>node===document.activeElement),true,"Profile dialog traps forward Tab");
+  await page.keyboard.press("Shift+Tab");assert.equal(await profileClose.evaluate(node=>node===document.activeElement),true,"Profile dialog traps reverse Tab");
   await page.screenshot({path:join(evidenceDir,`member-configuration--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
-  await page.getByRole("button",{name:"Close Agent configuration"}).click();
+  await page.keyboard.press("Escape");await page.getByRole("dialog").waitFor({state:"detached"});
+  assert.equal(await profileOpener.evaluate(node=>node===document.activeElement),true,"Profile dialog restores opener focus after Escape");
+  if(!liveConfig){
+    await open(page,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.member}&memberRun=${routeState.memberRun}&space=${routeState.space}&project=${routeState.project}`);
+    await page.locator('textarea[aria-label="Message"]').waitFor();
+    failMemberRefresh=true;
+    await page.locator('textarea[aria-label="Message"]').fill("Trigger authoritative refresh failure");
+    await page.getByRole("button",{name:"Send",exact:true}).click();
+    await page.getByRole("alert").filter({hasText:"Refresh failed; writes are disabled"}).waitFor();
+    assert.equal(await page.locator('textarea[aria-label="Message"]').count(),0,"refresh failure retained a writable message composer");
+    assert.equal(await page.getByLabel("Composer action").count(),0,"refresh failure retained a writable action selector");
+    failMemberRefresh=false;
+  }
   const hostPage=await makePage(liveConfig?.hostToken??"fixture-host-token");
   await open(hostPage,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.host}&space=${routeState.space}&project=${routeState.project}`);
   if(liveConfig)await hostPage.locator(".agent-authored-turn").first().waitFor();
   if(!liveConfig){assert.equal(await hostPage.getByText("Validated owner-bound native Session",{exact:true}).count(),0,"Member-private provider event leaked into Host Session");assert.equal(await hostPage.getByText("Read Lead inbox",{exact:true}).count(),1,"Host-native event missing");}
   await hostPage.screenshot({path:join(evidenceDir,`host-session--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   if(liveConfig)await hostPage.locator(".agent-roster-row").filter({hasNotText:"Host"}).first().click();
-  else await hostPage.getByRole("button",{name:/Mira Chen/}).first().click();
+  else{
+    let releasePublicProjection;
+    hostMemberProjectionGate=new Promise(resolve=>{releasePublicProjection=resolve;});
+    await hostPage.getByRole("button",{name:/Mira Chen/}).first().click();
+    await hostPage.getByText("Read Lead inbox",{exact:true}).waitFor({state:"detached"});
+    assert.equal(await hostPage.getByTestId("agent-workspace").count(),0,"old Host-private view remained while public projection was pending");
+    assert.equal(await hostPage.locator('textarea[aria-label="Message"]').count(),0,"identity switch retained a writable composer while projection was pending");
+    assert.equal(await hostPage.getByLabel("Composer action").count(),0,"identity switch retained an action selector while projection was pending");
+    releasePublicProjection();hostMemberProjectionGate=null;
+  }
   await hostPage.getByText(/Public Agent context/).waitFor();
   if(liveConfig)await hostPage.locator(".agent-authored-turn").first().waitFor();
   assert.equal(await hostPage.getByText("Validated owner-bound native Session",{exact:true}).count(),0,"Host-selected Member leaked provider-private activity");
   await hostPage.screenshot({path:join(evidenceDir,`host-member-public--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
-  assert.deepEqual(consoleErrors,[],`console errors: ${consoleErrors.join(" | ")}`);
+  if(!liveConfig){
+    await open(hostPage,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.host}&space=${routeState.space}&project=${routeState.project}`);
+    failHostMemberProjection=true;
+    await hostPage.getByRole("button",{name:/Mira Chen/}).first().click();
+    await hostPage.getByRole("alert").filter({hasText:"Agent Workspace"}).waitFor();
+    assert.equal(await hostPage.getByText("Read Lead inbox",{exact:true}).count(),0,"failed identity switch restored old Host-private activity");
+    assert.equal(await hostPage.locator('textarea[aria-label="Message"]').count(),0,"failed identity switch retained a writable composer");
+    assert.equal(await hostPage.getByLabel("Composer action").count(),0,"failed identity switch retained an action selector");
+    failHostMemberProjection=false;
+  }
+  const expectedFailureErrors=consoleErrors.filter(message=>message.includes("503 (Service Unavailable)"));
+  if(!liveConfig)assert.equal(expectedFailureErrors.length,2,"fixture should exercise exactly two expected 503 projection failures");
+  assert.deepEqual(consoleErrors.filter(message=>!message.includes("503 (Service Unavailable)")),[],`unexpected console errors: ${consoleErrors.join(" | ")}`);
 
   for(const viewport of [{width:900,height:1180},{width:390,height:844},{width:320,height:844}]){
     await page.setViewportSize(viewport);

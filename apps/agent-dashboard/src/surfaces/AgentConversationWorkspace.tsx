@@ -52,6 +52,7 @@ export function AgentConversationWorkspace({
   const [profileOpen,setProfileOpen]=useState(false);
   const [rosterOpen,setRosterOpen]=useState(false);
   const [contextOpen,setContextOpen]=useState(false);
+  const profileTriggerRef=useRef<HTMLButtonElement>(null);
   const profileCloseRef=useRef<HTMLButtonElement>(null);
   const mode:WorkspaceMode=selection.agentWorkspaceMode ?? "session";
   const agentId=selection.teamConversation && selection.teamConversation !== "host" ? selection.teamConversation : undefined;
@@ -70,14 +71,6 @@ export function AgentConversationWorkspace({
       .finally(()=>{if(live)setLoading(false);});
     return()=>{live=false;};
   },[apiUrl,space,project,requestPath,refreshKey,refresh]);
-
-  useEffect(()=>{
-    if(!profileOpen)return;
-    const onKeyDown=(event:KeyboardEvent)=>{if(event.key==="Escape")setProfileOpen(false);};
-    document.addEventListener("keydown",onKeyDown);
-    window.requestAnimationFrame(()=>profileCloseRef.current?.focus());
-    return()=>document.removeEventListener("keydown",onKeyDown);
-  },[profileOpen]);
 
   const currentView=viewRequestPath===requestPath?view:null;
   if(!currentView)return <main className="agent-team-surface h-full min-h-0 flex-1"><ViewState loading={loading} error={error} identityLabel={`Agent Workspace · ${routeIdentity}`} onRetry={()=>setRefresh(value=>value+1)}>{null}</ViewState></main>;
@@ -110,7 +103,7 @@ export function AgentConversationWorkspace({
         <section className="agent-workspace-center flex min-h-0 min-w-0 flex-col">
           <header className="agent-workspace-header flex min-h-[5.65rem] shrink-0 items-center gap-3 border-b border-border px-4 sm:px-6">
             <Button size="icon" variant="secondary" className="lg:hidden" onClick={closeWorkspace} aria-label="Back to Team Workspace"><ArrowLeft className="size-4"/></Button>
-            <button type="button" className="group flex min-w-0 flex-1 items-center gap-3 text-left" onClick={()=>setProfileOpen(true)} aria-label={`Open ${selected.display_name} configuration`}>
+            <button ref={profileTriggerRef} type="button" className="group flex min-w-0 flex-1 items-center gap-3 text-left" onClick={()=>setProfileOpen(true)} aria-label={`Open ${selected.display_name} configuration`}>
               <Avatar name={selected.display_name} identity={`${selected.agent_member_ref.id} ${selected.role}`} size="lg" tone={selected.runtime_status==="running"?"running":selected.runtime_status==="idle"?"good":"idle"}/>
               <span className="min-w-0">
                 <span className="flex min-w-0 items-center gap-2"><span className="truncate text-[1.28rem] font-semibold leading-tight tracking-[-0.025em] text-foreground">{selected.display_name}</span><ChevronRight className="size-3.5 text-muted-foreground transition-transform group-hover:translate-x-0.5"/></span>
@@ -137,7 +130,7 @@ export function AgentConversationWorkspace({
             <Tabs.Content value="work" className="min-h-0 flex-1 outline-none"><WorkCanvas data={data} onSelect={(work)=>{setContextSelection({kind:"work",work});onSelectionChange({teamWorkId:work.work_id});}}/></Tabs.Content>
           </Tabs.Root>
 
-          <AgentComposer data={data} actions={currentView.allowed_actions} actionsCurrent={actionsCurrent&&currentView.freshness==="current"} selectedRunId={selectedRunId} onAction={onAction} onCompleted={()=>setRefresh(value=>value+1)}/>
+          <AgentComposer data={data} actions={currentView.allowed_actions} actionsCurrent={!loading&&!error&&actionsCurrent&&currentView.freshness==="current"} selectedRunId={selectedRunId} onAction={onAction} onCompleted={()=>setRefresh(value=>value+1)}/>
         </section>
 
         <aside className="agent-workspace-context hidden min-h-0 border-l border-border lg:block" aria-label="Agent context">{context}</aside>
@@ -145,7 +138,7 @@ export function AgentConversationWorkspace({
 
       {rosterOpen&&<MobileSheet title="Agent roster" onClose={()=>setRosterOpen(false)}><AgentRoster data={data} selectedId={selected.agent_member_ref.id} onBack={closeWorkspace} onSelect={selectAgent}/></MobileSheet>}
       {contextOpen&&<MobileSheet title="Agent context" onClose={()=>setContextOpen(false)}>{context}</MobileSheet>}
-      {profileOpen&&<ProfileDialog data={data} closeRef={profileCloseRef} onClose={()=>setProfileOpen(false)}/>}
+      {profileOpen&&<ProfileDialog data={data} closeRef={profileCloseRef} openerRef={profileTriggerRef} onClose={()=>setProfileOpen(false)}/>}
     </main>
   </Tooltip.Provider>;
 }
@@ -193,7 +186,7 @@ function AuthoredTurn({data,message,selectedAgentId,onSelect}:{data:AgentWorkspa
   const fromSelected=message.sender.id===selectedAgentId;
   const actor=data.roster.find(item=>item.agent_member_ref.id===message.sender.id);
   const name=actor?.display_name??(fromSelected?data.selected_agent.display_name:message.sender.id);
-  return <article className="agent-authored-turn" onClick={onSelect}>
+  return <article role="button" tabIndex={0} aria-label={`Open authored Message from ${name}`} className="agent-authored-turn focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={onSelect} onKeyDown={event=>activateOnKeyDown(event,onSelect)} onKeyUp={event=>activateOnKeyUp(event,onSelect)}>
     <Avatar name={name} identity={`${message.sender.id} ${actor?.role??""}`} size="md" tone={actor?.runtime_state==="running"?"running":"idle"}/><div className="min-w-0 flex-1"><header className="mb-1 flex items-baseline gap-2"><p className="truncate text-[12px] font-semibold">{name}</p><span className="text-[9px] text-muted-foreground">{actor?.is_host?"Host Agent":actor?.role??"authored Message"}</span><time className="ml-auto text-[9px] text-muted-foreground">{formatTime(message.created_at)}</time></header>
     <div className="text-[13px] leading-[1.62] text-foreground"><Markdown source={message.body}/></div>
     <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[9px] text-muted-foreground">{message.work_id&&<span>Work · {shortId(message.work_id)}</span>}{message.correlation_id&&<span>Correlation · {shortId(message.correlation_id)}</span>}{message.deliveries.length>0&&<span>Delivery · {message.deliveries.map(delivery=>delivery.status).join(" · ")}</span>}</div></div>
@@ -205,7 +198,7 @@ function ExpandableEvent({data,event,onSelect}:{data:AgentWorkspaceData;event:Ag
   const Icon=event.kind==="tool"?Wrench:event.kind==="message"?MessageSquare:event.kind==="error"?TerminalSquare:Command;
   const eventTone=event.kind==="tool"?"agent-event-icon--tool":event.kind==="error"?"agent-event-icon--error":event.kind==="result"?"agent-event-icon--result":"agent-event-icon--fact";
   const authored=event.kind==="message";
-  if(authored)return <article className="agent-authored-turn" onClick={onSelect}><Avatar name={data.selected_agent.display_name} identity={`${data.selected_agent.agent_member_ref.id} ${data.selected_agent.role}`} size="md" tone={data.selected_agent.runtime_status==="running"?"running":"idle"}/><div className="min-w-0 flex-1"><header className="mb-1 flex items-baseline gap-2"><p className="text-[12px] font-semibold">{data.selected_agent.display_name}</p><span className="text-[9px] text-muted-foreground">provider-authored reply</span><time className="ml-auto text-[9px] text-muted-foreground">{formatTime(event.occurred_at)}</time></header><div className="text-[13px] leading-[1.62]"><Markdown source={event.summary??"Provider recorded an authored response."}/></div></div></article>;
+  if(authored)return <article role="button" tabIndex={0} aria-label={`Open provider-authored reply from ${data.selected_agent.display_name}`} className="agent-authored-turn focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={onSelect} onKeyDown={keyEvent=>activateOnKeyDown(keyEvent,onSelect)} onKeyUp={keyEvent=>activateOnKeyUp(keyEvent,onSelect)}><Avatar name={data.selected_agent.display_name} identity={`${data.selected_agent.agent_member_ref.id} ${data.selected_agent.role}`} size="md" tone={data.selected_agent.runtime_status==="running"?"running":"idle"}/><div className="min-w-0 flex-1"><header className="mb-1 flex items-baseline gap-2"><p className="text-[12px] font-semibold">{data.selected_agent.display_name}</p><span className="text-[9px] text-muted-foreground">provider-authored reply</span><time className="ml-auto text-[9px] text-muted-foreground">{formatTime(event.occurred_at)}</time></header><div className="text-[13px] leading-[1.62]"><Markdown source={event.summary??"Provider recorded an authored response."}/></div></div></article>;
   return <article className="agent-event-row border-b border-border/65" data-open={open}>
     <button type="button" className="flex min-h-10 w-full items-center gap-2.5 py-2 text-left" aria-expanded={open} onClick={()=>{setOpen(value=>!value);onSelect();}}>{open?<ChevronDown className="size-3 text-muted-foreground"/>:<ChevronRight className="size-3 text-muted-foreground"/>}<span className={`agent-event-icon ${eventTone}`}><Icon className="size-[15px]"/></span><span className="min-w-0 flex-1 truncate text-[11px] font-medium">{event.title}</span><span className="text-[9px] text-muted-foreground">{event.status}</span><span className="w-16 text-right text-[9px] text-muted-foreground">{formatTime(event.occurred_at)}</span></button>
     {open&&<div className="pb-3 pl-[4.6rem] pr-4 text-[11px] leading-5 text-muted-foreground"><Markdown source={event.summary??"Provider recorded this event without exposing private reasoning or raw output."}/></div>}
@@ -272,15 +265,38 @@ function AgentComposer({data,actions,actionsCurrent,selectedRunId,onAction,onCom
   const [selectedKey,setSelectedKey]=useState(sendAction?keyForAction(sendAction):usable[0]?keyForAction(usable[0]):"");
   const selected=usable.find(action=>keyForAction(action)===selectedKey)??sendAction;
   useEffect(()=>{if(selectedKey&&!usable.some(action=>keyForAction(action)===selectedKey))setSelectedKey(sendAction?keyForAction(sendAction):usable[0]?keyForAction(usable[0]):"");},[selectedKey,sendAction,usable]);
+  if(!actionsCurrent)return <div className="agent-workspace-composer shrink-0 border-t border-border bg-background/95 px-4 py-3 text-xs text-muted-foreground" role="status">Authoritative Agent Workspace refresh is pending or failed. Composer and action writes are unavailable.</div>;
   const actionControl=<label className="flex min-w-0 items-center gap-2 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground"><SlidersHorizontal className="size-3 shrink-0 text-primary"/><span className="sr-only">Action</span><select aria-label="Composer action" value={selected?keyForAction(selected):""} onChange={event=>setSelectedKey(event.target.value)} title={selected?.disabled_reason??actionLabel(selected?.kind??"")} className="h-8 min-w-0 w-full rounded-md border border-border bg-background px-2 text-[10px] font-medium normal-case tracking-normal text-foreground"><option value="" disabled>No action authorized</option>{usable.map(action=><option key={keyForAction(action)} value={keyForAction(action)} disabled={Boolean(action.disabled_reason)}>{actionLabel(action.kind)}</option>)}</select></label>;
   return <div className="agent-workspace-composer shrink-0 border-t border-border bg-background/95">
       {selected?.kind==="send_message"?<TeamMessageComposer variant="conversation" actionControl={actionControl} actions={actions} members={data.roster.filter(item=>!item.is_host) as never} works={data.works} replyTo={null} fixedRecipient={data.team.viewer_role==="host"?(data.selected_agent.is_host?undefined:{id:data.selected_agent.agent_member_ref.id,label:data.selected_agent.display_name}):{id:data.team.host_agent_id,label:"Host Agent"}} teamId={data.team.team_id} teamRunId={data.team.latest_run_id??undefined} actionsCurrent={actionsCurrent} onAction={onAction} onClearReply={()=>undefined} onCompleted={onCompleted}/>:selected?<div className="mx-auto max-w-4xl px-4 py-3"><div className="mb-2">{actionControl}</div><RoleActionPanel compact actions={[selected]} onAction={onAction} context={{teamId:data.team.team_id,teamRunId:data.team.latest_run_id??undefined}} actionsCurrent={actionsCurrent} onCompleted={onCompleted}/>{selected.target_ref.kind==="member_run"&&selectedRunId&&selected.target_ref.id!==selectedRunId&&<p className="mt-2 text-[10px] text-status-warn">This action targets a different MemberRun and is not executed from this selected Agent context.</p>}</div>:<div className="mx-auto max-w-4xl px-4 py-4">{actionControl}<p className="mt-2 text-xs text-muted-foreground">No canonical action is authorized for this identity and state.</p></div>}
   </div>;
 }
 
-function ProfileDialog({data,onClose,closeRef}:{data:AgentWorkspaceData;onClose:()=>void;closeRef:React.RefObject<HTMLButtonElement>}){
+function ProfileDialog({data,onClose,closeRef,openerRef}:{data:AgentWorkspaceData;onClose:()=>void;closeRef:React.RefObject<HTMLButtonElement>;openerRef:React.RefObject<HTMLButtonElement>}){
   const selected=data.selected_agent,c=data.configuration;
-  return <div className="fixed inset-0 z-50 bg-[#3b2f27]/12" role="presentation" onMouseDown={event=>{if(event.target===event.currentTarget)onClose();}}><section role="dialog" aria-modal="true" aria-label={`${selected.display_name} configuration`} className="agent-profile-drawer absolute inset-y-0 right-0 w-[min(92vw,29rem)] overflow-y-auto border-l border-border bg-background shadow-[0_0_28px_rgb(55_43_35_/_0.04)]">
+  const dialogRef=useRef<HTMLElement>(null);
+  const onCloseRef=useRef(onClose);
+  onCloseRef.current=onClose;
+  useEffect(()=>{
+    const dialog=dialogRef.current;
+    const focusFrame=window.requestAnimationFrame(()=>closeRef.current?.focus());
+    const onKeyDown=(event:KeyboardEvent)=>{
+      if(event.key==="Escape"){event.preventDefault();onCloseRef.current();return;}
+      if(event.key!=="Tab")return;
+      const focusable=[...(dialog?.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')??[])];
+      if(!focusable.length){event.preventDefault();dialog?.focus();return;}
+      const first=focusable[0],last=focusable[focusable.length-1];
+      if(event.shiftKey&&(document.activeElement===first||!dialog?.contains(document.activeElement))){event.preventDefault();last.focus();}
+      else if(!event.shiftKey&&(document.activeElement===last||!dialog?.contains(document.activeElement))){event.preventDefault();first.focus();}
+    };
+    document.addEventListener("keydown",onKeyDown);
+    return()=>{
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("keydown",onKeyDown);
+      window.requestAnimationFrame(()=>openerRef.current?.focus());
+    };
+  },[closeRef,openerRef]);
+  return <div className="fixed inset-0 z-50 bg-[#3b2f27]/12" role="presentation" onMouseDown={event=>{if(event.target===event.currentTarget)onClose();}}><section ref={dialogRef} role="dialog" aria-modal="true" aria-label={`${selected.display_name} configuration`} tabIndex={-1} className="agent-profile-drawer absolute inset-y-0 right-0 w-[min(92vw,29rem)] overflow-y-auto border-l border-border bg-background shadow-[0_0_28px_rgb(55_43_35_/_0.04)]">
     <header className="sticky top-0 z-10 flex min-h-14 items-center gap-3 border-b border-border bg-background/95 px-5 py-2"><Avatar name={selected.display_name} identity={`${selected.agent_member_ref.id} ${selected.role}`} size="lg" tone="running"/><div className="min-w-0 flex-1"><h2 className="truncate text-xl font-semibold tracking-[-0.02em]">{selected.display_name}</h2><p className="mt-0.5 text-[10px] text-muted-foreground">{selected.role} · durable AgentMember</p></div><Button ref={closeRef} size="icon" variant="secondary" onClick={onClose} aria-label="Close Agent configuration"><X className="size-4"/></Button></header>
     <div className="space-y-7 px-6 py-6"><ProfileSection title="Identity"><ContextFact label="AgentMember" value={selected.agent_member_ref.id}/><ContextFact label="Role" value={selected.role}/><ContextFact label="Organization" value={selected.organization_status}/>{c.description&&<p className="mt-3 text-[12px] leading-5 text-muted-foreground">{c.description}</p>}</ProfileSection>
       <ProfileSection title="Provider and permissions"><ContextFact label="Provider" value={selected.provider??"not bound"}/><ContextFact label="Execution mode" value={selected.execution_mode??"not bound"}/><ContextFact label="Profile" value={c.provider_profile_ref??"not projected"}/><ContextFact label="Permission ceiling" value={c.permission_ceiling??"not projected"}/><ContextFact label="Workspace policy" value={c.workspace_policy??"not projected"}/></ProfileSection>
@@ -307,3 +323,5 @@ function keyForAction(action:AllowedAction){return `${action.kind}:${action.targ
 function shortId(value:string|null|undefined){if(!value)return "none";return value.length>24?`${value.slice(0,12)}…${value.slice(-7)}`:value}
 function timestampKey(value:string|null|undefined){if(!value)return 0;if(value.startsWith("unix-ms:")){const parsed=Number(value.slice(8));return Number.isFinite(parsed)?parsed:0;}const parsed=Date.parse(value);return Number.isFinite(parsed)?parsed:0}
 function formatTime(value:string|null|undefined){if(!value)return "unknown";const timestamp=timestampKey(value);if(!timestamp)return value;return new Date(timestamp).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}
+function activateOnKeyDown(event:React.KeyboardEvent<HTMLElement>,activate:()=>void){if(event.target!==event.currentTarget)return;if(event.key==="Enter"){event.preventDefault();activate();}else if(event.key===" ")event.preventDefault();}
+function activateOnKeyUp(event:React.KeyboardEvent<HTMLElement>,activate:()=>void){if(event.target===event.currentTarget&&event.key===" "){event.preventDefault();activate();}}
