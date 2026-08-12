@@ -157,7 +157,7 @@ export function MemberWorkbench({
               <AttentionStrip view={view} />
               <div className="grid gap-8 xl:grid-cols-[minmax(0,1.25fr)_minmax(22rem,.75fr)]">
                 <div className="space-y-7">
-                  <section>
+                  <section className="border-y border-border py-4">
                     <SectionTitle
                       icon={BriefcaseBusiness}
                       title="My Work"
@@ -227,17 +227,23 @@ export function MemberWorkbench({
                       title="Authorized actions"
                       detail="Exact server-projected controls for this MemberRun."
                     />
-                    <div className="mt-3">
-                      <RoleActionPanel
-                        actions={view.allowed_actions}
-                        onAction={onAction}
-                        actionsCurrent={
-                          actionsCurrent && view.freshness === "current"
-                        }
-                        context={{ teamId, teamRunId }}
-                        onCompleted={retry}
-                      />
-                    </div>
+                    {view.allowed_actions.length ? (
+                      <div className="mt-3 [&>div]:rounded-none [&>div]:border-x-0 [&>div]:shadow-none">
+                        <RoleActionPanel
+                          actions={view.allowed_actions}
+                          onAction={onAction}
+                          actionsCurrent={
+                            actionsCurrent && view.freshness === "current"
+                          }
+                          context={{ teamId, teamRunId }}
+                          onCompleted={retry}
+                        />
+                      </div>
+                    ) : (
+                      <p className="mt-3 border-l-2 border-border pl-3 text-xs leading-5 text-muted-foreground">
+                        No action is authorized for this exact identity and state.
+                      </p>
+                    )}
                   </section>
                 </aside>
               </div>

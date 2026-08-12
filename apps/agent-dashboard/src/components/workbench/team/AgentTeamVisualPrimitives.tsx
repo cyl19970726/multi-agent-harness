@@ -8,7 +8,7 @@ export function AgentTeamTabs<T extends string>({ value, onValueChange, children
 }
 
 export function AgentTeamTab({ className, ...props }: ComponentProps<typeof TabsTrigger>) {
-  return <TabsTrigger className={cn("agent-team-tab relative min-h-12 min-w-0 flex-1 rounded-none bg-transparent px-4 text-xs shadow-none outline-none ring-0 focus-visible:outline-none focus-visible:ring-0 after:absolute after:inset-x-5 after:bottom-0 after:h-0.5 after:rounded-full after:bg-transparent data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:after:bg-primary sm:max-w-32",className)} {...props}/>;
+  return <TabsTrigger className={cn("agent-team-tab relative min-h-12 min-w-0 flex-1 rounded-none bg-transparent px-4 text-[13px] font-medium shadow-none outline-none ring-0 focus-visible:outline-none focus-visible:ring-0 after:absolute after:inset-x-4 after:bottom-0 after:h-0.5 after:bg-transparent data-[state=active]:bg-transparent data-[state=active]:font-semibold data-[state=active]:shadow-none data-[state=active]:after:bg-primary sm:max-w-28",className)} {...props}/>;
 }
 
 export function AgentTeamSection({ as:Tag="section", variant="plain", className, children, ...props }: { as?:"section"|"div"|"aside"; variant?:"plain"|"recessed"|"decision"; className?:string; children:ReactNode; [key:string]:unknown }) {
