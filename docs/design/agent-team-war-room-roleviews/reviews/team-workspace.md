@@ -59,7 +59,8 @@ membership in capacity, and incomplete selected-context/action evidence.
 The next correction preserves the selected TeamRun route identity through
 HostConsole and fails closed on mismatched action targets; resolves Inbox rows
 only by exact causation; keeps Host separate from explicit Team membership;
-restores the five canonical Work lanes; adds same-surface authenticated
+restores the four canonical Work phase lanes with Assigned grouped inside
+Open; adds same-surface authenticated
 Activity reply/composer, filters, readable actors and portraits; and expands
 evidence across empty mobile, Work details/actions, selected member, Member
 home, and completed-run Close. Exact-SHA evidence is captured only after the

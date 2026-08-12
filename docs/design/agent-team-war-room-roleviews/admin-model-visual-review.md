@@ -88,6 +88,15 @@ required decoration.
 - Steer/current-turn capability is not a generic message action. Do not render
   an enabled Steer control until an allowed action and safe-point projection
   exist.
+- PendingInteraction resolution and pending TeamMemberCloseRequest visibility
+  are not present in the current bounded RoleViews. Keep them as explicit
+  follow-up server projections/actions; do not infer them from runtime state.
+- Full MessageDelivery ACK/reconciliation remains separate from reply. The
+  conversation may inspect projected recipient/status/version/receipt lineage,
+  but never authors an ACK as another actor.
+- TeamWorkspace currently returns one bounded page with no cursor. Large-Team
+  virtualization and restored cursor/scroll acceptance remain unshipped until
+  the server exposes a real pagination contract.
 
 ## Responsive contract
 

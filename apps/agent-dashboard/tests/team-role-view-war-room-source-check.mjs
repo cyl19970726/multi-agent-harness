@@ -11,6 +11,7 @@ const activeFiles = [
   "src/surfaces/HostConsole.tsx",
   "src/surfaces/HostActivityComposer.tsx",
   "src/surfaces/AgentConversationWorkspace.tsx",
+  "src/surfaces/RoleActionPanel.tsx",
   "src/surfaces/RoleViewPrimitives.tsx",
   "src/components/workbench/team/TeamCapacityStrip.tsx",
   "src/components/workbench/team/TeamWorksBoard.tsx",
@@ -47,6 +48,8 @@ assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/Host execut
 assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/Ordinary messages|Messages, runtime controls and Work transitions remain separate/,"conversation UI collapses Message and control authority");
 assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/role="dialog" aria-modal="true"/,"responsive Agent/context sheets are missing");
 assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/selection\.teamConversation === "host"/,"an explicit Host Member is mistaken for the Host conversation target");
+assert.match(sources["src/surfaces/AgentConversationWorkspace.tsx"],/work\.current_member_run_ref === selectedMemberRunId/,"conversation Current Work is guessed from durable member ownership instead of exact MemberRun binding");
+assert.match(sources["src/surfaces/RoleActionPanel.tsx"],/aria-describedby=\{reason \? reasonId/,"disabled Role Actions do not expose visible accessible reasons");
 assert.match(sources["src/components/workbench/team/TeamMembersCapacity.tsx"],/<Avatar /,"mature member portraits are not reused");
 assert.match(sources["src/components/workbench/team/TeamMessageComposer.tsx"], /prepareRoleAction/, "compact composer bypasses closed Role Actions");
 assert.match(sources["src/surfaces/TeamWorkspace.tsx"], /Last authoritative view|last authoritative view|last-good truth|Showing the last authoritative view/, "last-good refresh state is missing");

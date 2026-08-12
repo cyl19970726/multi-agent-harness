@@ -1,7 +1,7 @@
 # Agent Team Workbench Page Spec
 
 ```text
-status: authenticated RoleView authority and mature composition implemented by issue #444
+status: authenticated RoleView parity slice implemented by issue #444; deferred projections explicit below
 owner_role: product-design
 canonical_for: one Mission-owned AgentTeamRun
 route_or_surface: Agent Teams -> TeamRun
@@ -16,6 +16,14 @@ The Host and Human need one surface to understand and steer a living Agent
 Team: what Work exists, who owns it, what is ready or blocked, what needs
 review, what questions need
 answers, which native sessions can be resumed, and what evidence has arrived.
+
+The issue #444 slice restores Works, Activity, Members, Agent Conversation and
+the independent Host Console. It does not claim the complete future runtime or
+large-Team contract: authenticated PendingInteraction resolution, pending
+Close-request projection, Steer/Interrupt safe-point actions, full
+MessageDelivery ACK control, and cursor-backed 1,000-Work/100-Member
+virtualization remain deferred until server-built RoleViews/actions exist. The
+browser never fills those gaps with snapshot joins or fake controls.
 
 The page must remain useful while the same TeamRun spans several append-only
 Mission Log judgments and replans. Runs created before ADR 0051 may also retain
@@ -39,7 +47,8 @@ Required data:
   owner/readiness/claim/review/parent-child state and `WorkDelivery`
   claim/provider receipt/failure/invalidation;
 - typed Message sender and recipients, optional Work relation, conversational
-  correlation, pending interactions, controls, artifacts, and checks;
+  correlation, projected controls, artifacts, and checks; pending interactions
+  remain a declared server-projection gap in the issue #444 slice;
 - canonical `MessageDelivery` when AgentMember mail was addressed to a
   participating MemberRun;
 - provider-native activity read on demand, clearly labeled by source and
@@ -109,7 +118,7 @@ standalone block that can push the first conversation below the viewport.
 
 `Activity` is one source-aware timeline:
 
-- WorkEvents, WorkDeliveries, authored messages, pending interactions, controls,
+- WorkEvents, WorkDeliveries, authored messages, projected controls,
   and outcomes;
 - ephemeral provider-native tool/command/chat/turn activity when available;
 - Work submissions, artifacts, and checks;
@@ -253,7 +262,9 @@ member-authored questions and coordination. Blocked and Review queues come
 from Works and link their discussion. Every item shows sender, Work when
 present, conversational correlation, delivery/ACK state, and the
 responsible next action. Answering reuses the source correlation, records the
-source message as causation, and acknowledges the source delivery.
+  source message as causation. Reply and MessageDelivery acknowledgement remain
+  separate authority operations; a browser reply never impersonates recipient
+  ACK. Delivery rows expose recipient, status, version and provider receipt.
 
 Conversation rows expose reply lineage and optional Work relation. WorkEvent
 history separately shows who assigned, claimed, blocked, submitted, requested
@@ -275,10 +286,12 @@ changes, accepted, released, or cancelled Work.
   member where the selected provider mode honestly supports it. Interrupt ends
   one turn; Close ends one runtime generation; Reopen resumes the same
   MemberRun/native session; Deactivate retires permanently.
-- Roll up pending `TeamMemberCloseRequest` rows in the Team header so a lost
-  Supervisor connection cannot make an accepted Close disappear from view.
-- Inspect WorkDelivery claim/receipt/failure lineage, authored Message
-  delivery/ACK lineage, and answer PendingInteractions.
+- Pending `TeamMemberCloseRequest` roll-up is deferred until a bounded
+  authenticated HostConsole projection exists; Close availability must not be
+  inferred from member runtime state in the meantime.
+- Inspect projected WorkDelivery and authored Message delivery lineage.
+  PendingInteraction answer and MessageDelivery ACK/reconciliation remain
+  explicit follow-up server-action gaps.
 - Answer Lead Inbox items with inherited correlation and causation. The
   Dashboard may author Host/operator messages; it never impersonates a member.
 - Open Mission/Log context, optional historical Wave, Member Focus, artifact, or native-session
@@ -338,25 +351,33 @@ Works acceptance shows the shared shell, assigned/unassigned ownership with
 portraits, Kanban/list, Mission/Mission-Log orientation, and the selected Work drawer.
 Activity acceptance shows source-aware rendered Markdown conversation, typed
 sender -> recipient routes, events, delivery state, and composer. Members
-acceptance shows factual capacity and runtime pressure. Across all views verify:
+acceptance shows factual capacity and runtime pressure. Across the shipped
+issue #444 slice verify:
 
 - member controls open the correct Member Focus and return without state loss;
 - Work, mailbox, participant, event/message, and search filters preserve Team context;
-- PendingInteraction answer, chat, steer, interrupt, Close, and resume states
-  match real adapter acknowledgements;
+- chat and projected Close/resume states match real adapter acknowledgements;
 - Work submissions, Markdown discussion and tool activity render with suitable icons and density;
 - the same TeamRun remains visible after a new Mission Log judgment/replan;
 - empty, loading, error, unavailable-native-session, and long-stream behavior;
 - actual screenshot against the approved expected reference.
 
-The state matrix covers initial loading, partial-source failure, last-good stale
-data, filtered empty, pending mutation, claim lost, version conflict, delivery
-queued/uncertain/failed, busy member, crash/disconnect, closed, retired, and
-Supervisor-generation change. A 1,000-Work/100-Member fixture proves stable
+The shipped state matrix covers initial loading, last-good stale data, useful
+empty, mutation-disabled stale projection, unavailable native activity and a
+completed TeamRun with a still-live runtime. Partial-source failure, pending
+interaction, pending Close request, active-turn Steer/Interrupt,
+delivery-reconciliation and Supervisor-generation recovery remain dependent on
+the deferred server projections above.
+
+The full future contract covers filtered empty, pending mutation, claim lost,
+version conflict, delivery queued/uncertain/failed, busy member,
+crash/disconnect, closed, retired, and Supervisor-generation change. A
+1,000-Work/100-Member fixture must prove stable
 sorting, bounded DOM/windowing, visible totals/load-more, and restorable URL
 state for view, filters, sort, selected Work, scroll anchor, Mission/optional
 historical Wave, and
-cursor.
+cursor. That virtualization case is not acceptance evidence for issue #444 and
+must not be marked shipped until a bounded cursor RoleView exists.
 
 Accessibility requires semantic tabs, keyboard board/list and non-drag action
 paths, focus restoration after drawers/dialogs, Escape handling, live-region

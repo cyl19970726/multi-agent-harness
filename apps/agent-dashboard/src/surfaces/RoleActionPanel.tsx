@@ -124,7 +124,8 @@ export function RoleActionPanel({
       const disabled = !actionsCurrent || Boolean(action.disabled_reason) || unsupported || unresolved || missingVersion;
       const reason = !actionsCurrent ? "Awaiting authoritative RoleView refetch" : action.disabled_reason ?? (unsupported ? "Semantic adapter unavailable" : unresolved ? "Route context unavailable" : missingVersion ? "Exact CAS unavailable" : undefined);
       const label=action.kind==="admit_provider"&&action.intent_binding?`admit provider · ${action.intent_binding.provider}/${action.intent_binding.execution_mode}`:action.kind.replace(/_/g, " ");
-      return <Button key={`${action.kind}:${action.target_ref.kind}:${action.target_ref.id}:${index}`} size="sm" variant={selected === action ? "default" : "secondary"} disabled={disabled} title={reason} onClick={() => choose(action)}>{label}</Button>;
+      const reasonId=`role-action-reason-${index}-${action.kind}`;
+      return <span key={`${action.kind}:${action.target_ref.kind}:${action.target_ref.id}:${index}`} className="inline-flex min-w-0 flex-col items-start gap-1"><Button size="sm" variant={selected === action ? "default" : "secondary"} disabled={disabled} aria-describedby={reason ? reasonId : undefined} onClick={() => choose(action)}>{label}</Button>{reason && <span id={reasonId} className="max-w-56 text-[10px] leading-snug text-muted-foreground">Unavailable: {reason}</span>}</span>;
     })}</div> : <p className="mt-3 text-xs text-muted-foreground">No actions are authorized for this identity and state.</p>}
     {selected && <div className="mt-4 space-y-3 rounded-lg bg-muted/35 p-3">
       <div className="text-xs"><b>{selected.kind}</b> → <code className="break-all">{route ?? "unavailable"}</code></div>

@@ -126,10 +126,13 @@ The contextual rail is not a required third column. It appears only when at
 least one selected/current fact or authorized action exists, and uses shared
 density variants rather than page-specific decorative cards. Its order is:
 
-1. **CurrentWork** — Work id/version, creator/owner, phase/condition/resolution,
+1. **CurrentWork** — only the Work bound to the selected exact MemberRun
+   (`current_member_run_ref` / server-projected execution binding), with
+   id/version, creator/owner, phase/condition/resolution,
    readiness, context,
    completion criteria, owned paths, permissions, blockers, child progress and
-   applicable constraints; queued and eligible Works remain one action away.
+   applicable constraints. Other durable AgentMember-owned Works remain in the
+   Team Works surface and are never guessed to be the selected execution.
 2. **RuntimeSummary** — exact MemberRun, provider/model/native-session binding, availability,
    resume compatibility, selected execution driver, continuation state,
    Team Supervisor generation/heartbeat, provider-transport and reconnect
