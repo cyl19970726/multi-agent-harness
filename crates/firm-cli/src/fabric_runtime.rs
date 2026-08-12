@@ -570,6 +570,12 @@ fn node_gateway_command(
                 Err(error) => return Err(fabric_error(error)),
             }
         }
+        // Reconcile and submit are coordination operations with durable Store
+        // work on the Control Plane. Restore the bounded coordination timeout
+        // after the intentionally short inbound idle poll.
+        gateway
+            .set_read_timeout(Some(GATEWAY_HEARTBEAT_READ_TIMEOUT))
+            .map_err(fabric_error)?;
         for mut operation in local.pending_outbox_operations().map_err(fabric_error)? {
             let receipts = gateway
                 .reconcile_operations(&local, BTreeSet::from([operation.id.clone()]))
@@ -1652,6 +1658,15 @@ mod tests {
         assert_eq!(GATEWAY_HEARTBEAT_READ_TIMEOUT, Duration::from_secs(5));
         assert!(GATEWAY_HEARTBEAT_READ_TIMEOUT > GATEWAY_IDLE_POLL_READ_TIMEOUT);
         assert!(GATEWAY_HEARTBEAT_READ_TIMEOUT < Duration::from_secs(30));
+    }
+
+    #[test]
+    fn durable_coordination_uses_the_heartbeat_timeout_not_the_idle_poll() {
+        let coordination_operations = ["heartbeat", "reconcile", "submit"];
+        assert_eq!(coordination_operations.len(), 3);
+        for _ in coordination_operations {
+            assert!(GATEWAY_HEARTBEAT_READ_TIMEOUT > GATEWAY_IDLE_POLL_READ_TIMEOUT);
+        }
     }
 
     #[cfg(target_os = "macos")]
