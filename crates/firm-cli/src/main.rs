@@ -28630,11 +28630,11 @@ fn daemon_command(args: &[String]) -> CliResult<()> {
 
 #[derive(Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AgentFirmHttpCredential {
-    token: String,
-    actor: harness_core::agentfirm_api::ActorRef,
+pub(crate) struct AgentFirmHttpCredential {
+    pub(crate) token: String,
+    pub(crate) actor: harness_core::agentfirm_api::ActorRef,
     #[serde(default)]
-    authority_actors: Vec<harness_core::agentfirm_api::ActorRef>,
+    pub(crate) authority_actors: Vec<harness_core::agentfirm_api::ActorRef>,
 }
 
 #[derive(serde::Deserialize)]
@@ -28708,7 +28708,7 @@ fn runtime_control_actor_is_authorized(
     Ok(false)
 }
 
-fn resolve_agentfirm_http_credential(
+pub(crate) fn resolve_agentfirm_http_credential(
     presented_token: Option<&str>,
 ) -> Result<AgentFirmHttpCredential, String> {
     let encoded = std::env::var("AGENTFIRM_HTTP_CREDENTIALS_JSON")
@@ -28904,6 +28904,91 @@ fn handle_http_connection(
                 }
             }),
         )?;
+        return Ok(());
+    }
+    if method == "POST" && path_only == "/v1/collaboration/delegations" {
+        if trust_identity_override_header {
+            write_http_json(
+                &mut stream,
+                "401 Unauthorized",
+                &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":"request headers cannot select collaboration actor or authority identity"}}),
+            )?;
+            return Ok(());
+        }
+        let credential = match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
+            Ok(value) => value,
+            Err(message) => {
+                write_http_json(
+                    &mut stream,
+                    "401 Unauthorized",
+                    &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":message}}),
+                )?;
+                return Ok(());
+            }
+        };
+        let Some(idempotency_key) = trust_idempotency_key
+            .as_deref()
+            .filter(|key| !key.trim().is_empty())
+        else {
+            write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok":false,"error":{"code":"IDEMPOTENCY_CONFLICT","message":"Idempotency-Key is required"}}),
+            )?;
+            return Ok(());
+        };
+        if trust_expected_version != Some(0) {
+            write_http_json(
+                &mut stream,
+                "409 Conflict",
+                &serde_json::json!({"ok":false,"error":{"code":"EXPECTED_REVISION_CONFLICT","message":"new Delegation proposal requires If-Match: 0"}}),
+            )?;
+            return Ok(());
+        }
+        let request = match serde_json::from_slice::<
+            fabric_runtime::QueueCollaborationProposalRequest,
+        >(&body)
+        {
+            Ok(value) => value,
+            Err(error) => {
+                write_http_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &serde_json::json!({"ok":false,"error":{"code":"INVALID_PAYLOAD","message":error.to_string()}}),
+                )?;
+                return Ok(());
+            }
+        };
+        let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
+        let local_node_id = read_local_node_id()?;
+        match fabric_runtime::queue_collaboration_proposal(
+            &store_owned,
+            &firm_home,
+            &project_id,
+            &local_node_id,
+            &credential,
+            idempotency_key,
+            &request,
+            current_unix_ms_u64(),
+        ) {
+            Ok(value) => write_http_json(
+                &mut stream,
+                "202 Accepted",
+                &serde_json::json!({"ok":true,"queued":value}),
+            )?,
+            Err(error) => {
+                let status = match error.code {
+                    harness_fabric::FabricErrorCode::UnauthorizedActor => "403 Forbidden",
+                    harness_fabric::FabricErrorCode::ExpectedRevisionConflict => "409 Conflict",
+                    _ => "400 Bad Request",
+                };
+                write_http_json(
+                    &mut stream,
+                    status,
+                    &serde_json::json!({"ok":false,"error":{"code":format!("{:?}",error.code).to_ascii_uppercase(),"message":error.message}}),
+                )?;
+            }
+        }
         return Ok(());
     }
     if method == "POST" && path_only == "/v1/agentfirm/runtime-commands" {

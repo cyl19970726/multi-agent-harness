@@ -45,6 +45,13 @@ struct DelegationDecidePayload {
     target_placement: firm_core::collaboration::TargetPlacementRef,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoteFactPublishPayload {
+    publication: firm_core::collaboration::RemoteFactPublication,
+    source_team_placement: firm_core::collaboration::TargetPlacementRef,
+}
+
 /// Server-resolved Wave 5 route authority. None of these fields may be copied
 /// from the public collaboration request body.
 #[derive(Debug, Clone)]
@@ -459,6 +466,97 @@ pub fn apply_collaboration_target_operation(
                 "delegation_id": payload.delegation_id,
                 "decision": payload.decision,
                 "target_placement": payload.target_placement,
+            }),
+            EffectCertainty::Applied,
+        ));
+    }
+    if reference.business_kind == "remote_fact_publish"
+        && reference.required_capability == "collaboration.remote_fact_publish"
+    {
+        let payload = serde_json::from_value::<RemoteFactPublishPayload>(reference.payload)
+            .map_err(|error| {
+                application_error(
+                    FabricErrorCode::InvalidPayload,
+                    format!("remote_fact_publish payload is invalid: {error}"),
+                    &operation.id,
+                )
+            })?;
+        let teams = store.teams().map_err(|error| {
+            application_error(
+                FabricErrorCode::StoreUnavailable,
+                format!("source AgentTeam lookup failed: {error}"),
+                &operation.id,
+            )
+        })?;
+        let team_revision = teams
+            .iter()
+            .filter(|team| team.id == reference.target_team_id)
+            .count() as u64;
+        let team = teams
+            .iter()
+            .rev()
+            .find(|team| team.id == reference.target_team_id)
+            .ok_or_else(|| {
+                application_error(
+                    FabricErrorCode::TargetNotPlaced,
+                    "source AgentTeam does not exist on target Node",
+                    &operation.id,
+                )
+            })?;
+        if payload.source_team_placement.team_id != reference.target_team_id
+            || payload.source_team_placement.team_revision != reference.target_team_revision
+            || payload.source_team_placement.node_id != operation.target_node_id
+            || payload.source_team_placement.placement_generation != reference.placement_generation
+            || payload.publication.company_id != operation.company_id
+            || payload.publication.origin_node_id
+                != operation.source_node_id.clone().unwrap_or_default()
+            || payload.publication.delegation_source_work_ref.team_id != team.id
+            || payload.publication.delegation_source_work_ref.node_id != team.node_id
+            || payload.publication.created_by.id != reference.business_actor_id
+            || team_revision != reference.target_team_revision
+            || team.node_id != operation.target_node_id
+            || team.status != AgentTeamStatus::Active
+        {
+            return Err(application_error(
+                FabricErrorCode::InvalidPayload,
+                "remote fact target Team, source Node, actor, or immutable placement changed",
+                &operation.id,
+            ));
+        }
+        let context = crate::CollaborationMutationContext {
+            company_id: operation.company_id.clone(),
+            authenticated_actor: ActorRef {
+                kind: CoreActorKind::Service,
+                id: format!(
+                    "remote-fabric-target-application:{}",
+                    operation.target_node_id
+                ),
+            },
+            command_name: "remote_fact_cache_persist".into(),
+            idempotency_key: operation.idempotency_key.clone(),
+            expected_revision: 0,
+            occurred_at: occurred_at.into(),
+        };
+        let cached = store
+            .persist_remote_fact_cache(
+                &context,
+                &payload.publication,
+                &operation.id,
+                &payload.source_team_placement,
+                &operation.target_node_id,
+            )
+            .map_err(|error| {
+                application_error(
+                    FabricErrorCode::InvalidPayload,
+                    format!("remote fact cache persistence failed: {error}"),
+                    &operation.id,
+                )
+            })?;
+        return Ok((
+            "agentfirm.collaboration.remote_fact_cached.v1".into(),
+            serde_json::json!({
+                "publication_id": cached.projection.id,
+                "replayed": cached.replayed,
             }),
             EffectCertainty::Applied,
         ));

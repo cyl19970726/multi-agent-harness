@@ -38,6 +38,103 @@ struct Wave6ControlPlaneApplication {
 }
 
 impl ControlPlaneReceiptApplication for Wave6ControlPlaneApplication {
+    fn fold_source_accepted(
+        &self,
+        operation: &RoutedOperation,
+        receipt: &RouteReceipt,
+        observed_at_unix_ms: u64,
+    ) -> Result<Vec<harness_fabric::gateway_runtime::ControlPlaneFollowUp>, FabricError> {
+        if operation.kind != COLLABORATION_BUSINESS_OPERATION_KIND
+            || receipt.kind != ReceiptKind::ControlPlaneAccepted
+        {
+            return Ok(Vec::new());
+        }
+        let reference = match operation.closed_body()? {
+            harness_fabric::ClosedOperationBody::CollaborationBusiness(reference) => reference,
+            _ => return Ok(Vec::new()),
+        };
+        if reference.business_kind != "remote_fact_publish" {
+            return Ok(Vec::new());
+        }
+        let publication = serde_json::from_value::<
+            harness_core::collaboration::RemoteFactPublication,
+        >(reference.payload.get("publication").cloned().ok_or_else(
+            || {
+                FabricError::none(
+                    FabricErrorCode::InvalidPayload,
+                    "remote fact route lacks the immutable publication",
+                )
+            },
+        )?)
+        .map_err(|error| {
+            FabricError::none(
+                FabricErrorCode::InvalidPayload,
+                format!("remote fact publication is invalid: {error}"),
+            )
+        })?;
+        let store = HarnessStore::new(&self.collaboration_root);
+        let delegation = store
+            .collaboration_delegation(&self.company_id, &publication.delegation_id)
+            .map_err(|error| {
+                FabricError::unknown(
+                    operation.id.clone(),
+                    format!("remote fact Delegation lookup failed: {error}"),
+                )
+            })?
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::ExpectedRevisionConflict,
+                    "remote fact references no central Delegation",
+                )
+            })?;
+        let business_actor = harness_core::agentfirm_api::ActorRef {
+            kind: match reference.business_actor_kind.as_str() {
+                "human" => harness_core::agentfirm_api::ActorKind::Human,
+                "agent_member" => harness_core::agentfirm_api::ActorKind::AgentMember,
+                "service" => harness_core::agentfirm_api::ActorKind::Service,
+                _ => {
+                    return Err(FabricError::none(
+                        FabricErrorCode::UnauthorizedActor,
+                        "remote fact business actor kind is not allowed",
+                    ))
+                }
+            },
+            id: reference.business_actor_id.clone(),
+        };
+        if delegation.revision != reference.expected_revision
+            || publication.created_by != business_actor
+            || publication.origin_node_id != operation.source_node_id.clone().unwrap_or_default()
+            || publication.origin_team_id != delegation.target_placement.team_id
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::ExpectedRevisionConflict,
+                "remote fact changed actor, source Node/Team, or Delegation revision",
+            ));
+        }
+        let context = harness_store::CollaborationMutationContext {
+            company_id: self.company_id.clone(),
+            authenticated_actor: business_actor.clone(),
+            command_name: "remote_fact_publish".into(),
+            idempotency_key: operation.idempotency_key.clone(),
+            expected_revision: 0,
+            occurred_at: format!("unix-ms:{observed_at_unix_ms}"),
+        };
+        store
+            .publish_remote_fact(
+                &context,
+                &publication,
+                &[business_actor, delegation.target_host_ref],
+                &delegation.target_placement,
+            )
+            .map_err(|error| {
+                FabricError::unknown(
+                    operation.id.clone(),
+                    format!("Control Plane remote fact fold failed: {error}"),
+                )
+            })?;
+        Ok(Vec::new())
+    }
+
     fn fold_target_application(
         &self,
         operation: &RoutedOperation,
@@ -447,6 +544,277 @@ pub(crate) fn fabric_command(
         "route" => route_command(store, resolved, &args[1..]),
         other => Err(CliError::Usage(format!("unknown fabric command: {other}"))),
     }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct QueueCollaborationProposalRequest {
+    pub company_id: String,
+    pub source_work_id: String,
+    pub target_team_id: String,
+    pub target_team_revision: u64,
+    pub target_node_id: String,
+    pub target_execution_space_id: String,
+    pub policy_id: String,
+    pub requested_outcome: String,
+    pub outcome_class: String,
+    pub acceptance_contract: String,
+    pub expires_unix_ms: u64,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn queue_collaboration_proposal(
+    store: &HarnessStore,
+    firm_home: &Path,
+    execution_space_id: &str,
+    local_node_id: &str,
+    credential: &super::AgentFirmHttpCredential,
+    idempotency_key: &str,
+    request: &QueueCollaborationProposalRequest,
+    now_unix_ms: u64,
+) -> Result<serde_json::Value, FabricError> {
+    if idempotency_key.trim().is_empty()
+        || request.company_id.trim().is_empty()
+        || request.source_work_id.trim().is_empty()
+        || request.target_execution_space_id.trim().is_empty()
+        || request.target_team_revision == 0
+        || request.expires_unix_ms <= now_unix_ms
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::InvalidPayload,
+            "collaboration proposal requires bounded identity, exact target revision, idempotency, and future expiry",
+        ));
+    }
+    let work = store
+        .latest_works()
+        .map_err(|error| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                format!("source Work lookup failed: {error}"),
+            )
+        })?
+        .into_iter()
+        .find(|work| work.id == request.source_work_id)
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::ExpectedRevisionConflict,
+                "source Work does not exist",
+            )
+        })?;
+    let team_id = work.team_id.clone().ok_or_else(|| {
+        FabricError::none(
+            FabricErrorCode::InvalidPayload,
+            "source Work is not bound to a canonical AgentTeam",
+        )
+    })?;
+    let teams = store.teams().map_err(|error| {
+        FabricError::none(
+            FabricErrorCode::StoreUnavailable,
+            format!("source AgentTeam lookup failed: {error}"),
+        )
+    })?;
+    let team_revision = teams.iter().filter(|team| team.id == team_id).count() as u64;
+    let team = teams
+        .iter()
+        .rev()
+        .find(|team| team.id == team_id)
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::ExpectedRevisionConflict,
+                "source AgentTeam does not exist",
+            )
+        })?;
+    let actor_is_host = credential.actor.kind
+        == harness_core::agentfirm_api::ActorKind::AgentMember
+        && credential.actor.id == team.host_agent_id;
+    let actor_is_owner = credential.actor.kind
+        == harness_core::agentfirm_api::ActorKind::AgentMember
+        && work.owner_member_id.as_deref() == Some(credential.actor.id.as_str());
+    if !actor_is_host && !actor_is_owner {
+        return Err(FabricError::none(
+            FabricErrorCode::UnauthorizedActor,
+            "only the exact source Host or current Work owner may propose a Delegation",
+        ));
+    }
+    if local_node_id.trim().is_empty()
+        || team.node_id != local_node_id
+        || request.target_node_id == local_node_id
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::TargetNotPlaced,
+            "source Team must belong to this Node and target Team must be cross-node",
+        ));
+    }
+    let layout = RemoteFabricStoreLayout::open(firm_home)?;
+    let local = layout.open_node_local(&request.company_id, local_node_id)?;
+    let session = local.active_session()?.ok_or_else(|| {
+        FabricError::none(
+            FabricErrorCode::NodeStaleGeneration,
+            "source Node has no current authenticated Fabric gateway session",
+        )
+    })?;
+    let latest_event = store
+        .work_events()
+        .map_err(|error| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                format!("source Work event lookup failed: {error}"),
+            )
+        })?
+        .into_iter()
+        .rev()
+        .find(|event| event.work_id == work.id && event.resulting_version == work.version)
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::ExpectedRevisionConflict,
+                "source Work has no exact current WorkEvent",
+            )
+        })?;
+    let source_work_ref = harness_core::collaboration::RemoteWorkRef {
+        schema_version: "agentfirm.remote-work-ref.v1".into(),
+        execution_space_id: execution_space_id.into(),
+        node_id: local_node_id.into(),
+        team_id: team.id.clone(),
+        team_revision,
+        placement_generation: 1,
+        work_id: work.id.clone(),
+        work_revision: work.version,
+        work_event_id: latest_event.id,
+        digest: harness_store::canonical_json_fingerprint(&serde_json::to_value(&work).map_err(
+            |error| FabricError::none(FabricErrorCode::InvalidPayload, error.to_string()),
+        )?),
+    };
+    let source_host = harness_core::agentfirm_api::ActorRef {
+        kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+        id: team.host_agent_id.clone(),
+    };
+    let source_owner = work
+        .owner_member_id
+        .as_ref()
+        .map(|id| harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+            id: id.clone(),
+        })
+        .unwrap_or_else(|| source_host.clone());
+    let work_service = harness_core::agentfirm_api::ActorRef {
+        kind: harness_core::agentfirm_api::ActorKind::Service,
+        id: format!("work-application:{execution_space_id}"),
+    };
+    let mut attestation = harness_core::collaboration::SourceWorkAttestation {
+        id: format!(
+            "source-work-attestation:{}:{}:{}",
+            work.id, work.version, session.gateway_generation
+        ),
+        company_id: request.company_id.clone(),
+        source_work_ref,
+        source_owner_ref: source_owner,
+        source_host_ref: source_host,
+        work_application_service_ref: work_service.clone(),
+        source_gateway_generation: session.gateway_generation,
+        attestation_digest: String::new(),
+        issued_at: format!("unix-ms:{now_unix_ms}"),
+    };
+    attestation.attestation_digest =
+        harness_store::canonical_json_fingerprint(&serde_json::json!({
+            "id": attestation.id,
+            "company_id": attestation.company_id,
+            "source_work_ref": attestation.source_work_ref,
+            "source_owner_ref": attestation.source_owner_ref,
+            "source_host_ref": attestation.source_host_ref,
+            "work_application_service_ref": attestation.work_application_service_ref,
+            "source_gateway_generation": attestation.source_gateway_generation,
+            "issued_at": attestation.issued_at,
+        }));
+    store
+        .put_source_work_attestation(
+            &harness_store::CollaborationMutationContext {
+                company_id: request.company_id.clone(),
+                authenticated_actor: work_service.clone(),
+                command_name: "source_work_attest".into(),
+                idempotency_key: format!("attestation:{idempotency_key}"),
+                expected_revision: 0,
+                occurred_at: format!("unix-ms:{now_unix_ms}"),
+            },
+            &attestation,
+            &work_service,
+            session.gateway_generation,
+        )
+        .map_err(|error| {
+            FabricError::none(
+                FabricErrorCode::ExpectedRevisionConflict,
+                format!("source Work attestation failed: {error}"),
+            )
+        })?;
+    let target_placement = harness_core::collaboration::TargetPlacementRef {
+        team_id: request.target_team_id.clone(),
+        team_revision: request.target_team_revision,
+        node_id: request.target_node_id.clone(),
+        placement_generation: 1,
+    };
+    let proposal = harness_store::ProposeDelegationRequest {
+        delegation_id: format!("delegation:{idempotency_key}"),
+        source_work_attestation_id: attestation.id,
+        target_placement,
+        requested_outcome: request.requested_outcome.clone(),
+        outcome_class: request.outcome_class.clone(),
+        acceptance_contract: request.acceptance_contract.clone(),
+        operation_id: format!("collaboration-propose:{idempotency_key}"),
+    };
+    let business = store
+        .delegation_propose_operation(
+            &harness_store::CollaborationMutationContext {
+                company_id: request.company_id.clone(),
+                authenticated_actor: credential.actor.clone(),
+                command_name: "delegation_propose".into(),
+                idempotency_key: idempotency_key.into(),
+                expected_revision: 0,
+                occurred_at: format!("unix-ms:{now_unix_ms}"),
+            },
+            &proposal,
+            &request.policy_id,
+        )
+        .map_err(|error| {
+            FabricError::none(
+                FabricErrorCode::InvalidPayload,
+                format!("delegation proposal build failed: {error}"),
+            )
+        })?;
+    let node_actor = AuthenticatedActor {
+        company_id: request.company_id.clone(),
+        actor_id: local_node_id.into(),
+        actor_kind: harness_fabric::ActorKind::Service,
+        role_bindings: BTreeSet::from(["fabric_submit".into()]),
+        session_id: format!(
+            "{}:{}",
+            session.node_daemon_id, session.node_daemon_generation
+        ),
+        issued_at_unix_ms: now_unix_ms,
+        expires_at_unix_ms: request.expires_unix_ms,
+    };
+    let routed = harness_store::route_collaboration_business_operation(
+        &business,
+        &harness_store::CollaborationFabricRouteContext {
+            authenticated_actor: node_actor.clone(),
+            resolved_business_actor: credential.actor.clone(),
+            source: harness_store::CollaborationFabricSource::Node {
+                source_execution_space_id: execution_space_id.into(),
+                source_gateway_generation: session.gateway_generation,
+                source_node_daemon_id: session.node_daemon_id.clone(),
+                source_node_daemon_generation: session.node_daemon_generation,
+            },
+            control_plane_generation: session.control_plane_generation,
+            target_execution_space_id: Some(request.target_execution_space_id.clone()),
+            created_at_unix_ms: now_unix_ms,
+            expires_at_unix_ms: request.expires_unix_ms,
+        },
+    )?;
+    let (outbox, replayed) = local.prepare_outbox(&session, &node_actor, &routed, now_unix_ms)?;
+    Ok(serde_json::json!({
+        "delegation_id": proposal.delegation_id,
+        "operation_id": routed.id,
+        "outbox_state": outbox.local_state,
+        "replayed": replayed,
+    }))
 }
 
 fn route_command(
@@ -1256,7 +1624,10 @@ impl NodeApplication for Wave4cApplication {
             harness_fabric::ClosedOperationBody::Message(_) => self.persist_message(operation),
             harness_fabric::ClosedOperationBody::CollaborationBusiness(reference) => {
                 match reference.business_kind.as_str() {
-                    "target_work_create" | "delegation_propose" | "delegation_decide" => {
+                    "target_work_create"
+                    | "delegation_propose"
+                    | "delegation_decide"
+                    | "remote_fact_publish" => {
                         let (_, store) = self.target_store(operation)?;
                         harness_store::apply_collaboration_target_operation(
                             &store,

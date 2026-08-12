@@ -25,6 +25,18 @@ use crate::{canonical_digest, FabricError, FabricErrorCode};
 /// route truth; this seam lets Company-level application services fold that
 /// terminal evidence without making `firm-fabric` a business-state authority.
 pub trait ControlPlaneReceiptApplication: Send + Sync {
+    /// Fold Company-owned facts that are allowed to become durable as soon as
+    /// the authenticated source Node operation is accepted. Implementations
+    /// must remain idempotent because a lost response replays the same route.
+    fn fold_source_accepted(
+        &self,
+        _operation: &RoutedOperation,
+        _receipt: &RouteReceipt,
+        _observed_at_unix_ms: u64,
+    ) -> Result<Vec<ControlPlaneFollowUp>, FabricError> {
+        Ok(Vec::new())
+    }
+
     fn fold_target_application(
         &self,
         operation: &RoutedOperation,
@@ -178,13 +190,22 @@ where
             }
             FabricPayload::OperationSubmit(operation) => {
                 let actor = authenticated_node_actor(peer, now);
-                let (_, _, receipt, _) = control_plane.accept_operation(
+                let (accepted, _, receipt, _) = control_plane.accept_operation(
                     control_plane_generation,
                     &session,
                     &actor,
                     *operation,
                     now,
                 )?;
+                let follow_ups = application.fold_source_accepted(&accepted, &receipt, now)?;
+                for follow_up in follow_ups {
+                    control_plane.accept_control_plane_operation(
+                        control_plane_generation,
+                        &follow_up.authenticated_actor,
+                        follow_up.operation,
+                        now,
+                    )?;
+                }
                 send_payload(
                     socket,
                     &session,

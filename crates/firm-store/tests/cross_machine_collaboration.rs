@@ -38,6 +38,7 @@ use std::sync::{Arc, Barrier, Mutex};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
 const TARGET_NODE_UUID: &str = "22222222-2222-4222-8222-222222222222";
+const SOURCE_NODE_UUID: &str = "11111111-1111-4111-8111-111111111111";
 
 struct TestStore {
     root: PathBuf,
@@ -153,10 +154,37 @@ fn install_policy(store: &HarnessStore) {
 }
 
 fn seed_target_team(store: &HarnessStore) {
+    seed_team(
+        store,
+        TARGET_NODE_UUID,
+        "Node B",
+        "space-node-b",
+        "project-b",
+        "mission-b",
+        "team-b",
+        "Team B",
+        "host-b",
+        "run-b",
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn seed_team(
+    store: &HarnessStore,
+    node_id: &str,
+    node_name: &str,
+    execution_space_id: &str,
+    project_binding_id: &str,
+    mission_id: &str,
+    team_id: &str,
+    team_name: &str,
+    host_id: &str,
+    run_id: &str,
+) {
     store
         .insert_execution_node(&ExecutionNode {
-            id: TARGET_NODE_UUID.into(),
-            display_name: "Node B".into(),
+            id: node_id.into(),
+            display_name: node_name.into(),
             status: ExecutionNodeStatus::Active,
             created_at: "unix-ms:1".into(),
             updated_at: "unix-ms:1".into(),
@@ -165,20 +193,20 @@ fn seed_target_team(store: &HarnessStore) {
     store
         .register_node_project(
             &NodeProjectRegistration {
-                node_id: TARGET_NODE_UUID.into(),
-                execution_space_id: "space-node-b".into(),
-                project_binding_id: "project-b".into(),
+                node_id: node_id.into(),
+                execution_space_id: execution_space_id.into(),
+                project_binding_id: project_binding_id.into(),
                 status: NodeProjectRegistrationStatus::Active,
                 created_at: "unix-ms:1".into(),
                 updated_at: "unix-ms:1".into(),
             },
-            "space-node-b",
+            execution_space_id,
         )
         .unwrap();
     store
         .insert_mission(&Mission {
-            id: "mission-b".into(),
-            title: "Mission B".into(),
+            id: mission_id.into(),
+            title: format!("{team_name} Mission"),
             objective: "Execute delegated Work".into(),
             context: String::new(),
             desired_outcome: None,
@@ -193,12 +221,12 @@ fn seed_target_team(store: &HarnessStore) {
         .unwrap();
     store
         .insert_agent_team_with_unique_mission(&AgentTeam {
-            id: "team-b".into(),
-            name: "Team B".into(),
+            id: team_id.into(),
+            name: team_name.into(),
             description: "Target Team".into(),
-            mission_id: "mission-b".into(),
-            host_agent_id: "host-b".into(),
-            node_id: TARGET_NODE_UUID.into(),
+            mission_id: mission_id.into(),
+            host_agent_id: host_id.into(),
+            node_id: node_id.into(),
             status: AgentTeamStatus::Active,
             member_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
@@ -208,10 +236,10 @@ fn seed_target_team(store: &HarnessStore) {
     store
         .create_team_run_from_agent_team(
             &AgentTeamRun {
-                id: "run-b".into(),
-                agent_team_id: "team-b".into(),
-                execution_node_id: TARGET_NODE_UUID.into(),
-                project_binding_id: "project-b".into(),
+                id: run_id.into(),
+                agent_team_id: team_id.into(),
+                execution_node_id: node_id.into(),
+                project_binding_id: project_binding_id.into(),
                 previous_run_id: None,
                 host_surface: "test".into(),
                 host_thread_id: None,
@@ -226,7 +254,7 @@ fn seed_target_team(store: &HarnessStore) {
                 updated_at: "unix-ms:1".into(),
                 completed_at: None,
             },
-            "space-node-b",
+            execution_space_id,
         )
         .unwrap();
 }
@@ -1826,6 +1854,123 @@ fn target_work_create_applies_once_through_native_work_authority() {
     stale.body_digest = json_digest(&stale.body).unwrap();
     assert!(apply_collaboration_target_operation(&target.store, &stale, "unix-ms:202").is_err());
     assert_eq!(target.store.latest_works().unwrap(), before);
+
+    let source = TestStore::new("remote-fact-source-cache");
+    seed_team(
+        &source.store,
+        SOURCE_NODE_UUID,
+        "Node A",
+        "space-node-a",
+        "project-a",
+        "mission-a",
+        "team-a",
+        "Team A",
+        "host-a",
+        "run-a",
+    );
+    let target_work_ref: RemoteWorkRef =
+        serde_json::from_value(first.1["target_work_ref"].clone()).unwrap();
+    let source_work = RemoteWorkRef {
+        schema_version: "agentfirm.remote-work-ref.v1".into(),
+        execution_space_id: "space-node-a".into(),
+        node_id: SOURCE_NODE_UUID.into(),
+        team_id: "team-a".into(),
+        team_revision: 1,
+        placement_generation: 1,
+        work_id: "work-a".into(),
+        work_revision: 9,
+        work_event_id: "event-work-a-9".into(),
+        digest: format!("sha256:{:064x}", 9),
+    };
+    let fact = serde_json::json!({
+        "submitted_work_revision": target_work_ref.work_revision,
+        "outcome": "implemented",
+        "checks": ["check:unit"],
+    });
+    let fact_digest = canonical_json_fingerprint(&fact);
+    let publication = RemoteFactPublication {
+        id: "publication-routed-1".into(),
+        company_id: "company-1".into(),
+        delegation_id: "delegation-native-1".into(),
+        origin_node_id: TARGET_NODE_UUID.into(),
+        origin_team_id: "team-b".into(),
+        fact_work_ref: target_work_ref,
+        delegation_source_work_ref: source_work,
+        fact_kind: RemoteFactKind::Report,
+        fact_id: "report-routed-1".into(),
+        fact_revision: 1,
+        fact_digest: fact_digest.clone(),
+        summary: "target result".into(),
+        classification: "team-visible".into(),
+        snapshot: RemoteFactSnapshot {
+            publication_id: "publication-routed-1".into(),
+            fact_schema: "agentfirm.work-report.v1".into(),
+            canonical_redacted_fact: fact,
+            canonical_digest: fact_digest,
+        },
+        artifact_refs: Vec::new(),
+        evidence_refs: vec!["check:unit".into()],
+        operational_decision_ref: None,
+        created_by: actor(ActorKind::AgentMember, "host-b"),
+        created_at: "unix-ms:203".into(),
+        retain_until: "unix-ms:999999".into(),
+    };
+    let source_placement = TargetPlacementRef {
+        team_id: "team-a".into(),
+        team_revision: 1,
+        node_id: SOURCE_NODE_UUID.into(),
+        placement_generation: 1,
+    };
+    let publication_business = target
+        .store
+        .remote_fact_publish_operation(
+            &CollaborationMutationContext {
+                company_id: "company-1".into(),
+                authenticated_actor: publication.created_by.clone(),
+                command_name: "remote_fact_publish".into(),
+                idempotency_key: "publish-routed-1".into(),
+                expected_revision: 3,
+                occurred_at: "unix-ms:203".into(),
+            },
+            &publication,
+            &source_placement,
+            TARGET_NODE_UUID,
+        )
+        .expect("target WorkApplicationService builds routed publication");
+    let publication_route = route_collaboration_business_operation(
+        &publication_business,
+        &CollaborationFabricRouteContext {
+            authenticated_actor: AuthenticatedActor {
+                company_id: "company-1".into(),
+                actor_id: TARGET_NODE_UUID.into(),
+                actor_kind: FabricActorKind::Service,
+                role_bindings: BTreeSet::from(["fabric_submit".into()]),
+                session_id: "daemon-b:1".into(),
+                issued_at_unix_ms: 203,
+                expires_at_unix_ms: 10_000,
+            },
+            resolved_business_actor: publication.created_by.clone(),
+            source: CollaborationFabricSource::Node {
+                source_execution_space_id: "space-node-b".into(),
+                source_gateway_generation: 9,
+                source_node_daemon_id: "daemon-b".into(),
+                source_node_daemon_generation: 1,
+            },
+            control_plane_generation: 3,
+            target_execution_space_id: Some("space-node-a".into()),
+            created_at_unix_ms: 203,
+            expires_at_unix_ms: 5_000,
+        },
+    )
+    .expect("publication uses Wave5 route");
+    let cached =
+        apply_collaboration_target_operation(&source.store, &publication_route, "unix-ms:204")
+            .expect("source Node persists read-only publication cache");
+    assert_eq!(cached.0, "agentfirm.collaboration.remote_fact_cached.v1");
+    let replay =
+        apply_collaboration_target_operation(&source.store, &publication_route, "unix-ms:205")
+            .expect("publication cache exact replay");
+    assert_eq!(cached.1["publication_id"], replay.1["publication_id"]);
 }
 
 #[test]

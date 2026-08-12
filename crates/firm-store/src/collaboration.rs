@@ -1445,6 +1445,96 @@ impl HarnessStore {
         })
     }
 
+    /// Target WorkApplicationService publishes only a redacted immutable fact
+    /// whose native Work identity is proven by the local target Store. The
+    /// Company registry will independently re-check Delegation scope.
+    pub fn remote_fact_publish_operation(
+        &self,
+        context: &CollaborationMutationContext,
+        publication: &RemoteFactPublication,
+        source_team_placement: &TargetPlacementRef,
+        current_node_id: &str,
+    ) -> StoreResult<RoutedBusinessOperation> {
+        let work = self
+            .latest_works()?
+            .into_iter()
+            .find(|work| work.id == publication.fact_work_ref.work_id)
+            .ok_or_else(|| {
+                collaboration_error(
+                    FabricErrorCode::PublicationScopeMismatch,
+                    "remote publication references no target-owned native Work",
+                    "remote_fact_publication",
+                    &publication.id,
+                    None,
+                )
+            })?;
+        let team = self
+            .teams()?
+            .into_iter()
+            .rev()
+            .find(|team| team.id == publication.origin_team_id)
+            .ok_or_else(|| {
+                collaboration_error(
+                    FabricErrorCode::PublicationScopeMismatch,
+                    "remote publication references no target-owned AgentTeam",
+                    "remote_fact_publication",
+                    &publication.id,
+                    None,
+                )
+            })?;
+        let actor_is_host = context.authenticated_actor.kind == ActorKind::AgentMember
+            && context.authenticated_actor.id == team.host_agent_id;
+        let actor_is_owner = context.authenticated_actor.kind == ActorKind::AgentMember
+            && work.owner_member_id.as_deref() == Some(context.authenticated_actor.id.as_str());
+        let canonical_digest =
+            canonical_json_fingerprint(&publication.snapshot.canonical_redacted_fact);
+        if context.expected_revision == 0
+            || publication.fact_revision == 0
+            || publication.company_id != context.company_id
+            || publication.origin_node_id != current_node_id
+            || publication.fact_work_ref.node_id != current_node_id
+            || publication.fact_work_ref.team_id != team.id
+            || publication.fact_work_ref.work_revision != work.version
+            || publication.fact_digest != canonical_digest
+            || publication.snapshot.canonical_digest != canonical_digest
+            || publication.snapshot.publication_id != publication.id
+            || publication.created_by != context.authenticated_actor
+            || (!actor_is_host && !actor_is_owner)
+            || source_team_placement.team_id != publication.delegation_source_work_ref.team_id
+            || source_team_placement.node_id != publication.delegation_source_work_ref.node_id
+            || source_team_placement.placement_generation != 1
+            || source_team_placement.node_id == current_node_id
+        {
+            return Err(collaboration_error(
+                FabricErrorCode::PublicationScopeMismatch,
+                "remote publication is not server-bound to the exact local Work/actor or source Team placement",
+                "remote_fact_publication",
+                &publication.id,
+                Some(work.version),
+            ));
+        }
+        let payload = serde_json::json!({
+            "publication": publication,
+            "source_team_placement": source_team_placement,
+        });
+        Ok(RoutedBusinessOperation {
+            id: format!("route-publication:{}", publication.id),
+            protocol_version: "agentfirm.fabric.v1".into(),
+            company_id: context.company_id.clone(),
+            kind: RoutedBusinessKind::RemoteFactPublish,
+            authenticated_actor: context.authenticated_actor.clone(),
+            source_node_id: current_node_id.into(),
+            target_placement: source_team_placement.clone(),
+            expected_revision: context.expected_revision,
+            idempotency_key: context.idempotency_key.clone(),
+            payload_digest: canonical_json_fingerprint(&payload),
+            payload,
+            required_capability: RoutedBusinessKind::RemoteFactPublish.required_capability(),
+            ordering_key: format!("delegation:{}", publication.delegation_id),
+            created_at: context.occurred_at.clone(),
+        })
+    }
+
     pub fn apply_target_work_created(
         &self,
         context: &CollaborationMutationContext,
@@ -1794,6 +1884,54 @@ impl HarnessStore {
             "remote_fact_publication",
             &publication.id,
             serde_json::to_value(publication)?,
+            publication,
+            Vec::new(),
+        )
+    }
+
+    /// Persist a target-Node-delivered, read-only copy of the central
+    /// publication. This aggregate is intentionally a cache and is never
+    /// consulted by Company collaboration mutations.
+    pub fn persist_remote_fact_cache(
+        &self,
+        context: &CollaborationMutationContext,
+        publication: &RemoteFactPublication,
+        routed_operation_id: &str,
+        target_placement: &TargetPlacementRef,
+        current_node_id: &str,
+    ) -> StoreResult<CollaborationMutationResult<RemoteFactPublication>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let canonical_digest =
+            canonical_json_fingerprint(&publication.snapshot.canonical_redacted_fact);
+        if context.expected_revision != 0
+            || context.authenticated_actor.kind != ActorKind::Service
+            || routed_operation_id.trim().is_empty()
+            || publication.company_id != context.company_id
+            || publication.fact_digest != canonical_digest
+            || publication.snapshot.canonical_digest != canonical_digest
+            || target_placement.node_id != current_node_id
+            || target_placement.team_id != publication.delegation_source_work_ref.team_id
+            || target_placement.node_id != publication.delegation_source_work_ref.node_id
+            || target_placement.placement_generation != 1
+        {
+            return Err(collaboration_error(
+                FabricErrorCode::PublicationScopeMismatch,
+                "remote fact cache is not bound to the exact central publication and target placement",
+                "remote_fact_cache",
+                &publication.id,
+                None,
+            ));
+        }
+        self.commit_collaboration_projection_unlocked(
+            context,
+            "remote_fact_cache",
+            &publication.id,
+            serde_json::json!({
+                "publication": publication,
+                "routed_operation_id": routed_operation_id,
+                "target_placement": target_placement,
+            }),
             publication,
             Vec::new(),
         )
