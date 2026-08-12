@@ -9,6 +9,7 @@
     "check:collaboration-foundation": "node scripts/check-collaboration-foundation.mjs && cargo test -p firm-core --test schema_fixture_parity collaboration_v1_schema_fixtures_match_closed_rust_wire_contracts && cargo test -p firm-store --test cross_machine_collaboration",
     "check:remote-fabric": "node scripts/acceptance-remote-fabric.mjs",
     "acceptance:remote-fabric": "node scripts/acceptance-remote-fabric.mjs",
+    "acceptance:cross-machine-collaboration": "node scripts/acceptance-cross-machine-collaboration.mjs",
     "check:runtime-message-fabric": "node scripts/check-runtime-message-fabric.mjs",
     "check:role-views": "node apps/agent-dashboard/tests/role-view-contract-check.mjs && node apps/agent-dashboard/tests/local-agentfirm-product-loop.mjs && node apps/agent-dashboard/tests/desktop-handoff-check.mjs && node apps/agent-dashboard/tests/local-agentfirm-product-loop-browser-check.mjs",
     "check:wave4-zero-match": "node scripts/check-wave4-zero-match.mjs",

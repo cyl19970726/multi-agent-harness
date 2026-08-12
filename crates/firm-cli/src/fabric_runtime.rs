@@ -1003,115 +1003,132 @@ pub(crate) fn queue_remote_fact_publication(
         ));
     }
 
-    let (fact_work_id, fact_work_revision, fact_revision, created_by, summary, schema, fact) =
-        match request.fact_kind {
-            RemoteFactKind::Report => {
-                let report = store
-                    .trust_work_reports(execution_space_id)
-                    .map_err(|error| {
-                        FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
-                    })?
-                    .into_iter()
-                    .find(|report| report.id == request.fact_id)
-                    .ok_or_else(|| {
-                        FabricError::none(
-                            FabricErrorCode::ExpectedRevisionConflict,
-                            "native WorkReport does not exist",
-                        )
-                    })?;
-                let redacted = serde_json::json!({
-                    "kind": report.kind,
-                    "summary": report.summary,
-                    "candidate_fingerprint": report.candidate_fingerprint,
-                    "artifact_refs": report.artifact_refs,
-                    "evidence_refs": report.evidence_refs,
-                    "known_risks": report.known_risks,
-                    "confidence": report.confidence,
-                    "recommended_next_action": report.recommended_next_action,
-                });
-                (
-                    report.work_id,
-                    report.work_revision,
-                    report.report_revision,
-                    report.authored_by,
-                    redacted["summary"].as_str().unwrap_or_default().to_string(),
-                    "agentfirm.remote-fact.work-report.v1",
-                    redacted,
-                )
-            }
-            RemoteFactKind::Finding => {
-                let finding = store
-                    .trust_work_findings(execution_space_id)
-                    .map_err(|error| {
-                        FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
-                    })?
-                    .into_iter()
-                    .find(|finding| finding.id == request.fact_id)
-                    .ok_or_else(|| {
-                        FabricError::none(
-                            FabricErrorCode::ExpectedRevisionConflict,
-                            "native WorkFinding does not exist",
-                        )
-                    })?;
-                let redacted = serde_json::json!({
-                    "kind": finding.kind,
-                    "summary": finding.summary,
-                    "affected_work_refs": finding.affected_work_refs,
-                    "reusable_asset_refs": finding.reusable_asset_refs,
-                    "invalidated_assumptions": finding.invalidated_assumptions,
-                    "evidence_refs": finding.evidence_refs,
-                    "confidence": finding.confidence,
-                });
-                (
-                    finding.work_id,
-                    finding.work_revision,
-                    1,
-                    finding.reported_by,
-                    redacted["summary"].as_str().unwrap_or_default().to_string(),
-                    "agentfirm.remote-fact.work-finding.v1",
-                    redacted,
-                )
-            }
-            RemoteFactKind::Failure => {
-                let analysis = store
-                    .trust_failure_analyses(execution_space_id)
-                    .map_err(|error| {
-                        FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
-                    })?
-                    .into_iter()
-                    .find(|analysis| analysis.id == request.fact_id)
-                    .ok_or_else(|| {
-                        FabricError::none(
-                            FabricErrorCode::ExpectedRevisionConflict,
-                            "native FailureAnalysis does not exist",
-                        )
-                    })?;
-                let redacted = serde_json::json!({
-                    "observed_failure": analysis.observed_failure,
-                    "impact": analysis.impact,
-                    "primary_cause_status": analysis.primary_cause_status,
-                    "primary_cause": analysis.primary_cause,
-                    "retry_safety": analysis.retry_safety,
-                    "side_effect_summary": analysis.side_effect_summary,
-                    "recovery_options": analysis.recovery_options,
-                    "recommended_host_decision": analysis.recommended_host_decision,
-                    "evidence_refs": analysis.evidence_refs,
-                    "confidence": analysis.confidence,
-                });
-                (
-                    analysis.work_id,
-                    analysis.work_revision,
-                    1,
-                    analysis.reported_by,
-                    redacted["observed_failure"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
-                    "agentfirm.remote-fact.failure-analysis.v1",
-                    redacted,
-                )
-            }
-        };
+    let (
+        fact_work_id,
+        fact_work_revision,
+        fact_revision,
+        created_by,
+        summary,
+        schema,
+        fact,
+        artifact_refs,
+        evidence_refs,
+    ) = match request.fact_kind {
+        RemoteFactKind::Report => {
+            let report = store
+                .trust_work_reports(execution_space_id)
+                .map_err(|error| {
+                    FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+                })?
+                .into_iter()
+                .find(|report| report.id == request.fact_id)
+                .ok_or_else(|| {
+                    FabricError::none(
+                        FabricErrorCode::ExpectedRevisionConflict,
+                        "native WorkReport does not exist",
+                    )
+                })?;
+            let redacted = serde_json::json!({
+                "kind": report.kind,
+                "summary": report.summary,
+                "candidate_fingerprint": report.candidate_fingerprint,
+                "artifact_refs": report.artifact_refs,
+                "evidence_refs": report.evidence_refs,
+                "known_risks": report.known_risks,
+                "confidence": report.confidence,
+                "recommended_next_action": report.recommended_next_action,
+            });
+            let artifact_refs = report.artifact_refs.clone();
+            let evidence_refs = report.evidence_refs.clone();
+            (
+                report.work_id,
+                report.work_revision,
+                report.report_revision,
+                report.authored_by,
+                redacted["summary"].as_str().unwrap_or_default().to_string(),
+                "agentfirm.remote-fact.work-report.v1",
+                redacted,
+                artifact_refs,
+                evidence_refs,
+            )
+        }
+        RemoteFactKind::Finding => {
+            let finding = store
+                .trust_work_findings(execution_space_id)
+                .map_err(|error| {
+                    FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+                })?
+                .into_iter()
+                .find(|finding| finding.id == request.fact_id)
+                .ok_or_else(|| {
+                    FabricError::none(
+                        FabricErrorCode::ExpectedRevisionConflict,
+                        "native WorkFinding does not exist",
+                    )
+                })?;
+            let redacted = serde_json::json!({
+                "kind": finding.kind,
+                "summary": finding.summary,
+                "affected_work_refs": finding.affected_work_refs,
+                "reusable_asset_refs": finding.reusable_asset_refs,
+                "invalidated_assumptions": finding.invalidated_assumptions,
+                "evidence_refs": finding.evidence_refs,
+                "confidence": finding.confidence,
+            });
+            (
+                finding.work_id,
+                finding.work_revision,
+                1,
+                finding.reported_by,
+                redacted["summary"].as_str().unwrap_or_default().to_string(),
+                "agentfirm.remote-fact.work-finding.v1",
+                redacted,
+                Vec::new(),
+                finding.evidence_refs,
+            )
+        }
+        RemoteFactKind::Failure => {
+            let analysis = store
+                .trust_failure_analyses(execution_space_id)
+                .map_err(|error| {
+                    FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+                })?
+                .into_iter()
+                .find(|analysis| analysis.id == request.fact_id)
+                .ok_or_else(|| {
+                    FabricError::none(
+                        FabricErrorCode::ExpectedRevisionConflict,
+                        "native FailureAnalysis does not exist",
+                    )
+                })?;
+            let redacted = serde_json::json!({
+                "observed_failure": analysis.observed_failure,
+                "impact": analysis.impact,
+                "primary_cause_status": analysis.primary_cause_status,
+                "primary_cause": analysis.primary_cause,
+                "retry_safety": analysis.retry_safety,
+                "side_effect_summary": analysis.side_effect_summary,
+                "recovery_options": analysis.recovery_options,
+                "recommended_host_decision": analysis.recommended_host_decision,
+                "evidence_refs": analysis.evidence_refs,
+                "confidence": analysis.confidence,
+            });
+            (
+                analysis.work_id,
+                analysis.work_revision,
+                1,
+                analysis.reported_by,
+                redacted["observed_failure"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                "agentfirm.remote-fact.failure-analysis.v1",
+                redacted,
+                Vec::new(),
+                analysis.evidence_refs,
+            )
+        }
+    };
     if created_by != credential.actor {
         return Err(FabricError::none(
             FabricErrorCode::UnauthorizedActor,
@@ -1210,8 +1227,8 @@ pub(crate) fn queue_remote_fact_publication(
             canonical_redacted_fact: fact,
             canonical_digest: fact_digest,
         },
-        artifact_refs: Vec::new(),
-        evidence_refs: Vec::new(),
+        artifact_refs,
+        evidence_refs,
         operational_decision_ref: None,
         created_by: credential.actor.clone(),
         created_at: format!("unix-ms:{now_unix_ms}"),

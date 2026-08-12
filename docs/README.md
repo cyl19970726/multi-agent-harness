@@ -48,6 +48,7 @@ When `mental/` contradicts any other doc, `mental/` wins.
 | Understand the AI Company OS | [Company OS product system map](current/company-os/product-system-map.md) |
 | Change Company OS product behavior | [Company OS contracts](current/company-os/README.md) |
 | Change Agent Team orchestration | [Host-plan contract](current/product/mission-wave-host-plan.md), [Agent Team Works](current/product/agent-team-works.md), [Member continuation](current/architecture/member-continuation-model.md), [ADR 0034](decisions/0034-host-plan-waves-and-mission-teams.md), [ADR 0044](decisions/0044-durable-team-supervision-and-typed-mail.md), [ADR 0050](decisions/0050-agent-team-work-board-and-message-boundary.md), and [Architecture map](current/architecture/architecture-map.md) |
+| Change cross-machine Team collaboration | [Cross-machine collaboration architecture](current/architecture/cross-machine-team-collaboration.md), [operations](current/operations/cross-machine-collaboration.md), and [Remote Node Fabric](current/architecture/remote-node-fabric.md) |
 | Implement or operate the repository | [Getting started](current/operations/getting-started.md), [Operations](current/operations/operations.md), [Schemas](current/architecture/schemas.md) |
 | Change repository agent operating rules | Root [AGENTS.md](../AGENTS.md) and [Agent operating rules detail](current/product/agent-operating-rules.md) |
 | Integrate a provider | [Integration index](current/integration/README.md) |
