@@ -58,12 +58,14 @@ export function RoleActionPanel({
   context,
   actionsCurrent = true,
   onCompleted,
+  compact = false,
 }: {
   actions: AllowedAction[];
   onAction: RoleActionExecutor;
   context: { teamId?: string; teamRunId?: string; nodeId?: string };
   actionsCurrent?: boolean;
   onCompleted?: () => void;
+  compact?: boolean;
 }) {
   const [selected, setSelected] = useState<AllowedAction | null>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
@@ -110,19 +112,20 @@ export function RoleActionPanel({
       : "Canonical service rejected the action.");
   };
 
-  return <section className="rounded-xl border border-border p-4" aria-labelledby="role-actions-title">
-    <div className="flex items-center justify-between gap-3">
+  return <section className={compact ? "" : "rounded-xl border border-border p-4"} aria-label={compact ? "Authorized actions" : undefined} aria-labelledby={compact ? undefined : "role-actions-title"}>
+    {!compact && <div className="flex items-center justify-between gap-3">
       <div><h2 id="role-actions-title" className="font-medium">Authorized actions</h2><p className="text-xs text-muted-foreground">Closed semantic intent; identity, authority, CAS and idempotency are transport-bound.</p></div>
       <ShieldAlert className="size-4 text-primary" />
-    </div>
-    {actions.length ? <div className="mt-3 flex flex-wrap gap-2">{actions.map((action, index) => {
+    </div>}
+    {actions.length ? <div className={compact ? "flex flex-wrap gap-2" : "mt-3 flex flex-wrap gap-2"}>{actions.map((action, index) => {
       const unsupported = !EXECUTABLE.has(action.kind);
       const unresolved = !roleActionRoute(action, context);
       const missingVersion = !Number.isSafeInteger(action.required_version);
       const disabled = !actionsCurrent || Boolean(action.disabled_reason) || unsupported || unresolved || missingVersion;
       const reason = !actionsCurrent ? "Awaiting authoritative RoleView refetch" : action.disabled_reason ?? (unsupported ? "Semantic adapter unavailable" : unresolved ? "Route context unavailable" : missingVersion ? "Exact CAS unavailable" : undefined);
       const label=action.kind==="admit_provider"&&action.intent_binding?`admit provider · ${action.intent_binding.provider}/${action.intent_binding.execution_mode}`:action.kind.replace(/_/g, " ");
-      return <Button key={`${action.kind}:${action.target_ref.kind}:${action.target_ref.id}:${index}`} size="sm" variant={selected === action ? "default" : "secondary"} disabled={disabled} title={reason} onClick={() => choose(action)}>{label}</Button>;
+      const reasonId=`role-action-reason-${index}-${action.kind}`;
+      return <span key={`${action.kind}:${action.target_ref.kind}:${action.target_ref.id}:${index}`} className="inline-flex min-w-0 flex-col items-start gap-1"><Button size="sm" variant={selected === action ? "default" : "secondary"} disabled={disabled} aria-describedby={reason ? reasonId : undefined} onClick={() => choose(action)}>{label}</Button>{reason && <span id={reasonId} className="max-w-56 text-[10px] leading-snug text-muted-foreground">Unavailable: {reason}</span>}</span>;
     })}</div> : <p className="mt-3 text-xs text-muted-foreground">No actions are authorized for this identity and state.</p>}
     {selected && <div className="mt-4 space-y-3 rounded-lg bg-muted/35 p-3">
       <div className="text-xs"><b>{selected.kind}</b> → <code className="break-all">{route ?? "unavailable"}</code></div>

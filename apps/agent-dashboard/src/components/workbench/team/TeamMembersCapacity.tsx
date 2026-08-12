@@ -1,258 +1,41 @@
-import { SquareArrowOutUpRight } from "lucide-react";
+import { Activity, ArrowRight, Inbox, MessageSquare, Radio, UserRound, Users } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { memberModelLabel, providerStackLine } from "@/lib/provider";
+import { Badge } from "@/components/ui/badge";
 import { Avatar } from "@/components/workbench/Avatar";
-import { StatusDot } from "@/components/workbench/atoms";
+import type { MemberCapacitySummary, TeamPressureSummary } from "../../../model/roleViews";
 
-import { canMemberAcceptWork, selectWorkOwnerMember } from "../../../model/teamSelectors";
-import type { MemberRun, ProviderCapacitySnapshot, Work } from "../../../types";
-import { formatAbsolute, memberTone, pressureLabel, relativeTime } from "./teamFormat";
-
-/**
- * Members as a factual capacity list.
- *
- * Capacity means addressability plus real Work counts, and provider-account
- * capacity is labelled separately from Harness runtime state. There is no
- * utilisation percentage anywhere: none of the providers reports a limit the
- * Workbench could divide by, so none is displayed.
- */
-export function TeamMembersCapacity({
-  members,
-  works,
-  selectedMemberId,
-  liveActivityByMember,
-  currentActionFor,
-  onSelect,
-  onOpen,
-}: {
-  members: MemberRun[];
-  works: Work[];
-  selectedMemberId?: string;
-  liveActivityByMember: Map<string, { preview?: string }>;
-  currentActionFor: (memberId: string) => string | undefined;
-  onSelect: (member: MemberRun) => void;
-  onOpen: (member: MemberRun) => void;
+export function TeamMembersCapacity({ members, summary, selectedMemberRunId, onOpenMember }: {
+  members: MemberCapacitySummary[];
+  summary?: TeamPressureSummary;
+  selectedMemberRunId?: string;
+  onOpenMember: (memberRunId:string) => void;
 }) {
-  return (
-    <section className="py-3" aria-label="Team members" data-testid="team-members-capacity">
-      <header className="mb-2">
-        <h2 className="text-sm font-semibold text-foreground">Member capacity</h2>
-        <p className="mt-0.5 text-[11px] text-muted-foreground">
-          Addressability and Work counts come from durable MemberRun and Work rows. Provider-account
-          capacity is a separate, separately-labelled observation.
-        </p>
-      </header>
-      <ul className="divide-y divide-border/60 overflow-hidden rounded-xl border border-border/70 bg-card">
-        {members.map((member) => (
-          <li key={member.id}>
-            <MemberCapacityRow
-              member={member}
-              works={works}
-              selected={selectedMemberId === member.id}
-              livePreview={liveActivityByMember.get(member.id)?.preview}
-              currentAction={currentActionFor(member.id)}
-              onSelect={() => onSelect(member)}
-              onOpen={() => onOpen(member)}
-            />
-          </li>
-        ))}
-        {members.length === 0 && (
-          <li className="px-3 py-6 text-center text-[11px] text-muted-foreground">
-            This attempt has no MemberRuns. Check whether the stable team definition is empty or run
-            materialization failed.
-          </li>
-        )}
-      </ul>
-    </section>
-  );
-}
-
-function MemberCapacityRow({
-  member,
-  works,
-  selected,
-  livePreview,
-  currentAction,
-  onSelect,
-  onOpen,
-}: {
-  member: MemberRun;
-  works: Work[];
-  selected: boolean;
-  livePreview?: string;
-  currentAction?: string;
-  onSelect: () => void;
-  onOpen: () => void;
-}) {
-  const tone = memberTone(member.status);
-  const owned = works.filter((work) => selectWorkOwnerMember(work, [member])?.id === member.id);
-  const active = owned.filter((work) => work.phase === "active").length;
-  const queued = owned.filter((work) => work.phase === "open").length;
-  const blocked = owned.filter((work) => work.condition === "blocked").length;
-  const review = owned.filter((work) => work.phase === "review").length;
-  const addressable = canMemberAcceptWork(member);
-  return (
-    <article
-      className={cn(
-        "grid gap-2 px-3 py-2.5 lg:grid-cols-[minmax(0,15rem)_minmax(0,1fr)_auto] lg:items-center",
-        selected && "bg-primary/[0.035]",
-        member.status === "blocked" && "bg-status-bad/[0.035]",
-      )}
-    >
-      <button type="button" onClick={onSelect} className="flex min-w-0 items-center gap-2 text-left">
-        <Avatar name={member.name ?? member.id} tone={tone} />
-        <span className="min-w-0">
-          <span className="flex min-w-0 items-center gap-1.5">
-            <span className="truncate text-[12px] font-semibold text-foreground">{member.name ?? member.id}</span>
-            <StatusDot tone={tone} pulse={tone === "running"} />
-          </span>
-          <span className="mt-0.5 block truncate text-[10px] text-muted-foreground" title={providerStackLine(member.provider, member.provider_profile?.execution_mode ?? member.native_session?.execution_mode, memberModelLabel(member))}>
-            {member.role ?? "member"} · {providerStackLine(member.provider, member.provider_profile?.execution_mode ?? member.native_session?.execution_mode, memberModelLabel(member))}
-          </span>
-        </span>
-      </button>
-
-      <div className="grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-4">
-        <CapacityFact label="Addressable" value={addressable ? "Yes" : "No"} tone={addressable ? undefined : "warn"} />
-        <CapacityFact label="Active" value={String(active)} />
-        <CapacityFact label="Queued" value={String(queued)} />
-        <CapacityFact label="Review" value={String(review)} tone={review ? "warn" : undefined} />
-        <CapacityFact label="Blocked" value={String(blocked)} tone={blocked ? "bad" : undefined} />
-        <CapacityFact
-          label="Runtime"
-          value={`${pressureLabel(member.status)} · ${relativeTime(member.last_event_at ?? member.finished_at ?? member.started_at)}`}
-        />
-        <CapacityFact label="Session" value={member.native_session?.availability ?? "Not recorded"} />
-        <ProviderAccountCapacity capacity={member.provider_capacity} />
-      </div>
-
-      <div className="flex items-center justify-end">
-        <button
-          type="button"
-          onClick={onOpen}
-          aria-label={`Open ${member.name ?? member.id}`}
-          className="grid size-11 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground sm:size-8"
-        >
-          <SquareArrowOutUpRight className="size-3.5" />
-        </button>
-      </div>
-
-      {(currentAction || livePreview) && (
-        <div className="min-w-0 space-y-0.5 text-[10px] lg:col-span-3">
-          {currentAction && <p className="truncate text-foreground"><span className="text-muted-foreground">Now · </span>{currentAction}</p>}
-          {livePreview && <p className="truncate text-status-info"><span className="font-semibold">Live · </span>{livePreview}</p>}
-        </div>
-      )}
-    </article>
-  );
-}
-
-/**
- * Provider-account capacity, rendered without ever upgrading silence into
- * health. An absent snapshot is "Not observed"; an `unknown` state stays
- * `unknown` and carries the evidence source that produced it.
- */
-function ProviderAccountCapacity({ capacity }: { capacity?: ProviderCapacitySnapshot | null }) {
-  if (!capacity) {
-    return (
-      <CapacityFact
-        label="Provider account"
-        value="Not observed"
-        title="No provider capacity snapshot exists for this member. Absent never means available."
-      />
-    );
-  }
-  const tone = capacity.state === "exhausted" || capacity.state === "unauthorized"
-    ? "bad"
-    : capacity.state === "limited"
-      ? "warn"
-      : capacity.state === "available"
-        ? undefined
-        : "muted";
-  return (
-    <CapacityFact
-      label="Provider account"
-      value={capacity.state}
-      tone={tone === "muted" ? undefined : tone}
-      title={[
-        `evidence: ${capacity.evidence_source}`,
-        `confidence: ${capacity.confidence}`,
-        `observed: ${formatAbsolute(capacity.observed_at)}`,
-        capacity.reset_at ? `resets: ${formatAbsolute(capacity.reset_at)}` : undefined,
-        capacity.diagnosis ?? undefined,
-      ].filter(Boolean).join(" · ")}
-      note={`${capacity.evidence_source} · ${capacity.confidence}`}
-    />
-  );
-}
-
-function CapacityFact({ label, value, tone, title, note }: {
-  label: string;
-  value: string;
-  tone?: "warn" | "bad";
-  title?: string;
-  note?: string;
-}) {
-  return (
-    <div className="min-w-0" title={title ?? label}>
-      <span className="block truncate text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{label}</span>
-      <span className={cn(
-        "block truncate text-[11px] font-medium text-foreground",
-        tone === "warn" && "text-status-warn",
-        tone === "bad" && "text-status-bad",
-      )}>{value}</span>
-      {note && <span className="block truncate text-[9px] text-muted-foreground">{note}</span>}
+  if (!members.length) return <div className="agent-team-panel rounded-xl border-dashed p-10 text-center"><UserRound className="mx-auto size-7 text-muted-foreground"/><h3 className="mt-3 text-sm font-semibold">No Team members are projected</h3><p className="mx-auto mt-1 max-w-md text-xs leading-relaxed text-muted-foreground">The Team still exists with its explicit Host Agent. Durable members appear here only after an authorized membership action is projected and recorded.</p></div>;
+  return <section aria-labelledby="team-members-title">
+    <header className="flex flex-wrap items-end justify-between gap-3"><div><h2 id="team-members-title" className="text-base font-semibold">Members and runtime capacity</h2><p className="text-xs text-muted-foreground">Durable identity, MemberRun, runtime and native-session truth remain separate.</p></div><p className="text-[10px] text-muted-foreground">Select a member to open the Team conversation.</p></header>
+    {summary && <div className="mt-3 grid grid-cols-4 divide-x divide-y divide-border border-y border-border lg:grid-cols-8"><CapacityFact icon={Users} label="AgentMembers" mobileLabel="Agents" value={summary.total_members}/><CapacityFact label="Ready" value={summary.ready_members} tone="good"/><CapacityFact label="Active turns" mobileLabel="Turns" value={summary.active_turns} tone="running"/><CapacityFact label="Ready Work" mobileLabel="Ready Work" value={summary.ready_work}/><CapacityFact label="Needs review" mobileLabel="Review" value={summary.review_work} tone="warn"/><CapacityFact label="Blocked" value={summary.blocked_work} tone="bad"/><CapacityFact icon={Radio} label="Native available" mobileLabel="Native" value={members.filter((member) => member.native_session_health === "available").length} qualifier="projected rows"/><CapacityFact icon={Activity} label="Addressable" mobileLabel="Reachable" value={members.filter((member) => Boolean(member.current_member_run_ref)).length} qualifier="projected rows"/></div>}
+    <div className="mt-3 overflow-hidden border-y border-border">
+      <div className="hidden grid-cols-[minmax(14rem,1.35fr)_minmax(11rem,1fr)_minmax(11rem,1fr)_minmax(9rem,.8fr)_minmax(10rem,.9fr)_8.5rem] gap-3 border-b border-border bg-secondary/60 px-4 py-2.5 text-[9px] font-semibold uppercase tracking-[.11em] text-muted-foreground lg:grid"><span>AgentMember / organization</span><span>Current MemberRun</span><span>Native session</span><span>Capacity</span><span>Status &amp; pressure</span><span className="text-right">Action</span></div>
+      <div>{members.map((member) => <MemberRow key={member.agent_member_ref.id} member={member} selected={member.current_member_run_ref === selectedMemberRunId} onOpenMember={onOpenMember}/>)}</div>
     </div>
-  );
+  </section>;
 }
 
-/** Compact member control retained for the context rail and pressure surfaces. */
-export function MemberControl({ member, selected, work, currentAction, livePreview, terminal, className, onSelect, onOpen }: {
-  member: MemberRun;
-  selected: boolean;
-  work?: string;
-  currentAction?: string;
-  livePreview?: string;
-  terminal: boolean;
-  className?: string;
-  onSelect: () => void;
-  onOpen: () => void;
-}) {
-  const tone = memberTone(member.status);
-  const blocked = member.status === "blocked";
-  return (
-    <article className={cn(
-      "group relative w-full shrink-0 px-3 py-2 sm:w-[15.5rem] xl:w-auto xl:min-w-0",
-      selected && "bg-primary/[0.035]",
-      blocked && "bg-status-bad/[0.035]",
-      className,
-    )}>
-      <div className="flex min-w-0 items-start gap-2">
-        <button type="button" onClick={onSelect} className="flex min-w-0 flex-1 items-start gap-2 text-left">
-          <Avatar name={member.name ?? member.id} tone={tone} />
-          <span className="min-w-0 flex-1">
-            <span className="flex min-w-0 items-center gap-1.5"><span className="truncate text-[12px] font-semibold text-foreground">{member.name ?? member.id}</span><StatusDot tone={tone} pulse={tone === "running"} /></span>
-            <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">{member.role ?? "member"} · {providerStackLine(member.provider, member.provider_profile?.execution_mode ?? member.native_session?.execution_mode, memberModelLabel(member))}<span className="sm:hidden"> · {member.status ?? "unknown"}</span></span>
-          </span>
-        </button>
-        <button type="button" onClick={onOpen} aria-label={`Open ${member.name ?? member.id}`} className="absolute right-1.5 top-1.5 rounded bg-background/90 p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"><SquareArrowOutUpRight className="size-3.5" /></button>
-      </div>
-      {blocked && (
-        <button
-          type="button"
-          onClick={onSelect}
-          aria-label={terminal ? "Unresolved history" : "QA approval required"}
-          className="mt-1.5 w-full rounded-md border border-primary/25 bg-primary/[0.045] px-2 py-1 text-[10px] font-semibold text-primary transition-colors hover:bg-primary/10"
-        >
-          {terminal ? "Inspect unresolved history" : "Review request"}
-        </button>
-      )}
-      <div className="mt-1.5 hidden space-y-1 border-t border-border/60 pt-1.5 text-[10px] sm:block">
-        <p className="truncate text-foreground"><span className="text-muted-foreground">Now · </span>{currentAction ?? work ?? "No durable action yet"}</p>
-        {livePreview && <p className="truncate text-status-info"><span className="font-semibold">Live · </span>{livePreview}</p>}
-        {!blocked && <p className="truncate text-muted-foreground">{pressureLabel(member.status)} · {relativeTime(member.last_event_at ?? member.finished_at ?? member.started_at)}</p>}
-      </div>
-    </article>
-  );
+function MemberRow({member,selected,onOpenMember}:{member:MemberCapacitySummary;selected:boolean;onOpenMember:(memberRunId:string)=>void}) {
+  const canOpen=Boolean(member.current_member_run_ref);
+  const tone=member.runtime_state === "running" ? "running" : member.blocked_work_count ? "bad" : member.review_work_count ? "warn" : member.capacity === "available" ? "good" : "muted";
+  return <article data-member-capacity={member.agent_member_ref.id} className={cn("agent-team-record-row min-w-0 px-1 py-3 sm:px-4",selected && "agent-team-selected")}>
+    <div className="grid min-w-0 gap-3 lg:grid-cols-[minmax(14rem,1.35fr)_minmax(11rem,1fr)_minmax(11rem,1fr)_minmax(9rem,.8fr)_minmax(10rem,.9fr)_8.5rem] lg:items-center">
+      <div className="flex min-w-0 items-center gap-3"><Avatar name={member.display_name} identity={`${member.agent_member_ref.id} ${member.role}`} size="lg" tone={member.runtime_state === "running" ? "running" : member.capacity === "available" ? "good" : member.blocked_work_count ? "warn" : "idle"}/><div className="min-w-0"><div className="flex min-w-0 flex-wrap items-center gap-1.5"><h3 className="truncate text-sm font-semibold" title={member.display_name}>{member.display_name}</h3><Badge>{member.role}</Badge><Badge tone={member.organization_status === "active" ? "good" : "muted"}>org {member.organization_status}</Badge></div><p className="mt-1 truncate text-[10px] text-muted-foreground">{[member.provider,member.model].filter(Boolean).join(" · ") || "provider not projected"}</p><p className="mt-1 truncate font-mono text-[9px] text-muted-foreground">{member.agent_member_ref.id}</p></div></div>
+      <FactBlock icon={Radio} label="Current MemberRun" primary={member.current_member_run_ref ?? "No current run"} secondary={`${member.coordination_status ?? "not participating"}${member.runtime_generation != null ? ` · generation ${member.runtime_generation}` : ""}`}/>
+      <FactBlock icon={Activity} label="Native session" primary={member.native_session_health ?? "not projected"} secondary={`runtime ${member.runtime_state ?? "unknown"}`}/>
+      <FactBlock icon={Inbox} label="Capacity" primary={member.capacity} secondary={`${member.active_work_count} active · ${member.queued_work_count} queued`}/>
+      <div className="min-w-0"><Badge tone={tone}>{member.runtime_state === "running" ? "running · active turn" : member.blocked_work_count ? "needs attention" : member.review_work_count ? "review waiting" : member.capacity}</Badge><p className="mt-2 text-[10px] text-muted-foreground">{member.review_work_count} review · {member.blocked_work_count} blocked</p>{member.latest_action && <p className="mt-1 line-clamp-1 text-[10px] text-muted-foreground">Latest · {member.latest_action.summary ?? member.latest_action.kind}</p>}</div>
+      <button type="button" disabled={!canOpen} onClick={() => member.current_member_run_ref && onOpenMember(member.current_member_run_ref)} className="flex min-h-10 items-center justify-center gap-2 px-2 text-xs font-medium text-primary enabled:hover:underline disabled:text-muted-foreground" title={canOpen ? "Open this MemberRun conversation" : "No current MemberRun is projected"}><MessageSquare className="size-3.5"/><span>{canOpen ? "Conversation" : "Not addressable"}</span><ArrowRight className="size-3.5"/></button>
+    </div>
+  </article>;
 }
+
+function CapacityFact({icon:Icon,label,mobileLabel,value,qualifier,tone}:{icon?:typeof Users;label:string;mobileLabel?:string;value:number;qualifier?:string;tone?:"good"|"warn"|"bad"|"running"}) { return <div className="min-w-0 px-1.5 py-2.5 sm:px-3"><dt className="flex min-h-6 min-w-0 items-start gap-1 text-[8px] font-semibold uppercase leading-tight tracking-[.06em] text-muted-foreground sm:text-[9px] sm:tracking-[.08em]">{Icon && <Icon className="size-3 shrink-0 sm:size-3.5"/>}<span className="truncate sm:hidden">{mobileLabel ?? label}</span><span className="hidden sm:inline">{label}</span></dt><dd className={cn("mt-1 text-lg font-semibold tabular-nums",tone === "good" && "text-status-good",tone === "warn" && "text-status-warn",tone === "bad" && "text-status-bad",tone === "running" && "text-status-running")}>{value}</dd>{qualifier && <p className="hidden truncate text-[8px] text-muted-foreground sm:block">{qualifier}</p>}</div>; }
+function FactBlock({icon:Icon,label,primary,secondary}:{icon:typeof Activity;label:string;primary:string;secondary:string}) { return <div className="min-w-0 lg:block"><p className="flex items-center gap-1 text-[9px] uppercase tracking-[.08em] text-muted-foreground lg:hidden"><Icon className="size-3"/>{label}</p><p className="truncate text-xs font-medium" title={primary}>{primary}</p><p className="mt-1 truncate text-[10px] text-muted-foreground" title={secondary}>{secondary}</p></div>; }

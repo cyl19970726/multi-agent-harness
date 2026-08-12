@@ -114,9 +114,11 @@ The current execution surfaces show:
   revisions, explicit judgments, and closeout;
 - Agent Teams: one flat Node-placed Team per Mission with long-lived runs, including
   historical direct-Wave compatibility rows;
-- Team War Room: member presence, assignments, unified activity, messages,
-  typed authors/recipients, claim/provider receipt/ACK, current Supervisor,
-  reconnect state, start, and attempt lifecycle;
+- Team War Room: member presence, four-phase Work projection, unified activity,
+  typed messages and delivery lineage, Agent Conversation, current Supervisor
+  summary, and server-authorized actions. Recipient ACK action, pending
+  interactions/Close requests, Steer/Interrupt safe-point state and complete
+  reconnect controls remain explicit unshipped RoleView gaps;
 - MemberRuns: run-scoped member detail;
 - Workflows: WorkflowRun/WorkflowStep, result, artifacts, and diagnostics;
 - the raw snapshot, read-only, behind the Debug boundary.
@@ -126,10 +128,9 @@ Organization, Approvals, Finance, and Governance from either authoritative
 store projections or an explicitly labelled prototype fixture.
 
 If the current service does not own a live Team's process handles, the
-Workbench still shows durable state and routes real controls through the
-current `TeamSupervisorLease.owner_locator`. A missing or stale Supervisor
-disables Steer/Interrupt/Close with an explicit reason; the UI never changes
-status locally to imply provider work stopped. Member Focus renders runtime
-status separately from `active | closed | retired` coordination. Reopen keeps
-the same MemberRun, increments its runtime generation, and resumes the recorded
-native session; Retire is permanent.
+Workbench still shows durable state. Only controls returned by the current
+authenticated RoleView are rendered, with visible disabled reasons; the UI
+never changes status locally to imply provider work stopped. Cross-process
+Steer/Interrupt and pending Close-request presentation require additional
+server projections and are not inferred from Supervisor status. Member Focus
+renders runtime status separately from coordination lifecycle.

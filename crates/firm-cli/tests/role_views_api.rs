@@ -335,6 +335,21 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let (status, refreshed) =
         serve.get_json_with_headers(&view_route, &[("X-AgentFirm-Token", TOKEN)]);
     assert_eq!(status, 200, "Host RoleView: {refreshed}");
+    assert_eq!(refreshed["data"]["mission_context"]["id"], mission_id);
+    assert!(refreshed["data"]["mission_context"]["log"].is_array());
+    assert!(refreshed["data"]["host_inbox"].is_array());
+    assert!(refreshed["data"]["member_runtime"].is_array());
+    assert!(refreshed["data"]["runtime_recovery"].is_array());
+    assert_eq!(refreshed["data"]["pressure_summary"]["ready_work"], 1);
+    assert_eq!(
+        refreshed["data"]["pressure_summary"]["total_members"], 2,
+        "Team Lead must not be synthesized into execution capacity"
+    );
+    assert!(refreshed["data"]["all_works"]
+        .as_array()
+        .is_some_and(|items| items
+            .iter()
+            .any(|work| work["work_id"] == "work-store-live-1")));
     assert!(refreshed["data"]["work_queues"]["unassigned"]
         .as_array()
         .is_some_and(|items| items
@@ -345,6 +360,14 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .is_some_and(|actions| actions
             .iter()
             .all(|action| action["required_version"].is_u64())));
+    let run_identity_route = format!("/v1/views/host-console/{run_id}?project={project_id}");
+    let (status, run_identity_view) =
+        serve.get_json_with_headers(&run_identity_route, &[("X-AgentFirm-Token", TOKEN)]);
+    assert_eq!(
+        status, 200,
+        "TeamRun-addressed Host RoleView: {run_identity_view}"
+    );
+    assert_eq!(run_identity_view["data"]["team_ref"], team.id);
     let message_route =
         format!("/v1/agentfirm/team-runs/{run_id}/messages/send?project={project_id}");
     let message_intent = serde_json::json!({
@@ -511,7 +534,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .and_then(|actions| {
             actions
                 .iter()
-                .find(|action| action["kind"] == "request_decision")
+                .find(|action| action["kind"] == "reply_message")
         })
         .is_some_and(|action| action["disabled_reason"].as_str().is_some()));
     let before_unroutable_decision = ledger_digest(serve.fixture_store_root());
@@ -1271,6 +1294,49 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .is_some_and(|items| items
             .iter()
             .any(|work| work["work_id"] == "work-store-live-1")));
+    assert_eq!(
+        team_view["data"]["team"]["display_name"],
+        "Role action team"
+    );
+    assert_eq!(team_view["data"]["team"]["host_agent_id"], host_id);
+    assert_eq!(team_view["data"]["team"]["viewer_role"], "host");
+    assert_eq!(team_view["data"]["team"]["latest_run"]["id"], run_id);
+    let projected_work = team_view["data"]["works"]
+        .as_array()
+        .and_then(|works| {
+            works
+                .iter()
+                .find(|work| work["work_id"] == "work-store-live-1")
+        })
+        .expect("projected Work");
+    assert_eq!(projected_work["title"], "Close the local product loop");
+    assert_eq!(projected_work["claim_mode"], "team_claim");
+    assert!(projected_work["eligible_member_ids"].is_array());
+    assert!(projected_work["artifact_refs"].is_array());
+    assert!(projected_work["latest_event"].is_object());
+    assert!(team_view["data"]["members"]
+        .as_array()
+        .is_some_and(|members| members.iter().all(|member| {
+            member["display_name"].is_string()
+                && member["active_work_count"].is_u64()
+                && member["queued_work_count"].is_u64()
+                && member["review_work_count"].is_u64()
+                && member["blocked_work_count"].is_u64()
+        })));
+    assert!(team_view["data"]["messages"]
+        .as_array()
+        .is_some_and(|messages| messages
+            .iter()
+            .all(|message| { message["body"].is_string() && message["deliveries"].is_array() })));
+    assert!(team_view["data"]["activity"].is_array());
+    assert!(team_view["data"]["activity_truncated"].is_boolean());
+    assert_eq!(
+        team_view["data"]["pressure_summary"]["total_members"].as_u64(),
+        team_view["data"]["members"]
+            .as_array()
+            .map(|members| members.len() as u64)
+    );
+    assert!(team_view["data"]["pressure_summary"]["ready_work"].is_u64());
     let (status, operator) =
         serve.get_json_with_headers(&operator_route, &[("X-AgentFirm-Token", OPERATOR_TOKEN)]);
     assert_eq!(status, 200, "Operator RoleView: {operator}");
@@ -1968,6 +2034,92 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
     );
     assert_eq!(status, 200, "Member message: {member_message}");
     let member_message_id = member_message["projection"]["id"].as_str().unwrap();
+    let (status, actionable_host_view) =
+        serve.get_json_with_headers(&host_view_route, &[("X-AgentFirm-Token", TOKEN)]);
+    assert_eq!(status, 200, "actionable Host inbox: {actionable_host_view}");
+    let host_inbox = actionable_host_view["data"]["host_inbox"]
+        .as_array()
+        .expect("Host inbox");
+    assert_eq!(
+        host_inbox.len(),
+        1,
+        "Host-authored broadcasts are not inbox pressure"
+    );
+    assert_eq!(host_inbox[0]["message_id"], member_message_id);
+    assert!(host_inbox
+        .iter()
+        .all(|message| message["message_id"] != host_message_id));
+    let reply_action = actionable_host_view["allowed_actions"]
+        .as_array()
+        .and_then(|actions| {
+            actions
+                .iter()
+                .find(|action| action["kind"] == "reply_message")
+        })
+        .expect("Host reply action");
+    let reply_version = reply_action["required_version"]
+        .as_u64()
+        .unwrap()
+        .to_string();
+    let correlation_id = host_inbox[0]["correlation_id"].as_str().unwrap();
+    let (status, host_reply) = serve.post_json_with_headers(
+        &format!("/v1/agentfirm/team-runs/{run_id}/messages/reply?project={project_id}"),
+        &serde_json::json!({
+            "action":"reply_message",
+            "recipient_ids":[member_id],
+            "body":"Host resolved the canonical decision request",
+            "correlation_id":correlation_id,
+            "causation_id":member_message_id
+        }),
+        &action_headers(TOKEN, "host-member-canonical-reply", &reply_version),
+    );
+    assert_eq!(status, 200, "Host reply: {host_reply}");
+    let host_reply_id = host_reply["projection"]["id"].as_str().unwrap();
+    let (status, resolved_host_view) =
+        serve.get_json_with_headers(&host_view_route, &[("X-AgentFirm-Token", TOKEN)]);
+    assert_eq!(status, 200, "resolved Host inbox: {resolved_host_view}");
+    assert_eq!(
+        resolved_host_view["data"]["host_inbox"],
+        serde_json::json!([])
+    );
+
+    let (status, followup_member_view) =
+        serve.get_json_with_headers(&member_view_route, &[("X-AgentFirm-Token", MEMBER_TOKEN)]);
+    assert_eq!(
+        status, 200,
+        "follow-up Member RoleView: {followup_member_view}"
+    );
+    let followup_version = followup_member_view["allowed_actions"]
+        .as_array()
+        .and_then(|actions| {
+            actions
+                .iter()
+                .find(|action| action["kind"] == "reply_message")
+        })
+        .and_then(|action| action["required_version"].as_u64())
+        .expect("follow-up reply version")
+        .to_string();
+    let (status, followup_message) = serve.post_json_with_headers(
+        &format!("/v1/agentfirm/team-runs/{run_id}/messages/reply?project={project_id}"),
+        &serde_json::json!({
+            "action":"reply_message",
+            "recipient_ids":[host_id],
+            "body":"Member follow-up after the Host reply",
+            "correlation_id":correlation_id,
+            "causation_id":host_reply_id,
+            "response_required":true
+        }),
+        &action_headers(MEMBER_TOKEN, "member-host-followup", &followup_version),
+    );
+    assert_eq!(status, 200, "Member follow-up: {followup_message}");
+    let followup_message_id = followup_message["projection"]["id"].as_str().unwrap();
+    let (status, followup_host_view) =
+        serve.get_json_with_headers(&host_view_route, &[("X-AgentFirm-Token", TOKEN)]);
+    assert_eq!(status, 200, "follow-up Host inbox: {followup_host_view}");
+    assert_eq!(
+        followup_host_view["data"]["host_inbox"][0]["message_id"], followup_message_id,
+        "a later member question in the same correlation remains actionable"
+    );
 
     let messages = store
         .fabric_messages(&space_id)
