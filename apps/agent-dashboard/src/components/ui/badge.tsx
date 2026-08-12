@@ -31,7 +31,7 @@ export interface BadgeProps
     VariantProps<typeof badgeVariants> {}
 
 function Badge({ className, tone, ...props }: BadgeProps) {
-  return <span className={cn(badgeVariants({ tone }), className)} {...props} />;
+  return <span data-ui="badge" className={cn(badgeVariants({ tone }), className)} {...props} />;
 }
 
 export { Badge, badgeVariants };

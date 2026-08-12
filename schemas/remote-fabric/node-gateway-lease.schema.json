@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.local/schemas/remote-fabric/node-gateway-lease.schema.json",
+  "title": "NodeGatewayLease",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "company_id", "node_id", "lease_id", "gateway_generation", "instance_id",
+    "node_daemon_id", "node_daemon_generation", "certificate_serial",
+    "revision", "control_plane_generation", "acquired_at_unix_ms",
+    "expires_at_unix_ms", "last_heartbeat_at_unix_ms", "protocol_version",
+    "build_sha", "schema_bundle_digest", "schema_version"
+  ],
+  "properties": {
+    "company_id": { "type": "string", "minLength": 1 },
+    "node_id": { "type": "string", "minLength": 1 },
+    "lease_id": { "type": "string", "minLength": 1 },
+    "gateway_generation": { "type": "integer", "minimum": 1 },
+    "instance_id": { "type": "string", "minLength": 1 },
+    "node_daemon_id": { "type": "string", "minLength": 1 },
+    "node_daemon_generation": { "type": "integer", "minimum": 1 },
+    "certificate_serial": { "type": "string", "minLength": 1 },
+    "revision": { "type": "integer", "minimum": 1 },
+    "control_plane_generation": { "type": "integer", "minimum": 1 },
+    "acquired_at_unix_ms": { "type": "integer", "minimum": 0 },
+    "expires_at_unix_ms": { "type": "integer", "minimum": 1 },
+    "last_heartbeat_at_unix_ms": { "type": "integer", "minimum": 0 },
+    "protocol_version": { "const": 1 },
+    "build_sha": { "type": "string", "minLength": 1 },
+    "schema_bundle_digest": { "type": "string", "minLength": 1 },
+    "schema_version": { "const": "agentfirm.remote_fabric.v1" }
+  }
+}

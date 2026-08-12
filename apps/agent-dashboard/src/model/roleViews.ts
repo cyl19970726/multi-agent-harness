@@ -116,9 +116,9 @@ export function prepareRoleAction(
       }
       case "revise_work": { const artifact_refs=(fields.artifact_refs??"").split(",").map(v=>v.trim()).filter(Boolean);const check_refs=(fields.check_refs??"").split(",").map(v=>v.trim()).filter(Boolean);if(!artifact_refs.length&&!check_refs.length)throw new Error("At least one evidence ref is required.");body={action:"revise_work",result_summary:required("result_summary"),artifact_refs,check_refs,candidate_revision:required("candidate_revision"),...(fields.base_revision?.trim()?{base_revision:fields.base_revision.trim()}:{})};break; }
       case "request_changes": body={action:"request_changes",reason:required("reason")};break;
-      case "send_message": body={action:"send_message",recipient_ids:required("recipient_ids").split(",").map(v=>v.trim()).filter(Boolean),body:required("body"),response_required:fields.response_required==="true"};break;
-      case "reply_message": body={action:"reply_message",recipient_ids:required("recipient_ids").split(",").map(v=>v.trim()).filter(Boolean),body:required("body"),correlation_id:required("correlation_id"),causation_id:required("causation_id"),response_required:fields.response_required==="true"};break;
-      case "request_decision": body={action:"request_decision",body:required("body")};break;
+      case "send_message": body={action:"send_message",recipient_ids:required("recipient_ids").split(",").map(v=>v.trim()).filter(Boolean),body:required("body"),response_required:fields.response_required==="true",...(fields.work_id?.trim()?{work_id:fields.work_id.trim()}:{}),evidence_refs:(fields.evidence_refs??"").split(",").map(v=>v.trim()).filter(Boolean)};break;
+      case "reply_message": body={action:"reply_message",recipient_ids:required("recipient_ids").split(",").map(v=>v.trim()).filter(Boolean),body:required("body"),correlation_id:required("correlation_id"),causation_id:required("causation_id"),response_required:fields.response_required==="true",...(fields.work_id?.trim()?{work_id:fields.work_id.trim()}:{}),evidence_refs:(fields.evidence_refs??"").split(",").map(v=>v.trim()).filter(Boolean)};break;
+      case "request_decision": body={action:"request_decision",body:required("body"),...(fields.work_id?.trim()?{work_id:fields.work_id.trim()}:{}),evidence_refs:(fields.evidence_refs??"").split(",").map(v=>v.trim()).filter(Boolean)};break;
       case "close_member_run": body={action:"close_member_run"};break; case "reopen_member_run": body={action:"reopen_member_run"};break; case "retire_member_run": body={action:"retire_member_run"};break; case "resume_native_session": body={action:"resume_native_session"};break;
       case "provision_workspace": body={action:"provision_workspace",project_binding_id:required("project_binding_id"),mode:fields.mode||"worktree",ownership:fields.ownership||"managed",canonical_root:required("canonical_root"),...(fields.work_id?.trim()?{work_id:fields.work_id.trim()}:{})};break;
       case "attach_workspace": body={action:"attach_workspace"};break; case "archive_workspace": body={action:"archive_workspace"};break; case "cleanup_workspace": body={action:"cleanup_workspace"};break;
@@ -175,6 +175,11 @@ export interface RoleView<T> {
 
 export interface WorkSummary {
   work_id: string; work_revision: number; team_id: string; mission_id: string;
+  title: string; context_markdown: string; completion_criteria_markdown: string;
+  claim_mode: string; eligible_member_ids: string[]; prerequisite_work_ids: string[];
+  parent_work_id: string | null; blocker_reason: string | null; result_summary: string | null;
+  artifact_refs: string[]; check_refs: string[];
+  latest_event: {id:string; kind:string; actor_ref:ActorRef|null; created_at:string} | null;
   owner_actor_ref: ActorRef | null; current_member_run_ref: string | null;
   phase: string; condition: string; resolution: string | null; priority: string;
   module_refs: string[];
@@ -190,40 +195,73 @@ export interface RoleRecordSummary {
 }
 export interface MemberCapacitySummary {
   agent_member_ref:ActorRef; role:string; organization_status:string; current_member_run_ref:string|null;
-  runtime_state:string|null; runtime_generation:number|null; capacity:"available"|"busy"|"paused"|"unknown";
+  display_name:string; provider:string|null; model:string|null; coordination_status:string|null;
+  runtime_state:string|null; runtime_generation:number|null; native_session_health:string|null;
+  capacity:"available"|"busy"|"paused"|"unknown";
+  queued_work_count:number; active_work_count:number; review_work_count:number; blocked_work_count:number;
+  latest_action:RoleRecordSummary|null;
+}
+export interface MessageDeliverySummary {
+  id:string; recipient_member_run_id:string; status:string; version:number; provider_receipt_id:string|null; updated_at:string|null;
 }
 export interface MessageSummary {
   message_id:string; work_id:string|null; sender:ActorRef; recipients:ActorRef[];
-  response_intent:string; created_at:string; delivery_summary:string[];
+  body:string; kind:string; correlation_id:string; causation_id:string|null;
+  response_intent:string; reply_eligible:boolean; created_at:string; deliveries:MessageDeliverySummary[];
+}
+export interface TeamActivitySummary {
+  source:string; id:string; work_id:string|null; actor_ref:ActorRef|null; status:string|null; summary:string|null; created_at:string;
+}
+export interface RuntimeFabricSummary {
+  agent_identities:RoleRecordSummary[]; agent_sessions:RoleRecordSummary[]; team_memberships:RoleRecordSummary[];
+  work_execution_bindings:RoleRecordSummary[]; messages:RoleRecordSummary[]; message_deliveries:RoleRecordSummary[];
+}
+export interface TeamPressureSummary {active_turns:number;ready_members:number;total_members:number;ready_work:number;review_work:number;blocked_work:number}
+export interface LatestTeamRunSummary {
+  id:string; status:string; created_at:string|null; completed_at:string|null; execution_node_id:string|null;
+  execution_root:string|null; project_binding_id:string|null; previous_run_id:string|null;
 }
 export interface CompanyWorkIndexData {
   query: Record<string, string[]>; sort: Array<{field: string; direction: string}>; items: WorkSummary[];
   page: { as_of_event_sequence: number; item_count: number; next_cursor: string | null; snapshot_vector:Array<{execution_space_id:string;store_identity:string;trust_store_sequence:number;work_operation_count:number;team_row_count:number;team_run_row_count:number}> };
-  facets: Record<string, string[]>;
+  facets: Record<string, string[]>; runtime_fabric:RuntimeFabricSummary;
 }
 export interface TeamWorkspaceData {
-  team: {team_id:string; team_revision:number; mission_id:string; node_id:string; placement_generation:number|null; status:string};
-  works: WorkSummary[]; members: MemberCapacitySummary[]; messages: MessageSummary[];
+  team: {team_id:string; display_name:string; team_revision:number; mission_id:string; host_agent_id:string; viewer_role:string; node_id:string; placement_generation:number|null; status:string; latest_run:LatestTeamRunSummary|null};
+  works: WorkSummary[]; members: MemberCapacitySummary[]; messages: MessageSummary[]; activity:TeamActivitySummary[]; activity_truncated:boolean; pressure_summary:TeamPressureSummary;
   reports: RoleRecordSummary[]; findings: RoleRecordSummary[]; failures: RoleRecordSummary[]; gate_requirements: RoleRecordSummary[];
   gate_evaluations: RoleRecordSummary[]; gate_waivers: RoleRecordSummary[]; workspace_attention: RoleRecordSummary[];
-  delegation_provenance: RoleRecordSummary[]; page: {as_of_event_sequence:number;item_count:number;next_cursor:string|null};
+  delegation_provenance: RoleRecordSummary[]; page: {as_of_event_sequence:number;item_count:number;next_cursor:string|null}; runtime_fabric:RuntimeFabricSummary;
 }
+export interface MissionContextSummary {id:string; title:string; objective:string; context:string; desired_outcome:string|null; status:string; outcome_summary:string|null; created_at:string; updated_at:string; completed_at:string|null; log:Array<{id:string;revision:number;kind:string;body:string;actor:string;created_at:string}>}
+export interface TeamSupervisorSummary {team_run_id:string; supervisor_id:string; generation:number; current:boolean; heartbeat_unix_ms:number; expires_unix_ms:number; owner_locator:string; node_daemon_generation:number; status:string}
 export interface HostConsoleData {
-  team_ref:string; mission_ref:string; work_queues:Record<string,WorkSummary[]>;
+  team_ref:string; mission_ref:string; all_works:WorkSummary[]; work_queues:Record<string,WorkSummary[]>;
   member_capacity:MemberCapacitySummary[]; convergence_plans:RoleRecordSummary[]; reusable_findings:RoleRecordSummary[];
   workspace_conflicts:RoleRecordSummary[]; provider_capacity_attention:Array<{state:"not_modeled";reason:string}>; deliveries_requiring_reconcile:RoleRecordSummary[];
   gate_attention:RoleRecordSummary[]; daemon_summary:{node_id:string;lease_status:string|null;generation:number|null};
+  mission_context:MissionContextSummary|null; team_supervisor:TeamSupervisorSummary|null; host_inbox:MessageSummary[];
+  member_runtime:MemberCapacitySummary[]; runtime_recovery:RoleRecordSummary[]; pressure_summary:TeamPressureSummary; runtime_fabric:RuntimeFabricSummary;
 }
 export interface MemberWorkbenchData {
   agent_member:{id:string;role:string;organization_status:string}; member_run:{id:string;agent_member_id:string;team_run_id:string;coordination_status:string;runtime_status:string;runtime_generation:number;native_session_health:string}; my_works:WorkSummary[];
   eligible_ready_pool:WorkSummary[]; unread_messages:MessageSummary[]; queued_deliveries:RoleRecordSummary[];
   workspace_binding:RoleRecordSummary|null; native_session_health:string; pending_provider_interactions:RoleRecordSummary[];
   report_history:RoleRecordSummary[]; finding_history:RoleRecordSummary[]; failure_history:RoleRecordSummary[]; gate_requirements:RoleRecordSummary[];
+  runtime_fabric:RuntimeFabricSummary;
 }
 export interface OperatorViewData {
   node:{node_id:string;node_revision:number;daemon_generation:number|null;status:string}; build:{build_sha:string;protocol_version:string;schema_version:string};
   projects:RoleRecordSummary[]; team_supervisors:RoleRecordSummary[]; delivery_backlog:{depth:number;oldest_age_ms:number|null;recovery_required:boolean};
   runtime_recovery:RoleRecordSummary[]; provider_admission:RoleRecordSummary[]; workspace_safety:RoleRecordSummary[]; diagnostics:Array<{kind:string;state:string}>;
+  remote_fabric:null|{
+    company_id:string;node_id:string;state:"observed"|"offline"|"unknown"|"unavailable";reason?:string|null;
+    gateway_session?:{company_id:string;node_id:string;gateway_generation:number;node_daemon_id:string;node_daemon_generation:number;control_plane_generation:number}|null;
+    outbox_depth?:number;oldest_outbox_age_ms?:number;inbox_depth?:number;recovery_required?:string[];store_revision?:number;
+    control_plane_online?:boolean|null;
+    control_plane_metrics?:null|{node_id:string;administrative_status:string;connection_status:string;gateway_generation:number|null;control_plane_generation:number|null;certificate_expires_at_unix_ms:number|null;queued_operations:number;oldest_queued_age_ms:number;gateway_lease_age_ms:number|null;recovery_required_operations:string[];last_assigned_route_seq:number;last_persisted_route_seq:number;reconcile_lag:number};
+  };
+  runtime_fabric:RuntimeFabricSummary;
 }
 
 export async function fetchRoleView<T>(apiUrl:string,path:string,scope:{project?:string;space?:string;company?:string}={}):Promise<RoleView<T>>{

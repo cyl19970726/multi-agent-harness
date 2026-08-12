@@ -201,6 +201,8 @@ pub(crate) fn call_tool(
         "work_delegation_cancel" => tool_work_delegation_cancel(store, &arguments),
         "execution_node_list" => tool_execution_node_list(store, &arguments),
         "execution_node_show" => tool_execution_node_show(store, &arguments),
+        "remote_fabric_status" => tool_remote_fabric_status(resolved, &arguments),
+        "remote_fabric_operation_show" => tool_remote_fabric_operation_show(resolved, &arguments),
         "team_run_rename_member" => tool_team_run_rename_member(store, &arguments),
         "team_run_deactivate_member" => tool_team_run_deactivate_member(store, &arguments),
         "team_run_start" => tool_team_run_start(store, resolved, &arguments),
@@ -291,6 +293,130 @@ fn tool_agentfirm_member_trust_mutate(
     agentfirm_api::execute(store, auth, command)
         .map(|result| json!(result))
         .map_err(|error| error.to_string())
+}
+
+fn tool_remote_fabric_status(resolved: &ResolvedStore, arguments: &Value) -> Result<Value, String> {
+    reject_unknown_arguments(arguments, "remote_fabric_status", &["company_id"])?;
+    let company_id = required_non_empty_str(arguments, "company_id")?.to_string();
+    let home =
+        crate::fabric_runtime::firm_home(resolved, &[]).map_err(|error| error.to_string())?;
+    let layout = harness_store::remote_fabric_store::RemoteFabricStoreLayout::open(&home)
+        .map_err(|error| error.to_string())?;
+    let node_id = crate::read_local_node_id().map_err(|error| error.to_string())?;
+    let local_root = layout
+        .node_local_root(&company_id, &node_id)
+        .map_err(|error| error.to_string())?;
+    let local = if local_root.exists() {
+        let store = layout
+            .open_node_local(&company_id, &node_id)
+            .map_err(|error| error.to_string())?;
+        let snapshot = store.snapshot().map_err(|error| error.to_string())?;
+        let queued_outbox = snapshot
+            .outboxes
+            .values()
+            .filter(|outbox| {
+                !matches!(
+                    outbox.local_state,
+                    harness_fabric::LocalOutboxState::Terminal
+                )
+            })
+            .count();
+        let recovery_required = snapshot
+            .inboxes
+            .values()
+            .filter(|inbox| inbox.state == harness_fabric::LocalInboxState::RecoveryRequired)
+            .map(|inbox| inbox.operation_id.clone())
+            .collect::<Vec<_>>();
+        Some(json!({
+            "store_revision": snapshot.revision,
+            "gateway_session": snapshot.active_session,
+            "outbox_depth": queued_outbox,
+            "inbox_depth": snapshot.inboxes.len(),
+            "recovery_required_operation_ids": recovery_required,
+        }))
+    } else {
+        None
+    };
+    let control_root = layout
+        .control_plane_root(&company_id)
+        .map_err(|error| error.to_string())?;
+    let control_plane = if control_root.exists() {
+        let store = layout
+            .open_control_plane(&company_id)
+            .map_err(|error| error.to_string())?;
+        let snapshot = store.snapshot().map_err(|error| error.to_string())?;
+        if snapshot.authority_company_id.as_deref() != Some(company_id.as_str()) {
+            return Err("Remote Fabric Store is not bound to the requested Company".into());
+        }
+        let diagnostics =
+            harness_fabric::diagnostics::inspect_fabric(&store, &company_id, current_unix_ms_u64())
+                .map_err(|error| error.to_string())?;
+        Some(json!({
+            "store_revision": snapshot.revision,
+            "control_plane_lease": snapshot.control_plane_leases.get(&company_id),
+            "nodes": snapshot.nodes.values().collect::<Vec<_>>(),
+            "diagnostics": diagnostics,
+        }))
+    } else {
+        None
+    };
+    Ok(json!({
+        "company_id": company_id,
+        "local_node_id": node_id,
+        "node_local": local,
+        "control_plane": control_plane,
+        "read_only": true,
+    }))
+}
+
+fn tool_remote_fabric_operation_show(
+    resolved: &ResolvedStore,
+    arguments: &Value,
+) -> Result<Value, String> {
+    reject_unknown_arguments(
+        arguments,
+        "remote_fabric_operation_show",
+        &["company_id", "operation_id"],
+    )?;
+    let company_id = required_non_empty_str(arguments, "company_id")?.to_string();
+    let operation_id = required_non_empty_str(arguments, "operation_id")?.to_string();
+    let home =
+        crate::fabric_runtime::firm_home(resolved, &[]).map_err(|error| error.to_string())?;
+    let layout = harness_store::remote_fabric_store::RemoteFabricStoreLayout::open(&home)
+        .map_err(|error| error.to_string())?;
+    let root = layout
+        .control_plane_root(&company_id)
+        .map_err(|error| error.to_string())?;
+    if !root.exists() {
+        return Err("Remote Fabric Control Plane Store is unavailable on this machine".into());
+    }
+    let store = layout
+        .open_control_plane(&company_id)
+        .map_err(|error| error.to_string())?;
+    let snapshot = store.snapshot().map_err(|error| error.to_string())?;
+    if snapshot.authority_company_id.as_deref() != Some(company_id.as_str()) {
+        return Err("Remote Fabric Store is not bound to the requested Company".into());
+    }
+    let operation = snapshot
+        .operations
+        .get(&operation_id)
+        .ok_or_else(|| "Remote Fabric operation does not exist".to_string())?;
+    let attempts = snapshot
+        .attempts
+        .values()
+        .filter(|attempt| attempt.operation_id == operation_id)
+        .collect::<Vec<_>>();
+    let receipts = snapshot
+        .receipts
+        .values()
+        .filter(|receipt| receipt.operation_id == operation_id)
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "operation": operation,
+        "attempts": attempts,
+        "receipts": receipts,
+        "read_only": true,
+    }))
 }
 
 /// `team_run_work_list` -- mirrors `harness team-run work list`, including
@@ -1289,6 +1415,31 @@ fn tool_definitions() -> Value {
                     "expected_version": {"type": "integer", "minimum": 0}
                 },
                 "required": ["command", "idempotency_key", "expected_version"]
+            }
+        },
+        {
+            "name": "remote_fabric_status",
+            "description": "Read current Node-local Remote Fabric queue/session truth and, when this machine hosts it, Company Control Plane Node/lease diagnostics. This tool is read-only and never reconstructs route truth from Message or runtime ledgers.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "company_id": {"type": "string", "minLength": 1}
+                },
+                "required": ["company_id"]
+            }
+        },
+        {
+            "name": "remote_fabric_operation_show",
+            "description": "Read one RoutedOperation with its transport Attempts and generation-fenced Receipts from the local Company Control Plane FabricStore. It is unavailable away from the Control Plane and performs no replay or mutation.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "company_id": {"type": "string", "minLength": 1},
+                    "operation_id": {"type": "string", "minLength": 1}
+                },
+                "required": ["company_id", "operation_id"]
             }
         },
         {

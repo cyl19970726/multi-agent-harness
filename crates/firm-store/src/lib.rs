@@ -35,6 +35,7 @@ pub use trust_kernel::*;
 
 mod collaboration;
 pub use collaboration::*;
+pub mod remote_fabric_store;
 
 mod company_os;
 pub mod docs_v2;

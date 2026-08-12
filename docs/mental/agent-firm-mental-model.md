@@ -41,7 +41,13 @@ Execution answers "what work is being done right now."
 
 **Agent Team Runs**: One execution instance with MemberRuns (runtime bindings), shared Work board, message inbox. Existing execution model — Work state machine, Message delivery, Daemon supervision — unchanged.
 
-**Work**: The responsibility kernel. Title, context, criteria, owner (AgentMember), team scope, status (open→in_progress→review→done). Optional `document_refs` (links to Docs) and `labels` (filtering).
+**Work**: The responsibility kernel. Title, context, criteria, owner
+(AgentMember), Team/TeamRun scope and three independent lifecycle axes:
+`phase` (`open -> active -> review -> closed`), `condition`
+(`normal | blocked | on_hold`), and closed-only `resolution`
+(`accepted | cancelled | failed`). Optional `document_refs` (links to Docs)
+and `labels` (filtering). Company Work is a read-only aggregate over this same
+identity, not a second task record.
 
 Work creation answers WHAT and WHO; placement and verification are modular records.
 

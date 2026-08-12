@@ -1,4 +1,100 @@
 {
-  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"agentfirm.role_views.v1/operator.schema.json",
-  "allOf":[{"$ref":"role-view.schema.json"},{"type":"object","properties":{"view_kind":{"const":"operator"},"data":{"type":"object","additionalProperties":false,"required":["node","build","projects","team_supervisors","delivery_backlog","runtime_recovery","provider_admission","workspace_safety","diagnostics","runtime_fabric"],"properties":{"node":{"$ref":"common.schema.json#/$defs/nodeSummary"},"build":{"$ref":"common.schema.json#/$defs/buildSummary"},"projects":{"type":"array","items":{"$ref":"common.schema.json#/$defs/recordSummary"}},"team_supervisors":{"type":"array","items":{"$ref":"common.schema.json#/$defs/recordSummary"}},"delivery_backlog":{"$ref":"common.schema.json#/$defs/backlogSummary"},"runtime_recovery":{"type":"array","items":{"$ref":"common.schema.json#/$defs/recordSummary"}},"provider_admission":{"type":"array","items":{"$ref":"common.schema.json#/$defs/recordSummary"}},"workspace_safety":{"type":"array","items":{"$ref":"common.schema.json#/$defs/recordSummary"}},"diagnostics":{"type":"array","items":{"$ref":"common.schema.json#/$defs/diagnosticSummary"}},"runtime_fabric":{"$ref":"common.schema.json#/$defs/runtimeFabric"}}}}}]
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agentfirm.role_views.v1/operator.schema.json",
+  "$defs": {
+    "gatewaySession": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["company_id", "node_id", "gateway_generation", "node_daemon_id", "node_daemon_generation", "control_plane_generation"],
+      "properties": {
+        "company_id": { "type": "string", "minLength": 1 },
+        "node_id": { "type": "string", "minLength": 1 },
+        "gateway_generation": { "type": "integer", "minimum": 1 },
+        "node_daemon_id": { "type": "string", "minLength": 1 },
+        "node_daemon_generation": { "type": "integer", "minimum": 1 },
+        "control_plane_generation": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "controlPlaneMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "administrative_status", "connection_status", "gateway_generation", "control_plane_generation", "certificate_expires_at_unix_ms", "queued_operations", "oldest_queued_age_ms", "gateway_lease_age_ms", "recovery_required_operations", "last_assigned_route_seq", "last_persisted_route_seq", "reconcile_lag"],
+      "properties": {
+        "node_id": { "type": "string", "minLength": 1 },
+        "administrative_status": { "enum": ["active", "draining", "revoked"] },
+        "connection_status": { "enum": ["online", "offline", "stale"] },
+        "gateway_generation": { "type": ["integer", "null"], "minimum": 1 },
+        "control_plane_generation": { "type": ["integer", "null"], "minimum": 1 },
+        "certificate_expires_at_unix_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "queued_operations": { "type": "integer", "minimum": 0 },
+        "oldest_queued_age_ms": { "type": "integer", "minimum": 0 },
+        "gateway_lease_age_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "recovery_required_operations": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "last_assigned_route_seq": { "type": "integer", "minimum": 0 },
+        "last_persisted_route_seq": { "type": "integer", "minimum": 0 },
+        "reconcile_lag": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "remoteFabric": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["company_id", "node_id", "state", "reason"],
+          "properties": {
+            "company_id": { "type": "string", "minLength": 1 },
+            "node_id": { "type": "string", "minLength": 1 },
+            "state": { "const": "unavailable" },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["company_id", "node_id", "state", "reason", "gateway_session", "outbox_depth", "oldest_outbox_age_ms", "inbox_depth", "recovery_required", "control_plane_online", "control_plane_metrics", "store_revision"],
+          "properties": {
+            "company_id": { "type": "string", "minLength": 1 },
+            "node_id": { "type": "string", "minLength": 1 },
+            "state": { "enum": ["observed", "offline", "unknown"] },
+            "reason": { "type": ["string", "null"] },
+            "gateway_session": { "oneOf": [{ "$ref": "#/$defs/gatewaySession" }, { "type": "null" }] },
+            "outbox_depth": { "type": "integer", "minimum": 0 },
+            "oldest_outbox_age_ms": { "type": "integer", "minimum": 0 },
+            "inbox_depth": { "type": "integer", "minimum": 0 },
+            "recovery_required": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "control_plane_online": { "type": ["boolean", "null"] },
+            "control_plane_metrics": { "oneOf": [{ "$ref": "#/$defs/controlPlaneMetrics" }, { "type": "null" }] },
+            "store_revision": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    { "$ref": "role-view.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "view_kind": { "const": "operator" },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["node", "build", "projects", "team_supervisors", "delivery_backlog", "runtime_recovery", "provider_admission", "workspace_safety", "diagnostics", "runtime_fabric", "remote_fabric"],
+          "properties": {
+            "node": { "$ref": "common.schema.json#/$defs/nodeSummary" },
+            "build": { "$ref": "common.schema.json#/$defs/buildSummary" },
+            "projects": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/recordSummary" } },
+            "team_supervisors": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/recordSummary" } },
+            "delivery_backlog": { "$ref": "common.schema.json#/$defs/backlogSummary" },
+            "runtime_recovery": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/recordSummary" } },
+            "provider_admission": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/recordSummary" } },
+            "workspace_safety": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/recordSummary" } },
+            "diagnostics": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/diagnosticSummary" } },
+            "runtime_fabric": { "$ref": "common.schema.json#/$defs/runtimeFabric" },
+            "remote_fabric": { "oneOf": [{ "$ref": "#/$defs/remoteFabric" }, { "type": "null" }] }
+          }
+        }
+      }
+    }
+  ]
 }

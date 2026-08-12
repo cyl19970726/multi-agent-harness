@@ -29,6 +29,7 @@ flowchart TB
   Workflow["Dynamic Workflow"]
   Direct["Human / Agent Membership direct work"]
   Runtime["Providers · sessions · plugins · MCP"]
+  Fabric["Remote Node Fabric\nControl Plane · outbound NodeGateway · durable routes"]
   Result["Results · evidence · artifacts · observations"]
 
   Human --> Home
@@ -60,6 +61,8 @@ flowchart TB
   TeamWork --> Supervisor
   TeamWork -.->|shared WorkCore| Work
   Supervisor --> Runtime
+  Supervisor --> Fabric
+  Fabric --> Runtime
   Workflow --> Runtime
   Direct --> Runtime
   Runtime --> Result
@@ -86,6 +89,7 @@ flowchart TB
 | Finance and Metrics | typed values, observations, audit, business relations | copied document display values |
 | Execution | Mission context/Host-plan Waves, one flat Mission-owned AgentTeam, durable NodeDaemon-fenced Team Supervisors, typed mail, Workflow, direct delivery | company organization or document truth; nested/reusable Teams or Wave runtime containment |
 | Runtime | provider processes, native sessions, native activity readers/resume, plugins, MCP, and ephemeral projections | business approval, assignment inference, or a second provider history |
+| Remote Node Fabric | cross-machine RoutedOperation/Attempt/Receipt, mTLS gateway generations, reconcile, and bounded artifacts | a second Node identity, Message/Work/RuntimeCommand truth, or application-effect inference from transport |
 
 For persistent Agent Team members, Work ownership and continuous native
 execution are separate. Harness owns Work, WorkEvent, WorkDelivery, and the

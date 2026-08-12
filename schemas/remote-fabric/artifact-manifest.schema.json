@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.local/schemas/remote-fabric/artifact-manifest.schema.json",
+  "title": "RemoteArtifactManifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id", "company_id", "source_node_id", "source_team_id", "source_work_id",
+    "operation_id", "media_type", "size_bytes", "sha256", "classification",
+    "initiator", "authorized_readers", "created_by", "created_at_unix_ms",
+    "expires_at_unix_ms", "completed_at_unix_ms", "deleted_at_unix_ms",
+    "revision", "schema_version"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "company_id": { "type": "string", "minLength": 1 },
+    "source_node_id": { "type": "string", "minLength": 1 },
+    "source_team_id": { "type": ["string", "null"] },
+    "source_work_id": { "type": ["string", "null"] },
+    "operation_id": { "type": ["string", "null"] },
+    "media_type": { "enum": ["application/json", "application/octet-stream", "text/plain", "image/png", "image/jpeg", "image/webp"] },
+    "size_bytes": { "type": "integer", "minimum": 0, "maximum": 67108864 },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "classification": { "enum": ["company_internal", "sensitive"] },
+    "initiator": { "type": "string", "minLength": 1 },
+    "authorized_readers": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "created_by": { "type": "string", "minLength": 1 },
+    "created_at_unix_ms": { "type": "integer", "minimum": 0 },
+    "expires_at_unix_ms": { "type": ["integer", "null"], "minimum": 1 },
+    "completed_at_unix_ms": { "type": ["integer", "null"], "minimum": 0 },
+    "deleted_at_unix_ms": { "type": ["integer", "null"], "minimum": 0 },
+    "revision": { "type": "integer", "minimum": 1 },
+    "schema_version": { "const": "agentfirm.remote_fabric.v1" }
+  }
+}

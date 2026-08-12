@@ -1,0 +1,17 @@
+{
+  "id": "route-attempt:operation-1:1",
+  "company_id": "company-test",
+  "operation_id": "operation-1",
+  "attempt_no": 1,
+  "target_node_id": "node-b",
+  "target_gateway_generation": 3,
+  "control_plane_generation": 2,
+  "route_seq": 1,
+  "ordering_seq": 1,
+  "state": "queued",
+  "error_code": null,
+  "effect": "none",
+  "started_at_unix_ms": 100,
+  "ended_at_unix_ms": null,
+  "schema_version": "agentfirm.remote_fabric.v1"
+}

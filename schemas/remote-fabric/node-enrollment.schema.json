@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.local/schemas/remote-fabric/node-enrollment.schema.json",
+  "title": "NodeEnrollment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id", "company_id", "token_digest", "requested_name", "allowed_capabilities",
+    "created_by", "authorized_node_daemon_id", "authorized_node_daemon_generation", "expires_at_unix_ms", "consumed_at_unix_ms",
+    "consumed_by_node_id", "status", "revision", "schema_version", "created_at_unix_ms",
+    "updated_at_unix_ms"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "company_id": { "type": "string", "minLength": 1 },
+    "token_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "requested_name": { "type": "string", "minLength": 1 },
+    "allowed_capabilities": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "created_by": { "type": "string", "minLength": 1 },
+    "authorized_node_daemon_id": { "type": "string" },
+    "authorized_node_daemon_generation": { "type": "integer", "minimum": 1 },
+    "expires_at_unix_ms": { "type": "integer", "minimum": 1 },
+    "consumed_at_unix_ms": { "type": ["integer", "null"], "minimum": 0 },
+    "consumed_by_node_id": { "type": ["string", "null"] },
+    "status": { "enum": ["pending", "consumed", "expired", "revoked"] },
+    "revision": { "type": "integer", "minimum": 1 },
+    "schema_version": { "const": "agentfirm.remote_fabric.v1" },
+    "created_at_unix_ms": { "type": "integer", "minimum": 0 },
+    "updated_at_unix_ms": { "type": "integer", "minimum": 0 }
+  }
+}

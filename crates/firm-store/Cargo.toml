@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 firm-core = { path = "../firm-core" }
+firm-fabric = { path = "../firm-fabric" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

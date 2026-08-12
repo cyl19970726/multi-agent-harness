@@ -1,0 +1,11 @@
+{
+  "id": "enrollment-1", "company_id": "company-a",
+  "token_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "requested_name": "Node A", "allowed_capabilities": ["durable-routing"],
+  "created_by": "host-a", "authorized_node_daemon_id": "node-daemon:node-a",
+  "authorized_node_daemon_generation": 1, "expires_at_unix_ms": 600000,
+  "consumed_at_unix_ms": null, "consumed_by_node_id": null, "status": "pending",
+  "revision": 1,
+  "schema_version": "agentfirm.remote_fabric.v1", "created_at_unix_ms": 1,
+  "updated_at_unix_ms": 1
+}

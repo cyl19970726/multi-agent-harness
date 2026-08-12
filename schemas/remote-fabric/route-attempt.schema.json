@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.local/schemas/remote-fabric/route-attempt.schema.json",
+  "title": "RouteAttempt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id", "company_id", "operation_id", "attempt_no", "target_node_id",
+    "target_gateway_generation", "control_plane_generation", "route_seq", "ordering_seq",
+    "state", "error_code", "effect", "started_at_unix_ms", "ended_at_unix_ms", "schema_version"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "company_id": { "type": "string", "minLength": 1 },
+    "operation_id": { "type": "string", "minLength": 1 },
+    "attempt_no": { "type": "integer", "minimum": 1 },
+    "target_node_id": { "type": "string", "minLength": 1 },
+    "target_gateway_generation": { "type": "integer", "minimum": 1 },
+    "control_plane_generation": { "type": "integer", "minimum": 1 },
+    "route_seq": { "type": "integer", "minimum": 1 },
+    "ordering_seq": { "type": "integer", "minimum": 1 },
+    "state": { "enum": ["queued", "sent", "target_persisted", "ended"] },
+    "error_code": { "type": ["string", "null"] },
+    "effect": { "enum": ["none", "not_applied", "applied", "unknown"] },
+    "started_at_unix_ms": { "type": "integer", "minimum": 0 },
+    "ended_at_unix_ms": { "type": ["integer", "null"], "minimum": 0 },
+    "schema_version": { "const": "agentfirm.remote_fabric.v1" }
+  }
+}

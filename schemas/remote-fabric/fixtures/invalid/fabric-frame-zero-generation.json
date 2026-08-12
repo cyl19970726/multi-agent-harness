@@ -1,0 +1,16 @@
+{
+  "frame_id": "frame-1",
+  "protocol_version": 1,
+  "schema_version": "agentfirm.remote_fabric.v1",
+  "company_id": "company-test",
+  "node_id": "node-a",
+  "gateway_generation": 0,
+  "control_plane_generation": 2,
+  "sent_at_unix_ms": 100,
+  "correlation_id": "correlation-1",
+  "payload": {
+    "frame_kind": "heartbeat",
+    "payload": { "observed_at_unix_ms": 100 }
+  },
+  "payload_digest": "3b355d28f75137a5cfba5c75e5917adad770673399fd2aae39d489a8436fde9b"
+}

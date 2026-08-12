@@ -93,6 +93,13 @@ schema contracts are checked with valid and invalid fixtures.
 | Gap | [gap.schema.json](../../../schemas/gap.schema.json) |
 | Vision | [vision.schema.json](../../../schemas/vision.schema.json) |
 
+Remote Node Fabric is a versioned closed bundle under
+[`schemas/remote-fabric`](../../../schemas/remote-fabric). Its executable
+inventory is `schema-bundle.v1.json`; `pnpm check:remote-fabric` requires every
+listed schema to have valid and hostile fixtures and to match the Rust closed
+operation registry. The bundle uses explicit protocol, schema, and canonical
+JSON versions because it crosses machine and release boundaries.
+
 `WorkOperation` is the Store's crash-atomic replay envelope around one
 WorkEvent, its complete resulting Work, delivery creates/updates, and any
 `WorkDelegation` revisions caused by that exact target-Work transition. The

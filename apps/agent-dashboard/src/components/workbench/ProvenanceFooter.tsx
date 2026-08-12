@@ -72,7 +72,7 @@ export function ProvenanceFooter({ apiUrl, projectId, spaceId }: ProvenanceFoote
   const stale = revsComparable && serverRev !== FRONTEND_GIT_REV;
 
   return (
-    <footer className="shrink-0 border-t border-border bg-card/60">
+    <footer className={cn("shrink-0 bg-card/60", (stale || error) ? "border-t border-border" : "sr-only")}>
       {(stale || error) && (
         <div
           role="alert"

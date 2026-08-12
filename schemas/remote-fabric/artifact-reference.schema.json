@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.local/schemas/remote-fabric/artifact-reference.schema.json",
+  "title": "ArtifactReference",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifact_id", "artifact_digest"],
+  "properties": {
+    "artifact_id": { "type": "string", "minLength": 1 },
+    "artifact_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}
