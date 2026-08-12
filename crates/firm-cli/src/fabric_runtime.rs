@@ -701,6 +701,18 @@ pub(crate) struct QueueCollaborationMessageRequest {
     pub expires_unix_ms: u64,
 }
 
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct QueueRemoteFactPublicationRequest {
+    pub company_id: String,
+    pub delegation_id: String,
+    pub fact_kind: harness_core::collaboration::RemoteFactKind,
+    pub fact_id: String,
+    pub source_work_ref: harness_core::collaboration::RemoteWorkRef,
+    pub expires_unix_ms: u64,
+    pub retain_until: String,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn queue_collaboration_proposal(
     store: &HarnessStore,
@@ -950,6 +962,323 @@ pub(crate) fn queue_collaboration_proposal(
     let (outbox, replayed) = local.prepare_outbox(&session, &node_actor, &routed, now_unix_ms)?;
     Ok(serde_json::json!({
         "delegation_id": proposal.delegation_id,
+        "operation_id": routed.id,
+        "outbox_state": outbox.local_state,
+        "replayed": replayed,
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn queue_remote_fact_publication(
+    store: &HarnessStore,
+    firm_home: &Path,
+    execution_space_id: &str,
+    local_node_id: &str,
+    credential: &super::AgentFirmHttpCredential,
+    idempotency_key: &str,
+    expected_delegation_revision: u64,
+    request: &QueueRemoteFactPublicationRequest,
+    now_unix_ms: u64,
+) -> Result<serde_json::Value, FabricError> {
+    use harness_core::collaboration::{
+        RemoteFactKind, RemoteFactPublication, RemoteFactSnapshot, RemoteWorkRef,
+        TargetPlacementRef,
+    };
+
+    if idempotency_key.trim().is_empty()
+        || expected_delegation_revision == 0
+        || request.company_id.trim().is_empty()
+        || request.delegation_id.trim().is_empty()
+        || request.fact_id.trim().is_empty()
+        || request.source_work_ref.execution_space_id.trim().is_empty()
+        || request.source_work_ref.team_revision == 0
+        || request.source_work_ref.placement_generation != 1
+        || request.source_work_ref.node_id == local_node_id
+        || request.expires_unix_ms <= now_unix_ms
+        || request.retain_until.trim().is_empty()
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::InvalidPayload,
+            "remote fact publication requires exact Delegation/source placement, immutable fact identity, idempotency and future expiry",
+        ));
+    }
+
+    let (fact_work_id, fact_work_revision, fact_revision, created_by, summary, schema, fact) =
+        match request.fact_kind {
+            RemoteFactKind::Report => {
+                let report = store
+                    .trust_work_reports(execution_space_id)
+                    .map_err(|error| {
+                        FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+                    })?
+                    .into_iter()
+                    .find(|report| report.id == request.fact_id)
+                    .ok_or_else(|| {
+                        FabricError::none(
+                            FabricErrorCode::ExpectedRevisionConflict,
+                            "native WorkReport does not exist",
+                        )
+                    })?;
+                let redacted = serde_json::json!({
+                    "kind": report.kind,
+                    "summary": report.summary,
+                    "candidate_fingerprint": report.candidate_fingerprint,
+                    "artifact_refs": report.artifact_refs,
+                    "evidence_refs": report.evidence_refs,
+                    "known_risks": report.known_risks,
+                    "confidence": report.confidence,
+                    "recommended_next_action": report.recommended_next_action,
+                });
+                (
+                    report.work_id,
+                    report.work_revision,
+                    report.report_revision,
+                    report.authored_by,
+                    redacted["summary"].as_str().unwrap_or_default().to_string(),
+                    "agentfirm.remote-fact.work-report.v1",
+                    redacted,
+                )
+            }
+            RemoteFactKind::Finding => {
+                let finding = store
+                    .trust_work_findings(execution_space_id)
+                    .map_err(|error| {
+                        FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+                    })?
+                    .into_iter()
+                    .find(|finding| finding.id == request.fact_id)
+                    .ok_or_else(|| {
+                        FabricError::none(
+                            FabricErrorCode::ExpectedRevisionConflict,
+                            "native WorkFinding does not exist",
+                        )
+                    })?;
+                let redacted = serde_json::json!({
+                    "kind": finding.kind,
+                    "summary": finding.summary,
+                    "affected_work_refs": finding.affected_work_refs,
+                    "reusable_asset_refs": finding.reusable_asset_refs,
+                    "invalidated_assumptions": finding.invalidated_assumptions,
+                    "evidence_refs": finding.evidence_refs,
+                    "confidence": finding.confidence,
+                });
+                (
+                    finding.work_id,
+                    finding.work_revision,
+                    1,
+                    finding.reported_by,
+                    redacted["summary"].as_str().unwrap_or_default().to_string(),
+                    "agentfirm.remote-fact.work-finding.v1",
+                    redacted,
+                )
+            }
+            RemoteFactKind::Failure => {
+                let analysis = store
+                    .trust_failure_analyses(execution_space_id)
+                    .map_err(|error| {
+                        FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+                    })?
+                    .into_iter()
+                    .find(|analysis| analysis.id == request.fact_id)
+                    .ok_or_else(|| {
+                        FabricError::none(
+                            FabricErrorCode::ExpectedRevisionConflict,
+                            "native FailureAnalysis does not exist",
+                        )
+                    })?;
+                let redacted = serde_json::json!({
+                    "observed_failure": analysis.observed_failure,
+                    "impact": analysis.impact,
+                    "primary_cause_status": analysis.primary_cause_status,
+                    "primary_cause": analysis.primary_cause,
+                    "retry_safety": analysis.retry_safety,
+                    "side_effect_summary": analysis.side_effect_summary,
+                    "recovery_options": analysis.recovery_options,
+                    "recommended_host_decision": analysis.recommended_host_decision,
+                    "evidence_refs": analysis.evidence_refs,
+                    "confidence": analysis.confidence,
+                });
+                (
+                    analysis.work_id,
+                    analysis.work_revision,
+                    1,
+                    analysis.reported_by,
+                    redacted["observed_failure"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    "agentfirm.remote-fact.failure-analysis.v1",
+                    redacted,
+                )
+            }
+        };
+    if created_by != credential.actor {
+        return Err(FabricError::none(
+            FabricErrorCode::UnauthorizedActor,
+            "credential is not the native fact author",
+        ));
+    }
+    let work = store
+        .latest_works()
+        .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?
+        .into_iter()
+        .find(|work| work.id == fact_work_id && work.version == fact_work_revision)
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::ExpectedRevisionConflict,
+                "native fact does not bind the exact current target Work revision",
+            )
+        })?;
+    let team_id = work.team_id.clone().ok_or_else(|| {
+        FabricError::none(
+            FabricErrorCode::InvalidPayload,
+            "native target Work is not Team-bound",
+        )
+    })?;
+    let teams = store
+        .teams()
+        .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?;
+    let team_revision = teams.iter().filter(|team| team.id == team_id).count() as u64;
+    let team = teams
+        .iter()
+        .rev()
+        .find(|team| team.id == team_id)
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::ExpectedRevisionConflict,
+                "target AgentTeam does not exist",
+            )
+        })?;
+    if team.node_id != local_node_id
+        || (credential.actor.id != team.host_agent_id
+            && work.owner_member_id.as_deref() != Some(credential.actor.id.as_str()))
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::UnauthorizedActor,
+            "remote fact requires the exact local target Host or current Work owner",
+        ));
+    }
+    let event = store
+        .work_events()
+        .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?
+        .into_iter()
+        .rev()
+        .find(|event| event.work_id == work.id && event.resulting_version == work.version)
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::ExpectedRevisionConflict,
+                "target Work has no exact current WorkEvent",
+            )
+        })?;
+    let target_work_ref = RemoteWorkRef {
+        schema_version: "agentfirm.remote-work-ref.v1".into(),
+        execution_space_id: execution_space_id.into(),
+        node_id: local_node_id.into(),
+        team_id: team.id.clone(),
+        team_revision,
+        placement_generation: 1,
+        work_id: work.id.clone(),
+        work_revision: work.version,
+        work_event_id: event.id,
+        digest: harness_store::canonical_json_fingerprint(&serde_json::to_value(&work).map_err(
+            |error| FabricError::none(FabricErrorCode::InvalidPayload, error.to_string()),
+        )?),
+    };
+    let publication_id = format!(
+        "remote-fact:{}:{:?}:{}",
+        request.delegation_id, request.fact_kind, request.fact_id
+    )
+    .to_ascii_lowercase();
+    let fact_digest = harness_store::canonical_json_fingerprint(&fact);
+    let publication = RemoteFactPublication {
+        id: publication_id.clone(),
+        company_id: request.company_id.clone(),
+        delegation_id: request.delegation_id.clone(),
+        origin_node_id: local_node_id.into(),
+        origin_team_id: team.id.clone(),
+        fact_work_ref: target_work_ref,
+        delegation_source_work_ref: request.source_work_ref.clone(),
+        fact_kind: request.fact_kind,
+        fact_id: request.fact_id.clone(),
+        fact_revision,
+        fact_digest: fact_digest.clone(),
+        summary,
+        classification: "team".into(),
+        snapshot: RemoteFactSnapshot {
+            publication_id: publication_id.clone(),
+            fact_schema: schema.into(),
+            canonical_redacted_fact: fact,
+            canonical_digest: fact_digest,
+        },
+        artifact_refs: Vec::new(),
+        evidence_refs: Vec::new(),
+        operational_decision_ref: None,
+        created_by: credential.actor.clone(),
+        created_at: format!("unix-ms:{now_unix_ms}"),
+        retain_until: request.retain_until.clone(),
+    };
+    let source_placement = TargetPlacementRef {
+        team_id: request.source_work_ref.team_id.clone(),
+        team_revision: request.source_work_ref.team_revision,
+        node_id: request.source_work_ref.node_id.clone(),
+        placement_generation: request.source_work_ref.placement_generation,
+    };
+    let business = store
+        .remote_fact_publish_operation(
+            &harness_store::CollaborationMutationContext {
+                company_id: request.company_id.clone(),
+                authenticated_actor: credential.actor.clone(),
+                command_name: "remote_fact_publish".into(),
+                idempotency_key: idempotency_key.into(),
+                expected_revision: expected_delegation_revision,
+                occurred_at: format!("unix-ms:{now_unix_ms}"),
+            },
+            &publication,
+            &source_placement,
+            local_node_id,
+        )
+        .map_err(|error| FabricError::none(FabricErrorCode::InvalidPayload, error.to_string()))?;
+    let layout = RemoteFabricStoreLayout::open(firm_home)?;
+    let local = layout.open_node_local(&request.company_id, local_node_id)?;
+    let session = local.active_session()?.ok_or_else(|| {
+        FabricError::none(
+            FabricErrorCode::NodeStaleGeneration,
+            "target Node has no current authenticated Fabric gateway session",
+        )
+    })?;
+    let node_actor = AuthenticatedActor {
+        company_id: request.company_id.clone(),
+        actor_id: local_node_id.into(),
+        actor_kind: harness_fabric::ActorKind::Service,
+        role_bindings: BTreeSet::from(["fabric_submit".into()]),
+        session_id: format!(
+            "{}:{}",
+            session.node_daemon_id, session.node_daemon_generation
+        ),
+        issued_at_unix_ms: now_unix_ms,
+        expires_at_unix_ms: request.expires_unix_ms,
+    };
+    let routed = harness_store::route_collaboration_business_operation(
+        &business,
+        &harness_store::CollaborationFabricRouteContext {
+            authenticated_actor: node_actor.clone(),
+            resolved_business_actor: credential.actor.clone(),
+            source: harness_store::CollaborationFabricSource::Node {
+                source_execution_space_id: execution_space_id.into(),
+                source_gateway_generation: session.gateway_generation,
+                source_node_daemon_id: session.node_daemon_id.clone(),
+                source_node_daemon_generation: session.node_daemon_generation,
+            },
+            control_plane_generation: session.control_plane_generation,
+            target_execution_space_id: Some(request.source_work_ref.execution_space_id.clone()),
+            created_at_unix_ms: now_unix_ms,
+            expires_at_unix_ms: request.expires_unix_ms,
+        },
+    )?;
+    let (outbox, replayed) = local.prepare_outbox(&session, &node_actor, &routed, now_unix_ms)?;
+    Ok(serde_json::json!({
+        "delegation_id": request.delegation_id,
+        "publication": publication,
         "operation_id": routed.id,
         "outbox_state": outbox.local_state,
         "replayed": replayed,
@@ -2457,6 +2786,46 @@ fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend
                 "unknown collaboration endpoint",
             )
         })?;
+    if method == "GET" && suffix.ends_with("/publications") {
+        let delegation_id = suffix
+            .strip_suffix("/publications")
+            .filter(|value| !value.is_empty() && !value.contains('/'))
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::InvalidPayload,
+                    "publication list path is malformed",
+                )
+            })?;
+        let delegation = store
+            .collaboration_delegation(control.company_id(), delegation_id)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+            })?
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::ExpectedRevisionConflict,
+                    "Delegation does not exist",
+                )
+            })?;
+        if credential.actor != delegation.source_owner_ref
+            && credential.actor != delegation.target_host_ref
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::UnauthorizedActor,
+                "publication projection requires the exact source owner/Host or target Host",
+            ));
+        }
+        let publications = store
+            .collaboration_publications(control.company_id(), delegation_id)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+            })?;
+        return Ok(serde_json::json!({
+            "delegation_id": delegation_id,
+            "delegation_revision": delegation.revision,
+            "items": publications,
+        }));
+    }
     if method == "GET" && !suffix.contains('/') {
         let delegation = store
             .collaboration_delegation(control.company_id(), suffix)

@@ -28999,6 +28999,104 @@ fn handle_http_connection(
         }
         return Ok(());
     }
+    let collaboration_publication_delegation = path_only
+        .strip_prefix("/v1/collaboration/delegations/")
+        .and_then(|suffix| suffix.strip_suffix("/publications"))
+        .filter(|delegation_id| !delegation_id.is_empty() && !delegation_id.contains('/'));
+    if method == "POST" && collaboration_publication_delegation.is_some() {
+        if trust_identity_override_header {
+            write_http_json(
+                &mut stream,
+                "401 Unauthorized",
+                &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":"request headers cannot select collaboration actor or authority identity"}}),
+            )?;
+            return Ok(());
+        }
+        let credential = match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
+            Ok(value) => value,
+            Err(message) => {
+                write_http_json(
+                    &mut stream,
+                    "401 Unauthorized",
+                    &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":message}}),
+                )?;
+                return Ok(());
+            }
+        };
+        let Some(idempotency_key) = trust_idempotency_key
+            .as_deref()
+            .filter(|key| !key.trim().is_empty())
+        else {
+            write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok":false,"error":{"code":"IDEMPOTENCY_CONFLICT","message":"Idempotency-Key is required"}}),
+            )?;
+            return Ok(());
+        };
+        let Some(expected_revision) = trust_expected_version.filter(|version| *version > 0) else {
+            write_http_json(
+                &mut stream,
+                "409 Conflict",
+                &serde_json::json!({"ok":false,"error":{"code":"EXPECTED_REVISION_CONFLICT","message":"If-Match exact Delegation revision is required"}}),
+            )?;
+            return Ok(());
+        };
+        let request = match serde_json::from_slice::<
+            fabric_runtime::QueueRemoteFactPublicationRequest,
+        >(&body)
+        {
+            Ok(value) => value,
+            Err(error) => {
+                write_http_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &serde_json::json!({"ok":false,"error":{"code":"INVALID_PAYLOAD","message":error.to_string()}}),
+                )?;
+                return Ok(());
+            }
+        };
+        if Some(request.delegation_id.as_str()) != collaboration_publication_delegation {
+            write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok":false,"error":{"code":"INVALID_PAYLOAD","message":"path and body Delegation identities differ"}}),
+            )?;
+            return Ok(());
+        }
+        let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
+        let local_node_id = read_local_node_id()?;
+        match fabric_runtime::queue_remote_fact_publication(
+            &store_owned,
+            &firm_home,
+            &project_id,
+            &local_node_id,
+            &credential,
+            idempotency_key,
+            expected_revision,
+            &request,
+            current_unix_ms_u64(),
+        ) {
+            Ok(value) => write_http_json(
+                &mut stream,
+                "202 Accepted",
+                &serde_json::json!({"ok":true,"queued":value}),
+            )?,
+            Err(error) => {
+                let status = match error.code {
+                    harness_fabric::FabricErrorCode::UnauthorizedActor => "403 Forbidden",
+                    harness_fabric::FabricErrorCode::ExpectedRevisionConflict => "409 Conflict",
+                    _ => "400 Bad Request",
+                };
+                write_http_json(
+                    &mut stream,
+                    status,
+                    &serde_json::json!({"ok":false,"error":{"code":format!("{:?}",error.code).to_ascii_uppercase(),"message":error.message}}),
+                )?;
+            }
+        }
+        return Ok(());
+    }
     if method == "POST" && path_only == "/v1/agentfirm/runtime-commands" {
         if trust_identity_override_header {
             write_http_json(

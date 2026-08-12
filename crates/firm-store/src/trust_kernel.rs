@@ -2632,6 +2632,33 @@ impl HarnessStore {
         )
     }
 
+    /// Latest immutable Work reports available to server-side application
+    /// services. Callers must still bind the selected report to the current
+    /// Work, Team, actor and placement before publishing it remotely.
+    pub fn trust_work_reports(&self, execution_space_id: &str) -> StoreResult<Vec<WorkReport>> {
+        self.latest_trust_envelopes_unlocked(execution_space_id, "work_report")?
+            .values()
+            .map(event_projection)
+            .collect()
+    }
+
+    pub fn trust_work_findings(&self, execution_space_id: &str) -> StoreResult<Vec<WorkFinding>> {
+        self.latest_trust_envelopes_unlocked(execution_space_id, "work_finding")?
+            .values()
+            .map(event_projection)
+            .collect()
+    }
+
+    pub fn trust_failure_analyses(
+        &self,
+        execution_space_id: &str,
+    ) -> StoreResult<Vec<FailureAnalysis>> {
+        self.latest_trust_envelopes_unlocked(execution_space_id, "failure_analysis")?
+            .values()
+            .map(event_projection)
+            .collect()
+    }
+
     pub fn create_trust_finding(
         &self,
         context: &MutationContext,
