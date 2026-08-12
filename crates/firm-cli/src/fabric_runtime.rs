@@ -1825,15 +1825,24 @@ pub(crate) fn firm_home(resolved: &ResolvedStore, args: &[String]) -> CliResult<
         return Ok(PathBuf::from(path));
     }
     if let Some(space) = &resolved.execution_space_context {
-        return space
-            .store_root
-            .parent()
-            .and_then(Path::parent)
-            .and_then(Path::parent)
-            .map(Path::to_path_buf)
-            .ok_or_else(|| CliError::Usage("cannot derive FIRM_HOME from Execution Space".into()));
+        return firm_home_from_execution_space_root(&space.store_root);
     }
     super::execution_space::firm_home().map_err(|error| CliError::Usage(error.to_string()))
+}
+
+fn firm_home_from_execution_space_root(store_root: &Path) -> CliResult<PathBuf> {
+    let execution_spaces = store_root
+        .parent()
+        .ok_or_else(|| CliError::Usage("cannot derive FIRM_HOME from Execution Space".into()))?;
+    if execution_spaces.file_name().and_then(|name| name.to_str()) != Some("execution-spaces") {
+        return Err(CliError::Usage(
+            "Execution Space store must be a direct child of FIRM_HOME/execution-spaces".into(),
+        ));
+    }
+    execution_spaces
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| CliError::Usage("cannot derive FIRM_HOME from Execution Space".into()))
 }
 
 fn required(args: &[String], name: &str) -> CliResult<String> {
@@ -1894,6 +1903,21 @@ mod tests {
     fn real_gateway_frame_timeout_is_bounded_within_the_lease() {
         assert_eq!(GATEWAY_FRAME_READ_TIMEOUT, Duration::from_secs(5));
         assert!(GATEWAY_FRAME_READ_TIMEOUT < Duration::from_secs(30));
+    }
+
+    #[test]
+    fn execution_space_derives_the_exact_firm_home_without_escaping_to_user_home() {
+        assert_eq!(
+            firm_home_from_execution_space_root(Path::new(
+                "/Users/test/.firm/execution-spaces/space-a"
+            ))
+            .expect("canonical Execution Space layout"),
+            PathBuf::from("/Users/test/.firm")
+        );
+        assert!(
+            firm_home_from_execution_space_root(Path::new("/Users/test/arbitrary/space-a"))
+                .is_err()
+        );
     }
 
     #[test]
