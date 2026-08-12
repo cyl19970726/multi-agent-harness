@@ -403,7 +403,9 @@ fn node_worker(node_id: &str, target_node_id: &str, source: bool) {
                     return;
                 }
                 Ok(_) => {}
-                Err(error) if error.code == FabricErrorCode::TargetOffline && error.retryable => {}
+                Err(error)
+                    if error.code == FabricErrorCode::TargetOffline
+                        && error.message == "pending delivery batch is complete" => {}
                 Err(error) => panic!("target apply failed: {error}"),
             }
             thread::sleep(Duration::from_millis(20));
