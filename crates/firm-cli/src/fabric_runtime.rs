@@ -743,6 +743,10 @@ fn serve_host_http(
 ) -> CliResult<()> {
     let listener = TcpListener::bind(addr)?;
     listener.set_nonblocking(true)?;
+    let store = harness_fabric::FabricStore::open(store_root).map_err(fabric_error)?;
+    let keys = InMemoryArtifactKeyBackend::default();
+    keys.insert(company_id, artifact_key);
+    let control = ControlPlane::new(company_id, instance_id, &store, &keys, capability_key);
     while !stop.load(Ordering::SeqCst) {
         let (stream, _) = match listener.accept() {
             Ok(value) => value,
@@ -759,10 +763,6 @@ fn serve_host_http(
                 continue;
             }
         };
-        let store = harness_fabric::FabricStore::open(store_root).map_err(fabric_error)?;
-        let keys = InMemoryArtifactKeyBackend::default();
-        keys.insert(company_id, artifact_key);
-        let control = ControlPlane::new(company_id, instance_id, &store, &keys, capability_key);
         handle_host_http(
             request,
             trusted_origin,

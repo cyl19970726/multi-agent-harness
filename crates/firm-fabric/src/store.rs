@@ -110,6 +110,13 @@ struct FabricCheckpoint {
 struct StoreInner {
     state: FabricState,
     last_frame_digest: String,
+    journal_stamp: JournalStamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct JournalStamp {
+    length: u64,
+    modified: Option<std::time::SystemTime>,
 }
 
 pub struct FabricStore {
@@ -175,6 +182,7 @@ impl FabricStore {
                 valid_length,
             );
         }
+        let journal_stamp = journal_stamp(&journal)?;
         Ok(Self {
             root: canonical_root,
             journal,
@@ -183,6 +191,7 @@ impl FabricStore {
             inner: Mutex::new(StoreInner {
                 state,
                 last_frame_digest,
+                journal_stamp,
             }),
             limits,
             available: AtomicBool::new(true),
@@ -207,6 +216,16 @@ impl FabricStore {
         self.require_available()?;
         let lock = open_lock(&self.lock_path)?;
         lock.lock_exclusive().map_err(store_error)?;
+        let durable_stamp = journal_stamp(&self.journal)?;
+        let mut inner = self.inner.lock().map_err(|_| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "FabricStore lock poisoned",
+            )
+        })?;
+        if durable_stamp == inner.journal_stamp {
+            return Ok(inner.state.clone());
+        }
         let (state, last_frame_digest, valid_length, checkpoint_current) =
             load_journal_from_checkpoint(&self.journal, &self.checkpoint)?;
         if !checkpoint_current {
@@ -218,14 +237,9 @@ impl FabricStore {
                 valid_length,
             );
         }
-        let mut inner = self.inner.lock().map_err(|_| {
-            FabricError::none(
-                FabricErrorCode::StoreUnavailable,
-                "FabricStore lock poisoned",
-            )
-        })?;
         inner.state = state;
         inner.last_frame_digest = last_frame_digest;
+        inner.journal_stamp = journal_stamp(&self.journal)?;
         Ok(inner.state.clone())
     }
 
@@ -399,10 +413,14 @@ impl FabricStore {
                 "FabricStore lock poisoned",
             )
         })?;
-        let (durable_state, durable_digest, _, _) =
-            load_journal_from_checkpoint(&self.journal, &self.checkpoint)?;
-        inner.state = durable_state;
-        inner.last_frame_digest = durable_digest;
+        let durable_stamp = journal_stamp(&self.journal)?;
+        if durable_stamp != inner.journal_stamp {
+            let (durable_state, durable_digest, _, _) =
+                load_journal_from_checkpoint(&self.journal, &self.checkpoint)?;
+            inner.state = durable_state;
+            inner.last_frame_digest = durable_digest;
+            inner.journal_stamp = durable_stamp;
+        }
         let mut next = inner.state.clone();
         let result = operation(&mut next)?;
         next.revision = inner.state.revision.saturating_add(1);
@@ -442,6 +460,7 @@ impl FabricStore {
             &inner.last_frame_digest,
             journal_length,
         );
+        inner.journal_stamp = journal_stamp(&self.journal)?;
         Ok(result)
     }
 
@@ -464,6 +483,20 @@ fn open_lock(path: &Path) -> Result<File, FabricError> {
         .write(true)
         .open(path)
         .map_err(store_error)
+}
+
+fn journal_stamp(path: &Path) -> Result<JournalStamp, FabricError> {
+    match path.metadata() {
+        Ok(metadata) => Ok(JournalStamp {
+            length: metadata.len(),
+            modified: metadata.modified().ok(),
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(JournalStamp {
+            length: 0,
+            modified: None,
+        }),
+        Err(error) => Err(store_error(error)),
+    }
 }
 
 fn append_frame(path: &Path, frame: &JournalFrame) -> Result<(), FabricError> {
