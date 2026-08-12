@@ -65,6 +65,7 @@ const base=`http://127.0.0.1:${vite.httpServer.address().port}`;
 const browser=await chromium.launch({headless:true});
 try{
   const consoleErrors=[];
+  const unknownFixturePaths=[];
   let failMemberRefresh=false;
   let failHostMemberProjection=false;
   let hostMemberProjectionGate=null;
@@ -89,7 +90,7 @@ try{
       }
       body=memberSelected?(token==="fixture-member-token"?memberView:hostMemberPublic):hostView;
     }
-    else return route.fulfill({status:404,contentType:"application/json",body:JSON.stringify({error:{message:url.pathname}})});
+    else { unknownFixturePaths.push(url.pathname); return route.fulfill({status:404,contentType:"application/json",body:JSON.stringify({error:{message:url.pathname}})}); }
     return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(body)});
   });return next;};
   const page=await makePage(liveConfig?.memberToken??"fixture-member-token");
@@ -170,7 +171,7 @@ try{
   }
   const expectedFailureErrors=consoleErrors.filter(message=>message.includes("503 (Service Unavailable)"));
   if(!liveConfig)assert.equal(expectedFailureErrors.length,2,"fixture should exercise exactly two expected 503 projection failures");
-  assert.deepEqual(consoleErrors.filter(message=>!message.includes("503 (Service Unavailable)")),[],`unexpected console errors: ${consoleErrors.join(" | ")}`);
+  assert.deepEqual(consoleErrors.filter(message=>!message.includes("503 (Service Unavailable)")),[],`unexpected console errors: ${consoleErrors.join(" | ")}; unknown fixture paths: ${unknownFixturePaths.join(", ")}`);
 
   for(const viewport of [{width:900,height:1180},{width:390,height:844},{width:320,height:844}]){
     await page.setViewportSize(viewport);
