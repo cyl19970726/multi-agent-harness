@@ -1,0 +1,11 @@
+{
+  "id": "artifact-1", "company_id": "company-a", "source_node_id": "node-a",
+  "source_team_id": null, "source_work_id": null, "operation_id": null,
+  "media_type": "application/octet-stream", "size_bytes": 67108865,
+  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "classification": "sensitive", "initiator": "member-a",
+  "authorized_readers": ["member-b"], "created_by": "member-a",
+  "created_at_unix_ms": 10, "expires_at_unix_ms": null,
+  "completed_at_unix_ms": null, "deleted_at_unix_ms": null,
+  "revision": 1, "schema_version": "agentfirm.remote_fabric.v1"
+}

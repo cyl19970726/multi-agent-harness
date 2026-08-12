@@ -33,6 +33,8 @@ use thiserror::Error;
 mod trust_kernel;
 pub use trust_kernel::*;
 
+pub mod remote_fabric_store;
+
 mod company_os;
 pub mod docs_v2;
 pub use company_os::{

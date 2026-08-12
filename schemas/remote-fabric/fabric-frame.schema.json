@@ -1,0 +1,232 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.local/schemas/remote-fabric/fabric-frame.schema.json",
+  "title": "FabricFrame",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "frame_id", "protocol_version", "schema_version", "canonicalization_version", "company_id", "node_id",
+    "gateway_generation", "node_daemon_id", "node_daemon_generation", "control_plane_generation", "sent_at_unix_ms",
+    "correlation_id", "payload", "payload_digest"
+  ],
+  "properties": {
+    "frame_id": { "type": "string", "minLength": 1 },
+    "protocol_version": { "const": 1 },
+    "schema_version": { "const": "agentfirm.remote_fabric.v1" },
+    "canonicalization_version": { "const": "agentfirm.canonical-json.v1" },
+    "company_id": { "type": "string", "minLength": 1 },
+    "node_id": { "type": "string", "minLength": 1 },
+    "gateway_generation": { "type": "integer", "minimum": 0 },
+    "node_daemon_id": { "type": "string", "minLength": 1 },
+    "node_daemon_generation": { "type": "integer", "minimum": 1 },
+    "control_plane_generation": { "type": "integer", "minimum": 0 },
+    "sent_at_unix_ms": { "type": "integer", "minimum": 0 },
+    "correlation_id": { "type": "string", "minLength": 1 },
+    "payload": { "$ref": "#/$defs/payload" },
+    "payload_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  },
+  "allOf": [{
+    "if": { "properties": { "payload": { "type": "object", "properties": { "frame_kind": { "const": "hello" } } } } },
+    "then": { "properties": { "gateway_generation": { "type": "integer", "const": 0 }, "control_plane_generation": { "type": "integer", "const": 0 } } },
+    "else": { "properties": { "gateway_generation": { "type": "integer", "minimum": 1 }, "control_plane_generation": { "type": "integer", "minimum": 1 } } }
+  }],
+  "$defs": {
+    "payload": {
+      "oneOf": [
+        { "$ref": "#/$defs/hello" },
+        { "$ref": "#/$defs/welcome" },
+        { "$ref": "#/$defs/operation_submit" },
+        { "$ref": "#/$defs/routed_operation" },
+        { "$ref": "#/$defs/target_persisted" },
+        { "$ref": "#/$defs/operation_result" },
+        { "$ref": "#/$defs/receipt" },
+        { "$ref": "#/$defs/heartbeat" },
+        { "$ref": "#/$defs/heartbeat_ack" },
+        { "$ref": "#/$defs/pending_batch_complete" },
+        { "$ref": "#/$defs/reconcile_request" },
+        { "$ref": "#/$defs/reconcile_result" },
+        { "$ref": "#/$defs/artifact_capability_request" },
+        { "$ref": "#/$defs/artifact_capability_response" },
+        { "$ref": "#/$defs/lease_fence" },
+        { "$ref": "#/$defs/drain" },
+        { "$ref": "#/$defs/protocol_shutdown" }
+      ]
+    },
+    "hello": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "hello" },
+        "payload": { "$ref": "node-hello.schema.json" }
+      }
+    },
+    "welcome": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "welcome" },
+        "payload": { "$ref": "node-welcome.schema.json" }
+      }
+    },
+    "routed_operation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "routed_operation" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["operation", "attempt"],
+          "properties": {
+            "operation": { "$ref": "routed-operation.schema.json" },
+            "attempt": { "$ref": "route-attempt.schema.json" }
+          }
+        }
+      }
+    },
+    "operation_submit": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "operation_submit" },
+        "payload": { "$ref": "routed-operation.schema.json" }
+      }
+    },
+    "target_persisted": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "target_persisted" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["operation_id", "request_digest", "route_seq"],
+          "properties": {
+            "operation_id": { "type": "string", "minLength": 1 },
+            "request_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "route_seq": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "operation_result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "operation_result" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["operation_id", "result_schema", "result", "effect"],
+          "properties": {
+            "operation_id": { "type": "string", "minLength": 1 },
+            "result_schema": { "type": "string", "minLength": 1 },
+            "result": {},
+            "effect": { "enum": ["not_applied", "applied", "unknown"] }
+          }
+        }
+      }
+    },
+    "receipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "receipt" },
+        "payload": { "$ref": "route-receipt.schema.json" }
+      }
+    },
+    "heartbeat": { "type": "object", "$ref": "#/$defs/observed_at", "properties": { "frame_kind": { "const": "heartbeat" } } },
+    "heartbeat_ack": { "type": "object", "$ref": "#/$defs/observed_at", "properties": { "frame_kind": { "const": "heartbeat_ack" } } },
+    "pending_batch_complete": { "type": "object", "$ref": "#/$defs/observed_at", "properties": { "frame_kind": { "const": "pending_batch_complete" } } },
+    "observed_at": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "type": "string" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["observed_at_unix_ms"],
+          "properties": { "observed_at_unix_ms": { "type": "integer", "minimum": 0 } }
+        }
+      }
+    },
+    "reconcile_request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "reconcile_request" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["operation_ids"],
+          "properties": {
+            "operation_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+          }
+        }
+      }
+    },
+    "reconcile_result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "reconcile_result" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["receipts"],
+          "properties": { "receipts": { "type": "array", "items": { "$ref": "route-receipt.schema.json" } } }
+        }
+      }
+    },
+    "artifact_capability_request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "artifact_capability_request" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["artifact_id", "purpose"],
+          "properties": {
+            "artifact_id": { "type": "string", "minLength": 1 },
+            "purpose": { "const": "download" }
+          }
+        }
+      }
+    },
+    "artifact_capability_response": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "artifact_capability_response" },
+        "payload": { "$ref": "#/$defs/artifact_capability" }
+      }
+    },
+    "artifact_capability": {
+      "type": "object", "additionalProperties": false,
+      "required": ["token", "company_id", "node_id", "artifact_id", "artifact_digest", "purpose", "issued_to", "issued_at_unix_ms", "expires_at_unix_ms", "one_use"],
+      "properties": {
+        "token": { "type": "string", "minLength": 1 },
+        "company_id": { "type": "string", "minLength": 1 },
+        "node_id": { "type": "string", "minLength": 1 },
+        "artifact_id": { "type": "string", "minLength": 1 },
+        "artifact_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "purpose": { "const": "download" },
+        "issued_to": { "type": "string", "minLength": 1 },
+        "issued_at_unix_ms": { "type": "integer", "minimum": 0 },
+        "expires_at_unix_ms": { "type": "integer", "minimum": 1 },
+        "one_use": { "const": true }
+      }
+    },
+    "reason_payload": {
+      "type": "object", "additionalProperties": false,
+      "required": ["reason"],
+      "properties": { "reason": { "type": "string", "minLength": 1 } }
+    },
+    "lease_fence": { "type": "object", "$ref": "#/$defs/reason_frame", "properties": { "frame_kind": { "const": "lease_fence" } } },
+    "drain": { "type": "object", "$ref": "#/$defs/reason_frame", "properties": { "frame_kind": { "const": "drain" } } },
+    "protocol_shutdown": { "type": "object", "$ref": "#/$defs/reason_frame", "properties": { "frame_kind": { "const": "protocol_shutdown" } } },
+    "reason_frame": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "type": "string" },
+        "payload": { "$ref": "#/$defs/reason_payload" }
+      }
+    }
+  }
+}

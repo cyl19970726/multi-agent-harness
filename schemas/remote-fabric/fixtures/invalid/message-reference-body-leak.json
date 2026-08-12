@@ -1,0 +1,5 @@
+{
+  "message_id": "message:remote-1",
+  "body_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "body": "Fabric must not transport Message content"
+}

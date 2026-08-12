@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.local/schemas/remote-fabric/runtime-command-reference.schema.json",
+  "title": "RuntimeCommandReference",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runtime_command_id", "intent_fingerprint", "target_execution_space_id",
+    "canonical_command_intent"
+  ],
+  "properties": {
+    "runtime_command_id": { "type": "string", "minLength": 1 },
+    "intent_fingerprint": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "target_execution_space_id": { "type": "string", "minLength": 1 },
+    "canonical_command_intent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "target_execution_space_id", "command", "idempotency_key",
+        "expected_version", "expires_unix_ms", "payload", "payload_fingerprint", "issued_at"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "target_execution_space_id": { "type": "string", "minLength": 1 },
+        "command": {
+          "type": "string",
+          "enum": [
+            "author_message", "start_session", "stop_session", "resume_session",
+            "dispatch_provider", "cancel_provider_turn"
+          ]
+        },
+        "idempotency_key": { "type": "string", "minLength": 1 },
+        "expected_version": { "type": "integer", "minimum": 0 },
+        "expires_unix_ms": { "type": "integer", "minimum": 1 },
+        "payload": { "type": "object" },
+        "payload_fingerprint": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "issued_at": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -92,3 +92,15 @@ native session. Never clear ownership, duplicate side effects, or reconstruct a
 session from Harness messages after a crash. Host assignment, resume,
 request-changes, and rebind are external changes that still arrive as
 WorkDelivery.
+
+## 10. Cross-Node Routing Has One Truth
+
+`CompanyNode.id` is the existing `ExecutionNode.id`. A NodeGateway is a child
+of the exact current NodeDaemonLease generation, not a second Node authority.
+For cross-Node operations, FabricStore `RoutedOperation`, `RouteAttempt`, and
+`RouteReceipt` are the sole route truth. Never dual-write or replay from
+MessageRouteJournal. A routed Message must carry the canonical immutable
+Message envelope or an authenticated content-addressed reference; the target
+persists and verifies it before creating MessageDelivery. RouteAttempt proves
+transport only; only a generation-fenced target result proves application
+effect. Unknown effect requires reconciliation and never permits blind replay.
