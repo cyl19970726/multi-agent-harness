@@ -27,8 +27,7 @@ use harness_store::HarnessStore;
 
 use super::{CliError, CliResult, ResolvedStore};
 
-const GATEWAY_HEARTBEAT_READ_TIMEOUT: Duration = Duration::from_secs(5);
-const GATEWAY_IDLE_POLL_READ_TIMEOUT: Duration = Duration::from_millis(250);
+const GATEWAY_FRAME_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) fn fabric_command(
     store: &HarnessStore,
@@ -546,18 +545,15 @@ fn node_gateway_command(
         daemon_generation: gateway.session.node_daemon_generation,
     };
     loop {
-        // A real two-machine mTLS heartbeat includes a durable lease CAS and
-        // must not inherit the short idle-poll timeout used while waiting for
-        // routed work. Otherwise normal LAN scheduling jitter fabricates an
-        // offline transition and the reconnect collides with its still-live
-        // generation lease.
+        // A real two-machine mTLS heartbeat includes a durable lease CAS.
+        // HeartbeatAck is followed by zero or more routed-operation frames,
+        // but v1 has no batch-end frame. Every read therefore needs the same
+        // bounded LAN timeout: a shorter idle poll can leave a delayed routed
+        // frame in the socket and misread it as the next HeartbeatAck.
         gateway
-            .set_read_timeout(Some(GATEWAY_HEARTBEAT_READ_TIMEOUT))
+            .set_read_timeout(Some(GATEWAY_FRAME_READ_TIMEOUT))
             .map_err(fabric_error)?;
         gateway.heartbeat().map_err(fabric_error)?;
-        gateway
-            .set_read_timeout(Some(GATEWAY_IDLE_POLL_READ_TIMEOUT))
-            .map_err(fabric_error)?;
         loop {
             match gateway.apply_next(&local, &mut application) {
                 Ok(receipt) => println!(
@@ -570,12 +566,6 @@ fn node_gateway_command(
                 Err(error) => return Err(fabric_error(error)),
             }
         }
-        // Reconcile and submit are coordination operations with durable Store
-        // work on the Control Plane. Restore the bounded coordination timeout
-        // after the intentionally short inbound idle poll.
-        gateway
-            .set_read_timeout(Some(GATEWAY_HEARTBEAT_READ_TIMEOUT))
-            .map_err(fabric_error)?;
         for mut operation in local.pending_outbox_operations().map_err(fabric_error)? {
             let receipts = gateway
                 .reconcile_operations(&local, BTreeSet::from([operation.id.clone()]))
@@ -1653,20 +1643,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn real_gateway_heartbeat_timeout_is_bounded_but_not_an_idle_poll() {
-        assert_eq!(GATEWAY_IDLE_POLL_READ_TIMEOUT, Duration::from_millis(250));
-        assert_eq!(GATEWAY_HEARTBEAT_READ_TIMEOUT, Duration::from_secs(5));
-        assert!(GATEWAY_HEARTBEAT_READ_TIMEOUT > GATEWAY_IDLE_POLL_READ_TIMEOUT);
-        assert!(GATEWAY_HEARTBEAT_READ_TIMEOUT < Duration::from_secs(30));
-    }
-
-    #[test]
-    fn durable_coordination_uses_the_heartbeat_timeout_not_the_idle_poll() {
-        let coordination_operations = ["heartbeat", "reconcile", "submit"];
-        assert_eq!(coordination_operations.len(), 3);
-        for _ in coordination_operations {
-            assert!(GATEWAY_HEARTBEAT_READ_TIMEOUT > GATEWAY_IDLE_POLL_READ_TIMEOUT);
-        }
+    fn real_gateway_frame_timeout_is_bounded_within_the_lease() {
+        assert_eq!(GATEWAY_FRAME_READ_TIMEOUT, Duration::from_secs(5));
+        assert!(GATEWAY_FRAME_READ_TIMEOUT < Duration::from_secs(30));
     }
 
     #[cfg(target_os = "macos")]
