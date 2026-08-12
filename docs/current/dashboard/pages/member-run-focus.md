@@ -26,7 +26,16 @@ Profile deep link carries durable identity and expanded historical detail.
 
 ## Canonical Data And Semantics
 
-Required data:
+The following is the full target contract. The issue #444 authenticated Agent
+Conversation slice currently ships TeamWorkspace messages and delivery
+lineage, all Works exactly bound to the selected MemberRun, current member
+runtime/session summary, read-on-demand native activity, and HostConsole
+allowed actions. PendingInteraction resolution, pending Close-request
+projection, recipient ACK action, Steer/Interrupt safe-point state and the full
+runtime/reconnect matrix remain server-projection gaps; the UI does not infer
+them.
+
+Full-contract required data:
 
 - optional `Mission`, selected/current Wave context, and Host judgment/advance
   projection;
@@ -126,13 +135,14 @@ The contextual rail is not a required third column. It appears only when at
 least one selected/current fact or authorized action exists, and uses shared
 density variants rather than page-specific decorative cards. Its order is:
 
-1. **CurrentWork** — only the Work bound to the selected exact MemberRun
+1. **BoundWorks** — every Work bound to the selected exact MemberRun
    (`current_member_run_ref` / server-projected execution binding), with
    id/version, creator/owner, phase/condition/resolution,
    readiness, context,
    completion criteria, owned paths, permissions, blockers, child progress and
-   applicable constraints. Other durable AgentMember-owned Works remain in the
-   Team Works surface and are never guessed to be the selected execution.
+   applicable constraints. No single Work is called current unless a future
+   server projection says so. Other durable AgentMember-owned Works are shown
+   separately and never guessed to be the selected execution.
 2. **RuntimeSummary** — exact MemberRun, provider/model/native-session binding, availability,
    resume compatibility, selected execution driver, continuation state,
    Team Supervisor generation/heartbeat, provider-transport and reconnect
@@ -204,7 +214,8 @@ it sends the selected adapter's real close/cancel protocol and must not be
 presented as ordinary turn completion. Completion of the MemberRun is an
 execution fact, not an implicit Wave advance.
 
-Render the latest `TeamMemberCloseRequest` beside those controls. `pending`
+Full-contract follow-up: render the latest `TeamMemberCloseRequest` beside
+those controls once HostConsole projects it. `pending`
 disables duplicate Close actions and remains visible across Supervisor restart;
 `applied` is retained as lifecycle evidence.
 
