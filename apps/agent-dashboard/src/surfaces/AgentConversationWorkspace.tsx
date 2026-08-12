@@ -130,7 +130,7 @@ export function AgentConversationWorkspace({
             <Tabs.Content value="work" className="min-h-0 flex-1 outline-none"><WorkCanvas data={data} onSelect={(work)=>{setContextSelection({kind:"work",work});onSelectionChange({teamWorkId:work.work_id});}}/></Tabs.Content>
           </Tabs.Root>
 
-          <AgentComposer data={data} actions={currentView.allowed_actions} actionsCurrent={!loading&&!error&&actionsCurrent&&currentView.freshness==="current"} selectedRunId={selectedRunId} onAction={onAction} onCompleted={()=>setRefresh(value=>value+1)}/>
+          <AgentComposer data={data} actions={currentView.allowed_actions} actionsCurrent={!error&&actionsCurrent&&currentView.freshness==="current"} selectedRunId={selectedRunId} onAction={onAction} onCompleted={()=>setRefresh(value=>value+1)}/>
         </section>
 
         <aside className="agent-workspace-context hidden min-h-0 border-l border-border lg:block" aria-label="Agent context">{context}</aside>
