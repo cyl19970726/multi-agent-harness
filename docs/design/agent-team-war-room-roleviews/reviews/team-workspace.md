@@ -74,9 +74,36 @@ kept a generic administration-dashboard composition, excessive bordered panels,
 weak first-screen density and insufficient chat dominance. Passing product
 checks, screenshot capture and interaction checks did not prove visual parity.
 
-The replacement visual contract and seven immutable candidate frames live in
-`../visual-rebaseline-v2.md` and `../expected-v2/`. Final review remains pending
-until an exact source SHA has all of the following:
+The replacement visual contract and immutable rejected/corrected candidate
+families live in `../visual-rebaseline-v2.md`, `../expected-v2/` and
+`../expected-v3/`.
+
+### Final visual acceptance — `bbcf3df2`
+
+An independent visual reviewer inspected the approved expected-v3/v3.1 frames
+and the exact browser evidence under
+`.visual-evidence/agent-team-war-room-roleviews/final-exact/` at desktop,
+tablet, 390 px and 320 px. Earlier P0/P1 findings were corrected rather than
+waived:
+
+- Works uses content-height phase regions and a mobile Priority Work instead
+  of full-height empty lane panels;
+- Activity is a continuous typed record stream;
+- Agent Conversation gives the center canvas majority width, keeps Current
+  Work visible on mobile and demotes provider-native facts below conversation;
+- Host Console shows Lead Inbox pressure followed immediately by Current
+  Decision at every viewport while retaining the desktop decision cockpit;
+- Member Home is identity-led and separates AgentMember, MemberRun, native
+  session, Workspace and Work responsibility;
+- Members uses a continuous roster and preserves AgentMember/MemberRun/native
+  separation.
+
+The reviewer reported visual P0=0 and P1=0 and set
+`visual_fidelity=pass`. Minor generated-image asset, typography and color
+differences remain governed by `../expected-v3/README.md`; they do not override
+RoleView data or justify expected-image replacement.
+
+The accepted source additionally passed:
 
 - deterministic product, authority, accessibility and responsive gates;
 - viewport-matched implemented evidence at desktop, tablet, mobile and 320 px;
@@ -85,3 +112,7 @@ until an exact source SHA has all of the following:
 - independent PM and real-user/operator review of that same SHA;
 - visual and product P0/P1 findings reduced to zero without overwriting the
   approved expected images to make a diff pass.
+
+Because this review document is committed after the reviewed UI source, the
+final evidence recapture must name the later documentation-inclusive SHA while
+preserving `bbcf3df2` as the reviewed implementation source.
