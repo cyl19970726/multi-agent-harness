@@ -253,19 +253,39 @@ export interface AgentWorkspaceActivityItem {
 export interface AgentWorkspaceRosterItem extends Partial<MemberCapacitySummary> {
   agent_member_ref:ActorRef; display_name:string; role:string; is_host?:boolean;
 }
-export interface AgentWorkspaceData {
-  projection_scope:"member_self_private"|"host_self_private"|"host_member_public";
+interface AgentWorkspaceSelectedAgent {
+  agent_member_ref:ActorRef;display_name:string;role:string;organization_status:string;is_host:boolean;current_member_run_ref:string|null;provider:string|null;execution_mode:string|null;runtime_status:string|null;
+}
+interface AgentWorkspaceSessionActivity {
+  native_session_id:string|null;provider:string|null;execution_mode:string|null;availability:string;items:AgentWorkspaceActivityItem[];truncated:boolean;disabled_reason:string|null;
+}
+interface AgentWorkspaceConfiguration {
+  description:string|null;prompt_ref:string|null;prompt_projection:string;skill_refs:string[];capabilities:string[];provider_profile_ref:string|null;model_preference:string|null;workspace_policy:string|null;permission_ceiling:string|null;forbidden_actions:string[];forbidden_actions_projection:string;workspace_binding:RoleRecordSummary|null;
+}
+interface AgentWorkspaceDataBase {
   team:{team_id:string;display_name:string;team_revision:number;mission_id:string;host_agent_id:string;viewer_role:"host"|"member";status:string;latest_run_id:string|null};
-  selected_agent:{agent_member_ref:ActorRef;display_name:string;role:string;organization_status:string;is_host:boolean;current_member_run_ref:string|null;provider:string|null;execution_mode:string|null;runtime_status:string|null};
+  selected_agent:AgentWorkspaceSelectedAgent;
   roster:AgentWorkspaceRosterItem[];
   sessions:AgentWorkspaceSession[];
   selected_session_id:string|null;
-  session_activity:{native_session_id:string|null;provider:string|null;execution_mode:string|null;availability:string;items:AgentWorkspaceActivityItem[];truncated:boolean;disabled_reason:string|null};
+  session_activity:AgentWorkspaceSessionActivity;
   messages:MessageSummary[];
   works:WorkSummary[];
-  configuration:{description:string|null;prompt_ref:string|null;prompt_projection:string;skill_refs:string[];capabilities:string[];provider_profile_ref:string|null;model_preference:string|null;workspace_policy:string|null;permission_ceiling:string|null;forbidden_actions:string[];forbidden_actions_projection:string;workspace_binding:RoleRecordSummary|null};
+  configuration:AgentWorkspaceConfiguration;
   context_summary:{current_work_id:string|null;message_count:number;unread_count:number;last_activity_at:string|null;authorization_count:number};
 }
+export type AgentWorkspacePrivateData=AgentWorkspaceDataBase&{
+  projection_scope:"member_self_private"|"host_self_private";
+};
+export type AgentWorkspaceHostMemberPublicData=AgentWorkspaceDataBase&{
+  projection_scope:"host_member_public";
+  selected_agent:AgentWorkspaceSelectedAgent&{current_member_run_ref:null;provider:null;execution_mode:null;runtime_status:null};
+  sessions:[];
+  selected_session_id:null;
+  session_activity:AgentWorkspaceSessionActivity&{native_session_id:null;provider:null;execution_mode:null;availability:"unavailable";items:[];truncated:false;disabled_reason:string};
+  configuration:AgentWorkspaceConfiguration&{prompt_ref:null;provider_profile_ref:null;model_preference:null;workspace_policy:null;permission_ceiling:null;forbidden_actions:[];workspace_binding:null};
+};
+export type AgentWorkspaceData=AgentWorkspacePrivateData|AgentWorkspaceHostMemberPublicData;
 export interface MemberWorkbenchData {
   agent_member:{id:string;role:string;organization_status:string}; member_run:{id:string;agent_member_id:string;team_run_id:string;coordination_status:string;runtime_status:string;runtime_generation:number;native_session_health:string}; my_works:WorkSummary[];
   eligible_ready_pool:WorkSummary[]; unread_messages:MessageSummary[]; queued_deliveries:RoleRecordSummary[];

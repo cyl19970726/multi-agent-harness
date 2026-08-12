@@ -28,6 +28,39 @@ for(const name of names.slice(2)){
   assert.equal(validate(hostile),false,`${name} must reject nested unknown fields`);
 }
 
+const agentWorkspaceValidate=ajv.getSchema("agentfirm.role_views.v1/agent-workspace.schema.json");
+const privateAgentWorkspaceFixture=JSON.parse(fs.readFileSync(path.join(fixtureDir,"agent-workspace.json"),"utf8"));
+const publicAgentWorkspaceFixture=structuredClone(privateAgentWorkspaceFixture);
+publicAgentWorkspaceFixture.data.projection_scope="host_member_public";
+Object.assign(publicAgentWorkspaceFixture.data.selected_agent,{current_member_run_ref:null,provider:null,execution_mode:null,runtime_status:null});
+publicAgentWorkspaceFixture.data.sessions=[];
+publicAgentWorkspaceFixture.data.selected_session_id=null;
+Object.assign(publicAgentWorkspaceFixture.data.session_activity,{native_session_id:null,provider:null,execution_mode:null,availability:"unavailable",items:[],truncated:false,disabled_reason:"Provider-private Session events are visible only to the exact selected Agent identity."});
+Object.assign(publicAgentWorkspaceFixture.data.configuration,{prompt_ref:null,provider_profile_ref:null,model_preference:null,workspace_policy:null,permission_ceiling:null,forbidden_actions:[],workspace_binding:null});
+assert.equal(agentWorkspaceValidate(publicAgentWorkspaceFixture),true,`public Agent Workspace projection: ${ajv.errorsText(agentWorkspaceValidate.errors)}`);
+for(const [label,mutate] of [
+  ["Session list",fixture=>fixture.data.sessions.push(privateAgentWorkspaceFixture.data.sessions[0])],
+  ["selected Session id",fixture=>{fixture.data.selected_session_id="private-session"}],
+  ["selected MemberRun",fixture=>{fixture.data.selected_agent.current_member_run_ref="private-member-run"}],
+  ["selected provider",fixture=>{fixture.data.selected_agent.provider="codex"}],
+  ["selected execution mode",fixture=>{fixture.data.selected_agent.execution_mode="codex_app_server"}],
+  ["selected runtime status",fixture=>{fixture.data.selected_agent.runtime_status="running"}],
+  ["native activity Session id",fixture=>{fixture.data.session_activity.native_session_id="private-session"}],
+  ["native activity provider",fixture=>{fixture.data.session_activity.provider="codex"}],
+  ["native activity execution mode",fixture=>{fixture.data.session_activity.execution_mode="codex_app_server"}],
+  ["native activity item",fixture=>fixture.data.session_activity.items.push(privateAgentWorkspaceFixture.data.session_activity.items[0])],
+  ["provider profile",fixture=>{fixture.data.configuration.provider_profile_ref="private-profile"}],
+  ["model preference",fixture=>{fixture.data.configuration.model_preference="private-model"}],
+  ["workspace policy",fixture=>{fixture.data.configuration.workspace_policy="private-policy"}],
+  ["permission ceiling",fixture=>{fixture.data.configuration.permission_ceiling="private-permission"}],
+  ["workspace binding",fixture=>{fixture.data.configuration.workspace_binding={kind:"workspace_binding",id:"private-workspace",work_id:null,member_run_id:"private-member-run",requirement_id:null,status:"active",version:1,actor_ref:null,summary:null,created_at:null,source_id:null,target_id:null,locator:"/private"}}],
+  ["runtime fabric",fixture=>{fixture.data.runtime_fabric={agent_sessions:[]}}],
+]){
+  const hostile=structuredClone(publicAgentWorkspaceFixture);
+  mutate(hostile);
+  assert.equal(agentWorkspaceValidate(hostile),false,`host_member_public must reject leaked ${label}`);
+}
+
 const operatorValidate=ajv.getSchema("agentfirm.role_views.v1/operator.schema.json");
 const operatorFixture=JSON.parse(fs.readFileSync(path.join(fixtureDir,"operator.json"),"utf8"));
 const daemonAction={kind:"start_daemon",target_ref:{kind:"execution_node",id:"node-1"},required_version:1,disabled_reason:null,authority_generation:0};

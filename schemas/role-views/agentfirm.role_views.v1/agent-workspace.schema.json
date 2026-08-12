@@ -7,28 +7,61 @@
       "type":"object",
       "properties":{
         "view_kind":{"const":"agent_workspace"},
-        "data":{
-          "type":"object",
-          "additionalProperties":false,
-          "required":["projection_scope","team","selected_agent","roster","sessions","selected_session_id","session_activity","messages","works","configuration","context_summary"],
-          "properties":{
-            "projection_scope":{"enum":["member_self_private","host_self_private","host_member_public"]},
-            "team":{"$ref":"#/$defs/team"},
-            "selected_agent":{"$ref":"#/$defs/selectedAgent"},
-            "roster":{"type":"array","items":{"$ref":"#/$defs/rosterAgent"}},
-            "sessions":{"type":"array","items":{"$ref":"#/$defs/session"}},
-            "selected_session_id":{"type":["string","null"]},
-            "session_activity":{"$ref":"#/$defs/nativeActivity"},
-            "messages":{"type":"array","items":{"$ref":"common.schema.json#/$defs/messageSummary"}},
-            "works":{"type":"array","items":{"$ref":"common.schema.json#/$defs/workSummary"}},
-            "configuration":{"$ref":"#/$defs/configuration"},
-            "context_summary":{"$ref":"#/$defs/contextSummary"}
-          }
-        }
+        "data":{"oneOf":[
+          {"$ref":"#/$defs/memberSelfPrivateData"},
+          {"$ref":"#/$defs/hostSelfPrivateData"},
+          {"$ref":"#/$defs/hostMemberPublicData"}
+        ]}
       }
     }
   ],
   "$defs":{
+    "agentWorkspaceData":{
+      "type":"object",
+      "additionalProperties":false,
+      "required":["projection_scope","team","selected_agent","roster","sessions","selected_session_id","session_activity","messages","works","configuration","context_summary"],
+      "properties":{
+        "projection_scope":{"enum":["member_self_private","host_self_private","host_member_public"]},
+        "team":{"$ref":"#/$defs/team"},
+        "selected_agent":{"$ref":"#/$defs/selectedAgent"},
+        "roster":{"type":"array","items":{"$ref":"#/$defs/rosterAgent"}},
+        "sessions":{"type":"array","items":{"$ref":"#/$defs/session"}},
+        "selected_session_id":{"type":["string","null"]},
+        "session_activity":{"$ref":"#/$defs/nativeActivity"},
+        "messages":{"type":"array","items":{"$ref":"common.schema.json#/$defs/messageSummary"}},
+        "works":{"type":"array","items":{"$ref":"common.schema.json#/$defs/workSummary"}},
+        "configuration":{"$ref":"#/$defs/configuration"},
+        "context_summary":{"$ref":"#/$defs/contextSummary"}
+      }
+    },
+    "memberSelfPrivateData":{
+      "allOf":[
+        {"$ref":"#/$defs/agentWorkspaceData"},
+        {"type":"object","properties":{"projection_scope":{"const":"member_self_private"}}}
+      ]
+    },
+    "hostSelfPrivateData":{
+      "allOf":[
+        {"$ref":"#/$defs/agentWorkspaceData"},
+        {"type":"object","properties":{"projection_scope":{"const":"host_self_private"}}}
+      ]
+    },
+    "hostMemberPublicData":{
+      "allOf":[
+        {"$ref":"#/$defs/agentWorkspaceData"},
+        {
+          "type":"object",
+          "properties":{
+            "projection_scope":{"const":"host_member_public"},
+            "selected_agent":{"$ref":"#/$defs/publicSelectedAgent"},
+            "sessions":{"type":"array","maxItems":0},
+            "selected_session_id":{"type":"null"},
+            "session_activity":{"$ref":"#/$defs/publicNativeActivity"},
+            "configuration":{"$ref":"#/$defs/publicConfiguration"}
+          }
+        }
+      ]
+    },
     "team":{
       "type":"object","additionalProperties":false,
       "required":["team_id","display_name","team_revision","mission_id","host_agent_id","viewer_role","status","latest_run_id"],
@@ -42,6 +75,20 @@
         "display_name":{"type":"string"},"role":{"type":"string"},"organization_status":{"type":"string"},"is_host":{"type":"boolean"},
         "current_member_run_ref":{"type":["string","null"]},"provider":{"type":["string","null"]},"execution_mode":{"type":["string","null"]},"runtime_status":{"type":["string","null"]}
       }
+    },
+    "publicSelectedAgent":{
+      "allOf":[
+        {"$ref":"#/$defs/selectedAgent"},
+        {
+          "type":"object",
+          "properties":{
+            "current_member_run_ref":{"type":"null"},
+            "provider":{"type":"null"},
+            "execution_mode":{"type":"null"},
+            "runtime_status":{"type":"null"}
+          }
+        }
+      ]
     },
     "rosterAgent":{
       "type":"object","additionalProperties":false,
@@ -66,10 +113,44 @@
       "required":["native_session_id","provider","execution_mode","availability","items","truncated","disabled_reason"],
       "properties":{"native_session_id":{"type":["string","null"]},"provider":{"type":["string","null"]},"execution_mode":{"type":["string","null"]},"availability":{"type":"string"},"items":{"type":"array","maxItems":300,"items":{"$ref":"#/$defs/nativeActivityItem"}},"truncated":{"type":"boolean"},"disabled_reason":{"type":["string","null"]}}
     },
+    "publicNativeActivity":{
+      "allOf":[
+        {"$ref":"#/$defs/nativeActivity"},
+        {
+          "type":"object",
+          "properties":{
+            "native_session_id":{"type":"null"},
+            "provider":{"type":"null"},
+            "execution_mode":{"type":"null"},
+            "availability":{"const":"unavailable"},
+            "items":{"type":"array","maxItems":0},
+            "truncated":{"const":false},
+            "disabled_reason":{"type":"string","minLength":1}
+          }
+        }
+      ]
+    },
     "configuration":{
       "type":"object","additionalProperties":false,
       "required":["description","prompt_ref","prompt_projection","skill_refs","capabilities","provider_profile_ref","model_preference","workspace_policy","permission_ceiling","forbidden_actions","forbidden_actions_projection","workspace_binding"],
       "properties":{"description":{"type":["string","null"]},"prompt_ref":{"type":["string","null"]},"prompt_projection":{"type":"string"},"skill_refs":{"type":"array","items":{"type":"string"}},"capabilities":{"type":"array","items":{"type":"string"}},"provider_profile_ref":{"type":["string","null"]},"model_preference":{"type":["string","null"]},"workspace_policy":{"type":["string","null"]},"permission_ceiling":{"type":["string","null"]},"forbidden_actions":{"type":"array","items":{"type":"string"}},"forbidden_actions_projection":{"type":"string"},"workspace_binding":{"anyOf":[{"$ref":"common.schema.json#/$defs/recordSummary"},{"type":"null"}]}}
+    },
+    "publicConfiguration":{
+      "allOf":[
+        {"$ref":"#/$defs/configuration"},
+        {
+          "type":"object",
+          "properties":{
+            "prompt_ref":{"type":"null"},
+            "provider_profile_ref":{"type":"null"},
+            "model_preference":{"type":"null"},
+            "workspace_policy":{"type":"null"},
+            "permission_ceiling":{"type":"null"},
+            "forbidden_actions":{"type":"array","maxItems":0},
+            "workspace_binding":{"type":"null"}
+          }
+        }
+      ]
     },
     "contextSummary":{
       "type":"object","additionalProperties":false,
