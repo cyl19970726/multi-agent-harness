@@ -563,6 +563,12 @@ fn node_gateway_command(
                 Err(error) if error.code == FabricErrorCode::TargetOffline && error.retryable => {
                     break
                 }
+                Err(error)
+                    if error.code == FabricErrorCode::TargetOffline
+                        && error.message == "pending delivery batch is complete" =>
+                {
+                    break
+                }
                 Err(error) => return Err(fabric_error(error)),
             }
         }

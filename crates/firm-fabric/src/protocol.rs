@@ -834,6 +834,7 @@ pub enum FabricPayload {
     Receipt(Box<RouteReceipt>),
     Heartbeat { observed_at_unix_ms: u64 },
     HeartbeatAck { observed_at_unix_ms: u64 },
+    PendingBatchComplete { observed_at_unix_ms: u64 },
     ReconcileRequest { operation_ids: BTreeSet<String> },
     ReconcileResult { receipts: Vec<RouteReceipt> },
     ArtifactCapabilityRequest(ArtifactCapabilityRequest),

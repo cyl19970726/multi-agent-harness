@@ -42,6 +42,7 @@
         { "$ref": "#/$defs/receipt" },
         { "$ref": "#/$defs/heartbeat" },
         { "$ref": "#/$defs/heartbeat_ack" },
+        { "$ref": "#/$defs/pending_batch_complete" },
         { "$ref": "#/$defs/reconcile_request" },
         { "$ref": "#/$defs/reconcile_result" },
         { "$ref": "#/$defs/artifact_capability_request" },
@@ -133,6 +134,7 @@
     },
     "heartbeat": { "type": "object", "$ref": "#/$defs/observed_at", "properties": { "frame_kind": { "const": "heartbeat" } } },
     "heartbeat_ack": { "type": "object", "$ref": "#/$defs/observed_at", "properties": { "frame_kind": { "const": "heartbeat_ack" } } },
+    "pending_batch_complete": { "type": "object", "$ref": "#/$defs/observed_at", "properties": { "frame_kind": { "const": "pending_batch_complete" } } },
     "observed_at": {
       "type": "object", "additionalProperties": false,
       "required": ["frame_kind", "payload"],

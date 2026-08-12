@@ -109,7 +109,17 @@ where
                     },
                     now,
                 )?;
-                send_pending(socket, control_plane, &session, now)?;
+                if !send_pending(socket, control_plane, &session, now)? {
+                    send_payload(
+                        socket,
+                        &session,
+                        &frame.correlation_id,
+                        FabricPayload::PendingBatchComplete {
+                            observed_at_unix_ms: now,
+                        },
+                        now,
+                    )?;
+                }
             }
             FabricPayload::OperationSubmit(operation) => {
                 let actor = authenticated_node_actor(peer, now);
@@ -216,6 +226,7 @@ where
             | FabricPayload::RoutedOperation(_)
             | FabricPayload::Receipt(_)
             | FabricPayload::HeartbeatAck { .. }
+            | FabricPayload::PendingBatchComplete { .. }
             | FabricPayload::ReconcileResult { .. }
             | FabricPayload::ArtifactCapabilityResponse(_)
             | FabricPayload::LeaseFence { .. }
@@ -247,7 +258,7 @@ fn send_pending<S, K>(
     control_plane: &ControlPlane<'_, K>,
     session: &FabricSessionFence,
     now_unix_ms: u64,
-) -> Result<(), FabricError>
+) -> Result<bool, FabricError>
 where
     S: Read + Write,
     K: ArtifactKeyBackend,
@@ -268,7 +279,7 @@ where
         .cloned()
         .collect::<Vec<_>>();
     attempts.sort_by_key(|attempt| attempt.route_seq);
-    for attempt in attempts {
+    if let Some(attempt) = attempts.into_iter().next() {
         let operation = state
             .operations
             .get(&attempt.operation_id)
@@ -290,8 +301,9 @@ where
             })),
             now_unix_ms,
         )?;
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 pub fn send_payload<S: Read + Write>(
@@ -311,6 +323,7 @@ pub fn send_payload<S: Read + Write>(
         FabricPayload::Receipt(_) => "receipt",
         FabricPayload::Heartbeat { .. } => "heartbeat",
         FabricPayload::HeartbeatAck { .. } => "heartbeat-ack",
+        FabricPayload::PendingBatchComplete { .. } => "pending-batch-complete",
         FabricPayload::ReconcileRequest { .. } => "reconcile-request",
         FabricPayload::ReconcileResult { .. } => "reconcile-result",
         FabricPayload::ArtifactCapabilityRequest(_) => "artifact-capability-request",
@@ -417,6 +430,12 @@ impl NodeGatewayConnection {
         let welcome_frame = read_frame(&mut socket)?;
         let welcome = match &welcome_frame.payload {
             FabricPayload::Welcome(welcome) => welcome.clone(),
+            FabricPayload::PendingBatchComplete { .. } => {
+                return Err(FabricError::none(
+                    FabricErrorCode::TargetOffline,
+                    "pending delivery batch is complete",
+                ))
+            }
             _ => {
                 return Err(FabricError::none(
                     FabricErrorCode::ProtocolIncompatible,
