@@ -1039,9 +1039,9 @@ function SurfaceSwitch({
       );
     case "team":
       return selection.teamId ? (
-        <TeamWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} teamId={selection.teamId} refreshKey={model.snapshot.generated_at} selection={selection} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} onSelectionChange={onSelectionChange} />
+        <TeamWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} teamId={selection.teamId} refreshKey={model.snapshot.generated_at} selection={selection} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} agentWorkspaceActionsEnabled={actionsEnabled} onSelectionChange={onSelectionChange} />
       ) : selection.memberRunId ? (
-        <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} routeIdentity={selection.memberRunId} selection={selection} refreshKey={model.snapshot.generated_at} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} onSelectionChange={onSelectionChange}/>
+        <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} routeIdentity={selection.memberRunId} selection={selection} refreshKey={model.snapshot.generated_at} onAction={onRoleAction} actionsEnabled={actionsEnabled} onSelectionChange={onSelectionChange}/>
       ) : (
         <AgentTeamsHome {...shared} />
       );
