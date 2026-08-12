@@ -732,6 +732,84 @@ struct Wave4cApplication {
     daemon_generation: u64,
 }
 
+impl Wave4cApplication {
+    fn target_store(
+        &self,
+        operation: &harness_fabric::RoutedOperation,
+    ) -> Result<(String, HarnessStore), FabricError> {
+        let execution_space_id =
+            operation
+                .target_execution_space_id
+                .as_deref()
+                .ok_or_else(|| {
+                    FabricError::none(
+                        FabricErrorCode::TargetNotPlaced,
+                        "routed application has no target Execution Space",
+                    )
+                })?;
+        let space = super::execution_space::context_for_id(&self.firm_home, execution_space_id)
+            .map_err(|error| {
+                FabricError::none(
+                    FabricErrorCode::StoreUnavailable,
+                    format!("Execution Space registry failed: {error}"),
+                )
+            })?
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::TargetNotPlaced,
+                    "target Execution Space is not registered on this Node",
+                )
+            })?;
+        Ok((
+            execution_space_id.into(),
+            HarnessStore::new(space.store_root),
+        ))
+    }
+
+    fn persist_message(
+        &self,
+        operation: &harness_fabric::RoutedOperation,
+    ) -> Result<(String, serde_json::Value, harness_fabric::EffectCertainty), FabricError> {
+        let message = super::remote_fabric::resolved_message_from_operation(operation)?;
+        let (execution_space_id, store) = self.target_store(operation)?;
+        let context = harness_core::agentfirm_api::MutationContext {
+            execution_space_id,
+            authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                kind: harness_core::agentfirm_api::ActorKind::Service,
+                id: self.daemon_id.clone(),
+            },
+            authority_actor: None,
+            command_name: "remote_message_persist".into(),
+            idempotency_key: operation.id.clone(),
+            expected_version: 0,
+            request_fingerprint: Some(harness_fabric::json_digest(operation).map_err(|error| {
+                FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
+            })?),
+        };
+        let persisted = store
+            .persist_remote_message(
+                &context,
+                operation,
+                message,
+                &self.node_id,
+                &self.daemon_id,
+                self.daemon_generation,
+            )
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::UnauthorizedActor, error.to_string())
+            })?;
+        Ok((
+            "agentfirm.remote_fabric.message_persisted.v1".into(),
+            serde_json::json!({
+                "message_id": persisted.projection.id,
+                "canonical_event_id": persisted.event.id,
+                "replayed": persisted.replayed,
+            }),
+            harness_fabric::EffectCertainty::Applied,
+        ))
+    }
+}
+
 impl NodeApplication for Wave4cApplication {
     fn apply(
         &mut self,
@@ -761,70 +839,21 @@ impl NodeApplication for Wave4cApplication {
                     effect,
                 ))
             }
-            harness_fabric::ClosedOperationBody::Message(_)
-            | harness_fabric::ClosedOperationBody::CollaborationBusiness(_) => {
-                let message = super::remote_fabric::resolved_message_from_operation(operation)?;
-                let execution_space_id = operation
-                    .target_execution_space_id
-                    .as_deref()
-                    .ok_or_else(|| {
-                        FabricError::none(
-                            FabricErrorCode::TargetNotPlaced,
-                            "Message route has no target Execution Space",
-                        )
-                    })?;
-                let space =
-                    super::execution_space::context_for_id(&self.firm_home, execution_space_id)
-                        .map_err(|error| {
-                            FabricError::none(
-                                FabricErrorCode::StoreUnavailable,
-                                format!("Execution Space registry failed: {error}"),
-                            )
-                        })?
-                        .ok_or_else(|| {
-                            FabricError::none(
-                                FabricErrorCode::TargetNotPlaced,
-                                "Message target Execution Space is not registered on this Node",
-                            )
-                        })?;
-                let store = HarnessStore::new(space.store_root);
-                let context = harness_core::agentfirm_api::MutationContext {
-                    execution_space_id: execution_space_id.into(),
-                    authenticated_actor: harness_core::agentfirm_api::ActorRef {
-                        kind: harness_core::agentfirm_api::ActorKind::Service,
-                        id: self.daemon_id.clone(),
-                    },
-                    authority_actor: None,
-                    command_name: "remote_message_persist".into(),
-                    idempotency_key: operation.id.clone(),
-                    expected_version: 0,
-                    request_fingerprint: Some(harness_fabric::json_digest(operation).map_err(
-                        |error| {
-                            FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
-                        },
-                    )?),
-                };
-                let persisted = store
-                    .persist_remote_message(
-                        &context,
+            harness_fabric::ClosedOperationBody::Message(_) => self.persist_message(operation),
+            harness_fabric::ClosedOperationBody::CollaborationBusiness(reference) => {
+                if reference.business_kind == "target_work_create" {
+                    let (_, store) = self.target_store(operation)?;
+                    harness_store::apply_collaboration_target_operation(
+                        &store,
                         operation,
-                        message,
-                        &self.node_id,
-                        &self.daemon_id,
-                        self.daemon_generation,
+                        &format!(
+                            "unix-ms:{}",
+                            harness_fabric::gateway_runtime::now_unix_ms()?
+                        ),
                     )
-                    .map_err(|error| {
-                        FabricError::none(FabricErrorCode::UnauthorizedActor, error.to_string())
-                    })?;
-                Ok((
-                    "agentfirm.remote_fabric.message_persisted.v1".into(),
-                    serde_json::json!({
-                        "message_id": persisted.projection.id,
-                        "canonical_event_id": persisted.event.id,
-                        "replayed": persisted.replayed,
-                    }),
-                    harness_fabric::EffectCertainty::Applied,
-                ))
+                } else {
+                    self.persist_message(operation)
+                }
             }
             _ => Err(FabricError::none(
                 FabricErrorCode::FeatureIncompatible,

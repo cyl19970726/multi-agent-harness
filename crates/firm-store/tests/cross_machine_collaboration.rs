@@ -12,17 +12,22 @@ use firm_core::collaboration::{
     RoutedBusinessOperation, RoutedBusinessReceipt, SourceWorkAttestation, TargetPlacementRef,
     WorkOperationalDecisionRef,
 };
+use firm_core::{
+    AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, Mission,
+    MissionStatus, NodeProjectRegistration, NodeProjectRegistrationStatus, TeamRunStatus,
+};
 use firm_fabric::{
     json_digest, ActorKind as FabricActorKind, AuthenticatedActor, EffectCertainty, ReceiptKind,
     RouteReceipt, COLLABORATION_BUSINESS_OPERATION_KIND,
 };
 use firm_store::{
-    canonical_json_fingerprint, collaboration_receipt_from_fabric,
-    persist_verified_remote_message_replica, project_cross_node_deliveries,
-    queue_remote_message_transfer, route_collaboration_business_operation,
-    validate_message_collaboration_scope, CollaborationApplicationService,
-    CollaborationDelegationFilter, CollaborationFabricPort, CollaborationFabricRouteContext,
-    CollaborationMutationContext, HarnessStore, ProposeDelegationRequest,
+    apply_collaboration_target_operation, canonical_json_fingerprint,
+    collaboration_receipt_from_fabric, persist_verified_remote_message_replica,
+    project_cross_node_deliveries, queue_remote_message_transfer,
+    route_collaboration_business_operation, validate_message_collaboration_scope,
+    CollaborationApplicationService, CollaborationDelegationFilter, CollaborationFabricPort,
+    CollaborationFabricRouteContext, CollaborationMutationContext, CollaborationRouteClient,
+    HarnessStore, ProposeDelegationRequest, RemoteFabricCollaborationPort,
     RemoteMessageReplicaExpectation, RemoteMessageReplicaPort, ResolvedCollaborationAuthority,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,6 +36,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
+const TARGET_NODE_UUID: &str = "22222222-2222-4222-8222-222222222222";
 
 struct TestStore {
     root: PathBuf,
@@ -143,6 +149,85 @@ fn install_policy(store: &HarnessStore) {
             8,
         )
         .expect("source WorkApplicationService canonical attestation");
+}
+
+fn seed_target_team(store: &HarnessStore) {
+    store
+        .insert_execution_node(&ExecutionNode {
+            id: TARGET_NODE_UUID.into(),
+            display_name: "Node B".into(),
+            status: ExecutionNodeStatus::Active,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        })
+        .unwrap();
+    store
+        .register_node_project(
+            &NodeProjectRegistration {
+                node_id: TARGET_NODE_UUID.into(),
+                execution_space_id: "space-node-b".into(),
+                project_binding_id: "project-b".into(),
+                status: NodeProjectRegistrationStatus::Active,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            },
+            "space-node-b",
+        )
+        .unwrap();
+    store
+        .insert_mission(&Mission {
+            id: "mission-b".into(),
+            title: "Mission B".into(),
+            objective: "Execute delegated Work".into(),
+            context: String::new(),
+            desired_outcome: None,
+            status: MissionStatus::Running,
+            wave_ids: Vec::new(),
+            outcome_summary: None,
+            completed_by: None,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+            completed_at: None,
+        })
+        .unwrap();
+    store
+        .insert_agent_team_with_unique_mission(&AgentTeam {
+            id: "team-b".into(),
+            name: "Team B".into(),
+            description: "Target Team".into(),
+            mission_id: "mission-b".into(),
+            host_agent_id: "host-b".into(),
+            node_id: TARGET_NODE_UUID.into(),
+            status: AgentTeamStatus::Active,
+            member_ids: Vec::new(),
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        })
+        .unwrap();
+    store
+        .create_team_run_from_agent_team(
+            &AgentTeamRun {
+                id: "run-b".into(),
+                agent_team_id: "team-b".into(),
+                execution_node_id: TARGET_NODE_UUID.into(),
+                project_binding_id: "project-b".into(),
+                previous_run_id: None,
+                host_surface: "test".into(),
+                host_thread_id: None,
+                host_actor: None,
+                host_control_mode: Default::default(),
+                objective: "Execute delegated Work".into(),
+                execution_root: None,
+                status: TeamRunStatus::Running,
+                member_run_ids: Vec::new(),
+                budget_limit_usd: None,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+                completed_at: None,
+            },
+            "space-node-b",
+        )
+        .unwrap();
 }
 
 fn context(
@@ -265,6 +350,45 @@ impl CollaborationFabricPort for UnknownFabric {
             resource_id: operation.id.clone(),
             current_revision: Some(operation.expected_revision),
         })
+    }
+}
+
+#[derive(Default)]
+struct TerminalRouteClient {
+    effects: Mutex<BTreeMap<String, RouteReceipt>>,
+}
+
+impl CollaborationRouteClient for TerminalRouteClient {
+    fn route_and_reconcile(
+        &self,
+        operation: firm_fabric::RoutedOperation,
+    ) -> Result<RouteReceipt, firm_fabric::FabricError> {
+        let mut effects = self.effects.lock().unwrap();
+        if let Some(receipt) = effects.get(&operation.id) {
+            return Ok(receipt.clone());
+        }
+        let result = serde_json::json!({
+            "target_work_ref": work_ref("node-b", "team-b", "work-b", 1),
+        });
+        let receipt = RouteReceipt {
+            id: format!("receipt:{}", operation.id),
+            company_id: operation.company_id.clone(),
+            operation_id: operation.id.clone(),
+            target_node_id: operation.target_node_id,
+            target_gateway_generation: 9,
+            control_plane_generation: operation.control_plane_generation,
+            route_seq: 1,
+            kind: ReceiptKind::OperationApplied,
+            application_effect: Some(EffectCertainty::Applied),
+            result_schema: Some("agentfirm.collaboration.target_work.v1".into()),
+            result_digest: Some(json_digest(&result).unwrap()),
+            result: Some(result),
+            error: None,
+            created_at_unix_ms: 200,
+            schema_version: "agentfirm.remote_fabric.v1".into(),
+        };
+        effects.insert(operation.id, receipt.clone());
+        Ok(receipt)
     }
 }
 
@@ -391,6 +515,37 @@ fn faithful_fabric_replays_exact_effect_and_unknown_never_folds_business_truth()
         .target_work_create_operation("company-1", "delegation-1", "2026-08-11T00:00:02Z")
         .unwrap();
     assert_eq!(route.authenticated_actor, auth.target_host);
+    let route_client = TerminalRouteClient::default();
+    let remote_port = RemoteFabricCollaborationPort::new(
+        &route_client,
+        CollaborationFabricRouteContext {
+            authenticated_actor: AuthenticatedActor {
+                company_id: "company-1".into(),
+                actor_id: "node-a".into(),
+                actor_kind: FabricActorKind::Service,
+                role_bindings: BTreeSet::from(["fabric_submit".into()]),
+                session_id: "session-host-b".into(),
+                issued_at_unix_ms: 1,
+                expires_at_unix_ms: 10_000,
+            },
+            resolved_business_actor: actor(ActorKind::AgentMember, "host-b"),
+            source_gateway_generation: 8,
+            source_node_daemon_id: "daemon-a".into(),
+            source_node_daemon_generation: 4,
+            control_plane_generation: 3,
+            source_execution_space_id: "space-node-a".into(),
+            target_execution_space_id: Some("space-node-b".into()),
+            created_at_unix_ms: 100,
+            expires_at_unix_ms: 5_000,
+        },
+        "2026-08-11T00:00:03Z",
+    );
+    let remote_first = remote_port
+        .dispatch(&route)
+        .expect("real Wave5 route adapter");
+    let remote_replay = remote_port.dispatch(&route).expect("exact route replay");
+    assert_eq!(remote_first, remote_replay);
+    assert_eq!(route_client.effects.lock().unwrap().len(), 1);
     let fabric = FaithfulFabric::default();
     let first_receipt = fabric.dispatch(&route).unwrap();
     let replay_receipt = fabric.dispatch(&route).unwrap();
@@ -1506,13 +1661,14 @@ fn all_frozen_business_kinds_use_the_wave5_route_and_terminal_receipt_contract()
     let context = CollaborationFabricRouteContext {
         authenticated_actor: AuthenticatedActor {
             company_id: "company-1".into(),
-            actor_id: "host-a".into(),
-            actor_kind: FabricActorKind::AgentMember,
+            actor_id: "node-a".into(),
+            actor_kind: FabricActorKind::Service,
             role_bindings: BTreeSet::from(["fabric_submit".into()]),
             session_id: "session-host-a".into(),
             issued_at_unix_ms: 1,
             expires_at_unix_ms: 10_000,
         },
+        resolved_business_actor: actor(ActorKind::AgentMember, "host-a"),
         source_gateway_generation: 8,
         source_node_daemon_id: "daemon-a".into(),
         source_node_daemon_generation: 4,
@@ -1587,4 +1743,79 @@ fn all_frozen_business_kinds_use_the_wave5_route_and_terminal_receipt_contract()
         assert_eq!(error.code, FabricErrorCode::RecoveryRequired);
         assert_eq!(error.effect_certainty, FabricEffectCertainty::Unknown);
     }
+}
+
+#[test]
+fn target_work_create_applies_once_through_native_work_authority() {
+    let target = TestStore::new("target-work-application");
+    seed_target_team(&target.store);
+    let target_placement = TargetPlacementRef {
+        team_id: "team-b".into(),
+        team_revision: 1,
+        node_id: TARGET_NODE_UUID.into(),
+        placement_generation: 1,
+    };
+    let payload = serde_json::json!({
+        "delegation_id": "delegation-native-1",
+        "requested_outcome": "Implement the target component",
+        "acceptance_contract": "checks and evidence are required",
+        "source_work_ref": work_ref("node-a", "team-a", "work-a", 9),
+        "target_placement": target_placement,
+    });
+    let business = RoutedBusinessOperation {
+        id: "route-target-native-1".into(),
+        protocol_version: "agentfirm.fabric.v1".into(),
+        company_id: "company-1".into(),
+        kind: RoutedBusinessKind::TargetWorkCreate,
+        authenticated_actor: actor(ActorKind::AgentMember, "host-b"),
+        source_node_id: "node-a".into(),
+        target_placement,
+        expected_revision: 2,
+        idempotency_key: "target-native-1".into(),
+        payload_digest: canonical_json_fingerprint(&payload),
+        payload,
+        required_capability: "collaboration.target_work_create".into(),
+        ordering_key: "delegation:delegation-native-1".into(),
+        created_at: "2026-08-13T00:00:00Z".into(),
+    };
+    let route = route_collaboration_business_operation(
+        &business,
+        &CollaborationFabricRouteContext {
+            authenticated_actor: AuthenticatedActor {
+                company_id: "company-1".into(),
+                actor_id: "node-a".into(),
+                actor_kind: FabricActorKind::Service,
+                role_bindings: BTreeSet::from(["fabric_submit".into()]),
+                session_id: "daemon-a:1".into(),
+                issued_at_unix_ms: 1,
+                expires_at_unix_ms: 10_000,
+            },
+            resolved_business_actor: actor(ActorKind::AgentMember, "host-b"),
+            source_gateway_generation: 8,
+            source_node_daemon_id: "daemon-a".into(),
+            source_node_daemon_generation: 4,
+            control_plane_generation: 3,
+            source_execution_space_id: "space-node-a".into(),
+            target_execution_space_id: Some("space-node-b".into()),
+            created_at_unix_ms: 100,
+            expires_at_unix_ms: 5_000,
+        },
+    )
+    .unwrap();
+    let first = apply_collaboration_target_operation(&target.store, &route, "unix-ms:200")
+        .expect("native target Work creation");
+    let replay = apply_collaboration_target_operation(&target.store, &route, "unix-ms:201")
+        .expect("native target Work exact replay");
+    assert_eq!(first.1, replay.1);
+    let works = target.store.latest_works().unwrap();
+    assert_eq!(works.len(), 1);
+    assert_eq!(works[0].id, "remote-work:delegation-native-1");
+    assert_eq!(works[0].team_id.as_deref(), Some("team-b"));
+
+    let before = target.store.latest_works().unwrap();
+    let mut stale = route;
+    stale.body["target_team_revision"] = serde_json::json!(2);
+    stale.body_digest = json_digest(&stale.body).unwrap();
+    assert!(apply_collaboration_target_operation(&target.store, &stale, "unix-ms:202").is_err());
+    assert_eq!(target.store.latest_works().unwrap(), before);
 }

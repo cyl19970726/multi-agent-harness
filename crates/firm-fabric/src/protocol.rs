@@ -456,6 +456,8 @@ pub struct ArtifactReference {
 pub struct CollaborationBusinessReference {
     pub business_kind: String,
     pub required_capability: String,
+    pub business_actor_kind: String,
+    pub business_actor_id: String,
     pub target_team_id: String,
     pub target_team_revision: u64,
     pub placement_generation: u64,
@@ -666,7 +668,11 @@ fn validate_closed_body(
             KINDS.contains(&(
                 body.business_kind.as_str(),
                 body.required_capability.as_str(),
-            )) && non_empty(&body.target_team_id)
+            )) && matches!(
+                body.business_actor_kind.as_str(),
+                "human" | "agent_member" | "service"
+            ) && non_empty(&body.business_actor_id)
+                && non_empty(&body.target_team_id)
                 && body.target_team_revision > 0
                 && body.placement_generation == 1
                 && fingerprint(&body.payload_digest)
@@ -681,6 +687,10 @@ fn validate_closed_body(
                     == Some(&body.placement_generation.to_string())
                 && operation.authorization_context.get("required_capability")
                     == Some(&body.required_capability)
+                && operation.authorization_context.get("business_actor_kind")
+                    == Some(&body.business_actor_kind)
+                && operation.authorization_context.get("business_actor_id")
+                    == Some(&body.business_actor_id)
         }
     };
     if !valid {

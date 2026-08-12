@@ -5,7 +5,8 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "business_kind", "required_capability", "target_team_id", "target_team_revision",
+    "business_kind", "required_capability", "business_actor_kind", "business_actor_id",
+    "target_team_id", "target_team_revision",
     "placement_generation", "expected_revision", "payload_digest", "payload"
   ],
   "properties": {
@@ -24,6 +25,8 @@
         "collaboration.remote_fact_publish", "collaboration.artifact_grant"
       ]
     },
+    "business_actor_kind": { "enum": ["human", "agent_member", "service"] },
+    "business_actor_id": { "type": "string", "minLength": 1 },
     "target_team_id": { "type": "string", "minLength": 1 },
     "target_team_revision": { "type": "integer", "minimum": 1 },
     "placement_generation": { "const": 1 },

@@ -366,10 +366,14 @@ fn operation_registry_requires_closed_kind_schema_and_body_scope() {
             "required_capability".into(),
             "collaboration.delegation_decide".into(),
         ),
+        ("business_actor_kind".into(), "agent_member".into()),
+        ("business_actor_id".into(), "host-b".into()),
     ]);
     collaboration.body = json!({
         "business_kind": "delegation_decide",
         "required_capability": "collaboration.delegation_decide",
+        "business_actor_kind": "agent_member",
+        "business_actor_id": "host-b",
         "target_team_id": "team-b",
         "target_team_revision": 9,
         "placement_generation": 1,
