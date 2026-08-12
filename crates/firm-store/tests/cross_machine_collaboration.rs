@@ -19,8 +19,9 @@ use firm_core::{
 };
 use firm_fabric::{
     json_digest, ActorKind as FabricActorKind, ArtifactCapability, ArtifactCapabilityPurpose,
-    ArtifactClassification, AuthenticatedActor, EffectCertainty, ReceiptKind,
-    RemoteArtifactManifest, RouteReceipt, COLLABORATION_BUSINESS_OPERATION_KIND,
+    ArtifactClassification, AuthenticatedActor, EffectCertainty,
+    FabricErrorCode as TransportFabricErrorCode, ReceiptKind, RemoteArtifactManifest, RouteReceipt,
+    COLLABORATION_BUSINESS_OPERATION_KIND,
 };
 use firm_store::{
     apply_collaboration_target_operation, canonical_json_fingerprint,
@@ -1876,6 +1877,38 @@ fn source_work_attestation_and_placement_v1_fail_closed() {
         .is_err());
     assert_eq!(test.store.collaboration_operations().unwrap(), before);
 
+    let mut revoked_policy = policy();
+    revoked_policy.revision = 2;
+    revoked_policy.revoked_at = Some("2026-08-11T00:00:03Z".into());
+    test.store
+        .put_collaboration_inbound_policy(
+            &context(
+                auth.target_host.clone(),
+                "delegation.policy.put",
+                "policy-revoke-1",
+                1,
+            ),
+            &revoked_policy,
+            &auth.target_host,
+        )
+        .expect("target Host may revoke the exact inbound policy revision");
+    let after_revoke = test.store.collaboration_operations().unwrap();
+    assert!(test
+        .store
+        .propose_collaboration_delegation(
+            &context(
+                auth.source_host.clone(),
+                "delegation.propose",
+                "revoked-policy-propose",
+                0,
+            ),
+            &proposal(),
+            &auth,
+            &revoked_policy,
+        )
+        .is_err());
+    assert_eq!(test.store.collaboration_operations().unwrap(), after_revoke);
+
     assert_eq!(
         CollaborationRetentionAnchor {
             terminal_transport_at_unix_ms: Some(100),
@@ -2072,6 +2105,32 @@ fn target_work_create_applies_once_through_native_work_authority() {
     assert_eq!(works.len(), 1);
     assert_eq!(works[0].id, "remote-work:delegation-native-1");
     assert_eq!(works[0].team_id.as_deref(), Some("team-b"));
+
+    for (label, status) in [
+        ("closed", AgentTeamStatus::Closed),
+        ("archived", AgentTeamStatus::Archived),
+    ] {
+        let unavailable = TestStore::new(&format!("target-work-{label}"));
+        seed_target_team(&unavailable.store);
+        let mut team = unavailable
+            .store
+            .teams()
+            .unwrap()
+            .into_iter()
+            .rev()
+            .find(|team| team.id == "team-b")
+            .unwrap();
+        team.status = status;
+        team.updated_at = format!("unix-ms:{label}");
+        unavailable.store.append_team(&team).unwrap();
+        let before_works = unavailable.store.latest_works().unwrap();
+        let before_events = unavailable.store.work_events().unwrap();
+        let error = apply_collaboration_target_operation(&unavailable.store, &route, "unix-ms:201")
+            .expect_err("terminal target Team must reject remote Work creation");
+        assert_eq!(error.code, TransportFabricErrorCode::NodeStaleGeneration);
+        assert_eq!(unavailable.store.latest_works().unwrap(), before_works);
+        assert_eq!(unavailable.store.work_events().unwrap(), before_events);
+    }
 
     let before = target.store.latest_works().unwrap();
     let mut stale = route;
