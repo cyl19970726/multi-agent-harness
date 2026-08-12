@@ -57,6 +57,7 @@ export function AgentConversationWorkspace({apiUrl,space,project,routeIdentity,v
   const [mobileContextOpen,setMobileContextOpen]=useState(false);
   const agentsButtonRef=useRef<HTMLButtonElement>(null);
   const contextButtonRef=useRef<HTMLButtonElement>(null);
+  const conversationCanvasRef=useRef<HTMLDivElement>(null);
   const selectedMemberRunId=selectedMember?.current_member_run_ref ?? selection.memberRunId;
 
   useEffect(() => {
@@ -102,6 +103,22 @@ export function AgentConversationWorkspace({apiUrl,space,project,routeIdentity,v
     ...(nativeActivity?.items ?? []).map((item,index):TimelineRow => ({kind:"native",at:item.occurred_at ?? `0000-${String(index).padStart(6,"0")}`,native:item})),
   ].sort((left,right) => left.at.localeCompare(right.at));
   const executionFactCount=timelineRows.filter((row) => row.kind !== "message").length;
+  useEffect(() => {
+    if (!window.matchMedia("(max-width: 1023px)").matches || !timelineRows.length) return;
+    let innerFrame=0;
+    let settleTimer=0;
+    const anchorLatest=() => {
+      const canvas=conversationCanvasRef.current;
+      if (canvas)canvas.scrollTop=canvas.scrollHeight;
+    };
+    const outerFrame=window.requestAnimationFrame(() => {
+      innerFrame=window.requestAnimationFrame(() => {
+        anchorLatest();
+        settleTimer=window.setTimeout(anchorLatest,180);
+      });
+    });
+    return () => { window.cancelAnimationFrame(outerFrame); window.cancelAnimationFrame(innerFrame); window.clearTimeout(settleTimer); };
+  },[targetId,timelineRows.length]);
   const contextualActions=(hostView?.allowed_actions ?? []).filter((action) =>
     Boolean(selectedMemberRunId && action.target_ref.kind === "member_run" && action.target_ref.id === selectedMemberRunId));
   const otherOwnedWork=memberWork.filter((work) => work.current_member_run_ref !== selectedMemberRunId);
@@ -137,7 +154,7 @@ export function AgentConversationWorkspace({apiUrl,space,project,routeIdentity,v
 
         {boundWork[0] && <button type="button" onClick={() => setMobileContextOpen(true)} className="flex min-h-11 items-center gap-2 border-b border-border bg-accent/25 px-3 text-left text-[10px] lg:hidden"><BriefcaseBusiness className="size-3.5 text-primary"/><span className="min-w-0 flex-1 truncate"><b>Current Work</b> · {boundWork[0].title || boundWork[0].work_id}</span><Badge tone={boundWork[0].condition === "blocked" ? "bad" : boundWork[0].phase === "review" ? "warn" : "muted"}>{boundWork[0].condition !== "normal" ? boundWork[0].condition : boundWork[0].phase}</Badge><ArrowRight className="size-3.5"/></button>}
 
-        <div className="agent-team-chat-canvas min-h-0 flex-1 overflow-y-auto px-3 py-4 sm:px-6" tabIndex={0} aria-label={`Conversation with ${targetLabel}`}>
+        <div ref={conversationCanvasRef} className="agent-team-chat-canvas min-h-0 flex-1 overflow-y-auto px-3 pb-24 pt-4 sm:px-6 lg:pb-4" tabIndex={0} aria-label={`Conversation with ${targetLabel}`}>
           <div className="mx-auto flex min-h-full max-w-[58rem] flex-col justify-start gap-1">
             {timelineRows.length > 0 && <div className="flex min-h-10 items-center gap-2 border-b border-border/70 py-2 text-[10px] text-muted-foreground"><RadioTower className="size-3.5 text-primary"/><span className="font-semibold text-foreground">Execution episode</span><span>{timelineRows.length} chronological records</span><span className="ml-auto">{executionFactCount} source-linked execution facts · authored replies included</span></div>}
             {timelineRows.map((row,index) => <ConversationRow key={`${row.kind}:${row.at}:${index}`} row={row} members={view.data.members} hostId={team.host_agent_id} onOpenWork={(workId) => onSelectionChange({teamConversation:undefined,memberRunId:undefined,teamTab:"works",teamWorkId:workId})} onReply={row.kind === "message" && canCompose ? setReplyTo : undefined}/>) }
