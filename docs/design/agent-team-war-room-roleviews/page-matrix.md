@@ -12,10 +12,10 @@ factor 1, light theme, reduced motion and `domcontentloaded` plus a visible
 | P0 | Team Workspace | populated active + Host pressure | tablet 900x1180 | current regression + historical War Room | canonical layout contract | implemented | product truth + visual fidelity |
 | P0 | Team Workspace | populated active + Host pressure | mobile 390x844 | current regression + historical War Room | canonical layout contract | implemented | product truth + visual fidelity |
 | P0 | Team Workspace | populated active + Host pressure | mobile 320x844 | current regression + historical War Room | canonical overflow contract | implemented | overflow + keyboard/touch |
-| P0 | Agent Conversation | selected Member + active native session | desktop 1440x1000 | simplified Member Workbench + historical MemberRun Focus | approved conversation-workspace direction + administrative-model review | pending | product truth + visual fidelity |
-| P0 | Agent Conversation | selected Member + active native session | tablet 900x1180 | simplified Member Workbench | responsive contract | pending | sheet navigation + sticky composer |
-| P0 | Agent Conversation | selected Member + active native session | mobile 390x844 and 320px gate | simplified Member Workbench | responsive contract | pending | agents/context sheets + overflow |
-| P0 | Agent Conversation | selected Host Agent | desktop/mobile | no current composed surface | same conversation shell, Host identity without fabricated MemberRun | pending | addressability + authority boundary |
+| P0 | Agent Conversation | selected Member + active native session | desktop 1440x1000 | simplified Member Workbench + historical MemberRun Focus | approved conversation-workspace direction + administrative-model review | implemented | product truth + visual fidelity |
+| P0 | Agent Conversation | selected Member + active native session | tablet 900x1180 | simplified Member Workbench | responsive contract | implemented | sheet navigation + sticky composer |
+| P0 | Agent Conversation | selected Member + active native session | mobile 390x844 and 320px gate | simplified Member Workbench | responsive contract | implemented | agents/context sheets + overflow |
+| P0 | Agent Conversation | selected Host Agent | desktop/mobile | no current composed surface | same conversation shell, Host identity without fabricated MemberRun | implemented | addressability + authority boundary |
 | P0 | Team Workspace | useful empty Team | desktop/mobile | `.visual-evidence/agent-team-war-room-roleviews/baseline-exact/` | canonical empty hierarchy | implemented | no blank canvas |
 | P1 | Team Workspace | loading / last-good stale / error | desktop/mobile | current `ViewState` | interaction contract | implemented | recoverability |
 | P1 | Team Workspace | completed run with live member runtime | desktop | historical War Room | canonical lifecycle contract | implemented | honest controls |
