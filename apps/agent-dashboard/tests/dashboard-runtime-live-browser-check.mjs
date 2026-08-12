@@ -545,8 +545,8 @@ try {
   await waitForText(page, "work-role-live");
   check(true, "real Company Work RoleView is populated");
   await page.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"team",team:liveTeamRunId})}`, {waitUntil:"domcontentloaded"});
-  await page.getByText("Team Workspace", {exact:true}).waitFor();
-  await waitForText(page, "work-role-live");
+  await page.locator('[data-testid="authenticated-team-workspace"]').waitFor();
+  await waitForText(page, "Real browser RoleAction loop");
   check(true, "real Team Workspace RoleView is populated before Host navigation");
   await page.getByRole("button", {name:"Host Console"}).click();
   await page.getByRole("heading", {name:"Host Console"}).waitFor();
@@ -593,9 +593,12 @@ try {
   const admitProvider = operatorPage.getByRole("button", {name:admissionLabel,exact:true});
   await admitProvider.waitFor();
   if (codexAdmissionAction.disabled_reason) {
-    await waitFor(async()=>await admitProvider.getAttribute("title")===codexAdmissionAction.disabled_reason,
+    const disabledReasonId=await admitProvider.getAttribute("aria-describedby");
+    if(!disabledReasonId)throw new Error("disabled provider admission has no accessible reason reference");
+    const disabledReason=operatorPage.locator(`#${disabledReasonId}`);
+    await waitFor(async()=>await disabledReason.textContent()===`Unavailable: ${codexAdmissionAction.disabled_reason}`,
       "browser settles on the server-authored provider disabled reason");
-    check(await admitProvider.isDisabled() && await admitProvider.getAttribute("title")===codexAdmissionAction.disabled_reason,
+    check(await admitProvider.isDisabled() && await disabledReason.textContent()===`Unavailable: ${codexAdmissionAction.disabled_reason}`,
       "Operator browser fails closed on the stable server-authored tuple eligibility");
   } else {
     await admitProvider.click();

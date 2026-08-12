@@ -481,6 +481,15 @@ fn records(facts: &Facts, predicate: impl Fn(&Value) -> bool) -> Vec<Value> {
         .collect()
 }
 
+fn role_actor_ref(value: &Value) -> Value {
+    match (value.get("kind"), value.get("id")) {
+        (Some(kind), Some(id)) if kind.is_string() && id.is_string() => {
+            json!({"kind":kind,"id":id})
+        }
+        _ => Value::Null,
+    }
+}
+
 /// Project canonical records into one closed, display-safe RoleView summary.
 /// RoleViews deliberately do not leak evolving ledger wire objects into the
 /// browser: every field below is stable, bounded, and schema-validated.
@@ -499,8 +508,8 @@ fn record_summary(kind: &str, value: &Value) -> Value {
     ]
     .iter()
     .find_map(|key| value.get(*key))
-    .filter(|actor| actor.get("kind").is_some() && actor.get("id").is_some())
-    .cloned();
+    .map(role_actor_ref)
+    .filter(|actor| !actor.is_null());
     let source_id = value
         .get("source_work_ref")
         .and_then(|reference| reference.get("work_id"))
@@ -550,7 +559,7 @@ fn team_activity(
             .as_str()
             .is_some_and(|id| team_work_ids.contains(id))
     }) {
-        rows.push(json!({"source":"work_event","id":event["id"],"work_id":event["work_id"],"actor_ref":event["performed_by_actor"],"status":event["kind"],"summary":display_text(event["payload"].get("summary").and_then(Value::as_str)),"created_at":event["created_at"]}));
+        rows.push(json!({"source":"work_event","id":event["id"],"work_id":event["work_id"],"actor_ref":role_actor_ref(&event["performed_by_actor"]),"status":event["kind"],"summary":display_text(event["payload"].get("summary").and_then(Value::as_str)),"created_at":event["created_at"]}));
     }
     for delivery in facts.work_deliveries.iter().filter(|delivery| {
         delivery["work_id"]
@@ -564,7 +573,7 @@ fn team_activity(
         .iter()
         .filter(|message| run_id.is_some_and(|id| message["team_run_id"] == id))
     {
-        rows.push(json!({"source":"message","id":message["id"],"work_id":message["work_id"],"actor_ref":message["sender_actor_ref"],"status":message["kind"],"summary":display_text(message["body"].as_str()),"created_at":message["created_at"]}));
+        rows.push(json!({"source":"message","id":message["id"],"work_id":message["work_id"],"actor_ref":role_actor_ref(&message["sender_actor_ref"]),"status":message["kind"],"summary":display_text(message["body"].as_str()),"created_at":message["created_at"]}));
     }
     let team_message_ids = facts
         .messages
@@ -605,7 +614,7 @@ fn team_activity(
             .as_str()
             .is_some_and(|id| team_work_ids.contains(id) || team_message_ids.contains(id))
     }) {
-        rows.push(json!({"source":"runtime_command","id":command["id"],"work_id":command["source_record_id"].as_str().filter(|id|team_work_ids.contains(id)),"actor_ref":command["authenticated_actor"],"status":command["status"],"summary":display_text(command["failure_code"].as_str()),"created_at":command["updated_at"]}));
+        rows.push(json!({"source":"runtime_command","id":command["id"],"work_id":command["source_record_id"].as_str().filter(|id|team_work_ids.contains(id)),"actor_ref":role_actor_ref(&command["authenticated_actor"]),"status":command["status"],"summary":display_text(command["failure_code"].as_str()),"created_at":command["updated_at"]}));
     }
     rows.sort_by(|left, right| {
         right["created_at"]
@@ -643,8 +652,8 @@ fn message_summary(value: &Value, deliveries: &[Value]) -> Value {
     json!({
         "message_id":message_id,
         "work_id":value["work_id"],
-        "sender":value["sender_actor_ref"],
-        "recipients":value["recipients"],
+        "sender":role_actor_ref(&value["sender_actor_ref"]),
+        "recipients":value["recipients"].as_array().map(|recipients|recipients.iter().map(role_actor_ref).collect::<Vec<_>>()).unwrap_or_default(),
         "body":value["body"],
         "kind":value["kind"],
         "correlation_id":value["correlation_id"],
@@ -727,7 +736,7 @@ fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
             json!({
                 "id":event["id"],
                 "kind":event["kind"],
-                "actor_ref":event["performed_by_actor"],
+                "actor_ref":role_actor_ref(&event["performed_by_actor"]),
                 "created_at":event["created_at"],
             })
         });
