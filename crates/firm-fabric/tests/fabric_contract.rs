@@ -326,12 +326,12 @@ fn operation_registry_requires_closed_kind_schema_and_body_scope() {
         ClosedOperationBody::RuntimeCommand(_)
     ));
 
-    let mut browser_authority = request.clone();
-    browser_authority.body["actor_id"] = json!("browser-selected-host");
-    browser_authority.body_digest =
-        json_digest(&browser_authority.body).expect("hostile body digest");
+    let mut injected_actor_field = request.clone();
+    injected_actor_field.body["actor_id"] = json!("client-selected-host");
+    injected_actor_field.body_digest =
+        json_digest(&injected_actor_field.body).expect("hostile body digest");
     assert_eq!(
-        browser_authority
+        injected_actor_field
             .closed_body()
             .expect_err("unknown authority field must fail closed")
             .code,
@@ -2390,7 +2390,7 @@ fn wire_config_and_frame_codec_are_closed_and_generation_fenced() {
     assert_eq!(frame, before);
 
     let mut unknown: serde_json::Value = serde_json::from_slice(&bytes).expect("frame JSON");
-    unknown["browser_authority"] = json!("host");
+    unknown["client_selected_actor"] = json!("host");
     let unknown_bytes = serde_json::to_vec(&unknown).expect("encode hostile frame");
     assert_eq!(
         decode_frame(&unknown_bytes)
