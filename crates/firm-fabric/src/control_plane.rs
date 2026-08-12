@@ -136,7 +136,6 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn create_enrollment(
         &self,
         actor: &AuthenticatedActor,
@@ -145,6 +144,34 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         raw_token: &str,
         requested_name: &str,
         allowed_capabilities: BTreeSet<String>,
+        expires_at_unix_ms: u64,
+        now_unix_ms: u64,
+    ) -> Result<NodeEnrollment, FabricError> {
+        self.create_enrollment_bound(
+            actor,
+            generation,
+            enrollment_id,
+            raw_token,
+            requested_name,
+            allowed_capabilities,
+            "",
+            1,
+            expires_at_unix_ms,
+            now_unix_ms,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_enrollment_bound(
+        &self,
+        actor: &AuthenticatedActor,
+        generation: u64,
+        enrollment_id: &str,
+        raw_token: &str,
+        requested_name: &str,
+        allowed_capabilities: BTreeSet<String>,
+        authorized_node_daemon_id: &str,
+        authorized_node_daemon_generation: u64,
         expires_at_unix_ms: u64,
         now_unix_ms: u64,
     ) -> Result<NodeEnrollment, FabricError> {
@@ -164,6 +191,8 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                 raw_token,
                 requested_name,
                 allowed_capabilities,
+                authorized_node_daemon_id,
+                authorized_node_daemon_generation,
                 expires_at_unix_ms,
                 now_unix_ms,
             )

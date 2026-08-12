@@ -1210,6 +1210,8 @@ fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
                 "enrollment_id",
                 "requested_name",
                 "allowed_capabilities",
+                "authorized_node_daemon_id",
+                "authorized_node_daemon_generation",
                 "expires_at_unix_ms",
             ],
         )?;
@@ -1217,6 +1219,9 @@ fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
         let enrollment_id = json_string(body, "enrollment_id")?;
         let requested_name = json_string(body, "requested_name")?;
         let capabilities = json_string_set(body, "allowed_capabilities")?;
+        let authorized_node_daemon_id = json_string(body, "authorized_node_daemon_id")?;
+        let authorized_node_daemon_generation =
+            json_u64(body, "authorized_node_daemon_generation")?;
         let expires_at = body
             .get("expires_at_unix_ms")
             .and_then(serde_json::Value::as_u64)
@@ -1225,13 +1230,15 @@ fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
             "enroll-{}",
             harness_fabric::sha256_hex(format!("{host_token}:{enrollment_id}:{now}").as_bytes())
         );
-        let enrollment = control.create_enrollment(
+        let enrollment = control.create_enrollment_bound(
             actor,
             generation,
             &enrollment_id,
             &raw_token,
             &requested_name,
             capabilities,
+            &authorized_node_daemon_id,
+            authorized_node_daemon_generation,
             expires_at,
             now,
         )?;

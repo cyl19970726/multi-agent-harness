@@ -227,6 +227,8 @@ pub struct NodeEnrollment {
     pub token_digest: String,
     pub requested_name: String,
     pub allowed_capabilities: BTreeSet<String>,
+    pub authorized_node_daemon_id: String,
+    pub authorized_node_daemon_generation: u64,
     pub created_by: String,
     pub expires_at_unix_ms: u64,
     pub consumed_at_unix_ms: Option<u64>,

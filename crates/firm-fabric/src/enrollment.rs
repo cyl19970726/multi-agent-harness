@@ -17,11 +17,16 @@ pub(crate) fn create_enrollment(
     raw_token: &str,
     requested_name: &str,
     allowed_capabilities: std::collections::BTreeSet<String>,
+    authorized_node_daemon_id: &str,
+    authorized_node_daemon_generation: u64,
     expires_at_unix_ms: u64,
     now_unix_ms: u64,
 ) -> Result<NodeEnrollment, FabricError> {
     actor.require_company_and_role(company_id, "company_host", now_unix_ms)?;
-    if raw_token.len() < 32 || expires_at_unix_ms <= now_unix_ms {
+    if raw_token.len() < 32
+        || expires_at_unix_ms <= now_unix_ms
+        || authorized_node_daemon_generation == 0
+    {
         return Err(FabricError::none(
             FabricErrorCode::EnrollmentInvalid,
             "enrollment token must be strong and have a future expiry",
@@ -56,6 +61,8 @@ pub(crate) fn create_enrollment(
         token_digest,
         requested_name: requested_name.into(),
         allowed_capabilities,
+        authorized_node_daemon_id: authorized_node_daemon_id.into(),
+        authorized_node_daemon_generation,
         created_by: actor.actor_id.clone(),
         expires_at_unix_ms,
         consumed_at_unix_ms: None,
@@ -226,8 +233,12 @@ pub(crate) fn consume_enrollment(
         company_id: company_id.into(),
         node_id: node_id.into(),
         public_key_fingerprint,
-        node_daemon_id: format!("node-daemon:{node_id}"),
-        node_daemon_generation: 1,
+        node_daemon_id: if enrollment.authorized_node_daemon_id.is_empty() {
+            format!("node-daemon:{node_id}")
+        } else {
+            enrollment.authorized_node_daemon_id.clone()
+        },
+        node_daemon_generation: enrollment.authorized_node_daemon_generation,
         issued_at_unix_ms: now_unix_ms,
         expires_at_unix_ms: certificate_expires_at_unix_ms,
         revoked_at_unix_ms: None,
@@ -356,8 +367,12 @@ pub(crate) fn consume_enrollment_csr(
         company_id: company_id.into(),
         node_id: node_id.into(),
         public_key_fingerprint: public_key_fingerprint.into(),
-        node_daemon_id: format!("node-daemon:{node_id}"),
-        node_daemon_generation: 1,
+        node_daemon_id: if enrollment.authorized_node_daemon_id.is_empty() {
+            format!("node-daemon:{node_id}")
+        } else {
+            enrollment.authorized_node_daemon_id.clone()
+        },
+        node_daemon_generation: enrollment.authorized_node_daemon_generation,
         issued_at_unix_ms: now_unix_ms,
         expires_at_unix_ms: certificate_expires_at_unix_ms,
         revoked_at_unix_ms: None,
