@@ -137,7 +137,7 @@ export function AgentConversationWorkspace({
           <AgentComposer data={data} actions={currentView.allowed_actions} actionsCurrent={!error&&actionsCurrent&&currentView.freshness==="current"} selectedRunId={selectedRunId} onAction={onAction} onCompleted={()=>setRefresh(value=>value+1)}/>
         </section>
 
-        <aside className="agent-workspace-context hidden min-h-0 border-l border-border lg:block" aria-label="Agent context">{context}</aside>
+        <aside className="agent-workspace-context hidden min-h-0 min-w-0 overflow-hidden border-l border-border lg:block" aria-label="Agent context">{context}</aside>
       </div>
 
       {rosterOpen&&<MobileSheet title="Agent roster" onClose={()=>setRosterOpen(false)}><AgentRoster data={data} selectedId={selected.agent_member_ref.id} onBack={closeWorkspace} onSelect={selectAgent}/></MobileSheet>}
@@ -243,7 +243,7 @@ function AgentContextRail({view,data,selected,currentWork,actions}:{view:RoleVie
   const activeWorks=data.works.filter(work=>work.phase==="active"||work.phase==="review");
   const evidenceWorks=data.works.filter(work=>work.latest_report_ref||work.latest_finding_refs.length||work.latest_failure_ref||work.artifact_refs.length||work.check_refs.length);
   const incoming=data.messages.filter(message=>message.sender.id!==data.selected_agent.agent_member_ref.id);
-  return <ScrollArea.Root className="h-full overflow-hidden"><ScrollArea.Viewport className="size-full"><div className="px-5 pb-8 pt-5">
+  return <ScrollArea.Root className="h-full min-w-0 overflow-hidden"><ScrollArea.Viewport className="size-full min-w-0 [&>div]:!block [&>div]:!min-w-0"><div className="min-w-0 overflow-hidden px-5 pb-8 pt-5">
     {selected?.kind==="message"
       ? <MessageContext message={selected.message}/>
       : selected?.kind==="event"
@@ -316,7 +316,7 @@ function MobileSheet({title,onClose,children}:{title:string;onClose:()=>void;chi
 function RuntimePill({state}:{state:string|null}){return <span className="flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[9px] font-semibold text-muted-foreground"><Circle className={`size-2 fill-current ${state==="running"?"text-status-running":state==="idle"?"text-status-good":"text-muted-foreground/40"}`}/>{state??"unknown"}</span>}
 function ContextSection({title,primary=false,children}:{title:string;primary?:boolean;children:React.ReactNode}){return <section className={`${primary?"agent-context-primary":"mt-5 border-t border-border pt-4"}`}><h2 className="mb-3 text-[12px] font-semibold tracking-[-0.015em] text-foreground">{title}</h2>{children}</section>}
 function ProfileSection({title,children}:{title:string;children:React.ReactNode}){return <section><h3 className="border-b border-border pb-2 text-[10px] font-semibold uppercase tracking-[.14em] text-muted-foreground">{title}</h3><div className="mt-3 space-y-2">{children}</div></section>}
-function ContextFact({label,value}:{label:string;value:string}){return <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3 py-1 text-[10.5px]"><span className="text-muted-foreground">{label}</span><span className="min-w-0 break-words text-right font-medium text-foreground" title={value}>{value}</span></div>}
+function ContextFact({label,value}:{label:string;value:string}){return <div className="grid min-w-0 grid-cols-[6rem_minmax(0,1fr)] gap-3 overflow-hidden py-1 text-[10.5px]"><span className="text-muted-foreground">{label}</span><span className="min-w-0 break-words text-right font-medium text-foreground" title={value}>{value}</span></div>}
 function MiniMetric({label,value}:{label:string;value:number}){return <div><p className="text-[9px] text-muted-foreground">{label}</p><p className="mt-1 text-[15px] font-semibold">{value}</p></div>}
 function ContextWorkRow({work,evidence=false}:{work:WorkSummary;evidence?:boolean}){return <div className="border-t border-border/70 py-2.5 first:border-t-0"><div className="flex items-start justify-between gap-3"><p className="min-w-0 flex-1 truncate text-[10.5px] font-semibold">{work.title||work.work_id}</p><span className="shrink-0 text-[9px] text-muted-foreground">{evidence?(work.latest_report_ref?"report":work.latest_finding_refs.length?"finding":work.latest_failure_ref?"failure":"evidence"):work.phase}</span></div><p className="mt-1 truncate text-[9px] text-muted-foreground">{shortId(work.work_id)} · {work.owner_actor_ref?.id??"unassigned"}</p></div>}
 function ContextMessageRow({data,message}:{data:AgentWorkspaceData;message:MessageSummary}){const actor=data.roster.find(item=>item.agent_member_ref.id===message.sender.id);return <div className="border-t border-border/70 py-2.5 first:border-t-0"><div className="flex items-baseline justify-between gap-3"><b className="truncate text-[10.5px]">{actor?.display_name??message.sender.id}</b><time className="shrink-0 text-[9px] text-muted-foreground">{formatTime(message.created_at)}</time></div><p className="mt-1 line-clamp-1 text-[9.5px] text-muted-foreground">{message.body}</p></div>}
