@@ -94,10 +94,12 @@ try{
   });return next;};
   const page=await makePage(liveConfig?.memberToken??"fixture-member-token");
   const open=async(target,url)=>{await target.goto(url,{waitUntil:"networkidle"});await target.getByTestId("agent-workspace").waitFor();assert.equal(await target.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true,"desktop horizontal overflow");};
+  const waitForStableWriteSurface=async target=>{await target.getByText("Authoritative Agent Workspace refresh is pending or failed. Composer and action writes are unavailable.",{exact:true}).waitFor({state:"detached"});};
   const routeState=liveConfig?{teamRun:liveConfig.teamRun,member:liveConfig.member,memberRun:liveConfig.memberRun,host:liveConfig.host,space:liveConfig.space,project:liveConfig.project}:{teamRun:team.latest_run.id,member:"agent-mira",memberRun:"member-run-mira",host:"agent-host",space:"fixture-space",project:"fixture-project"};
   await open(page,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.member}&memberRun=${routeState.memberRun}&space=${routeState.space}&project=${routeState.project}`);
   await page.getByRole("button",{name:/Open .* configuration/}).waitFor();
   if(!liveConfig){await page.getByText(/Implemented the owner-bound Session projection/).waitFor();await page.getByText("Validated owner-bound native Session",{exact:true}).waitFor();}
+  await waitForStableWriteSurface(page);
   await page.screenshot({path:join(evidenceDir,`member-session--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   if(!liveConfig){
     const authoredMessage=page.getByRole("button",{name:/Open authored Message from Host Agent/}).first();
@@ -107,10 +109,12 @@ try{
     const toolRow=page.getByRole("button",{name:/Validated owner-bound native Session/});await toolRow.focus();await page.keyboard.press("Enter");assert.equal(await toolRow.getAttribute("aria-expanded"),"true","event row keyboard expansion");
   }
   await page.getByRole("tab",{name:/Messages/}).click();await page.getByRole("button",{name:"inbox",exact:true}).waitFor();
+  await waitForStableWriteSurface(page);
   await page.screenshot({path:join(evidenceDir,`member-messages--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   await page.getByRole("tab",{name:/Work/}).click();
   if(!liveConfig)await page.getByRole("button",{name:/Restore authored conversation dominance/}).waitFor();
   else await page.getByRole("button",{name:/Implement unified Host and Member Agent Workspace/}).waitFor();
+  await waitForStableWriteSurface(page);
   await page.screenshot({path:join(evidenceDir,`member-work--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   const profileOpener=page.getByRole("button",{name:/Open .* configuration/});
   await profileOpener.click();await page.getByRole("dialog").waitFor();
@@ -135,6 +139,7 @@ try{
   const hostPage=await makePage(liveConfig?.hostToken??"fixture-host-token");
   await open(hostPage,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.host}&space=${routeState.space}&project=${routeState.project}`);
   if(liveConfig)await hostPage.locator(".agent-authored-turn").first().waitFor();
+  await waitForStableWriteSurface(hostPage);
   if(!liveConfig){assert.equal(await hostPage.getByText("Validated owner-bound native Session",{exact:true}).count(),0,"Member-private provider event leaked into Host Session");assert.equal(await hostPage.getByText("Read Lead inbox",{exact:true}).count(),1,"Host-native event missing");}
   await hostPage.screenshot({path:join(evidenceDir,`host-session--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   if(liveConfig)await hostPage.locator(".agent-roster-row").filter({hasNotText:"Host"}).first().click();
@@ -150,6 +155,7 @@ try{
   }
   await hostPage.getByText(/Public Agent context/).waitFor();
   if(liveConfig)await hostPage.locator(".agent-authored-turn").first().waitFor();
+  await waitForStableWriteSurface(hostPage);
   assert.equal(await hostPage.getByText("Validated owner-bound native Session",{exact:true}).count(),0,"Host-selected Member leaked provider-private activity");
   await hostPage.screenshot({path:join(evidenceDir,`host-member-public--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   if(!liveConfig){
