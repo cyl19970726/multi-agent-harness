@@ -1,5 +1,6 @@
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -8,7 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use crate::protocol::*;
-use crate::{canonical_digest, sha256_hex, FabricError, FabricErrorCode, FABRIC_SCHEMA_VERSION};
+use crate::{
+    bytes_to_hex, canonical_digest, sha256_hex, FabricError, FabricErrorCode, FABRIC_SCHEMA_VERSION,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -110,6 +113,7 @@ struct FabricCheckpoint {
 struct StoreInner {
     state: FabricState,
     last_frame_digest: String,
+    journal_hasher: Sha256,
     journal_stamp: JournalStamp,
 }
 
@@ -174,14 +178,16 @@ impl FabricStore {
             file.sync_all().map_err(store_error)?;
         }
         if !checkpoint_current {
+            let journal_prefix_digest = journal_prefix_digest(&journal, valid_length)?;
             let _ = write_checkpoint(
                 &checkpoint,
-                &journal,
                 &state,
                 &last_frame_digest,
                 valid_length,
+                &journal_prefix_digest,
             );
         }
+        let journal_hasher = journal_hasher(&journal, valid_length)?;
         let journal_stamp = journal_stamp(&journal)?;
         Ok(Self {
             root: canonical_root,
@@ -191,6 +197,7 @@ impl FabricStore {
             inner: Mutex::new(StoreInner {
                 state,
                 last_frame_digest,
+                journal_hasher,
                 journal_stamp,
             }),
             limits,
@@ -229,16 +236,18 @@ impl FabricStore {
         let (state, last_frame_digest, valid_length, checkpoint_current) =
             load_journal_from_checkpoint(&self.journal, &self.checkpoint)?;
         if !checkpoint_current {
+            let journal_prefix_digest = journal_prefix_digest(&self.journal, valid_length)?;
             let _ = write_checkpoint(
                 &self.checkpoint,
-                &self.journal,
                 &state,
                 &last_frame_digest,
                 valid_length,
+                &journal_prefix_digest,
             );
         }
         inner.state = state;
         inner.last_frame_digest = last_frame_digest;
+        inner.journal_hasher = journal_hasher(&self.journal, valid_length)?;
         inner.journal_stamp = journal_stamp(&self.journal)?;
         Ok(inner.state.clone())
     }
@@ -415,10 +424,11 @@ impl FabricStore {
         })?;
         let durable_stamp = journal_stamp(&self.journal)?;
         if durable_stamp != inner.journal_stamp {
-            let (durable_state, durable_digest, _, _) =
+            let (durable_state, durable_digest, valid_length, _) =
                 load_journal_from_checkpoint(&self.journal, &self.checkpoint)?;
             inner.state = durable_state;
             inner.last_frame_digest = durable_digest;
+            inner.journal_hasher = journal_hasher(&self.journal, valid_length)?;
             inner.journal_stamp = durable_stamp;
         }
         let mut next = inner.state.clone();
@@ -442,7 +452,7 @@ impl FabricStore {
             state: core.state,
             frame_digest: frame_digest.clone(),
         };
-        append_frame(&self.journal, &frame)?;
+        let appended = append_frame(&self.journal, &frame)?;
         if self.fail_after_append.swap(false, Ordering::SeqCst) {
             self.available.store(false, Ordering::SeqCst);
             return Err(FabricError::unknown(
@@ -452,13 +462,15 @@ impl FabricStore {
         }
         inner.state = next;
         inner.last_frame_digest = frame_digest;
+        inner.journal_hasher.update(&appended);
         let journal_length = self.journal.metadata().map_err(store_error)?.len();
+        let journal_prefix_digest = bytes_to_hex(&inner.journal_hasher.clone().finalize());
         let _ = write_checkpoint(
             &self.checkpoint,
-            &self.journal,
             &inner.state,
             &inner.last_frame_digest,
             journal_length,
+            &journal_prefix_digest,
         );
         inner.journal_stamp = journal_stamp(&self.journal)?;
         Ok(result)
@@ -499,7 +511,7 @@ fn journal_stamp(path: &Path) -> Result<JournalStamp, FabricError> {
     }
 }
 
-fn append_frame(path: &Path, frame: &JournalFrame) -> Result<(), FabricError> {
+fn append_frame(path: &Path, frame: &JournalFrame) -> Result<Vec<u8>, FabricError> {
     let mut encoded = serde_json::to_vec(frame).map_err(|error| {
         FabricError::none(
             FabricErrorCode::StoreUnavailable,
@@ -519,7 +531,7 @@ fn append_frame(path: &Path, frame: &JournalFrame) -> Result<(), FabricError> {
             .and_then(|directory| directory.sync_all())
             .map_err(store_error)?;
     }
-    Ok(())
+    Ok(encoded)
 }
 
 fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), FabricError> {
@@ -589,10 +601,10 @@ fn read_checkpoint(path: &Path) -> Result<Option<FabricCheckpoint>, FabricError>
 
 fn write_checkpoint(
     checkpoint: &Path,
-    journal: &Path,
     state: &FabricState,
     last_frame_digest: &str,
     journal_offset: u64,
+    journal_prefix_digest: &str,
 ) -> Result<(), FabricError> {
     if let Ok(metadata) = fs::symlink_metadata(checkpoint) {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -602,23 +614,10 @@ fn write_checkpoint(
             ));
         }
     }
-    let bytes = read_journal(journal)?;
-    let offset = usize::try_from(journal_offset).map_err(|_| {
-        FabricError::none(
-            FabricErrorCode::StoreUnavailable,
-            "FabricStore checkpoint offset exceeds this platform",
-        )
-    })?;
-    if offset > bytes.len() || (offset > 0 && bytes[offset - 1] != b'\n') {
-        return Err(FabricError::none(
-            FabricErrorCode::StoreUnavailable,
-            "FabricStore checkpoint does not end at a durable frame boundary",
-        ));
-    }
     let core = FabricCheckpointCore {
         schema_version: FABRIC_SCHEMA_VERSION.into(),
         journal_offset,
-        journal_prefix_digest: sha256_hex(&bytes[..offset]),
+        journal_prefix_digest: journal_prefix_digest.into(),
         transaction_sequence: state.revision,
         last_frame_digest: last_frame_digest.into(),
         state: state.clone(),
@@ -651,6 +650,31 @@ fn write_checkpoint(
             .map_err(store_error)?;
     }
     Ok(())
+}
+
+fn journal_hasher(path: &Path, valid_length: u64) -> Result<Sha256, FabricError> {
+    let bytes = read_journal(path)?;
+    let length = usize::try_from(valid_length).map_err(|_| {
+        FabricError::none(
+            FabricErrorCode::StoreUnavailable,
+            "FabricStore journal length exceeds this platform",
+        )
+    })?;
+    if length > bytes.len() || (length > 0 && bytes[length - 1] != b'\n') {
+        return Err(FabricError::none(
+            FabricErrorCode::StoreUnavailable,
+            "FabricStore journal does not end at the validated frame boundary",
+        ));
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes[..length]);
+    Ok(hasher)
+}
+
+fn journal_prefix_digest(path: &Path, valid_length: u64) -> Result<String, FabricError> {
+    Ok(bytes_to_hex(
+        &journal_hasher(path, valid_length)?.finalize(),
+    ))
 }
 
 fn read_journal(path: &Path) -> Result<Vec<u8>, FabricError> {
