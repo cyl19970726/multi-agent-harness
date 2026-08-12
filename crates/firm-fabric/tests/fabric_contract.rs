@@ -955,7 +955,20 @@ fn durable_checkpoint_recovers_stale_or_torn_cache_and_never_hides_journal_tampe
 
     std::fs::write(&checkpoint, &stale_checkpoint).expect("restore stale checkpoint");
     let reopened = FabricStore::open(root.path()).expect("replay suffix after stale checkpoint");
+    let checkpoint_modified = std::fs::metadata(&checkpoint)
+        .expect("checkpoint metadata")
+        .modified()
+        .expect("checkpoint modified time");
+    std::thread::sleep(std::time::Duration::from_millis(10));
     assert_eq!(reopened.snapshot().expect("snapshot"), expected);
+    assert_eq!(
+        std::fs::metadata(&checkpoint)
+            .expect("checkpoint metadata after read")
+            .modified()
+            .expect("checkpoint modified time after read"),
+        checkpoint_modified,
+        "a current checkpoint is read-only on snapshot"
+    );
     drop(reopened);
 
     std::fs::write(&checkpoint, b"{torn-checkpoint").expect("write torn checkpoint cache");

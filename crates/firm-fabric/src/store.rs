@@ -151,7 +151,7 @@ impl FabricStore {
         let lock_path = canonical_root.join("fabric.lock");
         let lock = open_lock(&lock_path)?;
         lock.lock_exclusive().map_err(store_error)?;
-        let (state, last_frame_digest, valid_length) =
+        let (state, last_frame_digest, valid_length, checkpoint_current) =
             load_journal_from_checkpoint(&journal, &checkpoint)?;
         if journal
             .metadata()
@@ -166,13 +166,15 @@ impl FabricStore {
             file.set_len(valid_length).map_err(store_error)?;
             file.sync_all().map_err(store_error)?;
         }
-        let _ = write_checkpoint(
-            &checkpoint,
-            &journal,
-            &state,
-            &last_frame_digest,
-            valid_length,
-        );
+        if !checkpoint_current {
+            let _ = write_checkpoint(
+                &checkpoint,
+                &journal,
+                &state,
+                &last_frame_digest,
+                valid_length,
+            );
+        }
         Ok(Self {
             root: canonical_root,
             journal,
@@ -205,15 +207,17 @@ impl FabricStore {
         self.require_available()?;
         let lock = open_lock(&self.lock_path)?;
         lock.lock_exclusive().map_err(store_error)?;
-        let (state, last_frame_digest, valid_length) =
+        let (state, last_frame_digest, valid_length, checkpoint_current) =
             load_journal_from_checkpoint(&self.journal, &self.checkpoint)?;
-        let _ = write_checkpoint(
-            &self.checkpoint,
-            &self.journal,
-            &state,
-            &last_frame_digest,
-            valid_length,
-        );
+        if !checkpoint_current {
+            let _ = write_checkpoint(
+                &self.checkpoint,
+                &self.journal,
+                &state,
+                &last_frame_digest,
+                valid_length,
+            );
+        }
         let mut inner = self.inner.lock().map_err(|_| {
             FabricError::none(
                 FabricErrorCode::StoreUnavailable,
@@ -395,7 +399,7 @@ impl FabricStore {
                 "FabricStore lock poisoned",
             )
         })?;
-        let (durable_state, durable_digest, _) =
+        let (durable_state, durable_digest, _, _) =
             load_journal_from_checkpoint(&self.journal, &self.checkpoint)?;
         inner.state = durable_state;
         inner.last_frame_digest = durable_digest;
@@ -498,7 +502,7 @@ fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), FabricError> {
 fn load_journal_from_checkpoint(
     journal: &Path,
     checkpoint: &Path,
-) -> Result<(FabricState, String, u64), FabricError> {
+) -> Result<(FabricState, String, u64, bool), FabricError> {
     let bytes = read_journal(journal)?;
     if let Some(checkpoint) = read_checkpoint(checkpoint)? {
         let offset = checkpoint.core.journal_offset as usize;
@@ -513,16 +517,25 @@ fn load_journal_from_checkpoint(
                 || (checkpoint.core.transaction_sequence > 0
                     && !checkpoint.core.last_frame_digest.is_empty()));
         if checkpoint_valid {
-            return parse_journal(
+            let checkpoint_offset = checkpoint.core.journal_offset;
+            let (state, digest, valid_length) = parse_journal(
                 &bytes,
                 offset,
                 checkpoint.core.state,
                 checkpoint.core.last_frame_digest,
                 checkpoint.core.transaction_sequence.saturating_add(1),
-            );
+            )?;
+            return Ok((
+                state,
+                digest,
+                valid_length,
+                valid_length == checkpoint_offset,
+            ));
         }
     }
-    parse_journal(&bytes, 0, FabricState::default(), String::new(), 1)
+    let (state, digest, valid_length) =
+        parse_journal(&bytes, 0, FabricState::default(), String::new(), 1)?;
+    Ok((state, digest, valid_length, false))
 }
 
 fn read_checkpoint(path: &Path) -> Result<Option<FabricCheckpoint>, FabricError> {
