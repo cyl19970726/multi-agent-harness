@@ -233,6 +233,115 @@
       inset 0 1px 0 rgb(255 255 255 / 0.8);
   }
 
+  /* DEV-14 Quiet Operations Console V2. Surfaces stay flat and are separated
+     by paper tone, rhythm and hairlines; only overlays may float. */
+  .agent-workspace {
+    background: #fffefa;
+  }
+
+  .agent-workspace-roster {
+    background: #fbf9f4;
+  }
+
+  .agent-workspace-center {
+    background: #fffefa;
+  }
+
+  .agent-workspace-context {
+    background: #fdfbf7;
+  }
+
+  .agent-workspace-header {
+    background: #fffefa;
+  }
+
+  .agent-workspace-tabs [data-state="active"] > span:last-child,
+  .agent-work-lens[data-active="true"]::after {
+    transform: scaleX(1);
+  }
+
+  .agent-work-lens::after {
+    position: absolute;
+    right: 0;
+    bottom: -0.8rem;
+    left: 0;
+    height: 2px;
+    background: var(--primary);
+    content: "";
+    transform: scaleX(0);
+    transition: transform 140ms ease;
+  }
+
+  .agent-roster-row {
+    position: relative;
+    border-left: 2px solid transparent;
+    transition: color 130ms ease, background-color 130ms ease,
+      border-color 130ms ease;
+  }
+
+  .agent-roster-row:hover {
+    background: rgb(255 247 242 / 0.55);
+  }
+
+  .agent-roster-row[data-selected="true"] {
+    border-left-color: color-mix(in srgb, var(--primary) 76%, var(--border));
+    background: rgb(255 244 238 / 0.7);
+  }
+
+  .agent-authored-turn {
+    display: flex;
+    gap: 0.75rem;
+    padding-block: 1rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  }
+
+  .agent-event-row {
+    transition: background-color 120ms ease;
+  }
+
+  .agent-event-row:hover,
+  .agent-event-row[data-open="true"] {
+    background: rgb(250 247 242 / 0.54);
+  }
+
+  .agent-message-row,
+  .agent-work-row {
+    transition: background-color 120ms ease, padding-inline 120ms ease;
+  }
+
+  .agent-message-row:hover,
+  .agent-work-row:hover {
+    margin-inline: -0.5rem;
+    width: calc(100% + 1rem);
+    padding-inline: 0.5rem;
+    background: rgb(255 246 240 / 0.48);
+  }
+
+  .agent-context-primary {
+    padding-block: 0.25rem 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .agent-workspace-composer {
+    box-shadow: none;
+  }
+
+  .agent-workspace-composer .agent-team-composer {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .agent-workspace-composer > div > section {
+    border-top: 0;
+    background: transparent;
+  }
+
+  .agent-profile-drawer {
+    background: #fffefa;
+  }
+
   .agent-team-surface :where(button, a, input, textarea, select, summary):focus-visible {
     outline: 2px solid color-mix(in srgb, var(--ring) 76%, white);
     outline-offset: 2px;
@@ -588,7 +697,7 @@
   }
   .member-focus-rail {
     gap: .35rem;
-    background: #fdfcf9;
+    background: #fffefa;
   }
   .member-focus-rail nav button {
     width: 2.5rem;

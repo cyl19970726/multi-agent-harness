@@ -185,64 +185,94 @@ pub(crate) fn read_activity(session: &NativeSessionRef) -> CliResult<serde_json:
     }))
 }
 
+/// Read a provider-native activity projection from a server-owned serialized
+/// session reference. RoleViews use this adapter only after proving the exact
+/// selected Agent and authenticated viewer relationship. The browser never
+/// supplies a filesystem locator or a provider session id directly.
+pub(crate) fn read_activity_value(session: &serde_json::Value) -> CliResult<serde_json::Value> {
+    let session = serde_json::from_value::<NativeSessionRef>(session.clone()).map_err(|error| {
+        CliError::Usage(format!(
+            "stored native session reference is not compatible with the reviewed reader: {error}"
+        ))
+    })?;
+    read_activity(&session)
+}
+
 fn locate(session: &NativeSessionRef) -> CliResult<Option<PathBuf>> {
     let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
         CliError::Usage("HOME is unavailable for native session discovery".into())
     })?;
     let result = match session.provider.as_str() {
-        "codex" => find_file(
+        "codex" => discover_codex_rollout(
             &std::env::var_os("CODEX_HOME")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".codex"))
-                .join("sessions"),
-            &format!("{}.jsonl", session.native_session_id),
-            5,
-        ),
+                .unwrap_or_else(|| home.join(".codex")),
+            &session.native_session_id,
+        )?,
         "kimi" => find_kimi_wire(
             &home.join(".kimi-code/sessions"),
             &session.native_session_id,
             4,
-        ),
+        )?,
         "claude" => find_file(
             &home.join(".claude/projects"),
             &format!("{}.jsonl", session.native_session_id),
             4,
-        ),
+        )?,
         _ => None,
     };
     Ok(result)
 }
 
-fn find_file(root: &Path, suffix: &str, depth: usize) -> Option<PathBuf> {
+fn find_file(root: &Path, suffix: &str, depth: usize) -> CliResult<Option<PathBuf>> {
     if depth == 0 || !root.is_dir() {
-        return None;
+        return Ok(None);
     }
-    for entry in fs::read_dir(root).ok()?.flatten() {
-        let path = entry.path();
-        if path.is_file()
+    let mut found = None;
+    for entry in fs::read_dir(root)? {
+        let path = entry?.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_file()
             && path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.ends_with(suffix))
         {
-            return Some(path);
+            let candidate = fs::canonicalize(&path)?;
+            if found.replace(candidate).is_some() {
+                return Err(CliError::Usage(format!(
+                    "multiple provider-native Session candidates match `{suffix}`"
+                )));
+            }
         }
-        if path.is_dir() {
-            if let Some(found) = find_file(&path, suffix, depth - 1) {
-                return Some(found);
+        if metadata.is_dir() {
+            if let Some(nested) = find_file(&path, suffix, depth - 1)? {
+                if found.replace(nested).is_some() {
+                    return Err(CliError::Usage(format!(
+                        "multiple provider-native Session candidates match `{suffix}`"
+                    )));
+                }
             }
         }
     }
-    None
+    Ok(found)
 }
 
-fn find_kimi_wire(root: &Path, session_dir: &str, depth: usize) -> Option<PathBuf> {
+fn find_kimi_wire(root: &Path, session_dir: &str, depth: usize) -> CliResult<Option<PathBuf>> {
     if depth == 0 || !root.is_dir() {
-        return None;
+        return Ok(None);
     }
-    for entry in fs::read_dir(root).ok()?.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
+    let mut found = None;
+    for entry in fs::read_dir(root)? {
+        let path = entry?.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
             let expected = if session_dir.starts_with("session_") {
                 session_dir.to_string()
             } else {
@@ -250,14 +280,25 @@ fn find_kimi_wire(root: &Path, session_dir: &str, depth: usize) -> Option<PathBu
             };
             if path.file_name().and_then(|name| name.to_str()) == Some(expected.as_str()) {
                 let wire = path.join("agents/main/wire.jsonl");
-                return wire.is_file().then_some(wire);
+                if wire.is_file() {
+                    let candidate = fs::canonicalize(wire)?;
+                    if found.replace(candidate).is_some() {
+                        return Err(CliError::Usage(format!(
+                            "multiple Kimi Session candidates name `{session_dir}`"
+                        )));
+                    }
+                }
             }
-            if let Some(found) = find_kimi_wire(&path, session_dir, depth - 1) {
-                return Some(found);
+            if let Some(nested) = find_kimi_wire(&path, session_dir, depth - 1)? {
+                if found.replace(nested).is_some() {
+                    return Err(CliError::Usage(format!(
+                        "multiple Kimi Session candidates name `{session_dir}`"
+                    )));
+                }
             }
         }
     }
-    None
+    Ok(found)
 }
 
 fn project_codex(value: &serde_json::Value) -> Option<serde_json::Value> {

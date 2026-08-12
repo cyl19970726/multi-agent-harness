@@ -1,7 +1,7 @@
 export const ROLE_VIEW_SCHEMA = "agentfirm.role_views.v1" as const;
 
 export type RoleViewFreshness = "current" | "stale" | "unavailable" | "unknown";
-export type RoleViewKind = "company_work" | "team_workspace" | "host_console" | "member_workbench" | "operator";
+export type RoleViewKind = "company_work" | "team_workspace" | "host_console" | "agent_workspace" | "member_workbench" | "operator";
 
 export interface ActorRef { kind: string; id: string }
 export interface TargetRef { kind: string; id: string }
@@ -243,6 +243,29 @@ export interface HostConsoleData {
   mission_context:MissionContextSummary|null; team_supervisor:TeamSupervisorSummary|null; host_inbox:MessageSummary[];
   member_runtime:MemberCapacitySummary[]; runtime_recovery:RoleRecordSummary[]; pressure_summary:TeamPressureSummary; runtime_fabric:RuntimeFabricSummary;
 }
+export interface AgentWorkspaceSession {
+  session_id:string|null; member_run_id:string|null; team_run_id:string; provider:string|null; execution_mode:string|null;
+  coordination_status:string; runtime_status:string; runtime_generation:number|null; started_at:string; last_active_at:string|null; ended_at:string|null;
+}
+export interface AgentWorkspaceActivityItem {
+  event_id:string; kind:string; status:string; title:string; summary?:string; occurred_at:string|null;
+}
+export interface AgentWorkspaceRosterItem extends Partial<MemberCapacitySummary> {
+  agent_member_ref:ActorRef; display_name:string; role:string; is_host?:boolean;
+}
+export interface AgentWorkspaceData {
+  projection_scope:"member_self_private"|"host_self_private"|"host_member_public";
+  team:{team_id:string;display_name:string;team_revision:number;mission_id:string;host_agent_id:string;viewer_role:"host"|"member";status:string;latest_run_id:string|null};
+  selected_agent:{agent_member_ref:ActorRef;display_name:string;role:string;organization_status:string;is_host:boolean;current_member_run_ref:string|null;provider:string|null;execution_mode:string|null;runtime_status:string|null};
+  roster:AgentWorkspaceRosterItem[];
+  sessions:AgentWorkspaceSession[];
+  selected_session_id:string|null;
+  session_activity:{native_session_id:string|null;provider:string|null;execution_mode:string|null;availability:string;items:AgentWorkspaceActivityItem[];truncated:boolean;disabled_reason:string|null};
+  messages:MessageSummary[];
+  works:WorkSummary[];
+  configuration:{description:string|null;prompt_ref:string|null;prompt_projection:string;skill_refs:string[];capabilities:string[];provider_profile_ref:string|null;model_preference:string|null;workspace_policy:string|null;permission_ceiling:string|null;forbidden_actions:string[];forbidden_actions_projection:string;workspace_binding:RoleRecordSummary|null};
+  context_summary:{current_work_id:string|null;message_count:number;unread_count:number;last_activity_at:string|null;authorization_count:number};
+}
 export interface MemberWorkbenchData {
   agent_member:{id:string;role:string;organization_status:string}; member_run:{id:string;agent_member_id:string;team_run_id:string;coordination_status:string;runtime_status:string;runtime_generation:number;native_session_health:string}; my_works:WorkSummary[];
   eligible_ready_pool:WorkSummary[]; unread_messages:MessageSummary[]; queued_deliveries:RoleRecordSummary[];
@@ -281,7 +304,7 @@ export async function fetchRoleView<T>(apiUrl:string,path:string,scope:{project?
   const body=await response.json().catch(()=>({}));
   if(!response.ok)throw new Error(body?.error?.message??`RoleView request failed (${response.status})`);
   if(body.schema_version!==ROLE_VIEW_SCHEMA)throw new Error(`Unsupported RoleView schema: ${String(body.schema_version)}`);
-  const expectedKind=path.includes("company-work")?"company_work":path.includes("team-workspace")?"team_workspace":path.includes("host-console")?"host_console":path.includes("member-workbench")?"member_workbench":path.includes("operator")?"operator":null;
+  const expectedKind=path.includes("company-work")?"company_work":path.includes("team-workspace")?"team_workspace":path.includes("host-console")?"host_console":path.includes("agent-workspace")?"agent_workspace":path.includes("member-workbench")?"member_workbench":path.includes("operator")?"operator":null;
   if(!expectedKind||body.view_kind!==expectedKind)throw new Error(`RoleView kind mismatch: expected ${String(expectedKind)}, received ${String(body.view_kind)}`);
   if(body.source_execution_space_id!==scope.space&&expectedKind!=="company_work")throw new Error("RoleView execution-space identity mismatch");
   if(!Number.isSafeInteger(body.as_of_event_sequence)||!["current","stale","unavailable","unknown"].includes(body.freshness)||!Array.isArray(body.allowed_actions)||!Array.isArray(body.attention))throw new Error("Malformed RoleView envelope");

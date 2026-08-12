@@ -87,6 +87,10 @@ export interface SelectionState {
   teamMode?: "workspace" | "host";
   /** Addressed actor in the Team conversation workspace (`host` or AgentMember id). */
   teamConversation?: string;
+  /** Center mode inside the unified Host/Member Agent Workspace. */
+  agentWorkspaceMode?: "session" | "messages" | "work";
+  /** Exact provider-native Session selected inside the Agent Workspace. */
+  agentSessionId?: string;
   /** URL-owned War Room tab and bounded Work filters. */
   teamTab?: "works" | "activity" | "members";
   teamOwner?: string;
@@ -228,6 +232,12 @@ function selectionFromSearch(search: string, pathname = "/"): SelectionState {
   if (agentTab && (agentTabs as string[]).includes(agentTab)) {
     next.agentTab = agentTab as AgentTab;
   }
+  const agentWorkspaceMode = params.get("agentMode");
+  if (agentWorkspaceMode && ["session", "messages", "work"].includes(agentWorkspaceMode)) {
+    next.agentWorkspaceMode = agentWorkspaceMode as SelectionState["agentWorkspaceMode"];
+  }
+  const agentSessionId = params.get("agentSession");
+  if (agentSessionId) next.agentSessionId = agentSessionId;
   const team = params.get("team");
   // Canonical team-run address: ?team=<run id>; setting it implies the Team
   // surface (mirror of the ?agent= / ?workflowRun= rules).
@@ -379,6 +389,8 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   setOrDelete("teamWork", selection.teamWorkId);
   setOrDelete("teamMode", selection.teamMode);
   setOrDelete("conversation", selection.teamConversation);
+  setOrDelete("agentMode", selection.agentWorkspaceMode && selection.agentWorkspaceMode !== "session" ? selection.agentWorkspaceMode : undefined);
+  setOrDelete("agentSession", selection.agentSessionId);
   setOrDelete("teamTab", selection.teamTab && selection.teamTab !== "works" ? selection.teamTab : undefined);
   setOrDelete("teamOwner", selection.teamOwner && selection.teamOwner !== "all" ? selection.teamOwner : undefined);
   setOrDelete("teamAttention", selection.teamAttention && selection.teamAttention !== "all" ? selection.teamAttention : undefined);
@@ -439,6 +451,8 @@ const selectionCompareKeys = [
   "teamWorkId",
   "teamMode",
   "teamConversation",
+  "agentWorkspaceMode",
+  "agentSessionId",
   "teamTab",
   "teamOwner",
   "teamAttention",

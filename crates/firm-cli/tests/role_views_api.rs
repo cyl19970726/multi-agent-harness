@@ -433,6 +433,108 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .find(|run| run["agent_member_id"] == sibling_worker_id)
         .and_then(|run| run["id"].as_str())
         .expect("sibling member run id");
+    let member_agent_workspace_route =
+        format!("/v1/views/agent-workspace/{run_id}?project={project_id}&agent_id={worker_id}");
+    let (status, host_selected_member) = serve.get_json_with_headers(
+        &member_agent_workspace_route,
+        &[("X-AgentFirm-Token", TOKEN)],
+    );
+    assert_eq!(
+        status, 200,
+        "Host-selected Member AgentWorkspace: {host_selected_member}"
+    );
+    assert_eq!(host_selected_member["view_kind"], "agent_workspace");
+    assert_eq!(
+        host_selected_member["data"]["projection_scope"],
+        "host_member_public"
+    );
+    assert_eq!(
+        host_selected_member["data"]["selected_agent"]["agent_member_ref"]["id"],
+        worker_id
+    );
+    assert_eq!(
+        host_selected_member["data"]["session_activity"]["availability"], "unavailable",
+        "Host-selected Member must fail closed for provider-private activity"
+    );
+    assert_eq!(
+        host_selected_member["data"]["session_activity"]["items"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        host_selected_member["data"]["sessions"],
+        serde_json::json!([]),
+        "Host-selected Member must not receive private Session history"
+    );
+    assert_eq!(
+        host_selected_member["data"]["selected_agent"]["current_member_run_ref"],
+        serde_json::Value::Null,
+        "Host-selected Member must not receive the private MemberRun binding"
+    );
+    assert!(host_selected_member["data"].get("runtime_fabric").is_none());
+    assert!(host_selected_member["data"]["messages"]
+        .as_array()
+        .expect("public messages")
+        .iter()
+        .all(|message| message["deliveries"] == serde_json::json!([])));
+    assert!(host_selected_member["data"]["works"]
+        .as_array()
+        .expect("public works")
+        .iter()
+        .all(|work| work["current_member_run_ref"].is_null()
+            && work["runtime_summary"]["state"] == "not_projected"
+            && work["workspace_summary"]["binding_id"].is_null()));
+    assert!(
+        host_selected_member["allowed_actions"]
+            .as_array()
+            .expect("Host public controls")
+            .iter()
+            .any(|action| action["kind"] == "close_member_run"
+                && action["target_ref"]["id"] == member_run_id),
+        "Host control projection must remain available without private Session projection"
+    );
+    assert!(host_selected_member["data"]["session_activity"]["items"]
+        .as_array()
+        .is_some());
+    let (status, member_self_workspace) = serve.get_json_with_headers(
+        &member_agent_workspace_route,
+        &[("X-AgentFirm-Token", MEMBER_TOKEN)],
+    );
+    assert_eq!(
+        status, 200,
+        "exact-self Member AgentWorkspace: {member_self_workspace}"
+    );
+    let (status, sibling_denied) = serve.get_json_with_headers(
+        &member_agent_workspace_route,
+        &[("X-AgentFirm-Token", SIBLING_MEMBER_TOKEN)],
+    );
+    assert_eq!(
+        status, 403,
+        "sibling Agent private Session must fail closed: {sibling_denied}"
+    );
+    assert_eq!(sibling_denied["error"]["code"], "NOT_AUTHORIZED");
+    let host_agent_workspace_route = format!(
+        "/v1/views/agent-workspace/{run_id}?project={project_id}&agent_id={}",
+        team.host_agent_id
+    );
+    let (status, exact_host_workspace) =
+        serve.get_json_with_headers(&host_agent_workspace_route, &[("X-AgentFirm-Token", TOKEN)]);
+    assert_eq!(
+        status, 200,
+        "exact Host AgentWorkspace: {exact_host_workspace}"
+    );
+    assert_eq!(
+        exact_host_workspace["data"]["selected_agent"]["is_host"],
+        true
+    );
+    let (status, member_denied_host) = serve.get_json_with_headers(
+        &host_agent_workspace_route,
+        &[("X-AgentFirm-Token", MEMBER_TOKEN)],
+    );
+    assert_eq!(
+        status, 403,
+        "Member must not read Host provider Session: {member_denied_host}"
+    );
+    assert_eq!(member_denied_host["error"]["code"], "NOT_AUTHORIZED");
     let member_run_version = store
         .trust_member_runs(&space_id)
         .expect("MemberRuns")
@@ -2262,6 +2364,7 @@ fn role_views_require_local_capability_and_gets_are_store_pure() {
     for path in [
         "/v1/views/team-workspace/missing",
         "/v1/views/host-console/missing",
+        "/v1/views/agent-workspace/missing",
         "/v1/views/member-workbench/missing",
         "/v1/views/operator/missing",
     ] {

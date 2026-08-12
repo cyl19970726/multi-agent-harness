@@ -51,7 +51,7 @@ import { AgentTeamsHome } from "../surfaces/AgentTeamsHome";
 import { MissionsSurface } from "../surfaces/Missions";
 import { CompanyWorkIndex } from "../surfaces/CompanyWorkIndex";
 import { TeamWorkspace } from "../surfaces/TeamWorkspace";
-import { MemberWorkbench } from "../surfaces/MemberWorkbench";
+import { AgentConversationWorkspace } from "../surfaces/AgentConversationWorkspace";
 import { OperatorView } from "../surfaces/OperatorView";
 import { isCompanyOsSurface, resolveCompanyOsRouteData } from "../company-os/routeMeta";
 import { DocsV2Surface } from "../company-os/docs/DocsV2Surface";
@@ -176,6 +176,7 @@ export function WorkbenchShell({
   const memberFocusMode = selection.surface === "team" && Boolean(selection.memberRunId);
   const focusedTeamMode = selection.surface === "team" && Boolean(selection.teamId);
   const compactExecutionMode = memberFocusMode || focusedTeamMode;
+  const quietAgentWorkspaceMode = selection.surface === "team" && Boolean(selection.teamConversation);
   const roleActionsCurrent = actionsEnabled && domainFreshness.works === "live" && domainFreshness.runtime === "live";
   function updateSelection(next: Partial<SelectionState>) {
     onSelectionChange({ ...selection, ...next });
@@ -188,6 +189,7 @@ export function WorkbenchShell({
         selection={selection}
         onSelectionChange={updateSelection}
         compact={compactExecutionMode}
+        quiet={quietAgentWorkspaceMode}
       />
       <div className="flex min-w-0 flex-1 flex-col pb-14 sm:pb-0">
         {!compactExecutionMode && <TopBar
@@ -673,11 +675,13 @@ function AppRail({
   selection,
   onSelectionChange,
   compact = false,
+  quiet = false,
 }: {
   model: WorkbenchModel;
   selection: SelectionState;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
   compact?: boolean;
+  quiet?: boolean;
 }) {
   const selectedRun = (model.snapshot.team_runs ?? []).find((run) => run.id === selection.teamId);
   const selectedTeam = (model.snapshot.teams ?? []).find(
@@ -844,7 +848,7 @@ function AppRail({
         <div className={cn("grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground shadow-sm", compact && "member-focus-brand")} aria-label="Company OS">
           {compact ? <Sparkles className="size-[19px]" /> : <Building2 className="size-4" />}
         </div>
-        <nav aria-label="Compact product navigation" className="mt-4 flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto px-2">
+        {!quiet && <nav aria-label="Compact product navigation" className="mt-4 flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto px-2">
           {navigationGroups.map((group, index) => (
             <div key={group.label} className={cn("flex flex-col items-center gap-1", index > 0 && "mt-2 border-t border-border pt-2")}>
               {group.items.map((item) => {
@@ -871,8 +875,9 @@ function AppRail({
               })}
             </div>
           ))}
-        </nav>
-        {mission && (
+        </nav>}
+        {quiet && <span className="mt-auto pb-1 text-[11px] font-semibold tracking-[-0.02em] text-muted-foreground" aria-hidden="true">AF</span>}
+        {!quiet && mission && (
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -1036,7 +1041,7 @@ function SurfaceSwitch({
       return selection.teamId ? (
         <TeamWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} teamId={selection.teamId} refreshKey={model.snapshot.generated_at} selection={selection} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} onSelectionChange={onSelectionChange} />
       ) : selection.memberRunId ? (
-        <MemberWorkbench apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} memberRunId={selection.memberRunId} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} />
+        <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} routeIdentity={selection.memberRunId} selection={selection} refreshKey={model.snapshot.generated_at} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} onSelectionChange={onSelectionChange}/>
       ) : (
         <AgentTeamsHome {...shared} />
       );
