@@ -96,8 +96,10 @@ export function AgentConversationWorkspace({apiUrl,space,project,routeIdentity,v
   const relatedWorkIds=new Set(memberWork.map((work) => work.work_id));
   const messages=view.data.messages.filter((message) => targetId && (message.sender.id === targetId || message.recipients.some((recipient) => recipient.id === targetId)));
   const activity=view.data.activity.filter((item) => item.source !== "message" && targetId && (item.actor_ref?.id === targetId || Boolean(item.work_id && relatedWorkIds.has(item.work_id))));
-  const timeline:TimelineRow[]=[
-    ...messages.map((message):TimelineRow => ({kind:"message",at:message.created_at,message})),
+  const conversationRows:TimelineRow[] = messages
+    .map((message):TimelineRow => ({kind:"message",at:message.created_at,message}))
+    .sort((left,right) => left.at.localeCompare(right.at));
+  const executionRows:TimelineRow[]=[
     ...activity.map((item):TimelineRow => ({kind:"activity",at:item.created_at,activity:item})),
     ...(nativeActivity?.items ?? []).map((item,index):TimelineRow => ({kind:"native",at:item.occurred_at ?? `0000-${String(index).padStart(6,"0")}`,native:item})),
   ].sort((left,right) => left.at.localeCompare(right.at));
@@ -138,11 +140,12 @@ export function AgentConversationWorkspace({apiUrl,space,project,routeIdentity,v
 
         <div className="agent-team-chat-canvas min-h-0 flex-1 overflow-y-auto px-3 py-4 sm:px-6" tabIndex={0} aria-label={`Conversation with ${targetLabel}`}>
           <div className="mx-auto max-w-[58rem] space-y-1">
-            {timeline.map((row,index) => <ConversationRow key={`${row.kind}:${row.at}:${index}`} row={row} members={view.data.members} hostId={team.host_agent_id} onOpenWork={(workId) => onSelectionChange({teamConversation:undefined,memberRunId:undefined,teamTab:"works",teamWorkId:workId})} onReply={canCompose ? setReplyTo : undefined}/>) }
+            {conversationRows.map((row,index) => <ConversationRow key={`${row.kind}:${row.at}:${index}`} row={row} members={view.data.members} hostId={team.host_agent_id} onOpenWork={(workId) => onSelectionChange({teamConversation:undefined,memberRunId:undefined,teamTab:"works",teamWorkId:workId})} onReply={canCompose ? setReplyTo : undefined}/>) }
+            {executionRows.length > 0 && <details className="border-y border-border/80" open={conversationRows.length === 0}><summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-2 text-[11px] font-semibold"><RadioTower className="size-3.5 text-primary"/><span>Execution episode</span><span className="text-muted-foreground">{executionRows.length} source-linked facts</span><span className="ml-auto text-[10px] font-normal text-muted-foreground">runtime · delivery · gate · native</span></summary><div className="border-t border-border/70">{executionRows.map((row,index) => <ConversationRow key={`${row.kind}:${row.at}:${index}`} row={row} members={view.data.members} hostId={team.host_agent_id} onOpenWork={(workId) => onSelectionChange({teamConversation:undefined,memberRunId:undefined,teamTab:"works",teamWorkId:workId})} onReply={undefined}/>)}</div></details>}
             {nativeLoading && <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/20 p-3 text-xs text-muted-foreground"><RefreshCw className="size-3.5 animate-spin"/>Reading provider-native activity on demand…</div>}
             {nativeError && <div className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground"><b>Provider-native activity unavailable.</b> Durable coordination remains visible. {nativeError}</div>}
             {isHostTarget && <div className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">Host conversation is addressable through canonical Messages. Host execution is not fabricated as a MemberRun or native-session timeline.</div>}
-            {!timeline.length && !nativeLoading && !nativeError && !isHostTarget && <div className="grid min-h-64 place-items-center rounded-xl border border-dashed border-border p-8 text-center"><div><MessageSquare className="mx-auto size-6 text-muted-foreground"/><h2 className="mt-3 text-sm font-medium">No conversation yet</h2><p className="mt-1 text-xs text-muted-foreground">Send the first coordination message. Work ownership changes only through Work actions.</p></div></div>}
+            {!conversationRows.length && !executionRows.length && !nativeLoading && !nativeError && !isHostTarget && <div className="grid min-h-64 place-items-center rounded-xl border border-dashed border-border p-8 text-center"><div><MessageSquare className="mx-auto size-6 text-muted-foreground"/><h2 className="mt-3 text-sm font-medium">No conversation yet</h2><p className="mt-1 text-xs text-muted-foreground">Send the first coordination message. Work ownership changes only through Work actions.</p></div></div>}
           </div>
         </div>
 
