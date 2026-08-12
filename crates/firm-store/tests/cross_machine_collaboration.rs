@@ -14,7 +14,8 @@ use firm_core::collaboration::{
 };
 use firm_core::{
     AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, Mission,
-    MissionStatus, NodeProjectRegistration, NodeProjectRegistrationStatus, TeamRunStatus,
+    MissionStatus, NodeProjectRegistration, NodeProjectRegistrationStatus, TeamActorKind,
+    TeamActorRef, TeamRunStatus, WorkCommandContext,
 };
 use firm_fabric::{
     json_digest, ActorKind as FabricActorKind, AuthenticatedActor, EffectCertainty, ReceiptKind,
@@ -997,24 +998,59 @@ fn active_cancellation_is_only_a_source_request_and_target_host_decision() {
         created_at: "2026-08-11T00:00:03Z".into(),
         updated_at: "2026-08-11T00:00:03Z".into(),
     };
-    let requested = test
+    let before = test.store.collaboration_operations().unwrap();
+    let mut hostile = request.clone();
+    hostile.requested_by = actor(ActorKind::AgentMember, "member-a");
+    assert!(test
         .store
         .request_delegation_cancellation(
             &context(
-                auth.source_host.clone(),
+                hostile.requested_by.clone(),
                 "delegation.cancel.request",
-                "cancel-1",
+                "cancel-hostile",
                 3,
             ),
-            &request,
+            &hostile,
             &auth,
         )
+        .is_err());
+    assert_eq!(test.store.collaboration_operations().unwrap(), before);
+
+    let request_context = context(
+        auth.source_host.clone(),
+        "delegation.cancel.request",
+        "cancel-1",
+        3,
+    );
+    let requested = test
+        .store
+        .request_delegation_cancellation(&request_context, &request, &auth)
         .expect("source Host cancellation request");
     assert_eq!(
         requested.projection.state,
         DelegationState::CancellationRequested
     );
     assert_eq!(requested.projection.terminal_outcome, None);
+    let replay = test
+        .store
+        .request_delegation_cancellation(&request_context, &request, &auth)
+        .expect("exact cancellation request replay");
+    assert!(replay.replayed);
+    assert_eq!(replay.operation, requested.operation);
+    let route = test
+        .store
+        .delegation_cancel_request_operation(
+            &context(
+                auth.source_host.clone(),
+                "delegation.cancel.route",
+                "cancel-route-1",
+                4,
+            ),
+            &request,
+        )
+        .expect("central pending cancellation builds target route");
+    assert_eq!(route.kind, RoutedBusinessKind::DelegationCancelRequest);
+    assert_eq!(route.expected_revision, 3);
 
     let decision = DelegationCancellationDecision {
         id: "cancel-decision-1".into(),
@@ -1730,6 +1766,7 @@ fn all_frozen_business_kinds_use_the_wave5_route_and_terminal_receipt_contract()
             kind,
             RoutedBusinessKind::DelegationDecide
                 | RoutedBusinessKind::TargetWorkCreate
+                | RoutedBusinessKind::DelegationCancelRequest
                 | RoutedBusinessKind::DelegationCancelDecide
                 | RoutedBusinessKind::ArtifactGrant
         ) {
@@ -1808,7 +1845,7 @@ fn target_work_create_applies_once_through_native_work_authority() {
         kind: RoutedBusinessKind::TargetWorkCreate,
         authenticated_actor: actor(ActorKind::AgentMember, "host-b"),
         source_node_id: "node-a".into(),
-        target_placement,
+        target_placement: target_placement.clone(),
         expected_revision: 2,
         idempotency_key: "target-native-1".into(),
         payload_digest: canonical_json_fingerprint(&payload),
@@ -1868,8 +1905,196 @@ fn target_work_create_applies_once_through_native_work_authority() {
         "host-a",
         "run-a",
     );
-    let target_work_ref: RemoteWorkRef =
+    let mut target_work_ref: RemoteWorkRef =
         serde_json::from_value(first.1["target_work_ref"].clone()).unwrap();
+
+    let cancellation_request = DelegationCancellationRequest {
+        id: "cancel-native-1".into(),
+        delegation_id: "delegation-native-1".into(),
+        expected_delegation_revision: 3,
+        requested_by: actor(ActorKind::AgentMember, "host-a"),
+        reason: "source Work no longer needs this outcome".into(),
+        state: CancellationRequestState::Pending,
+        target_host_decision_ref: None,
+        revision: 1,
+        created_at: "unix-ms:202".into(),
+        updated_at: "unix-ms:202".into(),
+    };
+    let cancellation_payload = serde_json::json!({
+        "request": cancellation_request,
+        "target_placement": target_placement,
+        "target_work_ref": target_work_ref,
+    });
+    let cancellation_business = RoutedBusinessOperation {
+        id: "route-cancel-native-1".into(),
+        protocol_version: "agentfirm.fabric.v1".into(),
+        company_id: "company-1".into(),
+        kind: RoutedBusinessKind::DelegationCancelRequest,
+        authenticated_actor: actor(ActorKind::AgentMember, "host-a"),
+        source_node_id: SOURCE_NODE_UUID.into(),
+        target_placement: target_placement.clone(),
+        expected_revision: 3,
+        idempotency_key: "cancel-native-1".into(),
+        payload_digest: canonical_json_fingerprint(&cancellation_payload),
+        payload: cancellation_payload,
+        required_capability: RoutedBusinessKind::DelegationCancelRequest.required_capability(),
+        ordering_key: "delegation:delegation-native-1".into(),
+        created_at: "unix-ms:202".into(),
+    };
+    let cancellation_route = route_collaboration_business_operation(
+        &cancellation_business,
+        &CollaborationFabricRouteContext {
+            authenticated_actor: AuthenticatedActor {
+                company_id: "company-1".into(),
+                actor_id: "control-plane:3".into(),
+                actor_kind: FabricActorKind::Service,
+                role_bindings: BTreeSet::from(["company_control_plane".into()]),
+                session_id: "control-plane:3".into(),
+                issued_at_unix_ms: 202,
+                expires_at_unix_ms: 10_000,
+            },
+            resolved_business_actor: actor(ActorKind::AgentMember, "host-a"),
+            source: CollaborationFabricSource::ControlPlane,
+            control_plane_generation: 3,
+            target_execution_space_id: Some("space-node-b".into()),
+            created_at_unix_ms: 202,
+            expires_at_unix_ms: 5_000,
+        },
+    )
+    .expect("central cancellation request uses Wave5 route");
+    let observed =
+        apply_collaboration_target_operation(&target.store, &cancellation_route, "unix-ms:203")
+            .expect("target observes exact active Work cancellation request");
+    assert_eq!(
+        observed.0,
+        "agentfirm.collaboration.cancellation_request_observed.v1"
+    );
+
+    let before_cancel = target.store.latest_works().unwrap();
+    let premature_decision = DelegationCancellationDecision {
+        id: "cancel-decision-native-1".into(),
+        cancellation_request_id: "cancel-native-1".into(),
+        expected_request_revision: 1,
+        decision: CancellationDecisionKind::Accept,
+        decided_by_target_host: actor(ActorKind::AgentMember, "host-b"),
+        native_work_event_ref: target_work_ref.work_event_id.clone(),
+        reason: "pretend the Work was cancelled".into(),
+        created_at: "unix-ms:204".into(),
+    };
+    let decision_payload = |decision: &DelegationCancellationDecision| {
+        serde_json::json!({
+            "delegation_id": "delegation-native-1",
+            "request_id": "cancel-native-1",
+            "decision": decision,
+            "target_placement": target_placement,
+            "target_work_ref": target_work_ref,
+        })
+    };
+    let route_decision = |decision: &DelegationCancellationDecision| {
+        let payload = decision_payload(decision);
+        let business = RoutedBusinessOperation {
+            id: format!("route:{}", decision.id),
+            protocol_version: "agentfirm.fabric.v1".into(),
+            company_id: "company-1".into(),
+            kind: RoutedBusinessKind::DelegationCancelDecide,
+            authenticated_actor: decision.decided_by_target_host.clone(),
+            source_node_id: SOURCE_NODE_UUID.into(),
+            target_placement: target_placement.clone(),
+            expected_revision: 4,
+            idempotency_key: decision.id.clone(),
+            payload_digest: canonical_json_fingerprint(&payload),
+            payload,
+            required_capability: RoutedBusinessKind::DelegationCancelDecide.required_capability(),
+            ordering_key: "delegation:delegation-native-1".into(),
+            created_at: decision.created_at.clone(),
+        };
+        route_collaboration_business_operation(
+            &business,
+            &CollaborationFabricRouteContext {
+                authenticated_actor: AuthenticatedActor {
+                    company_id: "company-1".into(),
+                    actor_id: "control-plane:3".into(),
+                    actor_kind: FabricActorKind::Service,
+                    role_bindings: BTreeSet::from(["company_control_plane".into()]),
+                    session_id: "control-plane:3".into(),
+                    issued_at_unix_ms: 204,
+                    expires_at_unix_ms: 10_000,
+                },
+                resolved_business_actor: actor(ActorKind::AgentMember, "host-b"),
+                source: CollaborationFabricSource::ControlPlane,
+                control_plane_generation: 3,
+                target_execution_space_id: Some("space-node-b".into()),
+                created_at_unix_ms: 204,
+                expires_at_unix_ms: 5_000,
+            },
+        )
+        .unwrap()
+    };
+    assert!(apply_collaboration_target_operation(
+        &target.store,
+        &route_decision(&premature_decision),
+        "unix-ms:204",
+    )
+    .is_err());
+    assert_eq!(target.store.latest_works().unwrap(), before_cancel);
+
+    let native_cancel_event = "native-work-cancelled:delegation-native-1";
+    let current_work = target
+        .store
+        .latest_works()
+        .unwrap()
+        .into_iter()
+        .find(|work| work.id == target_work_ref.work_id)
+        .unwrap();
+    target
+        .store
+        .cancel_work(
+            &current_work.id,
+            current_work.version,
+            "target Host accepted source cancellation request",
+            WorkCommandContext {
+                event_id: native_cancel_event.into(),
+                performed_by_actor: TeamActorRef {
+                    kind: TeamActorKind::Host,
+                    id: "host-b".into(),
+                    display_name: None,
+                    authn_source: Some("remote_fabric_verified_source_node".into()),
+                },
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: "native-cancel-1".into(),
+                created_at: "unix-ms:205".into(),
+                duplicate_ok: false,
+            },
+        )
+        .expect("target Host cancels native Work through Work authority");
+    let accepted_decision = DelegationCancellationDecision {
+        native_work_event_ref: native_cancel_event.into(),
+        reason: "native Work is quiesced and cancelled".into(),
+        ..premature_decision
+    };
+    let validated = apply_collaboration_target_operation(
+        &target.store,
+        &route_decision(&accepted_decision),
+        "unix-ms:206",
+    )
+    .expect("target validates exact native cancellation event");
+    assert_eq!(
+        validated.0,
+        "agentfirm.collaboration.cancellation_decision_validated.v1"
+    );
+    let cancelled_work = target
+        .store
+        .latest_works()
+        .unwrap()
+        .into_iter()
+        .find(|work| work.id == target_work_ref.work_id)
+        .unwrap();
+    target_work_ref.work_revision = cancelled_work.version;
+    target_work_ref.work_event_id = native_cancel_event.into();
+    target_work_ref.digest =
+        canonical_json_fingerprint(&serde_json::to_value(&cancelled_work).unwrap());
+
     let source_work = RemoteWorkRef {
         schema_version: "agentfirm.remote-work-ref.v1".into(),
         execution_space_id: "space-node-a".into(),

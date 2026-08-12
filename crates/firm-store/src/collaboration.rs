@@ -664,6 +664,15 @@ impl HarnessStore {
         )
     }
 
+    pub fn collaboration_cancellation_request(
+        &self,
+        company_id: &str,
+        delegation_id: &str,
+        request_id: &str,
+    ) -> StoreResult<Option<DelegationCancellationRequest>> {
+        self.latest_cancellation_request_unlocked(company_id, delegation_id, request_id)
+    }
+
     /// Persist a server-authored proof of exact source Work authority. The
     /// source WorkApplicationService is the only writer; a Host request can
     /// subsequently reference only this immutable attestation ID.
@@ -1535,6 +1544,145 @@ impl HarnessStore {
         })
     }
 
+    pub fn delegation_cancel_request_operation(
+        &self,
+        context: &CollaborationMutationContext,
+        request: &DelegationCancellationRequest,
+    ) -> StoreResult<RoutedBusinessOperation> {
+        let delegation = self
+            .collaboration_delegation(&context.company_id, &request.delegation_id)?
+            .ok_or_else(|| {
+                collaboration_error(
+                    FabricErrorCode::RevisionConflict,
+                    "cancellation route requires the central Delegation",
+                    "work_delegation_v1",
+                    &request.delegation_id,
+                    None,
+                )
+            })?;
+        let source_attestation = self
+            .collaboration_source_work_attestation(
+                &context.company_id,
+                &delegation.source_work_attestation_id,
+            )?
+            .ok_or_else(|| {
+                collaboration_error(
+                    FabricErrorCode::SourceWorkAttestationInvalid,
+                    "cancellation route has no source Host attestation",
+                    "source_work_attestation",
+                    &delegation.source_work_attestation_id,
+                    None,
+                )
+            })?;
+        if delegation.state != DelegationState::CancellationRequested
+            || delegation.revision != request.expected_delegation_revision.saturating_add(1)
+            || context.expected_revision != delegation.revision
+            || request.requested_by != context.authenticated_actor
+            || !exact_actor(
+                &context.authenticated_actor,
+                &source_attestation.source_host_ref,
+            )
+        {
+            return Err(collaboration_error(
+                FabricErrorCode::UnauthorizedActor,
+                "cancellation request requires the exact source actor and Delegation revision",
+                "work_delegation_v1",
+                &delegation.id,
+                Some(delegation.revision),
+            ));
+        }
+        let payload = serde_json::json!({
+            "request": request,
+            "target_placement": delegation.target_placement,
+            "target_work_ref": delegation.target_work_ref,
+        });
+        Ok(RoutedBusinessOperation {
+            id: format!("route-cancellation-request:{}", request.id),
+            protocol_version: "agentfirm.fabric.v1".into(),
+            company_id: context.company_id.clone(),
+            kind: RoutedBusinessKind::DelegationCancelRequest,
+            authenticated_actor: context.authenticated_actor.clone(),
+            source_node_id: delegation.source_node_id,
+            target_placement: delegation.target_placement,
+            expected_revision: request.expected_delegation_revision,
+            idempotency_key: context.idempotency_key.clone(),
+            payload_digest: canonical_json_fingerprint(&payload),
+            payload,
+            required_capability: RoutedBusinessKind::DelegationCancelRequest.required_capability(),
+            ordering_key: format!("delegation:{}", request.delegation_id),
+            created_at: context.occurred_at.clone(),
+        })
+    }
+
+    pub fn delegation_cancel_decide_operation(
+        &self,
+        context: &CollaborationMutationContext,
+        delegation_id: &str,
+        request_id: &str,
+        decision: &DelegationCancellationDecision,
+    ) -> StoreResult<RoutedBusinessOperation> {
+        let delegation = self
+            .collaboration_delegation(&context.company_id, delegation_id)?
+            .ok_or_else(|| {
+                collaboration_error(
+                    FabricErrorCode::RevisionConflict,
+                    "cancellation decision route requires the central Delegation",
+                    "work_delegation_v1",
+                    delegation_id,
+                    None,
+                )
+            })?;
+        let request = self
+            .collaboration_cancellation_request(&context.company_id, delegation_id, request_id)?
+            .ok_or_else(|| {
+                collaboration_error(
+                    FabricErrorCode::CancellationDecisionRequired,
+                    "cancellation decision references no pending request",
+                    "delegation_cancellation_request",
+                    request_id,
+                    None,
+                )
+            })?;
+        if delegation.revision != context.expected_revision
+            || request.state != CancellationRequestState::Pending
+            || decision.cancellation_request_id != request.id
+            || decision.expected_request_revision != request.revision
+            || decision.decided_by_target_host != delegation.target_host_ref
+            || !exact_actor(&context.authenticated_actor, &delegation.target_host_ref)
+        {
+            return Err(collaboration_error(
+                FabricErrorCode::UnauthorizedActor,
+                "cancellation decision requires exact target Host, pending request, and revision",
+                "work_delegation_v1",
+                delegation_id,
+                Some(delegation.revision),
+            ));
+        }
+        let payload = serde_json::json!({
+            "delegation_id": delegation.id,
+            "request_id": request_id,
+            "decision": decision,
+            "target_placement": delegation.target_placement,
+            "target_work_ref": delegation.target_work_ref,
+        });
+        Ok(RoutedBusinessOperation {
+            id: format!("route-cancellation-decision:{}", decision.id),
+            protocol_version: "agentfirm.fabric.v1".into(),
+            company_id: context.company_id.clone(),
+            kind: RoutedBusinessKind::DelegationCancelDecide,
+            authenticated_actor: context.authenticated_actor.clone(),
+            source_node_id: delegation.source_node_id,
+            target_placement: delegation.target_placement,
+            expected_revision: context.expected_revision,
+            idempotency_key: context.idempotency_key.clone(),
+            payload_digest: canonical_json_fingerprint(&payload),
+            payload,
+            required_capability: RoutedBusinessKind::DelegationCancelDecide.required_capability(),
+            ordering_key: format!("delegation:{delegation_id}"),
+            created_at: context.occurred_at.clone(),
+        })
+    }
+
     pub fn apply_target_work_created(
         &self,
         context: &CollaborationMutationContext,
@@ -1625,6 +1773,40 @@ impl HarnessStore {
     ) -> StoreResult<CollaborationMutationResult<WorkDelegationV1>> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        let mut frozen_request = request.clone();
+        frozen_request.state = CancellationRequestState::Pending;
+        frozen_request.revision = 1;
+        frozen_request.updated_at = context.occurred_at.clone();
+        let replay_fingerprint =
+            canonical_json_fingerprint(&serde_json::to_value(&frozen_request)?);
+        if let Some(existing) =
+            self.collaboration_operations_unlocked()?
+                .into_iter()
+                .find(|operation| {
+                    operation.company_id == context.company_id
+                        && operation.authenticated_actor == context.authenticated_actor
+                        && operation.command_name == context.command_name
+                        && operation.idempotency_key == context.idempotency_key
+                })
+        {
+            if existing.request_fingerprint != replay_fingerprint
+                || existing.aggregate_kind != "work_delegation_v1"
+                || existing.aggregate_id != request.delegation_id
+            {
+                return Err(collaboration_error(
+                    FabricErrorCode::IdempotencyConflict,
+                    "cancellation request idempotency key changed its fingerprint",
+                    "work_delegation_v1",
+                    &request.delegation_id,
+                    Some(existing.resulting_revision),
+                ));
+            }
+            return Ok(CollaborationMutationResult {
+                projection: serde_json::from_value(existing.resulting_projection.clone())?,
+                operation: existing,
+                replayed: true,
+            });
+        }
         let mut delegation = self
             .latest_collaboration_projection_unlocked::<WorkDelegationV1>(
                 &context.company_id,
@@ -1674,10 +1856,6 @@ impl HarnessStore {
                 Some(delegation.revision),
             ));
         }
-        let mut frozen_request = request.clone();
-        frozen_request.state = CancellationRequestState::Pending;
-        frozen_request.revision = 1;
-        frozen_request.updated_at = context.occurred_at.clone();
         delegation.state = DelegationState::CancellationRequested;
         delegation.revision += 1;
         delegation.updated_at = context.occurred_at.clone();

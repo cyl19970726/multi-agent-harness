@@ -8,7 +8,7 @@ use firm_core::collaboration::{
 };
 use firm_core::{
     AgentTeamStatus, TeamActorKind, TeamActorRef, TeamRunStatus, Work, WorkClaimMode,
-    WorkCommandContext, WorkCondition, WorkPhase, WorkPriority,
+    WorkCommandContext, WorkCondition, WorkEventKind, WorkPhase, WorkPriority,
 };
 use firm_fabric::{
     json_digest, ActorKind, AuthenticatedActor, CollaborationBusinessReference, EffectCertainty,
@@ -50,6 +50,24 @@ struct DelegationDecidePayload {
 struct RemoteFactPublishPayload {
     publication: firm_core::collaboration::RemoteFactPublication,
     source_team_placement: firm_core::collaboration::TargetPlacementRef,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DelegationCancelRequestPayload {
+    request: firm_core::collaboration::DelegationCancellationRequest,
+    target_placement: firm_core::collaboration::TargetPlacementRef,
+    target_work_ref: Option<firm_core::collaboration::RemoteWorkRef>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DelegationCancelDecidePayload {
+    delegation_id: String,
+    request_id: String,
+    decision: firm_core::collaboration::DelegationCancellationDecision,
+    target_placement: firm_core::collaboration::TargetPlacementRef,
+    target_work_ref: Option<firm_core::collaboration::RemoteWorkRef>,
 }
 
 /// Server-resolved Wave 5 route authority. None of these fields may be copied
@@ -175,6 +193,7 @@ pub fn route_collaboration_business_operation(
                 operation.kind,
                 firm_core::collaboration::RoutedBusinessKind::DelegationDecide
                     | firm_core::collaboration::RoutedBusinessKind::TargetWorkCreate
+                    | firm_core::collaboration::RoutedBusinessKind::DelegationCancelRequest
                     | firm_core::collaboration::RoutedBusinessKind::DelegationCancelDecide
                     | firm_core::collaboration::RoutedBusinessKind::ArtifactGrant
             )
@@ -198,6 +217,7 @@ pub fn route_collaboration_business_operation(
                     operation.kind,
                     firm_core::collaboration::RoutedBusinessKind::DelegationDecide
                         | firm_core::collaboration::RoutedBusinessKind::TargetWorkCreate
+                        | firm_core::collaboration::RoutedBusinessKind::DelegationCancelRequest
                         | firm_core::collaboration::RoutedBusinessKind::DelegationCancelDecide
                         | firm_core::collaboration::RoutedBusinessKind::ArtifactGrant
                 ) =>
@@ -557,6 +577,157 @@ pub fn apply_collaboration_target_operation(
             serde_json::json!({
                 "publication_id": cached.projection.id,
                 "replayed": cached.replayed,
+            }),
+            EffectCertainty::Applied,
+        ));
+    }
+    if reference.business_kind == "delegation_cancel_request"
+        && reference.required_capability == "collaboration.delegation_cancel_request"
+    {
+        let payload = serde_json::from_value::<DelegationCancelRequestPayload>(reference.payload)
+            .map_err(|error| {
+            application_error(
+                FabricErrorCode::InvalidPayload,
+                format!("delegation_cancel_request payload is invalid: {error}"),
+                &operation.id,
+            )
+        })?;
+        let teams = store.teams().map_err(|error| {
+            application_error(
+                FabricErrorCode::StoreUnavailable,
+                format!("target AgentTeam lookup failed: {error}"),
+                &operation.id,
+            )
+        })?;
+        let team_revision = teams
+            .iter()
+            .filter(|team| team.id == reference.target_team_id)
+            .count() as u64;
+        let team = teams
+            .iter()
+            .rev()
+            .find(|team| team.id == reference.target_team_id)
+            .ok_or_else(|| {
+                application_error(
+                    FabricErrorCode::TargetNotPlaced,
+                    "target AgentTeam does not exist",
+                    &operation.id,
+                )
+            })?;
+        let target_work_matches = payload.target_work_ref.as_ref().is_none_or(|work_ref| {
+            work_ref.node_id == operation.target_node_id
+                && work_ref.team_id == team.id
+                && store.latest_works().ok().is_some_and(|works| {
+                    works.into_iter().any(|work| {
+                        work.id == work_ref.work_id && work.version == work_ref.work_revision
+                    })
+                })
+        });
+        if payload.request.delegation_id.trim().is_empty()
+            || payload.request.expected_delegation_revision != reference.expected_revision
+            || payload.request.requested_by.id != reference.business_actor_id
+            || payload.target_placement.team_id != reference.target_team_id
+            || payload.target_placement.team_revision != reference.target_team_revision
+            || payload.target_placement.node_id != operation.target_node_id
+            || payload.target_placement.placement_generation != reference.placement_generation
+            || team_revision != reference.target_team_revision
+            || team.node_id != operation.target_node_id
+            || team.status != AgentTeamStatus::Active
+            || !target_work_matches
+        {
+            return Err(application_error(
+                FabricErrorCode::InvalidPayload,
+                "cancellation request changed actor, target Work, Team, placement, or revision",
+                &operation.id,
+            ));
+        }
+        return Ok((
+            "agentfirm.collaboration.cancellation_request_observed.v1".into(),
+            serde_json::json!({
+                "delegation_id": payload.request.delegation_id,
+                "request_id": payload.request.id,
+                "target_placement": payload.target_placement,
+            }),
+            EffectCertainty::Applied,
+        ));
+    }
+    if reference.business_kind == "delegation_cancel_decide"
+        && reference.required_capability == "collaboration.delegation_cancel_decide"
+    {
+        let payload = serde_json::from_value::<DelegationCancelDecidePayload>(reference.payload)
+            .map_err(|error| {
+                application_error(
+                    FabricErrorCode::InvalidPayload,
+                    format!("delegation_cancel_decide payload is invalid: {error}"),
+                    &operation.id,
+                )
+            })?;
+        let teams = store.teams().map_err(|error| {
+            application_error(
+                FabricErrorCode::StoreUnavailable,
+                format!("target AgentTeam lookup failed: {error}"),
+                &operation.id,
+            )
+        })?;
+        let team_revision = teams
+            .iter()
+            .filter(|team| team.id == reference.target_team_id)
+            .count() as u64;
+        let team = teams
+            .iter()
+            .rev()
+            .find(|team| team.id == reference.target_team_id)
+            .ok_or_else(|| {
+                application_error(
+                    FabricErrorCode::TargetNotPlaced,
+                    "target AgentTeam does not exist",
+                    &operation.id,
+                )
+            })?;
+        let work_ref = payload.target_work_ref.as_ref().ok_or_else(|| {
+            application_error(
+                FabricErrorCode::InvalidPayload,
+                "active cancellation decision requires exact target Work",
+                &operation.id,
+            )
+        })?;
+        let native_event_matches = store.work_events().ok().is_some_and(|events| {
+            events.into_iter().any(|event| {
+                event.id == payload.decision.native_work_event_ref
+                    && event.work_id == work_ref.work_id
+                    && event.resulting_version >= work_ref.work_revision
+                    && (payload.decision.decision
+                        != firm_core::collaboration::CancellationDecisionKind::Accept
+                        || event.kind == WorkEventKind::Cancelled)
+            })
+        });
+        if payload.delegation_id.trim().is_empty()
+            || payload.request_id != payload.decision.cancellation_request_id
+            || payload.target_placement.team_id != reference.target_team_id
+            || payload.target_placement.team_revision != reference.target_team_revision
+            || payload.target_placement.node_id != operation.target_node_id
+            || payload.target_placement.placement_generation != reference.placement_generation
+            || team_revision != reference.target_team_revision
+            || team.node_id != operation.target_node_id
+            || team.status != AgentTeamStatus::Active
+            || reference.business_actor_kind != "agent_member"
+            || reference.business_actor_id != team.host_agent_id
+            || payload.decision.decided_by_target_host.id != team.host_agent_id
+            || !native_event_matches
+        {
+            return Err(application_error(
+                FabricErrorCode::InvalidPayload,
+                "cancellation decision lacks exact target Host, native Work event, Team, or placement",
+                &operation.id,
+            ));
+        }
+        return Ok((
+            "agentfirm.collaboration.cancellation_decision_validated.v1".into(),
+            serde_json::json!({
+                "delegation_id": payload.delegation_id,
+                "request_id": payload.request_id,
+                "decision": payload.decision,
+                "target_placement": payload.target_placement,
             }),
             EffectCertainty::Applied,
         ));

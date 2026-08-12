@@ -444,6 +444,133 @@ impl ControlPlaneReceiptApplication for Wave6ControlPlaneApplication {
                 },
             ]);
         }
+        if reference.business_kind == "delegation_cancel_decide" {
+            if result.result_schema != "agentfirm.collaboration.cancellation_decision_validated.v1"
+            {
+                return Err(FabricError::unknown(
+                    operation.id.clone(),
+                    "cancellation decision applied receipt has an unexpected result schema",
+                ));
+            }
+            let delegation_id = result
+                .result
+                .get("delegation_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        "cancellation decision result lacks delegation_id",
+                    )
+                })?;
+            let request_id = result
+                .result
+                .get("request_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        "cancellation decision result lacks request_id",
+                    )
+                })?;
+            let decision = serde_json::from_value::<
+                harness_core::collaboration::DelegationCancellationDecision,
+            >(result.result.get("decision").cloned().ok_or_else(
+                || {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        "cancellation decision result lacks decision",
+                    )
+                },
+            )?)
+            .map_err(|error| {
+                FabricError::unknown(
+                    operation.id.clone(),
+                    format!("cancellation decision result is invalid: {error}"),
+                )
+            })?;
+            let observed =
+                serde_json::from_value::<harness_core::collaboration::TargetPlacementRef>(
+                    result
+                        .result
+                        .get("target_placement")
+                        .cloned()
+                        .ok_or_else(|| {
+                            FabricError::unknown(
+                                operation.id.clone(),
+                                "cancellation decision result lacks target placement",
+                            )
+                        })?,
+                )
+                .map_err(|error| {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        format!("cancellation placement is invalid: {error}"),
+                    )
+                })?;
+            let store = HarnessStore::new(&self.collaboration_root);
+            let delegation = store
+                .collaboration_delegation(&self.company_id, delegation_id)
+                .map_err(|error| {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        format!("cancellation Delegation lookup failed: {error}"),
+                    )
+                })?
+                .ok_or_else(|| {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        "cancellation decision references no Delegation",
+                    )
+                })?;
+            let source_attestation = store
+                .collaboration_source_work_attestation(
+                    &self.company_id,
+                    &delegation.source_work_attestation_id,
+                )
+                .map_err(|error| {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        format!("source Host attestation lookup failed: {error}"),
+                    )
+                })?
+                .ok_or_else(|| {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        "cancellation decision has no source Host attestation",
+                    )
+                })?;
+            let authority = harness_store::ResolvedCollaborationAuthority {
+                source_host: source_attestation.source_host_ref,
+                source_work_owner: delegation.source_owner_ref.clone(),
+                target_host: delegation.target_host_ref.clone(),
+                target_placement: delegation.target_placement.clone(),
+                source_work_application_service: source_attestation.work_application_service_ref,
+                source_gateway_generation: source_attestation.source_gateway_generation,
+            };
+            store
+                .decide_delegation_cancellation(
+                    &harness_store::CollaborationMutationContext {
+                        company_id: self.company_id.clone(),
+                        authenticated_actor: delegation.target_host_ref,
+                        command_name: "delegation_cancel_decide".into(),
+                        idempotency_key: operation.idempotency_key.clone(),
+                        expected_revision: reference.expected_revision,
+                        occurred_at: format!("unix-ms:{observed_at_unix_ms}"),
+                    },
+                    delegation_id,
+                    request_id,
+                    &decision,
+                    &authority,
+                    &observed,
+                )
+                .map_err(|error| {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        format!("Control Plane cancellation decision fold failed: {error}"),
+                    )
+                })?;
+            return Ok(Vec::new());
+        }
         if reference.business_kind != "target_work_create" {
             return Ok(Vec::new());
         }
@@ -1764,6 +1891,8 @@ impl NodeApplication for Wave4cApplication {
                     "target_work_create"
                     | "delegation_propose"
                     | "delegation_decide"
+                    | "delegation_cancel_request"
+                    | "delegation_cancel_decide"
                     | "remote_fact_publish" => {
                         let (_, store) = self.target_store(operation)?;
                         harness_store::apply_collaboration_target_operation(
@@ -2192,6 +2321,23 @@ struct CollaborationDecisionHttpRequest {
     expires_unix_ms: u64,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CollaborationCancellationRequestHttpRequest {
+    reason: String,
+    target_execution_space_id: String,
+    expires_unix_ms: u64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CollaborationCancellationDecisionHttpRequest {
+    reason: String,
+    native_work_event_ref: String,
+    target_execution_space_id: String,
+    expires_unix_ms: u64,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend>(
     method: &str,
@@ -2296,18 +2442,6 @@ fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend
             })?;
         return Ok(serde_json::json!({"delegation":delegation}));
     }
-    let (delegation_id, action) = suffix.rsplit_once('/').ok_or_else(|| {
-        FabricError::none(
-            FabricErrorCode::InvalidPayload,
-            "collaboration mutation path is malformed",
-        )
-    })?;
-    if method != "POST" || !matches!(action, "accept" | "reject") {
-        return Err(FabricError::none(
-            FabricErrorCode::InvalidPayload,
-            "unknown collaboration mutation",
-        ));
-    }
     let idempotency_key = headers
         .get("idempotency-key")
         .filter(|value| !value.trim().is_empty())
@@ -2326,9 +2460,229 @@ fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend
                 "If-Match exact Delegation revision is required",
             )
         })?;
+    let now = now_unix_ms()?;
+    let control_actor = AuthenticatedActor {
+        company_id: control.company_id().into(),
+        actor_id: format!("control-plane:{generation}"),
+        actor_kind: harness_fabric::ActorKind::Service,
+        role_bindings: BTreeSet::from(["company_control_plane".into()]),
+        session_id: format!("control-plane:{generation}"),
+        issued_at_unix_ms: now,
+        expires_at_unix_ms: now.saturating_add(30_000),
+    };
+    if method == "POST" && suffix.ends_with("/cancellation-requests") {
+        let delegation_id = suffix
+            .strip_suffix("/cancellation-requests")
+            .filter(|value| !value.is_empty() && !value.contains('/'))
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::InvalidPayload,
+                    "cancellation request path is malformed",
+                )
+            })?;
+        let request = serde_json::from_slice::<CollaborationCancellationRequestHttpRequest>(body)
+            .map_err(|error| {
+            FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
+        })?;
+        if request.reason.trim().is_empty()
+            || request.target_execution_space_id.trim().is_empty()
+            || request.expires_unix_ms <= now
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::InvalidPayload,
+                "cancellation request requires reason, exact target Execution Space, and future expiry",
+            ));
+        }
+        let delegation = store
+            .collaboration_delegation(control.company_id(), delegation_id)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+            })?
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::ExpectedRevisionConflict,
+                    "Delegation does not exist",
+                )
+            })?;
+        let attestation = store
+            .collaboration_source_work_attestation(
+                control.company_id(),
+                &delegation.source_work_attestation_id,
+            )
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+            })?
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::InvalidPayload,
+                    "Delegation lacks its server-authored source Work attestation",
+                )
+            })?;
+        let authority = harness_store::ResolvedCollaborationAuthority {
+            source_host: attestation.source_host_ref,
+            source_work_owner: attestation.source_owner_ref,
+            target_host: delegation.target_host_ref.clone(),
+            target_placement: delegation.target_placement.clone(),
+            source_work_application_service: attestation.work_application_service_ref,
+            source_gateway_generation: attestation.source_gateway_generation,
+        };
+        let cancellation = harness_core::collaboration::DelegationCancellationRequest {
+            id: format!("delegation-cancellation-request:{idempotency_key}"),
+            delegation_id: delegation_id.into(),
+            expected_delegation_revision: expected_revision,
+            requested_by: credential.actor.clone(),
+            reason: request.reason,
+            state: harness_core::collaboration::CancellationRequestState::Pending,
+            target_host_decision_ref: None,
+            revision: 1,
+            created_at: format!("unix-ms:{now}"),
+            updated_at: format!("unix-ms:{now}"),
+        };
+        let mutation_context = harness_store::CollaborationMutationContext {
+            company_id: control.company_id().into(),
+            authenticated_actor: credential.actor.clone(),
+            command_name: "delegation_cancel_request".into(),
+            idempotency_key: idempotency_key.clone(),
+            expected_revision,
+            occurred_at: format!("unix-ms:{now}"),
+        };
+        let pending = store
+            .request_delegation_cancellation(&mutation_context, &cancellation, &authority)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::ExpectedRevisionConflict, error.to_string())
+            })?;
+        let business = store
+            .delegation_cancel_request_operation(
+                &harness_store::CollaborationMutationContext {
+                    expected_revision: pending.projection.revision,
+                    command_name: "delegation_cancel_request_route".into(),
+                    ..mutation_context
+                },
+                &cancellation,
+            )
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::ExpectedRevisionConflict, error.to_string())
+            })?;
+        let routed_actor = AuthenticatedActor {
+            expires_at_unix_ms: request.expires_unix_ms,
+            ..control_actor.clone()
+        };
+        let routed = harness_store::route_collaboration_business_operation(
+            &business,
+            &harness_store::CollaborationFabricRouteContext {
+                authenticated_actor: routed_actor.clone(),
+                resolved_business_actor: credential.actor,
+                source: harness_store::CollaborationFabricSource::ControlPlane,
+                control_plane_generation: generation,
+                target_execution_space_id: Some(request.target_execution_space_id),
+                created_at_unix_ms: now,
+                expires_at_unix_ms: request.expires_unix_ms,
+            },
+        )?;
+        let (_, _, receipt, replayed) =
+            control.accept_control_plane_operation(generation, &routed_actor, routed, now)?;
+        return Ok(serde_json::json!({
+            "delegation": pending.projection,
+            "cancellation_request": cancellation,
+            "operation_id": receipt.operation_id,
+            "receipt": receipt,
+            "replayed": pending.replayed || replayed,
+        }));
+    }
+    let cancellation_parts = suffix.split('/').collect::<Vec<_>>();
+    if method == "POST"
+        && cancellation_parts.len() == 4
+        && cancellation_parts[1] == "cancellation-requests"
+        && matches!(cancellation_parts[3], "accept" | "reject")
+    {
+        let delegation_id = cancellation_parts[0];
+        let request_id = cancellation_parts[2];
+        let action = cancellation_parts[3];
+        let request = serde_json::from_slice::<CollaborationCancellationDecisionHttpRequest>(body)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
+            })?;
+        if request.reason.trim().is_empty()
+            || request.native_work_event_ref.trim().is_empty()
+            || request.target_execution_space_id.trim().is_empty()
+            || request.expires_unix_ms <= now
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::InvalidPayload,
+                "cancellation decision requires reason, native Work event, exact target Execution Space, and future expiry",
+            ));
+        }
+        let decision = harness_core::collaboration::DelegationCancellationDecision {
+            id: format!("delegation-cancellation-decision:{idempotency_key}"),
+            cancellation_request_id: request_id.into(),
+            expected_request_revision: 1,
+            decision: if action == "accept" {
+                harness_core::collaboration::CancellationDecisionKind::Accept
+            } else {
+                harness_core::collaboration::CancellationDecisionKind::Reject
+            },
+            decided_by_target_host: credential.actor.clone(),
+            native_work_event_ref: request.native_work_event_ref,
+            reason: request.reason,
+            created_at: format!("unix-ms:{now}"),
+        };
+        let business = store
+            .delegation_cancel_decide_operation(
+                &harness_store::CollaborationMutationContext {
+                    company_id: control.company_id().into(),
+                    authenticated_actor: credential.actor.clone(),
+                    command_name: "delegation_cancel_decide".into(),
+                    idempotency_key: idempotency_key.clone(),
+                    expected_revision,
+                    occurred_at: format!("unix-ms:{now}"),
+                },
+                delegation_id,
+                request_id,
+                &decision,
+            )
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::ExpectedRevisionConflict, error.to_string())
+            })?;
+        let routed_actor = AuthenticatedActor {
+            expires_at_unix_ms: request.expires_unix_ms,
+            ..control_actor.clone()
+        };
+        let routed = harness_store::route_collaboration_business_operation(
+            &business,
+            &harness_store::CollaborationFabricRouteContext {
+                authenticated_actor: routed_actor.clone(),
+                resolved_business_actor: credential.actor,
+                source: harness_store::CollaborationFabricSource::ControlPlane,
+                control_plane_generation: generation,
+                target_execution_space_id: Some(request.target_execution_space_id),
+                created_at_unix_ms: now,
+                expires_at_unix_ms: request.expires_unix_ms,
+            },
+        )?;
+        let (_, _, receipt, replayed) =
+            control.accept_control_plane_operation(generation, &routed_actor, routed, now)?;
+        return Ok(serde_json::json!({
+            "delegation_id": delegation_id,
+            "cancellation_request_id": request_id,
+            "operation_id": receipt.operation_id,
+            "receipt": receipt,
+            "replayed": replayed,
+        }));
+    }
+    let (delegation_id, action) = suffix.rsplit_once('/').ok_or_else(|| {
+        FabricError::none(
+            FabricErrorCode::InvalidPayload,
+            "collaboration mutation path is malformed",
+        )
+    })?;
+    if method != "POST" || !matches!(action, "accept" | "reject") {
+        return Err(FabricError::none(
+            FabricErrorCode::InvalidPayload,
+            "unknown collaboration mutation",
+        ));
+    }
     let request = serde_json::from_slice::<CollaborationDecisionHttpRequest>(body)
         .map_err(|error| FabricError::none(FabricErrorCode::InvalidPayload, error.to_string()))?;
-    let now = now_unix_ms()?;
     if request.reason.trim().is_empty()
         || request.target_execution_space_id.trim().is_empty()
         || request.expires_unix_ms <= now
@@ -2368,13 +2722,8 @@ fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend
             FabricError::none(FabricErrorCode::ExpectedRevisionConflict, error.to_string())
         })?;
     let control_actor = AuthenticatedActor {
-        company_id: control.company_id().into(),
-        actor_id: format!("control-plane:{generation}"),
-        actor_kind: harness_fabric::ActorKind::Service,
-        role_bindings: BTreeSet::from(["company_control_plane".into()]),
-        session_id: format!("control-plane:{generation}"),
-        issued_at_unix_ms: now,
         expires_at_unix_ms: request.expires_unix_ms,
+        ..control_actor
     };
     let routed = harness_store::route_collaboration_business_operation(
         &business,
