@@ -29,9 +29,12 @@ for(const name of names.slice(2)){
 
 const operatorValidate=ajv.getSchema("agentfirm.role_views.v1/operator.schema.json");
 const operatorFixture=JSON.parse(fs.readFileSync(path.join(fixtureDir,"operator.json"),"utf8"));
-const observedRemoteFabric={company_id:"company-1",node_id:"node-1",state:"observed",reason:null,gateway_session:{company_id:"company-1",node_id:"node-1",gateway_generation:2,node_daemon_id:"daemon-1",node_daemon_generation:3,control_plane_generation:4},outbox_depth:0,oldest_outbox_age_ms:0,inbox_depth:1,recovery_required:[],control_plane_online:true,control_plane_metrics:{node_id:"node-1",administrative_status:"active",connection_status:"online",gateway_generation:2,control_plane_generation:4,certificate_expires_at_unix_ms:999,queued_operations:0,oldest_queued_age_ms:0,gateway_lease_age_ms:10,recovery_required_operations:[],last_assigned_route_seq:1,last_persisted_route_seq:1,reconcile_lag:0},store_revision:7};
+const observedRemoteFabric={company_id:"company-1",node_id:"node-1",state:"observed",reason:null,gateway_session:{company_id:"company-1",node_id:"node-1",gateway_generation:2,node_daemon_id:"daemon-1",node_daemon_generation:3,control_plane_generation:4},outbox_depth:0,oldest_outbox_age_ms:0,inbox_depth:1,recovery_required:[],control_plane_online:true,control_plane_metrics:{node_id:"node-1",administrative_status:"active",connection_status:"online",gateway_generation:2,control_plane_generation:4,certificate_expires_at_unix_ms:999,queued_operations:0,oldest_queued_age_ms:0,gateway_lease_age_ms:10,recovery_required_operations:[],last_assigned_route_seq:1,last_persisted_route_seq:1,reconcile_lag:0},collaboration:{state:"observed",delegation_count:2,attention_count:1,as_of_store_sequence:9},store_revision:7};
 operatorFixture.data.remote_fabric=observedRemoteFabric;
 assert.equal(operatorValidate(operatorFixture),true,`observed Remote Fabric projection: ${ajv.errorsText(operatorValidate.errors)}`);
+operatorFixture.data.remote_fabric={...observedRemoteFabric,collaboration:{...observedRemoteFabric.collaboration,__browser_invented_truth:true}};
+assert.equal(operatorValidate(operatorFixture),false,"collaboration projection rejects browser-invented nested truth");
+operatorFixture.data.remote_fabric=observedRemoteFabric;
 operatorFixture.data.remote_fabric={...observedRemoteFabric,__browser_invented_truth:true};
 assert.equal(operatorValidate(operatorFixture),false,"Remote Fabric projection rejects unknown server fields");
 operatorFixture.data.remote_fabric=observedRemoteFabric;

@@ -979,11 +979,31 @@ pub(crate) fn handle_get(
     let result = if path == "/v1/views/company-work" {
         company_view(spaces, &query)
     } else if let Some(team_id) = path.strip_prefix("/v1/views/team-workspace/") {
-        team_view(current_space_id, current, team_id, false, identity)
+        team_view(
+            current_space_id,
+            current,
+            team_id,
+            false,
+            identity,
+            query.company.as_deref(),
+        )
     } else if let Some(team_id) = path.strip_prefix("/v1/views/host-console/") {
-        team_view(current_space_id, current, team_id, true, identity)
+        team_view(
+            current_space_id,
+            current,
+            team_id,
+            true,
+            identity,
+            query.company.as_deref(),
+        )
     } else if let Some(member_run_id) = path.strip_prefix("/v1/views/member-workbench/") {
-        member_view(current_space_id, current, member_run_id, identity)
+        member_view(
+            current_space_id,
+            current,
+            member_run_id,
+            identity,
+            query.company.as_deref(),
+        )
     } else if let Some(node_id) = path.strip_prefix("/v1/views/operator/") {
         operator_view(
             current_space_id,
@@ -1260,12 +1280,130 @@ fn company_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult 
     ))
 }
 
+fn collaboration_projection(
+    company_id: Option<&str>,
+    team_id: &str,
+    member_work_ids: Option<&BTreeSet<String>>,
+) -> Value {
+    let Some(company_id) = company_id else {
+        return json!({"state":"unavailable","reason":"Company scope is required"});
+    };
+    let result = (|| -> Result<Value, String> {
+        let home = crate::execution_space::firm_home().map_err(|error| error.to_string())?;
+        let layout = harness_store::remote_fabric_store::RemoteFabricStoreLayout::open(&home)
+            .map_err(|error| error.to_string())?;
+        let root = layout
+            .collaboration_root(company_id)
+            .map_err(|error| error.to_string())?;
+        if !root.exists() {
+            return Ok(json!({
+                "company_id":company_id,
+                "team_id":team_id,
+                "state":"unavailable",
+                "reason":"Company collaboration projection is not present on this server",
+            }));
+        }
+        let store = HarnessStore::new(root);
+        let page = store
+            .list_collaboration_delegations(
+                company_id,
+                &harness_store::CollaborationDelegationFilter {
+                    source_team_id: None,
+                    target_team_id: None,
+                    node_id: None,
+                    state: None,
+                },
+                None,
+                200,
+            )
+            .map_err(|error| error.to_string())?;
+        let mut delegations = page
+            .items
+            .into_iter()
+            .filter(|delegation| {
+                delegation.source_work_ref.team_id == team_id
+                    || delegation.target_placement.team_id == team_id
+            })
+            .filter(|delegation| {
+                member_work_ids.is_none_or(|work_ids| {
+                    delegation.state == harness_core::collaboration::DelegationState::Active
+                        && (work_ids.contains(&delegation.source_work_ref.work_id)
+                            || delegation
+                                .target_work_ref
+                                .as_ref()
+                                .is_some_and(|target| work_ids.contains(&target.work_id)))
+                })
+            })
+            .collect::<Vec<_>>();
+        delegations.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let pending_cancellations = delegations
+            .iter()
+            .map(|delegation| store.collaboration_cancellation_requests(company_id, &delegation.id))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .flatten()
+            .filter(|request| {
+                request.state == harness_core::collaboration::CancellationRequestState::Pending
+                    && delegations
+                        .iter()
+                        .any(|delegation| delegation.id == request.delegation_id)
+            })
+            .collect::<Vec<_>>();
+        let publication_count = delegations
+            .iter()
+            .map(|delegation| {
+                store
+                    .collaboration_publications(company_id, &delegation.id)
+                    .map(|items| items.len())
+                    .unwrap_or_default()
+            })
+            .sum::<usize>();
+        let attention_count = delegations
+            .iter()
+            .filter(|delegation| {
+                matches!(
+                    delegation.state,
+                    harness_core::collaboration::DelegationState::AwaitingTargetDecision
+                        | harness_core::collaboration::DelegationState::ProvisioningTargetWork
+                        | harness_core::collaboration::DelegationState::CancellationRequested
+                )
+            })
+            .count()
+            + pending_cancellations.len();
+        Ok(json!({
+            "company_id":company_id,
+            "team_id":team_id,
+            "state":"observed",
+            "as_of_store_sequence":page.as_of_store_sequence,
+            "delegations":delegations,
+            "pending_cancellations":pending_cancellations,
+            "publication_count":publication_count,
+            "attention_count":attention_count,
+        }))
+    })();
+    result.unwrap_or_else(|reason| {
+        json!({
+            "company_id":company_id,
+            "team_id":team_id,
+            "state":"unavailable",
+            "reason":reason,
+        })
+    })
+}
+
 fn team_view(
     space_id: &str,
     store: &HarnessStore,
     team_id: &str,
     host: bool,
     identity: Option<&ReadIdentity>,
+    company_id: Option<&str>,
 ) -> ViewResult {
     let facts = Facts::read(space_id, store)
         .map_err(|e| ("500 Internal Server Error", "ROLE_VIEW_BUILD_FAILED", e))?;
@@ -1485,9 +1623,10 @@ fn team_view(
         "PROJECTION_CONFLICT",
         "selected Team has no durable revision".to_string(),
     ))?;
+    let collaboration = collaboration_projection(company_id, &team.id, None);
     if !host {
         let latest_run = run.map(|run| json!({"id":run.id,"status":enum_string(&run.status),"previous_run_id":run.previous_run_id,"execution_node_id":run.execution_node_id,"project_binding_id":run.project_binding_id,"execution_root":run.execution_root,"created_at":run.created_at,"completed_at":run.completed_at}));
-        let data = json!({"team":{"team_id":team.id,"display_name":team.name,"team_revision":team_revision,"mission_id":team.mission_id,"host_agent_id":team.host_agent_id,"viewer_role":if exact_host_identity{"host"}else{"member"},"node_id":team.node_id,"placement_generation":run.and_then(|run|facts.run_revisions.get(&run.id).copied()),"status":enum_string(&team.status),"latest_run":latest_run},"pressure_summary":pressure_summary,"works":works,"members":members,"messages":messages,"activity":activity,"activity_truncated":activity_truncated,"reports":reports,"findings":findings,"failures":failures,"gate_requirements":requirements,"gate_evaluations":evaluations,"gate_waivers":waivers,"workspace_attention":workspace_attention,"delegation_provenance":delegations,"page":{"as_of_event_sequence":facts.sequence,"item_count":works.len(),"next_cursor":null}});
+        let data = json!({"team":{"team_id":team.id,"display_name":team.name,"team_revision":team_revision,"mission_id":team.mission_id,"host_agent_id":team.host_agent_id,"viewer_role":if exact_host_identity{"host"}else{"member"},"node_id":team.node_id,"placement_generation":run.and_then(|run|facts.run_revisions.get(&run.id).copied()),"status":enum_string(&team.status),"latest_run":latest_run},"pressure_summary":pressure_summary,"works":works,"members":members,"messages":messages,"activity":activity,"activity_truncated":activity_truncated,"reports":reports,"findings":findings,"failures":failures,"gate_requirements":requirements,"gate_evaluations":evaluations,"gate_waivers":waivers,"workspace_attention":workspace_attention,"delegation_provenance":delegations,"collaboration":collaboration,"page":{"as_of_event_sequence":facts.sequence,"item_count":works.len(),"next_cursor":null}});
         return Ok(envelope(
             "team_workspace",
             &facts,
@@ -1812,7 +1951,7 @@ fn team_view(
     Ok(envelope(
         "host_console",
         &facts,
-        json!({"team_ref":team.id,"mission_ref":team.mission_id,"mission_context":mission_context,"team_supervisor":supervisor,"host_inbox":host_inbox,"member_runtime":members,"runtime_recovery":runtime_recovery,"pressure_summary":pressure_summary,"all_works":works,"work_queues":{"ready":works.iter().filter(|w|w["phase"]=="open"&&w["condition"]=="normal").cloned().collect::<Vec<_>>(),"unassigned":works.iter().filter(|w|w["owner_actor_ref"].is_null()).cloned().collect::<Vec<_>>(),"blocked":works.iter().filter(|w|w["condition"]=="blocked").cloned().collect::<Vec<_>>(),"review":by_phase("review"),"integration":works.iter().filter(|w|w["module_refs"].as_array().is_some_and(|a|a.iter().any(|m|m=="integration-plan"))).cloned().collect::<Vec<_>>()},"member_capacity":members,"convergence_plans":[],"reusable_findings":findings,"workspace_conflicts":record_summaries("workspace_binding",raw_workspace_attention),"provider_capacity_attention":[{"state":"not_modeled","reason":"Provider account quota is not modeled in this RoleView."}],"deliveries_requiring_reconcile":record_summaries("work_delivery",facts.work_deliveries.iter().filter(|delivery|delivery_requires_team_reconcile(delivery,&team_work_ids)).cloned().collect()),"gate_attention":requirements,"daemon_summary":{"node_id":team.node_id,"lease_status":store.latest_node_daemon_lease(&team.node_id).ok().flatten().map(|lease|enum_string(&lease.status)),"generation":store.latest_node_daemon_lease(&team.node_id).ok().flatten().map(|lease|lease.generation)}}),
+        json!({"team_ref":team.id,"mission_ref":team.mission_id,"mission_context":mission_context,"team_supervisor":supervisor,"host_inbox":host_inbox,"member_runtime":members,"runtime_recovery":runtime_recovery,"pressure_summary":pressure_summary,"all_works":works,"work_queues":{"ready":works.iter().filter(|w|w["phase"]=="open"&&w["condition"]=="normal").cloned().collect::<Vec<_>>(),"unassigned":works.iter().filter(|w|w["owner_actor_ref"].is_null()).cloned().collect::<Vec<_>>(),"blocked":works.iter().filter(|w|w["condition"]=="blocked").cloned().collect::<Vec<_>>(),"review":by_phase("review"),"integration":works.iter().filter(|w|w["module_refs"].as_array().is_some_and(|a|a.iter().any(|m|m=="integration-plan"))).cloned().collect::<Vec<_>>()},"member_capacity":members,"convergence_plans":[],"reusable_findings":findings,"workspace_conflicts":record_summaries("workspace_binding",raw_workspace_attention),"provider_capacity_attention":[{"state":"not_modeled","reason":"Provider account quota is not modeled in this RoleView."}],"deliveries_requiring_reconcile":record_summaries("work_delivery",facts.work_deliveries.iter().filter(|delivery|delivery_requires_team_reconcile(delivery,&team_work_ids)).cloned().collect()),"gate_attention":requirements,"daemon_summary":{"node_id":team.node_id,"lease_status":store.latest_node_daemon_lease(&team.node_id).ok().flatten().map(|lease|enum_string(&lease.status)),"generation":store.latest_node_daemon_lease(&team.node_id).ok().flatten().map(|lease|lease.generation)},"collaboration":collaboration}),
         identity_attention,
         actions,
     ))
@@ -1823,6 +1962,7 @@ fn member_view(
     store: &HarnessStore,
     member_run_id: &str,
     identity: Option<&ReadIdentity>,
+    company_id: Option<&str>,
 ) -> ViewResult {
     let facts = Facts::read(space_id, store)
         .map_err(|e| ("500 Internal Server Error", "ROLE_VIEW_BUILD_FAILED", e))?;
@@ -1892,6 +2032,15 @@ fn member_view(
         .filter(|w| w.team_run_id == team_run_id && w.owner_member_id.as_deref() == Some(member_id))
         .map(|w| work_summary(&facts, team, w))
         .collect::<Vec<_>>();
+    let member_work_ids = facts
+        .works
+        .iter()
+        .filter(|work| {
+            work.team_run_id == team_run_id && work.owner_member_id.as_deref() == Some(member_id)
+        })
+        .map(|work| work.id.clone())
+        .collect::<BTreeSet<_>>();
+    let collaboration = collaboration_projection(company_id, &team.id, Some(&member_work_ids));
     let pool = facts
         .works
         .iter()
@@ -2016,7 +2165,7 @@ fn member_view(
     Ok(envelope(
         "member_workbench",
         &facts,
-        json!({"agent_member":agent_member_summary(&member),"member_run":member_run_summary(run),"my_works":my,"eligible_ready_pool":pool,"unread_messages":unread,"queued_deliveries":record_summaries("message_delivery",queued),"workspace_binding":workspace.as_ref().map(|value|record_summary("workspace_binding",value)),"native_session_health":run["native_session"].get("availability").cloned().unwrap_or(json!("unknown")),"pending_provider_interactions":[],"report_history":record_summaries("work_report",records(&facts,|v|v["authored_by"]["id"]==member_id&&v.get("report_revision").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"finding_history":record_summaries("work_finding",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("detail_markdown").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"failure_history":record_summaries("failure_analysis",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("observed_failure").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"gate_requirements":record_summaries("gate_requirement",records(&facts,|v|v.get("requirement_set_fingerprint").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id))&&facts.works.iter().any(|work|v["work_id"]==work.id&&v["work_revision"].as_u64()==Some(work.version))))}),
+        json!({"agent_member":agent_member_summary(&member),"member_run":member_run_summary(run),"my_works":my,"eligible_ready_pool":pool,"unread_messages":unread,"queued_deliveries":record_summaries("message_delivery",queued),"workspace_binding":workspace.as_ref().map(|value|record_summary("workspace_binding",value)),"native_session_health":run["native_session"].get("availability").cloned().unwrap_or(json!("unknown")),"pending_provider_interactions":[],"report_history":record_summaries("work_report",records(&facts,|v|v["authored_by"]["id"]==member_id&&v.get("report_revision").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"finding_history":record_summaries("work_finding",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("detail_markdown").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"failure_history":record_summaries("failure_analysis",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("observed_failure").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"gate_requirements":record_summaries("gate_requirement",records(&facts,|v|v.get("requirement_set_fingerprint").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id))&&facts.works.iter().any(|work|v["work_id"]==work.id&&v["work_revision"].as_u64()==Some(work.version)))),"collaboration":collaboration}),
         vec![],
         actions,
     ))
@@ -2307,6 +2456,51 @@ fn operator_view(
                         .find(|diagnostic| diagnostic.node_id == node_id)
                         .cloned()
                 });
+            let collaboration = layout
+                .collaboration_root(company_id)
+                .ok()
+                .filter(|root| root.exists())
+                .and_then(|root| {
+                    HarnessStore::new(root)
+                        .list_collaboration_delegations(
+                            company_id,
+                            &harness_store::CollaborationDelegationFilter {
+                                source_team_id: None,
+                                target_team_id: None,
+                                node_id: Some(node_id.into()),
+                                state: None,
+                            },
+                            None,
+                            200,
+                        )
+                        .ok()
+                        .map(|page| {
+                            let attention = page
+                                .items
+                                .iter()
+                                .filter(|delegation| {
+                                    matches!(
+                                        delegation.state,
+                                        harness_core::collaboration::DelegationState::AwaitingTargetDecision
+                                            | harness_core::collaboration::DelegationState::ProvisioningTargetWork
+                                            | harness_core::collaboration::DelegationState::CancellationRequested
+                                    )
+                                })
+                                .count();
+                            json!({
+                                "state":"observed",
+                                "delegation_count":page.items.len(),
+                                "attention_count":attention,
+                                "as_of_store_sequence":page.as_of_store_sequence,
+                            })
+                        })
+                })
+                .unwrap_or_else(|| {
+                    json!({
+                        "state":"unavailable",
+                        "reason":"Company collaboration projection is not present on this server",
+                    })
+                });
             let (state, reason) = match (control_plane_online, control_plane_metrics.as_ref()) {
                 (Some(true), Some(_)) => ("observed", None),
                 (Some(false), _) => (
@@ -2336,6 +2530,7 @@ fn operator_view(
                 "recovery_required":recovery_required,
                 "control_plane_online":control_plane_online,
                 "control_plane_metrics":control_plane_metrics,
+                "collaboration":collaboration,
                 "store_revision":snapshot.revision,
             }))
         })();
