@@ -188,6 +188,54 @@ fn route_command(
             ))
         }
     };
+    if let Some(existing) = local
+        .snapshot()
+        .map_err(fabric_error)?
+        .outboxes
+        .get(&operation_id)
+        .cloned()
+    {
+        let existing_operation = existing.operation.as_ref().ok_or_else(|| {
+            fabric_error(FabricError::none(
+                FabricErrorCode::OperationUnknown,
+                "durable source outbox lost its canonical operation envelope",
+            ))
+        })?;
+        let capability = route_capability(&kind);
+        let same_intent = route_queue_intent_matches(
+            existing_operation,
+            &company_id,
+            &operation_id,
+            wire_kind,
+            &node_id,
+            source_execution_space_id.as_deref(),
+            &target_node_id,
+            &target_execution_space_id,
+            &idempotency_key,
+            &ordering_key,
+            expected_target_revision,
+            body_schema,
+            &body,
+            capability,
+        )
+        .map_err(fabric_error)?;
+        if !same_intent {
+            return Err(fabric_error(FabricError::none(
+                FabricErrorCode::IdempotencyConflict,
+                "route queue replay changed its durable semantic intent",
+            )));
+        }
+        existing_operation.validate_digest().map_err(fabric_error)?;
+        existing_operation.closed_body().map_err(fabric_error)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "queued_operation": existing,
+                "replayed": true,
+            }))?
+        );
+        return Ok(());
+    }
     let actor = AuthenticatedActor {
         company_id: company_id.clone(),
         actor_id: node_id.clone(),
@@ -214,13 +262,7 @@ fn route_command(
         actor_runtime_generation: None,
         authorization_context: std::collections::BTreeMap::from([(
             "capability".into(),
-            match kind.as_str() {
-                "probe" => "remote-probe",
-                "runtime" => "remote-runtime",
-                "message" => "remote-message",
-                _ => unreachable!(),
-            }
-            .into(),
+            route_capability(&kind).into(),
         )]),
         idempotency_key,
         ordering_key,
@@ -260,6 +302,53 @@ fn route_command(
         }))?
     );
     Ok(())
+}
+
+fn route_capability(kind: &str) -> &'static str {
+    match kind {
+        "probe" => "remote-probe",
+        "runtime" => "remote-runtime",
+        "message" => "remote-message",
+        _ => unreachable!("route kind was closed before capability resolution"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn route_queue_intent_matches(
+    existing: &harness_fabric::RoutedOperation,
+    company_id: &str,
+    operation_id: &str,
+    wire_kind: &str,
+    source_node_id: &str,
+    source_execution_space_id: Option<&str>,
+    target_node_id: &str,
+    target_execution_space_id: &str,
+    idempotency_key: &str,
+    ordering_key: &str,
+    expected_target_revision: Option<u64>,
+    body_schema: &str,
+    body: &serde_json::Value,
+    capability: &str,
+) -> Result<bool, FabricError> {
+    Ok(existing.company_id == company_id
+        && existing.id == operation_id
+        && existing.kind == wire_kind
+        && existing.source_authority == harness_fabric::OperationSourceAuthority::Node
+        && existing.source_node_id.as_deref() == Some(source_node_id)
+        && existing.source_execution_space_id.as_deref() == source_execution_space_id
+        && existing.target_node_id == target_node_id
+        && existing.target_execution_space_id.as_deref() == Some(target_execution_space_id)
+        && existing.idempotency_key == idempotency_key
+        && existing.ordering_key == ordering_key
+        && existing.expected_target_revision == expected_target_revision
+        && existing.body_schema == body_schema
+        && existing.body == *body
+        && existing.body_digest == harness_fabric::json_digest(body)?
+        && existing
+            .authorization_context
+            .get("capability")
+            .map(String::as_str)
+            == Some(capability))
 }
 
 fn control_plane_command(resolved: &ResolvedStore, args: &[String]) -> CliResult<()> {
@@ -1651,6 +1740,59 @@ mod tests {
     fn real_gateway_frame_timeout_is_bounded_within_the_lease() {
         assert_eq!(GATEWAY_FRAME_READ_TIMEOUT, Duration::from_secs(5));
         assert!(GATEWAY_FRAME_READ_TIMEOUT < Duration::from_secs(30));
+    }
+
+    #[test]
+    fn route_queue_replay_uses_semantic_intent_not_regenerated_timestamps() {
+        let mut operation: harness_fabric::RoutedOperation = serde_json::from_str(include_str!(
+            "../../../schemas/remote-fabric/fixtures/valid/routed-operation.json"
+        ))
+        .expect("valid routed operation fixture");
+        operation
+            .authorization_context
+            .insert("capability".into(), "remote-probe".into());
+        operation.created_at_unix_ms = 11;
+        operation.expires_at_unix_ms = 2_000;
+        operation.actor.issued_at_unix_ms = 11;
+        operation.actor.expires_at_unix_ms = 2_000;
+        let body = serde_json::json!({"probe":"reachable"});
+
+        assert!(route_queue_intent_matches(
+            &operation,
+            "company-a",
+            "operation-1",
+            harness_fabric::PROBE_OPERATION_KIND,
+            "node-a",
+            Some("space-a"),
+            "node-b",
+            "space-b",
+            "idem-1",
+            "probe:a:b",
+            None,
+            harness_fabric::PROBE_BODY_SCHEMA,
+            &body,
+            "remote-probe",
+        )
+        .expect("semantic replay comparison"));
+
+        let changed = serde_json::json!({"probe":"changed"});
+        assert!(!route_queue_intent_matches(
+            &operation,
+            "company-a",
+            "operation-1",
+            harness_fabric::PROBE_OPERATION_KIND,
+            "node-a",
+            Some("space-a"),
+            "node-b",
+            "space-b",
+            "idem-1",
+            "probe:a:b",
+            None,
+            harness_fabric::PROBE_BODY_SCHEMA,
+            &changed,
+            "remote-probe",
+        )
+        .expect("changed replay comparison"));
     }
 
     #[cfg(target_os = "macos")]
