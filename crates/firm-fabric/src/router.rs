@@ -16,6 +16,16 @@ fn operation_source_key(operation: &RoutedOperation) -> String {
     }
 }
 
+fn queue_capacity_exceeded(
+    queued_operations: usize,
+    queued_bytes: u64,
+    operation_bytes: u64,
+    limits: FabricStoreLimits,
+) -> bool {
+    queued_operations >= limits.max_queued_operations_per_node
+        || queued_bytes.saturating_add(operation_bytes) > limits.max_queued_bytes_per_node
+}
+
 #[allow(clippy::type_complexity)]
 pub(crate) fn accept_and_enqueue(
     state: &mut FabricState,
@@ -132,9 +142,7 @@ pub(crate) fn accept_and_enqueue(
             )
         })?
         .len() as u64;
-    if queued >= limits.max_queued_operations_per_node
-        || queued_bytes.saturating_add(operation_bytes) > limits.max_queued_bytes_per_node
-    {
+    if queue_capacity_exceeded(queued, queued_bytes, operation_bytes, limits) {
         return Err(FabricError::none(
             FabricErrorCode::QueueCapacity,
             "target Node queue capacity reached; operation was not accepted",
@@ -222,6 +230,24 @@ pub(crate) fn accept_and_enqueue(
     }
     window.accepted_count = window.accepted_count.saturating_add(1);
     Ok((operation, attempt, receipt, false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::queue_capacity_exceeded;
+    use crate::store::FabricStoreLimits;
+
+    #[test]
+    fn default_offline_queue_boundaries_are_exact() {
+        let limits = FabricStoreLimits::default();
+        assert!(!queue_capacity_exceeded(9_999, 0, 1, limits));
+        assert!(queue_capacity_exceeded(10_000, 0, 1, limits));
+
+        let one_gib = 1024_u64 * 1024 * 1024;
+        assert!(!queue_capacity_exceeded(0, one_gib - 1, 1, limits));
+        assert!(queue_capacity_exceeded(0, one_gib, 1, limits));
+        assert!(queue_capacity_exceeded(0, u64::MAX, 1, limits));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -528,7 +554,8 @@ pub(crate) fn record_application_receipt(
     let result_digest = canonical_digest(&result)?;
     let kind = match effect {
         EffectCertainty::Applied => ReceiptKind::OperationApplied,
-        EffectCertainty::NotApplied | EffectCertainty::Unknown => ReceiptKind::OperationRejected,
+        EffectCertainty::NotApplied => ReceiptKind::OperationRejected,
+        EffectCertainty::Unknown => ReceiptKind::RecoveryRequired,
         EffectCertainty::None => {
             return Err(FabricError::none(
                 FabricErrorCode::InvalidPayload,
@@ -590,11 +617,15 @@ pub(crate) fn record_application_receipt(
             "application receipt requires prior target_persisted receipt",
         ));
     }
-    attempt.state = RouteAttemptState::Ended;
+    attempt.state = if effect == EffectCertainty::Unknown {
+        RouteAttemptState::TargetPersisted
+    } else {
+        RouteAttemptState::Ended
+    };
     // RouteAttempt records transport progress only. Application truth belongs
     // exclusively to the generation-fenced target receipt below.
     attempt.effect = EffectCertainty::None;
-    attempt.ended_at_unix_ms = Some(now_unix_ms);
+    attempt.ended_at_unix_ms = (effect != EffectCertainty::Unknown).then_some(now_unix_ms);
     let attempt = attempt.clone();
     let receipt = RouteReceipt {
         id: receipt_key,

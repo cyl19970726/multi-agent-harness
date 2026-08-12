@@ -87,6 +87,9 @@ truth and forbids resubmission.
 
 Production Node credentials can be read directly from macOS Keychain with
 `--credential-backend macos-keychain`; CI and isolated local tests use strict
-non-symlink file credentials. See
+non-symlink file credentials. A named development dogfood may use the same
+mode-`0600` file backend only after explicit user approval; that evidence must
+say `file-backed development exception` and must not claim Keychain coverage.
+See
 `docs/current/operations/remote-fabric-operations.md` for enrollment,
 credential account names, backup/restore, rotation, drain and recovery.

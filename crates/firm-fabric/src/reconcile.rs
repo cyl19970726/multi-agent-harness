@@ -55,7 +55,9 @@ pub(crate) fn reconcile(
             .filter(|receipt| {
                 matches!(
                     receipt.kind,
-                    ReceiptKind::OperationApplied | ReceiptKind::OperationRejected
+                    ReceiptKind::RecoveryRequired
+                        | ReceiptKind::OperationApplied
+                        | ReceiptKind::OperationRejected
                 )
             })
             .cloned()

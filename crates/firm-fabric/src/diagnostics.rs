@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::protocol::{
     EffectCertainty, NodeAdministrativeStatus, NodeConnectionStatus, ReceiptKind, RouteAttemptState,
 };
@@ -45,14 +47,27 @@ pub fn inspect_fabric(
         .map(|node| {
             let gateway = state.gateway_leases.get(&node.id);
             let recovery_required_operations = state
-                .attempts
+                .receipts
                 .values()
-                .filter(|attempt| {
-                    attempt.company_id == company_id
-                        && attempt.target_node_id == node.id
-                        && attempt.effect == EffectCertainty::Unknown
+                .filter(|receipt| {
+                    receipt.company_id == company_id
+                        && receipt.target_node_id == node.id
+                        && receipt.kind == ReceiptKind::RecoveryRequired
                 })
-                .map(|attempt| attempt.operation_id.clone())
+                .map(|receipt| receipt.operation_id.clone())
+                .chain(
+                    state
+                        .attempts
+                        .values()
+                        .filter(|attempt| {
+                            attempt.company_id == company_id
+                                && attempt.target_node_id == node.id
+                                && attempt.effect == EffectCertainty::Unknown
+                        })
+                        .map(|attempt| attempt.operation_id.clone()),
+                )
+                .collect::<BTreeSet<_>>()
+                .into_iter()
                 .collect::<Vec<_>>();
             let queued_operations = state
                 .attempts

@@ -51,16 +51,18 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["company_id", "node_id", "state", "gateway_session", "outbox_depth", "oldest_outbox_age_ms", "inbox_depth", "recovery_required", "control_plane_metrics", "store_revision"],
+          "required": ["company_id", "node_id", "state", "reason", "gateway_session", "outbox_depth", "oldest_outbox_age_ms", "inbox_depth", "recovery_required", "control_plane_online", "control_plane_metrics", "store_revision"],
           "properties": {
             "company_id": { "type": "string", "minLength": 1 },
             "node_id": { "type": "string", "minLength": 1 },
-            "state": { "const": "observed" },
+            "state": { "enum": ["observed", "offline", "unknown"] },
+            "reason": { "type": ["string", "null"] },
             "gateway_session": { "oneOf": [{ "$ref": "#/$defs/gatewaySession" }, { "type": "null" }] },
             "outbox_depth": { "type": "integer", "minimum": 0 },
             "oldest_outbox_age_ms": { "type": "integer", "minimum": 0 },
             "inbox_depth": { "type": "integer", "minimum": 0 },
             "recovery_required": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "control_plane_online": { "type": ["boolean", "null"] },
             "control_plane_metrics": { "oneOf": [{ "$ref": "#/$defs/controlPlaneMetrics" }, { "type": "null" }] },
             "store_revision": { "type": "integer", "minimum": 0 }
           }

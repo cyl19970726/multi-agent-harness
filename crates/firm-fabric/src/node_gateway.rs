@@ -120,6 +120,8 @@ fn connect_verified(
     if certificate.company_id != company_id
         || certificate.node_id != node.id
         || certificate.public_key_fingerprint != hello.public_key_fingerprint
+        || certificate.node_daemon_id != hello.node_daemon_id
+        || certificate.node_daemon_generation != hello.node_daemon_generation
         || certificate.expires_at_unix_ms <= now_unix_ms
         || certificate.revoked_at_unix_ms.is_some()
     {
@@ -138,6 +140,16 @@ fn connect_verified(
             "Node already has an active gateway generation",
         ));
     }
+    if prior.as_ref().is_some_and(|lease| {
+        lease.control_plane_generation == control_plane_generation
+            && lease.expires_at_unix_ms <= now_unix_ms
+            && hello.node_daemon_generation <= lease.node_daemon_generation
+    }) {
+        return Err(FabricError::none(
+            FabricErrorCode::NodeStaleGeneration,
+            "expired Gateway authority can reconnect only under a successor NodeDaemon generation",
+        ));
+    }
     let gateway_generation = prior
         .as_ref()
         .map_or(1, |lease| lease.gateway_generation.saturating_add(1));
@@ -149,6 +161,7 @@ fn connect_verified(
         instance_id: hello.instance_id.clone(),
         node_daemon_id: hello.node_daemon_id.clone(),
         node_daemon_generation: hello.node_daemon_generation,
+        certificate_serial: hello.certificate_serial.clone(),
         revision: prior
             .as_ref()
             .map_or(1, |lease| lease.revision.saturating_add(1)),
@@ -228,6 +241,7 @@ fn rebind_effect_none_attempts_to_successor(
                     && matches!(
                         receipt.kind,
                         ReceiptKind::TargetPersisted
+                            | ReceiptKind::RecoveryRequired
                             | ReceiptKind::OperationApplied
                             | ReceiptKind::OperationRejected
                     )

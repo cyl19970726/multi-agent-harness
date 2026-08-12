@@ -48,7 +48,9 @@ NodeDaemon operational model.
 - Host APIs use authenticated server-built authority and snapshot-opaque
   pagination. Browser and frame bodies cannot select actor or machine identity.
 - macOS production credentials come from Keychain; CI uses strict file-backed
-  credentials. Control Plane backup/restore is digest-bound and never
+  credentials. An explicitly user-approved development dogfood may use
+  mode-`0600` Node-local files but is labeled as a development exception and
+  never counts as Keychain evidence. Control Plane backup/restore is digest-bound and never
   overwrites existing authority.
 - Release acceptance includes a real three-process Control Plane + two Node
   mTLS/WSS journey and secret-free evidence, plus real two-machine dogfood when

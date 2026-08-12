@@ -2287,7 +2287,7 @@ fn operator_view(
                 .map(|operation| now.saturating_sub(operation.created_at_unix_ms))
                 .max()
                 .unwrap_or_default();
-            let control_plane_metrics = layout
+            let control_plane_diagnostics = layout
                 .control_plane_root(company_id)
                 .ok()
                 .filter(|root| root.exists())
@@ -2295,22 +2295,46 @@ fn operator_view(
                 .and_then(|control_store| {
                     harness_fabric::diagnostics::inspect_fabric(&control_store, company_id, now)
                         .ok()
-                })
-                .and_then(|diagnostics| {
+                });
+            let control_plane_online = control_plane_diagnostics
+                .as_ref()
+                .map(|diagnostics| diagnostics.control_plane_online);
+            let control_plane_metrics =
+                control_plane_diagnostics.as_ref().and_then(|diagnostics| {
                     diagnostics
                         .nodes
-                        .into_iter()
+                        .iter()
                         .find(|diagnostic| diagnostic.node_id == node_id)
+                        .cloned()
                 });
+            let (state, reason) = match (control_plane_online, control_plane_metrics.as_ref()) {
+                (Some(true), Some(_)) => ("observed", None),
+                (Some(false), _) => (
+                    "offline",
+                    Some("Company Control Plane lease is offline or expired"),
+                ),
+                (Some(true), None) => (
+                    "unknown",
+                    Some("Control Plane has no projection for this Node"),
+                ),
+                (None, _) => (
+                    "unknown",
+                    Some(
+                        "Control Plane metrics are unavailable; local journal is not health truth",
+                    ),
+                ),
+            };
             Ok(json!({
                 "company_id":company_id,
                 "node_id":node_id,
-                "state":"observed",
+                "state":state,
+                "reason":reason,
                 "gateway_session":snapshot.active_session,
                 "outbox_depth":queued,
                 "oldest_outbox_age_ms":oldest_outbox_age_ms,
                 "inbox_depth":snapshot.inboxes.len(),
                 "recovery_required":recovery_required,
+                "control_plane_online":control_plane_online,
                 "control_plane_metrics":control_plane_metrics,
                 "store_revision":snapshot.revision,
             }))

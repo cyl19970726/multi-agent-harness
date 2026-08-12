@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 use crate::control_plane::{require_active_control_plane, ControlPlane};
+use crate::node_gateway::require_current_gateway;
 use crate::protocol::*;
 use crate::store::EncryptedArtifact;
 use crate::{
@@ -262,50 +263,61 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                 generation,
                 now_unix_ms,
             )?;
-            actor.require_company_and_role(&company_id, "artifact_read", now_unix_ms)?;
-            let manifest = state.artifacts.get(artifact_id).ok_or_else(|| {
-                FabricError::none(
-                    FabricErrorCode::ArtifactInvalid,
-                    "artifact manifest does not exist",
-                )
-            })?;
-            if manifest.completed_at_unix_ms.is_none()
-                || manifest.deleted_at_unix_ms.is_some()
-                || !manifest.authorized_readers.contains(&actor.actor_id)
-            {
-                return Err(FabricError::none(
-                    FabricErrorCode::UnauthorizedActor,
-                    "actor is not an authorized reader of a complete artifact",
-                ));
-            }
-            let target = state.nodes.get(node_id).ok_or_else(|| {
-                FabricError::none(
-                    FabricErrorCode::TargetNotPlaced,
-                    "artifact target Node is not enrolled",
-                )
-            })?;
-            if target.company_id != company_id
-                || target.administrative_status == NodeAdministrativeStatus::Revoked
-            {
-                return Err(FabricError::none(
-                    FabricErrorCode::NodeRevoked,
-                    "artifact target Node is foreign or revoked",
-                ));
-            }
-            if !target.allowed_capabilities.contains("artifact-transfer") {
-                return Err(FabricError::none(
-                    FabricErrorCode::FeatureIncompatible,
-                    "artifact target Node lacks artifact-transfer capability",
-                ));
-            }
-            issue_capability(
+            issue_download_capability_from_state(
+                state,
                 &signing_key,
-                manifest,
+                &company_id,
+                actor,
+                artifact_id,
                 node_id,
-                ArtifactCapabilityPurpose::Download,
-                &actor.actor_id,
                 now_unix_ms,
-                true,
+            )
+        })
+    }
+
+    /// Gateway frame path: unlike the Host REST capability route, this also
+    /// fences the exact current Gateway and NodeDaemon parent generation in
+    /// the same Control Plane Store transaction before issuing a capability.
+    #[allow(clippy::too_many_arguments)]
+    pub fn issue_gateway_download_capability(
+        &self,
+        actor: &AuthenticatedActor,
+        generation: u64,
+        gateway_generation: u64,
+        node_daemon_id: &str,
+        node_daemon_generation: u64,
+        artifact_id: &str,
+        node_id: &str,
+        now_unix_ms: u64,
+    ) -> Result<ArtifactCapability, FabricError> {
+        let company_id = self.company_id().to_string();
+        let signing_key = *self.capability_signing_key();
+        self.store().transact(|state| {
+            require_active_control_plane(
+                state,
+                &company_id,
+                self.instance_id(),
+                generation,
+                now_unix_ms,
+            )?;
+            require_current_gateway(
+                state,
+                &company_id,
+                generation,
+                node_id,
+                gateway_generation,
+                node_daemon_id,
+                node_daemon_generation,
+                now_unix_ms,
+            )?;
+            issue_download_capability_from_state(
+                state,
+                &signing_key,
+                &company_id,
+                actor,
+                artifact_id,
+                node_id,
+                now_unix_ms,
             )
         })
     }
@@ -374,6 +386,62 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
             Ok(plaintext)
         })
     }
+}
+
+fn issue_download_capability_from_state(
+    state: &crate::store::FabricState,
+    signing_key: &[u8; 32],
+    company_id: &str,
+    actor: &AuthenticatedActor,
+    artifact_id: &str,
+    node_id: &str,
+    now_unix_ms: u64,
+) -> Result<ArtifactCapability, FabricError> {
+    actor.require_company_and_role(company_id, "artifact_read", now_unix_ms)?;
+    let manifest = state.artifacts.get(artifact_id).ok_or_else(|| {
+        FabricError::none(
+            FabricErrorCode::ArtifactInvalid,
+            "artifact manifest does not exist",
+        )
+    })?;
+    if manifest.completed_at_unix_ms.is_none()
+        || manifest.deleted_at_unix_ms.is_some()
+        || !manifest.authorized_readers.contains(&actor.actor_id)
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::UnauthorizedActor,
+            "actor is not an authorized reader of a complete artifact",
+        ));
+    }
+    let target = state.nodes.get(node_id).ok_or_else(|| {
+        FabricError::none(
+            FabricErrorCode::TargetNotPlaced,
+            "artifact target Node is not enrolled",
+        )
+    })?;
+    if target.company_id != company_id
+        || target.administrative_status == NodeAdministrativeStatus::Revoked
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::NodeRevoked,
+            "artifact target Node is foreign or revoked",
+        ));
+    }
+    if !target.allowed_capabilities.contains("artifact-transfer") {
+        return Err(FabricError::none(
+            FabricErrorCode::FeatureIncompatible,
+            "artifact target Node lacks artifact-transfer capability",
+        ));
+    }
+    issue_capability(
+        signing_key,
+        manifest,
+        node_id,
+        ArtifactCapabilityPurpose::Download,
+        &actor.actor_id,
+        now_unix_ms,
+        true,
+    )
 }
 
 fn issue_capability(

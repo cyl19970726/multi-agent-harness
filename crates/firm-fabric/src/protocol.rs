@@ -262,6 +262,7 @@ pub struct NodeGatewayLease {
     pub instance_id: String,
     pub node_daemon_id: String,
     pub node_daemon_generation: u64,
+    pub certificate_serial: String,
     pub revision: u64,
     pub control_plane_generation: u64,
     pub acquired_at_unix_ms: u64,
@@ -280,6 +281,8 @@ pub struct NodeCertificate {
     pub company_id: String,
     pub node_id: String,
     pub public_key_fingerprint: String,
+    pub node_daemon_id: String,
+    pub node_daemon_generation: u64,
     pub issued_at_unix_ms: u64,
     pub expires_at_unix_ms: u64,
     pub revoked_at_unix_ms: Option<u64>,
@@ -646,6 +649,7 @@ pub struct FabricRateWindow {
 pub enum ReceiptKind {
     ControlPlaneAccepted,
     TargetPersisted,
+    RecoveryRequired,
     OperationApplied,
     OperationRejected,
 }

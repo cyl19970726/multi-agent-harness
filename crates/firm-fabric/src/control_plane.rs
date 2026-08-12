@@ -412,6 +412,57 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn rotate_node_certificate_csr(
+        &self,
+        generation: u64,
+        node_id: &str,
+        gateway_generation: u64,
+        node_daemon_id: &str,
+        node_daemon_generation: u64,
+        current_certificate_serial: &str,
+        next_certificate_serial: &str,
+        expected_node_revision: u64,
+        csr_pem: &str,
+        next_certificate_expires_at_unix_ms: u64,
+        now_unix_ms: u64,
+    ) -> Result<(CompanyNode, NodeCertificate), FabricError> {
+        let public_key_fingerprint =
+            crate::pki::verify_node_csr(csr_pem, &self.company_id, node_id)?;
+        let csr_digest = crate::sha256_hex(csr_pem.as_bytes());
+        self.store.transact(|state| {
+            require_active_control_plane(
+                state,
+                &self.company_id,
+                &self.instance_id,
+                generation,
+                now_unix_ms,
+            )?;
+            node_gateway::require_current_gateway(
+                state,
+                &self.company_id,
+                generation,
+                node_id,
+                gateway_generation,
+                node_daemon_id,
+                node_daemon_generation,
+                now_unix_ms,
+            )?;
+            enrollment::rotate_certificate_csr(
+                state,
+                &self.company_id,
+                node_id,
+                current_certificate_serial,
+                next_certificate_serial,
+                expected_node_revision,
+                &public_key_fingerprint,
+                &csr_digest,
+                next_certificate_expires_at_unix_ms,
+                now_unix_ms,
+            )
+        })
+    }
+
     pub fn accept_operation(
         &self,
         generation: u64,

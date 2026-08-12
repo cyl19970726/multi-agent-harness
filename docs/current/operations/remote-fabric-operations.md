@@ -7,7 +7,7 @@ certificate fingerprint, Store root or backup digest differs.
 ## Credentials
 
 CI and isolated tests use regular non-symlink PEM/key files. Private key and
-bearer/key files must have mode `0600`. Production macOS Nodes should use:
+bearer/key files must have mode `0600`. Production macOS Nodes use:
 
 ```text
 firm fabric node-gateway serve \
@@ -29,6 +29,16 @@ closed before a Fabric frame is sent. Certificate serial and public-key
 fingerprint are public enrolled identity supplied explicitly through
 `--certificate-serial` and `--public-key-fingerprint`; keeping them outside
 Keychain avoids unnecessary per-item ACL prompts for login LaunchAgents.
+
+One bounded development dogfood may instead use non-symlink mode-`0600`
+credential files when the user explicitly approves that exact run because
+interactive Keychain ACL prompts would prevent unattended restart testing.
+The files must stay on the Node that generated the private key, outside the
+repository and evidence directory, and must be removed or rotated after the
+run. The resulting evidence must state `file-backed development exception`;
+it proves mTLS and credential file fail-closed behavior, **not** the production
+Keychain path. Release/production admission still requires a separate
+Keychain-backed run.
 
 ## Enrollment and rotation
 
@@ -116,9 +126,11 @@ keys between machines.
    Company id, Control Plane generation and schema bundle digest.
 2. Create one enrollment per existing ExecutionNode id. Each Mac generates its
    own key and CSR, consumes only its enrollment, and installs the returned
-   material in macOS Keychain using the accounts above.
+   material in macOS Keychain using the accounts above, unless this exact
+   development run has the explicit file-backed exception above.
 3. Start the current NodeDaemon and then `firm fabric node-gateway serve` on
-   both Macs with `--credential-backend macos-keychain`. Record the two exact
+   both Macs with `--credential-backend macos-keychain` (or the explicitly
+   recorded development exception). Record the two exact
    Node ids, NodeDaemon generations and gateway generations. Reject the run if
    either Node exposes an inbound collaboration listener.
 4. On Node A create a bounded diagnostic body such as
@@ -128,10 +140,15 @@ keys between machines.
 5. Verify the Control Plane journal reaches `operation_applied`, Node A
    reconciles the same terminal receipt, and an exact replay returns the
    original result without a second target application.
-6. Stop Node B's gateway, wait until the server-derived lease is offline, queue
-   a second probe on Node A, and prove it remains durable/nonterminal. Restart
-   Node B under the same current NodeDaemon parent, require a successor gateway
-   generation, and verify the queued operation applies exactly once.
+6. While Node B's predecessor gateway is still current, rotate its certificate
+   for the successor NodeDaemon generation; this revokes the old serial and
+   expires the predecessor gateway authority. Stop the predecessor process,
+   wait until the server-derived lease is offline, queue a second probe on Node
+   A, and prove it remains durable/nonterminal. Restart Node B with the rotated
+   certificate,
+   require a successor gateway generation, and verify the queued operation
+   applies exactly once. A reconnect that merely self-reports a higher daemon
+   generation under the predecessor certificate must fail with zero effects.
 7. Capture `remote_fabric_status` and `remote_fabric_operation_show` through
    the local MCP surface or the equivalent authenticated Host REST reads.
    Evidence must bind the immutable submitted SHA, Company/Node ids, Control

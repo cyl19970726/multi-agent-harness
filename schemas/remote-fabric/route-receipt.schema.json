@@ -18,7 +18,7 @@
     "target_gateway_generation": { "type": "integer", "minimum": 1 },
     "control_plane_generation": { "type": "integer", "minimum": 1 },
     "route_seq": { "type": "integer", "minimum": 1 },
-    "kind": { "enum": ["control_plane_accepted", "target_persisted", "operation_applied", "operation_rejected"] },
+    "kind": { "enum": ["control_plane_accepted", "target_persisted", "recovery_required", "operation_applied", "operation_rejected"] },
     "application_effect": { "type": ["string", "null"], "enum": ["none", "not_applied", "applied", "unknown", null] },
     "result_schema": { "type": ["string", "null"] },
     "result": {},

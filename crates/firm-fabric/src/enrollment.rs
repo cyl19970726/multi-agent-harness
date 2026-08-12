@@ -226,6 +226,8 @@ pub(crate) fn consume_enrollment(
         company_id: company_id.into(),
         node_id: node_id.into(),
         public_key_fingerprint,
+        node_daemon_id: format!("node-daemon:{node_id}"),
+        node_daemon_generation: 1,
         issued_at_unix_ms: now_unix_ms,
         expires_at_unix_ms: certificate_expires_at_unix_ms,
         revoked_at_unix_ms: None,
@@ -354,6 +356,8 @@ pub(crate) fn consume_enrollment_csr(
         company_id: company_id.into(),
         node_id: node_id.into(),
         public_key_fingerprint: public_key_fingerprint.into(),
+        node_daemon_id: format!("node-daemon:{node_id}"),
+        node_daemon_generation: 1,
         issued_at_unix_ms: now_unix_ms,
         expires_at_unix_ms: certificate_expires_at_unix_ms,
         revoked_at_unix_ms: None,
@@ -527,11 +531,23 @@ pub(crate) fn rotate_certificate(
             )
         })?;
     let fingerprint = sha256_hex(public_key_bytes);
+    let prior_certificate = state
+        .certificates
+        .get(current_certificate_serial)
+        .cloned()
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::EnrollmentInvalid,
+                "current certificate authority record is missing",
+            )
+        })?;
     let certificate = NodeCertificate {
         serial: next_certificate_serial.into(),
         company_id: company_id.into(),
         node_id: node_id.into(),
         public_key_fingerprint: fingerprint.clone(),
+        node_daemon_id: prior_certificate.node_daemon_id,
+        node_daemon_generation: prior_certificate.node_daemon_generation.saturating_add(1),
         issued_at_unix_ms: now_unix_ms,
         expires_at_unix_ms: next_certificate_expires_at_unix_ms,
         revoked_at_unix_ms: None,
@@ -541,6 +557,103 @@ pub(crate) fn rotate_certificate(
     let mut next = node;
     next.certificate_serial = next_certificate_serial.into();
     next.public_key_fingerprint = fingerprint;
+    next.node_revision = next.node_revision.saturating_add(1);
+    next.updated_at_unix_ms = now_unix_ms;
+    state
+        .revoked_certificate_serials
+        .insert(current_certificate_serial.into());
+    if let Some(prior) = state.certificates.get_mut(current_certificate_serial) {
+        prior.revoked_at_unix_ms = Some(now_unix_ms);
+    }
+    if let Some(lease) = state.gateway_leases.get_mut(node_id) {
+        lease.expires_at_unix_ms = now_unix_ms;
+        lease.revision = lease.revision.saturating_add(1);
+    }
+    state
+        .certificates
+        .insert(certificate.serial.clone(), certificate.clone());
+    state.nodes.insert(node_id.into(), next.clone());
+    Ok((next, certificate))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rotate_certificate_csr(
+    state: &mut FabricState,
+    company_id: &str,
+    node_id: &str,
+    current_certificate_serial: &str,
+    next_certificate_serial: &str,
+    expected_node_revision: u64,
+    next_public_key_fingerprint: &str,
+    csr_digest: &str,
+    next_certificate_expires_at_unix_ms: u64,
+    now_unix_ms: u64,
+) -> Result<(CompanyNode, NodeCertificate), FabricError> {
+    let node =
+        state.nodes.get(node_id).cloned().ok_or_else(|| {
+            FabricError::none(FabricErrorCode::SourceMismatch, "Node does not exist")
+        })?;
+    if node.company_id != company_id {
+        return Err(FabricError::none(
+            FabricErrorCode::WrongCompany,
+            "Node belongs to another Company",
+        ));
+    }
+    if node.administrative_status == NodeAdministrativeStatus::Revoked {
+        return Err(FabricError::none(
+            FabricErrorCode::NodeRevoked,
+            "revoked Node cannot rotate a certificate",
+        ));
+    }
+    if node.node_revision != expected_node_revision {
+        return Err(crate::control_plane::revision_conflict(
+            "Node revision changed before certificate rotation",
+            expected_node_revision,
+            node.node_revision,
+        ));
+    }
+    if node.certificate_serial != current_certificate_serial
+        || state
+            .revoked_certificate_serials
+            .contains(current_certificate_serial)
+        || state.certificates.contains_key(next_certificate_serial)
+        || next_public_key_fingerprint.trim().is_empty()
+        || csr_digest.trim().is_empty()
+        || next_certificate_expires_at_unix_ms <= now_unix_ms
+        || next_certificate_expires_at_unix_ms.saturating_sub(now_unix_ms)
+            > NODE_CERTIFICATE_LIFETIME_MAX_MS
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::EnrollmentInvalid,
+            "certificate rotation CSR, serial, lifetime, or current binding is invalid",
+        ));
+    }
+    let prior_certificate = state
+        .certificates
+        .get(current_certificate_serial)
+        .cloned()
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::EnrollmentInvalid,
+                "current certificate authority record is missing",
+            )
+        })?;
+    let certificate = NodeCertificate {
+        serial: next_certificate_serial.into(),
+        company_id: company_id.into(),
+        node_id: node_id.into(),
+        public_key_fingerprint: next_public_key_fingerprint.into(),
+        node_daemon_id: prior_certificate.node_daemon_id,
+        node_daemon_generation: prior_certificate.node_daemon_generation.saturating_add(1),
+        issued_at_unix_ms: now_unix_ms,
+        expires_at_unix_ms: next_certificate_expires_at_unix_ms,
+        revoked_at_unix_ms: None,
+        proof_of_possession_digest: csr_digest.into(),
+        schema_version: FABRIC_SCHEMA_VERSION.into(),
+    };
+    let mut next = node;
+    next.certificate_serial = next_certificate_serial.into();
+    next.public_key_fingerprint = next_public_key_fingerprint.into();
     next.node_revision = next.node_revision.saturating_add(1);
     next.updated_at_unix_ms = now_unix_ms;
     state

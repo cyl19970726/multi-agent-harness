@@ -29,6 +29,12 @@ use super::{CliError, CliResult, ResolvedStore};
 
 const GATEWAY_FRAME_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
+fn remote_fabric_schema_bundle_digest() -> String {
+    harness_fabric::sha256_hex(include_bytes!(
+        "../../../schemas/remote-fabric/schema-bundle.v1.json"
+    ))
+}
+
 pub(crate) fn fabric_command(
     store: &HarnessStore,
     resolved: &ResolvedStore,
@@ -133,10 +139,10 @@ fn route_command(
                 || envelope.execution_space_id != target_execution_space_id
                 || envelope.authenticated_actor.kind
                     != harness_core::agentfirm_api::ActorKind::Service
-                || envelope.authenticated_actor.id != node_id
+                || envelope.authenticated_actor.id != envelope.target_node_daemon_id
             {
                 return Err(CliError::Usage(
-                        "remote RuntimeCommand must bind the exact target and current source Node service authority"
+                        "remote RuntimeCommand must bind the source route to the current source Node and the canonical command to the exact target NodeDaemon service authority"
                             .into(),
                     ));
             }
@@ -565,7 +571,14 @@ fn node_gateway_command(
     let local = layout
         .open_node_local(&company_id, &node_id)
         .map_err(fabric_error)?;
-    let schema_digest = required(args, "--schema-bundle-digest")?;
+    let claimed_schema_digest = required(args, "--schema-bundle-digest")?;
+    let schema_digest = remote_fabric_schema_bundle_digest();
+    if claimed_schema_digest != schema_digest {
+        return Err(CliError::Usage(
+            "--schema-bundle-digest must equal the digest of the schema bundle compiled into this exact firm build"
+                .into(),
+        ));
+    }
     let credentials = resolve_node_credentials(args, &company_id, &node_id)?;
     let hello = NodeHello {
         company_id: company_id.clone(),
@@ -727,11 +740,8 @@ impl NodeApplication for Wave4cApplication {
                         "RuntimeCommand is not fenced to this exact NodeGateway/NodeDaemon parent",
                     ));
                 }
-                let (result, effect) = super::remote_fabric::dispatch_resolved_runtime_command(
-                    &self.firm_home,
-                    operation,
-                    &envelope,
-                )?;
+                let (result, effect) =
+                    dispatch_resolved_runtime_command(&self.firm_home, operation, &envelope)?;
                 Ok((
                     "agentfirm.remote_fabric.runtime_command_result.v1".into(),
                     result,
@@ -807,6 +817,97 @@ impl NodeApplication for Wave4cApplication {
                 "Node application adapter does not own this routed reference kind",
             )),
         }
+    }
+}
+
+fn dispatch_resolved_runtime_command(
+    firm_home: &Path,
+    operation: &harness_fabric::RoutedOperation,
+    envelope: &harness_core::agentfirm_api::ControlCommandEnvelope,
+) -> Result<(serde_json::Value, harness_fabric::EffectCertainty), FabricError> {
+    use harness_core::agentfirm_api::{RuntimeCommandStatus, RuntimeEffectCertainty};
+
+    super::remote_fabric::validate_resolved_runtime_command(operation, envelope)?;
+    let transport = super::supervisor_daemon::runtime_command_via_socket(
+        firm_home,
+        &envelope.target_node_id,
+        envelope,
+    );
+    let space = super::execution_space::context_for_id(firm_home, &envelope.execution_space_id)
+        .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::TargetNotPlaced,
+                "RuntimeCommand target Execution Space is not registered on this Node",
+            )
+        })?;
+    let record = HarnessStore::new(space.store_root)
+        .runtime_commands(&envelope.execution_space_id)
+        .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?
+        .into_iter()
+        .find(|record| record.id == envelope.id);
+    let transport_detail = match transport {
+        Ok(response) => response
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| "NodeDaemon returned a non-terminal response".into()),
+        Err(error) => format!("NodeDaemon transport ended before a response: {error}"),
+    };
+    match record {
+        Some(record)
+            if record.status == RuntimeCommandStatus::Applied
+                && record.effect_certainty == RuntimeEffectCertainty::Applied =>
+        {
+            Ok((
+                serde_json::json!({
+                    "runtime_command_id": record.id,
+                    "status": record.status,
+                    "result": record.result,
+                }),
+                harness_fabric::EffectCertainty::Applied,
+            ))
+        }
+        Some(record)
+            if record.status == RuntimeCommandStatus::Failed
+                && matches!(
+                    record.effect_certainty,
+                    RuntimeEffectCertainty::None | RuntimeEffectCertainty::NotApplied
+                ) =>
+        {
+            Err(FabricError::none(
+                FabricErrorCode::InvalidPayload,
+                record.failure_code.unwrap_or(transport_detail),
+            ))
+        }
+        Some(record)
+            if record.status == RuntimeCommandStatus::RecoveryRequired
+                || record.effect_certainty == RuntimeEffectCertainty::Unknown =>
+        {
+            let mut failure = FabricError::unknown(
+                operation.id.clone(),
+                record.failure_code.unwrap_or(transport_detail),
+            );
+            failure
+                .details
+                .insert("runtime_command_id".into(), envelope.id.clone());
+            failure.details.insert(
+                "reconciliation".into(),
+                "resolve the durable target RuntimeCommand before any retry".into(),
+            );
+            Err(failure)
+        }
+        Some(record) => Err(FabricError::unknown(
+            operation.id.clone(),
+            format!(
+                "RuntimeCommand remained non-terminal ({:?}/{:?}): {transport_detail}",
+                record.status, record.effect_certainty
+            ),
+        )),
+        None => Err(FabricError::unknown(
+            operation.id.clone(),
+            format!("RuntimeCommand has no durable target admission: {transport_detail}"),
+        )),
     }
 }
 
@@ -1151,7 +1252,14 @@ fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
         let node_id = json_string(body, "node_id")?;
         let display_name = json_string(body, "display_name")?;
         let csr_pem = json_string(body, "csr_pem")?;
-        let schema_digest = json_string(body, "schema_bundle_digest")?;
+        let claimed_schema_digest = json_string(body, "schema_bundle_digest")?;
+        let schema_digest = remote_fabric_schema_bundle_digest();
+        if claimed_schema_digest != schema_digest {
+            return Err(FabricError::none(
+                FabricErrorCode::SchemaIncompatible,
+                "Node enrollment schema digest does not match the Control Plane's actual compiled schema bundle",
+            ));
+        }
         harness_fabric::pki::verify_node_csr(&csr_pem, control.company_id(), &node_id)?;
         let issued = harness_fabric::pki::issue_node_certificate(
             ca,
@@ -1294,6 +1402,52 @@ fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
         }
     }
     if method == "POST" {
+        if let Some(node_id) = path
+            .strip_prefix("/v1/fabric/nodes/")
+            .and_then(|rest| rest.strip_suffix("/certificate/rotate"))
+        {
+            reject_unknown_json_fields(
+                body,
+                &["expected_revision", "current_certificate_serial", "csr_pem"],
+            )?;
+            let actor = required_actor()?;
+            actor.require_company_and_role(control.company_id(), "company_host", now)?;
+            let expected_revision = json_u64(body, "expected_revision")?;
+            let current_certificate_serial = json_string(body, "current_certificate_serial")?;
+            let csr_pem = json_string(body, "csr_pem")?;
+            let current_gateway = state.gateway_leases.get(node_id).cloned().ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::NodeStaleGeneration,
+                    "certificate rotation requires the exact current Gateway/NodeDaemon authority",
+                )
+            })?;
+            let issued = harness_fabric::pki::issue_node_certificate(
+                ca,
+                &csr_pem,
+                control.company_id(),
+                node_id,
+                now,
+            )?;
+            let (node, certificate) = control.rotate_node_certificate_csr(
+                generation,
+                node_id,
+                current_gateway.gateway_generation,
+                &current_gateway.node_daemon_id,
+                current_gateway.node_daemon_generation,
+                &current_certificate_serial,
+                &issued.serial,
+                expected_revision,
+                &csr_pem,
+                issued.expires_at_unix_ms,
+                now,
+            )?;
+            return Ok(serde_json::json!({
+                "node":node,
+                "certificate":certificate,
+                "client_certificate_pem":issued.certificate_pem,
+                "company_ca_pem":ca.certificate_pem,
+            }));
+        }
         if let Some(node_id) = path
             .strip_prefix("/v1/fabric/nodes/")
             .and_then(|rest| rest.strip_suffix("/drain"))
@@ -1939,6 +2093,7 @@ mod tests {
         let raw_token = created["raw_token"].as_str().expect("one-time token");
         let csr =
             harness_fabric::pki::generate_node_csr("company-test", "node-a").expect("Node CSR");
+        let schema_bundle_digest = remote_fabric_schema_bundle_digest();
         let enrolled = route_host_http(
             "POST",
             "/v1/fabric/nodes/enroll",
@@ -1948,7 +2103,7 @@ mod tests {
                 "node_id":"node-a",
                 "display_name":"Node A",
                 "csr_pem":csr.csr_pem,
-                "schema_bundle_digest":"schema-test"
+                "schema_bundle_digest":schema_bundle_digest
             }),
             None,
             &control,
@@ -2006,7 +2161,7 @@ mod tests {
                 "node_id":"node-a",
                 "display_name":"Node A",
                 "csr_pem":csr.csr_pem,
-                "schema_bundle_digest":"schema-test"
+                "schema_bundle_digest":schema_bundle_digest
             }),
             None,
             &control,

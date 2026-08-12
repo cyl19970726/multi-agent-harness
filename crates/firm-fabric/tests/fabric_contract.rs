@@ -242,6 +242,57 @@ fn fabric_session(
     }
 }
 
+fn rotate_gateway_certificate(
+    control: &ControlPlane<'_, InMemoryArtifactKeyBackend>,
+    store: &FabricStore,
+    control_generation: u64,
+    welcome: &NodeWelcome,
+    node_id: &str,
+    current_serial: &str,
+    next_serial: &str,
+    now_unix_ms: u64,
+) -> NodeHello {
+    let node = store.snapshot().expect("snapshot").nodes[node_id].clone();
+    let challenge = firm_fabric::enrollment::certificate_rotation_challenge(
+        COMPANY,
+        node_id,
+        current_serial,
+        next_serial,
+        node.node_revision,
+        SCHEMA_DIGEST,
+    );
+    let key = signing_key(node_id);
+    let proof = EnrollmentProof {
+        public_key: key.verifying_key().to_bytes().to_vec(),
+        signature: key.sign(challenge.as_bytes()).to_bytes().to_vec(),
+        challenge,
+    };
+    let (_, certificate) = control
+        .rotate_node_certificate(
+            control_generation,
+            node_id,
+            welcome.gateway_generation,
+            &welcome.node_daemon_id,
+            welcome.node_daemon_generation,
+            current_serial,
+            next_serial,
+            node.node_revision,
+            &proof,
+            now_unix_ms + 600_000,
+            now_unix_ms,
+        )
+        .expect("rotate gateway certificate under current NodeDaemon authority");
+    let mut hello = hello(
+        node_id,
+        &format!("gateway-{node_id}-successor"),
+        next_serial,
+        &certificate.public_key_fingerprint,
+    );
+    hello.node_daemon_id = certificate.node_daemon_id;
+    hello.node_daemon_generation = certificate.node_daemon_generation;
+    hello
+}
+
 #[test]
 fn operation_registry_requires_closed_kind_schema_and_body_scope() {
     let mut request = operation(3, 2);
@@ -629,6 +680,9 @@ fn durable_route_replays_exactly_and_fences_stale_source_generation() {
         target.gateway_generation,
         lease.control_plane_generation,
     );
+    target_local
+        .bind_gateway_session(&target_session)
+        .expect("bind target session");
     let mut request = operation(source.gateway_generation, lease.control_plane_generation);
     request.actor = actor("body-selected-admin", &["fabric_submit", "company_host"]);
     let before_hostile = store.snapshot().expect("snapshot");
@@ -768,7 +822,7 @@ fn durable_route_replays_exactly_and_fences_stale_source_generation() {
         before_out_of_order
     );
     let (inbox, replayed) = target_local
-        .persist_inbox(&target_session, &request, &attempt)
+        .persist_inbox(&target_session, &request, &attempt, 102)
         .expect("persist local inbox");
     assert!(!replayed);
     let (_, persisted, replayed) = control
@@ -787,7 +841,7 @@ fn durable_route_replays_exactly_and_fences_stale_source_generation() {
     assert!(!replayed);
     assert_eq!(persisted.kind, ReceiptKind::TargetPersisted);
     target_local
-        .claim_inbox(&target_session, &request.id)
+        .claim_inbox(&target_session, &request, 103)
         .expect("claim before native effect");
     let (terminal_inbox, local_result, replayed) = target_local
         .record_application_result(
@@ -827,7 +881,34 @@ fn durable_route_replays_exactly_and_fences_stale_source_generation() {
     control
         .heartbeat_lease(lease.control_plane_generation, lease.revision, 29_000)
         .expect("keep Control Plane alive");
-    let successor_hello = hello("node-a", "gateway-a-2", "cert-a", &fingerprint("node-a"));
+    let successor_hello = rotate_gateway_certificate(
+        &control,
+        &store,
+        lease.control_plane_generation,
+        &source,
+        "node-a",
+        "cert-a",
+        "cert-a-successor",
+        29_500,
+    );
+    let stale_hello = hello(
+        "node-a",
+        "gateway-stale-daemon",
+        "cert-a",
+        &fingerprint("node-a"),
+    );
+    let before_stale_reconnect = store.snapshot().expect("before stale reconnect");
+    let stale_reconnect = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &stale_hello,
+        &signing_key("node-a"),
+        30_031,
+    )
+    .expect_err("expired gateway cannot self-report its predecessor NodeDaemon authority");
+    assert_eq!(stale_reconnect.code, FabricErrorCode::UnauthorizedActor);
+    assert_eq!(stale_reconnect.effect, EffectCertainty::None);
+    assert_eq!(store.snapshot().unwrap(), before_stale_reconnect);
     let successor = connect_node(
         &control,
         lease.control_plane_generation,
@@ -1053,6 +1134,9 @@ fn node_local_journal_recovers_lost_ack_without_duplicate_native_effect() {
     let source_session = fabric_session("node-a", 1, 1);
     let source =
         NodeLocalFabricStore::open(source_root.path(), COMPANY, "node-a").expect("source store");
+    source
+        .bind_gateway_session(&source_session)
+        .expect("bind source session");
     let before = source.snapshot().expect("source snapshot");
     source.fail_next_commit_for_test();
     let rejected = source
@@ -1118,6 +1202,9 @@ fn node_local_journal_recovers_lost_ack_without_duplicate_native_effect() {
     let target =
         NodeLocalFabricStore::open(target_root.path(), COMPANY, "node-b").expect("target store");
     let target_session = fabric_session("node-b", 1, 1);
+    target
+        .bind_gateway_session(&target_session)
+        .expect("bind target session");
     let attempt = RouteAttempt {
         id: "route-attempt:operation-1:1".into(),
         company_id: COMPANY.into(),
@@ -1136,17 +1223,17 @@ fn node_local_journal_recovers_lost_ack_without_duplicate_native_effect() {
         schema_version: FABRIC_SCHEMA_VERSION.into(),
     };
     target
-        .persist_inbox(&target_session, &request, &attempt)
+        .persist_inbox(&target_session, &request, &attempt, 100)
         .expect("persist target inbox");
     target
-        .claim_inbox(&target_session, &request.id)
+        .claim_inbox(&target_session, &request, 101)
         .expect("claim before native effect");
     assert_eq!(
         target.unresolved_operation_ids().expect("unresolved ids"),
         BTreeSet::from([request.id.clone()])
     );
     let duplicate_claim = target
-        .claim_inbox(&target_session, &request.id)
+        .claim_inbox(&target_session, &request, 102)
         .expect_err("duplicate claim cannot blindly repeat a native effect");
     assert_eq!(duplicate_claim.code, FabricErrorCode::RecoveryRequired);
     target.fail_after_append_for_test();
@@ -1205,6 +1292,9 @@ fn two_process_style_node_outbox_handles_share_one_atomic_journal() {
             let request = operation(1, 1);
             let session = fabric_session("node-a", 1, 1);
             let source_actor = request.actor.clone();
+            store
+                .bind_gateway_session(&session)
+                .expect("bind shared exact session");
             barrier.wait();
             store.prepare_outbox(&session, &source_actor, &request, 100)
         }));
@@ -1258,6 +1348,67 @@ fn node_local_gateway_session_queues_exact_recoverable_operation_and_fences_pred
     );
     assert_eq!(store.snapshot().expect("after stale bind"), before);
     assert_eq!(store.active_session().unwrap(), Some(session));
+}
+
+#[test]
+fn target_successor_session_fences_predecessor_before_claim_or_result_side_effects() {
+    let root = TestRoot::new("target-successor-local-fence");
+    let store = NodeLocalFabricStore::open(root.path(), COMPANY, "node-b").expect("local store");
+    let predecessor = fabric_session("node-b", 4, 3);
+    store
+        .bind_gateway_session(&predecessor)
+        .expect("bind predecessor");
+    let request = operation(2, 3);
+    let attempt = RouteAttempt {
+        id: "route-attempt:successor-fence:1".into(),
+        company_id: COMPANY.into(),
+        operation_id: request.id.clone(),
+        attempt_no: 1,
+        target_node_id: "node-b".into(),
+        target_gateway_generation: predecessor.gateway_generation,
+        control_plane_generation: predecessor.control_plane_generation,
+        route_seq: 1,
+        ordering_seq: 1,
+        state: RouteAttemptState::Queued,
+        error_code: None,
+        effect: EffectCertainty::None,
+        started_at_unix_ms: 100,
+        ended_at_unix_ms: None,
+        schema_version: FABRIC_SCHEMA_VERSION.into(),
+    };
+    store
+        .persist_inbox(&predecessor, &request, &attempt, 100)
+        .expect("predecessor persists before takeover");
+
+    let successor = fabric_session("node-b", 5, 3);
+    store
+        .bind_gateway_session(&successor)
+        .expect("bind successor");
+    let before = store.snapshot().expect("snapshot after successor bind");
+
+    for rejected in [
+        store.claim_inbox(&predecessor, &request, 101).map(|_| ()),
+        store
+            .record_application_result(
+                &predecessor,
+                &request.id,
+                "agentfirm.remote_fabric.probe_result.v1",
+                json!({"must_not_exist": true}),
+                EffectCertainty::Applied,
+                101,
+            )
+            .map(|_| ()),
+    ] {
+        let error = rejected.expect_err("predecessor must be fenced under the Store lock");
+        assert_eq!(error.code, FabricErrorCode::NodeStaleGeneration);
+        assert_eq!(error.effect, EffectCertainty::None);
+        assert_eq!(store.snapshot().expect("zero-delta snapshot"), before);
+    }
+    assert!(store.snapshot().unwrap().results.is_empty());
+    assert_eq!(
+        store.snapshot().unwrap().inboxes[&request.id].state,
+        LocalInboxState::Persisted
+    );
 }
 
 #[test]
@@ -1378,7 +1529,7 @@ fn node_local_store_rejects_foreign_and_stale_sessions_with_zero_delta() {
         fabric_session("node-b", 9, 2),
     ] {
         let error = target
-            .persist_inbox(&hostile, &request, &attempt)
+            .persist_inbox(&hostile, &request, &attempt, 100)
             .expect_err("foreign or stale target session must fail closed");
         assert!(matches!(
             error.code,
@@ -1391,7 +1542,12 @@ fn node_local_store_rejects_foreign_and_stale_sessions_with_zero_delta() {
     hostile_body.body["authority"] = json!("browser-selected-host");
     hostile_body.body_digest = json_digest(&hostile_body.body).expect("hostile body digest");
     let error = target
-        .persist_inbox(&fabric_session("node-b", 9, 3), &hostile_body, &attempt)
+        .persist_inbox(
+            &fabric_session("node-b", 9, 3),
+            &hostile_body,
+            &attempt,
+            100,
+        )
         .expect_err("target independently rejects an unregistered body shape");
     assert_eq!(error.code, FabricErrorCode::InvalidPayload);
     assert_eq!(error.effect, EffectCertainty::None);
@@ -1433,23 +1589,81 @@ fn artifact_digest_scope_encryption_and_one_use_capability_fail_closed() {
         .expect_err("upload capability is one-use");
     assert_eq!(replay.code, FabricErrorCode::CapabilityConsumed);
     let reader = actor("reader", &["artifact_read"]);
+    let first_hello = hello("node-b", "gateway-b-1", "cert-b", &fingerprint("node-b"));
+    let first_gateway = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &first_hello,
+        &signing_key("node-b"),
+        103,
+    )
+    .expect("connect first target gateway");
+    control
+        .issue_gateway_download_capability(
+            &reader,
+            lease.control_plane_generation,
+            first_gateway.gateway_generation,
+            &first_gateway.node_daemon_id,
+            first_gateway.node_daemon_generation,
+            &manifest.id,
+            "node-b",
+            104,
+        )
+        .expect("current target gateway can request exact artifact capability");
+    control
+        .heartbeat_lease(lease.control_plane_generation, lease.revision, 29_000)
+        .expect("keep Control Plane authority current");
+    let successor_hello = rotate_gateway_certificate(
+        &control,
+        &store,
+        lease.control_plane_generation,
+        &first_gateway,
+        "node-b",
+        "cert-b",
+        "cert-b-successor",
+        29_500,
+    );
+    connect_node(
+        &control,
+        lease.control_plane_generation,
+        &successor_hello,
+        &signing_key("node-b"),
+        30_104,
+    )
+    .expect("successor target gateway binds after predecessor expiry");
+    let before_stale_capability = store.snapshot().expect("snapshot");
+    let stale_capability = control
+        .issue_gateway_download_capability(
+            &reader,
+            lease.control_plane_generation,
+            first_gateway.gateway_generation,
+            &first_gateway.node_daemon_id,
+            first_gateway.node_daemon_generation,
+            &manifest.id,
+            "node-b",
+            30_105,
+        )
+        .expect_err("predecessor gateway cannot mint artifact capability");
+    assert_eq!(stale_capability.code, FabricErrorCode::NodeStaleGeneration);
+    assert_eq!(stale_capability.effect, EffectCertainty::None);
+    assert_eq!(store.snapshot().expect("snapshot"), before_stale_capability);
     let download = control
         .issue_download_capability(
             &reader,
             lease.control_plane_generation,
             &manifest.id,
             "node-b",
-            103,
+            30_106,
         )
         .expect("issue download capability");
     assert_eq!(
         control
-            .download_artifact(lease.control_plane_generation, &download, 104)
+            .download_artifact(lease.control_plane_generation, &download, 30_107)
             .expect("decrypt artifact"),
         bytes
     );
     let consumed = control
-        .download_artifact(lease.control_plane_generation, &download, 105)
+        .download_artifact(lease.control_plane_generation, &download, 30_108)
         .expect_err("download capability is one-use");
     assert_eq!(consumed.code, FabricErrorCode::CapabilityConsumed);
     let journal_bytes = std::fs::read(store.journal_path()).expect("read journal");
@@ -1470,12 +1684,17 @@ fn artifact_digest_scope_encryption_and_one_use_capability_fail_closed() {
             &sha256_hex(secret),
             ArtifactClassification::Sensitive,
             BTreeSet::from(["reader".into()]),
-            106,
+            30_109,
         )
         .expect("manifest can precede content inspection");
     let before = store.snapshot().expect("snapshot");
     let rejected = control
-        .complete_artifact(lease.control_plane_generation, &secret_upload, secret, 107)
+        .complete_artifact(
+            lease.control_plane_generation,
+            &secret_upload,
+            secret,
+            30_110,
+        )
         .expect_err("secret-like payload must fail closed");
     assert_eq!(rejected.code, FabricErrorCode::ArtifactTampered);
     assert_eq!(store.snapshot().expect("snapshot"), before);
@@ -1682,12 +1901,13 @@ fn enrollment_proof_and_certificate_rotation_are_cryptographic_and_generation_fe
     )
     .expect_err("revoked certificate cannot reconnect");
     assert_eq!(old.code, FabricErrorCode::UnauthorizedActor);
-    let rotated_hello = hello(
+    let mut rotated_hello = hello(
         "node-a",
         "gateway-a-2",
         "cert-a-rotated",
         &sha256_hex(next_key.verifying_key().to_bytes()),
     );
+    rotated_hello.node_daemon_generation = 2;
     let successor = connect_node(
         &control,
         lease.control_plane_generation,
@@ -1849,7 +2069,16 @@ fn retry_requires_a_new_target_generation_and_reconcile_never_blind_replays() {
     let cp_second = control
         .heartbeat_lease(lease.control_plane_generation, lease.revision, 29_000)
         .expect("keep Control Plane alive");
-    let successor_hello = hello("node-b", "gateway-b-2", "cert-b", &fingerprint("node-b"));
+    let successor_hello = rotate_gateway_certificate(
+        &control,
+        &store,
+        lease.control_plane_generation,
+        &target,
+        "node-b",
+        "cert-b",
+        "cert-b-successor",
+        29_500,
+    );
     let successor = connect_node(
         &control,
         lease.control_plane_generation,
@@ -1858,11 +2087,15 @@ fn retry_requires_a_new_target_generation_and_reconcile_never_blind_replays() {
         30_031,
     )
     .expect("target successor");
-    let successor_session = fabric_session(
+    let mut successor_session = fabric_session(
         "node-b",
         successor.gateway_generation,
         lease.control_plane_generation,
     );
+    successor_session.node_daemon_generation = 2;
+    target_local
+        .bind_gateway_session(&successor_session)
+        .expect("bind target successor session");
     let rebound_state = store.snapshot().expect("successor rebound snapshot");
     let auto_rebound = rebound_state
         .attempts
@@ -1899,7 +2132,7 @@ fn retry_requires_a_new_target_generation_and_reconcile_never_blind_replays() {
     assert_eq!(stale.code, FabricErrorCode::NodeStaleGeneration);
     assert_eq!(store.snapshot().expect("snapshot"), before_stale);
     target_local
-        .persist_inbox(&successor_session, &request, &second_attempt)
+        .persist_inbox(&successor_session, &request, &second_attempt, 30_034)
         .expect("successor persists local inbox");
     control
         .record_target_persisted(
@@ -1915,7 +2148,7 @@ fn retry_requires_a_new_target_generation_and_reconcile_never_blind_replays() {
         )
         .expect("successor persists inbox");
     target_local
-        .claim_inbox(&successor_session, &request.id)
+        .claim_inbox(&successor_session, &request, 30_035)
         .expect("successor claims before native effect");
     let (_, local_result, _) = target_local
         .record_application_result(
@@ -1949,7 +2182,16 @@ fn retry_requires_a_new_target_generation_and_reconcile_never_blind_replays() {
         cp_third.control_plane_generation,
         lease.control_plane_generation
     );
-    let third_hello = hello("node-b", "gateway-b-3", "cert-b", &fingerprint("node-b"));
+    let third_hello = rotate_gateway_certificate(
+        &control,
+        &store,
+        lease.control_plane_generation,
+        &successor,
+        "node-b",
+        "cert-b-successor",
+        "cert-b-third",
+        59_000,
+    );
     let third = connect_node(
         &control,
         lease.control_plane_generation,
@@ -2453,6 +2695,12 @@ fn two_outbound_gateways_route_one_operation_through_durable_target_apply() {
         .expect("Node A local Store");
     let local_b = NodeLocalFabricStore::open(root.path().join("node-b"), company, "node-b")
         .expect("Node B local Store");
+    local_a
+        .bind_gateway_session(&node_a.session)
+        .expect("bind Node A gateway session");
+    local_b
+        .bind_gateway_session(&node_b.session)
+        .expect("bind Node B gateway session");
     node_b.heartbeat().expect("empty target heartbeat");
     let empty_batch = node_b
         .apply_next(&local_b, &mut ProbeApplication)
@@ -2601,6 +2849,257 @@ fn durable_rate_limit_rejects_new_work_but_preserves_exact_replay() {
     assert!(limited.retryable);
     assert_eq!(limited.effect, EffectCertainty::None);
     assert_eq!(store.snapshot().expect("snapshot"), before);
+}
+
+#[test]
+fn offline_queue_capacity_rejects_at_count_and_over_bytes_with_zero_delta() {
+    fn bounded_control(label: &str, limits: FabricStoreLimits) -> (TestRoot, FabricStore) {
+        let root = TestRoot::new(label);
+        let store = FabricStore::open_with_limits(root.path(), limits).expect("bounded store");
+        (root, store)
+    }
+
+    for (label, limits) in [
+        (
+            "queue-count-boundary",
+            FabricStoreLimits {
+                max_queued_operations_per_node: 1,
+                ..FabricStoreLimits::default()
+            },
+        ),
+        (
+            "queue-byte-boundary",
+            FabricStoreLimits {
+                max_queued_bytes_per_node: 1,
+                ..FabricStoreLimits::default()
+            },
+        ),
+    ] {
+        let (_root, store) = bounded_control(label, limits);
+        let keys = InMemoryArtifactKeyBackend::default();
+        keys.insert(COMPANY, [7; 32]);
+        let control = ControlPlane::new(COMPANY, "control-1", &store, &keys, [9; 32]);
+        let lease = control.acquire_lease("cp-lease", 0, 1).expect("lease");
+        enroll_nodes(&control, lease.control_plane_generation);
+        let source_hello = hello("node-a", "gateway-a", "cert-a", &fingerprint("node-a"));
+        let source = connect_node(
+            &control,
+            lease.control_plane_generation,
+            &source_hello,
+            &signing_key("node-a"),
+            30,
+        )
+        .expect("source connect");
+        let target_hello = hello("node-b", "gateway-b", "cert-b", &fingerprint("node-b"));
+        connect_node(
+            &control,
+            lease.control_plane_generation,
+            &target_hello,
+            &signing_key("node-b"),
+            30,
+        )
+        .expect("target connect");
+
+        let first = operation(source.gateway_generation, lease.control_plane_generation);
+        if label == "queue-count-boundary" {
+            accept_fabric_operation(
+                &control,
+                lease.control_plane_generation,
+                source.gateway_generation,
+                first.clone(),
+                100,
+            )
+            .expect("the one allowed queue slot is accepted");
+        }
+        let before = store
+            .snapshot()
+            .expect("snapshot before capacity rejection");
+        let mut rejected_operation = first;
+        rejected_operation.id = format!("operation-{label}");
+        rejected_operation.idempotency_key = format!("idempotency-{label}");
+        let rejected = accept_fabric_operation(
+            &control,
+            lease.control_plane_generation,
+            source.gateway_generation,
+            rejected_operation,
+            101,
+        )
+        .expect_err("capacity boundary rejects without accepting partial route state");
+        assert_eq!(rejected.code, FabricErrorCode::QueueCapacity);
+        assert_eq!(rejected.effect, EffectCertainty::None);
+        assert_eq!(store.snapshot().expect("snapshot after rejection"), before);
+    }
+}
+
+#[test]
+fn expired_offline_operation_cannot_persist_or_cross_native_effect_boundary() {
+    let target_root = TestRoot::new("expired-target");
+    let target =
+        NodeLocalFabricStore::open(target_root.path(), COMPANY, "node-b").expect("target store");
+    let session = fabric_session("node-b", 1, 1);
+    target.bind_gateway_session(&session).expect("bind session");
+    let request = operation(1, 1);
+    let attempt = RouteAttempt {
+        id: "route-attempt:operation-1:1".into(),
+        company_id: COMPANY.into(),
+        operation_id: request.id.clone(),
+        attempt_no: 1,
+        target_node_id: "node-b".into(),
+        target_gateway_generation: 1,
+        control_plane_generation: 1,
+        route_seq: 1,
+        ordering_seq: 1,
+        state: RouteAttemptState::Sent,
+        error_code: None,
+        effect: EffectCertainty::None,
+        started_at_unix_ms: 100,
+        ended_at_unix_ms: None,
+        schema_version: FABRIC_SCHEMA_VERSION.into(),
+    };
+    let before = target.snapshot().expect("snapshot");
+    let expired = target
+        .persist_inbox(&session, &request, &attempt, request.expires_at_unix_ms)
+        .expect_err("expired offline work cannot be persisted on reconnect");
+    assert_eq!(expired.code, FabricErrorCode::OperationExpired);
+    assert_eq!(expired.effect, EffectCertainty::None);
+    assert_eq!(target.snapshot().expect("snapshot"), before);
+
+    target
+        .persist_inbox(&session, &request, &attempt, request.expires_at_unix_ms - 1)
+        .expect("unexpired operation can persist");
+    let persisted = target.snapshot().expect("persisted snapshot");
+    let expired_claim = target
+        .claim_inbox(&session, &request, request.expires_at_unix_ms)
+        .expect_err("expiry is rechecked before native effect");
+    assert_eq!(expired_claim.code, FabricErrorCode::OperationExpired);
+    assert_eq!(expired_claim.effect, EffectCertainty::None);
+    assert_eq!(target.snapshot().expect("snapshot"), persisted);
+}
+
+#[test]
+fn unknown_application_effect_remains_durable_recovery_required() {
+    let root = TestRoot::new("unknown-recovery-control");
+    let source_root = TestRoot::new("unknown-recovery-source");
+    let target_root = TestRoot::new("unknown-recovery-target");
+    let store = FabricStore::open(root.path()).expect("open store");
+    let keys = InMemoryArtifactKeyBackend::default();
+    keys.insert(COMPANY, [7; 32]);
+    let control = ControlPlane::new(COMPANY, "control-1", &store, &keys, [9; 32]);
+    let lease = control.acquire_lease("cp-lease", 0, 1).expect("lease");
+    enroll_nodes(&control, lease.control_plane_generation);
+    let source = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &hello("node-a", "gateway-a", "cert-a", &fingerprint("node-a")),
+        &signing_key("node-a"),
+        30,
+    )
+    .expect("source connect");
+    let target = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &hello("node-b", "gateway-b", "cert-b", &fingerprint("node-b")),
+        &signing_key("node-b"),
+        30,
+    )
+    .expect("target connect");
+    let source_session = fabric_session(
+        "node-a",
+        source.gateway_generation,
+        lease.control_plane_generation,
+    );
+    let target_session = fabric_session(
+        "node-b",
+        target.gateway_generation,
+        lease.control_plane_generation,
+    );
+    let source_local =
+        NodeLocalFabricStore::open(source_root.path(), COMPANY, "node-a").expect("source local");
+    let target_local =
+        NodeLocalFabricStore::open(target_root.path(), COMPANY, "node-b").expect("target local");
+    source_local
+        .bind_gateway_session(&source_session)
+        .expect("bind source");
+    target_local
+        .bind_gateway_session(&target_session)
+        .expect("bind target");
+    let request = operation(source.gateway_generation, lease.control_plane_generation);
+    source_local
+        .prepare_outbox(
+            &source_session,
+            &actor("fabric-client", &["fabric_submit"]),
+            &request,
+            99,
+        )
+        .expect("prepare outbox");
+    let (_, attempt, accepted, _) = accept_fabric_operation(
+        &control,
+        lease.control_plane_generation,
+        source.gateway_generation,
+        request.clone(),
+        100,
+    )
+    .expect("accept route");
+    source_local
+        .mark_outbox_receipt(&source_session, &accepted)
+        .expect("record accepted");
+    target_local
+        .persist_inbox(&target_session, &request, &attempt, 101)
+        .expect("persist target");
+    control
+        .record_target_persisted(
+            lease.control_plane_generation,
+            "node-b",
+            target.gateway_generation,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            &request.id,
+            &json_digest(&request).expect("request digest"),
+            attempt.route_seq,
+            101,
+        )
+        .expect("record target persistence");
+    target_local
+        .claim_inbox(&target_session, &request, 102)
+        .expect("claim target");
+    let (local_inbox, local_result, _) = target_local
+        .record_application_result(
+            &target_session,
+            &request.id,
+            "agentfirm.remote_fabric.probe_result.v1",
+            json!({"error":"transport outcome cannot be proven"}),
+            EffectCertainty::Unknown,
+            103,
+        )
+        .expect("persist unknown result");
+    assert_eq!(local_inbox.state, LocalInboxState::RecoveryRequired);
+    let (attempt, receipt, replayed) = control
+        .record_application_receipt(
+            lease.control_plane_generation,
+            "node-b",
+            target.gateway_generation,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
+            &request.id,
+            &local_result.result_schema,
+            local_result.result,
+            local_result.effect,
+            104,
+        )
+        .expect("Control Plane preserves unknown result");
+    assert!(!replayed);
+    assert_eq!(attempt.state, RouteAttemptState::TargetPersisted);
+    assert_eq!(attempt.ended_at_unix_ms, None);
+    assert_eq!(receipt.kind, ReceiptKind::RecoveryRequired);
+    assert_eq!(receipt.application_effect, Some(EffectCertainty::Unknown));
+    let outbox = source_local
+        .mark_outbox_receipt(&source_session, &receipt)
+        .expect("source converges to reconciliation required");
+    assert_eq!(outbox.local_state, LocalOutboxState::ReconcileRequired);
+    let diagnostics = inspect_fabric(&store, COMPANY, 105).expect("diagnostics");
+    assert!(diagnostics.nodes.iter().any(|node| {
+        node.node_id == "node-b" && node.recovery_required_operations.contains(&request.id)
+    }));
 }
 
 #[test]
@@ -2761,6 +3260,9 @@ fn draining_rejects_new_target_work_but_preserves_inflight_completion() {
         target.gateway_generation,
         lease.control_plane_generation,
     );
+    target_local
+        .bind_gateway_session(&target_session)
+        .expect("bind target session");
     let first = operation(source.gateway_generation, lease.control_plane_generation);
     let first_digest = json_digest(&first).expect("request digest");
     let (_, attempt, _, _) = accept_fabric_operation(
@@ -2801,7 +3303,7 @@ fn draining_rejects_new_target_work_but_preserves_inflight_completion() {
     assert_eq!(rejected.code, FabricErrorCode::TargetNotPlaced);
     assert_eq!(store.snapshot().expect("snapshot"), before_new);
     target_local
-        .persist_inbox(&target_session, &first, &attempt)
+        .persist_inbox(&target_session, &first, &attempt, 103)
         .expect("drain preserves local persistence");
     control
         .record_target_persisted(
@@ -2817,7 +3319,7 @@ fn draining_rejects_new_target_work_but_preserves_inflight_completion() {
         )
         .expect("drain does not corrupt inflight operation");
     target_local
-        .claim_inbox(&target_session, &first.id)
+        .claim_inbox(&target_session, &first, 104)
         .expect("claim inflight operation before native effect");
     let (_, local_result, _) = target_local
         .record_application_result(
@@ -2880,6 +3382,9 @@ fn target_persistence_rejects_unresolved_route_sequence_gaps() {
         target.gateway_generation,
         lease.control_plane_generation,
     );
+    target_local
+        .bind_gateway_session(&target_session)
+        .expect("bind target session");
     let first = operation(source.gateway_generation, lease.control_plane_generation);
     let (_, first_attempt, _, _) = accept_fabric_operation(
         &control,
@@ -2903,15 +3408,15 @@ fn target_persistence_rejects_unresolved_route_sequence_gaps() {
     assert_eq!(second_attempt.route_seq, first_attempt.route_seq + 1);
     let before = target_local.snapshot().expect("snapshot");
     let gap = target_local
-        .persist_inbox(&target_session, &second, &second_attempt)
+        .persist_inbox(&target_session, &second, &second_attempt, 102)
         .expect_err("seq=2 cannot pass unresolved seq=1");
     assert_eq!(gap.code, FabricErrorCode::ExpectedRevisionConflict);
     assert_eq!(target_local.snapshot().expect("snapshot"), before);
     target_local
-        .persist_inbox(&target_session, &first, &first_attempt)
+        .persist_inbox(&target_session, &first, &first_attempt, 102)
         .expect("persist seq=1");
     target_local
-        .persist_inbox(&target_session, &second, &second_attempt)
+        .persist_inbox(&target_session, &second, &second_attempt, 102)
         .expect("persist seq=2 after seq=1");
     assert_eq!(
         target_local
@@ -2957,6 +3462,9 @@ fn diagnostics_derive_connection_and_recovery_truth_without_mutation() {
         target.gateway_generation,
         lease.control_plane_generation,
     );
+    target_local
+        .bind_gateway_session(&target_session)
+        .expect("bind target session");
     let request = operation(source.gateway_generation, lease.control_plane_generation);
     let request_digest = json_digest(&request).expect("request digest");
     let (_, attempt, _, _) = accept_fabric_operation(
@@ -2968,7 +3476,7 @@ fn diagnostics_derive_connection_and_recovery_truth_without_mutation() {
     )
     .expect("route operation");
     target_local
-        .persist_inbox(&target_session, &request, &attempt)
+        .persist_inbox(&target_session, &request, &attempt, 101)
         .expect("persist local target inbox");
     control
         .record_target_persisted(
@@ -3048,6 +3556,12 @@ fn three_independent_store_roots_preserve_control_plane_and_node_authority() {
         target.gateway_generation,
         lease.control_plane_generation,
     );
+    source_local
+        .bind_gateway_session(&source_session)
+        .expect("bind source session");
+    target_local
+        .bind_gateway_session(&target_session)
+        .expect("bind target session");
     let request = operation(source.gateway_generation, lease.control_plane_generation);
     let request_digest = json_digest(&request).expect("request digest");
     let (source_outbox, replayed) = source_local
@@ -3081,10 +3595,10 @@ fn three_independent_store_roots_preserve_control_plane_and_node_authority() {
     )
     .expect("Control Plane accepts and journals route");
     source_local
-        .mark_outbox_receipt(&accepted)
+        .mark_outbox_receipt(&source_session, &accepted)
         .expect("source records Control Plane acceptance");
     let (target_inbox, replayed) = target_local
-        .persist_inbox(&target_session, &request, &attempt)
+        .persist_inbox(&target_session, &request, &attempt, 101)
         .expect("target local Store persists before acknowledgement");
     assert!(!replayed);
     assert_eq!(target_inbox.state, LocalInboxState::Persisted);
@@ -3102,10 +3616,10 @@ fn three_independent_store_roots_preserve_control_plane_and_node_authority() {
         )
         .expect("Control Plane records transport receipt only");
     source_local
-        .mark_outbox_receipt(&persisted)
+        .mark_outbox_receipt(&source_session, &persisted)
         .expect("source records target persistence");
     target_local
-        .claim_inbox(&target_session, &request.id)
+        .claim_inbox(&target_session, &request, 102)
         .expect("target claims before native effect");
     let (_, local_result, _) = target_local
         .record_application_result(
@@ -3132,7 +3646,7 @@ fn three_independent_store_roots_preserve_control_plane_and_node_authority() {
         )
         .expect("Control Plane records terminal receipt");
     let terminal_outbox = source_local
-        .mark_outbox_receipt(&terminal)
+        .mark_outbox_receipt(&source_session, &terminal)
         .expect("source converges terminal outbox");
     assert_eq!(terminal_outbox.local_state, LocalOutboxState::Terminal);
 
@@ -3168,7 +3682,7 @@ fn three_independent_store_roots_preserve_control_plane_and_node_authority() {
     .expect("Control Plane remains healthy when one Node Store fails");
     target_local.fail_next_commit_for_test();
     let unavailable = target_local
-        .persist_inbox(&target_session, &independent, &independent_attempt)
+        .persist_inbox(&target_session, &independent, &independent_attempt, 105)
         .expect_err("target Store failure is isolated and explicit");
     assert_eq!(unavailable.code, FabricErrorCode::StoreUnavailable);
     assert_eq!(

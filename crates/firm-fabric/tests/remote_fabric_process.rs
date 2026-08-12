@@ -21,7 +21,11 @@ const COMPANY: &str = "company-process-test";
 const NODE_A: &str = "11111111-1111-4111-8111-111111111111";
 const NODE_B: &str = "22222222-2222-4222-8222-222222222222";
 const CONTROL_INSTANCE: &str = "control-process-test";
-const SCHEMA_DIGEST: &str = "process-schema-v1";
+fn schema_digest() -> String {
+    sha256_hex(include_bytes!(
+        "../../../schemas/remote-fabric/schema-bundle.v1.json"
+    ))
+}
 
 #[test]
 #[ignore = "explicit three-process Remote Fabric acceptance"]
@@ -117,7 +121,7 @@ fn parent_acceptance() {
                 &material.csr_pem,
                 &certificate.serial,
                 certificate.expires_at_unix_ms,
-                SCHEMA_DIGEST,
+                &schema_digest(),
                 now + 2,
             )
             .expect("consume enrollment");
@@ -148,6 +152,25 @@ fn parent_acceptance() {
     let mut node_b = spawn_child(&test_binary, "node-b", &output);
     wait_for_file(&runtime.join("node-b-ready"), Duration::from_secs(10));
     let mut node_a = spawn_child(&test_binary, "node-a", &output);
+    wait_for_file(&runtime.join("node-a-ready"), Duration::from_secs(10));
+    let control_listeners = inspect_tcp_listeners(control_child.id());
+    let node_a_listeners = inspect_tcp_listeners(node_a.id());
+    let node_b_listeners = inspect_tcp_listeners(node_b.id());
+    let gateway_port = fs::read_to_string(&port_file)
+        .expect("gateway port")
+        .trim()
+        .to_string();
+    assert!(
+        control_listeners
+            .iter()
+            .any(|line| line.contains(&format!("127.0.0.1:{gateway_port}"))),
+        "Control Plane process did not own the expected loopback gateway listener: {control_listeners:?}"
+    );
+    assert!(
+        node_a_listeners.is_empty() && node_b_listeners.is_empty(),
+        "outbound-only Node processes must own no TCP listeners: node-a={node_a_listeners:?} node-b={node_b_listeners:?}"
+    );
+    write_regular(&runtime.join("listener-inspection-complete"), "continue");
     wait_success(&mut node_a, "Node A", Duration::from_secs(20));
     wait_success(&mut node_b, "Node B", Duration::from_secs(20));
     wait_success(&mut control_child, "Control Plane", Duration::from_secs(20));
@@ -185,8 +208,13 @@ fn parent_acceptance() {
     write_json(
         &output.join("port-scan.json"),
         &json!({
-            "node_inbound_collaboration_listeners":[],
-            "control_plane_gateway_listener":"outbound-node-connections-only",
+            "inspection":"lsof-process-owned-tcp-listeners",
+            "control_plane_pid":control_child.id(),
+            "control_plane_gateway_listeners":control_listeners,
+            "node_a_pid":node_a.id(),
+            "node_a_inbound_collaboration_listeners":node_a_listeners,
+            "node_b_pid":node_b.id(),
+            "node_b_inbound_collaboration_listeners":node_b_listeners,
         }),
     );
     write_json(
@@ -203,7 +231,7 @@ fn parent_acceptance() {
             "effect":"applied",
             "protocol_version":FABRIC_PROTOCOL_VERSION,
             "schema_version":FABRIC_SCHEMA_VERSION,
-            "schema_bundle_digest":SCHEMA_DIGEST,
+            "schema_bundle_digest":schema_digest(),
             "canonicalization_version":FABRIC_CANONICALIZATION_VERSION,
         }),
     );
@@ -287,11 +315,11 @@ fn node_worker(node_id: &str, target_node_id: &str, source: bool) {
         company_id: COMPANY.into(),
         node_id: node_id.into(),
         instance_id: format!("gateway-{label}"),
-        node_daemon_id: format!("daemon-{label}"),
+        node_daemon_id: format!("node-daemon:{node_id}"),
         node_daemon_generation: 1,
         protocol_min: FABRIC_PROTOCOL_VERSION,
         protocol_max: FABRIC_PROTOCOL_VERSION,
-        schema_bundle_digest: SCHEMA_DIGEST.into(),
+        schema_bundle_digest: schema_digest(),
         features: BTreeSet::from([
             "durable-routing".into(),
             "remote-runtime".into(),
@@ -329,6 +357,10 @@ fn node_worker(node_id: &str, target_node_id: &str, source: bool) {
         .unwrap();
     local.bind_gateway_session(&gateway.session).unwrap();
     write_regular(&root.join(format!("{label}-ready")), "ready");
+    wait_for_file(
+        &root.join("listener-inspection-complete"),
+        Duration::from_secs(10),
+    );
     if source {
         let body = json!({"probe":"three-process"});
         let actor = AuthenticatedActor {
@@ -451,6 +483,23 @@ fn wait_for_file(path: &Path, timeout: Duration) {
         );
         thread::sleep(Duration::from_millis(20));
     }
+}
+
+fn inspect_tcp_listeners(pid: u32) -> Vec<String> {
+    let output = Command::new("lsof")
+        .args(["-nP", "-a", "-p", &pid.to_string(), "-iTCP", "-sTCP:LISTEN"])
+        .output()
+        .expect("lsof is required for real listener acceptance evidence");
+    assert!(
+        output.status.success() || output.status.code() == Some(1),
+        "lsof listener inspection failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .skip(1)
+        .map(str::to_string)
+        .collect()
 }
 
 fn child_root() -> PathBuf {

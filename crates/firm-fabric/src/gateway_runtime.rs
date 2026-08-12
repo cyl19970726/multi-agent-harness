@@ -206,9 +206,12 @@ where
                 }
                 let mut actor = authenticated_node_actor(peer, now);
                 actor.role_bindings.insert("artifact_read".into());
-                let capability = control_plane.issue_download_capability(
+                let capability = control_plane.issue_gateway_download_capability(
                     &actor,
                     control_plane_generation,
+                    session.gateway_generation,
+                    &session.node_daemon_id,
+                    session.node_daemon_generation,
                     &request.artifact_id,
                     &session.node_id,
                     now,
@@ -502,7 +505,7 @@ impl NodeGatewayConnection {
             now_unix_ms()?,
         )?;
         let receipt = self.read_receipt()?;
-        local_store.mark_outbox_receipt(&receipt)?;
+        local_store.mark_outbox_receipt(&self.session, &receipt)?;
         Ok(receipt)
     }
 
@@ -542,7 +545,7 @@ impl NodeGatewayConnection {
                 .outboxes
                 .contains_key(&receipt.operation_id)
             {
-                local_store.mark_outbox_receipt(receipt)?;
+                local_store.mark_outbox_receipt(&self.session, receipt)?;
             }
         }
         Ok(receipts)
@@ -612,8 +615,13 @@ impl NodeGatewayConnection {
                 ))
             }
         };
-        let (inbox, _) =
-            local_store.persist_inbox(&self.session, &delivery.operation, &delivery.attempt)?;
+        let persist_now = now_unix_ms()?;
+        let (inbox, _) = local_store.persist_inbox(
+            &self.session,
+            &delivery.operation,
+            &delivery.attempt,
+            persist_now,
+        )?;
         send_payload(
             &mut self.socket,
             &self.session,
@@ -632,7 +640,7 @@ impl NodeGatewayConnection {
                 "Control Plane did not acknowledge target persistence",
             ));
         }
-        local_store.claim_inbox(&self.session, &delivery.operation.id)?;
+        local_store.claim_inbox(&self.session, &delivery.operation, now_unix_ms()?)?;
         let (result_schema, result, effect) = match application.apply(&delivery.operation) {
             Ok(result) => result,
             Err(error) => {

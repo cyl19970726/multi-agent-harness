@@ -26,7 +26,10 @@ const schemas = [
 const failures = [];
 let validCount = 0;
 let invalidCount = 0;
-const bundle = readJson(join(root, "schema-bundle.v1.json"));
+const bundlePath = join(root, "schema-bundle.v1.json");
+const bundleBytes = readFileSync(bundlePath);
+const bundle = JSON.parse(bundleBytes.toString("utf8"));
+const bundleDigest = createHash("sha256").update(bundleBytes).digest("hex");
 const checkedSchemaNames = schemas.map(([name]) => name).sort();
 if (bundle.schema_version !== "agentfirm.remote_fabric.v1" || bundle.protocol_version !== 1) {
   failures.push("schema bundle version does not match the frozen Rust contract");
@@ -245,18 +248,19 @@ if (
   processResult.submitted_revision !== reviewedRevision ||
   processResult.gateway_generations.length !== 2 ||
   processResult.operation_ids.length !== 1 ||
-  processResult.schema_bundle_digest !== "process-schema-v1" ||
+  processResult.schema_bundle_digest !== bundleDigest ||
   processResult.effect !== "applied" ||
   reconcileResult.blind_replay !== false ||
-  portScan.node_inbound_collaboration_listeners.length !== 0
+  portScan.inspection !== "lsof-process-owned-tcp-listeners" ||
+  !Array.isArray(portScan.control_plane_gateway_listeners) ||
+  portScan.control_plane_gateway_listeners.length === 0 ||
+  portScan.node_a_inbound_collaboration_listeners.length !== 0 ||
+  portScan.node_b_inbound_collaboration_listeners.length !== 0
 ) {
   console.error("three-process evidence did not prove the frozen remote-fabric journey");
   process.exit(1);
 }
 
-const bundleDigest = createHash("sha256")
-  .update(JSON.stringify(bundle))
-  .digest("hex");
 console.log(
   `remote fabric accepted: ${validCount} valid schemas, ${invalidCount} hostile schemas, bundle ${bundleDigest}, durable routing/security/recovery and three-process mTLS/WSS journey PASS; evidence ${processEvidenceRoot}`,
 );

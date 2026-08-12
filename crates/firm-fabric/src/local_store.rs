@@ -266,7 +266,7 @@ impl NodeLocalFabricStore {
         operation.validate_digest()?;
         operation.closed_body()?;
         let request_digest = canonical_digest(operation)?;
-        self.transact(|state| {
+        self.transact_session(session, |state| {
             if let Some(existing) = state.outboxes.get(&operation.id) {
                 if existing.request_digest != request_digest
                     || Some(existing.gateway_generation) != operation.source_gateway_generation
@@ -333,7 +333,7 @@ impl NodeLocalFabricStore {
             ));
         }
         let request_digest = canonical_digest(operation)?;
-        self.transact(|state| {
+        self.transact_session(session, |state| {
             let mut outbox = state.outboxes.get(&operation.id).cloned().ok_or_else(|| {
                 FabricError::none(
                     FabricErrorCode::OperationUnknown,
@@ -380,7 +380,7 @@ impl NodeLocalFabricStore {
                 "accepted FabricStore operation cannot be rebound to a successor generation",
             ));
         }
-        self.transact(|state| {
+        self.transact_session(session, |state| {
             let mut outbox = state.outboxes.get(operation_id).cloned().ok_or_else(|| {
                 FabricError::none(
                     FabricErrorCode::OperationUnknown,
@@ -422,15 +422,17 @@ impl NodeLocalFabricStore {
 
     pub fn mark_outbox_receipt(
         &self,
+        session: &FabricSessionFence,
         receipt: &RouteReceipt,
     ) -> Result<LocalRemoteOutbox, FabricError> {
+        self.require_session(session)?;
         if receipt.company_id != self.company_id {
             return Err(FabricError::none(
                 FabricErrorCode::WrongCompany,
                 "route receipt belongs to another Company",
             ));
         }
-        self.transact(|state| {
+        self.transact_session(session, |state| {
             let outbox = state
                 .outboxes
                 .get(&receipt.operation_id)
@@ -447,6 +449,10 @@ impl NodeLocalFabricStore {
                     if next.local_state != LocalOutboxState::Terminal {
                         next.local_state = LocalOutboxState::Accepted;
                     }
+                }
+                ReceiptKind::RecoveryRequired => {
+                    next.local_state = LocalOutboxState::ReconcileRequired;
+                    next.terminal_receipt_ref = None;
                 }
                 ReceiptKind::OperationApplied | ReceiptKind::OperationRejected => {
                     next.local_state = LocalOutboxState::Terminal;
@@ -465,10 +471,17 @@ impl NodeLocalFabricStore {
         session: &FabricSessionFence,
         operation: &RoutedOperation,
         attempt: &RouteAttempt,
+        now_unix_ms: u64,
     ) -> Result<(LocalRemoteInbox, bool), FabricError> {
         self.require_session(session)?;
         operation.validate_digest()?;
         operation.closed_body()?;
+        if operation.expires_at_unix_ms <= now_unix_ms {
+            return Err(FabricError::none(
+                FabricErrorCode::OperationExpired,
+                "expired routed operation cannot be persisted by the target",
+            ));
+        }
         if operation.company_id != self.company_id
             || operation.target_node_id != self.node_id
             || attempt.company_id != self.company_id
@@ -495,7 +508,7 @@ impl NodeLocalFabricStore {
         }
         let request_digest = canonical_digest(operation)?;
         let ordering_index = operation.ordering_key.clone();
-        self.transact(|state| {
+        self.transact_session(session, |state| {
             if let Some(existing) = state.inboxes.get(&operation.id) {
                 if existing.request_digest != request_digest
                     || existing.route_seq != attempt.route_seq
@@ -545,10 +558,20 @@ impl NodeLocalFabricStore {
     pub fn claim_inbox(
         &self,
         session: &FabricSessionFence,
-        operation_id: &str,
+        operation: &RoutedOperation,
+        now_unix_ms: u64,
     ) -> Result<LocalRemoteInbox, FabricError> {
         self.require_session(session)?;
-        self.transact(|state| {
+        operation.validate_digest()?;
+        operation.closed_body()?;
+        if operation.expires_at_unix_ms <= now_unix_ms {
+            return Err(FabricError::none(
+                FabricErrorCode::OperationExpired,
+                "expired routed operation cannot cross the target application boundary",
+            ));
+        }
+        let operation_id = operation.id.as_str();
+        self.transact_session(session, |state| {
             let inbox = state.inboxes.get(operation_id).cloned().ok_or_else(|| {
                 FabricError::none(
                     FabricErrorCode::OperationUnknown,
@@ -613,7 +636,7 @@ impl NodeLocalFabricStore {
     ) -> Result<(LocalRemoteInbox, LocalApplicationResult, bool), FabricError> {
         self.require_session(session)?;
         let result_digest = canonical_digest(&result)?;
-        self.transact(|state| {
+        self.transact_session(session, |state| {
             if let Some(existing) = state.results.get(operation_id) {
                 if existing.result_digest != result_digest
                     || existing.result_schema != result_schema
@@ -746,6 +769,28 @@ impl NodeLocalFabricStore {
         inner.state = next;
         inner.last_frame_digest = frame_digest;
         Ok(result)
+    }
+
+    /// Run one Node-local mutation only while the exact authenticated gateway
+    /// session is still the durable active session. The comparison occurs
+    /// after the filesystem lock is held and the latest journal state has
+    /// been reloaded, so a predecessor cannot pass an early check and mutate
+    /// after a successor has bound.
+    fn transact_session<T>(
+        &self,
+        session: &FabricSessionFence,
+        operation: impl FnOnce(&mut NodeLocalFabricState) -> Result<T, FabricError>,
+    ) -> Result<T, FabricError> {
+        self.require_session(session)?;
+        self.transact(|state| {
+            if state.active_session.as_ref() != Some(session) {
+                return Err(FabricError::none(
+                    FabricErrorCode::NodeStaleGeneration,
+                    "Node-local mutation requires the exact current active gateway session",
+                ));
+            }
+            operation(state)
+        })
     }
 
     fn require_available(&self) -> Result<(), FabricError> {

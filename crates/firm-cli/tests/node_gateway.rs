@@ -24,8 +24,8 @@ fn envelope() -> ControlCommandEnvelope {
         target_node_daemon_id: "node-daemon:node-b".into(),
         target_node_daemon_generation: 7,
         authenticated_actor: ActorRef {
-            kind: RuntimeActorKind::AgentMember,
-            id: "agent-a".into(),
+            kind: RuntimeActorKind::Service,
+            id: "node-daemon:node-b".into(),
         },
         command: RuntimeCommandKind::ResumeSession,
         required_capability: "agent_session.resume".into(),
@@ -64,8 +64,8 @@ fn operation(envelope: &ControlCommandEnvelope) -> RoutedOperation {
         target_execution_space_id: Some(envelope.execution_space_id.clone()),
         actor: AuthenticatedActor {
             company_id: "company-a".into(),
-            actor_id: envelope.authenticated_actor.id.clone(),
-            actor_kind: ActorKind::AgentMember,
+            actor_id: "node-a".into(),
+            actor_kind: ActorKind::Service,
             role_bindings: BTreeSet::from(["fabric_submit".into()]),
             session_id: "session-agent-a".into(),
             issued_at_unix_ms: 10,
