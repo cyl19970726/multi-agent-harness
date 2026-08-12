@@ -256,9 +256,9 @@ export interface OperatorViewData {
   runtime_recovery:RoleRecordSummary[]; provider_admission:RoleRecordSummary[]; workspace_safety:RoleRecordSummary[]; diagnostics:Array<{kind:string;state:string}>;
   remote_fabric:null|{
     company_id:string;node_id:string;state:"observed"|"unavailable";reason?:string;
-    gateway_session?:{gateway_generation:number;control_plane_generation:number;node_daemon_generation:number}|null;
+    gateway_session?:{company_id:string;node_id:string;gateway_generation:number;node_daemon_id:string;node_daemon_generation:number;control_plane_generation:number}|null;
     outbox_depth?:number;oldest_outbox_age_ms?:number;inbox_depth?:number;recovery_required?:string[];store_revision?:number;
-    control_plane_metrics?:null|{connection_status:string;queued_operations:number;oldest_queued_age_ms:number;gateway_lease_age_ms:number|null;reconcile_lag:number};
+    control_plane_metrics?:null|{node_id:string;administrative_status:string;connection_status:string;gateway_generation:number|null;control_plane_generation:number|null;certificate_expires_at_unix_ms:number|null;queued_operations:number;oldest_queued_age_ms:number;gateway_lease_age_ms:number|null;recovery_required_operations:string[];last_assigned_route_seq:number;last_persisted_route_seq:number;reconcile_lag:number};
   };
   runtime_fabric:RuntimeFabricSummary;
 }
