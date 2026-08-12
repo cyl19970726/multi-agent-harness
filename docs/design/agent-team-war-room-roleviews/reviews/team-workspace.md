@@ -113,6 +113,40 @@ The accepted source additionally passed:
 - visual and product P0/P1 findings reduced to zero without overwriting the
   approved expected images to make a diff pass.
 
-Because this review document is committed after the reviewed UI source, the
-final evidence recapture must name the later documentation-inclusive SHA while
-preserving `bbcf3df2` as the reviewed implementation source.
+### Exact candidate closeout — `387a2992`
+
+The final runtime candidate preserves every accepted visual correction above
+and closes the remaining product-model findings without treating the generated
+concept frames as pixel-exact assets:
+
+- responsive `Attention preview` is explicitly display ordering and the same
+  Work remains present in its canonical Open / Active / Review / Closed phase;
+- Work detail renders phase, condition and Closed-only resolution as independent
+  facts;
+- Host conversation labels consistently use the explicit Host Agent identity;
+- Member Home evidence now covers desktop, tablet, mobile and 320 px.
+
+The candidate passed the full Dashboard gate, the focused Team War Room browser
+gate at all required viewports, and the RoleView Rust tests. A clean exact-SHA
+recapture is versioned under `../implemented/`; every run waits for the complete
+`frontend 387a29922b5883dade528845f0ff2ef913754ee3` provenance string before
+capturing.
+
+Independent final reviews of that exact runtime SHA reported:
+
+- PM / product logic: PASS, P0=0, P1=0, P2=0;
+- real-user / operator usability: PASS, P0=0, P1=0, P2=1;
+- visual reviewer: `visual_fidelity=pass`, P0=0, P1=0.
+
+The non-blocking operator P2 asks for an additional deep-scroll Member Home
+capture showing the narrow-screen My Work row. Current 390 px and 320 px runs
+already assert no document overflow and show a stable identity-first first
+screen; no observed defect was waived. Additional visual refinements remain
+recorded as P2 rather than silently changing the approved expected frames:
+compact the 320 px Attention caption, remove the unused final Work-detail fact
+cell, optionally add a direct My Work jump, and continue small mobile Activity
+density and portrait-temperature refinement.
+
+Because this review and the implemented screenshots are evidence-only changes
+after the reviewed runtime source, `387a2992` remains the source-of-runtime
+authority named by the visual contract.
