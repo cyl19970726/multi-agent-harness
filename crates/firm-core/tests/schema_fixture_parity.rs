@@ -7,10 +7,10 @@
 
 use firm_core::agentfirm_api::TeamMessage;
 use firm_core::collaboration::{
-    CollaborationScope, CrossNodeDeliveryProjection, DelegationCancellationRequest,
-    DelegationDecision, ImmutableMessageTransferPayload, RemoteFactPublication, RemoteWorkRef,
-    RoutedBusinessOperation, SourceRemoteMessageTransfer, SourceWorkAttestation,
-    TargetPlacementRef, WorkDelegationV1,
+    CollaborationScope, CrossNodeDeliveryProjection, DelegationCancellationDecision,
+    DelegationCancellationRequest, DelegationDecision, DelegationInboundPolicy,
+    ImmutableMessageTransferPayload, RemoteFactPublication, RemoteWorkRef, RoutedBusinessOperation,
+    SourceRemoteMessageTransfer, SourceWorkAttestation, TargetPlacementRef, WorkDelegationV1,
 };
 use firm_core::{
     AgentTeam, AgentTeamRun, ExecutionNode, Mission, NodeDaemonLease, NodeProjectRegistration,
@@ -144,6 +144,12 @@ fn collaboration_v1_schema_fixtures_match_closed_rust_wire_contracts() {
     assert_closed_wire_fixture_contract::<DelegationDecision>(&root.join("delegation-decision"));
     assert_closed_wire_fixture_contract::<DelegationCancellationRequest>(
         &root.join("delegation-cancellation-request"),
+    );
+    assert_closed_wire_fixture_contract::<DelegationCancellationDecision>(
+        &root.join("delegation-cancellation-decision"),
+    );
+    assert_closed_wire_fixture_contract::<DelegationInboundPolicy>(
+        &root.join("delegation-inbound-policy"),
     );
     assert_closed_wire_fixture_contract::<RemoteFactPublication>(
         &root.join("remote-fact-publication"),

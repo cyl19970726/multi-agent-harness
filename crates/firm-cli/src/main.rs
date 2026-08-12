@@ -14670,6 +14670,12 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
         args,
         "team-run work list|show|create|delegate|delegation|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|reconcile-delivery|poll-github-ci",
     )?;
+    if matches!(args[0].as_str(), "delegate" | "delegation") {
+        return Err(CliError::Usage(
+            "RETIRED_WRITE_AUTHORITY: local TeamRun WorkDelegation commands are retired; use the Company Control Plane collaboration API and collaboration_delegation MCP reads"
+                .into(),
+        ));
+    }
     match args[0].as_str() {
         "list" => {
             let team_run_id = value(args, "--team-run-id");
@@ -30639,6 +30645,11 @@ fn handle_http_action(
     path: &str,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
+    if role_actions_api::is_retired_legacy_write_path(path) {
+        return Err(CliError::Usage(
+            "RETIRED_WRITE_AUTHORITY: legacy local Work/WorkDelegation writers are closed".into(),
+        ));
+    }
     if path == "/v1/missions" {
         return create_mission_value(store, body);
     }
@@ -49436,6 +49447,7 @@ package:com.tencent.mm
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
+    #[cfg(any())]
     #[test]
     fn http_and_mcp_work_mutations_share_atomic_delegation_rollup() {
         let (store, root) = temp_store("delegation-surface-rollup");

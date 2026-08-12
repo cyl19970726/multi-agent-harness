@@ -96,7 +96,7 @@ pub struct CollaborationCursor {
     pub offset: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CollaborationPage<T> {
     pub items: Vec<T>,
     pub as_of_store_sequence: u64,
@@ -672,6 +672,36 @@ impl HarnessStore {
         request_id: &str,
     ) -> StoreResult<Option<DelegationCancellationRequest>> {
         self.latest_cancellation_request_unlocked(company_id, delegation_id, request_id)
+    }
+
+    pub fn collaboration_publications(
+        &self,
+        company_id: &str,
+        delegation_id: &str,
+    ) -> StoreResult<Vec<RemoteFactPublication>> {
+        let mut latest = BTreeMap::<String, RemoteFactPublication>::new();
+        for operation in self.collaboration_operations_unlocked()? {
+            if operation.company_id != company_id
+                || operation.aggregate_kind != "remote_fact_publication"
+            {
+                continue;
+            }
+            let Ok(publication) =
+                serde_json::from_value::<RemoteFactPublication>(operation.resulting_projection)
+            else {
+                continue;
+            };
+            if publication.delegation_id != delegation_id {
+                continue;
+            }
+            if latest
+                .get(&publication.id)
+                .is_none_or(|current| publication.fact_revision > current.fact_revision)
+            {
+                latest.insert(publication.id.clone(), publication);
+            }
+        }
+        Ok(latest.into_values().collect())
     }
 
     /// Persist a server-authored proof of exact source Work authority. The

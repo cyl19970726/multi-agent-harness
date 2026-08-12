@@ -53,6 +53,8 @@ for (const token of [
   "SourceWorkAttestation",
   "WorkDelegationV1",
   "DelegationCancellationRequest",
+  "DelegationCancellationDecision",
+  "DelegationInboundPolicy",
   "RemoteFactSnapshot",
   "CrossNodeDeliveryProjection",
   "ImmutableMessageTransferPayload",

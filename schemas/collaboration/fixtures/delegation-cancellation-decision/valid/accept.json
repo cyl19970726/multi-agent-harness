@@ -1,0 +1,1 @@
+{"id":"cancel-decision-1","cancellation_request_id":"cancel-request-1","expected_request_revision":1,"decision":"accept","decided_by_target_host":{"kind":"agent_member","id":"host-b"},"native_work_event_ref":"work-event-cancelled-2","reason":"target Work quiesced","created_at":"unix-ms:2"}

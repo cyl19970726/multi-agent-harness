@@ -25,19 +25,19 @@ use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
 use crate::{
-    add_team_run_member, agentfirm_api, cancel_work_delegation_value, close_mission,
-    close_team_member_value, create_mission, create_team_run, create_work_delegation_value,
-    current_unix_ms_u64, deactivate_team_run_member, delegate_team_run_to_node_daemon,
-    format_work_brief_line, generated_id, has_actionable_delivered_manual_ack,
-    host_inbox_for_native_thread, interrupt_team_member_value, latest_member_runs_in_append_order,
-    latest_pending_interactions_in_append_order, latest_team_messages_in_append_order,
-    latest_team_run, latest_team_runs_in_append_order, mutate_team_work_value, now_string,
-    reconcile_team_work_delivery_value, rename_team_run_member, reopen_team_member_value,
-    reopened_member_requires_supervisor_start, resolve_pending_interaction_value,
-    retired_wave_write_error, revise_mission_context, serde_snake_label, steer_team_member_value,
-    team_member_specs_from_definition, team_run_board_summary_text, team_run_inbox,
-    team_run_mission_id, team_run_wave_index, transition_team_run,
-    visible_member_actions_in_append_order, work_operation_cursors, ResolvedStore, TeamMemberSpec,
+    add_team_run_member, agentfirm_api, close_mission, close_team_member_value, create_mission,
+    create_team_run, current_unix_ms_u64, deactivate_team_run_member,
+    delegate_team_run_to_node_daemon, format_work_brief_line, generated_id,
+    has_actionable_delivered_manual_ack, host_inbox_for_native_thread, interrupt_team_member_value,
+    latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
+    latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
+    mutate_team_work_value, now_string, reconcile_team_work_delivery_value, rename_team_run_member,
+    reopen_team_member_value, reopened_member_requires_supervisor_start,
+    resolve_pending_interaction_value, retired_wave_write_error, revise_mission_context,
+    serde_snake_label, steer_team_member_value, team_member_specs_from_definition,
+    team_run_board_summary_text, team_run_inbox, team_run_mission_id, team_run_wave_index,
+    transition_team_run, visible_member_actions_in_append_order, work_operation_cursors,
+    ResolvedStore, TeamMemberSpec,
 };
 
 /// MCP protocol revision this server speaks, echoed verbatim in `initialize`
@@ -195,10 +195,8 @@ pub(crate) fn call_tool(
         "team_run_work_reconcile_delivery" => {
             tool_team_run_work_reconcile_delivery(store, &arguments)
         }
-        "work_delegation_create" => tool_work_delegation_create(store, &arguments),
-        "work_delegation_list" => tool_work_delegation_list(store, &arguments),
-        "work_delegation_show" => tool_work_delegation_show(store, &arguments),
-        "work_delegation_cancel" => tool_work_delegation_cancel(store, &arguments),
+        "collaboration_delegation_list" => tool_collaboration_delegation_list(&arguments),
+        "collaboration_delegation_show" => tool_collaboration_delegation_show(&arguments),
         "execution_node_list" => tool_execution_node_list(store, &arguments),
         "execution_node_show" => tool_execution_node_show(store, &arguments),
         "remote_fabric_status" => tool_remote_fabric_status(resolved, &arguments),
@@ -699,97 +697,72 @@ fn tool_team_run_work_reconcile_delivery(
         .map_err(|error| error.to_string())
 }
 
-fn tool_work_delegation_create(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+fn collaboration_store(company_id: &str) -> Result<HarnessStore, String> {
+    let firm_home = crate::execution_space::firm_home().map_err(|error| error.to_string())?;
+    let layout = harness_store::remote_fabric_store::RemoteFabricStoreLayout::open(&firm_home)
+        .map_err(|error| error.to_string())?;
+    let root = layout
+        .collaboration_root(company_id)
+        .map_err(|error| error.to_string())?;
+    Ok(HarnessStore::new(root))
+}
+
+fn tool_collaboration_delegation_list(arguments: &Value) -> Result<Value, String> {
     const ALLOWED: &[&str] = &[
-        "source_team_run_id",
-        "source_work_id",
-        "expected_version",
-        "target_agent_team_id",
-        "target_title",
-        "target_context_markdown",
-        "target_completion_criteria_markdown",
-        "target_priority",
-        "target_eligible_member_ids",
-        "target_work_id",
-        "delegation_id",
-        "gates",
-        "event_id",
-        "actor_id",
-        "actor_name",
-        "caused_by_message_id",
-        "idempotency_key",
-        "duplicate_ok",
+        "company_id",
+        "source_team_id",
+        "target_team_id",
+        "node_id",
+        "state",
+        "limit",
     ];
-    reject_unknown_arguments(arguments, "work_delegation_create", ALLOWED)?;
-    create_work_delegation_value(store, arguments).map_err(|error| error.to_string())
+    reject_unknown_arguments(arguments, "collaboration_delegation_list", ALLOWED)?;
+    let company_id = required_non_empty_str(arguments, "company_id")?;
+    let state = optional_non_empty_str(arguments, "state")?
+        .map(|value| serde_json::from_value(json!(value)).map_err(|error| error.to_string()))
+        .transpose()?;
+    let store = collaboration_store(company_id)?;
+    let page = store
+        .list_collaboration_delegations(
+            company_id,
+            &harness_store::CollaborationDelegationFilter {
+                source_team_id: optional_non_empty_str(arguments, "source_team_id")?,
+                target_team_id: optional_non_empty_str(arguments, "target_team_id")?,
+                node_id: optional_non_empty_str(arguments, "node_id")?,
+                state,
+            },
+            None,
+            arguments
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(100) as usize,
+        )
+        .map_err(|error| error.to_string())?;
+    serde_json::to_value(page).map_err(|error| error.to_string())
 }
 
-fn tool_work_delegation_list(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    const ALLOWED: &[&str] = &["source_work_id", "target_agent_team_id", "state"];
-    reject_unknown_arguments(arguments, "work_delegation_list", ALLOWED)?;
-    let source_work_id = optional_str(arguments, "source_work_id")?;
-    let target_team_id = optional_str(arguments, "target_agent_team_id")?;
-    let state = optional_str(arguments, "state")?;
-    let delegations = store
-        .latest_work_delegations()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .filter(|delegation| {
-            source_work_id
-                .as_deref()
-                .is_none_or(|id| delegation.source_work_ref.work_id == id)
-        })
-        .filter(|delegation| {
-            target_team_id
-                .as_deref()
-                .is_none_or(|id| delegation.target_agent_team_id == id)
-        })
-        .filter(|delegation| {
-            state
-                .as_deref()
-                .is_none_or(|expected| serde_snake_label(&delegation.state) == expected)
-        })
-        .collect::<Vec<_>>();
-    Ok(json!({"delegations": delegations}))
-}
-
-fn tool_work_delegation_show(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    reject_unknown_arguments(arguments, "work_delegation_show", &["delegation_id"])?;
-    let id = required_non_empty_str(arguments, "delegation_id")?;
-    let delegation = store
-        .latest_work_delegations()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .find(|delegation| delegation.id == id)
-        .ok_or_else(|| format!("Delegation not found: {id}"))?;
-    let events = store
-        .work_delegation_events()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .filter(|event| event.delegation_id == id)
-        .collect::<Vec<_>>();
-    Ok(json!({"delegation": delegation, "events": events}))
-}
-
-fn tool_work_delegation_cancel(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    const ALLOWED: &[&str] = &[
-        "delegation_id",
-        "expected_version",
-        "reason",
-        "event_id",
-        "actor_id",
-        "actor_name",
-        "caused_by_message_id",
-        "idempotency_key",
-        "duplicate_ok",
-    ];
-    reject_unknown_arguments(arguments, "work_delegation_cancel", ALLOWED)?;
-    cancel_work_delegation_value(
-        store,
-        required_non_empty_str(arguments, "delegation_id")?,
+fn tool_collaboration_delegation_show(arguments: &Value) -> Result<Value, String> {
+    reject_unknown_arguments(
         arguments,
-    )
-    .map_err(|error| error.to_string())
+        "collaboration_delegation_show",
+        &["company_id", "delegation_id"],
+    )?;
+    let company_id = required_non_empty_str(arguments, "company_id")?;
+    let delegation_id = required_non_empty_str(arguments, "delegation_id")?;
+    let store = collaboration_store(company_id)?;
+    let delegation = store
+        .collaboration_delegation(company_id, delegation_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("collaboration Delegation not found: {delegation_id}"))?;
+    Ok(json!({
+        "delegation": delegation,
+        "cancellation_requests": store
+            .collaboration_cancellation_requests(company_id, delegation_id)
+            .map_err(|error| error.to_string())?,
+        "publications": store
+            .collaboration_publications(company_id, delegation_id)
+            .map_err(|error| error.to_string())?,
+    }))
 }
 
 fn tool_execution_node_list(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
@@ -1688,48 +1661,14 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "work_delegation_create",
-            "description": "Atomically create a cross-Team WorkDelegation and one root Work in the target Team's sole active TeamRun. The source owner retains integration responsibility.",
-            "inputSchema": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "source_team_run_id": {"type": "string", "minLength": 1},
-                    "source_work_id": {"type": "string", "minLength": 1},
-                    "expected_version": {"type": "integer", "minimum": 1},
-                    "target_agent_team_id": {"type": "string", "minLength": 1},
-                    "target_title": {"type": "string", "minLength": 1},
-                    "target_context_markdown": {"type": "string"},
-                    "target_completion_criteria_markdown": {"type": "string", "minLength": 1},
-                    "target_priority": {"type": "string", "enum": ["low", "normal", "high", "urgent"]},
-                    "target_eligible_member_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
-                    "target_work_id": {"type": "string", "minLength": 1},
-                    "delegation_id": {"type": "string", "minLength": 1},
-                    "gates": {"type": "array", "items": {"type": "object"}},
-                    "event_id": {"type": "string", "minLength": 1},
-                    "actor_id": {"type": "string", "minLength": 1},
-                    "actor_name": {"type": "string", "minLength": 1},
-                    "caused_by_message_id": {"type": "string", "minLength": 1},
-                    "idempotency_key": {"type": "string", "minLength": 1},
-                    "duplicate_ok": {"type": "boolean"}
-                },
-                "required": ["source_team_run_id", "source_work_id", "expected_version", "target_agent_team_id", "target_title", "target_completion_criteria_markdown"]
-            }
+            "name": "collaboration_delegation_list",
+            "description": "Read the Company Control Plane's canonical cross-Team Delegations. This tool never folds an Execution Space's retired local WorkDelegation ledger.",
+            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"company_id": {"type": "string", "minLength": 1}, "source_team_id": {"type": "string", "minLength": 1}, "target_team_id": {"type": "string", "minLength": 1}, "node_id": {"type": "string", "minLength": 1}, "state": {"type": "string", "enum": ["proposed", "awaiting_target_decision", "provisioning_target_work", "active", "result_available", "cancellation_requested", "terminal"]}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, "required": ["company_id"]}
         },
         {
-            "name": "work_delegation_list",
-            "description": "List current cross-Team WorkDelegations, optionally filtered by source Work, target AgentTeam, or state.",
-            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"source_work_id": {"type": "string", "minLength": 1}, "target_agent_team_id": {"type": "string", "minLength": 1}, "state": {"type": "string", "enum": ["active", "blocked", "completed", "failed", "cancelled"]}}}
-        },
-        {
-            "name": "work_delegation_show",
-            "description": "Show one WorkDelegation with its append-only transition events.",
-            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"delegation_id": {"type": "string", "minLength": 1}}, "required": ["delegation_id"]}
-        },
-        {
-            "name": "work_delegation_cancel",
-            "description": "Cancel one active or blocked WorkDelegation with optimistic version fencing; the target Work remains independently auditable.",
-            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"delegation_id": {"type": "string", "minLength": 1}, "expected_version": {"type": "integer", "minimum": 1}, "reason": {"type": "string", "minLength": 1}, "event_id": {"type": "string", "minLength": 1}, "actor_id": {"type": "string", "minLength": 1}, "actor_name": {"type": "string", "minLength": 1}, "caused_by_message_id": {"type": "string", "minLength": 1}, "idempotency_key": {"type": "string", "minLength": 1}, "duplicate_ok": {"type": "boolean"}}, "required": ["delegation_id", "expected_version", "reason"]}
+            "name": "collaboration_delegation_show",
+            "description": "Read one canonical Company WorkDelegation with its cancellation requests and immutable remote publications.",
+            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"company_id": {"type": "string", "minLength": 1}, "delegation_id": {"type": "string", "minLength": 1}}, "required": ["company_id", "delegation_id"]}
         },
         {
             "name": "execution_node_list",
