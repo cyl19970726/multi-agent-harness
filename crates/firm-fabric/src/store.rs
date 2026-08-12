@@ -88,6 +88,25 @@ struct JournalFrame {
     frame_digest: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FabricCheckpointCore {
+    schema_version: String,
+    journal_offset: u64,
+    journal_prefix_digest: String,
+    transaction_sequence: u64,
+    last_frame_digest: String,
+    state: FabricState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FabricCheckpoint {
+    #[serde(flatten)]
+    core: FabricCheckpointCore,
+    checkpoint_digest: String,
+}
+
 struct StoreInner {
     state: FabricState,
     last_frame_digest: String,
@@ -96,6 +115,7 @@ struct StoreInner {
 pub struct FabricStore {
     root: PathBuf,
     journal: PathBuf,
+    checkpoint: PathBuf,
     lock_path: PathBuf,
     inner: Mutex<StoreInner>,
     limits: FabricStoreLimits,
@@ -127,10 +147,12 @@ impl FabricStore {
         }
         let canonical_root = fs::canonicalize(&root).map_err(store_error)?;
         let journal = canonical_root.join("fabric-transactions.jsonl");
+        let checkpoint = canonical_root.join("fabric-checkpoint.json");
         let lock_path = canonical_root.join("fabric.lock");
         let lock = open_lock(&lock_path)?;
         lock.lock_exclusive().map_err(store_error)?;
-        let (state, last_frame_digest, valid_length) = load_journal(&journal)?;
+        let (state, last_frame_digest, valid_length) =
+            load_journal_from_checkpoint(&journal, &checkpoint)?;
         if journal
             .metadata()
             .map(|metadata| metadata.len())
@@ -144,9 +166,17 @@ impl FabricStore {
             file.set_len(valid_length).map_err(store_error)?;
             file.sync_all().map_err(store_error)?;
         }
+        let _ = write_checkpoint(
+            &checkpoint,
+            &journal,
+            &state,
+            &last_frame_digest,
+            valid_length,
+        );
         Ok(Self {
             root: canonical_root,
             journal,
+            checkpoint,
             lock_path,
             inner: Mutex::new(StoreInner {
                 state,
@@ -175,7 +205,15 @@ impl FabricStore {
         self.require_available()?;
         let lock = open_lock(&self.lock_path)?;
         lock.lock_exclusive().map_err(store_error)?;
-        let (state, last_frame_digest, _) = load_journal(&self.journal)?;
+        let (state, last_frame_digest, valid_length) =
+            load_journal_from_checkpoint(&self.journal, &self.checkpoint)?;
+        let _ = write_checkpoint(
+            &self.checkpoint,
+            &self.journal,
+            &state,
+            &last_frame_digest,
+            valid_length,
+        );
         let mut inner = self.inner.lock().map_err(|_| {
             FabricError::none(
                 FabricErrorCode::StoreUnavailable,
@@ -357,7 +395,8 @@ impl FabricStore {
                 "FabricStore lock poisoned",
             )
         })?;
-        let (durable_state, durable_digest, _) = load_journal(&self.journal)?;
+        let (durable_state, durable_digest, _) =
+            load_journal_from_checkpoint(&self.journal, &self.checkpoint)?;
         inner.state = durable_state;
         inner.last_frame_digest = durable_digest;
         let mut next = inner.state.clone();
@@ -391,6 +430,14 @@ impl FabricStore {
         }
         inner.state = next;
         inner.last_frame_digest = frame_digest;
+        let journal_length = self.journal.metadata().map_err(store_error)?.len();
+        let _ = write_checkpoint(
+            &self.checkpoint,
+            &self.journal,
+            &inner.state,
+            &inner.last_frame_digest,
+            journal_length,
+        );
         Ok(result)
     }
 
@@ -448,21 +495,142 @@ fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), FabricError> {
     file.sync_all().map_err(store_error)
 }
 
-fn load_journal(path: &Path) -> Result<(FabricState, String, u64), FabricError> {
+fn load_journal_from_checkpoint(
+    journal: &Path,
+    checkpoint: &Path,
+) -> Result<(FabricState, String, u64), FabricError> {
+    let bytes = read_journal(journal)?;
+    if let Some(checkpoint) = read_checkpoint(checkpoint)? {
+        let offset = checkpoint.core.journal_offset as usize;
+        let checkpoint_valid = checkpoint.core.schema_version == FABRIC_SCHEMA_VERSION
+            && checkpoint.checkpoint_digest == canonical_digest(&checkpoint.core)?
+            && offset <= bytes.len()
+            && (offset == 0 || bytes.get(offset.saturating_sub(1)) == Some(&b'\n'))
+            && sha256_hex(&bytes[..offset]) == checkpoint.core.journal_prefix_digest
+            && checkpoint.core.state.revision == checkpoint.core.transaction_sequence
+            && ((checkpoint.core.transaction_sequence == 0
+                && checkpoint.core.last_frame_digest.is_empty())
+                || (checkpoint.core.transaction_sequence > 0
+                    && !checkpoint.core.last_frame_digest.is_empty()));
+        if checkpoint_valid {
+            return parse_journal(
+                &bytes,
+                offset,
+                checkpoint.core.state,
+                checkpoint.core.last_frame_digest,
+                checkpoint.core.transaction_sequence.saturating_add(1),
+            );
+        }
+    }
+    parse_journal(&bytes, 0, FabricState::default(), String::new(), 1)
+}
+
+fn read_checkpoint(path: &Path) -> Result<Option<FabricCheckpoint>, FabricError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "FabricStore checkpoint must be a regular non-symlink file",
+            ))
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(store_error(error)),
+    }
+    let bytes = fs::read(path).map_err(store_error)?;
+    Ok(serde_json::from_slice(&bytes).ok())
+}
+
+fn write_checkpoint(
+    checkpoint: &Path,
+    journal: &Path,
+    state: &FabricState,
+    last_frame_digest: &str,
+    journal_offset: u64,
+) -> Result<(), FabricError> {
+    if let Ok(metadata) = fs::symlink_metadata(checkpoint) {
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "FabricStore checkpoint must be a regular non-symlink file",
+            ));
+        }
+    }
+    let bytes = read_journal(journal)?;
+    let offset = usize::try_from(journal_offset).map_err(|_| {
+        FabricError::none(
+            FabricErrorCode::StoreUnavailable,
+            "FabricStore checkpoint offset exceeds this platform",
+        )
+    })?;
+    if offset > bytes.len() || (offset > 0 && bytes[offset - 1] != b'\n') {
+        return Err(FabricError::none(
+            FabricErrorCode::StoreUnavailable,
+            "FabricStore checkpoint does not end at a durable frame boundary",
+        ));
+    }
+    let core = FabricCheckpointCore {
+        schema_version: FABRIC_SCHEMA_VERSION.into(),
+        journal_offset,
+        journal_prefix_digest: sha256_hex(&bytes[..offset]),
+        transaction_sequence: state.revision,
+        last_frame_digest: last_frame_digest.into(),
+        state: state.clone(),
+    };
+    let record = FabricCheckpoint {
+        checkpoint_digest: canonical_digest(&core)?,
+        core,
+    };
+    let encoded = serde_json::to_vec(&record).map_err(|error| {
+        FabricError::none(
+            FabricErrorCode::StoreUnavailable,
+            format!("failed to encode FabricStore checkpoint: {error}"),
+        )
+    })?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "system clock is before UNIX epoch",
+            )
+        })?
+        .as_nanos();
+    let temp = checkpoint.with_extension(format!("tmp-{}-{nonce}", std::process::id()));
+    write_new_synced(&temp, &encoded)?;
+    fs::rename(&temp, checkpoint).map_err(store_error)?;
+    if let Some(parent) = checkpoint.parent() {
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(store_error)?;
+    }
+    Ok(())
+}
+
+fn read_journal(path: &Path) -> Result<Vec<u8>, FabricError> {
     let mut bytes = Vec::new();
     match File::open(path) {
         Ok(mut file) => {
             file.read_to_end(&mut bytes).map_err(store_error)?;
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((FabricState::default(), String::new(), 0));
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(store_error(error)),
     }
-    let mut state = FabricState::default();
-    let mut expected_previous = String::new();
-    let mut expected_sequence = 1u64;
-    let mut offset = 0usize;
+    Ok(bytes)
+}
+
+fn load_journal(path: &Path) -> Result<(FabricState, String, u64), FabricError> {
+    let bytes = read_journal(path)?;
+    parse_journal(&bytes, 0, FabricState::default(), String::new(), 1)
+}
+
+fn parse_journal(
+    bytes: &[u8],
+    mut offset: usize,
+    mut state: FabricState,
+    mut expected_previous: String,
+    mut expected_sequence: u64,
+) -> Result<(FabricState, String, u64), FabricError> {
     while offset < bytes.len() {
         let Some(relative_end) = bytes[offset..].iter().position(|byte| *byte == b'\n') else {
             // A crash may leave one torn final append. It was never ACKed and
