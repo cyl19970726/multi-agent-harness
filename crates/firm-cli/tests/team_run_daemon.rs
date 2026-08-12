@@ -413,6 +413,79 @@ fn team_run_start_delegates_to_node_daemon_and_is_idempotent() {
 }
 
 #[test]
+fn node_daemon_honors_exact_project_scoped_provider_admission() {
+    let home = TempHome::new("node-daemon-provider-admission-scope");
+    let fixture = bootstrap_runtime(&home, "project");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let kimi_bin = fake_bin.join("kimi").display().to_string();
+    let provider_env = [
+        ("PATH", fake_path.as_str()),
+        ("KIMI_CODE_BIN", kimi_bin.as_str()),
+        ("FAKE_KIMI_VERSION", "0.31.2"),
+        ("FAKE_KIMI_WAIT", "1"),
+    ];
+    let run_id = create_run(&home, &fixture, "admitted-worker", &provider_env);
+
+    let admission = run_firm_with_env(
+        &home,
+        &fixture.project_root,
+        &[
+            "--space",
+            &fixture.execution_space_id,
+            "--project",
+            &fixture.project_id,
+            "provider",
+            "admit",
+            "--provider",
+            "kimi",
+            "--execution-mode",
+            "kimi_acp",
+            "--provider-version",
+            "0.31.2",
+            "--adapter-contract-version",
+            "kimi-acp-v1",
+            "--evidence",
+            "test:exact-project-admission",
+        ],
+        &provider_env,
+    );
+    success(&admission, "provider admission");
+
+    let socket = node_daemon_socket_path(&home, &fixture.node_id);
+    let mut daemon = spawn_daemon(&home, &fixture, &provider_env);
+    wait_for_socket(&mut daemon, &socket);
+
+    let started = run_firm_with_env(
+        &home,
+        &fixture.project_root,
+        &[
+            "--space",
+            &fixture.execution_space_id,
+            "--project",
+            &fixture.project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+        ],
+        &provider_env,
+    );
+    success(
+        &started,
+        "NodeDaemon must resolve the TeamRun Project Binding before provider preflight",
+    );
+    let status = wait_for_run(&socket, &fixture.execution_space_id, &run_id);
+    assert_eq!(status["runs"][0]["project_binding_id"], fixture.project_id);
+
+    stop_daemon(&home, &fixture, &mut daemon, &socket);
+}
+
+#[test]
 fn public_team_run_start_cannot_use_test_idle_env_to_bypass_node_daemon() {
     let home = TempHome::new("node-daemon-no-test-bypass");
     let fixture = bootstrap_runtime(&home, "project");

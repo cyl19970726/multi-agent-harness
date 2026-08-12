@@ -484,6 +484,18 @@ impl MultiTeamDaemon {
         store: HarnessStore,
         run_id: &str,
     ) -> CliResult<()> {
+        // Provider admissions are scoped to the exact Project Binding and
+        // physical Execution Space.  The machine daemon opens stores from the
+        // space registry rather than through CLI resolution, so recover that
+        // scope from the canonical TeamRun before provider preflight.  Without
+        // this, an admission written through the public CLI is invisible to
+        // the daemon and every review-required provider is rejected even
+        // though the exact tuple was admitted.
+        let run_scope = crate::latest_team_run(&store, run_id)?;
+        let store = store.with_provider_compatibility_scope(
+            run_scope.project_binding_id,
+            format!("execution-space:{}", space.id),
+        );
         self.ensure_node_authority(&space, &store)?;
         // P0-2 fix: enforce concurrent team-run limit.
         {
