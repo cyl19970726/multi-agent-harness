@@ -171,7 +171,7 @@ export function MemberWorkbench({
                       title="Eligible ready pool"
                       detail="Claimable Work projected by server authority; eligibility is not ownership."
                     />
-                    <WorkTable items={view.data.eligible_ready_pool} />
+                    {view.data.eligible_ready_pool.length > 0 ? <WorkTable items={view.data.eligible_ready_pool} /> : <div className="mt-3 border-y border-dashed border-border py-4 text-xs text-muted-foreground">No eligible Work is currently projected. Eligibility remains server-authored and does not imply ownership.</div>}
                   </section>
                 </div>
                 <aside className="space-y-6">
