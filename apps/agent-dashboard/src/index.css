@@ -304,6 +304,19 @@
     background: rgb(250 247 242 / 0.54);
   }
 
+  .agent-event-icon {
+    display: grid;
+    width: 1.35rem;
+    height: 1.35rem;
+    flex: none;
+    place-items: center;
+    border-radius: 0.35rem;
+  }
+  .agent-event-icon--tool { background: #f0effb; color: #7167bc; }
+  .agent-event-icon--fact { background: #eef4fb; color: #5d7fa8; }
+  .agent-event-icon--result { background: #edf8f1; color: #3f9168; }
+  .agent-event-icon--error { background: #fbefec; color: #b45d4c; }
+
   .agent-message-row,
   .agent-work-row {
     transition: background-color 120ms ease, padding-inline 120ms ease;
