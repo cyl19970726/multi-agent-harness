@@ -106,14 +106,14 @@ marketing UI.
 
 | Purpose | Token target | Use |
 | --- | --- | --- |
-| Page paper | `#FBFAF8` | primary canvas |
-| Recessed canvas | `#F7F5F2` | lanes, navigation groups, filter bars |
-| Card | `#FFFEFC` / white | interactive records and focused facts |
-| Hairline | `#E7E2DC` | structural boundaries |
-| Primary ink | `#242220` | headings and decisive facts |
+| Page paper | `#FEFEFD` | primary canvas |
+| Recessed canvas | `#FAF9F7` | lanes and navigation groups |
+| Card | `#FFFFFF` | interactive records and focused facts |
+| Hairline | `#EAE7E3` | structural boundaries |
+| Primary ink | `#292725` | headings and decisive facts |
 | Secondary ink | `#77726D` | labels, timestamps, provenance |
-| Coral | `#FF3B57` | active navigation, primary Host action, unread |
-| Coral wash | `#FFF0F2` | selected Agent/Work and protected context |
+| Peach coral | `#FC7B5C` | active navigation, primary Host action, unread |
+| Peach wash | `#FFF3EF` | selected Agent/Work and protected context |
 | Green | `#2F9D62` | ready, available, accepted, healthy |
 | Amber | `#D88915` | review, waiting, on-hold, attention |
 | Red | `#E6494F` | blocked, failed, destructive control |

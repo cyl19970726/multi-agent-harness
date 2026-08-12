@@ -12,16 +12,16 @@ const capacityFacts = (summary: TeamPressureSummary) => [
 ] as const;
 
 /** Renders the server-built pressure projection without recalculating Team state. */
-export function TeamCapacityStrip({ summary, className }: { summary: TeamPressureSummary; className?: string }) {
+export function TeamCapacityStrip({ summary, className, compact = false }: { summary: TeamPressureSummary; className?: string; compact?: boolean }) {
   return (
-    <section aria-label="Team capacity and pressure" data-testid="team-capacity-strip" className={cn("grid grid-cols-4 gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-5", className)}>
+    <section aria-label="Team capacity and pressure" data-testid="team-capacity-strip" className={cn("grid grid-cols-4 sm:grid-cols-5", !compact && "divide-x divide-border border-y border-border", className)}>
       {capacityFacts(summary).map((fact) => {
         const Icon = fact.icon;
         const pressured = (fact.id === "blocked" || fact.id === "needs-review") && fact.value > 0;
         return (
-          <div key={fact.id} data-capacity-tile={fact.id} className={cn("min-w-0 bg-card px-1.5 py-2 sm:px-3 sm:py-2.5",fact.id === "ready-members" && "hidden sm:block")}>
-            <span className="flex items-center justify-center gap-1 text-[8px] font-semibold uppercase tracking-[.06em] text-muted-foreground sm:justify-start sm:gap-1.5 sm:text-[10px] sm:tracking-[.11em]"><Icon className={cn("size-3 shrink-0 sm:size-3.5", pressured && "text-status-warn")} /><span className="sm:hidden">{fact.mobileLabel}</span><span className="hidden sm:inline">{fact.label}</span></span>
-            <div className="mt-0.5 flex items-baseline justify-center gap-1 sm:mt-1 sm:justify-start"><strong className={cn("text-base font-semibold tabular-nums sm:text-xl", pressured && "text-status-warn")}>{fact.value}</strong>{"total" in fact && <span className="text-[9px] text-muted-foreground">of {fact.total}</span>}</div>
+          <div key={fact.id} data-capacity-tile={fact.id} className={cn("min-w-0", compact ? "py-1" : "px-1.5 py-2.5 sm:px-3 sm:py-3",fact.id === "ready-members" && "hidden sm:block")}>
+            <span className={cn("flex items-center gap-1 font-semibold uppercase text-muted-foreground", compact ? "justify-start text-[9px] tracking-[.08em]" : "justify-center text-[8px] tracking-[.06em] sm:justify-start sm:gap-1.5 sm:text-[10px] sm:tracking-[.11em]")}><Icon className={cn("size-3 shrink-0", !compact && "sm:size-3.5", pressured && "text-status-warn")} /><span className="sm:hidden">{fact.mobileLabel}</span><span className="hidden sm:inline">{fact.label}</span></span>
+            <div className={cn("flex items-baseline gap-1", compact ? "mt-1 justify-start" : "mt-0.5 justify-center sm:mt-1 sm:justify-start")}><strong className={cn(compact ? "text-xs" : "text-base sm:text-xl", "font-semibold tabular-nums", pressured && "text-status-warn")}>{fact.value}</strong>{"total" in fact && <span className="text-[9px] text-muted-foreground">of {fact.total}</span>}</div>
           </div>
         );
       })}

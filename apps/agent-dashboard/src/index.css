@@ -5,47 +5,48 @@
      restrained semantic state. These classes intentionally stay page-local so
      the Company OS surfaces can evolve independently. */
   .agent-team-surface {
-    --background: #fbfaf8;
-    --foreground: #242220;
-    --card: #fffefc;
-    --card-foreground: #242220;
-    --secondary: #f7f5f2;
-    --secondary-foreground: #35312e;
-    --muted: #f4f1ed;
+    --background: #fefefd;
+    --foreground: #292725;
+    --card: #ffffff;
+    --card-foreground: #292725;
+    --secondary: #faf9f7;
+    --secondary-foreground: #373330;
+    --muted: #f7f5f2;
     --muted-foreground: #77726d;
-    --accent: #fff0f2;
-    --accent-foreground: #2a2523;
-    --primary: #ff3b57;
+    --accent: #fff3ef;
+    --accent-foreground: #312824;
+    --primary: #fc7b5c;
     --primary-foreground: #fff;
-    --border: #e7e2dc;
-    --input: #ded8d1;
-    --ring: #ff3b57;
+    --border: #eae7e3;
+    --input: #ddd9d4;
+    --ring: #fc7b5c;
     --status-running: #3f82d1;
     --status-good: #2f9d62;
     --status-warn: #d88915;
     --status-bad: #e6494f;
     background:
-      radial-gradient(circle at 42% -15%, rgb(255 255 255 / 0.92), transparent 34rem),
+      radial-gradient(circle at 40% -18%, rgb(252 123 92 / 0.035), transparent 38rem),
       var(--background);
+    -webkit-font-smoothing: antialiased;
   }
 
   .agent-team-panel {
     border: 1px solid var(--border);
-    background: color-mix(in srgb, var(--card) 96%, transparent);
-    box-shadow: 0 1px 1px rgb(64 48 34 / 0.025);
+    background: color-mix(in srgb, var(--card) 98%, transparent);
+    box-shadow: 0 1px 2px rgb(48 38 32 / 0.025);
     transition: background-color 140ms ease, border-color 140ms ease,
       box-shadow 140ms ease, transform 140ms cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   .agent-team-recessed {
     border: 1px solid var(--border);
-    background: color-mix(in srgb, var(--secondary) 72%, var(--card));
+    background: color-mix(in srgb, var(--secondary) 58%, var(--card));
   }
 
   .agent-team-selected {
-    border-color: color-mix(in srgb, var(--primary) 48%, var(--border));
+    border-color: color-mix(in srgb, var(--primary) 38%, var(--border));
     background: color-mix(in srgb, var(--primary) 5%, var(--card));
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 10%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 7%, transparent);
   }
 
   .agent-team-eyebrow {
@@ -62,7 +63,7 @@
   }
 
   .agent-team-record-row:hover {
-    background: color-mix(in srgb, var(--primary) 2.5%, var(--card));
+    background: color-mix(in srgb, var(--primary) 2%, var(--card));
   }
 
   .agent-team-chat-canvas {
@@ -74,12 +75,24 @@
   .agent-team-composer {
     border: 1px solid color-mix(in srgb, var(--border) 92%, var(--foreground));
     background: var(--card);
-    box-shadow: 0 -8px 30px rgb(64 48 34 / 0.055), 0 2px 8px rgb(64 48 34 / 0.035);
+    box-shadow: 0 -10px 32px rgb(55 43 35 / 0.04), 0 2px 8px rgb(55 43 35 / 0.025);
   }
 
   .agent-team-surface :where(button, a, input, textarea, select, summary):focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--ring) 78%, white);
+    outline: 1px solid color-mix(in srgb, var(--ring) 72%, white);
     outline-offset: 2px;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 16%, transparent);
+  }
+
+  .agent-team-surface [role="tab"]:focus-visible {
+    outline: none;
+    box-shadow: none;
+    color: var(--foreground);
+  }
+
+  .agent-team-surface [role="tab"]:focus-visible::after {
+    height: 3px;
+    background: var(--primary);
   }
 
   .agent-team-surface :where(button, a, summary):not(:disabled):active {
@@ -147,8 +160,8 @@
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.27 0.006 60);
 
-  /* Primary — warm coral for navigation, links, and operator actions. */
-  --primary: oklch(0.64 0.21 18);
+  /* Primary — the reference's soft peach-coral, never warning red. */
+  --primary: #fc7b5c;
   --primary-foreground: oklch(0.99 0 0);
 
   --secondary: oklch(0.965 0.003 90);
@@ -165,7 +178,7 @@
 
   --border: oklch(0.92 0.003 90);
   --input: oklch(0.9 0.004 90);
-  --ring: oklch(0.64 0.21 18);
+  --ring: #fc7b5c;
 
   /* Semantic status — mid-tone so chips read on white */
   --status-running: oklch(0.6 0.13 240);
