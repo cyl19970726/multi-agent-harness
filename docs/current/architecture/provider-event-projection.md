@@ -4,11 +4,11 @@ Status: current contract for DEV-20.
 
 ## Authority boundary
 
-Provider transcripts remain provider-owned. AgentFirm incrementally reads a
-server-selected source and converts each supported native row into a bounded
-`ProviderObservation` during an on-demand read. The observation is a disposable
-read-model value; it is never Message, Work, Delivery, Evidence, review, or
-Decision truth.
+Provider transcripts remain provider-owned. AgentFirm performs a bounded read
+of a server-selected source and converts each supported native row into a
+`ProviderObservation` during an on-demand request. The observation is a
+disposable read-model value; it is never Message, Work, Delivery, Evidence,
+review, or Decision truth.
 
 ```text
 provider source
@@ -22,16 +22,18 @@ provider source
 
 The source path is never returned. The envelope exposes only an opaque scoped
 `provider-source:` locator in `native_source_ref`—not a Harness Evidence
-reference—paired with a content fingerprint. The reader rejects
+reference—paired with a response-local content fingerprint that is also not
+Evidence. The reader rejects
 symlinks, root escape, invalid transient read positions, oversized lines, and
-invalid UTF-8. An incomplete last line remains unconsumed until the provider
-finishes it.
+invalid UTF-8. Incremental process-local reads leave an incomplete last line
+unconsumed; the on-demand latest projection omits it and reports truncation.
 
 ## Identity and source authority
 
 Every observation binds exact AgentIdentity, AgentSession id/generation, and
 NodeDaemon id/generation from server context. Provider JSON cannot select those
-fields, visibility, validated references, or RuntimeCommand authority.
+fields, visibility, collaboration/Evidence references, or RuntimeCommand
+authority. The V1 observation schema carries no collaboration-reference field.
 
 Duplicate native rows within one on-demand read are idempotent. Any changed
 envelope under the same observation identity conflicts, even when the native
@@ -82,9 +84,9 @@ chain-of-thought is never saved, reconstructed, or forwarded.
 
 Authored text, reasoning, tool input/output, environment details, paths, and
 raw transcript rows are structurally absent from Team activity. Canonical
-Message, Delivery, Work, report, finding, failure, gate, and review facts remain
-owned by their existing stores and are composed alongside runtime summaries by
-the Team RoleView; provider observations never manufacture them.
+Message, Delivery, Work, report, finding, failure, gate, review, and
+RuntimeCommand summaries remain owned by their existing stores and are
+composed by the Team RoleView; provider observations never manufacture them.
 
 ## Provider fidelity
 
