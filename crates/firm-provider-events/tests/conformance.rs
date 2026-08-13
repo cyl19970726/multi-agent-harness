@@ -3,8 +3,8 @@ use firm_provider_events::{
     Completeness, DecodeContext, DecodeOutcome, EffectCertainty, FoldOutcome, NativeEvent,
     ObservationPayload, ObservationVisibility, ProjectionAccessError, ProjectionAuthority,
     ProjectionStore, ProjectionStoreError, ProjectionViewer, ProviderEventFold,
-    ProviderEventFoldError, ProviderKind, SemanticKind, TranscriptCursor, TranscriptReadBoundary,
-    TranscriptReadError, PROVIDER_OBSERVATION_SCHEMA_VERSION,
+    ProviderEventFoldError, ProviderKind, ProviderProjectionState, SemanticKind, TranscriptCursor,
+    TranscriptReadBoundary, TranscriptReadError, PROVIDER_OBSERVATION_SCHEMA_VERSION,
 };
 use serde_json::json;
 use std::{
@@ -592,4 +592,43 @@ fn transcript_reader_rejects_symlink_and_root_escape() {
     ));
     fs::remove_dir_all(root).unwrap();
     fs::remove_dir_all(outside).unwrap();
+}
+
+#[test]
+fn transcript_cursor_and_fold_commit_atomically_across_restart() {
+    let root = unique_temp_path("pipeline");
+    fs::create_dir_all(&root).unwrap();
+    let transcript = root.join("provider.jsonl");
+    fs::write(
+        &transcript,
+        b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"ok\"}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_reasoning\",\"text\":\"private\"}}\n",
+    )
+    .unwrap();
+    let mut state =
+        ProviderProjectionState::new(ProviderEventFold::new("session-1", 7, "daemon-1", 4));
+    let batch = read_transcript_batch(
+        &context(ProviderKind::Codex),
+        &TranscriptReadBoundary {
+            allowed_root: root.clone(),
+            transcript_path: transcript,
+        },
+        state.transcript_cursor,
+        10,
+    )
+    .unwrap();
+    let expected_cursor = batch.cursor;
+    let store = ProjectionStore::new(root.join("projection.json"));
+    store.apply_batch(&mut state, batch).unwrap();
+    let resumed = store.load_state().unwrap().unwrap();
+    assert_eq!(resumed.transcript_cursor, expected_cursor);
+    assert_eq!(
+        resumed.fold.session_projection(300).episodes[0]
+            .observations
+            .len(),
+        1
+    );
+    let serialized = serde_json::to_string(&resumed).unwrap();
+    assert!(!serialized.contains("agent_reasoning"));
+    assert!(!serialized.contains("provider-private reasoning omitted"));
+    fs::remove_dir_all(root).unwrap();
 }

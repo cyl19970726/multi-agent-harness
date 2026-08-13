@@ -52,10 +52,17 @@ for (const provider of manifest.providers) {
 }
 const model = readFileSync("crates/firm-provider-events/src/model.rs", "utf8");
 const typescript = readFileSync("apps/agent-dashboard/src/model/providerEvents.ts", "utf8");
+const architecture = readFileSync("docs/current/architecture/provider-event-projection.md", "utf8");
 for (const kind of manifest.semantic_kinds) {
   const rustName = kind.split("_").map((part) => part[0].toUpperCase() + part.slice(1)).join("");
   if (!model.includes(`    ${rustName},`)) failures.push(`missing Rust SemanticKind::${rustName}`);
   if (!typescript.includes(`"${kind}"`)) failures.push(`missing TypeScript semantic kind ${kind}`);
+}
+for (const forbidden of ["raw_transcript", "tool_input", "tool_output", "environment_variables"]) {
+  if (typescript.includes(forbidden)) failures.push(`browser contract exposes forbidden ${forbidden}`);
+}
+for (const required of ["exact AgentIdentity owner", "TeamRuntimeActivity", "RuntimeCommand"]) {
+  if (!architecture.includes(required)) failures.push(`architecture contract missing ${required}`);
 }
 for (const provider of manifest.providers) {
   if (!typescript.includes(`"${provider}"`)) failures.push(`missing TypeScript provider ${provider}`);
