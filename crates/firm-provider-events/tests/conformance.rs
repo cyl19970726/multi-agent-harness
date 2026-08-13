@@ -1,9 +1,10 @@
 use firm_provider_events::{
-    adapter_manifest, decode_native_event, decode_native_json_line, Completeness, DecodeContext,
-    DecodeOutcome, EffectCertainty, FoldOutcome, NativeEvent, ObservationPayload,
-    ObservationVisibility, ProjectionAccessError, ProjectionAuthority, ProjectionStore,
-    ProjectionStoreError, ProjectionViewer, ProviderEventFold, ProviderEventFoldError,
-    ProviderKind, SemanticKind, PROVIDER_OBSERVATION_SCHEMA_VERSION,
+    adapter_manifest, decode_native_event, decode_native_json_line, read_transcript_batch,
+    Completeness, DecodeContext, DecodeOutcome, EffectCertainty, FoldOutcome, NativeEvent,
+    ObservationPayload, ObservationVisibility, ProjectionAccessError, ProjectionAuthority,
+    ProjectionStore, ProjectionStoreError, ProjectionViewer, ProviderEventFold,
+    ProviderEventFoldError, ProviderKind, SemanticKind, TranscriptCursor, TranscriptReadBoundary,
+    TranscriptReadError, PROVIDER_OBSERVATION_SCHEMA_VERSION,
 };
 use serde_json::json;
 use std::{
@@ -65,6 +66,24 @@ fn four_provider_manifests_are_closed_and_truthful() {
         assert!(!manifest.supported_semantic_kinds.is_empty());
         assert!(!manifest.redaction_policy.is_empty());
     }
+}
+
+#[test]
+fn rust_adapter_manifests_match_the_versioned_json_contract() {
+    let expected: Vec<firm_provider_events::AdapterManifest> = serde_json::from_str(include_str!(
+        "../../../schemas/provider-events/adapters.v1.json"
+    ))
+    .expect("adapter manifest JSON");
+    let actual = [
+        ProviderKind::Codex,
+        ProviderKind::Claude,
+        ProviderKind::Kimi,
+        ProviderKind::Pi,
+    ]
+    .into_iter()
+    .map(adapter_manifest)
+    .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
 }
 
 #[test]
@@ -508,4 +527,69 @@ fn four_provider_jsonl_corpora_decode_and_malformed_lines_are_bounded() {
     assert!(!serde_json::to_string(&malformed)
         .unwrap()
         .contains("private transcript"));
+}
+
+#[test]
+fn transcript_reader_resumes_by_byte_offset_and_holds_incomplete_tail() {
+    let root = unique_temp_path("reader");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("session.jsonl");
+    fs::write(
+        &path,
+        b"{\"type\":\"turn/completed\"}\n{\"type\":\"turn/cancelled\"}\n{\"type\":",
+    )
+    .unwrap();
+    let boundary = TranscriptReadBoundary {
+        allowed_root: root.clone(),
+        transcript_path: path.clone(),
+    };
+    let first = read_transcript_batch(
+        &context(ProviderKind::Codex),
+        &boundary,
+        TranscriptCursor::default(),
+        1,
+    )
+    .unwrap();
+    assert_eq!(first.outcomes.len(), 1);
+    assert!(first.incomplete_tail);
+    let second =
+        read_transcript_batch(&context(ProviderKind::Codex), &boundary, first.cursor, 10).unwrap();
+    assert_eq!(second.outcomes.len(), 1);
+    assert!(second.incomplete_tail);
+
+    fs::write(&path, b"{}\n").unwrap();
+    assert!(matches!(
+        read_transcript_batch(&context(ProviderKind::Codex), &boundary, second.cursor, 10),
+        Err(TranscriptReadError::CursorBeyondEnd)
+    ));
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn transcript_reader_rejects_symlink_and_root_escape() {
+    use std::os::unix::fs::symlink;
+    let root = unique_temp_path("reader-root");
+    let outside = unique_temp_path("reader-outside");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let outside_file = outside.join("session.jsonl");
+    fs::write(&outside_file, b"{\"type\":\"turn/completed\"}\n").unwrap();
+    let link = root.join("session.jsonl");
+    symlink(&outside_file, &link).unwrap();
+    let result = read_transcript_batch(
+        &context(ProviderKind::Codex),
+        &TranscriptReadBoundary {
+            allowed_root: root.clone(),
+            transcript_path: link,
+        },
+        TranscriptCursor::default(),
+        10,
+    );
+    assert!(matches!(
+        result,
+        Err(TranscriptReadError::InvalidSourceType)
+    ));
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
 }

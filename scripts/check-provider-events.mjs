@@ -8,9 +8,12 @@ const observationSchema = readJson(join(root, "provider-observation.schema.json"
 const adapterSchema = readJson(join(root, "adapter-manifest.schema.json"));
 const manifest = readJson(join(root, "manifest.v1.json"));
 const adapters = readJson(join(root, "adapters.v1.json"));
+const sessionSchema = readJson(join(root, "session-event-projection.schema.json"));
+const teamSchema = readJson(join(root, "team-runtime-activity.schema.json"));
 const ajv = new Ajv2020({ allErrors: true, strict: false });
-const validateObservation = ajv.compile(observationSchema);
-const validateAdapter = ajv.compile(adapterSchema);
+for (const schema of [observationSchema, adapterSchema, sessionSchema, teamSchema]) ajv.addSchema(schema);
+const validateObservation = ajv.getSchema(observationSchema.$id);
+const validateAdapter = ajv.getSchema(adapterSchema.$id);
 const failures = [];
 
 for (const file of readdirSync(join(root, "fixtures/valid")).sort()) {
@@ -48,10 +51,30 @@ for (const provider of manifest.providers) {
   if (!decoder.includes(`fn decode_${provider}(`)) failures.push(`missing ${provider} decoder`);
 }
 const model = readFileSync("crates/firm-provider-events/src/model.rs", "utf8");
+const typescript = readFileSync("apps/agent-dashboard/src/model/providerEvents.ts", "utf8");
 for (const kind of manifest.semantic_kinds) {
   const rustName = kind.split("_").map((part) => part[0].toUpperCase() + part.slice(1)).join("");
   if (!model.includes(`    ${rustName},`)) failures.push(`missing Rust SemanticKind::${rustName}`);
+  if (!typescript.includes(`"${kind}"`)) failures.push(`missing TypeScript semantic kind ${kind}`);
 }
+for (const provider of manifest.providers) {
+  if (!typescript.includes(`"${provider}"`)) failures.push(`missing TypeScript provider ${provider}`);
+}
+
+const validObservation = readJson(join(root, "fixtures/valid/codex-authored.json"));
+const sessionEnvelope = {
+  schema_version: "agentfirm.provider_observation.v1",
+  agent_session_id: "session-1",
+  agent_session_generation: 7,
+  cursor: `sha256:${"a".repeat(64)}`,
+  episodes: [{ episode_id: "turn-1", provider_turn_id: "turn-1", observations: [validObservation], terminal: false, incomplete: false }],
+  truncated: false,
+  disabled_reason: null,
+};
+if (!ajv.getSchema(sessionSchema.$id)(sessionEnvelope)) failures.push("generated Session projection violates schema");
+const publicObservation = readJson(join(root, "fixtures/valid/runtime-ready-public.json"));
+const { observation_id, agent_identity_id, semantic_kind, lifecycle_phase, completeness, effect_certainty, occurred_at, payload } = publicObservation;
+if (!ajv.getSchema(teamSchema.$id)({ observation_id, agent_identity_id, semantic_kind, lifecycle_phase, completeness, effect_certainty, occurred_at, payload })) failures.push("generated Team activity violates schema");
 
 if (failures.length) {
   console.error(failures.join("\n"));

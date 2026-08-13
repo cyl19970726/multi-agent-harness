@@ -26,7 +26,7 @@
     "tool_events": true,
     "artifact_events": false,
     "usage_events": true,
-    "interaction_events": true,
+    "interaction_events": false,
     "cancellation_events": true,
     "supported_semantic_kinds": ["authored_response", "tool_call_requested", "tool_call_completed", "usage_reported", "transport_interrupted", "turn_completed", "turn_cancelled"],
     "redaction_policy": "drop_secrets_paths_raw_tool_io_and_private_reasoning"

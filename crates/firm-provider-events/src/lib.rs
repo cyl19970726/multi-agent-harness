@@ -9,13 +9,15 @@ mod access;
 mod decoder;
 mod fold;
 mod model;
+mod reader;
 mod store;
 
 pub use access::*;
 pub use decoder::{
     adapter_manifest, decode_native_event, decode_native_json_line, AdapterFidelity,
-    AdapterManifest, DecodeContext, DecodeOutcome, NativeEvent,
+    AdapterManifest, DecodeContext, DecodeError, DecodeOutcome, NativeEvent,
 };
 pub use fold::{FoldOutcome, ProviderEventFold, ProviderEventFoldError, SessionEpisode};
 pub use model::*;
+pub use reader::*;
 pub use store::*;
