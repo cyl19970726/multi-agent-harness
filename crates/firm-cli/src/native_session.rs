@@ -155,7 +155,7 @@ fn locate(session: &NativeSessionRef) -> CliResult<Option<PathBuf>> {
             &session.native_session_id,
             4,
         ),
-        "claude" | "claude-code" | "claude_code" => find_file(
+        "claude" | "claude-code" | "claude_code" => find_exact_file(
             &home.join(".claude/projects"),
             &format!("{}.jsonl", session.native_session_id),
             4,
@@ -195,7 +195,7 @@ fn kimi_code_home(home: &Path) -> PathBuf {
         .unwrap_or_else(|| home.join(".kimi-code"))
 }
 
-fn find_file(root: &Path, suffix: &str, depth: usize) -> CliResult<Option<PathBuf>> {
+fn find_exact_file(root: &Path, filename: &str, depth: usize) -> CliResult<Option<PathBuf>> {
     if depth == 0 || !root.is_dir() {
         return Ok(None);
     }
@@ -206,24 +206,19 @@ fn find_file(root: &Path, suffix: &str, depth: usize) -> CliResult<Option<PathBu
         if metadata.file_type().is_symlink() {
             continue;
         }
-        if metadata.is_file()
-            && path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(suffix))
-        {
+        if metadata.is_file() && path.file_name().and_then(|name| name.to_str()) == Some(filename) {
             let candidate = fs::canonicalize(&path)?;
             if found.replace(candidate).is_some() {
                 return Err(CliError::Usage(format!(
-                    "multiple provider-native Session candidates match `{suffix}`"
+                    "multiple provider-native Session candidates exactly name `{filename}`"
                 )));
             }
         }
         if metadata.is_dir() {
-            if let Some(nested) = find_file(&path, suffix, depth - 1)? {
+            if let Some(nested) = find_exact_file(&path, filename, depth - 1)? {
                 if found.replace(nested).is_some() {
                     return Err(CliError::Usage(format!(
-                        "multiple provider-native Session candidates match `{suffix}`"
+                        "multiple provider-native Session candidates exactly name `{filename}`"
                     )));
                 }
             }
@@ -449,6 +444,31 @@ mod tests {
         assert_eq!(
             find_kimi_wire(&root, "019f-kimi-valid", 4).expect("Kimi discovery"),
             Some(fs::canonicalize(&wire).expect("canonical wire"))
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn claude_session_discovery_requires_an_exact_filename() {
+        let root = kimi_sessions("claude-exact-filename");
+        let requested = "claude-native-session";
+        fs::write(
+            root.join(format!("prefix-{requested}.jsonl")),
+            "{\"type\":\"assistant\"}\n",
+        )
+        .expect("prefix candidate");
+        assert_eq!(
+            find_exact_file(&root, &format!("{requested}.jsonl"), 4)
+                .expect("exact Claude discovery"),
+            None,
+            "a suffix match is not an exact provider Session"
+        );
+        let exact = root.join(format!("{requested}.jsonl"));
+        fs::write(&exact, "{\"type\":\"assistant\"}\n").expect("exact candidate");
+        assert_eq!(
+            find_exact_file(&root, &format!("{requested}.jsonl"), 4)
+                .expect("exact Claude discovery"),
+            Some(fs::canonicalize(exact).expect("canonical exact candidate"))
         );
         fs::remove_dir_all(root).expect("cleanup");
     }
