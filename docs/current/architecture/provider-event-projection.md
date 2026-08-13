@@ -92,6 +92,11 @@ Provider turn completion may append only a generic coordination fact such as
 It never copies the provider-authored response into `MemberAction` or a
 TeamRun summary, and provider-emitted source references never become Harness
 Evidence without an explicit canonical Evidence write.
+The same rule applies to legacy Message delivery adapters: their response text
+may be consumed by the current in-process caller, but it does not manufacture a
+`provider-report` Message or a delivery-session Evidence row. Provider hooks
+are validated-and-discarded compatibility ingress; NodeDaemon/AgentSession and
+canonical Delivery writers remain the only lifecycle and delivery authority.
 
 ## Provider fidelity
 
