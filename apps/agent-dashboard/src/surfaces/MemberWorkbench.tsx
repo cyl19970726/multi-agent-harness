@@ -158,9 +158,9 @@ export function MemberWorkbench({
               </header>
               <AttentionStrip view={view} />
               <div className="border-y border-border bg-secondary/20 px-3 py-2 text-xs text-muted-foreground" aria-label="Member collaboration scope">
-                {view.data.collaboration.state === "observed"
+                {view.data.collaboration?.state === "observed"
                   ? `${view.data.collaboration.delegations?.length ?? 0} active Work-linked cross-Team Delegations are visible to this Member. No remote shell, transcript or unrelated Team state is exposed.`
-                  : view.data.collaboration.reason ?? "Company collaboration projection unavailable."}
+                  : view.data.collaboration?.reason ?? "Company collaboration projection unavailable."}
               </div>
               <div className="grid gap-8 xl:grid-cols-[minmax(0,1.25fr)_minmax(22rem,.75fr)]">
                 <div className="space-y-7">
