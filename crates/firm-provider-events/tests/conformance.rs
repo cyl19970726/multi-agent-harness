@@ -310,6 +310,21 @@ fn zero_generation_and_unscoped_source_are_rejected_before_decode() {
 }
 
 #[test]
+fn authored_content_redacts_secret_shapes_and_absolute_private_paths() {
+    let observation = observation(decode(
+        ProviderKind::Codex,
+        1,
+        json!({"type":"event_msg","payload":{"type":"agent_message","message":"token=super-secret sk-12345678901234567890 /Users/alice/.ssh/id_ed25519"}}),
+    ));
+    let serialized = serde_json::to_string(&observation).unwrap();
+    assert!(observation.redacted);
+    assert!(!serialized.contains("super-secret"));
+    assert!(!serialized.contains("sk-123"));
+    assert!(!serialized.contains("/Users/alice"));
+    assert!(serialized.contains("REDACTED"));
+}
+
+#[test]
 fn stale_generation_fails_before_projection_change() {
     let mut stale_context = context(ProviderKind::Claude);
     stale_context.agent_session_generation = 6;

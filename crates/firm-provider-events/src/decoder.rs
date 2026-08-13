@@ -743,12 +743,14 @@ fn decode_pi(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
 
 fn authored(text: &str) -> Decoded {
     let (text, truncated) = bounded(text, MAX_TEXT_CHARS);
+    let (text, redacted) = redact_display_text(&text);
     let mut decoded = private(
         ObservationPayload::AuthoredResponse { text },
         SemanticKind::AuthoredResponse,
         LifecyclePhase::Progress,
     );
     decoded.truncated = truncated;
+    decoded.redacted = redacted;
     decoded
 }
 
@@ -823,6 +825,7 @@ fn interaction(raw: &serde_json::Value) -> Decoded {
         .and_then(|v| v.as_str())
         .unwrap_or("Provider interaction is required");
     let (prompt, truncated) = bounded(prompt, MAX_DISPLAY_DETAIL_CHARS);
+    let (prompt, redacted) = redact_display_text(&prompt);
     let mut decoded = public_runtime(
         ObservationPayload::Interaction {
             reason_code: safe_label(
@@ -837,6 +840,7 @@ fn interaction(raw: &serde_json::Value) -> Decoded {
         Completeness::Incomplete,
     );
     decoded.truncated = truncated;
+    decoded.redacted = redacted;
     decoded
 }
 
@@ -913,6 +917,51 @@ fn bounded(value: &str, max: usize) -> (String, bool) {
     let mut chars = value.chars();
     let bounded = chars.by_ref().take(max).collect::<String>();
     (bounded, chars.next().is_some())
+}
+
+fn redact_display_text(value: &str) -> (String, bool) {
+    let mut redacted = false;
+    let lines = value
+        .lines()
+        .map(|line| {
+            if line.contains("-----BEGIN ") && line.contains("PRIVATE KEY-----") {
+                redacted = true;
+                return "[REDACTED PRIVATE KEY]".to_string();
+            }
+            line.split_whitespace()
+                .map(|token| {
+                    let sensitive_assignment = ["token=", "password=", "secret=", "api_key="]
+                        .iter()
+                        .find_map(|marker| {
+                            token
+                                .to_ascii_lowercase()
+                                .find(marker)
+                                .map(|index| (marker, index))
+                        });
+                    if let Some((marker, index)) = sensitive_assignment {
+                        redacted = true;
+                        return format!("{}{}[REDACTED]", &token[..index], marker);
+                    }
+                    if token.starts_with("sk-") && token.len() >= 20 {
+                        redacted = true;
+                        return "[REDACTED TOKEN]".into();
+                    }
+                    if token.starts_with('/')
+                        && (token.contains("/Users/")
+                            || token.contains("/.ssh/")
+                            || token.contains("/.config/"))
+                    {
+                        redacted = true;
+                        return "[REDACTED PATH]".into();
+                    }
+                    token.to_string()
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (lines, redacted)
 }
 
 fn fingerprint(value: &serde_json::Value) -> String {
