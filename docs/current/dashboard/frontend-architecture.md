@@ -27,7 +27,7 @@ financial state.
 
 ```text
 Harness store / provider adapters
-  -> Rust snapshot and action APIs
+  -> authenticated Rust snapshot, RoleView and action APIs
   -> project-scoped SSE deltas
   -> pure read-model selectors
   -> Mission, Team, Workflow, and Company OS surfaces
@@ -41,6 +41,10 @@ Harness store / provider adapters
 - Project selection is explicit. URL selection state never substitutes for a
   canonical object relation.
 - Thinking is sanitized transient state and is absent after expiry/reload.
+- Agent Workspace reads one authenticated, server-built RoleView. The browser
+  never joins Team snapshots to MemberRuns or native provider activity, and a
+  Host's provider-private Session projection is never populated from another
+  Agent's native events.
 
 ## Module Boundary
 
@@ -70,7 +74,7 @@ different from a Human Approval; an AgentTeamRun is different from an OrgUnit.
 | Mission Canvas | durable Mission Markdown, its Mission-owned Team, ordered Host-plan Wave revisions, explicit judgment, closeout | dependency graph, runtime containment, mutable Team linking, or implicit acceptance |
 | Agent Teams Home | Mission-owned, Node-placed AgentTeam/TeamRun discovery | implying Teams are reusable across Missions or pretending every run belongs to one Wave |
 | Team War Room | stable Team identity, Mission relation, shared Works, current Supervisor, typed actors, WorkDelivery claim/receipt/failure, authored Message delivery/ACK, member presence, Work-linked conversation, unified activity, and controls | claiming a selected Wave owns the TeamRun, impersonating a Member, or fabricating provider control |
-| MemberRun Focus | one run-scoped member's contract, native-session binding, mailbox and evidence | Agent Membership identity or a copied provider transcript |
+| Agent Workspace | one shared Host/Member shell with Team roster, exact Session activity, authored Messages, Work responsibility, selected context, profile/configuration and server-authorized actions | browser-authored authority, a second Work/Message model, copied provider transcript, or cross-Agent provider-private events |
 | Workflows | WorkflowRun/WorkflowStep/result/artifacts | Agent Team semantics |
 | Company OS | Documents, TeamWorks, actors, approvals, finance, metrics, governance | unimplemented schema authority |
 | Debug | raw snapshot and diagnostics | primary product navigation |
@@ -123,8 +127,10 @@ is not considered implemented because the same content exists at larger card
 sizes; layout rhythm, continuous flow, semantic icons, pressure placement, and
 responsive behavior are acceptance criteria.
 
-The active contract is
-git history (design/execution-workbench-v3).
+The legacy execution-family contract is preserved in git history
+(`design/execution-workbench-v3`). Agent Workspace visual references are
+approved and governed in AgentFirm DOC-72; generated reference images are not
+copied into this repository.
 
 ## Validation
 
