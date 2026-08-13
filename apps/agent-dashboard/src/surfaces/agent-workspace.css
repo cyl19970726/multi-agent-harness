@@ -194,7 +194,21 @@
     margin-inline: auto;
     background: var(--aw-canvas);
     overflow-anchor: none;
+    scroll-padding-top: 2.35rem;
     padding-bottom: 4.7rem;
+  }
+
+  .agent-workspace .aw-session-chronology {
+    min-width: 0;
+  }
+
+  .agent-workspace .aw-session-chronology > :where(.agent-authored-turn, .aw-native-authored-record) + .aw-execution-fact,
+  .agent-workspace .aw-session-chronology > .aw-execution-fact + .aw-execution-fact {
+    margin-left: 3.7rem;
+  }
+
+  .agent-workspace .aw-session-chronology > .aw-execution-fact + :where(.agent-authored-turn, .aw-native-authored-record) {
+    margin-top: 0.42rem;
   }
 
   .agent-workspace .aw-canvas-intro {
@@ -298,34 +312,34 @@
     grid-template-columns: auto minmax(0, 1fr) auto;
     gap: 0.8rem;
     align-items: center;
-    min-height: 2.35rem;
+    min-height: 2rem;
     border-bottom: 1px solid var(--aw-line);
     background: color-mix(in srgb, var(--aw-canvas) 97%, transparent);
     color: var(--aw-muted);
-    font-size: 0.66rem;
+    font-size: 0.63rem;
   }
 
   .agent-workspace .aw-session-context-strip__label {
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
-    color: var(--aw-coral-ink);
-    font-size: 0.58rem;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    color: var(--aw-muted);
+    font-size: 0.61rem;
+    font-weight: 610;
+    letter-spacing: 0.01em;
   }
 
   .agent-workspace .aw-session-context-strip__label svg {
-    width: 0.72rem;
-    height: 0.72rem;
+    width: 0.68rem;
+    height: 0.68rem;
+    color: var(--aw-coral-ink);
   }
 
   .agent-workspace .aw-session-context-strip strong {
     overflow: hidden;
     color: var(--aw-ink);
-    font-size: 0.71rem;
-    font-weight: 570;
+    font-size: 0.69rem;
+    font-weight: 590;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -336,10 +350,10 @@
 
   .agent-workspace .agent-authored-turn {
     display: flex;
-    gap: 0.85rem;
+    gap: 0.95rem;
     min-width: 0;
-    min-height: 4.15rem;
-    padding: 0.88rem 0.5rem 0.88rem 0;
+    min-height: 5rem;
+    padding: 1rem 0.5rem 1.05rem 0;
     border-bottom: 1px solid var(--aw-line-soft);
     border-radius: 0;
     background: transparent;
@@ -354,7 +368,9 @@
   }
 
   .agent-workspace .agent-authored-turn > :first-child {
-    margin-left: 0.2rem;
+    width: 2.7rem;
+    height: 2.7rem;
+    margin-left: 0.1rem;
   }
 
   .agent-workspace .agent-authored-turn p,
@@ -369,8 +385,8 @@
     align-items: baseline;
     gap: 0.25rem 0.7rem;
     color: var(--aw-muted);
-    margin-top: 0.28rem;
-    font-size: 0.68rem;
+    margin-top: 0.42rem;
+    font-size: 0.65rem;
     line-height: 1.35;
   }
 
@@ -396,14 +412,59 @@
 
   .agent-workspace .aw-authored-body {
     color: color-mix(in srgb, var(--aw-ink) 94%, transparent);
-    font-size: 0.88rem;
-    line-height: 1.62;
+    max-width: 43rem;
+    font-size: 0.94rem;
+    line-height: 1.66;
   }
 
-  .agent-workspace .agent-authored-turn[data-provider-reply="true"] .aw-authored-body {
-    font-size: 0.89rem;
-    font-weight: 470;
+  .agent-workspace .aw-native-authored-record {
+    display: flex;
+    min-width: 0;
+    gap: 0.95rem;
+    min-height: 5rem;
+    padding: 1rem 0.5rem 1rem 0;
+    border-bottom: 1px solid var(--aw-line-soft);
+    color: var(--aw-ink);
+    cursor: pointer;
+    transition: background-color 120ms ease;
   }
+
+  .agent-workspace .aw-native-authored-record:hover,
+  .agent-workspace .aw-native-authored-record:focus-visible {
+    outline: 0;
+    background: color-mix(in srgb, var(--aw-rail) 64%, transparent);
+    box-shadow: inset 2px 0 0 color-mix(in srgb, var(--aw-running) 58%, transparent);
+  }
+
+  .agent-workspace .aw-native-authored-record__mark {
+    display: grid;
+    width: 2.7rem;
+    height: 2.7rem;
+    flex: none;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--aw-running) 18%, var(--aw-line));
+    border-radius: 50%;
+    color: var(--aw-running);
+  }
+
+  .agent-workspace .aw-native-authored-record__mark svg {
+    width: 1rem;
+    height: 1rem;
+    stroke-width: 1.55;
+  }
+
+  .agent-workspace .aw-native-authored-record header {
+    display: flex;
+    min-width: 0;
+    align-items: baseline;
+    gap: 0.55rem;
+  }
+
+  .agent-workspace .aw-native-authored-record header strong { font-size: 0.79rem; font-weight: 640; }
+  .agent-workspace .aw-native-authored-record header span { color: var(--aw-muted); font-size: 0.64rem; }
+  .agent-workspace .aw-native-authored-record header time { margin-left: auto; color: var(--aw-faint); font-size: 0.64rem; }
+  .agent-workspace .aw-native-authored-record p { max-width: 43rem; margin-top: 0.4rem; color: color-mix(in srgb, var(--aw-ink) 90%, transparent); font-size: 0.9rem; line-height: 1.62; }
+  .agent-workspace .aw-native-authored-record footer { margin-top: 0.45rem; color: var(--aw-muted); font-size: 0.64rem; }
 
   .agent-workspace .agent-event-row {
     min-width: 0;
@@ -491,23 +552,23 @@
 
   .agent-workspace .aw-stream-fact[data-family="tool"],
   .agent-workspace .aw-stream-fact[data-family="runtime"] {
-    background: color-mix(in srgb, #edf4f2 50%, var(--aw-canvas));
+    background: transparent;
   }
 
   .agent-workspace .aw-stream-fact[data-family="work"],
   .agent-workspace .aw-stream-fact[data-family="review"],
   .agent-workspace .aw-stream-fact[data-family="delivery"] {
-    background: color-mix(in srgb, var(--aw-rail) 58%, var(--aw-canvas));
+    background: transparent;
   }
 
   .agent-workspace .aw-stream-fact__trigger {
     display: grid;
     width: 100%;
-    min-height: 3.45rem;
-    grid-template-columns: 0.85rem 7.6rem minmax(0, 1fr) 6.2rem;
-    gap: 0.45rem;
+    min-height: 2.85rem;
+    grid-template-columns: 0.65rem 5.9rem minmax(0, 1fr) 5.4rem;
+    gap: 0.38rem;
     align-items: center;
-    padding: 0.52rem 0.35rem 0.52rem 0.15rem;
+    padding: 0.34rem 0.3rem 0.34rem 0;
     color: var(--aw-ink);
     text-align: left;
     transition: background-color 120ms ease;
@@ -533,18 +594,18 @@
     display: inline-flex;
     min-width: 0;
     align-items: center;
-    gap: 0.45rem;
+    gap: 0.32rem;
     color: var(--aw-muted);
     font-size: 0.62rem;
-    font-weight: 610;
+    font-weight: 570;
   }
 
   .agent-workspace .aw-stream-kind svg {
-    width: 1.55rem;
-    height: 1.55rem;
-    padding: 0.36rem;
-    border-radius: 0.36rem;
-    background: color-mix(in srgb, currentColor 7%, transparent);
+    width: 1.05rem;
+    height: 1.05rem;
+    padding: 0.16rem;
+    border-radius: 0;
+    background: transparent;
   }
 
   .agent-workspace .aw-stream-kind[data-tone="positive"] { color: var(--aw-good); }
@@ -600,9 +661,9 @@
 
   .agent-workspace .aw-stream-fact__detail {
     display: grid;
-    min-height: 5rem;
-    grid-template-columns: 9.35rem minmax(0, 1fr);
-    padding: 0.7rem 0.8rem 0.85rem 0;
+    min-height: 0;
+    grid-template-columns: 8.1rem minmax(0, 1fr);
+    padding: 0.45rem 0.8rem 0.62rem 0;
     border-top: 1px solid color-mix(in srgb, var(--aw-line-soft) 72%, transparent);
     color: var(--aw-muted);
     font-size: 0.74rem;
@@ -614,9 +675,9 @@
   }
 
   .agent-workspace .aw-stream-fact[data-expanded="true"] {
-    margin-bottom: 0.62rem;
-    background: color-mix(in srgb, var(--aw-coral-wash) 28%, var(--aw-canvas));
-    box-shadow: inset 2px 0 0 var(--aw-coral);
+    margin-bottom: 0;
+    background: color-mix(in srgb, var(--aw-coral-wash) 18%, var(--aw-canvas));
+    box-shadow: inset 1px 0 0 color-mix(in srgb, var(--aw-coral) 65%, transparent);
   }
 
   .agent-workspace .agent-message-toolbar,
@@ -773,8 +834,8 @@
   .agent-workspace .agent-context-primary,
   .agent-workspace .aw-context-section[data-primary="true"] {
     position: relative;
-    margin: -0.35rem -0.45rem 0;
-    padding: 0.55rem 0.45rem 1.1rem;
+    margin: -0.35rem -0.2rem 0;
+    padding: 0.55rem 0.2rem 1.25rem;
     border-top: 0;
     border-bottom: 1px solid var(--aw-line);
     background: transparent;
@@ -792,8 +853,8 @@
   }
 
   .agent-workspace .aw-context-section {
-    margin-top: 1.28rem;
-    padding-top: 1.08rem;
+    margin-top: 1.5rem;
+    padding-top: 1.22rem;
     border-top: 1px solid var(--aw-line);
   }
 
@@ -812,7 +873,7 @@
 
   .agent-workspace .aw-context-section__header h2 {
     color: var(--aw-ink);
-    font-size: 0.82rem;
+    font-size: 0.9rem;
     font-weight: 625;
     letter-spacing: -0.012em;
   }
@@ -831,7 +892,7 @@
     gap: 0.75rem;
     padding-block: 0.24rem;
     color: var(--aw-muted);
-    font-size: 0.71rem;
+    font-size: 0.73rem;
     line-height: 1.45;
   }
 
@@ -854,6 +915,69 @@
 
   .agent-workspace .aw-context-work-title {
     overflow-wrap: anywhere;
+    font-family: var(--font-editorial, ui-serif, Georgia, serif);
+    font-size: 1.04rem;
+    font-weight: 590;
+    letter-spacing: -0.018em;
+    line-height: 1.32;
+  }
+
+  .agent-workspace .aw-context-focus-title {
+    color: var(--aw-ink);
+    font-size: 0.82rem;
+    font-weight: 620;
+    line-height: 1.4;
+  }
+
+  .agent-workspace .aw-context-focus-copy {
+    display: -webkit-box;
+    overflow: hidden;
+    margin-top: 0.45rem;
+    color: color-mix(in srgb, var(--aw-ink) 72%, var(--aw-muted));
+    font-size: 0.74rem;
+    line-height: 1.58;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 5;
+  }
+
+  .agent-workspace .aw-context-selection-inset {
+    position: relative;
+    margin-top: 0.78rem;
+    padding: 0.72rem 0 0.15rem 0.8rem;
+    border-left: 1px solid color-mix(in srgb, var(--aw-coral) 55%, var(--aw-line));
+  }
+
+  .agent-workspace .aw-context-selection-inset .aw-context-section {
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  .agent-workspace .aw-context-selection-inset .aw-context-section__header h2 {
+    font-size: 0.7rem;
+    color: var(--aw-muted);
+  }
+
+  .agent-workspace .aw-responsibility-summary {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.8rem;
+    margin-top: 1rem;
+    padding-top: 0.85rem;
+    border-top: 1px solid var(--aw-line-soft);
+  }
+
+  .agent-workspace .aw-responsibility-summary > span {
+    color: var(--aw-ink);
+    font-size: 0.76rem;
+    font-weight: 620;
+  }
+
+  .agent-workspace .aw-responsibility-summary > p {
+    color: var(--aw-muted);
+    font-size: 0.66rem;
+    text-align: right;
   }
 
   .agent-workspace .aw-state-mark {
@@ -885,7 +1009,7 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    margin-bottom: 0.5rem;
+    margin-bottom: 0.28rem;
     color: var(--aw-faint);
     font-size: 0.59rem;
     font-weight: 650;
@@ -904,8 +1028,8 @@
     min-width: 0;
     align-items: center;
     gap: 0.55rem;
-    min-height: 1.9rem;
-    padding-inline: 0.45rem;
+    min-height: 1.72rem;
+    padding-inline: 0.1rem;
     border-radius: 0.32rem;
     color: var(--aw-ink);
     font-size: 0.71rem;
@@ -920,7 +1044,7 @@
   }
 
   .agent-workspace .aw-action-row:hover {
-    background: var(--aw-rail);
+    color: var(--aw-coral-ink);
   }
 
   .agent-workspace .aw-action-row[data-danger="true"] svg {
@@ -968,6 +1092,168 @@
     background: color-mix(in srgb, var(--aw-canvas) 96%, white);
     box-shadow: 0 -10px 24px rgb(53 41 32 / 0.032);
   }
+
+  .agent-workspace .aw-command-composer {
+    background: color-mix(in srgb, var(--aw-canvas) 97%, white);
+  }
+
+  .agent-workspace .aw-command-route {
+    display: grid;
+    min-height: 2.65rem;
+    grid-template-columns: minmax(8rem, 10rem) auto minmax(9rem, 12rem) auto minmax(11rem, 1fr) auto;
+    gap: 0.5rem;
+    align-items: center;
+    padding-inline: 1rem;
+    border-bottom: 1px solid var(--aw-line-soft);
+    color: var(--aw-muted);
+  }
+
+  .agent-workspace .aw-command-route > svg {
+    width: 0.68rem;
+    height: 0.68rem;
+    color: var(--aw-faint);
+  }
+
+  .agent-workspace .aw-command-action label,
+  .agent-workspace .aw-command-target,
+  .agent-workspace .aw-command-work,
+  .agent-workspace .aw-command-response {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 0.42rem;
+    color: var(--aw-faint);
+    font-size: 0.59rem;
+    font-weight: 650;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+  }
+
+  .agent-workspace .aw-command-action label > svg,
+  .agent-workspace .aw-command-target > svg,
+  .agent-workspace .aw-command-work > svg {
+    width: 0.73rem;
+    height: 0.73rem;
+    color: var(--aw-coral-ink);
+  }
+
+  .agent-workspace .aw-command-route select {
+    min-width: 0;
+    height: 2rem;
+    flex: 1;
+    border: 0;
+    background: transparent;
+    color: var(--aw-ink);
+    font-size: 0.7rem;
+    font-weight: 590;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .agent-workspace .aw-command-target strong {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--aw-ink);
+    font-size: 0.73rem;
+    font-weight: 620;
+    letter-spacing: 0;
+    text-overflow: ellipsis;
+    text-transform: none;
+    white-space: nowrap;
+  }
+
+  .agent-workspace .aw-command-response {
+    white-space: nowrap;
+  }
+
+  .agent-workspace .aw-command-response input {
+    width: 0.75rem;
+    height: 0.75rem;
+    accent-color: var(--aw-coral);
+  }
+
+  .agent-workspace .aw-command-input {
+    display: grid;
+    min-height: 5.5rem;
+    grid-template-rows: minmax(2.8rem, auto) auto;
+    padding: 0.25rem 1rem 0.3rem;
+  }
+
+  .agent-workspace .aw-command-input textarea {
+    min-height: 3rem;
+    width: 100%;
+    resize: none;
+    border: 0;
+    padding: 0.72rem 0.1rem 0.35rem;
+    background: transparent;
+    color: var(--aw-ink);
+    font-size: 0.92rem;
+    line-height: 1.5;
+    outline: 0;
+  }
+
+  .agent-workspace .aw-command-input button {
+    min-width: 4.7rem;
+    min-height: 2.2rem;
+    border-radius: 0.38rem;
+    background: var(--aw-coral);
+    color: white;
+  }
+
+  .agent-workspace .aw-command-input__footer {
+    position: relative;
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 0.8rem;
+    min-height: 2.35rem;
+    border-top: 1px solid var(--aw-line-soft);
+  }
+
+  .agent-workspace .aw-command-input__footer button {
+    margin: 0;
+  }
+
+  .agent-workspace .aw-command-input__footer > button:last-child {
+    position: absolute;
+    right: 1rem;
+  }
+
+  .agent-workspace .aw-command-attachment,
+  .agent-workspace .aw-command-submit-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--aw-faint);
+    font-size: 0.59rem;
+  }
+
+  .agent-workspace .aw-command-attachment { color: var(--aw-muted); }
+  .agent-workspace .aw-command-submit-hint { margin-left: auto; margin-right: 5.5rem; }
+  .agent-workspace .aw-command-attachment svg,
+  .agent-workspace .aw-command-submit-hint svg { width: 0.72rem; height: 0.72rem; }
+
+  .agent-workspace .aw-command-input button:hover:not(:disabled) { background: var(--aw-coral-ink); }
+
+  .agent-workspace .aw-command-composer footer {
+    display: flex;
+    min-height: 1.55rem;
+    align-items: center;
+    justify-content: space-between;
+    margin-inline: 1rem;
+    border-top: 0;
+    color: var(--aw-faint);
+    font-size: 0.57rem;
+  }
+
+  .agent-workspace .aw-command-composer footer span:last-child {
+    display: flex;
+    align-items: center;
+    gap: 0.32rem;
+  }
+
+  .agent-workspace .aw-command-composer footer svg { width: 0.65rem; height: 0.65rem; }
+  .agent-workspace .aw-command-status { padding: 0.2rem 1rem 0.45rem; color: var(--aw-muted); font-size: 0.66rem; }
 
   .agent-workspace .agent-workspace-composer :where(textarea, input, select) {
     border-color: var(--aw-line);
@@ -1061,6 +1347,14 @@
     .agent-workspace .agent-team-composer > div:nth-child(2) {
       grid-template-columns: 9rem minmax(9rem, 12rem) minmax(8rem, 1fr) auto;
     }
+  }
+
+  @media (max-width: 1100px) {
+    .agent-workspace .aw-command-route {
+      grid-template-columns: minmax(8rem, 10rem) auto minmax(8rem, 1fr) auto;
+    }
+    .agent-workspace .aw-command-work { grid-column: 1 / span 3; }
+    .agent-workspace .aw-command-response { grid-column: 4; grid-row: 2; }
   }
 
   .agent-workspace .aw-empty-state {

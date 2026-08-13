@@ -120,27 +120,23 @@ try{
   assert.deepEqual(await page.locator(".agent-team-composer span[title]").evaluateAll(nodes=>nodes.filter(node=>node.scrollWidth>node.clientWidth).map(node=>node.textContent)),[],"Composer recipient target is visually clipped");
   if(!liveConfig){await page.getByText(/Implemented the owner-bound Session projection/).waitFor();await page.getByText("Validated owner-bound native Session",{exact:true}).waitFor();}
   if(!liveConfig){
+    assert.equal(await page.getByRole("button",{name:/Open native Session message Mira/}).count(),1,"provider-native authored content is not presented as a primary readable Session record");
     assert.ok(await page.locator('.aw-stream-fact[data-family="tool"]').count()>=2,"canonical tool events do not use the shared Tool presentation family");
     assert.equal(await page.locator('.aw-stream-fact[data-family="tool"] .aw-stream-kind').first().getAttribute("data-tone"),"info","completed Tool activity is incorrectly presented as delivery success");
   }
   await waitForStableWriteSurface(page);
+  const composerAlignment=await page.getByTestId("agent-workspace-composer").evaluate(composer=>{const bounds=composer.getBoundingClientRect();const send=[...composer.querySelectorAll('button')].find(node=>node.textContent?.trim()==="Send");const sendBounds=send?.getBoundingClientRect();const parent=send?.parentElement;const parentBounds=parent?.getBoundingClientRect();const style=send?getComputedStyle(send):null;return {composerRight:bounds.right,sendRight:sendBounds?.right??0,gap:sendBounds?bounds.right-sendBounds.right:null,parentClass:parent?.className,parentDisplay:parent?getComputedStyle(parent).display:null,parentLeft:parentBounds?.left,parentRight:parentBounds?.right,marginLeft:style?.marginLeft,position:style?.position};});
+  assert.ok(composerAlignment.gap!=null&&composerAlignment.gap<=24,`Composer primary action does not close the command surface at the right edge: ${JSON.stringify(composerAlignment)}`);
   await page.screenshot({path:join(evidenceDir,`member-session--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   if(!liveConfig){
     const authoredMessage=page.getByRole("button",{name:/Open authored Message from Marcus Allen/}).first();
-    await authoredMessage.focus();await page.keyboard.press("Enter");await page.getByText("Selected Message",{exact:true}).waitFor();
-    const providerReply=page.getByRole("button",{name:/Open provider-authored reply from Mira Chen/}).first();
-    await providerReply.focus();await page.keyboard.press("Space");await page.getByText("Selected Event",{exact:true}).waitFor();
-    const toolRow=page.getByRole("button",{name:/Validated owner-bound native Session/});await toolRow.focus();await page.keyboard.press("Enter");assert.equal(await toolRow.getAttribute("aria-expanded"),"true","event row keyboard expansion");
-    await page.locator('[data-boundary-aligned="true"]').waitFor();
-    const partialAuthoredRecords=await page.locator('[role="tabpanel"][data-state="active"] [data-radix-scroll-area-viewport]').evaluate(viewport=>{
-      const bounds=viewport.getBoundingClientRect();
-      return [...viewport.querySelectorAll('.agent-authored-turn')].filter(record=>{
-        const rect=record.getBoundingClientRect();
-        const visible=rect.bottom>bounds.top+0.5&&rect.top<bounds.bottom-0.5;
-        return visible&&(rect.top<bounds.top-0.5||rect.bottom>bounds.bottom+0.5);
-      }).map(record=>{const rect=record.getBoundingClientRect();return {label:record.getAttribute('aria-label')??record.textContent?.trim().slice(0,80),recordTop:rect.top,recordBottom:rect.bottom,viewportTop:bounds.top,viewportBottom:bounds.bottom};});
-    });
-    assert.deepEqual(partialAuthoredRecords,[],`expanded event viewport exposes a partial authored record: ${JSON.stringify(partialAuthoredRecords)}`);
+    await authoredMessage.focus();await page.keyboard.press("Enter");await page.getByText("Message in focus",{exact:true}).waitFor();
+    const nativeMessage=page.locator('.aw-stream-fact__trigger').first();
+    await nativeMessage.focus();await page.keyboard.press("Space");await page.getByText("Native fact in focus",{exact:true}).waitFor();
+    const toolRow=page.getByRole("button",{name:/Validated owner-bound native Session/});await toolRow.focus();await page.keyboard.press("Enter");assert.equal(await toolRow.getAttribute("aria-expanded"),"true","event row keyboard selection");
+    await toolRow.locator('xpath=ancestor::div[@data-boundary-aligned="true"]').waitFor();
+    assert.equal(await toolRow.locator('xpath=ancestor::article').getAttribute("data-selected"),"true","selected event does not retain a stable center-row state");
+    assert.equal(await page.getByText("Native fact in focus",{exact:true}).count(),1,"selected event detail is not delegated to the context rail");
     await page.screenshot({path:join(evidenceDir,`member-event-detail--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   }
   await page.getByRole("tab",{name:/Messages/}).click();await page.getByRole("button",{name:"inbox",exact:true}).waitFor();
@@ -203,7 +199,7 @@ try{
     assert.equal(await hostPage.getByLabel("Composer action").count(),0,"identity switch retained an action selector while projection was pending");
     releasePublicProjection();hostMemberProjectionGate=null;
   }
-  await hostPage.getByText(/Public Agent context/).waitFor();
+  await hostPage.getByText("Privacy boundary",{exact:true}).waitFor();
   if(liveConfig&&(await hostPage.locator(".agent-authored-turn").count())>0)await hostPage.locator(".agent-authored-turn").first().waitFor();
   await waitForStableWriteSurface(hostPage);
   assert.equal(await hostPage.getByText("Validated owner-bound native Session",{exact:true}).count(),0,"Host-selected Member leaked provider-private activity");

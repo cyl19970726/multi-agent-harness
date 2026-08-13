@@ -1,7 +1,7 @@
 import * as ScrollArea from "@radix-ui/react-scroll-area";
 import * as Tabs from "@radix-ui/react-tabs";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft, BriefcaseBusiness, ChevronRight, Circle, Clock3,
   Inbox, MessageSquare,
@@ -20,8 +20,8 @@ import {
   WorkspaceSection,
   WorkspaceState,
 } from "@/components/workbench/agent/AgentWorkspacePrimitives";
+import { AgentMessageCommandComposer } from "@/components/workbench/agent/AgentMessageCommandComposer";
 import { OperationalFactRow } from "@/components/workbench/agent/AgentStreamPrimitives";
-import { TeamMessageComposer } from "@/components/workbench/team/TeamMessageComposer";
 import type { SelectionState } from "../app/selection";
 import {
   fetchRoleView,
@@ -186,6 +186,7 @@ function AgentRoster({data,selectedId,onBack,onSelect}:{data:AgentWorkspaceData;
 }
 
 function SessionCanvas({data,onSelect}:{data:AgentWorkspaceData;onSelect:(next:ContextSelection)=>void}){
+  const [selectedEventId,setSelectedEventId]=useState<string|null>(null);
   const rows=useMemo(()=>[
     ...data.messages.map(message=>({kind:"message" as const,at:message.created_at,message})),
     ...data.session_activity.items.map(event=>({kind:"event" as const,at:event.occurred_at??"",event})),
@@ -194,16 +195,27 @@ function SessionCanvas({data,onSelect}:{data:AgentWorkspaceData;onSelect:(next:C
   const currentWork=data.works.find(work=>work.work_id===data.context_summary.current_work_id);
   return <ScrollArea.Root className="h-full overflow-hidden"><ScrollArea.Viewport className="size-full"><div className="agent-session-stream w-full px-5 pb-8 sm:px-7">
     <div className="aw-session-context-strip">
-      <span className="aw-session-context-strip__label">{publicProjection?<><ShieldCheck aria-hidden="true"/>Public coordination</>:<><Sparkles aria-hidden="true"/>Session stream</>}</span>
-      <strong>{publicProjection?"Authored Messages and Work facts only":currentWork?.title??"Chronological authored and provider-native activity"}</strong>
-      <span>{data.messages.length} authored{publicProjection?"":` · ${data.session_activity.items.length} owner-bound`}{currentWork?` · ${currentWork.phase} Work`:""}</span>
+      <span className="aw-session-context-strip__label">{publicProjection?<ShieldCheck aria-hidden="true"/>:<Sparkles aria-hidden="true"/>}{publicProjection?"Public coordination":"Current conversation"}</span>
+      <strong>{currentWork?.title??(publicProjection?"Authored Messages and Work facts":"Agent and Host exchange")}</strong>
+      <span>{currentWork?`${humanizeToken(currentWork.phase)} Work · `:""}{data.messages.length} messages{publicProjection?"":` · ${data.session_activity.items.length} native facts`}</span>
     </div>
     {rows.length
-      ? rows.map(row=>row.kind==="message"?<AuthoredTurn key={`message:${row.message.message_id}`} data={data} message={row.message} selectedAgentId={data.selected_agent.agent_member_ref.id} onSelect={()=>onSelect({kind:"message",message:row.message})}/>:<ExpandableEvent key={row.event.event_id} data={data} event={row.event} onSelect={()=>onSelect({kind:"event",event:row.event})}/>)
+      ? <div className="aw-session-chronology" aria-label="Chronological authored Messages and native Session facts">{rows.map(row=>row.kind==="message"
+        ? <AuthoredTurn key={`message:${row.message.message_id}`} data={data} message={row.message} selectedAgentId={data.selected_agent.agent_member_ref.id} onSelect={()=>onSelect({kind:"message",message:row.message})}/>
+        : row.event.kind==="message"
+          ? <NativeAuthoredRecord key={`native:${row.event.event_id}`} event={row.event} selected={selectedEventId===row.event.event_id} onSelect={()=>{setSelectedEventId(row.event.event_id);onSelect({kind:"event",event:row.event});}}/>
+          : <div key={`native:${row.event.event_id}`} className="aw-execution-fact"><ExpandableEvent event={row.event} selected={selectedEventId===row.event.event_id} onSelect={()=>{setSelectedEventId(row.event.event_id);onSelect({kind:"event",event:row.event});}}/></div>)}</div>
       : <EmptyCanvas compact title={data.selected_agent.is_host?"No Host-owned Session events or public Messages yet":"No Session activity yet"} detail={data.session_activity.disabled_reason??"Display-safe provider events and public authored Messages will appear here when recorded."}/>
     }
     {data.session_activity.truncated&&<p className="mt-4 border-t border-border pt-3 text-[10px] text-muted-foreground">Showing the latest bounded provider-native events.</p>}
   </div></ScrollArea.Viewport><ScrollArea.Scrollbar orientation="vertical" className="flex w-2 p-0.5"><ScrollArea.Thumb className="rounded-full bg-border"/></ScrollArea.Scrollbar></ScrollArea.Root>;
+}
+
+function NativeAuthoredRecord({event,selected,onSelect}:{event:AgentWorkspaceActivityItem;selected:boolean;onSelect:()=>void}){
+  return <article role="button" tabIndex={0} aria-label={`Open native Session message ${event.title}`} data-selected={selected||undefined} className="aw-native-authored-record" onClick={onSelect} onKeyDown={eventKey=>activateOnKeyDown(eventKey,onSelect)} onKeyUp={eventKey=>activateOnKeyUp(eventKey,onSelect)}>
+    <span className="aw-native-authored-record__mark"><MessageSquare aria-hidden="true"/></span>
+    <div className="min-w-0 flex-1"><header><strong>{event.title}</strong><span>Native Session message</span><time>{formatTime(event.occurred_at)}</time></header><p>{event.summary??"Display-safe content recorded by the provider-native Session."}</p><footer>Provider-native record · {humanizeToken(event.status)}</footer></div>
+  </article>;
 }
 
 function SessionSelect({data,onChange}:{data:AgentWorkspaceData;onChange:(sessionId:string)=>void}){
@@ -221,24 +233,8 @@ function AuthoredTurn({data,message,selectedAgentId,onSelect}:{data:AgentWorkspa
   </article>;
 }
 
-function ExpandableEvent({data,event,onSelect}:{data:AgentWorkspaceData;event:AgentWorkspaceActivityItem;onSelect:()=>void}){
-  const [open,setOpen]=useState(false);
-  const [boundaryAligned,setBoundaryAligned]=useState(false);
-  const anchorRef=useRef<HTMLDivElement>(null);
-  const authored=event.kind==="message";
-  useLayoutEffect(()=>{
-    if(!open)return;
-    const viewport=anchorRef.current?.closest<HTMLElement>('[data-radix-scroll-area-viewport]');
-    if(!viewport)return;
-    const bounds=viewport.getBoundingClientRect();
-    const bottomPartial=[...viewport.querySelectorAll<HTMLElement>('.agent-authored-turn')]
-      .map(record=>record.getBoundingClientRect())
-      .find(rect=>rect.top<bounds.bottom&&rect.bottom>bounds.bottom);
-    if(bottomPartial)viewport.scrollTop+=bottomPartial.bottom-bounds.bottom;
-    setBoundaryAligned(true);
-  },[open]);
-  if(authored)return <article role="button" tabIndex={0} aria-label={`Open provider-authored reply from ${data.selected_agent.display_name}`} className="agent-authored-turn" data-provider-reply="true" onClick={onSelect} onKeyDown={keyEvent=>activateOnKeyDown(keyEvent,onSelect)} onKeyUp={keyEvent=>activateOnKeyUp(keyEvent,onSelect)}><Avatar name={data.selected_agent.display_name} identity={`${data.selected_agent.agent_member_ref.id} ${data.selected_agent.role}`} size="md" tone={data.selected_agent.runtime_status==="running"?"running":"idle"}/><div className="min-w-0 flex-1"><header className="mb-1 flex items-baseline gap-2"><p className="text-[12px] font-semibold">{data.selected_agent.display_name}</p><span className="aw-record-kind">Provider reply</span><time className="aw-record-time ml-auto">{formatTime(event.occurred_at)}</time></header><div className="aw-authored-body"><Markdown source={event.summary??"Provider recorded an authored response."}/></div></div></article>;
-  return <div ref={anchorRef} data-boundary-aligned={open&&boundaryAligned||undefined}><OperationalFactRow kind={event.kind} status={event.status} title={event.title} summary={event.summary} timestamp={formatTime(event.occurred_at)} expanded={open} onToggle={()=>setOpen(value=>{setBoundaryAligned(false);return !value;})} onSelect={onSelect}>{open&&<p>Selected event details and provenance are shown in the context rail.</p>}</OperationalFactRow></div>;
+function ExpandableEvent({event,selected,onSelect}:{event:AgentWorkspaceActivityItem;selected:boolean;onSelect:()=>void}){
+  return <div data-boundary-aligned={selected||undefined}><OperationalFactRow kind={event.kind} status={event.status} title={event.title} summary={event.summary} timestamp={formatTime(event.occurred_at)} expanded={selected} selected={selected} onToggle={onSelect}/></div>;
 }
 
 function MessagesCanvas({data,onSelect}:{data:AgentWorkspaceData;onSelect:(next:ContextSelection)=>void}){
@@ -277,32 +273,32 @@ function AgentContextRail({view,data,selected,currentWork,actions}:{view:RoleVie
   const ownedWorks=data.works.filter(work=>work.owner_actor_ref?.id===data.selected_agent.agent_member_ref.id);
   const eligibleWorks=data.works.filter(work=>work.owner_actor_ref?.id!==data.selected_agent.agent_member_ref.id&&work.eligible_member_ids.includes(data.selected_agent.agent_member_ref.id));
   const activeWorks=data.works.filter(work=>work.phase==="active"||work.phase==="review");
+  const attentionWorks=activeWorks.filter(work=>work.phase==="review"||work.condition==="blocked");
   const evidenceWorks=data.works.filter(work=>work.latest_report_ref||work.latest_finding_refs.length||work.latest_failure_ref||work.artifact_refs.length||work.check_refs.length);
   const incoming=data.messages.filter(message=>message.sender.id!==data.selected_agent.agent_member_ref.id);
+  const unreadIncoming=incoming.filter(message=>message.deliveries.some(delivery=>["queued","delivered"].includes(delivery.status)));
   const actionIndex=[...actions.reduce((index,action)=>{
     const existing=index.get(action.kind);
     if(!existing||existing.disabled_reason&& !action.disabled_reason)index.set(action.kind,action);
     return index;
   },new Map<string,AllowedAction>()).values()];
-  return <ScrollArea.Root className="h-full min-w-0 overflow-hidden"><ScrollArea.Viewport className="size-full min-w-0 [&>div]:!block [&>div]:!min-w-0"><div className="min-w-0 overflow-hidden px-5 pb-8 pt-5">
-    {selected?.kind==="message"
-      ? <MessageContext data={data} message={selected.message}/>
-      : selected?.kind==="event"
-        ? <EventContext event={selected.event}/>
-        : <WorkContext title={isHost?(currentWork?.owner_actor_ref?.id===data.selected_agent.agent_member_ref.id?"Host Current Work":"Current Team Work"):"Current Work"} work={selected?.kind==="work"?selected.work:currentWork}/>}
-    {!isHost&&<ContextSection title="My Work"><div className="grid grid-cols-4 gap-3"><MiniMetric label="Open" value={ownedWorks.filter(work=>work.phase==="open").length}/><MiniMetric label="Active" value={ownedWorks.filter(work=>work.phase==="active").length}/><MiniMetric label="Review" value={ownedWorks.filter(work=>work.phase==="review").length}/><MiniMetric label="Closed" value={ownedWorks.filter(work=>work.phase==="closed").length}/></div>{eligibleWorks.length>0&&<p className="mt-3 border-t border-border/70 pt-2 text-[10px] text-muted-foreground">Eligible ready Work <b className="float-right text-foreground">{eligibleWorks.length}</b></p>}</ContextSection>}
-    {selfPrivate?<ContextSection title={isHost?"Host Session":"Native Session"}><ContextFact label="State" value={data.selected_agent.runtime_status??"unknown"}/><ContextFact label="Provider" value={data.selected_agent.provider??"not bound"}/><ContextFact label="Session" value={shortId(data.selected_session_id)}/><ContextFact label="Last activity" value={formatTime(data.context_summary.last_activity_at)}/></ContextSection>:<ContextSection title="Public Agent context"><div className="aw-privacy-notice"><ShieldCheck aria-hidden="true"/><p>Provider-private Session, runtime and workspace facts are owner-bound and are not part of this Host view.</p></div></ContextSection>}
-    {isHost&&<ContextSection title="Team Inbox"><div className="mb-2 flex items-baseline justify-between"><span className="text-[10px] text-muted-foreground">Needs Host</span><b className="text-[12px] text-primary">{data.context_summary.unread_count}</b></div>{incoming.slice(0,2).map(message=><ContextMessageRow key={message.message_id} data={data} message={message}/>)}{!incoming.length&&<p className="text-[10px] text-muted-foreground">No authored message currently needs Host attention.</p>}</ContextSection>}
-    {isHost&&<ContextSection title="Assigned Work"><div className="mb-2 flex items-baseline justify-between"><span className="text-[10px] text-muted-foreground">Current responsibility</span><b className="text-[10px]">{Math.min(activeWorks.length,2)} of {activeWorks.length} active</b></div>{activeWorks.slice(0,2).map(work=><ContextWorkRow key={work.work_id} work={work}/>)}</ContextSection>}
-    {evidenceWorks.length>0&&<ContextSection title="Latest Review & Evidence">{evidenceWorks.slice(0,2).map(work=><ContextWorkRow key={work.work_id} work={work} evidence/>)}</ContextSection>}
-    {actionIndex.some(action=>!action.disabled_reason)&&<ContextSection title={isHost?"Available Host Controls":"Available Controls"}><WorkspaceActionIndex label={isHost?"Available Host Controls":"Available Controls"} actions={actionIndex.filter(action=>!action.disabled_reason).slice(0,6).map(action=>({key:action.kind,label:actionLabel(action.kind)}))}/></ContextSection>}
+  const anchoredWork=selected?.kind==="work"?selected.work:currentWork;
+  return <ScrollArea.Root className="h-full min-w-0 overflow-hidden"><ScrollArea.Viewport className="size-full min-w-0 [&>div]:!block [&>div]:!min-w-0"><div className="aw-context-story min-w-0 overflow-hidden px-5 pb-8 pt-5">
+    <WorkContext title={isHost?(anchoredWork?.owner_actor_ref?.id===data.selected_agent.agent_member_ref.id?"Host Current Work":"Current Team Work"):"Current Work"} work={anchoredWork}/>
+    {(selected?.kind==="message"||selected?.kind==="event")&&<div className="aw-context-selection-inset" aria-label="Selected context">{selected.kind==="message"?<MessageContext data={data} message={selected.message}/>:<EventContext event={selected.event}/>}</div>}
+    {!isHost&&<div className="aw-responsibility-summary" aria-label="My Work summary"><span>My Work</span><p>{ownedWorks.filter(work=>work.phase==="open").length} open · {ownedWorks.filter(work=>work.phase==="active").length} active · {ownedWorks.filter(work=>work.phase==="review").length} review{eligibleWorks.length>0?` · ${eligibleWorks.length} eligible`:""}</p></div>}
+    {isHost&&unreadIncoming.length>0&&<ContextSection title="Needs Host" hint={`${unreadIncoming.length} unread`}>{unreadIncoming.slice(0,2).map(message=><ContextMessageRow key={message.message_id} data={data} message={message}/>)}</ContextSection>}
+    {isHost&&attentionWorks.length>0&&<ContextSection title="Review and blocked Work" hint={`${attentionWorks.length} records`}>{attentionWorks.slice(0,2).map(work=><ContextWorkRow key={work.work_id} work={work}/>)}</ContextSection>}
+    {evidenceWorks.length>0&&<ContextSection title="Latest evidence">{evidenceWorks.slice(0,2).map(work=><ContextWorkRow key={work.work_id} work={work} evidence/>)}</ContextSection>}
+    {selfPrivate?<ContextSection title={isHost?"Host runtime":"Runtime"}><ContextFact label="State" value={data.selected_agent.runtime_status??"unknown"}/><ContextFact label="Provider" value={data.selected_agent.provider??"not bound"}/><ContextFact label="Session" value={shortId(data.selected_session_id)}/><ContextFact label="Last activity" value={formatTime(data.context_summary.last_activity_at)}/></ContextSection>:<ContextSection title="Privacy boundary"><div className="aw-privacy-notice"><ShieldCheck aria-hidden="true"/><p>Provider-private Session, runtime and workspace facts are owner-bound and are not part of this Host view.</p></div></ContextSection>}
+    {actionIndex.some(action=>!action.disabled_reason)&&<ContextSection title="Next"><WorkspaceActionIndex label={isHost?"Available Host Controls":"Available Controls"} actions={actionIndex.filter(action=>!action.disabled_reason).slice(0,6).map(action=>({key:action.kind,label:actionLabel(action.kind)}))}/></ContextSection>}
     <details className="mt-5 border-t border-border pt-4"><summary className="cursor-pointer text-[10px] font-semibold text-muted-foreground">Projection · {view.freshness} · seq {view.as_of_event_sequence}</summary><div className="mt-3"><ViewProvenance view={view}/></div></details>
   </div></ScrollArea.Viewport><ScrollArea.Scrollbar orientation="vertical" className="flex w-2 p-0.5"><ScrollArea.Thumb className="rounded-full bg-border"/></ScrollArea.Scrollbar></ScrollArea.Root>;
 }
 
 function WorkContext({title="Current Work",work}:{title?:string;work?:WorkSummary}){return <ContextSection title={title} primary>{work?<><h3 className="aw-context-work-title text-[14px] font-semibold leading-5">{work.title||work.work_id}</h3><div className="mt-2 flex items-center gap-2"><WorkspaceState label={humanizeToken(work.phase)} tone={work.phase==="active"?"running":work.phase==="review"?"warn":work.phase==="closed"?"good":"muted"}/><span className="text-[10px] text-muted-foreground">{shortId(work.work_id)} · v{work.work_revision}</span></div><div className="mt-4"><ContextFact label="Condition" value={humanizeToken(String(work.condition))}/><ContextFact label="Priority" value={humanizeToken(String(work.priority))}/>{work.delivery_summary.recovery_class&&work.delivery_summary.recovery_class!=="none"&&<ContextFact label="Delivery recovery" value={humanizeToken(String(work.delivery_summary.recovery_class))}/>}<ContextFact label="Gates" value={`${work.gate_summary.passed}/${work.gate_summary.required}`}/></div></>:<p className="text-[11px] leading-5 text-muted-foreground">No Work is currently owned or eligible for this Agent.</p>}</ContextSection>}
-function MessageContext({data,message}:{data:AgentWorkspaceData;message:MessageSummary}){const actor=data.roster.find(item=>item.agent_member_ref.id===message.sender.id);return <ContextSection title="Selected Message" primary><p className="text-[13px] font-semibold">{actor?.display_name??message.sender.id}</p><p className="mt-2 line-clamp-4 text-[11px] leading-5 text-muted-foreground">{message.body}</p><div className="mt-4"><ContextFact label="Delivery" value={message.deliveries.map(item=>item.status).join(", ")||"recorded"}/><ContextFact label="Linked Work" value={shortId(message.work_id)}/></div></ContextSection>}
-function EventContext({event}:{event:AgentWorkspaceActivityItem}){return <ContextSection title="Selected Event" primary><p className="text-[12px] font-semibold">{event.title}</p><p className="mt-2 text-[11px] leading-5 text-muted-foreground">{event.summary??"Display-safe provider event summary."}</p><div className="mt-4"><ContextFact label="Source" value="provider-native"/><ContextFact label="Status" value={event.status}/><ContextFact label="Time" value={formatTime(event.occurred_at)}/></div></ContextSection>}
+function MessageContext({data,message}:{data:AgentWorkspaceData;message:MessageSummary}){const actor=data.roster.find(item=>item.agent_member_ref.id===message.sender.id);return <ContextSection title="Message in focus" hint={formatTime(message.created_at)}><p className="aw-context-focus-title">{actor?.display_name??message.sender.id}</p><p className="aw-context-focus-copy">{message.body}</p><div className="mt-3"><ContextFact label="Delivery" value={message.deliveries.map(item=>humanizeToken(item.status)).join(", ")||"Recorded"}/>{message.work_id&&<ContextFact label="Linked Work" value={shortId(message.work_id)}/>}</div></ContextSection>}
+function EventContext({event}:{event:AgentWorkspaceActivityItem}){return <ContextSection title="Native fact in focus" hint={formatTime(event.occurred_at)}><p className="aw-context-focus-title">{event.title}</p><p className="aw-context-focus-copy">{event.summary??"Display-safe provider-native fact."}</p><div className="mt-3"><ContextFact label="Source" value="Provider native"/><ContextFact label="Status" value={humanizeToken(event.status)}/></div></ContextSection>}
 
 function AgentComposer({data,actions,actionsCurrent,selectedRunId,onAction,onCompleted}:{data:AgentWorkspaceData;actions:AllowedAction[];actionsCurrent:boolean;selectedRunId:string|null;onAction:RoleActionExecutor;onCompleted:()=>void}){
   const sendAction=actions.find(action=>action.kind==="send_message");
@@ -313,8 +309,10 @@ function AgentComposer({data,actions,actionsCurrent,selectedRunId,onAction,onCom
   useEffect(()=>{if(selectedKey&&!usable.some(action=>keyForAction(action)===selectedKey))setSelectedKey(sendAction?keyForAction(sendAction):usable[0]?keyForAction(usable[0]):"");},[selectedKey,sendAction,usable]);
   if(!actionsCurrent)return <div className="agent-workspace-composer shrink-0 border-t border-border bg-background/95 px-4 py-3 text-xs text-muted-foreground" role="status">Authoritative Agent Workspace refresh is pending or failed. Composer and action writes are unavailable.</div>;
   const actionControl=<label className="flex min-w-0 items-center gap-2 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground"><SlidersHorizontal className="size-3 shrink-0 text-primary"/><span className="sr-only">Action</span><select aria-label="Composer action" value={selected?keyForAction(selected):""} onChange={event=>setSelectedKey(event.target.value)} title={selected?.disabled_reason??actionLabel(selected?.kind??"")} className="h-8 min-w-0 w-full rounded-md border border-border bg-background px-2 text-[10px] font-medium normal-case tracking-normal text-foreground"><option value="" disabled>No action authorized</option>{usable.map(action=><option key={keyForAction(action)} value={keyForAction(action)} disabled={Boolean(action.disabled_reason)}>{actionLabel(action.kind)}</option>)}</select></label>;
+  const fixedRecipient=data.team.viewer_role==="host"?(data.selected_agent.is_host?undefined:{id:data.selected_agent.agent_member_ref.id,label:data.selected_agent.display_name}):{id:data.team.host_agent_id,label:hostAgent?.display_name??"Host Agent"};
+  const recipients=data.roster.filter(item=>!item.is_host).map(item=>({id:item.agent_member_ref.id,label:item.display_name}));
   return <div data-testid="agent-workspace-composer" data-composer-kind={selected?.kind==="send_message"?"message":"action"} className="agent-workspace-composer shrink-0 border-t border-border bg-background/95">
-      {selected?.kind==="send_message"?<TeamMessageComposer variant="conversation" actionControl={actionControl} actions={actions} members={data.roster.filter(item=>!item.is_host) as never} works={data.works} replyTo={null} fixedRecipient={data.team.viewer_role==="host"?(data.selected_agent.is_host?undefined:{id:data.selected_agent.agent_member_ref.id,label:data.selected_agent.display_name}):{id:data.team.host_agent_id,label:hostAgent?.display_name??"Host Agent"}} teamId={data.team.team_id} teamRunId={data.team.latest_run_id??undefined} actionsCurrent={actionsCurrent} onAction={onAction} onClearReply={()=>undefined} onCompleted={onCompleted}/>:selected?<div className="mx-auto max-w-4xl px-4 py-3"><div className="mb-2">{actionControl}</div><RoleActionPanel compact actions={[selected]} onAction={onAction} context={{teamId:data.team.team_id,teamRunId:data.team.latest_run_id??undefined}} actionsCurrent={actionsCurrent} onCompleted={onCompleted}/>{selected.target_ref.kind==="member_run"&&selectedRunId&&selected.target_ref.id!==selectedRunId&&<p className="mt-2 text-[10px] text-status-warn">This action targets a different MemberRun and is not executed from this selected Agent context.</p>}</div>:<div className="mx-auto max-w-4xl px-4 py-4">{actionControl}<p className="mt-2 text-xs text-muted-foreground">No canonical action is authorized for this identity and state.</p></div>}
+      {selected?.kind==="send_message"?<AgentMessageCommandComposer action={selected} actionControl={actionControl} recipient={fixedRecipient} recipients={recipients} works={data.works} teamId={data.team.team_id} teamRunId={data.team.latest_run_id??undefined} actionsCurrent={actionsCurrent} onAction={onAction} onCompleted={onCompleted}/>:selected?<div className="mx-auto max-w-4xl px-4 py-3"><div className="mb-2">{actionControl}</div><RoleActionPanel compact actions={[selected]} onAction={onAction} context={{teamId:data.team.team_id,teamRunId:data.team.latest_run_id??undefined}} actionsCurrent={actionsCurrent} onCompleted={onCompleted}/>{selected.target_ref.kind==="member_run"&&selectedRunId&&selected.target_ref.id!==selectedRunId&&<p className="mt-2 text-[10px] text-status-warn">This action targets a different MemberRun and is not executed from this selected Agent context.</p>}</div>:<div className="mx-auto max-w-4xl px-4 py-4">{actionControl}<p className="mt-2 text-xs text-muted-foreground">No canonical action is authorized for this identity and state.</p></div>}
   </div>;
 }
 
