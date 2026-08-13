@@ -96,20 +96,25 @@ pub fn read_transcript_batch(
         });
     }
 
+    let snapshot_len = metadata.len();
     let mut file = fs::File::open(path)?;
     file.seek(SeekFrom::Start(position.byte_offset))?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    let remaining = snapshot_len - position.byte_offset;
+    let mut reader = BufReader::new(file.take(remaining));
+    let mut segment = Vec::new();
     let mut outcomes = Vec::new();
     let mut consumed = 0usize;
     let mut ordering = position.next_ordering_position.max(1);
     let mut active_turn_id = position.active_provider_turn_id.clone();
-    for segment in bytes.split_inclusive(|byte| *byte == b'\n') {
-        if outcomes.len() >= max_events || !segment.ends_with(b"\n") {
+    let mut incomplete_tail = false;
+    while outcomes.len() < max_events {
+        let read = read_bounded_segment(&mut reader, &mut segment)?;
+        if read == 0 {
             break;
         }
-        if segment.len() > MAX_NATIVE_LINE_BYTES {
-            return Err(TranscriptReadError::LineTooLarge);
+        if !segment.ends_with(b"\n") {
+            incomplete_tail = true;
+            break;
         }
         let line_bytes = &segment[..segment.len() - 1];
         let line = std::str::from_utf8(line_bytes).map_err(|_| TranscriptReadError::InvalidUtf8)?;
@@ -131,7 +136,10 @@ pub fn read_transcript_batch(
             }
             ordering += 1;
         }
-        consumed += segment.len();
+        consumed += read;
+    }
+    if !incomplete_tail && outcomes.len() < max_events && consumed as u64 != remaining {
+        return Err(TranscriptReadError::SourceChanged);
     }
     Ok(TranscriptBatch {
         outcomes,
@@ -140,7 +148,7 @@ pub fn read_transcript_batch(
             next_ordering_position: ordering,
             active_provider_turn_id: active_turn_id,
         },
-        incomplete_tail: consumed < bytes.len(),
+        incomplete_tail: incomplete_tail || (consumed as u64) < remaining,
     })
 }
 
