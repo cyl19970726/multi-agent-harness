@@ -1,0 +1,3 @@
+{"type":"message_update","content":[{"type":"text","text":"pi answer"}]}
+{"type":"tool_execution_start","toolName":"Read","toolCallId":"pi-call","args":{"secret":"not projected"}}
+{"type":"turn_end"}

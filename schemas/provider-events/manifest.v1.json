@@ -1,0 +1,22 @@
+{
+  "schema_version": "agentfirm.provider_event_manifest.v1",
+  "observation_schema": "provider-observation.schema.json",
+  "adapter_manifest_schema": "adapter-manifest.schema.json",
+  "session_projection_schema": "session-event-projection.schema.json",
+  "team_activity_schema": "team-runtime-activity.schema.json",
+  "providers": ["codex", "claude", "kimi", "pi"],
+  "semantic_kinds": [
+    "authored_response", "reasoning_summary", "tool_call_requested",
+    "tool_call_started", "tool_call_completed", "tool_call_failed",
+    "artifact_created", "usage_reported", "interaction_required",
+    "interaction_resolved", "runtime_started", "runtime_ready",
+    "runtime_stopped", "transport_interrupted", "turn_completed",
+    "turn_failed", "turn_cancelled", "command_recovery_required",
+    "malformed_or_incomplete"
+  ],
+  "team_public_allowlist": [
+    "interaction_required", "interaction_resolved", "runtime_started",
+    "runtime_ready", "runtime_stopped", "transport_interrupted",
+    "command_recovery_required"
+  ]
+}

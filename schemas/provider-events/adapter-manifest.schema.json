@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.local/schemas/provider-events/adapter-manifest.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "provider", "adapter_version", "native_families", "fidelity",
+    "stable_native_identity", "streaming", "terminal_events", "tool_events",
+    "artifact_events", "usage_events", "interaction_events", "cancellation_events", "supported_semantic_kinds",
+    "redaction_policy"
+  ],
+  "properties": {
+    "provider": {"enum": ["codex", "claude", "kimi", "pi"]},
+    "adapter_version": {"const": "agentfirm.provider_event_adapter.v1"},
+    "native_families": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "fidelity": {"enum": ["structured", "summary", "unsupported"]},
+    "stable_native_identity": {"type": "boolean"},
+    "streaming": {"type": "boolean"},
+    "terminal_events": {"type": "boolean"},
+    "tool_events": {"type": "boolean"},
+    "artifact_events": {"type": "boolean"},
+    "usage_events": {"type": "boolean"},
+    "interaction_events": {"type": "boolean"},
+    "cancellation_events": {"type": "boolean"},
+    "supported_semantic_kinds": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["authored_response", "reasoning_summary", "tool_call_requested", "tool_call_started", "tool_call_completed", "tool_call_failed", "artifact_created", "usage_reported", "interaction_required", "interaction_resolved", "runtime_started", "runtime_ready", "runtime_stopped", "transport_interrupted", "turn_completed", "turn_failed", "turn_cancelled", "command_recovery_required", "malformed_or_incomplete"]}},
+    "redaction_policy": {"const": "drop_secrets_paths_raw_tool_io_and_private_reasoning"}
+  }
+}

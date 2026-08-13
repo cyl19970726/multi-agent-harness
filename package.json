@@ -5,7 +5,8 @@
   "type": "module",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
-    "check": "pnpm validate:json && pnpm check:schema-fixtures && pnpm check:member-execution-trust && pnpm check:runtime-message-fabric && pnpm check:remote-fabric && pnpm check:tool-descriptors && pnpm check:native-session-boundary && pnpm check:star-harness-plugin && node scripts/check-cross-layer-consistency.mjs && pnpm check:role-views && pnpm check:dashboard && pnpm check:company-os",
+    "check": "pnpm validate:json && pnpm check:schema-fixtures && pnpm check:provider-events && pnpm check:member-execution-trust && pnpm check:runtime-message-fabric && pnpm check:remote-fabric && pnpm check:tool-descriptors && pnpm check:native-session-boundary && pnpm check:star-harness-plugin && node scripts/check-cross-layer-consistency.mjs && pnpm check:role-views && pnpm check:dashboard && pnpm check:company-os",
+    "check:provider-events": "node scripts/check-provider-events.mjs && cargo test -p firm-provider-events",
     "check:remote-fabric": "node scripts/acceptance-remote-fabric.mjs",
     "acceptance:remote-fabric": "node scripts/acceptance-remote-fabric.mjs",
     "check:runtime-message-fabric": "node scripts/check-runtime-message-fabric.mjs",

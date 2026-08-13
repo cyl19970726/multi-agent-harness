@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.local/schemas/provider-events/session-event-projection.schema.json",
+  "title": "SessionEventProjection",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "agent_session_id", "agent_session_generation", "cursor", "episodes", "truncated", "disabled_reason"],
+  "properties": {
+    "schema_version": {"const": "agentfirm.provider_observation.v1"},
+    "agent_session_id": {"type": "string", "minLength": 1},
+    "agent_session_generation": {"type": "integer", "minimum": 1},
+    "cursor": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "episodes": {
+      "type": "array",
+      "maxItems": 300,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["episode_id", "provider_turn_id", "observations", "terminal", "incomplete"],
+        "properties": {
+          "episode_id": {"type": "string", "minLength": 1},
+          "provider_turn_id": {"type": ["string", "null"], "minLength": 1},
+          "observations": {"type": "array", "minItems": 1, "items": {"$ref": "provider-observation.schema.json"}},
+          "terminal": {"type": "boolean"},
+          "incomplete": {"type": "boolean"}
+        }
+      }
+    },
+    "truncated": {"type": "boolean"},
+    "disabled_reason": {"type": ["string", "null"]}
+  }
+}
