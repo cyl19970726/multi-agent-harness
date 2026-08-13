@@ -3622,7 +3622,7 @@ struct CollaborationArtifactRetentionHttpRequest {
     retention_duration_ms: u64,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct CollaborationArtifactGrantEnvelope {
     delegation_id: String,
@@ -3631,6 +3631,77 @@ struct CollaborationArtifactGrantEnvelope {
     manifest: harness_fabric::RemoteArtifactManifest,
     read_capability: harness_fabric::ArtifactCapability,
     source_placement: harness_core::collaboration::TargetPlacementRef,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_frozen_artifact_grant_replay(
+    operations: &std::collections::BTreeMap<String, RoutedOperation>,
+    receipts: &std::collections::BTreeMap<String, RouteReceipt>,
+    company_id: &str,
+    delegation_id: &str,
+    artifact_id: &str,
+    idempotency_key: &str,
+    expected_revision: u64,
+    target_execution_space_id: &str,
+    expires_unix_ms: u64,
+    credential_actor: &harness_core::agentfirm_api::ActorRef,
+) -> Result<Option<RouteReceipt>, FabricError> {
+    let operation_id = format!("route-artifact-grant:{delegation_id}:{artifact_id}");
+    let Some(existing) = operations.get(&operation_id) else {
+        return Ok(None);
+    };
+    let harness_fabric::ClosedOperationBody::CollaborationBusiness(reference) =
+        existing.closed_body()?
+    else {
+        return Err(FabricError::none(
+            FabricErrorCode::IdempotencyConflict,
+            "artifact grant identity belongs to another operation kind",
+        ));
+    };
+    let payload: CollaborationArtifactGrantEnvelope =
+        serde_json::from_value(reference.payload.clone()).map_err(|error| {
+            FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
+        })?;
+    let credential_kind = match credential_actor.kind {
+        harness_core::agentfirm_api::ActorKind::Human => "human",
+        harness_core::agentfirm_api::ActorKind::AgentMember => "agent_member",
+        harness_core::agentfirm_api::ActorKind::External
+        | harness_core::agentfirm_api::ActorKind::Service => "service",
+    };
+    let exact = existing.company_id == company_id
+        && existing.idempotency_key == idempotency_key
+        && existing.expected_target_revision == Some(expected_revision)
+        && existing.target_execution_space_id.as_deref() == Some(target_execution_space_id)
+        && existing.actor.expires_at_unix_ms == expires_unix_ms
+        && reference.business_kind == "artifact_grant"
+        && reference.business_actor_kind == credential_kind
+        && reference.business_actor_id == credential_actor.id
+        && payload.delegation_id == delegation_id
+        && payload.delegation.id == delegation_id
+        && payload.delegation.revision == expected_revision
+        && payload.delegation.target_host_ref == *credential_actor
+        && payload.manifest.id == artifact_id;
+    if !exact {
+        return Err(FabricError::none(
+            FabricErrorCode::IdempotencyConflict,
+            "same artifact grant identity was reused with a different request",
+        ));
+    }
+    receipts
+        .values()
+        .filter(|receipt| {
+            receipt.operation_id == operation_id
+                && receipt.kind == ReceiptKind::ControlPlaneAccepted
+        })
+        .min_by_key(|receipt| (receipt.created_at_unix_ms, receipt.id.as_str()))
+        .cloned()
+        .map(Some)
+        .ok_or_else(|| {
+            FabricError::unknown(
+                operation_id,
+                "accepted artifact grant has no durable ControlPlane receipt",
+            )
+        })
 }
 
 fn validate_artifact_grant_authority(
@@ -4242,6 +4313,34 @@ fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend
                 "artifact grant requires exact source Execution Space and future expiry",
             ));
         }
+        // Resolve an already committed grant from its frozen operation before
+        // consulting mutable Delegation or Artifact state. Exact replay is a
+        // read of the original decision: later Delegation/retention progress
+        // must neither mint a second one-use capability nor turn the original
+        // request into a conflict. Authentication is still bound to the
+        // frozen target Host and the complete original request fingerprint.
+        let operation_id = format!("route-artifact-grant:{delegation_id}:{artifact_id}");
+        let fabric_state = control.store().snapshot()?;
+        if let Some(receipt) = resolve_frozen_artifact_grant_replay(
+            &fabric_state.operations,
+            &fabric_state.receipts,
+            control.company_id(),
+            delegation_id,
+            artifact_id,
+            idempotency_key,
+            expected_revision,
+            &request.target_execution_space_id,
+            request.expires_unix_ms,
+            &credential.actor,
+        )? {
+            return Ok(serde_json::json!({
+                "delegation_id": delegation_id,
+                "artifact_id": artifact_id,
+                "operation_id": operation_id,
+                "receipt": receipt,
+                "replayed": true,
+            }));
+        }
         let delegation = store
             .collaboration_delegation(control.company_id(), delegation_id)
             .map_err(|error| {
@@ -4273,60 +4372,6 @@ fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend
                 "artifact manifest does not exist",
             )
         })?;
-        // Replay must resolve the already frozen grant before minting another
-        // one-use capability. A freshly signed token carries a new issued-at
-        // value and would otherwise change the routed-operation fingerprint,
-        // making an exact idempotent replay impossible after the first import.
-        let operation_id = format!("route-artifact-grant:{delegation_id}:{artifact_id}");
-        let fabric_state = control.store().snapshot()?;
-        if let Some(existing) = fabric_state.operations.get(&operation_id) {
-            let harness_fabric::ClosedOperationBody::CollaborationBusiness(reference) =
-                existing.closed_body()?
-            else {
-                return Err(FabricError::none(
-                    FabricErrorCode::IdempotencyConflict,
-                    "artifact grant identity belongs to another operation kind",
-                ));
-            };
-            let payload: CollaborationArtifactGrantEnvelope =
-                serde_json::from_value(reference.payload.clone()).map_err(|error| {
-                    FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
-                })?;
-            let exact = existing.idempotency_key == *idempotency_key
-                && existing.target_execution_space_id.as_deref()
-                    == Some(request.target_execution_space_id.as_str())
-                && existing.actor.expires_at_unix_ms == request.expires_unix_ms
-                && reference.business_actor_id == credential.actor.id
-                && payload.delegation_id == delegation_id
-                && payload.delegation == delegation
-                && payload.source_work_attestation == attestation
-                && payload.manifest == manifest;
-            if !exact {
-                return Err(FabricError::none(
-                    FabricErrorCode::IdempotencyConflict,
-                    "same artifact grant identity was reused with a different request",
-                ));
-            }
-            let receipt = fabric_state
-                .receipts
-                .values()
-                .filter(|receipt| receipt.operation_id == operation_id)
-                .min_by_key(|receipt| receipt.created_at_unix_ms)
-                .cloned()
-                .ok_or_else(|| {
-                    FabricError::unknown(
-                        operation_id.clone(),
-                        "accepted artifact grant has no durable receipt",
-                    )
-                })?;
-            return Ok(serde_json::json!({
-                "delegation_id": delegation_id,
-                "artifact_id": artifact_id,
-                "operation_id": operation_id,
-                "receipt": receipt,
-                "replayed": true,
-            }));
-        }
         let grantor = AuthenticatedActor {
             company_id: control.company_id().into(),
             actor_id: credential.actor.id.clone(),
@@ -5800,6 +5845,191 @@ mod tests {
                 "caller-supplied {field} must fail before artifact mutation"
             );
         }
+    }
+
+    #[test]
+    fn artifact_grant_replay_uses_frozen_authority_before_mutable_business_state() {
+        let delegation: harness_core::collaboration::WorkDelegationV1 =
+            serde_json::from_str(include_str!(
+                "../../../schemas/collaboration/fixtures/work-delegation-v1/valid/awaiting.json"
+            ))
+            .expect("Delegation fixture");
+        let attestation: harness_core::collaboration::SourceWorkAttestation =
+            serde_json::from_str(include_str!(
+                "../../../schemas/collaboration/fixtures/source-work-attestation/valid/server-authored.json"
+            ))
+            .expect("attestation fixture");
+        let manifest = harness_fabric::RemoteArtifactManifest {
+            id: "artifact-replay".into(),
+            company_id: delegation.company_id.clone(),
+            source_node_id: delegation.target_placement.node_id.clone(),
+            source_team_id: Some(delegation.target_placement.team_id.clone()),
+            source_work_id: delegation
+                .target_work_ref
+                .as_ref()
+                .map(|work| work.work_id.clone()),
+            operation_id: None,
+            media_type: "text/plain".into(),
+            size_bytes: 5,
+            sha256: harness_fabric::sha256_hex(b"hello"),
+            classification: harness_fabric::ArtifactClassification::CompanyInternal,
+            initiator: delegation.target_host_ref.id.clone(),
+            authorized_readers: BTreeSet::from([attestation.source_host_ref.id.clone()]),
+            created_by: delegation.target_host_ref.id.clone(),
+            revision: 1,
+            created_at_unix_ms: 10,
+            expires_at_unix_ms: None,
+            completed_at_unix_ms: Some(11),
+            deleted_at_unix_ms: None,
+            schema_version: harness_fabric::FABRIC_SCHEMA_VERSION.into(),
+        };
+        let capability = harness_fabric::ArtifactCapability {
+            token: "redacted-test-capability".into(),
+            company_id: delegation.company_id.clone(),
+            artifact_id: manifest.id.clone(),
+            artifact_digest: manifest.sha256.clone(),
+            purpose: harness_fabric::ArtifactCapabilityPurpose::Download,
+            node_id: delegation.source_node_id.clone(),
+            issued_to: attestation.source_host_ref.id.clone(),
+            issued_at_unix_ms: 12,
+            expires_at_unix_ms: 1_000,
+            one_use: true,
+        };
+        let source_placement = harness_core::collaboration::TargetPlacementRef {
+            team_id: delegation.source_team_id.clone(),
+            team_revision: delegation.source_work_ref.team_revision,
+            node_id: delegation.source_node_id.clone(),
+            placement_generation: delegation.source_work_ref.placement_generation,
+        };
+        let payload = serde_json::to_value(CollaborationArtifactGrantEnvelope {
+            delegation_id: delegation.id.clone(),
+            delegation: delegation.clone(),
+            source_work_attestation: attestation,
+            manifest: manifest.clone(),
+            read_capability: capability,
+            source_placement,
+        })
+        .expect("closed grant payload");
+        let operation_id = format!("route-artifact-grant:{}:{}", delegation.id, manifest.id);
+        let business = harness_core::collaboration::RoutedBusinessOperation {
+            id: operation_id.clone(),
+            protocol_version: "agentfirm.fabric.v1".into(),
+            company_id: delegation.company_id.clone(),
+            kind: harness_core::collaboration::RoutedBusinessKind::ArtifactGrant,
+            authenticated_actor: delegation.target_host_ref.clone(),
+            source_node_id: delegation.target_placement.node_id.clone(),
+            target_placement: harness_core::collaboration::TargetPlacementRef {
+                team_id: delegation.source_team_id.clone(),
+                team_revision: delegation.source_work_ref.team_revision,
+                node_id: delegation.source_node_id.clone(),
+                placement_generation: delegation.source_work_ref.placement_generation,
+            },
+            expected_revision: delegation.revision,
+            idempotency_key: "grant-replay-key".into(),
+            payload_digest: harness_store::canonical_json_fingerprint(&payload),
+            payload,
+            required_capability: harness_core::collaboration::RoutedBusinessKind::ArtifactGrant
+                .required_capability(),
+            ordering_key: format!("delegation:{}", delegation.id),
+            created_at: "unix-ms:12".into(),
+        };
+        let operation = harness_store::route_collaboration_business_operation(
+            &business,
+            &harness_store::CollaborationFabricRouteContext {
+                authenticated_actor: AuthenticatedActor {
+                    company_id: delegation.company_id.clone(),
+                    actor_id: "control-plane:3".into(),
+                    actor_kind: harness_fabric::ActorKind::Service,
+                    role_bindings: BTreeSet::from(["company_control_plane".into()]),
+                    session_id: "control-plane:3".into(),
+                    issued_at_unix_ms: 12,
+                    expires_at_unix_ms: 1_000,
+                },
+                resolved_business_actor: delegation.target_host_ref.clone(),
+                source: harness_store::CollaborationFabricSource::ControlPlane,
+                control_plane_generation: 3,
+                target_execution_space_id: Some("space-source".into()),
+                created_at_unix_ms: 12,
+                expires_at_unix_ms: 1_000,
+            },
+        )
+        .expect("canonical artifact grant route");
+        operation.validate_digest().expect("exact operation digest");
+
+        let receipt = harness_fabric::RouteReceipt {
+            id: "receipt-grant-accepted".into(),
+            company_id: delegation.company_id.clone(),
+            operation_id: operation_id.clone(),
+            target_node_id: delegation.source_node_id.clone(),
+            target_gateway_generation: 9,
+            control_plane_generation: 3,
+            route_seq: 1,
+            kind: ReceiptKind::ControlPlaneAccepted,
+            application_effect: None,
+            result_schema: None,
+            result: None,
+            result_digest: None,
+            error: None,
+            created_at_unix_ms: 20,
+            schema_version: harness_fabric::FABRIC_SCHEMA_VERSION.into(),
+        };
+        let operations = std::collections::BTreeMap::from([(operation_id, operation)]);
+        let receipts = std::collections::BTreeMap::from([(receipt.id.clone(), receipt.clone())]);
+
+        assert_eq!(
+            resolve_frozen_artifact_grant_replay(
+                &operations,
+                &receipts,
+                &delegation.company_id,
+                &delegation.id,
+                &manifest.id,
+                "grant-replay-key",
+                delegation.revision,
+                "space-source",
+                1_000,
+                &delegation.target_host_ref,
+            )
+            .expect("exact frozen replay"),
+            Some(receipt)
+        );
+        assert_eq!(
+            resolve_frozen_artifact_grant_replay(
+                &operations,
+                &receipts,
+                &delegation.company_id,
+                &delegation.id,
+                &manifest.id,
+                "grant-replay-key",
+                delegation.revision,
+                "space-other",
+                1_000,
+                &delegation.target_host_ref,
+            )
+            .expect_err("changed scope conflicts")
+            .code,
+            FabricErrorCode::IdempotencyConflict
+        );
+        let hostile = harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+            id: "sibling-host".into(),
+        };
+        assert_eq!(
+            resolve_frozen_artifact_grant_replay(
+                &operations,
+                &receipts,
+                &delegation.company_id,
+                &delegation.id,
+                &manifest.id,
+                "grant-replay-key",
+                delegation.revision,
+                "space-source",
+                1_000,
+                &hostile,
+            )
+            .expect_err("wrong actor conflicts")
+            .code,
+            FabricErrorCode::IdempotencyConflict
+        );
     }
 
     #[test]
