@@ -160,10 +160,25 @@ if (realEvidencePath) {
           }
         }
         if (Object.hasOwn(evidence, "post_build_non_authority_paths")) throw new Error("caller-authored post-build path allowlist is forbidden");
-        for (const side of ["control_plane", "source", "target"]) {
+        const controlPlaneProcess = evidence.processes?.control_plane;
+        if (
+          !controlPlaneProcess?.process_id ||
+          controlPlaneProcess.build_sha !== evidence.build_sha ||
+          !controlPlaneProcess.binary_sha256 ||
+          !Number.isInteger(controlPlaneProcess.control_plane_generation)
+        ) {
+          throw new Error("Control Plane process identity/build/generation is incomplete or not exact tested build");
+        }
+        for (const side of ["source", "target"]) {
           const process = evidence.processes?.[side];
-          if (!process?.process_id || process.build_sha !== evidence.build_sha || !process.binary_sha256 || !process.node_daemon_generation) {
-            throw new Error(`${side} process identity/build/generation is incomplete or not exact tested build`);
+          if (
+            !process?.process_id ||
+            process.build_sha !== evidence.build_sha ||
+            !process.binary_sha256 ||
+            !process.node_daemon_id ||
+            !Number.isInteger(process.node_daemon_generation)
+          ) {
+            throw new Error(`${side} NodeDaemon process identity/build/generation is incomplete or not exact tested build`);
           }
         }
 
@@ -205,8 +220,17 @@ if (realEvidencePath) {
 
         const collaborationRows = readJsonLines(material.central_collaboration_ledger.absolute);
         for (const [name, descriptor] of Object.entries(evidence.files)) {
-          if ((name.includes("ledger") || name.includes("journal")) && (!Number.isInteger(descriptor.first_sequence) || !Number.isInteger(descriptor.last_sequence) || !descriptor.source_store_digest)) {
-            throw new Error(`${name} lacks exact raw transaction range and source Store digest`);
+          if (name.includes("ledger") || name.includes("journal")) {
+            if (
+              !Number.isInteger(descriptor.first_sequence) ||
+              !Number.isInteger(descriptor.last_sequence) ||
+              descriptor.first_sequence > descriptor.last_sequence ||
+              !descriptor.source_store_digest ||
+              !descriptor.source_store_identity ||
+              !descriptor.selector_digest
+            ) {
+              throw new Error(`${name} lacks exact raw transaction range, selector, Store identity, or source Store digest`);
+            }
           }
         }
         const delegationRows = collaborationRows.filter(
