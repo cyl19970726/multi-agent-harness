@@ -28040,17 +28040,24 @@ fn hook_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 
 fn broadcast_live_provider_activity(
     manager: &sse::SseManager,
-    project_id: &str,
+    execution_space_id: &str,
+    project_binding_id: &str,
     owner_agent_identity_id: &str,
     event: serde_json::Value,
 ) -> serde_json::Value {
-    manager.broadcast_live_provider_activity(project_id, owner_agent_identity_id, event.clone());
+    manager.broadcast_live_provider_activity(
+        execution_space_id,
+        project_binding_id,
+        owner_agent_identity_id,
+        event.clone(),
+    );
     event
 }
 
 fn handle_sse_stream(
     store: &HarnessStore,
     execution_space_id: &str,
+    private_project_binding_id: Option<&str>,
     company_scope_id: Option<&str>,
     private_agent_identity_id: Option<&str>,
     mut stream: TcpStream,
@@ -28061,8 +28068,15 @@ fn handle_sse_stream(
     // A private live overlay is valid only for one connected stream lifetime.
     // Clear any pre-connection residue before subscribing so reconnect cannot
     // turn process memory into a replay surface.
-    if let Some(agent_identity_id) = private_agent_identity_id {
-        provider_event_api::clear_live_for_agent(store, execution_space_id, agent_identity_id)?;
+    if let (Some(agent_identity_id), Some(project_binding_id)) =
+        (private_agent_identity_id, private_project_binding_id)
+    {
+        provider_event_api::clear_live_for_agent(
+            store,
+            execution_space_id,
+            project_binding_id,
+            agent_identity_id,
+        )?;
     }
 
     // Subscribe before exposing the initial snapshot marker. The browser starts
@@ -28073,6 +28087,7 @@ fn handle_sse_stream(
         execution_space_id,
         company_scope_id,
         private_agent_identity_id,
+        private_project_binding_id,
     );
 
     // Send SSE header
@@ -28089,9 +28104,10 @@ fn handle_sse_stream(
     let snapshot_json = serde_json::json!({
         "generated_at": now_string(),
         "execution_space_id": execution_space_id,
-                "company_scope_id": company_scope_id,
-                "private_provider_activity": private_agent_identity_id.is_some(),
-                "stream_epoch": sse_manager.stream_epoch(),
+        "private_project_binding_id": private_project_binding_id,
+        "company_scope_id": company_scope_id,
+        "private_provider_activity": private_agent_identity_id.is_some(),
+        "stream_epoch": sse_manager.stream_epoch(),
     });
     sse::write_sse_frame(&mut stream, "snapshot", &snapshot_json)?;
 
@@ -28243,11 +28259,17 @@ fn handle_sse_stream(
         }
     }
 
-    if let Some(agent_identity_id) = private_agent_identity_id {
+    if let (Some(agent_identity_id), Some(project_binding_id)) =
+        (private_agent_identity_id, private_project_binding_id)
+    {
         // The transport is already gone; cleanup is best-effort and must not
         // turn an ordinary disconnect into a new HTTP error response.
-        let _ =
-            provider_event_api::clear_live_for_agent(store, execution_space_id, agent_identity_id);
+        let _ = provider_event_api::clear_live_for_agent(
+            store,
+            execution_space_id,
+            project_binding_id,
+            agent_identity_id,
+        );
     }
 
     Ok(())
@@ -30098,6 +30120,22 @@ fn handle_http_connection(
                         }
                     }
                 };
+                let private_project_binding_id = if private_agent_identity_id.is_some() {
+                    match projects.exact_project_context_for(project_param.as_deref(), &project_id)
+                    {
+                        Ok(project) => Some(project.id),
+                        Err(error) => {
+                            write_http_json(
+                                &mut stream,
+                                "404 Not Found",
+                                &serde_json::json!({"ok":false,"error":{"code":"PROJECT_BINDING_NOT_FOUND","message":error.to_string()}}),
+                            )?;
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    None
+                };
                 // Scope coordination to the selected Execution Space and Company
                 // invalidations to the independently selected Company Store.
                 // Private live provider activity additionally requires the
@@ -30105,6 +30143,7 @@ fn handle_http_connection(
                 handle_sse_stream(
                     &store_owned,
                     &project_id,
+                    private_project_binding_id.as_deref(),
                     company_store_owned.as_ref().map(|(id, _)| id.as_str()),
                     private_agent_identity_id.as_deref(),
                     stream,
@@ -30352,9 +30391,12 @@ fn handle_http_connection(
                 .into_iter()
                 .find(|member| member.id == member_run_id)
                 .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+            let run = latest_team_run(&store_owned, &team_run_id)?;
+            let project_binding_id = run.project_binding_id.clone();
             let scope = provider_event_api::exact_live_scope(
                 &store_owned,
                 &project_id,
+                &project_binding_id,
                 &team_run_id,
                 &member,
             )
@@ -30366,7 +30408,6 @@ fn handle_http_connection(
                     display_summary,
                     ..
                 } => {
-                    let run = latest_team_run(&store_owned, &team_run_id)?;
                     if run.status != TeamRunStatus::Running {
                         return Err(CliError::Usage(format!(
                             "team run {team_run_id} is {}, not running",
@@ -30412,6 +30453,7 @@ fn handle_http_connection(
             Ok(broadcast_live_provider_activity(
                 &sse_manager,
                 &project_id,
+                &project_binding_id,
                 &member.agent_member_id,
                 event,
             ))

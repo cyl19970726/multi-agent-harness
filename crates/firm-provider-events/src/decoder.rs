@@ -415,7 +415,7 @@ fn malformed_observation(
 }
 
 fn validate_context(context: &DecodeContext, event: &NativeEvent) -> Result<(), DecodeError> {
-    if !context.native_source_ref.starts_with("evidence:")
+    if !context.native_source_ref.starts_with("provider-source:")
         || context.agent_identity_id.trim().is_empty()
         || context.agent_session_id.trim().is_empty()
         || context.node_daemon_id.trim().is_empty()

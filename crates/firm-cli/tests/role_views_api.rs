@@ -283,6 +283,23 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         ],
     );
     assert!(other_space.status.success(), "other space: {other_space:?}");
+    let other_project_root = home.base().join("other-project-binding");
+    std::fs::create_dir_all(&other_project_root).expect("other project root");
+    let other_project = run_firm(&home, &other_project_root, &["init"]);
+    assert!(
+        other_project.status.success(),
+        "other Project Binding: {other_project:?}"
+    );
+    let other_project_id = current_project_id(&home);
+    assert_ne!(
+        other_project_id, project_id,
+        "cross-binding test requires two distinct Project Bindings"
+    );
+    let restored_project = run_firm(&home, &root, &["project", "switch", project_id.as_str()]);
+    assert!(
+        restored_project.status.success(),
+        "restore primary Project Binding: {restored_project:?}"
+    );
     let serve = ServeHandle::spawn_with_env(
         &home,
         &root,
@@ -670,6 +687,29 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         file_tree_digest(&home.home().join(".codex")),
         before_owner_projection_source,
         "on-demand provider projection must not rewrite provider-native storage"
+    );
+    let cross_binding_route = format!(
+        "/v1/views/agent-workspace/{run_id}?project={other_project_id}&agent_id={worker_id}"
+    );
+    let (status, cross_binding_workspace) =
+        serve.get_json_with_headers(&cross_binding_route, &[("X-AgentFirm-Token", MEMBER_TOKEN)]);
+    assert_eq!(status, 200, "cross-binding owner view");
+    let cross_binding_projection = &cross_binding_workspace["data"]["session_event_projection"];
+    assert!(
+        cross_binding_projection["disabled_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("another Project Binding")),
+        "same Execution Space must not expose a Session through another Project Binding: {cross_binding_workspace}"
+    );
+    assert_eq!(
+        cross_binding_projection["agent_session_id"],
+        serde_json::Value::Null,
+        "cross-binding projection must not expose an AgentSession id"
+    );
+    assert_eq!(
+        cross_binding_workspace["data"]["live_provider_activity"],
+        serde_json::Value::Null,
+        "same Execution Space must not expose a live overlay through another Project Binding"
     );
     for retired_history_field in ["sessions", "selected_session_id", "session_activity"] {
         assert!(

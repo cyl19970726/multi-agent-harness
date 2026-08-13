@@ -3,7 +3,7 @@
   "observation_id": "kimi:session-1:event-9",
   "provider": "kimi",
   "adapter_version": "agentfirm.provider_event_adapter.v1",
-  "native_source_ref": "evidence:provider_session:kimi:9",
+  "native_source_ref": "provider-source:provider_session:kimi:9",
   "agent_identity_id": "agent-1",
   "agent_session_id": "session-1",
   "agent_session_generation": 7,
@@ -29,4 +29,3 @@
   "source_evidence_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "payload": {"type": "recovery", "reason_code": "native_effect_unknown"}
 }
-

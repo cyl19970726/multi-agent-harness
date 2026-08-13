@@ -132,7 +132,8 @@ and runtime contracts, not frontend-only state.
 
 The Console can show sanitized, truncated, rate-limited provider activity while
 a provider is streaming it. A `thinking` preview is sent only as the exact
-owner's Execution-Space-scoped SSE `live_provider_activity` frame, includes an
+owner's Execution-Space + Project-Binding-scoped SSE
+`live_provider_activity` frame, includes an
 expiry, and disappears on terminal state, refresh/reconnect, TTL expiry, or
 process restart. It never enters snapshot history, JSONL, replay, evidence,
 messages, Host inspection, or peer context.

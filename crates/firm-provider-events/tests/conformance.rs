@@ -17,7 +17,7 @@ use std::{
 fn context(provider: ProviderKind) -> DecodeContext {
     DecodeContext {
         provider,
-        native_source_ref: format!("evidence:provider-session:source:12:{}", provider.as_str()),
+        native_source_ref: format!("provider-source:session:source:12:{}", provider.as_str()),
         agent_identity_id: "agent-1".into(),
         agent_session_id: "session-1".into(),
         agent_session_generation: 7,
@@ -477,12 +477,12 @@ fn impossible_effect_and_public_private_semantics_fail_before_fold_change() {
     ));
     effect.effect_certainty = EffectCertainty::Applied;
     let mut fold = ProviderEventFold::new("session-1", 7, "daemon-1", 4);
-    let cursor = fold.snapshot_fingerprint();
+    let before_fingerprint = fold.snapshot_fingerprint();
     assert!(matches!(
         fold.ingest(effect),
         Err(ProviderEventFoldError::InvalidObservation(_))
     ));
-    assert_eq!(fold.snapshot_fingerprint(), cursor);
+    assert_eq!(fold.snapshot_fingerprint(), before_fingerprint);
 
     let mut leaked = observation(decode(
         ProviderKind::Codex,
@@ -494,7 +494,7 @@ fn impossible_effect_and_public_private_semantics_fail_before_fold_change() {
         fold.ingest(leaked),
         Err(ProviderEventFoldError::InvalidObservation(_))
     ));
-    assert_eq!(fold.snapshot_fingerprint(), cursor);
+    assert_eq!(fold.snapshot_fingerprint(), before_fingerprint);
 }
 
 #[test]
@@ -665,8 +665,8 @@ fn on_demand_service_writes_no_projection_files_and_restart_discards_state() {
 }
 
 #[test]
-fn codex_turn_context_survives_cursor_resume_and_closes_on_terminal() {
-    let root = unique_temp_path("turn-cursor");
+fn codex_turn_context_survives_one_read_call_and_closes_on_terminal() {
+    let root = unique_temp_path("turn-transient-position");
     fs::create_dir_all(&root).unwrap();
     let transcript = root.join("codex.jsonl");
     fs::write(

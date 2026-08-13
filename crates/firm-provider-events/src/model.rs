@@ -160,7 +160,8 @@ pub struct ProviderObservation {
     pub observation_id: String,
     pub provider: ProviderKind,
     pub adapter_version: String,
-    /// Opaque, scoped evidence fingerprint. Never a provider filesystem path.
+    /// Opaque, scoped provider-source locator. Never a provider filesystem path
+    /// and never a Harness Evidence reference.
     pub native_source_ref: String,
     pub agent_identity_id: String,
     pub agent_session_id: String,
@@ -222,7 +223,7 @@ impl ProviderObservation {
         }
         if self.agent_session_generation == 0
             || self.node_daemon_generation == 0
-            || !self.native_source_ref.starts_with("evidence:")
+            || !self.native_source_ref.starts_with("provider-source:")
             || !self.source_evidence_fingerprint.starts_with("sha256:")
             || self.source_evidence_fingerprint.len() != 71
         {

@@ -89,6 +89,7 @@ const liveEnvelope = {
   schema_version: "agentfirm.live_provider_activity.v1",
   durability: "volatile_process_memory",
   replayable: false,
+  execution_space_id: "space-1",
   project_id: "project-1",
   team_run_id: "team-run-1",
   member_run_id: "member-run-1",
@@ -102,7 +103,7 @@ if (!ajv.getSchema(liveSchema.$id)(liveEnvelope)) failures.push("generated live 
 const liveEventEnvelope = {
   schema_version: "agentfirm.live_provider_activity_event.v1",
   reason: "updated",
-  scope: {project_id:"project-1",team_run_id:"team-run-1",member_run_id:"member-run-1",agent_session_id:"session-1",agent_session_generation:7},
+  scope: {execution_space_id:"space-1",project_id:"project-1",team_run_id:"team-run-1",member_run_id:"member-run-1",agent_session_id:"session-1",agent_session_generation:7},
   activity: liveEnvelope,
 };
 if (!ajv.getSchema(liveEventSchema.$id)(liveEventEnvelope)) failures.push("generated live activity event violates schema");

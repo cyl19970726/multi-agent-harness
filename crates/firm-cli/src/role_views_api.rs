@@ -1847,7 +1847,7 @@ fn normalized_provider(provider: &str) -> &str {
 /// become a replacement source of provider identity or filesystem authority.
 fn exact_agent_session_binding<'a>(
     facts: &'a Facts,
-    project_id: &str,
+    execution_space_id: &str,
     agent_identity_id: &str,
     native_session_id: &str,
     provider: Option<&str>,
@@ -1860,7 +1860,7 @@ fn exact_agent_session_binding<'a>(
     let current = facts
         .agent_sessions
         .iter()
-        .filter(|session| session["execution_space_id"] == project_id)
+        .filter(|session| session["execution_space_id"] == execution_space_id)
         .filter(|session| session["agent_identity_id"] == agent_identity_id)
         .filter(|session| session["lifecycle"] != "closed")
         .filter(|session| {
@@ -1890,6 +1890,7 @@ fn exact_agent_session_binding<'a>(
 }
 
 struct SessionProjectionReadRequest<'a> {
+    execution_space_id: &'a str,
     project_id: &'a str,
     team_id: &'a str,
     selected_agent_id: &'a str,
@@ -1939,9 +1940,17 @@ fn read_session_event_projection(
         };
         (native_id, Some(run.host_surface.as_str()), None)
     };
+    if request
+        .run
+        .is_none_or(|run| run.project_binding_id != request.project_id)
+    {
+        return unavailable_session_event_projection(
+            "The selected TeamRun belongs to another Project Binding.",
+        );
+    }
     let (session, native_session) = match exact_agent_session_binding(
         facts,
-        request.project_id,
+        request.execution_space_id,
         request.selected_agent_id,
         selector.0,
         selector.1,
@@ -1968,6 +1977,7 @@ fn read_session_event_projection(
     };
     crate::provider_event_api::read_historical_projection(
         crate::provider_event_api::HistoricalProjectionRequest {
+            execution_space_id: request.execution_space_id,
             project_id: request.project_id,
             team_id: request.team_id,
             agent_identity_id: request.selected_agent_id,
@@ -2254,11 +2264,16 @@ fn agent_workspace_view(
         .map(|identity| identity.actor.id.as_str())
         .unwrap_or_default();
     let session_event_projection = may_read_private_session.then(|| {
+        let project_binding_id = store
+            .provider_compatibility_scope()
+            .map(|(project_id, _)| project_id)
+            .unwrap_or_default();
         read_session_event_projection(
             store,
             &facts,
             SessionProjectionReadRequest {
-                project_id: space_id,
+                execution_space_id: space_id,
+                project_id: project_binding_id,
                 team_id: &team.id,
                 selected_agent_id,
                 viewer_identity_id,
@@ -2270,12 +2285,17 @@ fn agent_workspace_view(
     // Only an exact MemberRun + AgentSession generation can receive the
     // process-local live overlay. Host runs without a MemberRun remain null.
     let live_provider_activity = if may_read_private_session {
+        let project_binding_id = store
+            .provider_compatibility_scope()
+            .map(|(project_id, _)| project_id)
+            .unwrap_or_default();
         selected_member_run
             .and_then(|member_run| {
                 let typed_member = serde_json::from_value(member_run.clone()).ok()?;
                 crate::provider_event_api::exact_live_scope(
                     store,
                     space_id,
+                    project_binding_id,
                     member_run["team_run_id"].as_str()?,
                     &typed_member,
                 )

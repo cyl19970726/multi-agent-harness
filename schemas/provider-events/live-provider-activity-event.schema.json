@@ -11,8 +11,9 @@
     "scope": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["project_id", "team_run_id", "member_run_id", "agent_session_id", "agent_session_generation"],
+      "required": ["execution_space_id", "project_id", "team_run_id", "member_run_id", "agent_session_id", "agent_session_generation"],
       "properties": {
+        "execution_space_id": {"type": "string", "minLength": 1},
         "project_id": {"type": "string", "minLength": 1},
         "team_run_id": {"type": "string", "minLength": 1},
         "member_run_id": {"type": "string", "minLength": 1},

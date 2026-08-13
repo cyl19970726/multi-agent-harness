@@ -21,9 +21,11 @@ provider source
 ```
 
 The source path is never returned. The envelope exposes only an opaque scoped
-`native_source_ref` and a content fingerprint. The reader rejects symlinks,
-root escape, invalid transient read positions, oversized lines, and invalid UTF-8. An incomplete
-last line remains unconsumed until the provider finishes it.
+`provider-source:` locator in `native_source_ref`—not a Harness Evidence
+reference—paired with a content fingerprint. The reader rejects
+symlinks, root escape, invalid transient read positions, oversized lines, and
+invalid UTF-8. An incomplete last line remains unconsumed until the provider
+finishes it.
 
 ## Identity and source authority
 
@@ -62,8 +64,9 @@ Delivery, and allowlisted runtime-command summaries.
 
 `LiveProviderActivity` is a different channel: provider sinks send typed,
 display-safe phase/tool/response progress into the serve process; its registry
-holds at most 24 items per exact AgentSession + MemberRun generation for 10
-seconds. The SSE event name is `live_provider_activity`, and the envelope is
+holds at most 24 items per exact Execution Space + Project Binding +
+AgentSession + MemberRun generation for 10 seconds. The SSE event name is
+`live_provider_activity`, and the envelope is
 `agentfirm.live_provider_activity_event.v1`. Delivery requires an authenticated
 SSE subscription whose actor is the exact owner AgentIdentity. Same-project
 Hosts, siblings, anonymous streams, cross-project streams, and later reconnects

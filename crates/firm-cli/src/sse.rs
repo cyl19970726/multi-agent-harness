@@ -83,6 +83,9 @@ struct SseClient {
     /// process-memory provider overlay. Team Host authority is intentionally
     /// not represented here and cannot widen this identity.
     private_agent_identity_id: Option<String>,
+    /// Project Binding is independent from the Execution Space channel key.
+    /// A private overlay must match both axes before delivery.
+    private_project_binding_id: Option<String>,
     sender: Sender<SseEventFrame>,
 }
 
@@ -125,7 +128,7 @@ impl SseManager {
         execution_space_id: &str,
         company_scope_id: Option<&str>,
     ) -> Receiver<SseEventFrame> {
-        self.subscribe_scoped_private(execution_space_id, company_scope_id, None)
+        self.subscribe_scoped_private(execution_space_id, company_scope_id, None, None)
     }
 
     pub fn subscribe_scoped_private(
@@ -133,6 +136,7 @@ impl SseManager {
         execution_space_id: &str,
         company_scope_id: Option<&str>,
         private_agent_identity_id: Option<&str>,
+        private_project_binding_id: Option<&str>,
     ) -> Receiver<SseEventFrame> {
         let (tx, rx) = bounded(100); // Buffered channel
         let mut clients = self.clients.lock().unwrap();
@@ -142,6 +146,7 @@ impl SseManager {
             .push(SseClient {
                 company_scope_id: company_scope_id.map(str::to_string),
                 private_agent_identity_id: private_agent_identity_id.map(str::to_string),
+                private_project_binding_id: private_project_binding_id.map(str::to_string),
                 sender: tx,
             });
         rx
@@ -219,15 +224,18 @@ impl SseManager {
     /// replay and the activity is not part of any persisted product contract.
     pub fn broadcast_live_provider_activity(
         &self,
-        project_id: &str,
+        execution_space_id: &str,
+        project_binding_id: &str,
         owner_agent_identity_id: &str,
         activity: serde_json::Value,
     ) {
         let frame = SseEventFrame::LiveProviderActivity(activity);
         let mut clients = self.clients.lock().unwrap();
-        if let Some(subscribers) = clients.get_mut(project_id) {
+        if let Some(subscribers) = clients.get_mut(execution_space_id) {
             subscribers.retain(|client| {
-                if client.private_agent_identity_id.as_deref() == Some(owner_agent_identity_id) {
+                if client.private_agent_identity_id.as_deref() == Some(owner_agent_identity_id)
+                    && client.private_project_binding_id.as_deref() == Some(project_binding_id)
+                {
                     client.sender.try_send(frame.clone()).is_ok()
                 } else {
                     true
@@ -1964,18 +1972,49 @@ mod tests {
     #[test]
     fn live_provider_activity_is_direct_only_and_project_isolated() {
         let manager = SseManager::new();
-        let owner = manager.subscribe_scoped_private("proj-a", None, Some("agent-owner"));
-        let host = manager.subscribe_scoped_private("proj-a", None, Some("agent-host"));
-        let anonymous = manager.subscribe("proj-a");
-        let other_project = manager.subscribe_scoped_private("proj-b", None, Some("agent-owner"));
+        let owner = manager.subscribe_scoped_private(
+            "space-a",
+            None,
+            Some("agent-owner"),
+            Some("project-a"),
+        );
+        let host = manager.subscribe_scoped_private(
+            "space-a",
+            None,
+            Some("agent-host"),
+            Some("project-a"),
+        );
+        let other_binding = manager.subscribe_scoped_private(
+            "space-a",
+            None,
+            Some("agent-owner"),
+            Some("project-b"),
+        );
+        let anonymous = manager.subscribe("space-a");
+        let other_project = manager.subscribe_scoped_private(
+            "space-b",
+            None,
+            Some("agent-owner"),
+            Some("project-a"),
+        );
         let activity = serde_json::json!({
             "member_run_id": "mrun-a",
             "status": "working",
             "summary": "Reading the current implementation"
         });
 
-        manager.broadcast_live_provider_activity("proj-a", "agent-owner", activity.clone());
-        let late_owner = manager.subscribe_scoped_private("proj-a", None, Some("agent-owner"));
+        manager.broadcast_live_provider_activity(
+            "space-a",
+            "project-a",
+            "agent-owner",
+            activity.clone(),
+        );
+        let late_owner = manager.subscribe_scoped_private(
+            "space-a",
+            None,
+            Some("agent-owner"),
+            Some("project-a"),
+        );
 
         match owner.try_recv() {
             Ok(SseEventFrame::LiveProviderActivity(value)) => assert_eq!(value, activity),
@@ -1988,6 +2027,10 @@ mod tests {
         assert!(
             anonymous.try_recv().is_err(),
             "anonymous stream must not see private activity"
+        );
+        assert!(
+            other_binding.try_recv().is_err(),
+            "another Project Binding in the same Execution Space must not see activity"
         );
         assert!(
             other_project.try_recv().is_err(),

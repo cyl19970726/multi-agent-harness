@@ -26,6 +26,7 @@ pub(crate) const LIVE_TTL_MS: u64 = 10_000;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub(crate) struct LiveProviderScope {
+    pub execution_space_id: String,
     pub project_id: String,
     pub team_run_id: String,
     pub member_run_id: String,
@@ -82,6 +83,7 @@ fn provider_kind(provider: &str) -> Option<ProviderKind> {
 }
 
 pub(crate) struct HistoricalProjectionRequest<'a> {
+    pub execution_space_id: &'a str,
     pub project_id: &'a str,
     pub team_id: &'a str,
     pub agent_identity_id: &'a str,
@@ -112,8 +114,10 @@ pub(crate) fn read_historical_projection(
     let context = DecodeContext {
         provider,
         native_source_ref: format!(
-            "evidence:provider_session:{}:{}:{}",
+            "provider-source:{}:{}:{}:{}:{}",
             provider.as_str(),
+            request.execution_space_id,
+            request.project_id,
             request.agent_session_id,
             request.agent_session_generation
         ),
@@ -127,14 +131,14 @@ pub(crate) fn read_historical_projection(
         observed_at: format!("unix-ms:{}", now_unix_ms()),
     };
     let authority = ProjectionAuthority {
-        project_id: request.project_id.to_string(),
+        project_id: request.execution_space_id.to_string(),
         team_id: request.team_id.to_string(),
         agent_identity_id: request.agent_identity_id.to_string(),
         agent_session_id: request.agent_session_id.to_string(),
         agent_session_generation: request.agent_session_generation,
     };
     let viewer = ProjectionViewer {
-        project_id: request.project_id.to_string(),
+        project_id: request.execution_space_id.to_string(),
         team_id: request.team_id.to_string(),
         agent_identity_id: request.viewer_identity_id.to_string(),
         is_team_host: false,
@@ -242,28 +246,35 @@ pub(crate) fn clear_live(scope: &LiveProviderScope) {
 /// snapshot through the RoleView GET surface.
 pub(crate) fn clear_live_for_agent(
     store: &harness_store::HarnessStore,
+    execution_space_id: &str,
     project_id: &str,
     agent_identity_id: &str,
 ) -> CliResult<()> {
     let session_ids = store
-        .fabric_agent_sessions(project_id)?
+        .fabric_agent_sessions(execution_space_id)?
         .into_iter()
-        .filter(|session| session.execution_space_id == project_id)
+        .filter(|session| session.execution_space_id == execution_space_id)
         .filter(|session| session.agent_identity_id == agent_identity_id)
         .map(|session| session.id)
         .collect::<BTreeSet<_>>();
-    clear_live_for_session_ids(project_id, &session_ids);
+    clear_live_for_session_ids(execution_space_id, project_id, &session_ids);
     Ok(())
 }
 
-fn clear_live_for_session_ids(project_id: &str, session_ids: &BTreeSet<String>) {
+fn clear_live_for_session_ids(
+    execution_space_id: &str,
+    project_id: &str,
+    session_ids: &BTreeSet<String>,
+) {
     if let Some(registry) = LIVE_REGISTRY.get() {
         registry
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .items
             .retain(|scope, _| {
-                scope.project_id != project_id || !session_ids.contains(&scope.agent_session_id)
+                scope.execution_space_id != execution_space_id
+                    || scope.project_id != project_id
+                    || !session_ids.contains(&scope.agent_session_id)
             });
     }
 }
@@ -273,6 +284,7 @@ fn clear_live_for_session_ids(project_id: &str, session_ids: &BTreeSet<String>) 
 /// caller to fabricate or cross-bind private runtime activity.
 pub(crate) fn exact_live_scope(
     store: &harness_store::HarnessStore,
+    execution_space_id: &str,
     project_id: &str,
     team_run_id: &str,
     member_run: &harness_core::ProviderRuntimeProjection,
@@ -280,13 +292,23 @@ pub(crate) fn exact_live_scope(
     if member_run.team_run_id != team_run_id {
         return Err("member run does not belong to the selected TeamRun");
     }
+    let run = store
+        .team_runs()
+        .map_err(|_| "TeamRun registry is unavailable")?
+        .into_iter()
+        .rev()
+        .find(|run| run.id == team_run_id)
+        .ok_or("TeamRun does not exist in the selected Execution Space")?;
+    if run.project_binding_id != project_id {
+        return Err("TeamRun belongs to another Project Binding");
+    }
     let sessions = store
-        .fabric_agent_sessions(project_id)
+        .fabric_agent_sessions(execution_space_id)
         .map_err(|_| "AgentSession registry is unavailable")?;
     let current = sessions
         .into_iter()
         .filter(|session| session.agent_identity_id == member_run.agent_member_id)
-        .filter(|session| session.execution_space_id == project_id)
+        .filter(|session| session.execution_space_id == execution_space_id)
         .filter(|session| session.provider_kind == member_run.provider)
         .filter(|session| session.runtime_generation == member_run.runtime_generation)
         .filter(|session| {
@@ -307,6 +329,7 @@ pub(crate) fn exact_live_scope(
         .collect::<Vec<_>>();
     match current.as_slice() {
         [session] => Ok(LiveProviderScope {
+            execution_space_id: execution_space_id.to_string(),
             project_id: project_id.to_string(),
             team_run_id: team_run_id.to_string(),
             member_run_id: member_run.id.clone(),
@@ -332,6 +355,7 @@ fn snapshot_locked(registry: &LiveRegistry, scope: &LiveProviderScope) -> Option
         "schema_version":"agentfirm.live_provider_activity.v1",
         "durability":"volatile_process_memory",
         "replayable":false,
+        "execution_space_id":scope.execution_space_id,
         "project_id":scope.project_id,
         "team_run_id":scope.team_run_id,
         "member_run_id":scope.member_run_id,
@@ -363,8 +387,9 @@ mod tests {
             .unwrap_or_else(|error| error.into_inner())
     }
 
-    fn scope(project_id: &str, generation: u64) -> LiveProviderScope {
+    fn scope(execution_space_id: &str, project_id: &str, generation: u64) -> LiveProviderScope {
         LiveProviderScope {
+            execution_space_id: execution_space_id.into(),
             project_id: project_id.into(),
             team_run_id: "team-run-1".into(),
             member_run_id: "member-run-1".into(),
@@ -377,8 +402,8 @@ mod tests {
     fn live_activity_is_exact_scope_ttl_bounded_and_not_cross_project() {
         let _guard = test_guard();
         reset_live_for_test();
-        let project_a = scope("project-a", 1);
-        let project_b = scope("project-b", 1);
+        let project_a = scope("space-a", "project-a", 1);
+        let project_b = scope("space-a", "project-b", 1);
         let activity = record_live_at(
             project_a.clone(),
             "kimi",
@@ -387,6 +412,7 @@ mod tests {
             100,
         );
         assert_eq!(activity["project_id"], "project-a");
+        assert_eq!(activity["execution_space_id"], "space-a");
         assert_eq!(activity["agent_session_id"], "agent-session-1");
         assert!(live_snapshot_at(&project_b, 101).is_none());
         assert!(live_snapshot_at(&project_a, 100 + LIVE_TTL_MS - 1).is_some());
@@ -397,8 +423,8 @@ mod tests {
     fn terminal_clear_does_not_cross_session_generation() {
         let _guard = test_guard();
         reset_live_for_test();
-        let generation_one = scope("project-a", 1);
-        let generation_two = scope("project-a", 2);
+        let generation_one = scope("space-a", "project-a", 1);
+        let generation_two = scope("space-a", "project-a", 2);
         record_live_at(
             generation_one.clone(),
             "codex",
@@ -424,9 +450,9 @@ mod tests {
     fn connection_clear_is_owner_session_scoped_and_project_isolated() {
         let _guard = test_guard();
         reset_live_for_test();
-        let owner_one = scope("project-a", 1);
-        let owner_two = scope("project-a", 2);
-        let other_project = scope("project-b", 1);
+        let owner_one = scope("space-a", "project-a", 1);
+        let owner_two = scope("space-a", "project-a", 2);
+        let other_project = scope("space-a", "project-b", 1);
         for candidate in [&owner_one, &owner_two, &other_project] {
             record_live_at(
                 candidate.clone(),
@@ -437,6 +463,7 @@ mod tests {
             );
         }
         clear_live_for_session_ids(
+            "space-a",
             "project-a",
             &BTreeSet::from([owner_one.agent_session_id.clone()]),
         );

@@ -17,7 +17,7 @@
     "observation_id": {"type": "string", "minLength": 1},
     "provider": {"enum": ["codex", "claude", "kimi", "pi"]},
     "adapter_version": {"const": "agentfirm.provider_event_adapter.v1"},
-    "native_source_ref": {"type": "string", "pattern": "^evidence:[A-Za-z0-9:_-]+$"},
+    "native_source_ref": {"type": "string", "pattern": "^provider-source:[A-Za-z0-9:_-]+$"},
     "agent_identity_id": {"type": "string", "minLength": 1},
     "agent_session_id": {"type": "string", "minLength": 1},
     "agent_session_generation": {"type": "integer", "minimum": 1},
