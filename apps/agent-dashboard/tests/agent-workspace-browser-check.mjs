@@ -122,8 +122,9 @@ try{
   if(!liveConfig){
     assert.equal(await page.getByRole("button",{name:/Open native Session message Mira/}).count(),1,"provider-native authored content is not presented as a primary readable Session record");
     assert.ok(await page.locator('.aw-stream-fact[data-family="tool"]').count()>=2,"canonical tool events do not use the shared Tool presentation family");
-    assert.equal(await page.locator('.aw-stream-fact[data-family="tool"] .aw-stream-kind').first().getAttribute("data-tone"),"info","completed Tool activity is incorrectly presented as delivery success");
+    assert.equal(await page.locator('.aw-stream-fact[data-family="tool"] .aw-stream-kind').first().getAttribute("data-tone"),"neutral","completed Tool activity should remain a quiet operational fact, not delivery-success chrome");
   }
+  assert.equal(await page.locator(".aw-current-execution").count(),0,"Agent Workspace fabricated a current-execution preview without a private live projection");
   await waitForStableWriteSurface(page);
   const composerAlignment=await page.getByTestId("agent-workspace-composer").evaluate(composer=>{const bounds=composer.getBoundingClientRect();const send=[...composer.querySelectorAll('button')].find(node=>node.textContent?.trim()==="Send");const sendBounds=send?.getBoundingClientRect();const parent=send?.parentElement;const parentBounds=parent?.getBoundingClientRect();const style=send?getComputedStyle(send):null;return {composerRight:bounds.right,sendRight:sendBounds?.right??0,gap:sendBounds?bounds.right-sendBounds.right:null,parentClass:parent?.className,parentDisplay:parent?getComputedStyle(parent).display:null,parentLeft:parentBounds?.left,parentRight:parentBounds?.right,marginLeft:style?.marginLeft,position:style?.position};});
   assert.ok(composerAlignment.gap!=null&&composerAlignment.gap<=24,`Composer primary action does not close the command surface at the right edge: ${JSON.stringify(composerAlignment)}`);
@@ -199,10 +200,11 @@ try{
     assert.equal(await hostPage.getByLabel("Composer action").count(),0,"identity switch retained an action selector while projection was pending");
     releasePublicProjection();hostMemberProjectionGate=null;
   }
-  await hostPage.getByText("Privacy boundary",{exact:true}).waitFor();
+  await hostPage.getByText("Privacy",{exact:true}).waitFor();
   if(liveConfig&&(await hostPage.locator(".agent-authored-turn").count())>0)await hostPage.locator(".agent-authored-turn").first().waitFor();
   await waitForStableWriteSurface(hostPage);
   assert.equal(await hostPage.getByText("Validated owner-bound native Session",{exact:true}).count(),0,"Host-selected Member leaked provider-private activity");
+  assert.equal(await hostPage.locator(".aw-current-execution").count(),0,"Host-selected Member exposed or fabricated a private current-execution preview");
   await hostPage.screenshot({path:join(evidenceDir,`host-member-public--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   if(!liveConfig){
     await open(hostPage,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.host}&space=${routeState.space}&project=${routeState.project}`);

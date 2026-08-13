@@ -780,9 +780,15 @@
 
   .agent-workspace .aw-stream-fact[data-expanded="true"] {
     margin-bottom: 0;
-    background: color-mix(in srgb, var(--aw-coral-wash) 18%, var(--aw-canvas));
-    box-shadow: inset 2px 0 0 color-mix(in srgb, var(--aw-coral) 58%, transparent);
+    background: color-mix(in srgb, var(--aw-coral-wash) 24%, var(--aw-canvas));
+    box-shadow: none;
   }
+
+  .agent-workspace .aw-stream-fact[data-family="tool"] .aw-stream-kind { color: #657c75; }
+  .agent-workspace .aw-stream-fact[data-family="result"] .aw-stream-kind,
+  .agent-workspace .aw-stream-fact[data-family="delivery"] .aw-stream-kind { color: var(--aw-good); }
+  .agent-workspace .aw-stream-fact[data-family="review"] .aw-stream-kind { color: var(--aw-warn); }
+  .agent-workspace .aw-stream-fact[data-family="reasoning"] .aw-stream-kind { color: #71688c; }
 
   .agent-workspace .agent-message-toolbar,
   .agent-workspace .aw-filter-strip {
@@ -967,6 +973,15 @@
     background: transparent;
   }
 
+  .agent-workspace .aw-context-story__eyebrow {
+    margin-bottom: 0.85rem;
+    color: var(--aw-coral-ink);
+    font-size: 0.59rem;
+    font-weight: 680;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
   .agent-workspace .agent-context-primary::before,
   .agent-workspace .aw-context-section[data-primary="true"]::before {
     position: absolute;
@@ -979,8 +994,8 @@
   }
 
   .agent-workspace .aw-context-section {
-    margin-top: 1.5rem;
-    padding-top: 1.22rem;
+    margin-top: 1.25rem;
+    padding-top: 1rem;
     border-top: 1px solid var(--aw-line);
   }
 
@@ -999,7 +1014,7 @@
 
   .agent-workspace .aw-context-section__header h2 {
     color: var(--aw-ink);
-    font-size: 0.9rem;
+    font-size: 0.82rem;
     font-weight: 625;
     letter-spacing: -0.012em;
   }
@@ -1041,11 +1056,11 @@
 
   .agent-workspace .aw-context-work-title {
     overflow-wrap: anywhere;
-    font-family: var(--font-editorial, ui-serif, Georgia, serif);
-    font-size: 1.04rem;
-    font-weight: 590;
-    letter-spacing: -0.018em;
-    line-height: 1.32;
+    font-family: inherit;
+    font-size: 0.98rem;
+    font-weight: 650;
+    letter-spacing: -0.022em;
+    line-height: 1.35;
   }
 
   .agent-workspace .aw-context-work-narrative {
@@ -1071,6 +1086,36 @@
     line-height: 1.58;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 5;
+  }
+
+  .agent-workspace .aw-responsibility-strip {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border-block: 1px solid var(--aw-line-soft);
+  }
+
+  .agent-workspace .aw-responsibility-strip > div {
+    display: grid;
+    gap: 0.14rem;
+    padding: 0.65rem 0.55rem 0.62rem 0;
+  }
+
+  .agent-workspace .aw-responsibility-strip > div + div {
+    padding-left: 0.65rem;
+    border-left: 1px solid var(--aw-line-soft);
+  }
+
+  .agent-workspace .aw-responsibility-strip strong {
+    color: var(--aw-ink);
+    font-size: 1rem;
+    font-weight: 630;
+    line-height: 1;
+  }
+
+  .agent-workspace .aw-responsibility-strip span {
+    color: var(--aw-muted);
+    font-size: 0.61rem;
+    text-transform: capitalize;
   }
 
   .agent-workspace .aw-context-selection-inset {
@@ -1302,17 +1347,17 @@
 
   .agent-workspace .aw-command-input {
     display: grid;
-    min-height: 4.6rem;
-    grid-template-rows: minmax(2.2rem, auto) auto;
+    min-height: 4rem;
+    grid-template-rows: minmax(1.8rem, auto) auto;
     padding: 0.15rem 1rem 0.2rem;
   }
 
   .agent-workspace .aw-command-input textarea {
-    min-height: 2.35rem;
+    min-height: 1.95rem;
     width: 100%;
     resize: none;
     border: 0;
-    padding: 0.55rem 0.1rem 0.2rem;
+    padding: 0.42rem 0.1rem 0.15rem;
     background: transparent;
     color: var(--aw-ink);
     font-size: 0.92rem;
@@ -1334,7 +1379,7 @@
     min-width: 0;
     align-items: center;
     gap: 0.8rem;
-    min-height: 2.1rem;
+    min-height: 1.9rem;
     border-top: 1px solid var(--aw-line-soft);
   }
 
@@ -1576,11 +1621,35 @@
   }
 
   .agent-workspace .aw-profile-section > h3 {
+    display: flex;
+    align-items: center;
+    gap: 0.48rem;
     margin-bottom: 0.85rem;
     color: var(--aw-ink);
-    font-size: 0.88rem;
-    font-weight: 625;
+    font-size: 0.76rem;
+    font-weight: 650;
     letter-spacing: -0.012em;
+  }
+
+  .agent-workspace .aw-profile-section > h3 svg {
+    width: 0.86rem;
+    height: 0.86rem;
+    color: var(--aw-coral-ink);
+    stroke-width: 1.55;
+  }
+
+  .agent-workspace .aw-profile-section:first-child > h3,
+  .agent-workspace .aw-profile-section:nth-child(4) > h3 {
+    font-family: var(--font-editorial, ui-serif, Georgia, serif);
+    font-size: 1.05rem;
+    font-weight: 590;
+    letter-spacing: -0.02em;
+  }
+
+  .agent-workspace .aw-profile-section:first-child > h3 svg,
+  .agent-workspace .aw-profile-section:nth-child(4) > h3 svg {
+    width: 0.92rem;
+    height: 0.92rem;
   }
 
   .agent-workspace .aw-profile-description {
@@ -1603,8 +1672,9 @@
   }
 
   .agent-workspace .aw-profile-token-list {
-    display: grid;
-    gap: 0.35rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.38rem 0.8rem;
   }
 
   .agent-workspace .aw-profile-token {
@@ -1612,7 +1682,7 @@
     align-items: baseline;
     gap: 0.5rem;
     color: var(--aw-ink);
-    font-size: 0.7rem;
+    font-size: 0.72rem;
     line-height: 1.45;
   }
 
@@ -1628,6 +1698,36 @@
   .agent-workspace .aw-session-history-row {
     padding-block: 0.7rem;
     border-bottom: 1px solid var(--aw-line-soft);
+  }
+
+  .agent-workspace .aw-profile-current-session {
+    margin-top: 0.9rem;
+    padding: 0.8rem 0;
+    border-block: 1px solid var(--aw-line-soft);
+  }
+
+  .agent-workspace .aw-profile-current-session > div {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    color: var(--aw-muted);
+    font-size: 0.65rem;
+  }
+
+  .agent-workspace .aw-profile-current-session > strong {
+    display: block;
+    margin-top: 0.45rem;
+    color: var(--aw-ink);
+    font-family: var(--font-editorial, ui-serif, Georgia, serif);
+    font-size: 1.08rem;
+    font-weight: 590;
+  }
+
+  .agent-workspace .aw-profile-current-session > p {
+    margin-top: 0.2rem;
+    color: var(--aw-muted);
+    font-size: 0.68rem;
   }
 
   .agent-workspace .aw-session-history-row b {
