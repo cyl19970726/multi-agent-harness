@@ -4273,6 +4273,60 @@ fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend
                 "artifact manifest does not exist",
             )
         })?;
+        // Replay must resolve the already frozen grant before minting another
+        // one-use capability. A freshly signed token carries a new issued-at
+        // value and would otherwise change the routed-operation fingerprint,
+        // making an exact idempotent replay impossible after the first import.
+        let operation_id = format!("route-artifact-grant:{delegation_id}:{artifact_id}");
+        let fabric_state = control.store().snapshot()?;
+        if let Some(existing) = fabric_state.operations.get(&operation_id) {
+            let harness_fabric::ClosedOperationBody::CollaborationBusiness(reference) =
+                existing.closed_body()?
+            else {
+                return Err(FabricError::none(
+                    FabricErrorCode::IdempotencyConflict,
+                    "artifact grant identity belongs to another operation kind",
+                ));
+            };
+            let payload: CollaborationArtifactGrantEnvelope =
+                serde_json::from_value(reference.payload.clone()).map_err(|error| {
+                    FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
+                })?;
+            let exact = existing.idempotency_key == *idempotency_key
+                && existing.target_execution_space_id.as_deref()
+                    == Some(request.target_execution_space_id.as_str())
+                && existing.actor.expires_at_unix_ms == request.expires_unix_ms
+                && reference.business_actor_id == credential.actor.id
+                && payload.delegation_id == delegation_id
+                && payload.delegation == delegation
+                && payload.source_work_attestation == attestation
+                && payload.manifest == manifest;
+            if !exact {
+                return Err(FabricError::none(
+                    FabricErrorCode::IdempotencyConflict,
+                    "same artifact grant identity was reused with a different request",
+                ));
+            }
+            let receipt = fabric_state
+                .receipts
+                .values()
+                .filter(|receipt| receipt.operation_id == operation_id)
+                .min_by_key(|receipt| receipt.created_at_unix_ms)
+                .cloned()
+                .ok_or_else(|| {
+                    FabricError::unknown(
+                        operation_id.clone(),
+                        "accepted artifact grant has no durable receipt",
+                    )
+                })?;
+            return Ok(serde_json::json!({
+                "delegation_id": delegation_id,
+                "artifact_id": artifact_id,
+                "operation_id": operation_id,
+                "receipt": receipt,
+                "replayed": true,
+            }));
+        }
         let grantor = AuthenticatedActor {
             company_id: control.company_id().into(),
             actor_id: credential.actor.id.clone(),

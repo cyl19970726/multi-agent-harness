@@ -1439,6 +1439,7 @@ fn actor_scoped_cursor_bounds_hidden_scans_and_freezes_visible_snapshot() {
 }
 
 #[test]
+#[allow(clippy::result_large_err)]
 fn collaboration_authority_fence_holds_writer_lock_through_route_commit() {
     let test = TestStore::new("authority-fence");
     install_policy(&test.store);
