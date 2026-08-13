@@ -147,7 +147,7 @@ pub(crate) fn read_historical_projection(
     };
     let mut service = ProviderProjectionService::open(context);
     service
-        .refresh(
+        .refresh_latest(
             &TranscriptReadBoundary {
                 allowed_root,
                 transcript_path,

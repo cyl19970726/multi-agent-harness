@@ -1,10 +1,11 @@
 use thiserror::Error;
 
 use crate::{
-    project_private_session, project_team_activity, read_transcript_batch, DecodeContext,
-    DecodeOutcome, ProjectionAccessError, ProjectionAuthority, ProjectionViewer, ProviderEventFold,
-    ProviderEventFoldError, SessionEventProjection, TeamRuntimeActivity, TranscriptReadBoundary,
-    TranscriptReadError, TransientReadPosition,
+    project_private_session, project_team_activity, read_latest_transcript_batch,
+    read_transcript_batch, DecodeContext, DecodeOutcome, ProjectionAccessError,
+    ProjectionAuthority, ProjectionViewer, ProviderEventFold, ProviderEventFoldError,
+    SessionEventProjection, TeamRuntimeActivity, TranscriptReadBoundary, TranscriptReadError,
+    TransientReadPosition,
 };
 
 #[derive(Debug, Error)]
@@ -24,6 +25,7 @@ pub struct ProviderProjectionService {
     context: DecodeContext,
     fold: ProviderEventFold,
     transient_position: TransientReadPosition,
+    source_truncated: bool,
 }
 
 impl ProviderProjectionService {
@@ -41,6 +43,7 @@ impl ProviderProjectionService {
             context,
             fold,
             transient_position: TransientReadPosition::default(),
+            source_truncated: false,
         }
     }
 
@@ -65,15 +68,40 @@ impl ProviderProjectionService {
         Ok(read_count)
     }
 
+    /// Replaces this disposable fold with the latest bounded snapshot. This is
+    /// the historical RoleView path: it never exposes or persists a cursor.
+    pub fn refresh_latest(
+        &mut self,
+        boundary: &TranscriptReadBoundary,
+        max_events: usize,
+    ) -> Result<usize, ProviderProjectionServiceError> {
+        let batch = read_latest_transcript_batch(&self.context, boundary, max_events)?;
+        self.fold = ProviderEventFold::new(
+            &self.context.agent_session_id,
+            self.context.agent_session_generation,
+            &self.context.node_daemon_id,
+            self.context.node_daemon_generation,
+        );
+        let read_count = batch.outcomes.len();
+        for outcome in batch.outcomes {
+            if let DecodeOutcome::Observation(observation) = outcome {
+                self.fold.ingest(*observation)?;
+            }
+        }
+        self.transient_position = TransientReadPosition::default();
+        self.source_truncated = batch.source_truncated;
+        Ok(read_count)
+    }
+
     pub fn private_session(
         &self,
         authority: &ProjectionAuthority,
         viewer: &ProjectionViewer,
         limit: usize,
     ) -> Result<SessionEventProjection, ProviderProjectionServiceError> {
-        Ok(project_private_session(
-            &self.fold, authority, viewer, limit,
-        )?)
+        let mut projection = project_private_session(&self.fold, authority, viewer, limit)?;
+        projection.truncated |= self.source_truncated;
+        Ok(projection)
     }
 
     pub fn team_activity(

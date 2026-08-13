@@ -1,8 +1,8 @@
 use firm_provider_events::{
-    adapter_manifest, decode_native_event, decode_native_json_line, read_transcript_batch,
-    Completeness, DecodeContext, DecodeOutcome, EffectCertainty, FoldOutcome, NativeEvent,
-    ObservationPayload, ObservationVisibility, ProjectionAccessError, ProjectionAuthority,
-    ProjectionViewer, ProviderEventFold, ProviderEventFoldError, ProviderKind,
+    adapter_manifest, decode_native_event, decode_native_json_line, read_latest_transcript_batch,
+    read_transcript_batch, Completeness, DecodeContext, DecodeOutcome, EffectCertainty,
+    FoldOutcome, NativeEvent, ObservationPayload, ObservationVisibility, ProjectionAccessError,
+    ProjectionAuthority, ProjectionViewer, ProviderEventFold, ProviderEventFoldError, ProviderKind,
     ProviderProjectionService, ProviderProjectionServiceError, SemanticKind,
     TranscriptReadBoundary, TranscriptReadError, TransientReadPosition,
     PROVIDER_OBSERVATION_SCHEMA_VERSION,
@@ -626,6 +626,100 @@ fn transcript_reader_uses_disposable_position_and_holds_incomplete_tail() {
         Err(TranscriptReadError::SourceChanged)
     ));
     fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn latest_reader_keeps_the_real_tail_with_turn_context_and_explicit_truncation() {
+    let root = unique_temp_path("latest-reader");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("session.jsonl");
+    fs::write(
+        &path,
+        concat!(
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-old\"}}\n",
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"old\"}}\n",
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-old\"}}\n",
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-new\"}}\n",
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"new\"}}\n",
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-new\"}}\n",
+            "{\"type\":"
+        ),
+    )
+    .unwrap();
+    let boundary = TranscriptReadBoundary {
+        allowed_root: root.clone(),
+        transcript_path: path,
+    };
+    let latest = read_latest_transcript_batch(&context(ProviderKind::Codex), &boundary, 3)
+        .expect("latest provider tail");
+    assert_eq!(latest.outcomes.len(), 3);
+    assert!(latest.source_truncated);
+    assert!(latest.incomplete_tail);
+    let observations = latest
+        .outcomes
+        .into_iter()
+        .filter_map(|outcome| match outcome {
+            DecodeOutcome::Observation(value) => Some(value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(observations.len(), 2);
+    assert!(observations
+        .iter()
+        .all(|item| item.provider_turn_id.as_deref() == Some("turn-new")));
+    assert!(observations.iter().any(|item| {
+        matches!(
+            &item.payload,
+            ObservationPayload::AuthoredResponse { text } if text == "new"
+        )
+    }));
+    assert!(!observations.iter().any(|item| {
+        matches!(
+            &item.payload,
+            ObservationPayload::AuthoredResponse { text } if text == "old"
+        )
+    }));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn latest_service_marks_a_source_tail_as_truncated_without_persisting_a_cursor() {
+    let root = unique_temp_path("latest-service");
+    fs::create_dir_all(&root).unwrap();
+    let transcript = root.join("provider.jsonl");
+    fs::write(
+        &transcript,
+        concat!(
+            "{\"type\":\"turn/completed\",\"turn_id\":\"old\"}\n",
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"new\"}}\n",
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"latest\"}}\n",
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"new\"}}\n"
+        ),
+    )
+    .unwrap();
+    let boundary = TranscriptReadBoundary {
+        allowed_root: root.clone(),
+        transcript_path: transcript,
+    };
+    let mut service = ProviderProjectionService::open(context(ProviderKind::Codex));
+    assert_eq!(service.refresh_latest(&boundary, 3).unwrap(), 3);
+    let projection = service
+        .private_session(&authority(), &viewer("agent-1"), 300)
+        .unwrap();
+    assert!(projection.truncated);
+    assert_eq!(projection.episodes.len(), 1);
+    assert_eq!(
+        projection.episodes[0].provider_turn_id.as_deref(),
+        Some("new")
+    );
+    assert!(projection.episodes[0].terminal);
+    assert_eq!(
+        service.transient_position(),
+        &TransientReadPosition::default(),
+        "latest reads expose no resumable cursor"
+    );
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[cfg(unix)]
