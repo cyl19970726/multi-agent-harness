@@ -274,21 +274,60 @@ export interface HostConsoleData {
   mission_context:MissionContextSummary|null; team_supervisor:TeamSupervisorSummary|null; host_inbox:MessageSummary[];
   member_runtime:MemberCapacitySummary[]; runtime_recovery:RoleRecordSummary[]; pressure_summary:TeamPressureSummary; collaboration:CollaborationProjectionSummary; runtime_fabric:RuntimeFabricSummary;
 }
-export interface AgentWorkspaceSession {
-  session_id:string|null; member_run_id:string|null; team_run_id:string; provider:string|null; execution_mode:string|null;
-  coordination_status:string; runtime_status:string; runtime_generation:number|null; started_at:string; last_active_at:string|null; ended_at:string|null;
+export type ProviderObservationSemanticKind =
+  | "authored_response" | "reasoning_summary"
+  | "tool_call_requested" | "tool_call_started" | "tool_call_completed" | "tool_call_failed"
+  | "artifact_created" | "usage_reported" | "interaction_required" | "interaction_resolved"
+  | "runtime_started" | "runtime_ready" | "runtime_stopped" | "transport_interrupted"
+  | "turn_completed" | "turn_failed" | "turn_cancelled"
+  | "command_recovery_required" | "malformed_or_incomplete";
+export type ProviderObservationPayload =
+  | {type:"authored_response";text:string}
+  | {type:"reasoning_summary";summary:string}
+  | {type:"tool";tool_name:string;call_id?:string|null;display_detail?:string|null}
+  | {type:"artifact";display_name:string;media_type?:string|null;content_digest?:string|null}
+  | {type:"usage";input_tokens?:number|null;output_tokens?:number|null;total_tokens?:number|null}
+  | {type:"interaction";reason_code:string;prompt:string}
+  | {type:"runtime";state:string}
+  | {type:"transport";reason_code:string}
+  | {type:"turn";outcome:string;display_summary?:string|null}
+  | {type:"recovery";reason_code:string}
+  | {type:"malformed";reason_code:string};
+export interface ProviderObservation {
+  schema_version:"agentfirm.provider_observation.v1"; observation_id:string; provider:"codex"|"claude"|"kimi"|"pi";
+  adapter_version:"agentfirm.provider_event_adapter.v1"; native_source_ref:string; agent_identity_id:string; agent_session_id:string;
+  agent_session_generation:number; node_daemon_id:string; node_daemon_generation:number; provider_thread_id?:string|null;
+  provider_turn_id?:string|null; provider_event_id?:string|null; ordering_position:number; causal_parent_id?:string|null;
+  correlation_id?:string|null; runtime_command_id?:string|null; occurred_at:string|null; observed_at:string;
+  semantic_kind:ProviderObservationSemanticKind; lifecycle_phase:"requested"|"started"|"progress"|"terminal"|"recovery";
+  completeness:"partial"|"complete"|"incomplete"|"recovery_required"; effect_certainty:"none"|"not_applied"|"applied"|"unknown";
+  visibility:"session_owner_private"|"team_public"|"operator_only"; redacted:boolean; truncated:boolean;
+  source_content_fingerprint:string; payload:ProviderObservationPayload;
 }
-export interface AgentWorkspaceActivityItem {
-  event_id:string; kind:string; status:string; title:string; summary?:string; occurred_at:string|null;
+export interface SessionEventProjection {
+  schema_version:"agentfirm.provider_observation.v1"; agent_session_id:string|null; agent_session_generation:number|null;
+  source_snapshot_fingerprint:string|null; episodes:Array<{episode_id:string;provider_turn_id:string|null;observations:ProviderObservation[];terminal:boolean;incomplete:boolean}>;
+  truncated:boolean; disabled_reason:string|null;
+}
+export interface LiveProviderActivityItem {
+  runtime_event_locator:string; kind:"thinking"|"response_streaming"|"tool_started"|"tool_completed"|"tool_failed"|"interaction_waiting";
+  provider:"codex"|"claude"|"kimi"|"pi"; display_summary:string; emitted_unix_ms:number; expires_unix_ms:number;
+}
+export interface LiveProviderActivity {
+  schema_version:"agentfirm.live_provider_activity.v1"; durability:"volatile_process_memory"; replayable:false;
+  execution_space_id:string; project_id:string; team_run_id:string; member_run_id:string; agent_session_id:string;
+  agent_session_generation:number; runtime_snapshot_locator:string; expires_unix_ms:number; items:LiveProviderActivityItem[];
+}
+export interface LiveProviderActivityEvent {
+  schema_version:"agentfirm.live_provider_activity_event.v1"; reason:"updated"|"terminal";
+  scope:{execution_space_id:string;project_id:string;team_run_id:string;member_run_id:string;agent_session_id:string;agent_session_generation:number};
+  activity:LiveProviderActivity|null;
 }
 export interface AgentWorkspaceRosterItem extends Partial<MemberCapacitySummary> {
   agent_member_ref:ActorRef; display_name:string; role:string; is_host?:boolean;
 }
 interface AgentWorkspaceSelectedAgent {
   agent_member_ref:ActorRef;display_name:string;role:string;organization_status:string;is_host:boolean;current_member_run_ref:string|null;provider:string|null;execution_mode:string|null;runtime_status:string|null;
-}
-interface AgentWorkspaceSessionActivity {
-  native_session_id:string|null;provider:string|null;execution_mode:string|null;availability:string;items:AgentWorkspaceActivityItem[];truncated:boolean;disabled_reason:string|null;
 }
 interface AgentWorkspaceConfiguration {
   description:string|null;prompt_ref:string|null;prompt_projection:string;skill_refs:string[];capabilities:string[];tool_refs:string[];tools_projection:string;provider_profile_ref:string|null;model_preference:string|null;workspace_policy:string|null;permission_ceiling:string|null;forbidden_actions:string[];forbidden_actions_projection:string;workspace_binding:RoleRecordSummary|null;
@@ -297,9 +336,6 @@ interface AgentWorkspaceDataBase {
   team:{team_id:string;display_name:string;team_revision:number;mission_id:string;host_agent_id:string;viewer_role:"host"|"member";status:string;latest_run_id:string|null};
   selected_agent:AgentWorkspaceSelectedAgent;
   roster:AgentWorkspaceRosterItem[];
-  sessions:AgentWorkspaceSession[];
-  selected_session_id:string|null;
-  session_activity:AgentWorkspaceSessionActivity;
   messages:MessageSummary[];
   works:WorkSummary[];
   configuration:AgentWorkspaceConfiguration;
@@ -307,13 +343,14 @@ interface AgentWorkspaceDataBase {
 }
 export type AgentWorkspacePrivateData=AgentWorkspaceDataBase&{
   projection_scope:"member_self_private"|"host_self_private";
+  session_event_projection:SessionEventProjection;
+  live_provider_activity:LiveProviderActivity|null;
 };
 export type AgentWorkspaceHostMemberPublicData=AgentWorkspaceDataBase&{
   projection_scope:"host_member_public";
   selected_agent:AgentWorkspaceSelectedAgent&{current_member_run_ref:null;provider:null;execution_mode:null;runtime_status:null};
-  sessions:[];
-  selected_session_id:null;
-  session_activity:AgentWorkspaceSessionActivity&{native_session_id:null;provider:null;execution_mode:null;availability:"unavailable";items:[];truncated:false;disabled_reason:string};
+  session_event_projection?:never;
+  live_provider_activity?:never;
   configuration:AgentWorkspaceConfiguration&{prompt_ref:null;tool_refs:[];provider_profile_ref:null;model_preference:null;workspace_policy:null;permission_ceiling:null;forbidden_actions:[];workspace_binding:null};
 };
 export type AgentWorkspaceData=AgentWorkspacePrivateData|AgentWorkspaceHostMemberPublicData;
