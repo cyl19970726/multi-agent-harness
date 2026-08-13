@@ -42,11 +42,9 @@ pub struct LatestTranscriptBatch {
     pub incomplete_tail: bool,
 }
 
-struct BufferedTranscriptLine {
-    byte_offset: u64,
-    ordering_position: u64,
-    provider_turn_id: Option<String>,
-    line: String,
+struct BufferedTranscriptOutcome {
+    source_bytes: usize,
+    outcome: DecodeOutcome,
 }
 
 #[derive(Debug, Error)]
@@ -178,7 +176,7 @@ pub fn read_latest_transcript_batch(
     let file = fs::File::open(path)?;
     let mut reader = BufReader::new(file.take(snapshot_len));
     let mut segment = Vec::new();
-    let mut tail = VecDeque::<BufferedTranscriptLine>::new();
+    let mut tail = VecDeque::<BufferedTranscriptOutcome>::new();
     let mut tail_bytes = 0usize;
     let mut byte_offset = 0u64;
     let mut ordering_position = 1u64;
@@ -208,17 +206,29 @@ pub fn read_latest_transcript_batch(
         if let Some(turn_id) = parsed.as_ref().and_then(provider_turn_id) {
             active_turn_id = Some(turn_id.to_owned());
         }
-        tail_bytes = tail_bytes.saturating_add(line.len());
-        tail.push_back(BufferedTranscriptLine {
-            byte_offset: segment_offset,
+        let outcome = decode_native_json_line(
+            context,
+            Some(format!("offset-{segment_offset}")),
+            active_turn_id.clone(),
             ordering_position,
-            provider_turn_id: active_turn_id.clone(),
-            line,
-        });
-        while tail.len() > max_events || tail_bytes > MAX_LATEST_TRANSCRIPT_BYTES {
-            if let Some(discarded) = tail.pop_front() {
-                tail_bytes = tail_bytes.saturating_sub(discarded.line.len());
-                source_truncated = true;
+            None,
+            &line,
+        )?;
+        // Unsupported provider metadata and deliberately dropped private
+        // reasoning do not consume the visible-history budget. Otherwise a
+        // long run of non-projectable native rows could hide the actual latest
+        // Message/Tool/Result observations.
+        if matches!(&outcome, DecodeOutcome::Observation(_)) {
+            tail_bytes = tail_bytes.saturating_add(line.len());
+            tail.push_back(BufferedTranscriptOutcome {
+                source_bytes: line.len(),
+                outcome,
+            });
+            while tail.len() > max_events || tail_bytes > MAX_LATEST_TRANSCRIPT_BYTES {
+                if let Some(discarded) = tail.pop_front() {
+                    tail_bytes = tail_bytes.saturating_sub(discarded.source_bytes);
+                    source_truncated = true;
+                }
             }
         }
         if parsed.as_ref().is_some_and(is_turn_terminal) {
@@ -230,19 +240,7 @@ pub fn read_latest_transcript_batch(
         return Err(TranscriptReadError::SourceChanged);
     }
 
-    let outcomes = tail
-        .into_iter()
-        .map(|row| {
-            decode_native_json_line(
-                context,
-                Some(format!("offset-{}", row.byte_offset)),
-                row.provider_turn_id,
-                row.ordering_position,
-                None,
-                &row.line,
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let outcomes = tail.into_iter().map(|row| row.outcome).collect();
     Ok(LatestTranscriptBatch {
         outcomes,
         source_truncated,

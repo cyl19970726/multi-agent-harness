@@ -650,9 +650,9 @@ fn latest_reader_keeps_the_real_tail_with_turn_context_and_explicit_truncation()
         allowed_root: root.clone(),
         transcript_path: path,
     };
-    let latest = read_latest_transcript_batch(&context(ProviderKind::Codex), &boundary, 3)
+    let latest = read_latest_transcript_batch(&context(ProviderKind::Codex), &boundary, 2)
         .expect("latest provider tail");
-    assert_eq!(latest.outcomes.len(), 3);
+    assert_eq!(latest.outcomes.len(), 2);
     assert!(latest.source_truncated);
     assert!(latest.incomplete_tail);
     let observations = latest
@@ -683,6 +683,44 @@ fn latest_reader_keeps_the_real_tail_with_turn_context_and_explicit_truncation()
 }
 
 #[test]
+fn latest_reader_budget_counts_projectable_observations_not_native_metadata() {
+    let root = unique_temp_path("latest-observation-budget");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("session.jsonl");
+    let mut rows = String::from(
+        "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"latest visible result\"}}\n",
+    );
+    for index in 0..32 {
+        rows.push_str(&format!(
+            "{{\"type\":\"provider_metadata\",\"sequence\":{index}}}\n"
+        ));
+    }
+    fs::write(&path, rows).unwrap();
+    let latest = read_latest_transcript_batch(
+        &context(ProviderKind::Codex),
+        &TranscriptReadBoundary {
+            allowed_root: root.clone(),
+            transcript_path: path,
+        },
+        1,
+    )
+    .expect("latest projectable observation");
+    assert_eq!(latest.outcomes.len(), 1);
+    assert!(matches!(
+        observation(latest.outcomes.into_iter().next().unwrap()),
+        firm_provider_events::ProviderObservation {
+            payload: ObservationPayload::AuthoredResponse { text },
+            ..
+        } if text == "latest visible result"
+    ));
+    assert!(
+        !latest.source_truncated,
+        "unsupported metadata is not omitted visible history"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn latest_service_marks_a_source_tail_as_truncated_without_persisting_a_cursor() {
     let root = unique_temp_path("latest-service");
     fs::create_dir_all(&root).unwrap();
@@ -702,7 +740,7 @@ fn latest_service_marks_a_source_tail_as_truncated_without_persisting_a_cursor()
         transcript_path: transcript,
     };
     let mut service = ProviderProjectionService::open(context(ProviderKind::Codex));
-    assert_eq!(service.refresh_latest(&boundary, 3).unwrap(), 3);
+    assert_eq!(service.refresh_latest(&boundary, 2).unwrap(), 2);
     let projection = service
         .private_session(&authority(), &viewer("agent-1"), 300)
         .unwrap();
