@@ -94,7 +94,6 @@ integrating project repository, not in the generic core docs.
 | [star-workflow](../skills/star-workflow/SKILL.md) | Optional Dynamic Workflow authoring capability; not a Mission/Wave planning authority. |
 | [bootstrap-project-workflow](../skills/bootstrap-project-workflow/SKILL.md) | Current doc-sync compatibility methodology. It is no longer a mandatory Lead skill or default install. |
 | [design-notion-information-architecture](../.agents/skills/design-notion-information-architecture/SKILL.md) | Audit, redesign, migrate, and review governed Notion systems with explicit authority, reader journeys, semantic relations, cutover, and rollback. |
-| [multi-agent-system-design](../.agents/skills/multi-agent-system-design/SKILL.md) | Reusable mailbox, runtime lifecycle, permission, recovery, and dashboard-proof design guidance. |
 
 ## Split rule
 
