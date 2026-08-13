@@ -375,10 +375,10 @@ if (realEvidencePath) {
             !transcript.terminal_ack_digest ||
             !transcript.transcript_digest ||
             !command ||
-            command.status !== "completed" ||
+            command.status !== "applied" ||
             transcript.secret_material_recorded !== false
           ) {
-            throw new Error(`${side} provider transcript is not bound to a completed RuntimeCommand/AgentSession/terminal ack`);
+            throw new Error(`${side} provider transcript is not bound to an applied RuntimeCommand/AgentSession/terminal ack`);
           }
         }
         const cleanup = JSON.parse(material.process_cleanup.bytes.toString("utf8"));
