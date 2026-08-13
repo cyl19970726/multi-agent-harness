@@ -1462,6 +1462,63 @@ pub(crate) fn queue_remote_fact_publication(
             expires_at_unix_ms: request.expires_unix_ms,
         },
     )?;
+    if let Some(existing) = local.snapshot()?.outboxes.get(&routed.id) {
+        let existing_operation = existing.operation.as_ref().ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::RecoveryRequired,
+                "remote fact replay retained no operation body and requires operator recovery",
+            )
+        })?;
+        let reference = match existing_operation.closed_body()? {
+            harness_fabric::ClosedOperationBody::CollaborationBusiness(reference)
+                if reference.business_kind == "remote_fact_publish" =>
+            {
+                reference
+            }
+            _ => {
+                return Err(FabricError::none(
+                    FabricErrorCode::IdempotencyConflict,
+                    "remote fact operation identity was reused by another business kind",
+                ))
+            }
+        };
+        let existing_publication = serde_json::from_value::<RemoteFactPublication>(
+            reference
+                .payload
+                .get("publication")
+                .cloned()
+                .ok_or_else(|| {
+                    FabricError::none(
+                        FabricErrorCode::IdempotencyConflict,
+                        "remote fact replay lacks its frozen publication",
+                    )
+                })?,
+        )
+        .map_err(|error| {
+            FabricError::none(FabricErrorCode::IdempotencyConflict, error.to_string())
+        })?;
+        let mut semantic_publication = publication.clone();
+        semantic_publication.created_at = existing_publication.created_at.clone();
+        if semantic_publication != existing_publication
+            || existing_operation.idempotency_key != idempotency_key
+            || existing_operation.expected_target_revision != Some(expected_delegation_revision)
+            || existing_operation.expires_at_unix_ms != request.expires_unix_ms
+            || existing_operation.target_execution_space_id.as_deref()
+                != Some(request.source_work_ref.execution_space_id.as_str())
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::IdempotencyConflict,
+                "remote fact replay changed its actor, fact, Work/placement, revision, retention, or expiry",
+            ));
+        }
+        return Ok(serde_json::json!({
+            "delegation_id": request.delegation_id,
+            "publication": existing_publication,
+            "operation_id": existing_operation.id,
+            "outbox_state": existing.local_state,
+            "replayed": true,
+        }));
+    }
     let (outbox, replayed) = local.prepare_outbox(&session, &node_actor, &routed, now_unix_ms)?;
     Ok(serde_json::json!({
         "delegation_id": request.delegation_id,
