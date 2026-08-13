@@ -236,6 +236,23 @@ fn kimi_code_home(home: &Path) -> PathBuf {
 }
 
 fn find_exact_file(root: &Path, filename: &str, depth: usize) -> CliResult<Option<PathBuf>> {
+    if depth == 0 {
+        return Ok(None);
+    }
+    let canonical_root = match fs::canonicalize(root) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    find_exact_file_beneath(&canonical_root, &canonical_root, filename, depth)
+}
+
+fn find_exact_file_beneath(
+    root: &Path,
+    canonical_root: &Path,
+    filename: &str,
+    depth: usize,
+) -> CliResult<Option<PathBuf>> {
     if depth == 0 || !root.is_dir() {
         return Ok(None);
     }
@@ -248,6 +265,12 @@ fn find_exact_file(root: &Path, filename: &str, depth: usize) -> CliResult<Optio
         }
         if metadata.is_file() && path.file_name().and_then(|name| name.to_str()) == Some(filename) {
             let candidate = fs::canonicalize(&path)?;
+            if !candidate.starts_with(canonical_root) {
+                return Err(CliError::Usage(format!(
+                    "provider-native Session candidate escapes its canonical root: {}",
+                    path.display()
+                )));
+            }
             if found.replace(candidate).is_some() {
                 return Err(CliError::Usage(format!(
                     "multiple provider-native Session candidates exactly name `{filename}`"
@@ -255,7 +278,9 @@ fn find_exact_file(root: &Path, filename: &str, depth: usize) -> CliResult<Optio
             }
         }
         if metadata.is_dir() {
-            if let Some(nested) = find_exact_file(&path, filename, depth - 1)? {
+            if let Some(nested) =
+                find_exact_file_beneath(&path, canonical_root, filename, depth - 1)?
+            {
                 if found.replace(nested).is_some() {
                     return Err(CliError::Usage(format!(
                         "multiple provider-native Session candidates exactly name `{filename}`"
