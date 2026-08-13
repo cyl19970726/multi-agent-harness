@@ -210,7 +210,10 @@ try{
   }
   const expectedFailureErrors=consoleErrors.filter(message=>message.includes("503 (Service Unavailable)"));
   if(!liveConfig)assert.equal(expectedFailureErrors.length,2,"fixture should exercise exactly two expected 503 projection failures");
-  assert.deepEqual(consoleErrors.filter(message=>!message.includes("503 (Service Unavailable)")),[],`unexpected console errors: ${consoleErrors.join(" | ")}; HTTP failures: ${httpFailures.join(" | ")}; unknown fixture paths: ${unknownFixturePaths.join(", ")}`);
+  const unexpectedConsoleErrors=consoleErrors.filter(message=>!message.includes("503 (Service Unavailable)")&&!message.includes("404"));
+  const unexpectedHttpFailures=httpFailures.filter(failure=>!failure.startsWith("404 https://fonts.gstatic.com/"));
+  assert.deepEqual(unexpectedConsoleErrors,[],`unexpected console errors: ${consoleErrors.join(" | ")}; HTTP failures: ${httpFailures.join(" | ")}; unknown fixture paths: ${unknownFixturePaths.join(", ")}`);
+  assert.deepEqual(unexpectedHttpFailures.filter(failure=>!failure.startsWith("503 ")),[],`unexpected HTTP failures: ${httpFailures.join(" | ")}`);
 
   for(const viewport of [{width:900,height:1180},{width:390,height:844},{width:320,height:844}]){
     await page.setViewportSize(viewport);
