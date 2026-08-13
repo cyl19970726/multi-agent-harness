@@ -4,7 +4,8 @@ use crate::{ProviderEventFold, SessionEventProjection, TeamRuntimeActivity};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionAuthority {
-    pub project_id: String,
+    pub execution_space_id: String,
+    pub project_binding_id: String,
     pub team_id: String,
     pub agent_identity_id: String,
     pub agent_session_id: String,
@@ -13,7 +14,8 @@ pub struct ProjectionAuthority {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionViewer {
-    pub project_id: String,
+    pub execution_space_id: String,
+    pub project_binding_id: String,
     pub team_id: String,
     pub agent_identity_id: String,
     pub is_team_host: bool,
@@ -21,8 +23,10 @@ pub struct ProjectionViewer {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ProjectionAccessError {
-    #[error("provider event projection belongs to another project")]
-    CrossProject,
+    #[error("provider event projection belongs to another Execution Space")]
+    CrossExecutionSpace,
+    #[error("provider event projection belongs to another Project Binding")]
+    CrossProjectBinding,
     #[error("provider event projection belongs to another Team")]
     CrossTeam,
     #[error("private Session events require the exact AgentIdentity owner")]
@@ -61,8 +65,11 @@ fn verify_shared_scope(
     authority: &ProjectionAuthority,
     viewer: &ProjectionViewer,
 ) -> Result<(), ProjectionAccessError> {
-    if viewer.project_id != authority.project_id {
-        return Err(ProjectionAccessError::CrossProject);
+    if viewer.execution_space_id != authority.execution_space_id {
+        return Err(ProjectionAccessError::CrossExecutionSpace);
+    }
+    if viewer.project_binding_id != authority.project_binding_id {
+        return Err(ProjectionAccessError::CrossProjectBinding);
     }
     if viewer.team_id != authority.team_id {
         return Err(ProjectionAccessError::CrossTeam);

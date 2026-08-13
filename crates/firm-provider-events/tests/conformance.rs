@@ -394,7 +394,8 @@ fn unknown_effect_is_not_silently_completed() {
 
 fn authority() -> ProjectionAuthority {
     ProjectionAuthority {
-        project_id: "project-1".into(),
+        execution_space_id: "space-1".into(),
+        project_binding_id: "project-1".into(),
         team_id: "team-1".into(),
         agent_identity_id: "agent-1".into(),
         agent_session_id: "session-1".into(),
@@ -404,7 +405,8 @@ fn authority() -> ProjectionAuthority {
 
 fn viewer(agent_identity_id: &str) -> ProjectionViewer {
     ProjectionViewer {
-        project_id: "project-1".into(),
+        execution_space_id: "space-1".into(),
+        project_binding_id: "project-1".into(),
         team_id: "team-1".into(),
         agent_identity_id: agent_identity_id.into(),
         is_team_host: false,
@@ -448,6 +450,20 @@ fn private_session_requires_exact_owner_while_team_projection_is_bounded() {
             .unwrap();
     assert_eq!(team.len(), 1);
     assert!(!serde_json::to_string(&team).unwrap().contains("private"));
+
+    let mut cross_space = viewer("agent-1");
+    cross_space.execution_space_id = "space-2".into();
+    assert_eq!(
+        firm_provider_events::project_private_session(&fold, &authority(), &cross_space, 300),
+        Err(ProjectionAccessError::CrossExecutionSpace)
+    );
+
+    let mut cross_binding = viewer("agent-1");
+    cross_binding.project_binding_id = "project-2".into();
+    assert_eq!(
+        firm_provider_events::project_private_session(&fold, &authority(), &cross_binding, 300),
+        Err(ProjectionAccessError::CrossProjectBinding)
+    );
 
     let mut cross_team = viewer("agent-1");
     cross_team.team_id = "team-2".into();

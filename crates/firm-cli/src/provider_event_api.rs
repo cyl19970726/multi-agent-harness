@@ -131,14 +131,16 @@ pub(crate) fn read_historical_projection(
         observed_at: format!("unix-ms:{}", now_unix_ms()),
     };
     let authority = ProjectionAuthority {
-        project_id: request.execution_space_id.to_string(),
+        execution_space_id: request.execution_space_id.to_string(),
+        project_binding_id: request.project_id.to_string(),
         team_id: request.team_id.to_string(),
         agent_identity_id: request.agent_identity_id.to_string(),
         agent_session_id: request.agent_session_id.to_string(),
         agent_session_generation: request.agent_session_generation,
     };
     let viewer = ProjectionViewer {
-        project_id: request.execution_space_id.to_string(),
+        execution_space_id: request.execution_space_id.to_string(),
+        project_binding_id: request.project_id.to_string(),
         team_id: request.team_id.to_string(),
         agent_identity_id: request.viewer_identity_id.to_string(),
         is_team_host: false,
