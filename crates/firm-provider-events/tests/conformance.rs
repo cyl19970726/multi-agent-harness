@@ -530,7 +530,7 @@ fn four_provider_jsonl_corpora_decode_and_malformed_lines_are_bounded() {
                     decode_native_json_line(
                         &context(provider),
                         Some(format!("corpus-{index}")),
-                        Some("corpus-turn".into()),
+                        (provider != ProviderKind::Kimi).then(|| "corpus-turn".into()),
                         index as u64 + 1,
                         None,
                         line,
@@ -539,12 +539,28 @@ fn four_provider_jsonl_corpora_decode_and_malformed_lines_are_bounded() {
                 )
             })
             .collect::<Vec<_>>();
-        assert_eq!(observations.len(), 3);
+        assert!(
+            observations.len() >= 3,
+            "{provider:?} corpus must exercise text, tool, and terminal paths"
+        );
         let serialized = serde_json::to_string(&observations).unwrap();
         assert!(!serialized.contains("not projected"));
+        assert!(!serialized.contains("private tool output"));
         assert!(observations
             .iter()
             .any(|item| item.semantic_kind == SemanticKind::TurnCompleted));
+        if provider == ProviderKind::Kimi {
+            assert!(observations.iter().any(|item| {
+                matches!(
+                    &item.payload,
+                    ObservationPayload::Tool { call_id, .. }
+                        if call_id.as_deref() == Some("kimi-call")
+                )
+            }));
+            assert!(observations
+                .iter()
+                .all(|item| item.provider_turn_id.as_deref() == Some("kimi-turn")));
+        }
     }
 
     let malformed = observation(

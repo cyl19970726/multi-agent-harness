@@ -151,7 +151,7 @@ fn locate(session: &NativeSessionRef) -> CliResult<Option<PathBuf>> {
             &session.native_session_id,
         ),
         "kimi" => find_kimi_wire(
-            &home.join(".kimi-code/sessions"),
+            &kimi_code_home(&home).join("sessions"),
             &session.native_session_id,
             4,
         ),
@@ -182,11 +182,17 @@ pub(crate) fn locate_read_boundary(
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".codex"))
             .join("sessions"),
-        "kimi" => home.join(".kimi-code/sessions"),
+        "kimi" => kimi_code_home(&home).join("sessions"),
         "claude" | "claude-code" | "claude_code" => home.join(".claude/projects"),
         _ => return Ok(None),
     };
     Ok(Some((root, path)))
+}
+
+fn kimi_code_home(home: &Path) -> PathBuf {
+    std::env::var_os("KIMI_CODE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".kimi-code"))
 }
 
 fn find_file(root: &Path, suffix: &str, depth: usize) -> CliResult<Option<PathBuf>> {
@@ -238,11 +244,13 @@ fn find_kimi_wire(root: &Path, session_dir: &str, depth: usize) -> CliResult<Opt
     if !fs::symlink_metadata(&canonical_root)?.is_dir() {
         return Ok(None);
     }
-    let expected = if session_dir.starts_with("session_") {
-        session_dir.to_string()
-    } else {
-        format!("session_{session_dir}")
-    };
+    // Current Kimi Code stores `<workDirKey>/<sessionId>/agents/main/wire.jsonl`.
+    // Older Python releases used `session_<sessionId>` directories. Accept both
+    // exact provider-owned layouts during migration, but reject duplicates.
+    let mut expected = vec![session_dir.to_string()];
+    if !session_dir.starts_with("session_") {
+        expected.push(format!("session_{session_dir}"));
+    }
     find_kimi_wire_beneath(
         &canonical_root,
         &canonical_root,
@@ -255,7 +263,7 @@ fn find_kimi_wire(root: &Path, session_dir: &str, depth: usize) -> CliResult<Opt
 fn find_kimi_wire_beneath(
     root: &Path,
     canonical_root: &Path,
-    expected_session_dir: &str,
+    expected_session_dirs: &[String],
     requested_session: &str,
     depth: usize,
 ) -> CliResult<Option<PathBuf>> {
@@ -270,7 +278,15 @@ fn find_kimi_wire_beneath(
             continue;
         }
         if metadata.is_dir() {
-            if path.file_name().and_then(|name| name.to_str()) == Some(expected_session_dir) {
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    expected_session_dirs
+                        .iter()
+                        .any(|expected| expected == name)
+                })
+            {
                 let wire = path.join("agents/main/wire.jsonl");
                 match fs::symlink_metadata(&wire) {
                     Ok(wire_metadata) => {
@@ -306,7 +322,7 @@ fn find_kimi_wire_beneath(
             if let Some(nested) = find_kimi_wire_beneath(
                 &path,
                 canonical_root,
-                expected_session_dir,
+                expected_session_dirs,
                 requested_session,
                 depth - 1,
             )? {
@@ -427,7 +443,7 @@ mod tests {
     #[test]
     fn discovers_only_the_exact_kimi_session_wire() {
         let root = kimi_sessions("valid");
-        let wire = root.join("workspace/session_019f-kimi-valid/agents/main/wire.jsonl");
+        let wire = root.join("wd_project/019f-kimi-valid/agents/main/wire.jsonl");
         fs::create_dir_all(wire.parent().expect("wire parent")).expect("wire parent");
         fs::write(&wire, "{\"type\":\"turn.prompt\"}\n").expect("wire");
         assert_eq!(
@@ -440,10 +456,11 @@ mod tests {
     #[test]
     fn duplicate_kimi_session_directories_are_rejected() {
         let root = kimi_sessions("duplicate");
-        for parent in ["workspace-a", "workspace-b"] {
+        for session_dir in ["019f-kimi-duplicate", "session_019f-kimi-duplicate"] {
             let wire = root
-                .join(parent)
-                .join("session_019f-kimi-duplicate/agents/main/wire.jsonl");
+                .join("wd_project")
+                .join(session_dir)
+                .join("agents/main/wire.jsonl");
             fs::create_dir_all(wire.parent().expect("wire parent")).expect("wire parent");
             fs::write(wire, "{}\n").expect("wire");
         }

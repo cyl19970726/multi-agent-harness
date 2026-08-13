@@ -597,6 +597,9 @@ fn codex_usage(raw: &serde_json::Value) -> Decoded {
 fn native_turn_id(raw: &serde_json::Value) -> Option<String> {
     raw.pointer("/payload/turn_id")
         .or_else(|| raw.pointer("/turn_id"))
+        .or_else(|| raw.pointer("/turnId"))
+        .or_else(|| raw.pointer("/event/turn_id"))
+        .or_else(|| raw.pointer("/event/turnId"))
         .and_then(|value| value.as_str())
         .map(str::to_owned)
 }
@@ -684,20 +687,37 @@ fn decode_kimi(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
                     SemanticKind::ToolCallRequested,
                     LifecyclePhase::Requested,
                     event.raw.pointer("/event/name").and_then(|v| v.as_str()),
-                    event.raw.pointer("/event/id").and_then(|v| v.as_str()),
+                    event
+                        .raw
+                        .pointer("/event/toolCallId")
+                        .or_else(|| event.raw.pointer("/event/id"))
+                        .and_then(|v| v.as_str()),
                 ))),
                 "tool.result" => Ok(Some(tool(
                     SemanticKind::ToolCallCompleted,
                     LifecyclePhase::Terminal,
                     Some("tool"),
-                    event.raw.pointer("/event/id").and_then(|v| v.as_str()),
+                    event
+                        .raw
+                        .pointer("/event/toolCallId")
+                        .or_else(|| event.raw.pointer("/event/id"))
+                        .and_then(|v| v.as_str()),
                 ))),
+                "step.end"
+                    if event
+                        .raw
+                        .pointer("/event/finishReason")
+                        .and_then(|v| v.as_str())
+                        == Some("end_turn") =>
+                {
+                    Ok(Some(turn("completed")))
+                }
                 "artifact.created" => Ok(Some(artifact(&event.raw, "/event"))),
                 _ => Ok(None),
             }
         }
         "turn.end" | "turn_end" => Ok(Some(turn("completed"))),
-        "turn.cancelled" => Ok(Some(turn("cancelled"))),
+        "turn.cancel" | "turn.cancelled" => Ok(Some(turn("cancelled"))),
         "transport_interrupted" => Ok(Some(transport("provider_transport_interrupted"))),
         _ => Ok(None),
     }
