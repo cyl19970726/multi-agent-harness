@@ -159,11 +159,26 @@ if (realEvidencePath) {
           );
           if (changed.status !== 0) throw new Error("cannot prove the post-test revision delta");
           const changedPaths = changed.stdout.trim().split("\n").filter(Boolean);
+          const allowedPostBuildPaths = new Set(evidence.post_build_non_authority_paths ?? []);
+          if (evidence.integrated_revision) {
+            const integrated = spawnSync(
+              "git",
+              ["merge-base", "--is-ancestor", evidence.integrated_revision, head],
+              { encoding: "utf8" },
+            );
+            if (integrated.status !== 0) {
+              throw new Error("declared post-build integration is not an ancestor of submitted HEAD");
+            }
+          }
+          const observedNonEvidence = changedPaths.filter(
+            (path) => !path.startsWith("docs/current/operations/evidence/"),
+          );
           if (
             changedPaths.length === 0 ||
-            changedPaths.some((path) => !path.startsWith("docs/current/operations/evidence/"))
+            observedNonEvidence.some((path) => !allowedPostBuildPaths.has(path)) ||
+            [...allowedPostBuildPaths].some((path) => !observedNonEvidence.includes(path))
           ) {
-            throw new Error("post-test revision changed production or non-evidence files");
+            throw new Error("post-test revision changed an undeclared production or non-evidence file");
           }
         }
 
