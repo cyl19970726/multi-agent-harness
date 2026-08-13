@@ -129,8 +129,8 @@ if (realEvidencePath) {
     if (evidence.cleanup_verified !== true || evidence.secret_material_recorded !== false) {
       failures.push("two-Mac evidence must prove cleanup and contain no secret material");
     }
-    if (evidence.evidence_schema_version !== "agentfirm.wave6-two-mac-evidence.v2") {
-      failures.push("two-Mac evidence must use the recomputable v2 evidence schema");
+    if (evidence.evidence_schema_version !== "agentfirm.wave6-two-mac-evidence.v3") {
+      failures.push("two-Mac evidence must use the raw-store recomputable v3 evidence schema");
     } else {
       try {
         const exactHead = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" });
@@ -152,33 +152,18 @@ if (realEvidencePath) {
         );
         if (buildAncestor.status !== 0) throw new Error("tested build is not an ancestor of the submitted revision");
         if (evidence.build_sha !== head) {
-          const changed = spawnSync(
-            "git",
-            ["diff", "--name-only", `${evidence.build_sha}..${head}`],
-            { encoding: "utf8" },
-          );
-          if (changed.status !== 0) throw new Error("cannot prove the post-test revision delta");
+          const changed = spawnSync("git", ["diff", "--name-only", `${evidence.build_sha}..${head}`], { encoding: "utf8" });
+          if (changed.status !== 0) throw new Error("cannot prove the tested-build to submitted-revision delta");
           const changedPaths = changed.stdout.trim().split("\n").filter(Boolean);
-          const allowedPostBuildPaths = new Set(evidence.post_build_non_authority_paths ?? []);
-          if (evidence.integrated_revision) {
-            const integrated = spawnSync(
-              "git",
-              ["merge-base", "--is-ancestor", evidence.integrated_revision, head],
-              { encoding: "utf8" },
-            );
-            if (integrated.status !== 0) {
-              throw new Error("declared post-build integration is not an ancestor of submitted HEAD");
-            }
+          if (changedPaths.length === 0 || changedPaths.some((path) => !path.startsWith("docs/current/operations/evidence/"))) {
+            throw new Error("post-test revision contains a production or non-evidence change");
           }
-          const observedNonEvidence = changedPaths.filter(
-            (path) => !path.startsWith("docs/current/operations/evidence/"),
-          );
-          if (
-            changedPaths.length === 0 ||
-            observedNonEvidence.some((path) => !allowedPostBuildPaths.has(path)) ||
-            [...allowedPostBuildPaths].some((path) => !observedNonEvidence.includes(path))
-          ) {
-            throw new Error("post-test revision changed an undeclared production or non-evidence file");
+        }
+        if (Object.hasOwn(evidence, "post_build_non_authority_paths")) throw new Error("caller-authored post-build path allowlist is forbidden");
+        for (const side of ["control_plane", "source", "target"]) {
+          const process = evidence.processes?.[side];
+          if (!process?.process_id || process.build_sha !== evidence.build_sha || !process.binary_sha256 || !process.node_daemon_generation) {
+            throw new Error(`${side} process identity/build/generation is incomplete or not exact tested build`);
           }
         }
 
@@ -197,6 +182,8 @@ if (realEvidencePath) {
           "target_provider_transcript",
           "artifact",
           "process_cleanup",
+          "source_runtime_commands",
+          "target_runtime_commands",
         ]) {
           const descriptor = evidence.files?.[name];
           if (!descriptor?.path || !descriptor?.sha256) throw new Error(`evidence files.${name} is incomplete`);
@@ -217,6 +204,11 @@ if (realEvidencePath) {
         }
 
         const collaborationRows = readJsonLines(material.central_collaboration_ledger.absolute);
+        for (const [name, descriptor] of Object.entries(evidence.files)) {
+          if ((name.includes("ledger") || name.includes("journal")) && (!Number.isInteger(descriptor.first_sequence) || !Number.isInteger(descriptor.last_sequence) || !descriptor.source_store_digest)) {
+            throw new Error(`${name} lacks exact raw transaction range and source Store digest`);
+          }
+        }
         const delegationRows = collaborationRows.filter(
           (row) => row.aggregate_kind === "work_delegation_v1" && row.aggregate_id === evidence.delegation_id,
         );
@@ -349,19 +341,28 @@ if (realEvidencePath) {
           ["target", evidence.target_provider_marker],
         ]) {
           const transcript = JSON.parse(material[`${side}_provider_transcript`].bytes.toString("utf8"));
+          const commands = objects(readJsonLines(material[`${side}_runtime_commands`].absolute));
+          const command = commands.find((value) => value.id === transcript.runtime_command_id);
           if (
             transcript.node_id !== evidence[`${side}_node_id`] ||
             transcript.marker !== marker ||
             transcript.provider !== "codex" ||
+            !transcript.agent_session_id ||
+            !transcript.terminal_ack_digest ||
+            !transcript.transcript_digest ||
+            !command ||
+            command.status !== "completed" ||
             transcript.secret_material_recorded !== false
           ) {
-            throw new Error(`${side} provider transcript is not the exact secret-free Codex proof`);
+            throw new Error(`${side} provider transcript is not bound to a completed RuntimeCommand/AgentSession/terminal ack`);
           }
         }
         const cleanup = JSON.parse(material.process_cleanup.bytes.toString("utf8"));
         if (
           cleanup.source?.scoped_processes_remaining !== 0 ||
           cleanup.target?.scoped_processes_remaining !== 0 ||
+          !Array.isArray(cleanup.commands) || cleanup.commands.length === 0 ||
+          cleanup.commands.some((command) => !command.command_ref || command.exit_code !== 0) ||
           cleanup.secret_material_recorded !== false
         ) {
           throw new Error("scoped two-Mac process cleanup is absent or incomplete");

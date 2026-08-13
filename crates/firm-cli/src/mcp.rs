@@ -751,6 +751,7 @@ fn tool_collaboration_delegation_list(
         "node_id",
         "state",
         "limit",
+        "cursor",
     ];
     reject_unknown_arguments(arguments, "collaboration_delegation_list", ALLOWED)?;
     let (company_id, credential) = resolved_mcp_collaboration_scope(resolved)?;
@@ -768,30 +769,35 @@ fn tool_collaboration_delegation_list(
         .get("limit")
         .and_then(Value::as_u64)
         .unwrap_or(100) as usize;
-    let mut cursor = None;
-    let mut visible = Vec::new();
-    let mut as_of_store_sequence = None;
-    loop {
-        let page = store
-            .list_collaboration_delegations(&company_id, &filter, cursor, 500)
-            .map_err(|error| error.to_string())?;
-        as_of_store_sequence.get_or_insert(page.as_of_store_sequence);
-        for delegation in page.items {
-            if mcp_actor_can_read_delegation(&store, &company_id, &credential.actor, &delegation)?
-                && visible.len() < limit
-            {
-                visible.push(delegation);
-            }
-        }
-        cursor = page.next_cursor;
-        if cursor.is_none() {
-            break;
-        }
-    }
+    let secret = std::env::var("AGENTFIRM_MCP_CREDENTIAL_TOKEN")
+        .map_err(|_| "collaboration cursor requires server credential".to_string())?;
+    let cursor = optional_non_empty_str(arguments, "cursor")?
+        .map(|value| {
+            super::fabric_runtime::decode_collaboration_cursor(&value, &secret)
+                .map_err(|error| error.to_string())
+        })
+        .transpose()?;
+    let page = store
+        .list_collaboration_delegations_for_actor(
+            &company_id,
+            &credential.actor,
+            &filter,
+            cursor,
+            limit,
+        )
+        .map_err(|error| error.to_string())?;
+    let next_cursor = page
+        .next_cursor
+        .as_ref()
+        .map(|value| {
+            super::fabric_runtime::encode_collaboration_cursor(value, &secret)
+                .map_err(|error| error.to_string())
+        })
+        .transpose()?;
     Ok(json!({
-        "items": visible,
-        "as_of_store_sequence": as_of_store_sequence.unwrap_or(0),
-        "next_cursor": null,
+        "items": page.items,
+        "as_of_store_sequence": page.as_of_store_sequence,
+        "next_cursor": next_cursor,
     }))
 }
 
@@ -1725,7 +1731,7 @@ fn tool_definitions() -> Value {
         {
             "name": "collaboration_delegation_list",
             "description": "Read the Company Control Plane's canonical cross-Team Delegations. This tool never folds an Execution Space's retired local WorkDelegation ledger.",
-            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"source_team_id": {"type": "string", "minLength": 1}, "target_team_id": {"type": "string", "minLength": 1}, "node_id": {"type": "string", "minLength": 1}, "state": {"type": "string", "enum": ["proposed", "awaiting_target_decision", "provisioning_target_work", "active", "result_available", "cancellation_requested", "terminal"]}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}}
+            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"source_team_id": {"type": "string", "minLength": 1}, "target_team_id": {"type": "string", "minLength": 1}, "node_id": {"type": "string", "minLength": 1}, "state": {"type": "string", "enum": ["proposed", "awaiting_target_decision", "provisioning_target_work", "active", "result_available", "cancellation_requested", "terminal"]}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}, "cursor": {"type": "string", "minLength": 1}}}
         },
         {
             "name": "collaboration_delegation_show",

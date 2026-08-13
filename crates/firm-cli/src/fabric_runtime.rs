@@ -106,6 +106,94 @@ fn validate_current_collaboration_message_authority(
 }
 
 impl ControlPlaneReceiptApplication for Wave6ControlPlaneApplication {
+    fn admit_and_accept_source(
+        &self,
+        operation: &RoutedOperation,
+        _authenticated_actor: &AuthenticatedActor,
+        accept: &mut dyn FnMut() -> Result<
+            harness_fabric::gateway_runtime::AcceptedSourceOperation,
+            FabricError,
+        >,
+    ) -> Result<harness_fabric::gateway_runtime::AcceptedSourceOperation, FabricError> {
+        if operation.kind != COLLABORATION_BUSINESS_OPERATION_KIND {
+            return accept();
+        }
+        let reference = match operation.closed_body()? {
+            harness_fabric::ClosedOperationBody::CollaborationBusiness(reference) => reference,
+            _ => return accept(),
+        };
+        if reference.business_kind != "team_message_deliver" {
+            return accept();
+        }
+        let authority =
+            serde_json::from_value::<harness_core::collaboration::CollaborationMessageAuthority>(
+                reference
+                    .payload
+                    .get("delegation_authority")
+                    .cloned()
+                    .ok_or_else(|| {
+                        FabricError::none(
+                            FabricErrorCode::UnauthorizedActor,
+                            "team Message route lacks frozen Delegation authority",
+                        )
+                    })?,
+            )
+            .map_err(|error| {
+                FabricError::none(
+                    FabricErrorCode::UnauthorizedActor,
+                    format!("team Message Delegation authority is invalid: {error}"),
+                )
+            })?;
+        let store = HarnessStore::new(&self.collaboration_root);
+        store.with_collaboration_authority_fence(
+            |locked_store| {
+                let delegation = locked_store
+                    .collaboration_delegation(&self.company_id, &authority.delegation_id)
+                    .map_err(|error| FabricError::unknown(operation.id.clone(), error.to_string()))?
+                    .ok_or_else(|| {
+                        FabricError::none(
+                            FabricErrorCode::UnauthorizedActor,
+                            "team Message references no central Delegation",
+                        )
+                    })?;
+                let attestation = locked_store
+                    .collaboration_source_work_attestation(
+                        &self.company_id,
+                        &delegation.source_work_attestation_id,
+                    )
+                    .map_err(|error| FabricError::unknown(operation.id.clone(), error.to_string()))?
+                    .ok_or_else(|| {
+                        FabricError::none(
+                            FabricErrorCode::UnauthorizedActor,
+                            "team Message Delegation lacks source Work attestation",
+                        )
+                    })?;
+                let policy = locked_store
+                    .collaboration_inbound_policy(
+                        &self.company_id,
+                        &delegation.inbound_policy_snapshot.policy_id,
+                    )
+                    .map_err(|error| FabricError::unknown(operation.id.clone(), error.to_string()))?
+                    .filter(|policy| policy.revoked_at.is_none())
+                    .ok_or_else(|| {
+                        FabricError::none(
+                            FabricErrorCode::UnauthorizedActor,
+                            "team Message inbound policy is missing or revoked",
+                        )
+                    })?;
+                validate_current_collaboration_message_authority(
+                    &self.company_id,
+                    &delegation,
+                    &attestation,
+                    &policy,
+                    &authority,
+                    &reference,
+                )
+            },
+            accept,
+        )
+    }
+
     fn fold_source_accepted(
         &self,
         operation: &RoutedOperation,
@@ -2865,6 +2953,101 @@ impl Wave4cApplication {
 }
 
 impl NodeApplication for Wave4cApplication {
+    fn authorize_artifact_download(
+        &mut self,
+        operation: &harness_fabric::RoutedOperation,
+        capability: &harness_fabric::ArtifactCapability,
+    ) -> Result<(), FabricError> {
+        let harness_fabric::ClosedOperationBody::CollaborationBusiness(reference) =
+            operation.closed_body()?
+        else {
+            return Err(FabricError::none(
+                FabricErrorCode::InvalidPayload,
+                "artifact download is not a collaboration operation",
+            ));
+        };
+        if reference.business_kind != "artifact_grant" {
+            return Err(FabricError::none(
+                FabricErrorCode::InvalidPayload,
+                "artifact download is not an artifact grant",
+            ));
+        }
+        let payload: CollaborationArtifactGrantEnvelope = serde_json::from_value(reference.payload)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
+            })?;
+        if &payload.read_capability != capability
+            || capability.node_id != self.node_id
+            || capability.company_id != operation.company_id
+            || capability.purpose != harness_fabric::ArtifactCapabilityPurpose::Download
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::UnauthorizedActor,
+                "artifact capability changed or is outside the authenticated source Node",
+            ));
+        }
+        let (_, store) = self.target_store(operation)?;
+        harness_store::apply_collaboration_target_operation(
+            &store,
+            operation,
+            &format!(
+                "unix-ms:{}",
+                harness_fabric::gateway_runtime::now_unix_ms()?
+            ),
+        )?;
+        Ok(())
+    }
+
+    fn replay_downloaded_artifact(
+        &mut self,
+        operation: &harness_fabric::RoutedOperation,
+    ) -> Result<Option<(String, serde_json::Value, harness_fabric::EffectCertainty)>, FabricError>
+    {
+        let harness_fabric::ClosedOperationBody::CollaborationBusiness(reference) =
+            operation.closed_body()?
+        else {
+            return Ok(None);
+        };
+        if reference.business_kind != "artifact_grant" {
+            return Ok(None);
+        }
+        let payload: CollaborationArtifactGrantEnvelope = serde_json::from_value(reference.payload)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
+            })?;
+        let (_, store) = self.target_store(operation)?;
+        let Some(import) = store
+            .collaboration_artifact_import(&operation.company_id, &payload.manifest.id)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+            })?
+        else {
+            return Ok(None);
+        };
+        if import.operation_id != operation.id
+            || import.delegation_id != payload.delegation_id
+            || import.artifact_digest != payload.manifest.sha256
+            || import.source_node_id != self.node_id
+            || import.source_node_daemon_id != self.daemon_id
+            || import.source_node_daemon_generation != self.daemon_generation
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::IdempotencyConflict,
+                "artifact import replay changed operation, bytes, or NodeDaemon generation",
+            ));
+        }
+        store
+            .read_collaboration_artifact_import_bytes(&operation.company_id, &payload.manifest.id)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::ArtifactTampered, error.to_string())
+            })?;
+        Ok(Some((
+            "agentfirm.collaboration.artifact_imported.v1".into(),
+            serde_json::json!({"artifact_import": import, "replayed": true}),
+            harness_fabric::EffectCertainty::Applied,
+        )))
+    }
+
     fn apply(
         &mut self,
         operation: &harness_fabric::RoutedOperation,
@@ -2901,8 +3084,7 @@ impl NodeApplication for Wave4cApplication {
                     | "delegation_decide"
                     | "delegation_cancel_request"
                     | "delegation_cancel_decide"
-                    | "remote_fact_publish"
-                    | "artifact_grant" => {
+                    | "remote_fact_publish" => {
                         let (_, store) = self.target_store(operation)?;
                         harness_store::apply_collaboration_target_operation(
                             &store,
@@ -2913,6 +3095,10 @@ impl NodeApplication for Wave4cApplication {
                             ),
                         )
                     }
+                    "artifact_grant" => Err(FabricError::unknown(
+                        operation.id.clone(),
+                        "artifact grant cannot be applied before its one-use capability is consumed and source bytes are durably imported",
+                    )),
                     "team_message_deliver" => self.persist_message(operation),
                     _ => Err(FabricError::none(
                         FabricErrorCode::FeatureIncompatible,
@@ -2925,6 +3111,115 @@ impl NodeApplication for Wave4cApplication {
                 "Node application adapter does not own this routed reference kind",
             )),
         }
+    }
+
+    fn apply_downloaded_artifact(
+        &mut self,
+        operation: &harness_fabric::RoutedOperation,
+        artifact_id: &str,
+        artifact_digest: &str,
+        bytes: &[u8],
+    ) -> Result<(String, serde_json::Value, harness_fabric::EffectCertainty), FabricError> {
+        let harness_fabric::ClosedOperationBody::CollaborationBusiness(reference) =
+            operation.closed_body()?
+        else {
+            return Err(FabricError::none(
+                FabricErrorCode::InvalidPayload,
+                "downloaded artifact is not a collaboration operation",
+            ));
+        };
+        if reference.business_kind != "artifact_grant" {
+            return Err(FabricError::none(
+                FabricErrorCode::InvalidPayload,
+                "downloaded artifact is not an artifact grant",
+            ));
+        }
+        let payload: CollaborationArtifactGrantEnvelope = serde_json::from_value(reference.payload)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
+            })?;
+        let delegation_id = payload.delegation_id.as_str();
+        let (_, store) = self.target_store(operation)?;
+        let delegation = store
+            .collaboration_delegation(&operation.company_id, delegation_id)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+            })?
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::ExpectedRevisionConflict,
+                    "artifact import Delegation does not exist",
+                )
+            })?;
+        let attestation = store
+            .collaboration_source_work_attestation(
+                &operation.company_id,
+                &delegation.source_work_attestation_id,
+            )
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+            })?
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::UnauthorizedActor,
+                    "artifact import source Work attestation does not exist",
+                )
+            })?;
+        if delegation.source_node_id != self.node_id
+            || operation.target_node_id != self.node_id
+            || payload.source_placement.node_id != self.node_id
+            || payload.manifest.id != artifact_id
+            || payload.manifest.sha256 != artifact_digest
+            || payload.manifest.size_bytes != bytes.len() as u64
+            || payload.read_capability.artifact_id != artifact_id
+            || payload.read_capability.artifact_digest != artifact_digest
+            || harness_fabric::sha256_hex(bytes) != artifact_digest
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::ArtifactTampered,
+                "downloaded artifact bytes or source Node disagree with canonical authority",
+            ));
+        }
+        let imported_at = harness_fabric::gateway_runtime::now_unix_ms()?;
+        let import = harness_core::collaboration::ArtifactImport {
+            id: format!("artifact-import:{artifact_id}"),
+            company_id: operation.company_id.clone(),
+            delegation_id: delegation_id.into(),
+            artifact_id: artifact_id.into(),
+            artifact_digest: artifact_digest.into(),
+            size_bytes: bytes.len() as u64,
+            source_node_id: self.node_id.clone(),
+            source_node_daemon_id: self.daemon_id.clone(),
+            source_node_daemon_generation: self.daemon_generation,
+            source_team_id: delegation.source_team_id.clone(),
+            source_host_ref: attestation.source_host_ref,
+            source_work_ref: delegation.source_work_ref,
+            operation_id: operation.id.clone(),
+            imported_at_unix_ms: imported_at,
+            revision: 1,
+        };
+        let persisted = store
+            .persist_collaboration_artifact_import(
+                &harness_store::CollaborationMutationContext {
+                    company_id: operation.company_id.clone(),
+                    authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                        kind: harness_core::agentfirm_api::ActorKind::Service,
+                        id: self.daemon_id.clone(),
+                    },
+                    command_name: "artifact_import.persist".into(),
+                    idempotency_key: operation.id.clone(),
+                    expected_revision: 0,
+                    occurred_at: format!("unix-ms:{imported_at}"),
+                },
+                &import,
+                bytes,
+            )
+            .map_err(|error| FabricError::unknown(operation.id.clone(), error.to_string()))?;
+        Ok((
+            "agentfirm.collaboration.artifact_imported.v1".into(),
+            serde_json::json!({"artifact_import": persisted.projection, "replayed": persisted.replayed}),
+            harness_fabric::EffectCertainty::Applied,
+        ))
     }
 }
 
@@ -3383,6 +3678,15 @@ struct CollaborationArtifactRetentionHttpRequest {
     retention_duration_ms: u64,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CollaborationArtifactGrantEnvelope {
+    delegation_id: String,
+    manifest: harness_fabric::RemoteArtifactManifest,
+    read_capability: harness_fabric::ArtifactCapability,
+    source_placement: harness_core::collaboration::TargetPlacementRef,
+}
+
 fn unix_ms_timestamp(value: &str) -> Option<u64> {
     value.strip_prefix("unix-ms:")?.parse().ok()
 }
@@ -3400,6 +3704,55 @@ fn collaboration_actor_can_read_delegation(
     Ok(actor == &delegation.source_owner_ref
         || source_host.as_ref() == Some(actor)
         || actor == &delegation.target_host_ref)
+}
+
+pub(crate) fn encode_collaboration_cursor(
+    cursor: &harness_store::CollaborationScopedCursor,
+    secret: &str,
+) -> Result<String, FabricError> {
+    let bytes = serde_json::to_vec(cursor)
+        .map_err(|error| FabricError::none(FabricErrorCode::InvalidPayload, error.to_string()))?;
+    let payload = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let signature = harness_fabric::sha256_hex(format!("{payload}:{secret}").as_bytes());
+    Ok(format!("v1.{payload}.{signature}"))
+}
+
+pub(crate) fn decode_collaboration_cursor(
+    encoded: &str,
+    secret: &str,
+) -> Result<harness_store::CollaborationScopedCursor, FabricError> {
+    let mut parts = encoded.split('.');
+    let (Some("v1"), Some(payload), Some(signature), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(FabricError::none(
+            FabricErrorCode::InvalidPayload,
+            "collaboration cursor is malformed",
+        ));
+    };
+    let expected = harness_fabric::sha256_hex(format!("{payload}:{secret}").as_bytes());
+    if !constant_time_secret_eq(signature, &expected) || payload.len() % 2 != 0 {
+        return Err(FabricError::none(
+            FabricErrorCode::UnauthorizedActor,
+            "collaboration cursor signature is invalid",
+        ));
+    }
+    let bytes = (0..payload.len())
+        .step_by(2)
+        .map(|offset| {
+            u8::from_str_radix(&payload[offset..offset + 2], 16).map_err(|_| {
+                FabricError::none(
+                    FabricErrorCode::InvalidPayload,
+                    "collaboration cursor encoding is invalid",
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| FabricError::none(FabricErrorCode::InvalidPayload, error.to_string()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3433,6 +3786,14 @@ fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend
     .map_err(|message| FabricError::none(FabricErrorCode::UnauthorizedActor, message))?;
     let store = HarnessStore::new(collaboration_root);
     if method == "GET" && path == "/v1/collaboration/delegations" {
+        let query_value = |key: &str| {
+            target.split_once('?').and_then(|(_, query)| {
+                query.split('&').find_map(|part| {
+                    let (candidate, value) = part.split_once('=')?;
+                    (candidate == key).then_some(value)
+                })
+            })
+        };
         let state = target
             .split_once('?')
             .and_then(|(_, query)| {
@@ -3469,35 +3830,45 @@ fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend
             node_id: None,
             state,
         };
-        let mut cursor = None;
-        let mut visible = Vec::new();
-        let mut as_of_store_sequence = None;
-        loop {
-            let page = store
-                .list_collaboration_delegations(control.company_id(), &filter, cursor, 500)
-                .map_err(|error| {
-                    FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
-                })?;
-            as_of_store_sequence.get_or_insert(page.as_of_store_sequence);
-            for delegation in page.items {
-                if collaboration_actor_can_read_delegation(
-                    &store,
-                    control.company_id(),
-                    &credential.actor,
-                    &delegation,
-                )? {
-                    visible.push(delegation);
-                }
-            }
-            cursor = page.next_cursor;
-            if cursor.is_none() {
-                break;
-            }
-        }
+        let cursor_secret = headers.get("x-agentfirm-token").ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::UnauthorizedActor,
+                "collaboration cursor requires authenticated credential",
+            )
+        })?;
+        let cursor = query_value("cursor")
+            .map(|value| decode_collaboration_cursor(value, cursor_secret))
+            .transpose()?;
+        let limit = query_value("limit")
+            .map(str::parse::<usize>)
+            .transpose()
+            .map_err(|_| {
+                FabricError::none(
+                    FabricErrorCode::InvalidPayload,
+                    "collaboration limit is invalid",
+                )
+            })?
+            .unwrap_or(100);
+        let page = store
+            .list_collaboration_delegations_for_actor(
+                control.company_id(),
+                &credential.actor,
+                &filter,
+                cursor,
+                limit,
+            )
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
+            })?;
+        let next_cursor = page
+            .next_cursor
+            .as_ref()
+            .map(|value| encode_collaboration_cursor(value, cursor_secret))
+            .transpose()?;
         return Ok(serde_json::json!({
-            "items": visible,
-            "as_of_store_sequence": as_of_store_sequence.unwrap_or(0),
-            "next_cursor": null,
+            "items": page.items,
+            "as_of_store_sequence": page.as_of_store_sequence,
+            "next_cursor": next_cursor,
         }));
     }
     if method == "POST" && path == "/v1/collaboration/inbound-policies" {
@@ -3958,6 +4329,15 @@ fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend
             .map_err(|error| {
                 FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
             })?;
+        const MAX_COLLABORATION_RETENTION_MS: u64 = 365 * 24 * 60 * 60 * 1_000;
+        if request.retention_duration_ms == 0
+            || request.retention_duration_ms > MAX_COLLABORATION_RETENTION_MS
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::ArtifactInvalid,
+                "retention duration must be positive and within the server one-year policy",
+            ));
+        }
         let delegation = store
             .collaboration_delegation(control.company_id(), delegation_id)
             .map_err(|error| {
@@ -4000,48 +4380,34 @@ fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend
                 "artifact retention scope disagrees with the exact terminal Delegation",
             ));
         }
-        let fabric = control.store().snapshot()?;
-        let mut applied_import_receipts = Vec::new();
-        for operation in fabric.operations.values() {
-            let Ok(harness_fabric::ClosedOperationBody::CollaborationBusiness(reference)) =
-                operation.closed_body()
-            else {
-                continue;
-            };
-            if reference.business_kind != "artifact_grant"
-                || reference
-                    .payload
-                    .get("delegation_id")
-                    .and_then(serde_json::Value::as_str)
-                    != Some(delegation_id)
-                || reference
-                    .payload
-                    .get("manifest")
-                    .and_then(|value| value.get("id"))
-                    .and_then(serde_json::Value::as_str)
-                    != Some(artifact_id)
-                || operation.target_node_id != delegation.source_node_id
-            {
-                continue;
-            }
-            applied_import_receipts.extend(fabric.receipts.values().filter(|receipt| {
-                receipt.operation_id == operation.id
-                    && receipt.kind == harness_fabric::ReceiptKind::OperationApplied
-                    && receipt.application_effect == Some(harness_fabric::EffectCertainty::Applied)
-            }));
-        }
-        if applied_import_receipts.len() != 1 {
-            return Err(FabricError::none(
-                FabricErrorCode::RecoveryRequired,
-                "artifact retention requires one exact durable source-import receipt",
-            ));
-        }
+        let artifact_import = store
+            .collaboration_artifact_import(control.company_id(), artifact_id)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+            })?
+            .filter(|import| {
+                import.delegation_id == delegation_id
+                    && import.source_node_id == delegation.source_node_id
+                    && import.source_team_id == delegation.source_team_id
+                    && import.source_work_ref == delegation.source_work_ref
+                    && import.artifact_digest == manifest.sha256
+                    && import.size_bytes == manifest.size_bytes
+            })
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::RecoveryRequired,
+                    "artifact retention requires one exact canonical source-owned ArtifactImport",
+                )
+            })?;
+        store
+            .read_collaboration_artifact_import_bytes(control.company_id(), artifact_id)
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::ArtifactTampered, error.to_string())
+            })?;
         let retain_until = harness_core::collaboration::CollaborationRetentionAnchor {
             terminal_transport_at_unix_ms: manifest.completed_at_unix_ms,
             terminal_delegation_at_unix_ms: unix_ms_timestamp(&delegation.updated_at),
-            source_import_completed_at_unix_ms: Some(
-                applied_import_receipts[0].created_at_unix_ms,
-            ),
+            source_import_completed_at_unix_ms: Some(artifact_import.imported_at_unix_ms),
         }
         .retain_until_unix_ms(request.retention_duration_ms)
         .ok_or_else(|| {

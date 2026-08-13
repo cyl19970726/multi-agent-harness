@@ -3,14 +3,14 @@ use firm_core::agentfirm_api::{
     MessageAddressKind, MessageKind, MessageRecipientKind, MessageRecipientRef, ResponseIntent,
 };
 use firm_core::collaboration::{
-    CancellationDecisionKind, CancellationRequestState, CollaborationRetentionAnchor,
-    DelegationCancellationDecision, DelegationCancellationRequest, DelegationDecision,
-    DelegationDecisionKind, DelegationInboundMode, DelegationInboundPolicy, DelegationState,
-    DelegationTerminalOutcome, FabricEffectCertainty, FabricError, FabricErrorCode,
-    ImmutableMessageTransferPayload, RemoteFactKind, RemoteFactPublication, RemoteFactSnapshot,
-    RemoteMessageReplica, RemoteMessageTransferState, RemoteWorkRef, RoutedBusinessKind,
-    RoutedBusinessOperation, RoutedBusinessReceipt, SourceWorkAttestation, TargetPlacementRef,
-    WorkOperationalDecisionRef,
+    ArtifactImport, CancellationDecisionKind, CancellationRequestState,
+    CollaborationRetentionAnchor, DelegationCancellationDecision, DelegationCancellationRequest,
+    DelegationDecision, DelegationDecisionKind, DelegationInboundMode, DelegationInboundPolicy,
+    DelegationState, DelegationTerminalOutcome, FabricEffectCertainty, FabricError,
+    FabricErrorCode, ImmutableMessageTransferPayload, RemoteFactKind, RemoteFactPublication,
+    RemoteFactSnapshot, RemoteMessageReplica, RemoteMessageTransferState, RemoteWorkRef,
+    RoutedBusinessKind, RoutedBusinessOperation, RoutedBusinessReceipt, SourceWorkAttestation,
+    TargetPlacementRef, WorkOperationalDecisionRef,
 };
 use firm_core::{
     AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, Mission,
@@ -46,6 +46,63 @@ const SOURCE_NODE_UUID: &str = "11111111-1111-4111-8111-111111111111";
 struct TestStore {
     root: PathBuf,
     store: HarnessStore,
+}
+
+#[test]
+fn source_artifact_import_is_digest_bound_durable_and_exactly_replayed() {
+    let test = TestStore::new("artifact-import");
+    active_delegation(&test.store);
+    let bytes = b"source-owned-import";
+    let digest = firm_fabric::sha256_hex(bytes);
+    let import = ArtifactImport {
+        id: "artifact-import:artifact-1".into(),
+        company_id: "company-1".into(),
+        delegation_id: "delegation-1".into(),
+        artifact_id: "artifact-1".into(),
+        artifact_digest: digest.clone(),
+        size_bytes: bytes.len() as u64,
+        source_node_id: "node-a".into(),
+        source_node_daemon_id: "daemon-a".into(),
+        source_node_daemon_generation: 9,
+        source_team_id: "team-a".into(),
+        source_host_ref: actor(ActorKind::AgentMember, "host-a"),
+        source_work_ref: source_attestation().source_work_ref,
+        operation_id: "artifact-grant-route-1".into(),
+        imported_at_unix_ms: 500,
+        revision: 1,
+    };
+    let ctx = context(
+        actor(ActorKind::Service, "daemon-a"),
+        "artifact_import.persist",
+        "artifact-grant-route-1",
+        0,
+    );
+    let committed = test
+        .store
+        .persist_collaboration_artifact_import(&ctx, &import, bytes)
+        .expect("verified bytes become canonical source import");
+    assert!(!committed.replayed);
+    assert_eq!(
+        test.store
+            .read_collaboration_artifact_import_bytes("company-1", "artifact-1")
+            .unwrap(),
+        bytes,
+    );
+    let rows = test.store.collaboration_operations().unwrap().len();
+    let replay = test
+        .store
+        .persist_collaboration_artifact_import(&ctx, &import, bytes)
+        .expect("exact replay does not download or import twice");
+    assert!(replay.replayed);
+    assert_eq!(test.store.collaboration_operations().unwrap().len(), rows);
+
+    let mut tampered = import;
+    tampered.artifact_digest = firm_fabric::sha256_hex(b"different");
+    assert!(test
+        .store
+        .persist_collaboration_artifact_import(&ctx, &tampered, bytes)
+        .is_err());
+    assert_eq!(test.store.collaboration_operations().unwrap().len(), rows);
 }
 
 impl TestStore {
@@ -981,6 +1038,140 @@ fn delegation_list_cursor_freezes_snapshot_and_filters_exact_scope() {
         .expect("fresh view includes later proposal");
     assert_eq!(fresh.items.len(), 4);
     assert!(fresh.as_of_store_sequence > first.as_of_store_sequence);
+}
+
+#[test]
+fn actor_scoped_cursor_skips_hidden_rows_and_rejects_scope_reuse() {
+    let test = TestStore::new("scoped-cursor");
+    install_policy(&test.store);
+    let auth = authority();
+    for ordinal in 1..=4 {
+        let mut request = proposal();
+        request.delegation_id = format!("delegation-{ordinal}");
+        request.operation_id = format!("route-propose-{ordinal}");
+        test.store
+            .propose_collaboration_delegation(
+                &context(
+                    auth.source_host.clone(),
+                    "delegation.propose",
+                    &format!("scope-{ordinal}"),
+                    0,
+                ),
+                &request,
+                &auth,
+                &policy(),
+            )
+            .unwrap();
+    }
+    let filter = CollaborationDelegationFilter::default();
+    let first = test
+        .store
+        .list_collaboration_delegations_for_actor(
+            "company-1",
+            &auth.source_work_owner,
+            &filter,
+            None,
+            2,
+        )
+        .unwrap();
+    assert_eq!(first.items.len(), 2);
+    let cursor = first.next_cursor.clone().expect("bounded next cursor");
+
+    let second = test
+        .store
+        .list_collaboration_delegations_for_actor(
+            "company-1",
+            &auth.source_work_owner,
+            &filter,
+            Some(cursor.clone()),
+            10,
+        )
+        .unwrap();
+    assert_eq!(second.items.len(), 2);
+    assert_eq!(first.items.len() + second.items.len(), 4);
+
+    assert!(test
+        .store
+        .list_collaboration_delegations_for_actor(
+            "company-1",
+            &actor(ActorKind::AgentMember, "hostile"),
+            &filter,
+            Some(cursor.clone()),
+            2,
+        )
+        .is_err());
+    assert!(test
+        .store
+        .list_collaboration_delegations_for_actor(
+            "other-company",
+            &auth.source_work_owner,
+            &filter,
+            Some(cursor),
+            2,
+        )
+        .is_err());
+}
+
+#[test]
+fn collaboration_authority_fence_holds_writer_lock_through_route_commit() {
+    let test = TestStore::new("authority-fence");
+    install_policy(&test.store);
+    let first = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let root = test.root.clone();
+    let first_worker = first.clone();
+    let release_worker = release.clone();
+    let worker = std::thread::spawn(move || {
+        let store = HarnessStore::new(root);
+        store
+            .with_collaboration_authority_fence(
+                |locked| {
+                    assert!(locked
+                        .collaboration_inbound_policy("company-1", "policy-a-b")
+                        .unwrap()
+                        .unwrap()
+                        .revoked_at
+                        .is_none());
+                    first_worker.wait();
+                    release_worker.wait();
+                    Ok(())
+                },
+                || Ok::<_, firm_fabric::FabricError>("fabric-commit"),
+            )
+            .unwrap()
+    });
+    first.wait();
+    let writer_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer_finished_thread = writer_finished.clone();
+    let writer_root = test.root.clone();
+    let writer = std::thread::spawn(move || {
+        let store = HarnessStore::new(writer_root);
+        let mut revoked = policy();
+        revoked.revision = 2;
+        revoked.revoked_at = Some("unix-ms:99".into());
+        store
+            .put_collaboration_inbound_policy(
+                &context(
+                    actor(ActorKind::AgentMember, "host-b"),
+                    "delegation.policy.put",
+                    "policy-revoke",
+                    1,
+                ),
+                &revoked,
+                &actor(ActorKind::AgentMember, "host-b"),
+            )
+            .unwrap();
+        writer_finished_thread.store(true, Ordering::SeqCst);
+    });
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    assert!(
+        !writer_finished.load(Ordering::SeqCst),
+        "authority writer must not cross the admission→Fabric commit fence"
+    );
+    release.wait();
+    assert_eq!(worker.join().unwrap(), "fabric-commit");
+    writer.join().unwrap();
+    assert!(writer_finished.load(Ordering::SeqCst));
 }
 
 #[test]

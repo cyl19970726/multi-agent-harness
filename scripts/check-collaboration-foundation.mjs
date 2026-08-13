@@ -61,6 +61,7 @@ for (const token of [
   "RemoteMessageReplica",
   "SourceRemoteMessageTransfer",
   "CollaborationRetentionAnchor",
+  "ArtifactImport",
   "RoutedBusinessKind",
 ]) {
   if (!core.includes(`pub struct ${token}`) && !core.includes(`pub enum ${token}`)) {

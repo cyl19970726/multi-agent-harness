@@ -25,6 +25,19 @@ use crate::{canonical_digest, FabricError, FabricErrorCode};
 /// route truth; this seam lets Company-level application services fold that
 /// terminal evidence without making `firm-fabric` a business-state authority.
 pub trait ControlPlaneReceiptApplication: Send + Sync {
+    /// Run business admission while the business authority still holds its
+    /// own canonical lock, and keep that lock held through the Fabric commit.
+    /// The Fabric remains opaque to the business model: it only supplies the
+    /// server-resolved actor and the exact operation to the admission seam.
+    fn admit_and_accept_source(
+        &self,
+        _operation: &RoutedOperation,
+        _authenticated_actor: &AuthenticatedActor,
+        accept: &mut dyn FnMut() -> Result<AcceptedSourceOperation, FabricError>,
+    ) -> Result<AcceptedSourceOperation, FabricError> {
+        accept()
+    }
+
     /// Fold Company-owned facts that are allowed to become durable as soon as
     /// the authenticated source Node operation is accepted. Implementations
     /// must remain idempotent because a lost response replays the same route.
@@ -45,6 +58,8 @@ pub trait ControlPlaneReceiptApplication: Send + Sync {
         observed_at_unix_ms: u64,
     ) -> Result<Vec<ControlPlaneFollowUp>, FabricError>;
 }
+
+pub type AcceptedSourceOperation = (RoutedOperation, RouteAttempt, RouteReceipt, bool);
 
 #[derive(Debug, Clone)]
 pub struct ControlPlaneFollowUp {
@@ -190,13 +205,18 @@ where
             }
             FabricPayload::OperationSubmit(operation) => {
                 let actor = authenticated_node_actor(peer, now);
-                let (accepted, _, receipt, _) = control_plane.accept_operation(
-                    control_plane_generation,
-                    &session,
-                    &actor,
-                    *operation,
-                    now,
-                )?;
+                let operation = *operation;
+                let mut accept = || {
+                    control_plane.accept_operation(
+                        control_plane_generation,
+                        &session,
+                        &actor,
+                        operation.clone(),
+                        now,
+                    )
+                };
+                let (accepted, _, receipt, _) =
+                    application.admit_and_accept_source(&operation, &actor, &mut accept)?;
                 let follow_ups = application.fold_source_accepted(&accepted, &receipt, now)?;
                 for follow_up in follow_ups {
                     control_plane.accept_control_plane_operation(
@@ -327,6 +347,57 @@ where
                     now,
                 )?;
             }
+            FabricPayload::ArtifactDownloadRequest(request) => {
+                if request.capability.company_id != session.company_id
+                    || request.capability.node_id != session.node_id
+                    || request.capability.purpose != ArtifactCapabilityPurpose::Download
+                {
+                    return Err(FabricError::none(
+                        FabricErrorCode::CapabilityInvalid,
+                        "artifact capability is not bound to this authenticated target Node gateway",
+                    ));
+                }
+                let bytes = control_plane.download_artifact(
+                    control_plane_generation,
+                    &request.capability,
+                    now,
+                )?;
+                const CHUNK_BYTES: usize = 128 * 1024;
+                let total_size = bytes.len() as u64;
+                for (index, chunk) in bytes.chunks(CHUNK_BYTES).enumerate() {
+                    let offset = (index * CHUNK_BYTES) as u64;
+                    send_payload(
+                        socket,
+                        &session,
+                        &frame.correlation_id,
+                        FabricPayload::ArtifactDownloadChunk(ArtifactDownloadChunk {
+                            artifact_id: request.capability.artifact_id.clone(),
+                            artifact_digest: request.capability.artifact_digest.clone(),
+                            offset,
+                            total_size,
+                            bytes: chunk.to_vec(),
+                            terminal: offset + chunk.len() as u64 == total_size,
+                        }),
+                        now,
+                    )?;
+                }
+                if bytes.is_empty() {
+                    send_payload(
+                        socket,
+                        &session,
+                        &frame.correlation_id,
+                        FabricPayload::ArtifactDownloadChunk(ArtifactDownloadChunk {
+                            artifact_id: request.capability.artifact_id,
+                            artifact_digest: request.capability.artifact_digest,
+                            offset: 0,
+                            total_size: 0,
+                            bytes: Vec::new(),
+                            terminal: true,
+                        }),
+                        now,
+                    )?;
+                }
+            }
             FabricPayload::Hello(_)
             | FabricPayload::Welcome(_)
             | FabricPayload::RoutedOperation(_)
@@ -335,6 +406,7 @@ where
             | FabricPayload::PendingBatchComplete { .. }
             | FabricPayload::ReconcileResult { .. }
             | FabricPayload::ArtifactCapabilityResponse(_)
+            | FabricPayload::ArtifactDownloadChunk(_)
             | FabricPayload::LeaseFence { .. }
             | FabricPayload::Drain { .. }
             | FabricPayload::ProtocolShutdown { .. } => {
@@ -434,6 +506,8 @@ pub fn send_payload<S: Read + Write>(
         FabricPayload::ReconcileResult { .. } => "reconcile-result",
         FabricPayload::ArtifactCapabilityRequest(_) => "artifact-capability-request",
         FabricPayload::ArtifactCapabilityResponse(_) => "artifact-capability-response",
+        FabricPayload::ArtifactDownloadRequest(_) => "artifact-download-request",
+        FabricPayload::ArtifactDownloadChunk(_) => "artifact-download-chunk",
         FabricPayload::LeaseFence { .. } => "lease-fence",
         FabricPayload::Drain { .. } => "drain",
         FabricPayload::ProtocolShutdown { .. } => "protocol-shutdown",
@@ -491,6 +565,34 @@ pub trait NodeApplication {
         &mut self,
         operation: &RoutedOperation,
     ) -> Result<(String, serde_json::Value, EffectCertainty), FabricError>;
+
+    fn apply_downloaded_artifact(
+        &mut self,
+        operation: &RoutedOperation,
+        _artifact_id: &str,
+        _artifact_digest: &str,
+        _bytes: &[u8],
+    ) -> Result<(String, serde_json::Value, EffectCertainty), FabricError> {
+        self.apply(operation)
+    }
+
+    /// Return a previously committed source import result before attempting
+    /// another one-use download. This closes response-loss replay without
+    /// consuming or repeating the native transfer effect.
+    fn replay_downloaded_artifact(
+        &mut self,
+        _operation: &RoutedOperation,
+    ) -> Result<Option<(String, serde_json::Value, EffectCertainty)>, FabricError> {
+        Ok(None)
+    }
+
+    fn authorize_artifact_download(
+        &mut self,
+        _operation: &RoutedOperation,
+        _capability: &ArtifactCapability,
+    ) -> Result<(), FabricError> {
+        Ok(())
+    }
 }
 
 /// Live outbound gateway connection. The Node has no listener; all target
@@ -776,7 +878,97 @@ impl NodeGatewayConnection {
             ));
         }
         local_store.claim_inbox(&self.session, &delivery.operation, now_unix_ms()?)?;
-        let (result_schema, result, effect) = match application.apply(&delivery.operation) {
+        let imported_replay = application.replay_downloaded_artifact(&delivery.operation)?;
+        let downloaded_artifact: Result<Option<ArtifactDownloadChunk>, FabricError> =
+            if imported_replay.is_some() {
+                Ok(None)
+            } else {
+                artifact_download_capability(&delivery.operation)?
+                    .map(|capability| {
+                        application
+                            .authorize_artifact_download(&delivery.operation, &capability)?;
+                        let correlation_id =
+                            format!("artifact-download:{}", capability.artifact_id);
+                        send_payload(
+                            &mut self.socket,
+                            &self.session,
+                            &correlation_id,
+                            FabricPayload::ArtifactDownloadRequest(ArtifactDownloadRequest {
+                                capability: capability.clone(),
+                            }),
+                            now_unix_ms()?,
+                        )?;
+                        let mut bytes = Vec::new();
+                        loop {
+                            let frame = read_frame(&mut self.socket)?;
+                            self.session.validate_frame(&frame)?;
+                            match frame.payload {
+                                FabricPayload::ArtifactDownloadChunk(chunk)
+                                    if chunk.artifact_id == capability.artifact_id
+                                        && chunk.artifact_digest == capability.artifact_digest
+                                        && chunk.offset == bytes.len() as u64
+                                        && chunk.total_size <= 64 * 1024 * 1024 =>
+                                {
+                                    bytes.extend_from_slice(&chunk.bytes);
+                                    if bytes.len() as u64 > chunk.total_size {
+                                        return Err(FabricError::none(
+                                            FabricErrorCode::ArtifactTampered,
+                                            "artifact chunk exceeds declared total size",
+                                        ));
+                                    }
+                                    if chunk.terminal {
+                                        if bytes.len() as u64 != chunk.total_size
+                                            || crate::sha256_hex(&bytes)
+                                                != capability.artifact_digest
+                                        {
+                                            return Err(FabricError::none(
+                                                FabricErrorCode::ArtifactTampered,
+                                                "artifact chunk stream size or digest mismatch",
+                                            ));
+                                        }
+                                        break Ok(ArtifactDownloadChunk {
+                                            artifact_id: capability.artifact_id,
+                                            artifact_digest: capability.artifact_digest,
+                                            offset: 0,
+                                            total_size: bytes.len() as u64,
+                                            bytes,
+                                            terminal: true,
+                                        });
+                                    }
+                                }
+                                FabricPayload::LeaseFence { reason } => {
+                                    break Err(FabricError::none(
+                                        FabricErrorCode::NodeStaleGeneration,
+                                        reason,
+                                    ))
+                                }
+                                _ => break Err(FabricError::none(
+                                    FabricErrorCode::ProtocolIncompatible,
+                                    "artifact download chunk stream was not server-authoritative",
+                                )),
+                            }
+                        }
+                    })
+                    .transpose()
+            };
+        let application_result = match (imported_replay, downloaded_artifact.as_ref()) {
+            (Some(replay), _) => Ok(replay),
+            (None, Ok(Some(artifact))) => application.apply_downloaded_artifact(
+                &delivery.operation,
+                &artifact.artifact_id,
+                &artifact.artifact_digest,
+                &artifact.bytes,
+            ),
+            (None, Ok(None)) => application.apply(&delivery.operation),
+            (None, Err(error)) => Err(FabricError::unknown(
+                delivery.operation.id.clone(),
+                format!(
+                    "artifact capability may have been consumed before source import completed: {}",
+                    error.message
+                ),
+            )),
+        };
+        let (result_schema, result, effect) = match application_result {
             Ok(result) => result,
             Err(error) => {
                 let effect = match error.effect {
@@ -849,6 +1041,35 @@ impl NodeGatewayConnection {
     ) -> Result<(), FabricError> {
         set_node_gateway_read_timeout(&mut self.socket, timeout)
     }
+}
+
+fn artifact_download_capability(
+    operation: &RoutedOperation,
+) -> Result<Option<ArtifactCapability>, FabricError> {
+    let ClosedOperationBody::CollaborationBusiness(reference) = operation.closed_body()? else {
+        return Ok(None);
+    };
+    if reference.business_kind != "artifact_grant" {
+        return Ok(None);
+    }
+    let capability = reference
+        .payload
+        .get("read_capability")
+        .cloned()
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::InvalidPayload,
+                "artifact grant omitted the server-issued download capability",
+            )
+        })?;
+    serde_json::from_value(capability)
+        .map(Some)
+        .map_err(|error| {
+            FabricError::none(
+                FabricErrorCode::InvalidPayload,
+                format!("artifact grant download capability is invalid: {error}"),
+            )
+        })
 }
 
 /// Closed application used by health probes and deterministic fabric

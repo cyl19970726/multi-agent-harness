@@ -436,6 +436,29 @@ pub struct CollaborationRetentionAnchor {
     pub source_import_completed_at_unix_ms: Option<u64>,
 }
 
+/// Source-owned proof that a delegated artifact was actually consumed,
+/// verified and durably imported. A transport/application receipt is not an
+/// import and must never be used as the retention anchor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactImport {
+    pub id: String,
+    pub company_id: String,
+    pub delegation_id: String,
+    pub artifact_id: String,
+    pub artifact_digest: String,
+    pub size_bytes: u64,
+    pub source_node_id: String,
+    pub source_node_daemon_id: String,
+    pub source_node_daemon_generation: u64,
+    pub source_team_id: String,
+    pub source_host_ref: ActorRef,
+    pub source_work_ref: RemoteWorkRef,
+    pub operation_id: String,
+    pub imported_at_unix_ms: u64,
+    pub revision: u64,
+}
+
 impl CollaborationRetentionAnchor {
     /// No deletion clock starts until transport, Delegation and durable source
     /// import are all terminal. Once complete, the latest boundary wins.

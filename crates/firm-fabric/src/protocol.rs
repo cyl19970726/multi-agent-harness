@@ -924,6 +924,23 @@ pub struct ArtifactCapabilityRequest {
     pub purpose: ArtifactCapabilityPurpose,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactDownloadRequest {
+    pub capability: ArtifactCapability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactDownloadChunk {
+    pub artifact_id: String,
+    pub artifact_digest: String,
+    pub offset: u64,
+    pub total_size: u64,
+    pub bytes: Vec<u8>,
+    pub terminal: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "frame_kind", content = "payload", rename_all = "snake_case")]
 pub enum FabricPayload {
@@ -941,6 +958,8 @@ pub enum FabricPayload {
     ReconcileResult { receipts: Vec<RouteReceipt> },
     ArtifactCapabilityRequest(ArtifactCapabilityRequest),
     ArtifactCapabilityResponse(ArtifactCapability),
+    ArtifactDownloadRequest(ArtifactDownloadRequest),
+    ArtifactDownloadChunk(ArtifactDownloadChunk),
     LeaseFence { reason: String },
     Drain { reason: String },
     ProtocolShutdown { reason: String },

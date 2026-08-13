@@ -65,17 +65,19 @@ generations, operation ids, Work revisions and artifact digests. It must also
 prove all child processes and test listeners were stopped.
 
 The submission gate accepts only the recomputable
-`agentfirm.wave6-two-mac-evidence.v2` bundle. Its manifest hashes the raw
+`agentfirm.wave6-two-mac-evidence.v3` bundle. Its manifest hashes the raw
 central collaboration ledger, Control Plane and both Node Fabric journals,
 both canonical trust ledgers, secret-free provider transcripts and imported
 artifact bytes. `scripts/acceptance-cross-machine-collaboration.mjs`
 independently derives the current Delegation/Work, Node and Gateway
 generations, immutable Message replica, per-recipient Delivery, terminal
-receipt, provider markers and artifact digest. Self-reported success booleans
-are not evidence. The bundle binds the submitted revision to the validator's
-exact Git `HEAD`, avoiding a self-referential SHA inside the evidence commit. A
-later evidence-only commit is allowed only when the validator proves every
-intervening path is under `docs/current/operations/evidence/`.
+receipt, canonical `ArtifactImport`, provider `AgentSession` + `RuntimeCommand`
++ terminal acknowledgement/transcript digests, raw transaction selectors and
+cleanup command results. Self-reported success booleans and caller-authored
+path allowlists are not evidence. Every Control Plane, Gateway and NodeDaemon
+process must identify the exact tested build. If evidence is committed after
+that build, the validator's fixed policy permits only paths below
+`docs/current/operations/evidence/`; no manifest field can widen this set.
 
 If the second authorized Mac or its approved endpoint is unavailable, report
 the real-machine gate as blocked. A second process on one Mac is deterministic

@@ -97,13 +97,15 @@ target-Work receipt; the Control Plane independently resolves the live central
 Delegation before storing the publication. The source Node receives a read-only
 cache.
 
-Large/private evidence uses the accepted Wave 5 artifact service. Manifests,
-encrypted blobs and one-use capabilities are not duplicated in the
-collaboration store. Delegation scope binds writer Team/Work and exact reader
-Host. Retention starts only after transport, terminal Delegation and source
-durable import are all terminal; the latest anchor wins. All three times are
-derived from canonical Fabric manifest/receipt and Delegation stores. Public
-callers cannot submit retention anchors.
+Large/private evidence uses the accepted Wave 5 artifact service. The source
+Node validates the frozen Delegation and grant before asking the Control Plane
+to consume the one-use capability. Artifact bytes then travel in ordered,
+digest-bound chunks, and the source Node atomically persists a source-owned
+`ArtifactImport` plus independently readable bytes. A grant validation or
+`OperationApplied` receipt is never an import. Retention starts only after
+transport, terminal Delegation and that canonical import are all terminal;
+the latest anchor wins and duration is a positive bounded server policy.
+Public callers cannot submit retention anchors.
 
 ## Public and operator surfaces
 
@@ -114,6 +116,9 @@ callers cannot submit retention anchors.
   Read projections are restricted to the exact source owner, source Host or
   target Host resolved from the authenticated credential; Company, Team and
   Execution Space are never caller-selected authority.
+- HTTP and MCP list endpoints return bounded, opaque server-signed cursors
+  bound to Company, actor, filter and a frozen Store sequence. Hidden sibling
+  rows advance the raw scan but never consume a visible page.
 - MCP collaboration tools are read-only central projections. Retired local
   WorkDelegation writers are absent and fail as unknown tools with zero Store
   delta.

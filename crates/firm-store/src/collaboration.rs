@@ -1,9 +1,9 @@
 use crate::{canonical_json_fingerprint, HarnessStore, StoreError, StoreResult};
 use firm_core::agentfirm_api::{ActorKind, ActorRef, CanonicalMessageDelivery, Message};
 use firm_core::collaboration::{
-    CancellationDecisionKind, CancellationRequestState, CrossNodeDeliveryProjection,
-    DelegationCancellationDecision, DelegationCancellationRequest, DelegationDecision,
-    DelegationDecisionKind, DelegationInboundMode, DelegationInboundPolicy,
+    ArtifactImport, CancellationDecisionKind, CancellationRequestState,
+    CrossNodeDeliveryProjection, DelegationCancellationDecision, DelegationCancellationRequest,
+    DelegationDecision, DelegationDecisionKind, DelegationInboundMode, DelegationInboundPolicy,
     DelegationInboundPolicySnapshot, DelegationState, DelegationTerminalOutcome,
     FabricEffectCertainty, FabricError, FabricErrorCode, ImmutableMessageTransferPayload,
     RemoteFactPublication, RemoteMessageReplica, RemoteMessageTransferState, RemoteWorkRef,
@@ -81,7 +81,7 @@ pub struct CollaborationMutationResult<T> {
     pub replayed: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CollaborationDelegationFilter {
     pub source_team_id: Option<String>,
     pub target_team_id: Option<String>,
@@ -101,6 +101,24 @@ pub struct CollaborationPage<T> {
     pub items: Vec<T>,
     pub as_of_store_sequence: u64,
     pub next_cursor: Option<CollaborationCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollaborationScopedCursor {
+    pub company_id: String,
+    pub actor_digest: String,
+    pub filter_digest: String,
+    pub as_of_store_sequence: u64,
+    pub raw_offset: usize,
+    pub visible_progress: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CollaborationScopedPage<T> {
+    pub items: Vec<T>,
+    pub as_of_store_sequence: u64,
+    pub next_cursor: Option<CollaborationScopedCursor>,
 }
 
 pub trait CollaborationFabricPort {
@@ -475,6 +493,276 @@ fn exact_actor(actual: &ActorRef, expected: &ActorRef) -> bool {
 }
 
 impl HarnessStore {
+    pub fn list_collaboration_delegations_for_actor(
+        &self,
+        company_id: &str,
+        actor: &ActorRef,
+        filter: &CollaborationDelegationFilter,
+        cursor: Option<CollaborationScopedCursor>,
+        limit: usize,
+    ) -> StoreResult<CollaborationScopedPage<WorkDelegationV1>> {
+        if limit == 0 || limit > 500 {
+            return Err(StoreError::Conflict(
+                "COLLABORATION_CURSOR_INVALID: limit must be between 1 and 500".into(),
+            ));
+        }
+        let operations = self.collaboration_operations_unlocked()?;
+        let latest_sequence = operations
+            .iter()
+            .map(|row| row.store_sequence)
+            .max()
+            .unwrap_or(0);
+        let actor_digest = canonical_json_fingerprint(&serde_json::to_value(actor)?);
+        let filter_digest = canonical_json_fingerprint(&serde_json::to_value(filter)?);
+        let as_of = cursor
+            .as_ref()
+            .map(|value| value.as_of_store_sequence)
+            .unwrap_or(latest_sequence);
+        if as_of > latest_sequence
+            || cursor.as_ref().is_some_and(|value| {
+                value.company_id != company_id
+                    || value.actor_digest != actor_digest
+                    || value.filter_digest != filter_digest
+            })
+        {
+            return Err(StoreError::Conflict(
+                "COLLABORATION_CURSOR_SCOPE_MISMATCH: cursor actor, Company, filter or snapshot is invalid".into(),
+            ));
+        }
+        let mut attestations = BTreeMap::<String, SourceWorkAttestation>::new();
+        let mut latest = BTreeMap::<String, WorkDelegationV1>::new();
+        for operation in operations
+            .into_iter()
+            .filter(|row| row.company_id == company_id && row.store_sequence <= as_of)
+        {
+            if operation.aggregate_kind == "source_work_attestation" {
+                let value: SourceWorkAttestation =
+                    serde_json::from_value(operation.resulting_projection)?;
+                attestations.insert(value.id.clone(), value);
+            } else if operation.aggregate_kind == "work_delegation_v1" {
+                let value: WorkDelegationV1 =
+                    serde_json::from_value(operation.resulting_projection)?;
+                latest.insert(value.id.clone(), value);
+            }
+        }
+        let rows = latest.into_values().collect::<Vec<_>>();
+        let mut raw_offset = cursor.as_ref().map(|value| value.raw_offset).unwrap_or(0);
+        let mut visible_progress = cursor
+            .as_ref()
+            .map(|value| value.visible_progress)
+            .unwrap_or(0);
+        if raw_offset > rows.len() {
+            return Err(StoreError::Conflict(
+                "COLLABORATION_CURSOR_INVALID: raw offset is outside the frozen snapshot".into(),
+            ));
+        }
+        let mut items = Vec::new();
+        while raw_offset < rows.len() && items.len() < limit {
+            let delegation = &rows[raw_offset];
+            raw_offset += 1;
+            let source_host = attestations
+                .get(&delegation.source_work_attestation_id)
+                .map(|value| &value.source_host_ref);
+            let visible = actor == &delegation.source_owner_ref
+                || source_host == Some(actor)
+                || actor == &delegation.target_host_ref;
+            let matches = filter
+                .source_team_id
+                .as_ref()
+                .is_none_or(|value| value == &delegation.source_team_id)
+                && filter
+                    .target_team_id
+                    .as_ref()
+                    .is_none_or(|value| value == &delegation.target_placement.team_id)
+                && filter.node_id.as_ref().is_none_or(|value| {
+                    value == &delegation.source_node_id
+                        || value == &delegation.target_placement.node_id
+                })
+                && filter.state.is_none_or(|value| value == delegation.state);
+            if visible && matches {
+                items.push(delegation.clone());
+                visible_progress += 1;
+            }
+        }
+        Ok(CollaborationScopedPage {
+            items,
+            as_of_store_sequence: as_of,
+            next_cursor: (raw_offset < rows.len()).then_some(CollaborationScopedCursor {
+                company_id: company_id.into(),
+                actor_digest,
+                filter_digest,
+                as_of_store_sequence: as_of,
+                raw_offset,
+                visible_progress,
+            }),
+        })
+    }
+    pub fn collaboration_artifact_import(
+        &self,
+        company_id: &str,
+        artifact_id: &str,
+    ) -> StoreResult<Option<ArtifactImport>> {
+        self.latest_collaboration_projection_unlocked(company_id, "artifact_import", artifact_id)
+    }
+
+    pub fn read_collaboration_artifact_import_bytes(
+        &self,
+        company_id: &str,
+        artifact_id: &str,
+    ) -> StoreResult<Vec<u8>> {
+        let import = self
+            .collaboration_artifact_import(company_id, artifact_id)?
+            .ok_or_else(|| {
+                StoreError::Conflict(format!("ARTIFACT_IMPORT_NOT_FOUND: {artifact_id}"))
+            })?;
+        let path = self
+            .root()
+            .join("collaboration-artifact-imports")
+            .join(&import.artifact_digest);
+        let bytes = std::fs::read(path)?;
+        if bytes.len() as u64 != import.size_bytes
+            || firm_fabric::sha256_hex(&bytes) != import.artifact_digest
+        {
+            return Err(StoreError::Conflict(
+                "ARTIFACT_IMPORT_TAMPERED: imported bytes disagree with the canonical import"
+                    .into(),
+            ));
+        }
+        Ok(bytes)
+    }
+
+    pub fn persist_collaboration_artifact_import(
+        &self,
+        context: &CollaborationMutationContext,
+        import: &ArtifactImport,
+        bytes: &[u8],
+    ) -> StoreResult<CollaborationMutationResult<ArtifactImport>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let delegation = self
+            .latest_collaboration_projection_unlocked::<WorkDelegationV1>(
+                &context.company_id,
+                "work_delegation_v1",
+                &import.delegation_id,
+            )?
+            .ok_or_else(|| {
+                collaboration_error(
+                    FabricErrorCode::RevisionConflict,
+                    "artifact import requires the exact current Delegation",
+                    "artifact_import",
+                    &import.artifact_id,
+                    None,
+                )
+            })?;
+        let attestation = self
+            .latest_collaboration_projection_unlocked::<SourceWorkAttestation>(
+                &context.company_id,
+                "source_work_attestation",
+                &delegation.source_work_attestation_id,
+            )?
+            .ok_or_else(|| {
+                collaboration_error(
+                    FabricErrorCode::SourceWorkAttestationInvalid,
+                    "artifact import requires the exact source Work attestation",
+                    "artifact_import",
+                    &import.artifact_id,
+                    None,
+                )
+            })?;
+        if import.company_id != context.company_id
+            || import.revision != 1
+            || context.authenticated_actor.kind != ActorKind::Service
+            || context.authenticated_actor.id != import.source_node_daemon_id
+            || import.source_node_id != delegation.source_node_id
+            || import.source_node_daemon_id.trim().is_empty()
+            || import.source_node_daemon_generation == 0
+            || import.source_team_id != delegation.source_team_id
+            || import.source_host_ref != attestation.source_host_ref
+            || import.source_work_ref != delegation.source_work_ref
+            || import.size_bytes != bytes.len() as u64
+            || import.artifact_digest != firm_fabric::sha256_hex(bytes)
+        {
+            return Err(collaboration_error(
+                FabricErrorCode::ArtifactScopeUnauthorized,
+                "artifact import bytes or source authority disagree with the current Delegation",
+                "artifact_import",
+                &import.artifact_id,
+                None,
+            ));
+        }
+        if let Some(existing) = self.latest_collaboration_projection_unlocked::<ArtifactImport>(
+            &context.company_id,
+            "artifact_import",
+            &import.artifact_id,
+        )? {
+            if existing != *import {
+                return Err(collaboration_error(
+                    FabricErrorCode::IdempotencyConflict,
+                    "artifact import replay changed immutable bytes or authority",
+                    "artifact_import",
+                    &import.artifact_id,
+                    Some(existing.revision),
+                ));
+            }
+            return self.commit_collaboration_projection_unlocked(
+                context,
+                "artifact_import",
+                &import.artifact_id,
+                serde_json::to_value(&existing)?,
+                &existing,
+                Vec::new(),
+            );
+        }
+        let directory = self.root().join("collaboration-artifact-imports");
+        std::fs::create_dir_all(&directory)?;
+        let path = directory.join(&import.artifact_digest);
+        let next = directory.join(format!("{}.next", import.artifact_digest));
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&next)?;
+        file.write_all(bytes)?;
+        file.flush()?;
+        file.sync_all()?;
+        std::fs::rename(&next, &path)?;
+        std::fs::File::open(&directory)?.sync_all()?;
+        self.commit_collaboration_projection_unlocked(
+            context,
+            "artifact_import",
+            &import.artifact_id,
+            serde_json::to_value(import)?,
+            import,
+            Vec::new(),
+        )
+    }
+
+    /// Hold the canonical collaboration writer lock across a caller-supplied
+    /// authority check and its downstream durable commit. This is the only
+    /// supported lock order for cross-store routing: collaboration first,
+    /// Fabric second. The callback cannot mutate collaboration state.
+    #[allow(clippy::result_large_err)]
+    pub fn with_collaboration_authority_fence<T>(
+        &self,
+        validate: impl FnOnce(&Self) -> Result<(), firm_fabric::FabricError>,
+        commit: impl FnOnce() -> Result<T, firm_fabric::FabricError>,
+    ) -> Result<T, firm_fabric::FabricError> {
+        self.init().map_err(|error| {
+            firm_fabric::FabricError::none(
+                firm_fabric::FabricErrorCode::StoreUnavailable,
+                error.to_string(),
+            )
+        })?;
+        let _lock = self.acquire_write_lock().map_err(|error| {
+            firm_fabric::FabricError::none(
+                firm_fabric::FabricErrorCode::StoreUnavailable,
+                error.to_string(),
+            )
+        })?;
+        validate(self)?;
+        commit()
+    }
+
     fn collaboration_operations_unlocked(&self) -> StoreResult<Vec<CollaborationOperation>> {
         let path = self.root().join(COLLABORATION_OPERATIONS_LEDGER);
         if !path.exists() {
