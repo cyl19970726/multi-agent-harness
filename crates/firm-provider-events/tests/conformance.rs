@@ -3,7 +3,8 @@ use firm_provider_events::{
     Completeness, DecodeContext, DecodeOutcome, EffectCertainty, FoldOutcome, NativeEvent,
     ObservationPayload, ObservationVisibility, ProjectionAccessError, ProjectionAuthority,
     ProjectionStore, ProjectionStoreError, ProjectionViewer, ProviderEventFold,
-    ProviderEventFoldError, ProviderKind, ProviderProjectionState, SemanticKind, TranscriptCursor,
+    ProviderEventFoldError, ProviderKind, ProviderProjectionService,
+    ProviderProjectionServiceError, ProviderProjectionState, SemanticKind, TranscriptCursor,
     TranscriptReadBoundary, TranscriptReadError, PROVIDER_OBSERVATION_SCHEMA_VERSION,
 };
 use serde_json::json;
@@ -740,5 +741,68 @@ fn codex_turn_context_survives_cursor_resume_and_closes_on_terminal() {
         })
         .unwrap();
     assert_eq!(terminal.provider_turn_id.as_deref(), Some("turn-9"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn service_refresh_resume_and_private_team_projections_are_one_closed_seam() {
+    let root = unique_temp_path("service");
+    fs::create_dir_all(&root).unwrap();
+    let transcript = root.join("pi.jsonl");
+    fs::write(
+        &transcript,
+        b"{\"type\":\"message_update\",\"content\":[{\"type\":\"text\",\"text\":\"private\"}]}\n{\"type\":\"interaction_required\",\"reasonCode\":\"decision\",\"prompt\":\"Need decision\"}\n",
+    )
+    .unwrap();
+    let store_path = root.join("projection.json");
+    let boundary = TranscriptReadBoundary {
+        allowed_root: root.clone(),
+        transcript_path: transcript,
+    };
+    let mut service = ProviderProjectionService::open(
+        ProjectionStore::new(&store_path),
+        context(ProviderKind::Pi),
+    )
+    .unwrap();
+    assert_eq!(service.refresh(&boundary, 10).unwrap(), 2);
+    assert_eq!(
+        service
+            .private_session(&authority(), &viewer("agent-1"), 300)
+            .unwrap()
+            .episodes
+            .iter()
+            .map(|episode| episode.observations.len())
+            .sum::<usize>(),
+        2
+    );
+    assert_eq!(
+        service
+            .team_activity(&authority(), &viewer("sibling"))
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(matches!(
+        service.private_session(&authority(), &viewer("sibling"), 300),
+        Err(ProviderProjectionServiceError::Access(
+            ProjectionAccessError::NotSessionOwner
+        ))
+    ));
+    let cursor = service.cursor().clone();
+    drop(service);
+    let mut resumed = ProviderProjectionService::open(
+        ProjectionStore::new(&store_path),
+        context(ProviderKind::Pi),
+    )
+    .unwrap();
+    assert_eq!(resumed.cursor(), &cursor);
+    assert_eq!(resumed.refresh(&boundary, 10).unwrap(), 0);
+
+    let mut stale = context(ProviderKind::Pi);
+    stale.node_daemon_generation += 1;
+    assert!(matches!(
+        ProviderProjectionService::open(ProjectionStore::new(&store_path), stale),
+        Err(ProviderProjectionServiceError::StaleAuthority)
+    ));
     fs::remove_dir_all(root).unwrap();
 }

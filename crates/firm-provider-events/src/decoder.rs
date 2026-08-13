@@ -184,6 +184,8 @@ pub enum DecodeError {
     Malformed(&'static str),
     #[error("provider event attempted to select server authority")]
     AuthorityInjection,
+    #[error("provider event violates the canonical semantic contract")]
+    InvalidSemantic,
 }
 
 pub fn decode_native_json_line(
@@ -257,7 +259,7 @@ pub fn decode_native_event(
         context.agent_session_id,
         native_identity
     );
-    Ok(DecodeOutcome::Observation(Box::new(ProviderObservation {
+    let observation = ProviderObservation {
         schema_version: PROVIDER_OBSERVATION_SCHEMA_VERSION.into(),
         observation_id,
         provider: context.provider,
@@ -289,7 +291,11 @@ pub fn decode_native_event(
         truncated: decoded.truncated,
         source_evidence_fingerprint: source_fingerprint,
         payload: decoded.payload,
-    })))
+    };
+    observation
+        .validate()
+        .map_err(|_| DecodeError::InvalidSemantic)?;
+    Ok(DecodeOutcome::Observation(Box::new(observation)))
 }
 
 fn decode_common(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {

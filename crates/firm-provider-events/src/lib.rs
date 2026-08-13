@@ -10,6 +10,7 @@ mod decoder;
 mod fold;
 mod model;
 mod reader;
+mod service;
 mod store;
 
 pub use access::*;
@@ -20,4 +21,5 @@ pub use decoder::{
 pub use fold::{FoldOutcome, ProviderEventFold, ProviderEventFoldError, SessionEpisode};
 pub use model::*;
 pub use reader::*;
+pub use service::*;
 pub use store::*;
