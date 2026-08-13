@@ -145,7 +145,6 @@ for (const retired of ["kimi-agent-team", "harness-telemetry"]) {
   }
 }
 for (const skill of [
-  "agentfirm-development-loop",
   "orchestrate-mission-waves",
   "collaborate-as-agent-team-member",
 ]) {

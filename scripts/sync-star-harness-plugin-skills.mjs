@@ -15,7 +15,6 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const canonicalRoot = join(repoRoot, "skills");
 const pluginRoot = join(repoRoot, "plugins", "star-harness", "skills");
 const names = [
-  "agentfirm-development-loop",
   "orchestrate-mission-waves",
   "collaborate-as-agent-team-member",
   "shared-references",

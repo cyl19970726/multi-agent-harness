@@ -71,25 +71,6 @@ done
 [ "$(ls "$PROJ/.claude/skills/star-workflow/examples" 2>/dev/null | wc -l | tr -d ' ')" -ge 3 ] \
   && ok "star-workflow examples copied" || bad "star-workflow examples missing"
 
-echo "== A1a: install the AgentFirm development loop into a clean project =="
-AGENTFIRM_PROJ="$WORK/agentfirm-proj"
-mkdir -p "$AGENTFIRM_PROJ"
-if bash "$REPO_ROOT/scripts/install-skill.sh" --agent both --dest "$AGENTFIRM_PROJ" --skill agentfirm-development-loop >/dev/null 2>&1; then
-  ok "explicit AgentFirm development-loop install succeeded"
-else
-  bad "explicit AgentFirm development-loop install failed"
-fi
-for d in .claude/skills .agents/skills; do
-  if [ -f "$AGENTFIRM_PROJ/$d/agentfirm-development-loop/SKILL.md" ] \
-      && [ -f "$AGENTFIRM_PROJ/$d/agentfirm-development-loop/agents/openai.yaml" ] \
-      && [ -f "$AGENTFIRM_PROJ/$d/agentfirm-development-loop/references/brain.md" ] \
-      && [ ! -L "$AGENTFIRM_PROJ/$d/agentfirm-development-loop" ]; then
-    ok "$d/agentfirm-development-loop installed as complete real files"
-  else
-    bad "$d/agentfirm-development-loop is incomplete or a symlink"
-  fi
-done
-
 echo "== A1c: --agent kimi prints the documented divergence =="
 KIMI_OUT="$(bash "$REPO_ROOT/scripts/install-skill.sh" --agent kimi 2>&1)" || true
 if [[ "$KIMI_OUT" == *"Kimi CLI does not currently expose a generic plugin-management command"* ]]; then
@@ -209,9 +190,8 @@ if [ "$REMOTE" = "1" ]; then
   [ "$code" = "200" ] && ok "raw install-skill.sh reachable (HTTP 200)" \
     || bad "raw script HTTP ${code:-000} (repo private / not pushed?)"
   if GIT_TERMINAL_PROMPT=0 git clone -q --depth 1 "$CLONE_URL" "$WORK/anon" 2>/dev/null \
-      && [ -f "$WORK/anon/skills/star-workflow/SKILL.md" ] \
-      && [ -f "$WORK/anon/skills/agentfirm-development-loop/SKILL.md" ]; then
-    ok "anonymous public clone carries star-workflow and agentfirm-development-loop"
+      && [ -f "$WORK/anon/skills/star-workflow/SKILL.md" ]; then
+    ok "anonymous public clone carries skills/star-workflow"
   else
     bad "anonymous public clone failed"
   fi
