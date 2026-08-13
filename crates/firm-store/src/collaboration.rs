@@ -557,7 +557,15 @@ impl HarnessStore {
             ));
         }
         let mut items = Vec::new();
-        while raw_offset < rows.len() && items.len() < limit {
+        // Bound raw work independently of visible results. A page containing
+        // only rows hidden from this actor is still a valid advancing page;
+        // clients follow its opaque cursor until visible rows or EOF. This
+        // prevents a hostile Company history from turning one scoped request
+        // into an unbounded scan without letting hidden rows consume the
+        // caller's visible item limit.
+        let raw_scan_budget = limit.saturating_mul(4).max(limit);
+        let raw_scan_end = raw_offset.saturating_add(raw_scan_budget).min(rows.len());
+        while raw_offset < raw_scan_end && items.len() < limit {
             let delegation = &rows[raw_offset];
             raw_offset += 1;
             let source_host = attestations

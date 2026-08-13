@@ -26,6 +26,8 @@ use harness_fabric::{
 };
 use harness_store::remote_fabric_store::RemoteFabricStoreLayout;
 use harness_store::HarnessStore;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 
 use super::{CliError, CliResult, ResolvedStore};
 
@@ -210,84 +212,12 @@ impl ControlPlaneReceiptApplication for Wave6ControlPlaneApplication {
             _ => return Ok(Vec::new()),
         };
         if reference.business_kind == "team_message_deliver" {
-            let authority = serde_json::from_value::<
-                harness_core::collaboration::CollaborationMessageAuthority,
-            >(
-                reference
-                    .payload
-                    .get("delegation_authority")
-                    .cloned()
-                    .ok_or_else(|| {
-                        FabricError::none(
-                            FabricErrorCode::UnauthorizedActor,
-                            "team Message route lacks frozen Delegation authority",
-                        )
-                    })?,
-            )
-            .map_err(|error| {
-                FabricError::none(
-                    FabricErrorCode::UnauthorizedActor,
-                    format!("team Message Delegation authority is invalid: {error}"),
-                )
-            })?;
-            let store = HarnessStore::new(&self.collaboration_root);
-            let delegation = store
-                .collaboration_delegation(&self.company_id, &authority.delegation_id)
-                .map_err(|error| {
-                    FabricError::unknown(
-                        operation.id.clone(),
-                        format!("team Message Delegation lookup failed: {error}"),
-                    )
-                })?
-                .ok_or_else(|| {
-                    FabricError::none(
-                        FabricErrorCode::UnauthorizedActor,
-                        "team Message references no central Delegation",
-                    )
-                })?;
-            let attestation = store
-                .collaboration_source_work_attestation(
-                    &self.company_id,
-                    &delegation.source_work_attestation_id,
-                )
-                .map_err(|error| {
-                    FabricError::unknown(
-                        operation.id.clone(),
-                        format!("team Message source attestation lookup failed: {error}"),
-                    )
-                })?
-                .ok_or_else(|| {
-                    FabricError::none(
-                        FabricErrorCode::UnauthorizedActor,
-                        "team Message Delegation lacks source Work attestation",
-                    )
-                })?;
-            let policy = store
-                .collaboration_inbound_policy(
-                    &self.company_id,
-                    &delegation.inbound_policy_snapshot.policy_id,
-                )
-                .map_err(|error| {
-                    FabricError::unknown(
-                        operation.id.clone(),
-                        format!("team Message inbound policy lookup failed: {error}"),
-                    )
-                })?
-                .filter(|policy| policy.revoked_at.is_none())
-                .ok_or_else(|| {
-                    FabricError::none(
-                        FabricErrorCode::UnauthorizedActor,
-                        "team Message inbound policy is missing or revoked",
-                    )
-                })?;
-            validate_current_collaboration_message_authority(
-                &self.company_id,
-                &delegation,
-                &attestation,
-                &policy,
-                &authority,
-                &reference,
-            )?;
+            // Source authority was already resolved while the canonical
+            // collaboration lock was held through the Fabric commit. Never
+            // perform a second mutable-authority fold here: cancellation or a
+            // policy revision immediately after that linearization point is a
+            // later event, not grounds to reject an already accepted route or
+            // strand a committed attempt without its response.
             return Ok(Vec::new());
         }
         if reference.business_kind != "remote_fact_publish" {
@@ -3758,7 +3688,19 @@ pub(crate) fn encode_collaboration_cursor(
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    let signature = harness_fabric::sha256_hex(format!("{payload}:{secret}").as_bytes());
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).map_err(|_| {
+        FabricError::none(
+            FabricErrorCode::StoreUnavailable,
+            "collaboration cursor signing key is invalid",
+        )
+    })?;
+    mac.update(payload.as_bytes());
+    let signature = mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     Ok(format!("v1.{payload}.{signature}"))
 }
 
@@ -3775,8 +3717,29 @@ pub(crate) fn decode_collaboration_cursor(
             "collaboration cursor is malformed",
         ));
     };
-    let expected = harness_fabric::sha256_hex(format!("{payload}:{secret}").as_bytes());
-    if !constant_time_secret_eq(signature, &expected) || payload.len() % 2 != 0 {
+    let signature_bytes = (0..signature.len())
+        .step_by(2)
+        .map(|offset| {
+            signature
+                .get(offset..offset + 2)
+                .ok_or(())
+                .and_then(|value| u8::from_str_radix(value, 16).map_err(|_| ()))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| {
+            FabricError::none(
+                FabricErrorCode::UnauthorizedActor,
+                "collaboration cursor signature is invalid",
+            )
+        })?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).map_err(|_| {
+        FabricError::none(
+            FabricErrorCode::StoreUnavailable,
+            "collaboration cursor signing key is invalid",
+        )
+    })?;
+    mac.update(payload.as_bytes());
+    if mac.verify_slice(&signature_bytes).is_err() || payload.len() % 2 != 0 {
         return Err(FabricError::none(
             FabricErrorCode::UnauthorizedActor,
             "collaboration cursor signature is invalid",
