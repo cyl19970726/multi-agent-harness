@@ -87,6 +87,11 @@ raw transcript rows are structurally absent from Team activity. Canonical
 Message, Delivery, Work, report, finding, failure, gate, review, and
 RuntimeCommand summaries remain owned by their existing stores and are
 composed by the Team RoleView; provider observations never manufacture them.
+Provider turn completion may append only a generic coordination fact such as
+"round completed with authored output; transcript remains provider-native".
+It never copies the provider-authored response into `MemberAction` or a
+TeamRun summary, and provider-emitted source references never become Harness
+Evidence without an explicit canonical Evidence write.
 
 ## Provider fidelity
 

@@ -10293,7 +10293,6 @@ const PROVIDER_TERMINAL_STATUS_PREFIX: &str = "provider_terminal";
 
 impl ProviderTerminalFailure {
     /// `provider_terminal:<reason>:<http status or ->`.
-    #[cfg(test)]
     fn to_provider_status(&self) -> String {
         let status = self
             .http_status
@@ -19438,7 +19437,8 @@ impl TeamRunLedger {
 
     /// `provider_status` carries the transport's OWN terminal metadata in a
     /// machine-readable token. It is the only field a capacity classifier may
-    /// read: `summary` is prose and also contains the member's own text.
+    /// read. `summary` is a Harness-owned coordination fact and must never copy
+    /// the provider-authored response or transcript.
     #[allow(clippy::too_many_arguments)]
     fn append_action_with_provider_status(
         &self,
@@ -20655,6 +20655,47 @@ struct MemberOutcome {
     provider: String,
     status: MemberRunStatus,
     summary: String,
+}
+
+/// Describe a provider turn as a Harness-owned execution fact without copying
+/// the provider-authored response into MemberAction or supervisor output. The
+/// provider-native Session remains the sole transcript/history authority;
+/// explicit TeamMessage, WorkReport, Delivery, Review, and Evidence operations
+/// are persisted independently through their canonical writers.
+fn provider_turn_coordination_summary(
+    provider: &str,
+    round: u32,
+    has_authored_output: bool,
+) -> String {
+    let output = if has_authored_output {
+        "with authored output"
+    } else {
+        "without authored output"
+    };
+    format!(
+        "{provider} provider round {round} completed {output}; transcript remains provider-native"
+    )
+}
+
+fn provider_turn_failure_summary(provider: &str, round: u32) -> String {
+    format!(
+        "{provider} provider round {round} failed; inspect the provider-native session for details"
+    )
+}
+
+fn structured_provider_turn_failure_summary(
+    provider: &str,
+    round: u32,
+    failure: &ProviderTerminalFailure,
+) -> String {
+    let http_status = failure
+        .http_status
+        .map(|status| format!(" (HTTP {status})"))
+        .unwrap_or_default();
+    format!(
+        "{provider} provider round {round} failed: {}{http_status}; inspect the provider-native session for details",
+        failure.reason
+    )
 }
 
 struct MemberRuntimeContext {
@@ -22759,19 +22800,18 @@ fn run_codex_member(
                 zero_output_streak = 0;
             }
 
-            let (action_status, round_summary) = if final_text.trim().is_empty() {
-                (MemberActionStatus::Failed, "(empty turn)".to_string())
+            let action_status = if final_text.trim().is_empty() {
+                MemberActionStatus::Failed
             } else {
                 let result = parse_round_result(&final_text);
-                let status = if result == MemberRoundResult::Done {
+                if result == MemberRoundResult::Done {
                     MemberActionStatus::Succeeded
                 } else {
                     MemberActionStatus::Failed
-                };
-                let summary = extract_report_section(&final_text, "SUMMARY")
-                    .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
-                (status, summary)
+                }
             };
+            let round_summary =
+                provider_turn_coordination_summary("Codex", round, !final_text.trim().is_empty());
             let action = ledger.append_action(
                 &member.id,
                 "turn_completed",
@@ -24000,13 +24040,6 @@ fn run_claude_agent_sdk_team_member(
                 }
                 "turn_complete" => {
                     emit_live_provider_terminal(live_sink.as_ref(), ledger, &member_row);
-                    let turn_evidence_refs: Vec<String> = data
-                        .get("evidenceRefs")
-                        .and_then(|value| value.as_array())
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|value| value.as_str().map(str::to_string))
-                        .collect();
                     // A provider API failure arrives with subtype "success" and
                     // `isError: true` (issue #293). The runner forwards the
                     // honest fields; without this check the ledger would record
@@ -24076,11 +24109,15 @@ fn run_claude_agent_sdk_team_member(
                     } else {
                         MemberActionStatus::Failed
                     };
-                    let summary = provider_error.clone().unwrap_or_else(|| {
-                        extract_report_section(&turn_text, "SUMMARY").unwrap_or_else(|| {
-                            turn_text.lines().take(3).collect::<Vec<_>>().join("\n")
-                        })
-                    });
+                    let summary = if let Some(failure) = provider_terminal.as_ref() {
+                        structured_provider_turn_failure_summary("Claude", round, failure)
+                    } else {
+                        provider_turn_coordination_summary(
+                            "Claude",
+                            round,
+                            !turn_text.trim().is_empty(),
+                        )
+                    };
                     let title = trigger_work
                         .as_ref()
                         .map(|work| format!("Work turn completed: {}", work.work.title))
@@ -24102,8 +24139,8 @@ fn run_claude_agent_sdk_team_member(
                         &summary,
                         provider_terminal
                             .as_ref()
-                            .map(|failure| failure.reason.clone()),
-                        &turn_evidence_refs,
+                            .map(ProviderTerminalFailure::to_provider_status),
+                        &[],
                     )?;
                     ledger.fold_event(
                         TeamRunEventSourceKind::Member,
@@ -24487,7 +24524,6 @@ fn latest_member_handoff_for_turn(
 struct ClaudeTeamTurn {
     session_id: String,
     final_text: String,
-    evidence_refs: Vec<String>,
 }
 
 fn claude_team_permission_mode() -> &'static str {
@@ -24628,11 +24664,9 @@ fn run_claude_team_turn(
         .ok_or_else(|| CliError::Usage("Claude completed without a native session id".into()))?;
     let final_text = extract_claude_reply_text(&events)
         .ok_or_else(|| CliError::Usage("Claude completed without an assistant result".into()))?;
-    let evidence_refs = extract_claude_evidence_refs(&events);
     Ok(ClaudeTeamTurn {
         session_id,
         final_text,
-        evidence_refs,
     })
 }
 
@@ -25329,15 +25363,11 @@ fn run_kimi_member(
             // with the Claude provider-error contract, issue #293).
             let result = parse_round_result(&final_text);
             let output_empty = final_text.trim().is_empty();
-            let summary = outcome.provider_error.clone().unwrap_or_else(|| {
-                if output_empty {
-                    "provider ended the round without durable agent output".to_string()
-                } else {
-                    extract_report_section(&final_text, "SUMMARY").unwrap_or_else(|| {
-                        final_text.lines().take(3).collect::<Vec<_>>().join("\n")
-                    })
-                }
-            });
+            let summary = if outcome.provider_error.is_some() {
+                provider_turn_failure_summary("Kimi", round)
+            } else {
+                provider_turn_coordination_summary("Kimi", round, !output_empty)
+            };
             let action = ledger.append_action(
                 &member.id,
                 if outcome.provider_error.is_some() {
@@ -26001,19 +26031,18 @@ fn run_pi_team_member(
             } else {
                 zero_output_streak = 0;
             }
-            let (action_status, round_summary) = if is_zero_output {
-                (MemberActionStatus::Failed, "(empty turn)".to_string())
+            let action_status = if is_zero_output {
+                MemberActionStatus::Failed
             } else {
                 let result = parse_round_result(&final_text);
-                let action_status = if result == MemberRoundResult::Done {
+                if result == MemberRoundResult::Done {
                     MemberActionStatus::Succeeded
                 } else {
                     MemberActionStatus::Failed
-                };
-                let round_summary = extract_report_section(&final_text, "SUMMARY")
-                    .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
-                (action_status, round_summary)
+                }
             };
+            let round_summary =
+                provider_turn_coordination_summary("Pi", round, !final_text.trim().is_empty());
             let action = ledger.append_action(
                 &member.id,
                 "turn_completed",
@@ -40567,24 +40596,6 @@ fn extract_claude_reply_text(events: &[ClaudeStreamEvent]) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
-/// Extract evidence refs from a `claude -p --output-format stream-json`
-/// stream. Scans the terminal `result` event for an optional `evidenceRefs`
-/// array (strings); returns empty vec when absent.
-fn extract_claude_evidence_refs(events: &[ClaudeStreamEvent]) -> Vec<String> {
-    for event in events.iter().rev() {
-        if event.event_type != "result" {
-            continue;
-        }
-        if let Some(refs) = event.payload.get("evidenceRefs").and_then(|v| v.as_array()) {
-            return refs
-                .iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect();
-        }
-    }
-    Vec::new()
-}
-
 /// Map ProviderExecutionStatus to terminal source.
 fn status_to_terminal_source(status: &ProviderExecutionStatus) -> Option<MessageTerminalSource> {
     match status {
@@ -53766,6 +53777,23 @@ package:com.tencent.mm
     }
 
     #[test]
+    fn durable_provider_turn_summary_never_copies_native_response() {
+        let native_response = "## RESULT\ndone\n## SUMMARY\nprivate provider transcript marker";
+        let summary =
+            provider_turn_coordination_summary("Kimi", 7, !native_response.trim().is_empty());
+
+        assert_eq!(
+            summary,
+            "Kimi provider round 7 completed with authored output; transcript remains provider-native"
+        );
+        assert!(!summary.contains("private provider transcript marker"));
+        assert_eq!(
+            provider_turn_failure_summary("Claude", 3),
+            "Claude provider round 3 failed; inspect the provider-native session for details"
+        );
+    }
+
+    #[test]
     fn member_handoff_last_structured_report_wins() {
         let text = "## RESULT\nblocked\n## SUMMARY\nfirst attempt\n\
                     Retrying after Host feedback.\n\
@@ -55279,72 +55307,5 @@ invalid json line
                 .and_then(extract_json_object),
             Some(serde_json::json!({"ok": true}))
         );
-    }
-}
-
-#[cfg(test)]
-mod tests_extract_claude_evidence_refs {
-    use super::*;
-
-    #[test]
-    fn result_with_evidence_refs() {
-        let events = vec![ClaudeStreamEvent::parse_line(
-            r#"{"type":"result","result":"done","evidenceRefs":["src/a.ts","docs/b.md"]}"#,
-        )
-        .unwrap()];
-        let refs = extract_claude_evidence_refs(&events);
-        assert_eq!(refs, vec!["src/a.ts", "docs/b.md"]);
-    }
-
-    #[test]
-    fn result_without_evidence_refs() {
-        let events =
-            vec![ClaudeStreamEvent::parse_line(r#"{"type":"result","result":"done"}"#).unwrap()];
-        let refs = extract_claude_evidence_refs(&events);
-        assert_eq!(refs, Vec::<String>::new());
-    }
-
-    #[test]
-    fn no_result_event() {
-        let events = vec![ClaudeStreamEvent::parse_line(
-            r#"{"type":"stream_event","event":{"type":"message","message":{"content":[{"type":"text","text":"hello"}]}}}"#,
-        )
-        .unwrap()];
-        let refs = extract_claude_evidence_refs(&events);
-        assert_eq!(refs, Vec::<String>::new());
-    }
-
-    #[test]
-    fn result_with_empty_evidence_refs() {
-        let events = vec![ClaudeStreamEvent::parse_line(
-            r#"{"type":"result","result":"done","evidenceRefs":[]}"#,
-        )
-        .unwrap()];
-        let refs = extract_claude_evidence_refs(&events);
-        assert_eq!(refs, Vec::<String>::new());
-    }
-
-    #[test]
-    fn result_interleaved_uses_last_result() {
-        let events = vec![
-            ClaudeStreamEvent::parse_line(
-                r#"{"type":"stream_event","event":{"type":"message","message":{"content":[{"type":"text","text":"ok"}]}}}"#,
-            )
-            .unwrap(),
-            ClaudeStreamEvent::parse_line(
-                r#"{"type":"result","result":"done","evidenceRefs":["first.ts"]}"#,
-            )
-            .unwrap(),
-            ClaudeStreamEvent::parse_line(
-                r#"{"type":"stream_event","event":{"type":"message","message":{"content":[{"type":"text","text":"more"}]}}}"#,
-            )
-            .unwrap(),
-            ClaudeStreamEvent::parse_line(
-                r#"{"type":"result","result":"done","evidenceRefs":["last.ts"]}"#,
-            )
-            .unwrap(),
-        ];
-        let refs = extract_claude_evidence_refs(&events);
-        assert_eq!(refs, vec!["last.ts"]);
     }
 }

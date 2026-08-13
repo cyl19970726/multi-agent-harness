@@ -120,7 +120,7 @@ fn validate_codex_rollout_metadata(path: &Path, session_id: &str) -> CliResult<(
         }
         let line = std::str::from_utf8(&bytes[..bytes.len() - 1])
             .map_err(|_| CliError::Usage("Codex rollout metadata is not UTF-8".into()))?;
-        let row = serde_json::from_str::<serde_json::Value>(&line)?;
+        let row = serde_json::from_str::<serde_json::Value>(line)?;
         if row.get("type").and_then(|value| value.as_str()) != Some("session_meta") {
             continue;
         }
