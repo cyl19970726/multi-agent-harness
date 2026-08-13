@@ -289,7 +289,7 @@ pub fn decode_native_event(
         validated_references: vec![],
         redacted: decoded.redacted,
         truncated: decoded.truncated,
-        source_evidence_fingerprint: source_fingerprint,
+        source_content_fingerprint: source_fingerprint,
         payload: decoded.payload,
     };
     observation
@@ -407,7 +407,7 @@ fn malformed_observation(
         validated_references: vec![],
         redacted: true,
         truncated: false,
-        source_evidence_fingerprint: source_fingerprint,
+        source_content_fingerprint: source_fingerprint,
         payload: ObservationPayload::Malformed {
             reason_code: "native_json_malformed".into(),
         },

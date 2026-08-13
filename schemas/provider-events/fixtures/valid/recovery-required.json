@@ -26,6 +26,6 @@
   "validated_references": [],
   "redacted": false,
   "truncated": false,
-  "source_evidence_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "source_content_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "payload": {"type": "recovery", "reason_code": "native_effect_unknown"}
 }

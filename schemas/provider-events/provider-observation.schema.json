@@ -10,7 +10,7 @@
     "agent_session_generation", "node_daemon_id", "node_daemon_generation",
     "ordering_position", "observed_at", "semantic_kind", "lifecycle_phase",
     "completeness", "effect_certainty", "visibility", "validated_references",
-    "redacted", "truncated", "source_evidence_fingerprint", "payload"
+    "redacted", "truncated", "source_content_fingerprint", "payload"
   ],
   "properties": {
     "schema_version": {"const": "agentfirm.provider_observation.v1"},
@@ -61,7 +61,7 @@
     },
     "redacted": {"type": "boolean"},
     "truncated": {"type": "boolean"},
-    "source_evidence_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "source_content_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Provider-native content fingerprint for response-local dedupe; not a Harness Evidence reference."},
     "payload": {"$ref": "#/$defs/payload"}
   },
   "$defs": {

@@ -19,7 +19,7 @@
   "validated_references": [],
   "redacted": false,
   "truncated": false,
-  "source_evidence_fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "source_content_fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
   "payload": {"type": "authored_response", "text": "ok"},
   "raw_transcript": "forbidden"
 }

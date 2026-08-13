@@ -90,7 +90,7 @@ impl ProviderEventFold {
         }
         self.source_fingerprints.insert(
             observation.observation_id.clone(),
-            observation.source_evidence_fingerprint.clone(),
+            observation.source_content_fingerprint.clone(),
         );
         self.observations
             .insert(observation.observation_id.clone(), observation);

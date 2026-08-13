@@ -26,6 +26,6 @@
   "validated_references": [],
   "redacted": false,
   "truncated": false,
-  "source_evidence_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source_content_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "payload": {"type": "authored_response", "text": "Completed the bounded step."}
 }

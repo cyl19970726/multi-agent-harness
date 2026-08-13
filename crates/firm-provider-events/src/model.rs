@@ -193,7 +193,9 @@ pub struct ProviderObservation {
     pub validated_references: Vec<ValidatedReference>,
     pub redacted: bool,
     pub truncated: bool,
-    pub source_evidence_fingerprint: String,
+    /// Fingerprint of the provider-native content used for response-local
+    /// dedupe. It is not a Harness Evidence reference.
+    pub source_content_fingerprint: String,
     pub payload: ObservationPayload,
 }
 
@@ -224,10 +226,10 @@ impl ProviderObservation {
         if self.agent_session_generation == 0
             || self.node_daemon_generation == 0
             || !self.native_source_ref.starts_with("provider-source:")
-            || !self.source_evidence_fingerprint.starts_with("sha256:")
-            || self.source_evidence_fingerprint.len() != 71
+            || !self.source_content_fingerprint.starts_with("sha256:")
+            || self.source_content_fingerprint.len() != 71
         {
-            return Err(ObservationValidationError::InvalidAuthorityOrEvidence);
+            return Err(ObservationValidationError::InvalidAuthorityOrSource);
         }
         if self
             .validated_references
@@ -317,7 +319,7 @@ pub enum ObservationValidationError {
     #[error("semantic kind and payload variant do not match")]
     PayloadMismatch,
     #[error("authority generation or evidence identity is invalid")]
-    InvalidAuthorityOrEvidence,
+    InvalidAuthorityOrSource,
     #[error("validated references must be non-empty server-owned identifiers")]
     InvalidReference,
 }
