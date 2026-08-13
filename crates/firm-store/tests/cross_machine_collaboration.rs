@@ -1204,6 +1204,29 @@ fn remote_fact_is_redacted_digest_bound_and_target_scoped() {
         .expect("target Host exposes accepted target result");
     assert_eq!(available.projection.state, DelegationState::ResultAvailable);
     assert_eq!(available.projection.source_work_ref.work_revision, 9);
+    let operations_after_available = test.store.collaboration_operations().unwrap();
+    let available_replay = test
+        .store
+        .mark_delegation_result_available(
+            &context(
+                authority().target_host.clone(),
+                "delegation.result_available",
+                "result-available-1",
+                3,
+            ),
+            "delegation-1",
+            &publication.id,
+            &operational_decision,
+            &authority(),
+            &placement(13),
+        )
+        .expect("exact result-available replay");
+    assert!(available_replay.replayed);
+    assert_eq!(
+        test.store.collaboration_operations().unwrap(),
+        operations_after_available,
+        "exact receipt replay must not append a second Delegation transition"
+    );
 
     let integrated_source = work_ref("node-a", "team-a", "work-a", 10);
     let completed = test
@@ -1706,8 +1729,9 @@ fn immutable_message_transfer_persists_exact_replica_before_delivery_and_replays
         }),
         kind: MessageKind::Message,
         body: "immutable remote body".into(),
-        body_digest: canonical_json_fingerprint(
-            &serde_json::json!({"body": "immutable remote body"}),
+        body_digest: format!(
+            "sha256:{}",
+            firm_fabric::sha256_hex(b"immutable remote body")
         ),
         correlation_id: "remote-correlation-1".into(),
         causation_id: None,

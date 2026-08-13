@@ -5211,7 +5211,12 @@ impl HarnessStore {
                 });
             }
         }
+        let cross_node_collaboration = message
+            .collaboration_scope
+            .as_ref()
+            .is_some_and(|scope| scope.source_team_id != scope.target_team_id);
         if delivery_rows.is_empty()
+            && !cross_node_collaboration
             && !message
                 .recipients
                 .iter()
@@ -5328,6 +5333,7 @@ impl HarnessStore {
                 None,
             ));
         }
+        crate::validate_message_collaboration_scope(&message)?;
         let request_fingerprint = match context.request_fingerprint.clone() {
             Some(fingerprint) => fingerprint,
             None => canonical_json_fingerprint(&serde_json::to_value(operation)?),
@@ -5363,7 +5369,17 @@ impl HarnessStore {
                 if !delivered_identities.insert(subscription.subscriber_agent_id.clone()) {
                     continue;
                 }
-                if let Some(team_id) = message.team_id.as_deref() {
+                // `Message.team_id` remains the immutable source-Team scope.
+                // On the target Node, recipient authorization must bind the
+                // collaboration target Team; requiring a target membership in
+                // the source Team would make every valid cross-Team transfer
+                // undeliverable (or tempt a split-Team model).
+                let recipient_team_id = message
+                    .collaboration_scope
+                    .as_ref()
+                    .map(|scope| scope.target_team_id.as_str())
+                    .or(message.team_id.as_deref());
+                if let Some(team_id) = recipient_team_id {
                     let exact_membership =
                         subscription
                             .membership_ref
@@ -7337,6 +7353,87 @@ mod tests {
     }
 
     #[test]
+    fn source_node_authors_cross_node_message_without_inventing_target_delivery() {
+        let (store, root) = fabric_store();
+        store
+            .create_agent_identity(
+                &context("host", "identity.create", "identity-remote-sender", 0),
+                identity("remote-sender"),
+            )
+            .unwrap();
+        store
+            .create_agent_session(
+                &service_context("session.create", "remote-sender-session", 0),
+                session("session-remote-sender", "remote-sender"),
+            )
+            .unwrap();
+        append_runtime_team(&store, "source-team", "source-team-run");
+        join_runtime_membership(
+            &store,
+            "source-membership",
+            "source-team",
+            "remote-sender",
+            firm_core::agentfirm_api::TeamMembershipRole::Member,
+        );
+        let recipients = vec![firm_core::agentfirm_api::MessageRecipientRef {
+            kind: MessageRecipientKind::AgentIdentity,
+            id: "target-host-on-another-node".into(),
+        }];
+        let mut message = Message {
+            id: "cross-node-message".into(),
+            source_execution_space_id: "space-test".into(),
+            source_node_id: "11111111-1111-4111-8111-111111111111".into(),
+            source_node_daemon_id: "daemon-1".into(),
+            source_authority_generation: 1,
+            sender_actor_ref: ActorRef {
+                kind: ActorKind::AgentMember,
+                id: "remote-sender".into(),
+            },
+            sender_agent_id: Some("remote-sender".into()),
+            sender_session_id: Some("session-remote-sender".into()),
+            address_kind: firm_core::agentfirm_api::MessageAddressKind::DirectAgent,
+            target_ref: recipients[0].clone(),
+            recipients,
+            team_id: Some("source-team".into()),
+            team_run_id: Some("source-team-run".into()),
+            work_id: None,
+            collaboration_scope: Some(firm_core::collaboration::CollaborationScope {
+                source_team_id: "source-team".into(),
+                target_team_id: "target-team".into(),
+                delegation_id: Some("delegation-a-b".into()),
+                expected_delegation_revision: Some(3),
+                source_work_ref: None,
+                target_work_ref: None,
+            }),
+            kind: firm_core::agentfirm_api::MessageKind::Message,
+            body: "cross-node immutable body".into(),
+            body_digest: format!("sha256:{:x}", Sha256::digest(b"cross-node immutable body")),
+            correlation_id: "cross-node-correlation".into(),
+            causation_id: None,
+            response_intent: firm_core::agentfirm_api::ResponseIntent::ResponseRequired,
+            evidence_refs: Vec::new(),
+            content_fingerprint: String::new(),
+            schema_version: 1,
+            idempotency_key: "cross-node-message".into(),
+            created_at: "t2".into(),
+        };
+        message.content_fingerprint = message_content_fingerprint(&message);
+
+        let authored = store
+            .author_message(
+                &service_context("message.author", "cross-node-message", 0),
+                message.clone(),
+            )
+            .expect("source Node owns Message authorship without target delivery authority");
+        assert_eq!(authored.projection, message);
+        assert!(store
+            .fabric_message_deliveries("space-test")
+            .unwrap()
+            .is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn remote_message_persists_before_delivery_and_replays_without_route_duplication() {
         let (store, root) = fabric_store();
         store
@@ -7351,6 +7448,14 @@ mod tests {
                 session("session-remote-recipient", "remote-recipient"),
             )
             .unwrap();
+        append_runtime_team(&store, "target-team", "target-team-run");
+        join_runtime_membership(
+            &store,
+            "target-membership",
+            "target-team",
+            "remote-recipient",
+            firm_core::agentfirm_api::TeamMembershipRole::Member,
+        );
         let subscription = MessageSubscription {
             id: "remote-direct-recipient".into(),
             subscriber_agent_id: "remote-recipient".into(),
@@ -7405,10 +7510,17 @@ mod tests {
                 address_kind: firm_core::agentfirm_api::MessageAddressKind::DirectAgent,
                 target_ref: recipients[0].clone(),
                 recipients,
-                team_id: None,
+                team_id: Some("source-team".into()),
                 team_run_id: None,
                 work_id: None,
-                collaboration_scope: None,
+                collaboration_scope: Some(firm_core::collaboration::CollaborationScope {
+                    source_team_id: "source-team".into(),
+                    target_team_id: "target-team".into(),
+                    delegation_id: Some("delegation-source-target".into()),
+                    expected_delegation_revision: Some(3),
+                    source_work_ref: None,
+                    target_work_ref: None,
+                }),
                 kind: firm_core::agentfirm_api::MessageKind::Message,
                 body: body.into(),
                 body_digest: format!("sha256:{:x}", Sha256::digest(body.as_bytes())),

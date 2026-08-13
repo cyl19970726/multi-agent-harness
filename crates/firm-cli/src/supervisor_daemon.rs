@@ -962,8 +962,13 @@ impl MultiTeamDaemon {
                                 } else {
                                     (None, None)
                                 };
-                                let body_digest = harness_store::canonical_json_fingerprint(
-                                    &serde_json::json!({"body": draft.body}),
+                                // The immutable transfer contract hashes the
+                                // exact Message body bytes. Hashing a wrapper
+                                // JSON object here makes a valid source-authored
+                                // Message unverifiable on the target Node.
+                                let body_digest = format!(
+                                    "sha256:{}",
+                                    harness_fabric::sha256_hex(draft.body.as_bytes())
                                 );
                                 let fingerprint = harness_store::canonical_json_fingerprint(
                                     &serde_json::json!({

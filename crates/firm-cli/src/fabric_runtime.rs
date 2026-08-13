@@ -123,7 +123,7 @@ impl ControlPlaneReceiptApplication for Wave6ControlPlaneApplication {
             .publish_remote_fact(
                 &context,
                 &publication,
-                &[business_actor, delegation.target_host_ref],
+                &[business_actor, delegation.target_host_ref.clone()],
                 &delegation.target_placement,
             )
             .map_err(|error| {
@@ -132,6 +132,55 @@ impl ControlPlaneReceiptApplication for Wave6ControlPlaneApplication {
                     format!("Control Plane remote fact fold failed: {error}"),
                 )
             })?;
+        if let Some(operational_decision) = publication.operational_decision_ref.as_ref() {
+            let attestation = store
+                .collaboration_source_work_attestation(
+                    &self.company_id,
+                    &delegation.source_work_attestation_id,
+                )
+                .map_err(|error| {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        format!("source Work attestation lookup failed: {error}"),
+                    )
+                })?
+                .ok_or_else(|| {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        "accepted remote result has no frozen source Work attestation",
+                    )
+                })?;
+            let result_context = harness_store::CollaborationMutationContext {
+                company_id: self.company_id.clone(),
+                authenticated_actor: delegation.target_host_ref.clone(),
+                command_name: "delegation.result_available".into(),
+                idempotency_key: format!("{}:result-available", operation.idempotency_key),
+                expected_revision: reference.expected_revision,
+                occurred_at: format!("unix-ms:{observed_at_unix_ms}"),
+            };
+            store
+                .mark_delegation_result_available(
+                    &result_context,
+                    &delegation.id,
+                    &publication.id,
+                    operational_decision,
+                    &harness_store::ResolvedCollaborationAuthority {
+                        source_host: attestation.source_host_ref,
+                        source_work_owner: attestation.source_owner_ref,
+                        target_host: delegation.target_host_ref.clone(),
+                        target_placement: delegation.target_placement.clone(),
+                        source_work_application_service: attestation.work_application_service_ref,
+                        source_gateway_generation: attestation.source_gateway_generation,
+                    },
+                    &delegation.target_placement,
+                )
+                .map_err(|error| {
+                    FabricError::unknown(
+                        operation.id.clone(),
+                        format!("Control Plane result-available fold failed: {error}"),
+                    )
+                })?;
+        }
         Ok(Vec::new())
     }
 
@@ -716,6 +765,106 @@ pub(crate) struct QueueRemoteFactPublicationRequest {
     pub retain_until: String,
 }
 
+fn exact_work_projection_at_revision(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    work_id: &str,
+    work_revision: u64,
+) -> Result<(harness_core::Work, String), FabricError> {
+    let projection_matches = |value: &serde_json::Value| {
+        serde_json::from_value::<harness_core::Work>(value.clone())
+            .ok()
+            .filter(|work| work.id == work_id && work.version == work_revision)
+    };
+    for operation in store
+        .canonical_operations_for_space(execution_space_id)
+        .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?
+        .into_iter()
+        .rev()
+    {
+        if let Some(work) = projection_matches(&operation.resulting_projection) {
+            return Ok((work, operation.event.id));
+        }
+        for record in operation.immutable_side_records.into_iter().rev() {
+            if let Some(work) = projection_matches(&record) {
+                return Ok((work, operation.event.id));
+            }
+        }
+    }
+    for operation in store
+        .work_operations()
+        .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?
+        .into_iter()
+        .rev()
+    {
+        if operation.work.id == work_id && operation.work.version == work_revision {
+            return Ok((operation.work, operation.event.id));
+        }
+    }
+    Err(FabricError::none(
+        FabricErrorCode::ExpectedRevisionConflict,
+        "native fact does not bind an exact durable target Work revision",
+    ))
+}
+
+fn accepted_work_decision_ref(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    work_id: &str,
+    report_id: &str,
+    work_ref: &harness_core::collaboration::RemoteWorkRef,
+    target_host_id: &str,
+) -> Result<Option<harness_core::collaboration::WorkOperationalDecisionRef>, FabricError> {
+    let operation = store
+        .canonical_operations_for_space(execution_space_id)
+        .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?
+        .into_iter()
+        .rev()
+        .find(|operation| {
+            operation.event.aggregate_kind == "work"
+                && operation.event.aggregate_id == work_id
+                && operation.event.transition == "accepted"
+                && operation.event.performed_by_actor.kind
+                    == harness_core::agentfirm_api::ActorKind::AgentMember
+                && operation.event.performed_by_actor.id == target_host_id
+                && operation
+                    .event
+                    .payload
+                    .get("work_report_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(report_id)
+        });
+    let Some(operation) = operation else {
+        return Ok(None);
+    };
+    let accepted_work =
+        serde_json::from_value::<harness_core::Work>(operation.resulting_projection.clone())
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
+            })?;
+    if accepted_work.version != work_ref.work_revision + 1
+        || accepted_work.phase != harness_core::WorkPhase::Closed
+        || accepted_work.resolution != Some(harness_core::WorkResolution::Accepted)
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::ExpectedRevisionConflict,
+            "accepted target Work decision does not bind the published submitted revision",
+        ));
+    }
+    Ok(Some(
+        harness_core::collaboration::WorkOperationalDecisionRef {
+            decision_id: operation.event.id.clone(),
+            work_ref: work_ref.clone(),
+            decision_revision: operation.event.resulting_version,
+            digest: harness_store::canonical_json_fingerprint(
+                &serde_json::to_value(&operation.event).map_err(|error| {
+                    FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
+                })?,
+            ),
+        },
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn queue_collaboration_proposal(
     store: &HarnessStore,
@@ -1010,6 +1159,7 @@ pub(crate) fn queue_remote_fact_publication(
         fact_work_id,
         fact_work_revision,
         fact_revision,
+        result_report_id,
         created_by,
         summary,
         schema,
@@ -1047,6 +1197,8 @@ pub(crate) fn queue_remote_fact_publication(
                 report.work_id,
                 report.work_revision,
                 report.report_revision,
+                (report.kind == harness_core::agentfirm_api::WorkReportKind::Result)
+                    .then_some(report.id.clone()),
                 report.authored_by,
                 redacted["summary"].as_str().unwrap_or_default().to_string(),
                 "agentfirm.remote-fact.work-report.v1",
@@ -1082,6 +1234,7 @@ pub(crate) fn queue_remote_fact_publication(
                 finding.work_id,
                 finding.work_revision,
                 1,
+                None,
                 finding.reported_by,
                 redacted["summary"].as_str().unwrap_or_default().to_string(),
                 "agentfirm.remote-fact.work-finding.v1",
@@ -1120,6 +1273,7 @@ pub(crate) fn queue_remote_fact_publication(
                 analysis.work_id,
                 analysis.work_revision,
                 1,
+                None,
                 analysis.reported_by,
                 redacted["observed_failure"]
                     .as_str()
@@ -1138,17 +1292,23 @@ pub(crate) fn queue_remote_fact_publication(
             "credential is not the native fact author",
         ));
     }
-    let work = store
+    let current_work = store
         .latest_works()
         .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?
         .into_iter()
-        .find(|work| work.id == fact_work_id && work.version == fact_work_revision)
+        .find(|work| work.id == fact_work_id)
         .ok_or_else(|| {
             FabricError::none(
                 FabricErrorCode::ExpectedRevisionConflict,
-                "native fact does not bind the exact current target Work revision",
+                "native fact target Work does not exist",
             )
         })?;
+    let (work, work_event_id) = exact_work_projection_at_revision(
+        store,
+        execution_space_id,
+        &fact_work_id,
+        fact_work_revision,
+    )?;
     let team_id = work.team_id.clone().ok_or_else(|| {
         FabricError::none(
             FabricErrorCode::InvalidPayload,
@@ -1169,27 +1329,17 @@ pub(crate) fn queue_remote_fact_publication(
                 "target AgentTeam does not exist",
             )
         })?;
-    if team.node_id != local_node_id
+    if current_work.team_id.as_deref() != Some(team.id.as_str())
+        || current_work.version < work.version
+        || team.node_id != local_node_id
         || (credential.actor.id != team.host_agent_id
-            && work.owner_member_id.as_deref() != Some(credential.actor.id.as_str()))
+            && current_work.owner_member_id.as_deref() != Some(credential.actor.id.as_str()))
     {
         return Err(FabricError::none(
             FabricErrorCode::UnauthorizedActor,
             "remote fact requires the exact local target Host or current Work owner",
         ));
     }
-    let event = store
-        .work_events()
-        .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?
-        .into_iter()
-        .rev()
-        .find(|event| event.work_id == work.id && event.resulting_version == work.version)
-        .ok_or_else(|| {
-            FabricError::none(
-                FabricErrorCode::ExpectedRevisionConflict,
-                "target Work has no exact current WorkEvent",
-            )
-        })?;
     let target_work_ref = RemoteWorkRef {
         schema_version: "agentfirm.remote-work-ref.v1".into(),
         execution_space_id: execution_space_id.into(),
@@ -1199,11 +1349,28 @@ pub(crate) fn queue_remote_fact_publication(
         placement_generation: 1,
         work_id: work.id.clone(),
         work_revision: work.version,
-        work_event_id: event.id,
+        work_event_id,
         digest: harness_store::canonical_json_fingerprint(&serde_json::to_value(&work).map_err(
             |error| FabricError::none(FabricErrorCode::InvalidPayload, error.to_string()),
         )?),
     };
+    let operational_decision_ref = match result_report_id.as_deref() {
+        Some(report_id) => accepted_work_decision_ref(
+            store,
+            execution_space_id,
+            &work.id,
+            report_id,
+            &target_work_ref,
+            &team.host_agent_id,
+        )?,
+        None => None,
+    };
+    if current_work.version != work.version && operational_decision_ref.is_none() {
+        return Err(FabricError::none(
+            FabricErrorCode::ExpectedRevisionConflict,
+            "superseded native fact requires the exact accepted result Work decision",
+        ));
+    }
     let publication_id = format!(
         "remote-fact:{}:{:?}:{}",
         request.delegation_id, request.fact_kind, request.fact_id
@@ -1232,7 +1399,7 @@ pub(crate) fn queue_remote_fact_publication(
         },
         artifact_refs,
         evidence_refs,
-        operational_decision_ref: None,
+        operational_decision_ref,
         created_by: credential.actor.clone(),
         created_at: format!("unix-ms:{now_unix_ms}"),
         retain_until: request.retain_until.clone(),
@@ -2933,7 +3100,17 @@ fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend
                     "Delegation does not exist",
                 )
             })?;
+        let source_host = store
+            .collaboration_source_work_attestation(
+                control.company_id(),
+                &delegation.source_work_attestation_id,
+            )
+            .map_err(|error| {
+                FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
+            })?
+            .map(|attestation| attestation.source_host_ref);
         if credential.actor != delegation.source_owner_ref
+            && source_host.as_ref() != Some(&credential.actor)
             && credential.actor != delegation.target_host_ref
         {
             return Err(FabricError::none(

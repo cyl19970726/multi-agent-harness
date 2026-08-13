@@ -287,7 +287,10 @@ fn decode_embedded_message(
     if message.id != reference.message_id
         || message.body_digest != reference.body_digest
         || message.body_digest
-            != harness_store::canonical_json_fingerprint(&serde_json::json!({"body": message.body}))
+            != format!(
+                "sha256:{}",
+                harness_fabric::sha256_hex(message.body.as_bytes())
+            )
         || message.content_fingerprint != expected_fingerprint
         || operation.source_execution_space_id.as_deref()
             != Some(message.source_execution_space_id.as_str())

@@ -249,7 +249,10 @@ pub fn persist_verified_remote_message_replica<P: RemoteMessageReplicaPort>(
             &expected.message_id,
         )
     })?;
-    let body_digest = canonical_json_fingerprint(&serde_json::json!({"body": message.body}));
+    let body_digest = format!(
+        "sha256:{}",
+        firm_fabric::sha256_hex(message.body.as_bytes())
+    );
     if message.source_execution_space_id != expected.source_execution_space_id
         || message.id != expected.message_id
         || message.schema_version != expected.schema_version
@@ -1526,6 +1529,16 @@ impl HarnessStore {
             && context.authenticated_actor.id == team.host_agent_id;
         let actor_is_owner = context.authenticated_actor.kind == ActorKind::AgentMember
             && work.owner_member_id.as_deref() == Some(context.authenticated_actor.id.as_str());
+        let accepted_result_revision =
+            publication
+                .operational_decision_ref
+                .as_ref()
+                .is_some_and(|decision| {
+                    decision.work_ref == publication.fact_work_ref
+                        && work.version == publication.fact_work_ref.work_revision + 1
+                        && work.phase == firm_core::WorkPhase::Closed
+                        && work.resolution == Some(firm_core::WorkResolution::Accepted)
+                });
         let canonical_digest =
             canonical_json_fingerprint(&publication.snapshot.canonical_redacted_fact);
         if context.expected_revision == 0
@@ -1534,7 +1547,8 @@ impl HarnessStore {
             || publication.origin_node_id != current_node_id
             || publication.fact_work_ref.node_id != current_node_id
             || publication.fact_work_ref.team_id != team.id
-            || publication.fact_work_ref.work_revision != work.version
+            || (publication.fact_work_ref.work_revision != work.version
+                && !accepted_result_revision)
             || publication.fact_digest != canonical_digest
             || publication.snapshot.canonical_digest != canonical_digest
             || publication.snapshot.publication_id != publication.id
@@ -2254,6 +2268,32 @@ impl HarnessStore {
     ) -> StoreResult<CollaborationMutationResult<WorkDelegationV1>> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        let request_payload = serde_json::json!({
+            "publication_id": publication_id,
+            "operational_decision": operational_decision,
+            "observed_target_placement": observed_target_placement,
+        });
+        if let Some(existing) =
+            self.collaboration_operations_unlocked()?
+                .into_iter()
+                .find(|operation| {
+                    operation.company_id == context.company_id
+                        && operation.authenticated_actor == context.authenticated_actor
+                        && operation.command_name == context.command_name
+                        && operation.idempotency_key == context.idempotency_key
+                })
+        {
+            let projection =
+                serde_json::from_value::<WorkDelegationV1>(existing.resulting_projection)?;
+            return self.commit_collaboration_projection_unlocked(
+                context,
+                "work_delegation_v1",
+                delegation_id,
+                request_payload,
+                &projection,
+                vec![serde_json::to_value(operational_decision)?],
+            );
+        }
         let mut delegation = self
             .latest_collaboration_projection_unlocked::<WorkDelegationV1>(
                 &context.company_id,
@@ -2337,11 +2377,7 @@ impl HarnessStore {
             context,
             "work_delegation_v1",
             delegation_id,
-            serde_json::json!({
-                "publication_id": publication_id,
-                "operational_decision": operational_decision,
-                "observed_target_placement": observed_target_placement,
-            }),
+            request_payload,
             &delegation,
             vec![serde_json::to_value(operational_decision)?],
         )

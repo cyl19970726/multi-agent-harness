@@ -29454,6 +29454,10 @@ fn handle_http_connection(
             &envelope,
         ) {
             Ok(response) => {
+                if response.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+                    write_http_json(&mut stream, "409 Conflict", &response)?;
+                    return Ok(());
+                }
                 if envelope.command == RuntimeCommandKind::AuthorMessage {
                     if let Some(remote_transfer) = envelope
                         .payload
