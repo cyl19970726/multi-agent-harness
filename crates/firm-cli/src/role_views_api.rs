@@ -1889,17 +1889,21 @@ fn exact_agent_session_binding<'a>(
     }
 }
 
+struct SessionProjectionReadRequest<'a> {
+    project_id: &'a str,
+    team_id: &'a str,
+    selected_agent_id: &'a str,
+    viewer_identity_id: &'a str,
+    run: Option<&'a AgentTeamRun>,
+    selected_member_run: Option<&'a Value>,
+}
+
 fn read_session_event_projection(
     store: &HarnessStore,
-    project_id: &str,
-    team_id: &str,
-    selected_agent_id: &str,
-    viewer_identity_id: &str,
     facts: &Facts,
-    run: Option<&AgentTeamRun>,
-    selected_member_run: Option<&Value>,
+    request: SessionProjectionReadRequest<'_>,
 ) -> Value {
-    let selector = if let Some(member_run) = selected_member_run {
+    let selector = if let Some(member_run) = request.selected_member_run {
         let Some(native) = member_run
             .get("native_session")
             .filter(|value| !value.is_null())
@@ -1919,7 +1923,7 @@ fn read_session_event_projection(
             member_run["runtime_generation"].as_u64(),
         )
     } else {
-        let Some(run) = run else {
+        let Some(run) = request.run else {
             return unavailable_session_event_projection(
                 "No current TeamRun binds the selected Host Agent Session.",
             );
@@ -1937,8 +1941,8 @@ fn read_session_event_projection(
     };
     let (session, native_session) = match exact_agent_session_binding(
         facts,
-        project_id,
-        selected_agent_id,
+        request.project_id,
+        request.selected_agent_id,
         selector.0,
         selector.1,
         selector.2,
@@ -1964,14 +1968,14 @@ fn read_session_event_projection(
     };
     crate::provider_event_api::read_historical_projection(
         crate::provider_event_api::HistoricalProjectionRequest {
-            project_id,
-            team_id,
-            agent_identity_id: selected_agent_id,
+            project_id: request.project_id,
+            team_id: request.team_id,
+            agent_identity_id: request.selected_agent_id,
             agent_session_id: session["id"].as_str().unwrap_or_default(),
             agent_session_generation: session["runtime_generation"].as_u64().unwrap_or(0),
             node_daemon_id: &lease.daemon_id,
             node_daemon_generation: lease.generation,
-            viewer_identity_id,
+            viewer_identity_id: request.viewer_identity_id,
             native_session: &native_session,
         },
     )
@@ -2252,13 +2256,15 @@ fn agent_workspace_view(
     let session_event_projection = may_read_private_session.then(|| {
         read_session_event_projection(
             store,
-            space_id,
-            &team.id,
-            selected_agent_id,
-            viewer_identity_id,
             &facts,
-            run,
-            selected_member_run,
+            SessionProjectionReadRequest {
+                project_id: space_id,
+                team_id: &team.id,
+                selected_agent_id,
+                viewer_identity_id,
+                run,
+                selected_member_run,
+            },
         )
     });
     // Only an exact MemberRun + AgentSession generation can receive the
