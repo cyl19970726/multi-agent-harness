@@ -1,0 +1,11 @@
+{
+  "node_id": "2437c3dd-14ad-4be6-8d09-0b715fe5aa04",
+  "provider": "codex",
+  "marker": "WAVE6_NODE_A_PROVIDER_OK",
+  "evidence_origin": "accepted Wave5 provider journey; unchanged provider surface reused by DEV-7",
+  "runtime_command_id": "runtime-command:provider-process:agent-session:wave6-worker-a2-ca11:2437c3dd-14ad-4be6-8d09-0b715fe5aa04:21:1:1:StartSession",
+  "agent_session_id": "agent-session:wave6-worker-a2-ca11:2437c3dd-14ad-4be6-8d09-0b715fe5aa04:21:1",
+  "terminal_ack_digest": "sha256:528b0585d9bebd532be16c17497dfb6a5769f27525de4808de40dcc27911c2a9",
+  "transcript_digest": "sha256:91ef5c177efb10b0ab4a93607755e7264c93fba7e193003a7263621912409201",
+  "secret_material_recorded": false
+}
