@@ -15957,19 +15957,12 @@ fn dispatch_headless_host_once(
                     .provider_request_id
                     .or(outcome.provider_turn_id)
                     .map(|id| format!("{provider}:{thread_id}:{id}"))
-                    .or_else(|| {
-                        outcome
-                            .evidence_ids
-                            .first()
-                            .map(|id| format!("{provider}:{thread_id}:terminal-evidence:{id}"))
-                    })
-                    .ok_or_else(|| {
-                        StoreError::Conflict(
-                            "headless Host turn returned no provider terminal evidence".to_string(),
-                        )
-                    })?;
+                    .unwrap_or_else(|| format!("{provider}:{thread_id}:terminal"));
                 host_dispatcher::DispatcherConsumerSuccess::new(
-                    (outcome.summary, delivered_attention_ids),
+                    (
+                        outcome.response_text.unwrap_or(outcome.summary),
+                        delivered_attention_ids,
+                    ),
                     receipt,
                 )
             },
@@ -32441,7 +32434,7 @@ fn create_message_value(
     };
     store.append_message(&message)?;
     if let Some(member) = target.as_ref() {
-        append_agent_event(
+        append_harness_runtime_control_fact(
             store,
             &member.id,
             member.provider_runtime_id.as_deref(),
@@ -33192,7 +33185,7 @@ fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<Provid
             member.status = ProviderLaunchStatus::Error;
             member.last_seen_at = Some(now_string());
             store.append_member(&member)?;
-            append_agent_event(
+            append_harness_runtime_control_fact(
                 store,
                 &member.id,
                 member.provider_runtime_id.as_deref(),
@@ -33210,7 +33203,7 @@ fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<Provid
     member.last_seen_at = Some(now_string());
     store.append_runtime(&runtime)?;
     store.append_member(&member)?;
-    append_agent_event(
+    append_harness_runtime_control_fact(
         store,
         &member.id,
         Some(runtime.id.as_str()),
@@ -37387,7 +37380,7 @@ fn deliver_agent_messages_value(
         .as_ref()
         .is_some_and(|runtime| !runtime_is_alive(runtime))
     {
-        append_agent_event(
+        append_harness_runtime_control_fact(
             store,
             &member.id,
             member.provider_runtime_id.as_deref(),
@@ -37451,7 +37444,7 @@ fn deliver_agent_messages_value(
         member.current_task_id = claimed_message.task_id.clone();
         member.last_seen_at = Some(now_string());
         store.append_member(&member)?;
-        append_agent_event(
+        append_harness_runtime_control_fact(
             store,
             &member.id,
             member.provider_runtime_id.as_deref(),
@@ -37467,7 +37460,7 @@ fn deliver_agent_messages_value(
                 .clone()
                 .or_else(|| Some(format!("dry-thread-{}", member.id)));
             let provider_turn_id = Some(format!("dry-turn-{}", claimed_message.id));
-            let evidence_ids = record_claimed_delivery_terminal(
+            record_claimed_delivery_terminal(
                 store,
                 &delivery_id,
                 &claimed_message,
@@ -37486,12 +37479,12 @@ fn deliver_agent_messages_value(
                 provider_turn_id,
                 terminal_source: Some(MessageTerminalSource::DryRun),
                 provider_request_id: None,
-                evidence_ids,
                 exit_code: Some(0),
                 tokens: None,
                 cost_usd: None,
                 model: None,
                 structured: None,
+                response_text: None,
                 summary: "dry-run delivery completed".into(),
             }
         } else {
@@ -37517,7 +37510,7 @@ fn deliver_agent_messages_value(
                     "{} runtime start failed after claim: {error}",
                     member.provider
                 );
-                let evidence_ids = record_claimed_delivery_terminal(
+                record_claimed_delivery_terminal(
                     store,
                     &delivery_id,
                     &claimed_message,
@@ -37536,17 +37529,17 @@ fn deliver_agent_messages_value(
                     provider_turn_id: None,
                     terminal_source: Some(MessageTerminalSource::Failed),
                     provider_request_id: None,
-                    evidence_ids,
                     exit_code: Some(1),
                     tokens: None,
                     cost_usd: None,
                     model: None,
                     structured: None,
+                    response_text: None,
                     summary,
                 }
             } else if runtime.is_none() {
                 let summary = format!("agent {agent_id} has no running provider runtime");
-                let evidence_ids = record_claimed_delivery_terminal(
+                record_claimed_delivery_terminal(
                     store,
                     &delivery_id,
                     &claimed_message,
@@ -37565,12 +37558,12 @@ fn deliver_agent_messages_value(
                     provider_turn_id: None,
                     terminal_source: Some(MessageTerminalSource::Failed),
                     provider_request_id: None,
-                    evidence_ids,
                     exit_code: Some(1),
                     tokens: None,
                     cost_usd: None,
                     model: None,
                     structured: None,
+                    response_text: None,
                     summary,
                 }
             } else {
@@ -37606,23 +37599,6 @@ fn deliver_agent_messages_value(
             last_error: delivery_error_message(&delivery.status, &delivery.summary),
         });
         store.append_message(&delivered_message)?;
-        if !delivery_unresolved {
-            let report = RegistryMessage {
-                id: generated_id("msg"),
-                task_id: delivered_message.task_id.clone(),
-                from_agent_id: member.id.clone(),
-                to_agent_id: None,
-                channel: Some("provider-report".into()),
-                kind: RegistryMessageIntent::Report,
-                delivery_status: RegistryDeliveryStatus::Delivered,
-                content: delivery.summary.clone(),
-                evidence_ids: delivery.evidence_ids.clone(),
-                created_at: now_string(),
-                delivery: delivered_message.delivery.clone(),
-                sender_kind: SenderKind::Agent,
-            };
-            store.append_message(&report)?;
-        }
         if let Some(thread_id) = delivery.provider_thread_id.clone() {
             member.provider_thread_id = Some(thread_id);
         }
@@ -37662,7 +37638,7 @@ fn deliver_agent_messages_value(
         }
         member.last_seen_at = Some(now_string());
         store.append_member(&member)?;
-        append_agent_event(
+        append_harness_runtime_control_fact(
             store,
             &member.id,
             member.provider_runtime_id.as_deref(),
@@ -37820,12 +37796,16 @@ struct DeliveryOutcome {
     provider_turn_id: Option<String>,
     terminal_source: Option<MessageTerminalSource>,
     provider_request_id: Option<String>,
-    evidence_ids: Vec<String>,
     exit_code: Option<i32>,
     tokens: Option<TokenUsage>,
     cost_usd: Option<f64>,
     model: Option<String>,
     structured: Option<serde_json::Value>,
+    /// Provider-authored response retained only for the current in-process
+    /// consumer. It is never copied into RegistryMessage, Evidence, runtime
+    /// health, or another Harness history store.
+    response_text: Option<String>,
+    /// Harness-owned delivery/control fact safe for durable coordination rows.
     summary: String,
 }
 
@@ -37914,7 +37894,7 @@ fn retry_delivery_value(
     message.delivery_status = RegistryDeliveryStatus::Queued;
     message.delivery = None;
     store.append_message(&message)?;
-    append_agent_event(
+    append_harness_runtime_control_fact(
         store,
         agent_id,
         member.provider_runtime_id.as_deref(),
@@ -38065,6 +38045,7 @@ fn build_turn_input(message: &RegistryMessage, delivery_attempt_id: &str) -> ser
 /// the endpoint verbatim so callers that only inspect existence/format keep
 /// working without assuming a unix socket. This keeps the seam provider-neutral
 /// per ADR 0011 — the endpoint format is the one place Codex assumed a socket.
+#[cfg(test)]
 fn reconcile_running_delivery_attempts(
     store: &HarnessStore,
     agent_member_id: &str,
@@ -38116,25 +38097,6 @@ fn reconcile_running_delivery_attempts(
             reconciled_task_ids.insert(task_id);
         }
         store.append_message(&message)?;
-        let delivery_id = message
-            .delivery
-            .as_ref()
-            .and_then(|delivery| delivery.delivery_id.as_deref())
-            .unwrap_or("unknown");
-        store.append_message(&RegistryMessage {
-            id: generated_id("msg"),
-            task_id: message.task_id.clone(),
-            from_agent_id: agent_member_id.into(),
-            to_agent_id: None,
-            channel: Some("provider-report".into()),
-            kind: RegistryMessageIntent::Report,
-            delivery_status: RegistryDeliveryStatus::Delivered,
-            content: format!("Delivery {delivery_id} completed from provider-native activity"),
-            evidence_ids: message.evidence_ids.clone(),
-            created_at: now_string(),
-            delivery: message.delivery.clone(),
-            sender_kind: SenderKind::Agent,
-        })?;
         reconciled_any = true;
     }
     if reconciled_any {
@@ -38160,6 +38122,7 @@ fn reconcile_running_delivery_attempts(
     Ok(reconciled_any)
 }
 
+#[cfg(test)]
 fn mark_runtime_delivery_reconciled(
     store: &HarnessStore,
     runtime_id: &str,
@@ -38344,17 +38307,6 @@ fn terminal_source_from_values(values: &[serde_json::Value]) -> Option<MessageTe
     None
 }
 
-fn turn_id_from_container(value: &serde_json::Value) -> Option<String> {
-    value
-        .get("turn")
-        .and_then(|turn| turn.get("id"))
-        .and_then(|id| id.as_str())
-        .or_else(|| value.get("turnId").and_then(|id| id.as_str()))
-        .or_else(|| value.get("turn_id").and_then(|id| id.as_str()))
-        .or_else(|| value.get("id").and_then(|id| id.as_str()))
-        .map(str::to_string)
-}
-
 // Test-only helper: extracts a thread id from codex app-server values; unit-tested only.
 #[cfg(test)]
 fn extract_thread_id(values: &[serde_json::Value], request_id: &str) -> Option<String> {
@@ -38384,6 +38336,7 @@ fn extract_thread_id(values: &[serde_json::Value], request_id: &str) -> Option<S
     None
 }
 
+#[cfg(test)]
 fn thread_id_from_container(value: &serde_json::Value) -> Option<String> {
     for path in [
         &["thread", "id"][..],
@@ -38399,6 +38352,7 @@ fn thread_id_from_container(value: &serde_json::Value) -> Option<String> {
     None
 }
 
+#[cfg(test)]
 fn json_path_string(value: &serde_json::Value, path: &[&str]) -> Option<String> {
     let mut current = value;
     for key in path {
@@ -40223,7 +40177,7 @@ fn run_kimi_delivery(
         .join("deliveries")
         .join(delivery_id);
     fs::create_dir_all(&session_dir)?;
-    let (process_success, _events, raw_events, session_id, stderr_log) =
+    let (process_success, _events, raw_events, session_id, _stderr_log) =
         run_kimi_exec_delivery_real(&session_dir, member, message, timeout_ms, project)?;
     // Kimi -p stream-json carries no usage/model/cost/structured frame; degrade per
     // kimi_exec(). Reply/status/session come from the kimi-native parsers on the raw
@@ -40235,29 +40189,9 @@ fn run_kimi_delivery(
     let status = infer_kimi_status(&raw_events, process_success);
     let structured = structured_for_status(&status, raw_structured);
     let terminal_source = status_to_terminal_source(&status);
-    let resolved_session_id = session_id
-        .clone()
-        .unwrap_or_else(|| generated_id("session"));
     // Only a real session id parsed from the stream is resumable; the synthetic
     // fallback is not surfaced as a resume token (claude-identical).
     let resumable_session_id = session_id.clone();
-    let evidence_id = generated_id("evidence");
-    let evidence = Evidence {
-        id: evidence_id.clone(),
-        task_id: message.task_id.clone(),
-        source_type: "kimi_delivery_session".into(),
-        source_ref: format!("native-session:kimi:{resolved_session_id}"),
-        summary: format!(
-            "Kimi stream-json delivery {} for message {} ({} frames)",
-            resolved_session_id,
-            message.id,
-            raw_events.len()
-        ),
-        created_at: now_string(),
-        evidence_kind: None,
-        goal_id: None,
-    };
-    store.append_evidence(&evidence)?;
 
     let _ = fs::remove_dir_all(&session_dir);
     Ok(DeliveryOutcome {
@@ -40269,17 +40203,18 @@ fn run_kimi_delivery(
         terminal_source,
         status,
         provider_request_id: None,
-        evidence_ids: vec![evidence_id],
         exit_code: if process_success { Some(0) } else { Some(1) },
         tokens,
         cost_usd,
         model,
         structured,
+        response_text: process_success
+            .then(|| extract_kimi_reply_text(&raw_events))
+            .flatten(),
         summary: if process_success {
-            extract_kimi_reply_text(&raw_events)
-                .unwrap_or_else(|| format!("Kimi delivery succeeded: {} frames", raw_events.len()))
+            "Kimi provider delivery completed; transcript remains provider-native".to_string()
         } else {
-            format!("Kimi delivery failed: {}", stderr_log)
+            "Kimi provider delivery failed; inspect the provider-native session".to_string()
         },
     })
 }
@@ -41022,40 +40957,6 @@ fn codex_mcp_id_key(id: &str) -> String {
     }
 }
 
-// Record only the Harness-level link from a delivery attempt to provider-native
-// session truth. The provider owns the transcript, tool history, and resume data.
-struct ExecDeliverySessionRecord<'a> {
-    delivery_id: &'a str,
-    message: &'a RegistryMessage,
-    provider_thread_id: Option<String>,
-}
-
-fn record_exec_delivery_session(
-    store: &HarnessStore,
-    record: ExecDeliverySessionRecord<'_>,
-) -> CliResult<String> {
-    let evidence_id = generated_id("evidence");
-    let evidence = Evidence {
-        id: evidence_id.clone(),
-        task_id: record.message.task_id.clone(),
-        source_type: "codex_exec_delivery_session".into(),
-        source_ref: record
-            .provider_thread_id
-            .as_ref()
-            .map(|id| format!("native-session:codex:{id}"))
-            .unwrap_or_else(|| "native-session:codex:unavailable".to_string()),
-        summary: format!(
-            "Codex exec-stream delivery {} for message {}",
-            record.delivery_id, record.message.id
-        ),
-        created_at: now_string(),
-        evidence_kind: None,
-        goal_id: None,
-    };
-    store.append_evidence(&evidence)?;
-    Ok(evidence_id)
-}
-
 /// This is the exec-stream variant of run_codex_app_server_exchange.
 #[allow(clippy::too_many_arguments)]
 fn run_codex_exec_delivery(
@@ -41075,7 +40976,7 @@ fn run_codex_exec_delivery(
     fs::create_dir_all(&session_dir)?;
     let spec = build_launch_spec(member, message);
 
-    let (process_success, events, raw_events, stderr_log) = run_codex_exec_process(
+    let (process_success, events, raw_events, _stderr_log) = run_codex_exec_process(
         &session_dir,
         member,
         message,
@@ -41103,28 +41004,12 @@ fn run_codex_exec_delivery(
     let structured =
         structured_for_status(&status, codex_delivery_structured(reply.as_deref(), &spec));
 
-    let evidence_id = record_exec_delivery_session(
-        store,
-        ExecDeliverySessionRecord {
-            delivery_id,
-            message,
-            provider_thread_id: provider_thread_id.clone(),
-        },
-    )?;
-
     let summary = match status {
-        ProviderExecutionStatus::Succeeded => reply
-            .clone()
-            .unwrap_or_else(|| "Codex exec --json turn completed successfully".into()),
+        ProviderExecutionStatus::Succeeded => {
+            "Codex provider delivery completed; transcript remains provider-native".into()
+        }
         ProviderExecutionStatus::Failed => {
-            if stderr_log.is_empty() {
-                "Codex exec --json failed: no output".into()
-            } else {
-                format!(
-                    "Codex exec --json failed: {}",
-                    stderr_log.lines().next().unwrap_or("unknown error")
-                )
-            }
+            "Codex provider delivery failed; inspect the provider-native session".into()
         }
         ProviderExecutionStatus::Stale => {
             "Codex exec --json produced output but did not complete before timeout".into()
@@ -41143,12 +41028,12 @@ fn run_codex_exec_delivery(
         provider_turn_id,
         terminal_source,
         provider_request_id: None, // exec stream does not use request_id
-        evidence_ids: vec![evidence_id],
         exit_code,
         tokens,
         cost_usd,
         model,
         structured,
+        response_text: reply,
         summary,
     })
 }
@@ -41315,7 +41200,7 @@ fn run_claude_delivery(
     // frame (see `resident.rs`). The returned tuple shape is identical to the
     // default path, so status inference and telemetry stay provider-neutral.
     let resident = env::var("HARNESS_CLAUDE_RESIDENT").as_deref() == Ok("1");
-    let (process_success, events, raw_events, session_id, stderr_log) = if resident {
+    let (process_success, events, raw_events, session_id, _stderr_log) = if resident {
         run_claude_resident_delivery_real(&session_dir, member, message, timeout_ms, project)?
     } else {
         run_claude_exec_delivery_real(&session_dir, member, message, timeout_ms, project)?
@@ -41325,35 +41210,11 @@ fn run_claude_delivery(
     let status = infer_claude_session_status(&events, process_success);
     let structured = structured_for_status(&status, raw_structured);
     let terminal_source = status_to_terminal_source(&status);
-    let resolved_session_id = session_id
-        .clone()
-        .unwrap_or_else(|| generated_id("session"));
-
     // The id we hand back as the member's provider thread for the NEXT delivery
     // to resume. Only a real session id parsed from the provider output is
     // resumable; the synthetic fallback id above is not, so it is not surfaced
     // as a resume token.
     let resumable_session_id = session_id.clone();
-
-    // Record an Evidence row for the delivery session, mirroring the codex path
-    // so every provider delivery is auditable from the snapshot.
-    let evidence_id = generated_id("evidence");
-    let evidence = Evidence {
-        id: evidence_id.clone(),
-        task_id: message.task_id.clone(),
-        source_type: "claude_delivery_session".into(),
-        source_ref: format!("native-session:claude:{resolved_session_id}"),
-        summary: format!(
-            "Claude stream-json delivery {} for message {} ({} events)",
-            resolved_session_id,
-            message.id,
-            events.len()
-        ),
-        created_at: now_string(),
-        evidence_kind: None,
-        goal_id: None,
-    };
-    store.append_evidence(&evidence)?;
 
     let _ = fs::remove_dir_all(&session_dir);
     Ok(DeliveryOutcome {
@@ -41367,19 +41228,18 @@ fn run_claude_delivery(
         terminal_source,
         status,
         provider_request_id: None,
-        evidence_ids: vec![evidence_id],
         exit_code: if process_success { Some(0) } else { Some(1) },
         tokens,
         cost_usd,
         model,
         structured,
+        response_text: process_success
+            .then(|| extract_claude_reply_text(&events))
+            .flatten(),
         summary: if process_success {
-            // Surface the agent's actual reply as the report content; fall back
-            // to a status line only when the turn produced no assistant text.
-            extract_claude_reply_text(&events)
-                .unwrap_or_else(|| format!("Claude delivery succeeded: {} events", events.len()))
+            "Claude provider delivery completed; transcript remains provider-native".to_string()
         } else {
-            format!("Claude delivery failed: {}", stderr_log)
+            "Claude provider delivery failed; inspect the provider-native session".to_string()
         },
     })
 }
@@ -41651,40 +41511,6 @@ fn json_str(value: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn provider_hook_summary(
-    provider: &str,
-    hook_event_name: &str,
-    payload: &serde_json::Value,
-) -> String {
-    let provider_label = match provider {
-        "codex" => "Codex",
-        "claude" => "Claude",
-        "kimi" => "Kimi",
-        other => other,
-    };
-    match hook_event_name {
-        "SessionStart" | "sessionStart" => format!(
-            "{provider_label} SessionStart hook source={}",
-            json_str(payload, "source").unwrap_or_else(|| "unknown".into())
-        ),
-        "PreToolUse" | "PostToolUse" | "PermissionRequest" | "preToolUse" | "postToolUse"
-        | "permissionRequest" => format!(
-            "{provider_label} {hook_event_name} hook tool={}",
-            json_str(payload, "tool_name").unwrap_or_else(|| "unknown".into())
-        ),
-        "SubagentStart" | "SubagentStop" | "subagentStart" | "subagentStop" => format!(
-            "{provider_label} {hook_event_name} hook child={} type={}",
-            json_str(payload, "agent_id").unwrap_or_else(|| "unknown".into()),
-            json_str(payload, "agent_type").unwrap_or_else(|| "unknown".into())
-        ),
-        "Stop" | "stop" => format!(
-            "{provider_label} Stop hook turn={}",
-            json_str(payload, "turn_id").unwrap_or_else(|| "unknown".into())
-        ),
-        other => format!("{provider_label} hook {other}"),
-    }
-}
-
 fn record_provider_hook_event(
     store: &HarnessStore,
     args: &[String],
@@ -41694,74 +41520,21 @@ fn record_provider_hook_event(
     let agent_id = value(args, "--agent")
         .or_else(|| env::var("HARNESS_AGENT_MEMBER_ID").ok())
         .ok_or_else(|| CliError::Usage("--agent is required".into()))?;
-    let runtime_id = value(args, "--runtime").or_else(|| env::var("HARNESS_AGENT_RUNTIME_ID").ok());
+    let _runtime_id =
+        value(args, "--runtime").or_else(|| env::var("HARNESS_AGENT_RUNTIME_ID").ok());
     let mut stdin = String::new();
     std::io::stdin().read_to_string(&mut stdin)?;
-    let payload = parse_hook_payload(&stdin);
-    let hook_event_name = value(args, "--event")
-        .or_else(|| json_str(&payload, "hook_event_name"))
-        .unwrap_or_else(|| "unknown".into());
-    let task_id = value(args, "--task")
-        .or_else(|| env::var("HARNESS_TASK_ID").ok())
-        .or_else(|| {
-            latest_member(store, &agent_id)
-                .ok()
-                .and_then(|member| member.current_task_id)
-        });
-    let provider_thread_id = thread_id_from_container(&payload);
-    let provider_turn_id =
-        json_str(&payload, "turn_id").or_else(|| turn_id_from_container(&payload));
-    let now = now_string();
-    let event = Evidence {
-        id: generated_id("event"),
-        task_id: task_id.clone(),
-        source_type: "provider_hook_observation".into(),
-        source_ref: serde_json::json!({
-            "agent_identity_id": &agent_id,
-            "provider_runtime_id": &runtime_id,
-            "provider": provider,
-            "provider_thread_id": &provider_thread_id,
-            "provider_turn_id": &provider_turn_id,
-            "provider_child_thread_id": json_str(&payload, "agent_id"),
-            "hook_event": &hook_event_name,
-        })
-        .to_string(),
-        summary: provider_hook_summary(provider, &hook_event_name, &payload),
-        created_at: now.clone(),
-        evidence_kind: Some("provider_runtime_observation".into()),
-        goal_id: None,
-    };
-    store.append_evidence(&event)?;
-    if let Ok(mut member) = latest_member(store, &agent_id) {
-        member.last_seen_at = Some(now.clone());
-        member.status = if hook_event_name.eq_ignore_ascii_case("stop") {
-            member.current_task_id = None;
-            ProviderLaunchStatus::Idle
-        } else {
-            ProviderLaunchStatus::Running
-        };
-        store.append_member(&member)?;
-    }
-    if let Some(runtime_id) = runtime_id {
-        if let Some(mut runtime) = latest_runtime(store, &runtime_id)? {
-            runtime.last_event_at = Some(now);
-            store.append_runtime(&runtime)?;
-        }
-    }
-    if hook_event_name.eq_ignore_ascii_case("stop") {
-        reconcile_running_delivery_attempts(
-            store,
-            &agent_id,
-            task_id.as_deref(),
-            provider_thread_id.as_deref(),
-            provider_turn_id.as_deref(),
-            MessageTerminalSource::HookStop,
-        )?;
-    }
+    let _payload = parse_hook_payload(&stdin);
+    let _member = latest_member(store, &agent_id)?;
+    // Compatibility ingress only. Provider hooks are neither AgentSession
+    // lifecycle authority nor Evidence/Delivery authority; the NodeDaemon and
+    // canonical transport writers own those transitions. The raw frame is
+    // deliberately discarded after validating the bound AgentMember.
+    let _ = provider;
     Ok(())
 }
 
-fn append_agent_event(
+fn append_harness_runtime_control_fact(
     store: &HarnessStore,
     agent_member_id: &str,
     runtime_id: Option<&str>,
@@ -41773,7 +41546,7 @@ fn append_agent_event(
     let event = Evidence {
         id: generated_id("event"),
         task_id: task_id.map(str::to_string),
-        source_type: "provider_runtime_observation".into(),
+        source_type: "harness_runtime_control_fact".into(),
         source_ref: serde_json::json!({
             "agent_identity_id": agent_member_id,
             "provider_runtime_id": runtime_id,
@@ -41784,7 +41557,7 @@ fn append_agent_event(
         .to_string(),
         summary: summary.into(),
         created_at: now_string(),
-        evidence_kind: Some("provider_runtime_observation".into()),
+        evidence_kind: Some("harness_runtime_control_fact".into()),
         goal_id: None,
     };
     store.append_evidence(&event)?;
@@ -42928,12 +42701,12 @@ mod workflow_runtime_tests {
             provider_turn_id: None,
             terminal_source: Some(MessageTerminalSource::Unknown),
             provider_request_id: None,
-            evidence_ids: Vec::new(),
             exit_code: Some(0),
             tokens,
             cost_usd,
             model,
             structured,
+            response_text: None,
             summary: "test delivery".into(),
         }
     }
@@ -48937,7 +48710,7 @@ package:com.tencent.mm
     }
 
     #[test]
-    fn taskless_running_delivery_reconciliation_clears_member_and_reports() {
+    fn taskless_running_delivery_reconciliation_clears_member_without_fabricating_report() {
         let root =
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("direct")));
         let store = HarnessStore::new(&root);
@@ -48990,20 +48763,14 @@ package:com.tencent.mm
             latest_message.delivery_status,
             RegistryDeliveryStatus::Delivered
         );
-        let report = store
-            .messages()
-            .expect("messages")
-            .into_iter()
-            .find(|message| {
-                message.kind == RegistryMessageIntent::Report
-                    && message.channel.as_deref() == Some("provider-report")
-                    && message.delivery.as_ref().is_some_and(|delivery| {
-                        delivery.delivery_id.as_deref() == Some("delivery-1")
-                    })
-            })
-            .expect("provider report");
-        assert_eq!(report.task_id, None);
-        assert!(report.evidence_ids.is_empty());
+        assert!(
+            store
+                .messages()
+                .expect("messages")
+                .into_iter()
+                .all(|message| message.kind != RegistryMessageIntent::Report),
+            "provider terminal activity must never fabricate an authored report Message"
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
