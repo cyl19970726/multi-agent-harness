@@ -181,6 +181,7 @@ if (realEvidencePath) {
           "source_provider_transcript",
           "target_provider_transcript",
           "artifact",
+          "process_cleanup",
         ]) {
           const descriptor = evidence.files?.[name];
           if (!descriptor?.path || !descriptor?.sha256) throw new Error(`evidence files.${name} is incomplete`);
@@ -243,6 +244,18 @@ if (realEvidencePath) {
         if (!terminalReceipt || terminalReceipt.kind !== "operation_applied") {
           throw new Error("terminal OperationApplied receipt is absent from the route journal");
         }
+        if (!fabric.operations?.[evidence.proposal_operation_id]) {
+          throw new Error("exact Delegation proposal operation is absent from the route journal");
+        }
+        const artifactImportReceipt = fabric.receipts?.[evidence.artifact_import_receipt_id];
+        if (
+          !artifactImportReceipt ||
+          artifactImportReceipt.kind !== "operation_applied" ||
+          artifactImportReceipt.application_effect !== "applied" ||
+          artifactImportReceipt.operation_id !== evidence.artifact_route_operation_id
+        ) {
+          throw new Error("exact source durable artifact-import receipt is absent or non-applied");
+        }
         const artifactManifest = fabric.artifacts?.[evidence.artifact_id];
         if (!artifactManifest || artifactManifest.sha256 !== evidence.artifact_sha256) {
           throw new Error("Fabric artifact manifest does not match the claimed artifact digest");
@@ -271,14 +284,21 @@ if (realEvidencePath) {
         const targetTrustObjects = objects(readJsonLines(material.target_trust_ledger.absolute));
         const sourceWorkObjects = objects(readJsonLines(material.source_work_ledger.absolute));
         const targetWorkObjects = objects(readJsonLines(material.target_work_ledger.absolute));
-        const sourceMessage = sourceTrustObjects.find((value) => value.id === evidence.message_id);
-        const targetMessage = targetTrustObjects.find((value) => value.id === evidence.message_id);
-        const delivery = targetTrustObjects.find((value) => value.id === evidence.message_delivery_id);
+        const sourceMessage = sourceTrustObjects.filter((value) => value.id === evidence.message_id).at(-1);
+        const targetMessage = targetTrustObjects.filter((value) => value.id === evidence.message_id).at(-1);
+        const delivery = targetTrustObjects.filter((value) => value.id === evidence.message_delivery_id).at(-1);
         if (!sourceMessage || !targetMessage || !delivery) {
           throw new Error("Message authoring, target replica, or per-recipient Delivery is not recomputable from trust ledgers");
         }
         if (sourceMessage.body_digest !== targetMessage.body_digest) {
           throw new Error("source and target immutable Message bytes disagree");
+        }
+        if (
+          delivery.status !== "acknowledged" ||
+          delivery.target_node_id !== evidence.target_node_id ||
+          delivery.message_id !== evidence.message_id
+        ) {
+          throw new Error("exact per-recipient target Delivery is not authoritatively acknowledged");
         }
         const nativeTargetWork = targetWorkObjects.find(
           (value) =>
@@ -314,6 +334,14 @@ if (realEvidencePath) {
           ) {
             throw new Error(`${side} provider transcript is not the exact secret-free Codex proof`);
           }
+        }
+        const cleanup = JSON.parse(material.process_cleanup.bytes.toString("utf8"));
+        if (
+          cleanup.source?.scoped_processes_remaining !== 0 ||
+          cleanup.target?.scoped_processes_remaining !== 0 ||
+          cleanup.secret_material_recorded !== false
+        ) {
+          throw new Error("scoped two-Mac process cleanup is absent or incomplete");
         }
       } catch (error) {
         failures.push(`two-Mac evidence is not independently recomputable: ${error.message}`);
