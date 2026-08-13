@@ -1,4 +1,4 @@
-import { ArrowDownRight, Circle, LockKeyhole, SlidersHorizontal } from "lucide-react";
+import { ArrowDownRight, ArrowRight, Circle, LockKeyhole, SlidersHorizontal } from "lucide-react";
 
 export function WorkspaceSection({
   title,
@@ -65,8 +65,8 @@ export function WorkspaceActionIndex({
 }) {
   return <div className="aw-action-index" aria-label={label}>
     <p><SlidersHorizontal aria-hidden="true"/>Choose in composer</p>
-    <ul>{actions.map(action=><li key={action.key} className="aw-action-row" data-disabled={Boolean(action.disabledReason)||undefined} title={action.disabledReason??undefined}>
-      <Circle aria-hidden="true"/>
+    <ul>{actions.map(action=><li key={action.key} className="aw-action-row" data-danger={/close|retire|cancel|interrupt|stop/i.test(action.label)||undefined} data-disabled={Boolean(action.disabledReason)||undefined} title={action.disabledReason??undefined}>
+      <ArrowRight aria-hidden="true"/>
       <span>{action.label}</span>
     </li>)}</ul>
   </div>;
