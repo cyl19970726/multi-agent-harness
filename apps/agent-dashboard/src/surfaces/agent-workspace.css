@@ -137,9 +137,11 @@
 
   .agent-workspace .agent-roster-row::before {
     position: absolute;
-    inset-block: 0.7rem;
+    top: 50%;
     left: 0;
     width: 2px;
+    height: 1.65rem;
+    transform: translateY(-50%);
     background: transparent;
     content: "";
   }
@@ -478,12 +480,23 @@
 
   .agent-workspace .agent-context-primary,
   .agent-workspace .aw-context-section[data-primary="true"] {
+    position: relative;
     margin: -0.35rem -0.45rem 0;
     padding: 0.55rem 0.45rem 1.1rem;
     border-top: 0;
     border-bottom: 1px solid var(--aw-line);
     background: color-mix(in srgb, var(--aw-coral-wash) 24%, transparent);
-    box-shadow: inset 2px 0 0 color-mix(in srgb, var(--aw-coral) 72%, transparent);
+  }
+
+  .agent-workspace .agent-context-primary::before,
+  .agent-workspace .aw-context-section[data-primary="true"]::before {
+    position: absolute;
+    top: 0.62rem;
+    left: 0;
+    width: 2px;
+    height: 1.65rem;
+    background: color-mix(in srgb, var(--aw-coral) 72%, transparent);
+    content: "";
   }
 
   .agent-workspace .aw-context-section {
@@ -536,6 +549,19 @@
     color: var(--aw-ink);
     font-weight: 560;
     text-align: right;
+  }
+
+  .agent-workspace .aw-fact-row strong small {
+    display: block;
+    margin-top: 0.08rem;
+    color: var(--aw-faint);
+    font-size: 0.58rem;
+    font-weight: 450;
+    line-height: 1.3;
+  }
+
+  .agent-workspace .aw-context-work-title {
+    overflow-wrap: anywhere;
   }
 
   .agent-workspace .aw-state-mark {
@@ -629,6 +655,12 @@
 
   .agent-workspace .agent-workspace-composer :where(button) {
     box-shadow: none;
+  }
+
+  @media (min-width: 1024px) {
+    .agent-workspace .agent-team-composer > div:nth-child(2) {
+      grid-template-columns: 9rem minmax(9rem, 12rem) minmax(8rem, 1fr) auto;
+    }
   }
 
   .agent-workspace .aw-empty-state {

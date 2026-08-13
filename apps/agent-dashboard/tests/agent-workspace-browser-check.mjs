@@ -115,6 +115,9 @@ try{
   const routeState=liveConfig?{teamRun:liveConfig.teamRun,member:liveConfig.member,memberRun:liveConfig.memberRun,host:liveConfig.host,space:liveConfig.space,project:liveConfig.project}:{teamRun:team.latest_run.id,member:"agent-mira",memberRun:"member-run-mira",host:"agent-host",space:"fixture-space",project:"fixture-project"};
   await open(page,`${base}/?surface=team&team=${routeState.teamRun}&conversation=${routeState.member}&memberRun=${routeState.memberRun}&space=${routeState.space}&project=${routeState.project}`);
   await page.getByRole("button",{name:/Open .* configuration/}).waitFor();
+  assert.deepEqual(await page.locator(".agent-roster-name, .agent-roster-meta").evaluateAll(nodes=>nodes.filter(node=>node.scrollWidth>node.clientWidth).map(node=>node.textContent)),[],"Agent roster identity or role/runtime is visually clipped");
+  assert.deepEqual(await page.locator(".aw-context-work-title, .aw-context-work-row-title, .aw-context-work-row-meta").evaluateAll(nodes=>nodes.filter(node=>node.scrollWidth>node.clientWidth).map(node=>node.textContent)),[],"Current or assigned Work is visually clipped");
+  assert.deepEqual(await page.locator(".agent-team-composer span[title]").evaluateAll(nodes=>nodes.filter(node=>node.scrollWidth>node.clientWidth).map(node=>node.textContent)),[],"Composer recipient target is visually clipped");
   if(!liveConfig){await page.getByText(/Implemented the owner-bound Session projection/).waitFor();await page.getByText("Validated owner-bound native Session",{exact:true}).waitFor();}
   await waitForStableWriteSurface(page);
   await page.screenshot({path:join(evidenceDir,`member-session--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
@@ -128,6 +131,12 @@ try{
   }
   await page.getByRole("tab",{name:/Messages/}).click();await page.getByRole("button",{name:"inbox",exact:true}).waitFor();
   await waitForStableWriteSurface(page);
+  const visibleTogether=await page.evaluate(()=>{
+    const selectors=['[data-testid="agent-workspace-identity"]','[data-testid="agent-workspace-modebar"]','[role="tabpanel"][data-state="active"]','[data-testid="agent-workspace-composer"]'];
+    return selectors.map(selector=>{const node=document.querySelector(selector);const rect=node?.getBoundingClientRect();return {selector,visible:Boolean(rect&&rect.top>=0&&rect.bottom<=window.innerHeight&&rect.width>0&&rect.height>0)};});
+  });
+  assert.deepEqual(visibleTogether.filter(item=>!item.visible),[],`Messages mode lost normative first viewport after event expansion: ${JSON.stringify(visibleTogether)}`);
+  assert.equal(await page.locator('[role="tabpanel"][data-state="active"] [data-radix-scroll-area-viewport]').evaluate(node=>node.scrollTop),0,"Messages canvas did not reset to top after mode change");
   await page.screenshot({path:join(evidenceDir,`member-messages--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   await page.getByRole("tab",{name:/Work/}).click();
   if(!liveConfig)await page.getByRole("button",{name:/Restore authored conversation dominance/}).waitFor();
