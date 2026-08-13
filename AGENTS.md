@@ -19,9 +19,11 @@ tests, CI, executable contracts, and shipped behavior.
 - Start at [AgentFirm Home](https://app.notion.com/p/3b849a4fa3798115939cca2b0b9e6f2d)
   and verify its current authority notice before any Notion mutation.
 - Use the [Development System](https://app.notion.com/p/21e49a4fa37982a5b9f781cf04584034)
-  for Work, immutable Delivery Runs, and typed Development Documents.
+  for the current Task and its immutable Review history. Delivery Runs are
+  Legacy / Advanced history, not a second current authority.
 - Follow the [Development Playbook](https://app.notion.com/p/3b849a4fa37981a990a5cf0059dcfa4a)
-  for claim, execution, exact-candidate review, merge, and closeout.
+  for Brain assignment, Dev work, exact-revision submission, Review, merge,
+  and closeout.
 - Never claim or update work in the Notion area labeled Legacy Production /
   READ ONLY / DO NOT CLAIM. Page location and relations never grant authority;
   authority follows the current AgentFirm Home notice.
@@ -172,11 +174,14 @@ doc carries the contract behind each rule.
 
 ## Repository Execution Rules
 
-- Repository development follows the Notion-led delivery contract in
-  [docs/current/operations/workflow-git-pr.md](docs/current/operations/workflow-git-pr.md):
-  frozen Spec -> umbrella Issue -> Primary Codex claim -> clean worktree -> one
-  branch/PR -> final-SHA self-review and CI -> narrow Host Gate -> merge ->
-  Notion closeout. Ordinary changes do not require a second reviewer queue.
+- Repository development follows
+  [.agents/skills/agentfirm-development-loop/SKILL.md](.agents/skills/agentfirm-development-loop/SKILL.md):
+  Brain assigns one Task -> Dev works freely -> Dev submits an exact revision
+  -> Reviewer returns Pass or Changes Required -> Pass completes the Task or
+  Changes Required returns the same Task to Dev. There is no Candidate or
+  pre-review readiness stage. Run focused checks while working; run the
+  submission-level checks once when Dev is ready for Review. Preserve
+  unaffected evidence after rejection and review the delta by default.
 - Harness Member execution is suspended for repository repair until the
   explicit dogfood admission standard passes. A Primary Codex Session may use
   bounded temporary Sub-Agents internally, but must not label that as Harness
