@@ -162,6 +162,10 @@ try{
   else await page.locator(".agent-work-row").first().waitFor();
   await waitForStableWriteSurface(page);
   if(!liveConfig)assert.equal(await page.locator('.agent-work-row[data-current="true"]').first().getByText("Restore authored conversation dominance",{exact:true}).count(),1,"Current Work emphasis does not follow context_summary.current_work_id");
+  if(!liveConfig){
+    const clippedWorkRows=await page.locator('.agent-work-row').evaluateAll(rows=>rows.filter(row=>{const rect=row.getBoundingClientRect();return rect.top<window.innerHeight&&rect.bottom>window.innerHeight;}).map(row=>row.textContent?.trim().slice(0,80)));
+    assert.deepEqual(clippedWorkRows,[],`Work first viewport ends on a partially obscured responsibility: ${JSON.stringify(clippedWorkRows)}`);
+  }
   await page.screenshot({path:join(evidenceDir,`member-work--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   const profileOpener=page.getByRole("button",{name:/Open .* configuration/});
   await profileOpener.click();await page.getByRole("dialog").waitFor();

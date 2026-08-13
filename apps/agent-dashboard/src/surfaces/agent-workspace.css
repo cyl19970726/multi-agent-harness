@@ -830,7 +830,7 @@
   }
 
   .agent-workspace .aw-work-group-label {
-    padding: 1.1rem 0.25rem 0.4rem;
+    padding: 0.78rem 0.25rem 0.32rem;
     border-bottom: 1px solid var(--aw-line-soft);
     color: var(--aw-faint);
     font-size: 0.61rem;
@@ -840,7 +840,7 @@
   }
 
   .agent-workspace .agent-work-stream > div:first-child .aw-work-group-label {
-    padding-top: 0.65rem;
+    padding-top: 0.48rem;
   }
 
   .agent-workspace .agent-message-row {
@@ -857,8 +857,9 @@
   }
 
   .agent-workspace .agent-work-row {
-    min-height: 6rem;
+    min-height: 5.15rem;
     position: relative;
+    padding-block: 0.72rem;
   }
 
   .agent-workspace .agent-message-row:hover,
@@ -923,7 +924,7 @@
     flex-direction: column;
     align-items: flex-start;
     gap: 0.7rem;
-    padding-top: 1.1rem;
+    padding-top: 0.82rem;
     color: var(--aw-muted);
     font-size: 0.67rem;
   }
@@ -932,7 +933,7 @@
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    padding-top: 0.95rem;
+    padding-top: 0.76rem;
     color: var(--aw-muted);
     font-size: 0.64rem;
     line-height: 1.4;
@@ -945,7 +946,7 @@
   }
 
   .agent-workspace .aw-work-gates time {
-    margin-top: 0.75rem;
+    margin-top: 0.48rem;
     color: var(--aw-faint);
   }
 
