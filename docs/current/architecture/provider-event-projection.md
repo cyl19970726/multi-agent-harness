@@ -17,7 +17,7 @@ provider source
   -> disposable generation-fenced in-memory fold
        -> exact-owner SessionEventProjection
        -> allowlisted TeamRuntimeActivity
-       -> RuntimeCommand settle/recovery evidence
+       -> validated recovery correlation (no command or evidence writes)
 ```
 
 The source path is never returned. The envelope exposes only an opaque scoped
@@ -53,9 +53,12 @@ control action and is not implied by reading this projection.
 
 `SessionEventProjection` is available only to the exact AgentIdentity owner of
 the current AgentSession generation. Team Host status does not bypass this
-boundary. A Team page consumes `TeamRuntimeActivity`, a separately constructed
-allowlist containing only interaction, runtime availability/interruption, and
-recovery summaries.
+boundary. `TeamRuntimeActivity` is the only provider-derived shape eligible for
+a future Team projection: it is a separately constructed allowlist containing
+only interaction, runtime availability/interruption, and recovery summaries.
+DEV-20 does not compose that shape into a selected Member's public RoleView.
+Current Team pages continue to use canonical responsibility, Message, Work,
+Delivery, and allowlisted runtime-command summaries.
 
 `LiveProviderActivity` is a different channel: provider sinks send typed,
 display-safe phase/tool/response progress into the serve process; its registry
