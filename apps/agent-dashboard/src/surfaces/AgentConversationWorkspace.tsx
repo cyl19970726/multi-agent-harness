@@ -122,16 +122,7 @@ export function AgentConversationWorkspace({
   const publicProjection=data.projection_scope==="host_member_public";
   const selectedRunId=selected.current_member_run_ref;
   const selectedSession=data.sessions.find(session=>session.session_id===data.selected_session_id);
-  const currentLiveActivity=!publicProjection
-    && liveActivity
-    && selectedRunId
-    && liveActivity.member_run_id===selectedRunId
-    && liveActivity.team_run_id===data.team.latest_run_id
-    && liveActivity.agent_session_id===data.selected_session_id
-    && liveActivity.runtime_generation===selectedSession?.runtime_generation
-    && isUnexpiredActivity(liveActivity)
-      ? liveActivity
-      : null;
+  const currentLiveActivity=selectAgentWorkspaceLiveActivity({activity:liveActivity,projectionScope:data.projection_scope,teamRunId:data.team.latest_run_id,memberRunId:selectedRunId,sessionId:data.selected_session_id,runtimeGeneration:selectedSession?.runtime_generation});
   const selectedRoster=data.roster.find(item=>item.agent_member_ref.id===selected.agent_member_ref.id);
   const currentWork=data.works.find(work=>work.work_id===(contextSelection?.kind==="work"?contextSelection.work.work_id:data.context_summary.current_work_id));
   const selectAgent=(agent:AgentWorkspaceRosterItem)=>{
@@ -452,7 +443,21 @@ function workNarrative(work:WorkSummary){if(work.condition==="blocked")return wo
 function shortId(value:string|null|undefined){if(!value)return "Not linked";return value.length>24?`${value.slice(0,12)}…${value.slice(-7)}`:value}
 function humanizeToken(value:string){return value.split(/[_-]+/).filter(Boolean).map((part,index)=>index===0?`${part.charAt(0).toUpperCase()}${part.slice(1)}`:part).join(" ")}
 function timestampKey(value:string|null|undefined){if(!value)return 0;if(value.startsWith("unix-ms:")){const parsed=Number(value.slice(8));return Number.isFinite(parsed)?parsed:0;}const parsed=Date.parse(value);return Number.isFinite(parsed)?parsed:0}
-function isUnexpiredActivity(activity:AgentWorkspaceLiveActivity){const expiresAt=timestampKey(activity.expires_at);return expiresAt>0&&expiresAt>Date.now()}
+export function isUnexpiredActivity(activity:AgentWorkspaceLiveActivity,now=Date.now()){const expiresAt=timestampKey(activity.expires_at);return expiresAt>0&&expiresAt>now}
+export function selectAgentWorkspaceLiveActivity({activity,projectionScope,teamRunId,memberRunId,sessionId,runtimeGeneration,now=Date.now()}:{activity?:AgentWorkspaceLiveActivity|null;projectionScope:AgentWorkspaceData["projection_scope"];teamRunId:string|null;memberRunId:string|null;sessionId:string|null;runtimeGeneration:number|null|undefined;now?:number}){
+  return projectionScope!=="host_member_public"
+    && activity
+    && memberRunId
+    && sessionId
+    && runtimeGeneration!=null
+    && activity.member_run_id===memberRunId
+    && activity.team_run_id===teamRunId
+    && activity.agent_session_id===sessionId
+    && activity.runtime_generation===runtimeGeneration
+    && isUnexpiredActivity(activity,now)
+      ? activity
+      : null;
+}
 function formatTime(value:string|null|undefined){if(!value)return "unknown";const timestamp=timestampKey(value);if(!timestamp)return value;return new Date(timestamp).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}
 function activateOnKeyDown(event:React.KeyboardEvent<HTMLElement>,activate:()=>void){if(event.target!==event.currentTarget)return;if(event.key==="Enter"){event.preventDefault();activate();}else if(event.key===" ")event.preventDefault();}
 function activateOnKeyUp(event:React.KeyboardEvent<HTMLElement>,activate:()=>void){if(event.target===event.currentTarget&&event.key===" "){event.preventDefault();activate();}}
