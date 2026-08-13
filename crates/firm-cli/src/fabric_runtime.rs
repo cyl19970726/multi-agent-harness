@@ -3134,14 +3134,14 @@ impl NodeApplication for Wave4cApplication {
             source_node_daemon_id: self.daemon_id.clone(),
             source_node_daemon_generation: self.daemon_generation,
             source_team_id: delegation.source_team_id.clone(),
-            source_host_ref: attestation.source_host_ref,
-            source_work_ref: delegation.source_work_ref,
+            source_host_ref: attestation.source_host_ref.clone(),
+            source_work_ref: delegation.source_work_ref.clone(),
             operation_id: operation.id.clone(),
             imported_at_unix_ms: imported_at,
             revision: 1,
         };
         let persisted = store
-            .persist_collaboration_artifact_import(
+            .persist_collaboration_artifact_import_with_frozen_authority(
                 &harness_store::CollaborationMutationContext {
                     company_id: operation.company_id.clone(),
                     authenticated_actor: harness_core::agentfirm_api::ActorRef {
@@ -3155,6 +3155,8 @@ impl NodeApplication for Wave4cApplication {
                 },
                 &import,
                 bytes,
+                &delegation,
+                &attestation,
             )
             .map_err(|error| FabricError::unknown(operation.id.clone(), error.to_string()))?;
         Ok((

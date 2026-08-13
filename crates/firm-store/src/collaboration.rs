@@ -677,7 +677,53 @@ impl HarnessStore {
                     None,
                 )
             })?;
+        self.persist_collaboration_artifact_import_unlocked(
+            context,
+            import,
+            bytes,
+            &delegation,
+            &attestation,
+        )
+    }
+
+    /// Persist source-owned artifact bytes using the immutable central
+    /// Delegation/attestation snapshot already authenticated by the routed
+    /// operation. The source Node never copies the central relationship into
+    /// its local collaboration ledger.
+    pub fn persist_collaboration_artifact_import_with_frozen_authority(
+        &self,
+        context: &CollaborationMutationContext,
+        import: &ArtifactImport,
+        bytes: &[u8],
+        delegation: &WorkDelegationV1,
+        attestation: &SourceWorkAttestation,
+    ) -> StoreResult<CollaborationMutationResult<ArtifactImport>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.persist_collaboration_artifact_import_unlocked(
+            context,
+            import,
+            bytes,
+            delegation,
+            attestation,
+        )
+    }
+
+    fn persist_collaboration_artifact_import_unlocked(
+        &self,
+        context: &CollaborationMutationContext,
+        import: &ArtifactImport,
+        bytes: &[u8],
+        delegation: &WorkDelegationV1,
+        attestation: &SourceWorkAttestation,
+    ) -> StoreResult<CollaborationMutationResult<ArtifactImport>> {
         if import.company_id != context.company_id
+            || delegation.company_id != context.company_id
+            || attestation.company_id != context.company_id
+            || delegation.id != import.delegation_id
+            || delegation.source_work_attestation_id != attestation.id
+            || delegation.source_work_ref != attestation.source_work_ref
+            || delegation.source_owner_ref != attestation.source_owner_ref
             || import.revision != 1
             || context.authenticated_actor.kind != ActorKind::Service
             || context.authenticated_actor.id != import.source_node_daemon_id
