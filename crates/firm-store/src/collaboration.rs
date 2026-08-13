@@ -737,6 +737,76 @@ impl HarnessStore {
         )
     }
 
+    /// Fold a target Node's terminal import into central relationship state.
+    /// Artifact bytes remain solely in the source Execution Space.
+    pub fn record_collaboration_artifact_import(
+        &self,
+        context: &CollaborationMutationContext,
+        import: &ArtifactImport,
+        routed_operation_id: &str,
+        resolved_control_plane_actor: &ActorRef,
+    ) -> StoreResult<CollaborationMutationResult<ArtifactImport>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let delegation = self
+            .latest_collaboration_projection_unlocked::<WorkDelegationV1>(
+                &context.company_id,
+                "work_delegation_v1",
+                &import.delegation_id,
+            )?
+            .ok_or_else(|| {
+                collaboration_error(
+                    FabricErrorCode::RevisionConflict,
+                    "artifact import result references no central Delegation",
+                    "artifact_import",
+                    &import.artifact_id,
+                    None,
+                )
+            })?;
+        let attestation = self
+            .latest_collaboration_projection_unlocked::<SourceWorkAttestation>(
+                &context.company_id,
+                "source_work_attestation",
+                &delegation.source_work_attestation_id,
+            )?
+            .ok_or_else(|| {
+                collaboration_error(
+                    FabricErrorCode::SourceWorkAttestationInvalid,
+                    "artifact import result has no source Work attestation",
+                    "artifact_import",
+                    &import.artifact_id,
+                    None,
+                )
+            })?;
+        if !exact_actor(&context.authenticated_actor, resolved_control_plane_actor)
+            || import.company_id != context.company_id
+            || import.operation_id != routed_operation_id
+            || import.source_node_id != delegation.source_node_id
+            || import.source_team_id != delegation.source_team_id
+            || import.source_host_ref != attestation.source_host_ref
+            || import.source_work_ref != delegation.source_work_ref
+            || import.source_node_daemon_id.trim().is_empty()
+            || import.source_node_daemon_generation == 0
+            || import.revision != 1
+        {
+            return Err(collaboration_error(
+                FabricErrorCode::ArtifactScopeUnauthorized,
+                "artifact import result changed Delegation, source Host/Work/Node, operation, or daemon generation",
+                "artifact_import",
+                &import.artifact_id,
+                None,
+            ));
+        }
+        self.commit_collaboration_projection_unlocked(
+            context,
+            "artifact_import",
+            &import.artifact_id,
+            serde_json::to_value(import)?,
+            import,
+            Vec::new(),
+        )
+    }
+
     /// Hold the canonical collaboration writer lock across a caller-supplied
     /// authority check and its downstream durable commit. This is the only
     /// supported lock order for cross-store routing: collaboration first,

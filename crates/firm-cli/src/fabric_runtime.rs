@@ -860,6 +860,48 @@ impl ControlPlaneReceiptApplication for Wave6ControlPlaneApplication {
                 })?;
             return Ok(Vec::new());
         }
+        if reference.business_kind == "artifact_grant" {
+            if result.result_schema != "agentfirm.collaboration.artifact_imported.v1" {
+                return Err(FabricError::unknown(
+                    operation.id.clone(),
+                    "artifact grant receipt is not a canonical source ArtifactImport",
+                ));
+            }
+            let import = serde_json::from_value::<harness_core::collaboration::ArtifactImport>(
+                result
+                    .result
+                    .get("artifact_import")
+                    .cloned()
+                    .ok_or_else(|| {
+                        FabricError::unknown(
+                            operation.id.clone(),
+                            "artifact import result is absent",
+                        )
+                    })?,
+            )
+            .map_err(|error| FabricError::unknown(operation.id.clone(), error.to_string()))?;
+            let store = HarnessStore::new(&self.collaboration_root);
+            let control_actor = harness_core::agentfirm_api::ActorRef {
+                kind: harness_core::agentfirm_api::ActorKind::Service,
+                id: self.actor_id.clone(),
+            };
+            store
+                .record_collaboration_artifact_import(
+                    &harness_store::CollaborationMutationContext {
+                        company_id: self.company_id.clone(),
+                        authenticated_actor: control_actor.clone(),
+                        command_name: "artifact_import.fold".into(),
+                        idempotency_key: format!("artifact-import:{}", operation.idempotency_key),
+                        expected_revision: 0,
+                        occurred_at: format!("unix-ms:{observed_at_unix_ms}"),
+                    },
+                    &import,
+                    &operation.id,
+                    &control_actor,
+                )
+                .map_err(|error| FabricError::unknown(operation.id.clone(), error.to_string()))?;
+            return Ok(Vec::new());
+        }
         if reference.business_kind != "target_work_create" {
             return Ok(Vec::new());
         }
@@ -4398,11 +4440,6 @@ fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend
                     FabricErrorCode::RecoveryRequired,
                     "artifact retention requires one exact canonical source-owned ArtifactImport",
                 )
-            })?;
-        store
-            .read_collaboration_artifact_import_bytes(control.company_id(), artifact_id)
-            .map_err(|error| {
-                FabricError::none(FabricErrorCode::ArtifactTampered, error.to_string())
             })?;
         let retain_until = harness_core::collaboration::CollaborationRetentionAnchor {
             terminal_transport_at_unix_ms: manifest.completed_at_unix_ms,
