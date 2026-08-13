@@ -4,12 +4,12 @@
   "title": "SessionEventProjection",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "agent_session_id", "agent_session_generation", "cursor", "episodes", "truncated", "disabled_reason"],
+  "required": ["schema_version", "agent_session_id", "agent_session_generation", "source_snapshot_fingerprint", "episodes", "truncated", "disabled_reason"],
   "properties": {
     "schema_version": {"const": "agentfirm.provider_observation.v1"},
     "agent_session_id": {"type": "string", "minLength": 1},
     "agent_session_generation": {"type": "integer", "minimum": 1},
-    "cursor": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "source_snapshot_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Response-local source snapshot fingerprint; not a cursor, replay token, history id, or evidence reference."},
     "episodes": {
       "type": "array",
       "maxItems": 300,

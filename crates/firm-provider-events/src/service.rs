@@ -2,19 +2,17 @@ use thiserror::Error;
 
 use crate::{
     project_private_session, project_team_activity, read_transcript_batch, DecodeContext,
-    ProjectionAccessError, ProjectionAuthority, ProjectionStore, ProjectionStoreError,
-    ProjectionViewer, ProviderEventFold, ProviderProjectionState, SessionEventProjection,
-    TeamRuntimeActivity, TranscriptReadBoundary, TranscriptReadError,
+    DecodeOutcome, ProjectionAccessError, ProjectionAuthority, ProjectionViewer,
+    ProviderEventFold, ProviderEventFoldError, SessionEventProjection, TeamRuntimeActivity,
+    TranscriptReadBoundary, TranscriptReadError, TransientReadPosition,
 };
 
 #[derive(Debug, Error)]
 pub enum ProviderProjectionServiceError {
-    #[error("persisted projection belongs to a stale Session or NodeDaemon generation")]
-    StaleAuthority,
     #[error(transparent)]
     Read(#[from] TranscriptReadError),
     #[error(transparent)]
-    Store(#[from] ProjectionStoreError),
+    Fold(#[from] ProviderEventFoldError),
     #[error(transparent)]
     Access(#[from] ProjectionAccessError),
 }
@@ -23,39 +21,27 @@ pub enum ProviderProjectionServiceError {
 /// exact AgentSession, NodeDaemon and viewer from canonical Stores; this layer
 /// owns only provider-source normalization and projection state.
 pub struct ProviderProjectionService {
-    store: ProjectionStore,
     context: DecodeContext,
-    state: ProviderProjectionState,
+    fold: ProviderEventFold,
+    transient_position: TransientReadPosition,
 }
 
 impl ProviderProjectionService {
-    pub fn open(
-        store: ProjectionStore,
-        context: DecodeContext,
-    ) -> Result<Self, ProviderProjectionServiceError> {
-        let state = match store.load_state()? {
-            Some(state) => {
-                if state.fold.agent_session_id != context.agent_session_id
-                    || state.fold.agent_session_generation != context.agent_session_generation
-                    || state.fold.node_daemon_id != context.node_daemon_id
-                    || state.fold.node_daemon_generation != context.node_daemon_generation
-                {
-                    return Err(ProviderProjectionServiceError::StaleAuthority);
-                }
-                state
-            }
-            None => ProviderProjectionState::new(ProviderEventFold::new(
-                &context.agent_session_id,
-                context.agent_session_generation,
-                &context.node_daemon_id,
-                context.node_daemon_generation,
-            )),
-        };
-        Ok(Self {
-            store,
+    /// Opens a disposable, process-local projection. Provider-native storage is
+    /// the sole history: no cursor, fold, observation, or snapshot is written
+    /// by this service and a process restart intentionally starts from zero.
+    pub fn open(context: DecodeContext) -> Self {
+        let fold = ProviderEventFold::new(
+            &context.agent_session_id,
+            context.agent_session_generation,
+            &context.node_daemon_id,
+            context.node_daemon_generation,
+        );
+        Self {
             context,
-            state,
-        })
+            fold,
+            transient_position: TransientReadPosition::default(),
+        }
     }
 
     pub fn refresh(
@@ -66,13 +52,16 @@ impl ProviderProjectionService {
         let batch = read_transcript_batch(
             &self.context,
             boundary,
-            self.state.transcript_cursor.clone(),
+            self.transient_position.clone(),
             max_events,
         )?;
         let read_count = batch.outcomes.len();
-        if read_count > 0 || batch.cursor != self.state.transcript_cursor {
-            self.store.apply_batch(&mut self.state, batch)?;
+        for outcome in batch.outcomes {
+            if let DecodeOutcome::Observation(observation) = outcome {
+                self.fold.ingest(*observation)?;
+            }
         }
+        self.transient_position = batch.next_position;
         Ok(read_count)
     }
 
@@ -83,7 +72,7 @@ impl ProviderProjectionService {
         limit: usize,
     ) -> Result<SessionEventProjection, ProviderProjectionServiceError> {
         Ok(project_private_session(
-            &self.state.fold,
+            &self.fold,
             authority,
             viewer,
             limit,
@@ -95,10 +84,10 @@ impl ProviderProjectionService {
         authority: &ProjectionAuthority,
         viewer: &ProjectionViewer,
     ) -> Result<Vec<TeamRuntimeActivity>, ProviderProjectionServiceError> {
-        Ok(project_team_activity(&self.state.fold, authority, viewer)?)
+        Ok(project_team_activity(&self.fold, authority, viewer)?)
     }
 
-    pub fn cursor(&self) -> &crate::TranscriptCursor {
-        &self.state.transcript_cursor
+    pub fn transient_position(&self) -> &TransientReadPosition {
+        &self.transient_position
     }
 }

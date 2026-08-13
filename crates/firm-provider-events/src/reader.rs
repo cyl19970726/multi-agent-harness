@@ -13,7 +13,7 @@ const MAX_NATIVE_LINE_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct TranscriptCursor {
+pub struct TransientReadPosition {
     pub byte_offset: u64,
     pub next_ordering_position: u64,
     #[serde(default)]
@@ -29,7 +29,7 @@ pub struct TranscriptReadBoundary {
 #[derive(Debug, PartialEq)]
 pub struct TranscriptBatch {
     pub outcomes: Vec<DecodeOutcome>,
-    pub cursor: TranscriptCursor,
+    pub next_position: TransientReadPosition,
     pub incomplete_tail: bool,
 }
 
@@ -41,8 +41,8 @@ pub enum TranscriptReadError {
     SourceEscape,
     #[error("provider transcript must be a regular non-symlink file")]
     InvalidSourceType,
-    #[error("provider transcript was truncated behind the durable cursor")]
-    CursorBeyondEnd,
+    #[error("provider transcript changed behind the disposable read position")]
+    SourceChanged,
     #[error("provider transcript line exceeds the bounded adapter limit")]
     LineTooLarge,
     #[error("provider transcript is not UTF-8")]
@@ -56,7 +56,7 @@ pub enum TranscriptReadError {
 pub fn read_transcript_batch(
     context: &DecodeContext,
     boundary: &TranscriptReadBoundary,
-    cursor: TranscriptCursor,
+    position: TransientReadPosition,
     max_events: usize,
 ) -> Result<TranscriptBatch, TranscriptReadError> {
     let allowed_root = boundary.allowed_root.canonicalize()?;
@@ -68,26 +68,26 @@ pub fn read_transcript_batch(
     if !path.starts_with(&allowed_root) {
         return Err(TranscriptReadError::SourceEscape);
     }
-    if cursor.byte_offset > metadata.len() {
-        return Err(TranscriptReadError::CursorBeyondEnd);
+    if position.byte_offset > metadata.len() {
+        return Err(TranscriptReadError::SourceChanged);
     }
     if max_events == 0 {
-        let incomplete_tail = metadata.len() > cursor.byte_offset;
+        let incomplete_tail = metadata.len() > position.byte_offset;
         return Ok(TranscriptBatch {
             outcomes: vec![],
-            cursor,
+            next_position: position,
             incomplete_tail,
         });
     }
 
     let mut file = fs::File::open(path)?;
-    file.seek(SeekFrom::Start(cursor.byte_offset))?;
+    file.seek(SeekFrom::Start(position.byte_offset))?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
     let mut outcomes = Vec::new();
     let mut consumed = 0usize;
-    let mut ordering = cursor.next_ordering_position.max(1);
-    let mut active_turn_id = cursor.active_provider_turn_id.clone();
+    let mut ordering = position.next_ordering_position.max(1);
+    let mut active_turn_id = position.active_provider_turn_id.clone();
     for segment in bytes.split_inclusive(|byte| *byte == b'\n') {
         if outcomes.len() >= max_events || !segment.ends_with(b"\n") {
             break;
@@ -104,7 +104,7 @@ pub fn read_transcript_batch(
             }
             outcomes.push(decode_native_json_line(
                 context,
-                Some(format!("offset-{}", cursor.byte_offset + consumed as u64)),
+                Some(format!("offset-{}", position.byte_offset + consumed as u64)),
                 active_turn_id.clone(),
                 ordering,
                 None,
@@ -119,8 +119,8 @@ pub fn read_transcript_batch(
     }
     Ok(TranscriptBatch {
         outcomes,
-        cursor: TranscriptCursor {
-            byte_offset: cursor.byte_offset + consumed as u64,
+        next_position: TransientReadPosition {
+            byte_offset: position.byte_offset + consumed as u64,
             next_ordering_position: ordering,
             active_provider_turn_id: active_turn_id,
         },

@@ -6,14 +6,15 @@ Status: current contract for DEV-20.
 
 Provider transcripts remain provider-owned. AgentFirm incrementally reads a
 server-selected source and converts each supported native row into a bounded
-`ProviderObservation`. The observation is evidence-backed read-model input; it
-is never Message, Work, Delivery, review, or Decision truth.
+`ProviderObservation` during an on-demand read. The observation is a disposable
+read-model value; it is never Message, Work, Delivery, Evidence, review, or
+Decision truth.
 
 ```text
 provider source
   -> bounded provider decoder
   -> ProviderObservation (private/public/operator visibility fixed by server)
-  -> durable generation-fenced fold
+  -> disposable generation-fenced in-memory fold
        -> exact-owner SessionEventProjection
        -> allowlisted TeamRuntimeActivity
        -> RuntimeCommand settle/recovery evidence
@@ -24,16 +25,23 @@ The source path is never returned. The envelope exposes only an opaque scoped
 root escape, cursor rollback, oversized lines, and invalid UTF-8. An incomplete
 last line remains unconsumed until the provider finishes it.
 
-## Identity and replay
+## Identity and source authority
 
 Every observation binds exact AgentIdentity, AgentSession id/generation, and
 NodeDaemon id/generation from server context. Provider JSON cannot select those
 fields, visibility, validated references, or RuntimeCommand authority.
 
-Exact full-envelope replay is a no-op. Any changed envelope under the same
-observation identity conflicts, even when the native content fingerprint is
-unchanged. Late rows are folded by provider ordering position. Atomic snapshot
-replacement ensures a failed durable write cannot advance the live fold.
+Duplicate native rows within one on-demand read are idempotent. Any changed
+envelope under the same observation identity conflicts, even when the native
+content fingerprint is unchanged. Late rows are folded by provider ordering
+position. The response exposes a `source_snapshot_fingerprint` only to describe
+that response; it is not a cursor, replay token, stable history ID, or evidence
+reference.
+
+AgentFirm writes no transcript mirror, fold, observation history, or transcript
+position. A process restart discards every in-memory fold and reads the
+provider-owned source again. The provider-native Session remains the sole
+history and correctness authority.
 
 ## Privacy projections
 
@@ -69,9 +77,10 @@ treated as successful product facts.
 ## Executable contracts
 
 - `schemas/provider-events/`: closed JSON Schemas, manifests, and fixtures.
-- `crates/firm-provider-events/`: decoders, fold, access policy, reader, and
-  atomic projection store.
-- `apps/agent-dashboard/src/model/providerEvents.ts`: browser consumer types;
-  the browser consumes typed projections and never reinterprets native JSON.
+- `crates/firm-provider-events/`: decoders, disposable fold, access policy, and
+  bounded on-demand reader. It has no persistent store.
+- Agent Workspace consumers bind directly to the versioned JSON Schemas. The
+  browser consumes typed projections and never reinterprets native JSON; its
+  TypeScript ownership remains in the frontend Task.
 - `pnpm check:provider-events`: Rust/TypeScript/schema/manifest parity and
   conformance gate.

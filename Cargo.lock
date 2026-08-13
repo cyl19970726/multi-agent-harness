@@ -947,6 +947,7 @@ dependencies = [
  "firm-core",
  "firm-fabric",
  "firm-governance",
+ "firm-provider-events",
  "firm-store",
  "firm-workflow",
  "libc",

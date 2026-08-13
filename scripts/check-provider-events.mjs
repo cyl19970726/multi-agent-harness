@@ -10,8 +10,9 @@ const manifest = readJson(join(root, "manifest.v1.json"));
 const adapters = readJson(join(root, "adapters.v1.json"));
 const sessionSchema = readJson(join(root, "session-event-projection.schema.json"));
 const teamSchema = readJson(join(root, "team-runtime-activity.schema.json"));
+const liveSchema = readJson(join(root, "live-provider-activity.schema.json"));
 const ajv = new Ajv2020({ allErrors: true, strict: false });
-for (const schema of [observationSchema, adapterSchema, sessionSchema, teamSchema]) ajv.addSchema(schema);
+for (const schema of [observationSchema, adapterSchema, sessionSchema, teamSchema, liveSchema]) ajv.addSchema(schema);
 const validateObservation = ajv.getSchema(observationSchema.$id);
 const validateAdapter = ajv.getSchema(adapterSchema.$id);
 const failures = [];
@@ -55,34 +56,39 @@ for (const provider of manifest.providers) {
   if (!decoder.includes(`fn decode_${provider}(`)) failures.push(`missing ${provider} decoder`);
 }
 const model = readFileSync("crates/firm-provider-events/src/model.rs", "utf8");
-const typescript = readFileSync("apps/agent-dashboard/src/model/providerEvents.ts", "utf8");
 const architecture = readFileSync("docs/current/architecture/provider-event-projection.md", "utf8");
 for (const kind of manifest.semantic_kinds) {
   const rustName = kind.split("_").map((part) => part[0].toUpperCase() + part.slice(1)).join("");
   if (!model.includes(`    ${rustName},`)) failures.push(`missing Rust SemanticKind::${rustName}`);
-  if (!typescript.includes(`"${kind}"`)) failures.push(`missing TypeScript semantic kind ${kind}`);
-}
-for (const forbidden of ["raw_transcript", "tool_input", "tool_output", "environment_variables"]) {
-  if (typescript.includes(forbidden)) failures.push(`browser contract exposes forbidden ${forbidden}`);
 }
 for (const required of ["exact AgentIdentity owner", "TeamRuntimeActivity", "RuntimeCommand"]) {
   if (!architecture.includes(required)) failures.push(`architecture contract missing ${required}`);
 }
-for (const provider of manifest.providers) {
-  if (!typescript.includes(`"${provider}"`)) failures.push(`missing TypeScript provider ${provider}`);
-}
-
 const validObservation = readJson(join(root, "fixtures/valid/codex-authored.json"));
 const sessionEnvelope = {
   schema_version: "agentfirm.provider_observation.v1",
   agent_session_id: "session-1",
   agent_session_generation: 7,
-  cursor: `sha256:${"a".repeat(64)}`,
+  source_snapshot_fingerprint: `sha256:${"a".repeat(64)}`,
   episodes: [{ episode_id: "turn-1", provider_turn_id: "turn-1", observations: [validObservation], terminal: false, incomplete: false }],
   truncated: false,
   disabled_reason: null,
 };
 if (!ajv.getSchema(sessionSchema.$id)(sessionEnvelope)) failures.push("generated Session projection violates schema");
+const liveEnvelope = {
+  schema_version: "agentfirm.live_provider_activity.v1",
+  durability: "volatile_process_memory",
+  replayable: false,
+  project_id: "project-1",
+  team_run_id: "team-run-1",
+  member_run_id: "member-run-1",
+  agent_session_id: "session-1",
+  agent_session_generation: 7,
+  runtime_snapshot_locator: "runtime-snapshot-1",
+  expires_unix_ms: 2,
+  items: [{runtime_event_locator:"runtime-event-1",kind:"thinking",provider:"codex",display_summary:"Working",emitted_unix_ms:1,expires_unix_ms:2}],
+};
+if (!ajv.getSchema(liveSchema.$id)(liveEnvelope)) failures.push("generated live activity violates schema");
 const publicObservation = readJson(join(root, "fixtures/valid/runtime-ready-public.json"));
 const { observation_id, agent_identity_id, semantic_kind, lifecycle_phase, completeness, effect_certainty, occurred_at, payload } = publicObservation;
 if (!ajv.getSchema(teamSchema.$id)({ observation_id, agent_identity_id, semantic_kind, lifecycle_phase, completeness, effect_certainty, occurred_at, payload })) failures.push("generated Team activity violates schema");

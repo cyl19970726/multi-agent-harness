@@ -2,10 +2,10 @@ use firm_provider_events::{
     adapter_manifest, decode_native_event, decode_native_json_line, read_transcript_batch,
     Completeness, DecodeContext, DecodeOutcome, EffectCertainty, FoldOutcome, NativeEvent,
     ObservationPayload, ObservationVisibility, ProjectionAccessError, ProjectionAuthority,
-    ProjectionStore, ProjectionStoreError, ProjectionViewer, ProviderEventFold,
-    ProviderEventFoldError, ProviderKind, ProviderProjectionService,
-    ProviderProjectionServiceError, ProviderProjectionState, SemanticKind, TranscriptCursor,
-    TranscriptReadBoundary, TranscriptReadError, PROVIDER_OBSERVATION_SCHEMA_VERSION,
+    ProjectionViewer, ProviderEventFold, ProviderEventFoldError, ProviderKind,
+    ProviderProjectionService, ProviderProjectionServiceError, SemanticKind,
+    TranscriptReadBoundary, TranscriptReadError, TransientReadPosition,
+    PROVIDER_OBSERVATION_SCHEMA_VERSION,
 };
 use serde_json::json;
 use std::{
@@ -173,7 +173,7 @@ fn server_context_cannot_be_selected_by_native_body() {
 }
 
 #[test]
-fn exact_replay_conflict_late_order_restart_and_cursor_are_deterministic() {
+fn exact_duplicate_conflict_and_late_order_are_deterministic_in_memory() {
     let first = observation(decode(
         ProviderKind::Codex,
         2,
@@ -192,14 +192,6 @@ fn exact_replay_conflict_late_order_restart_and_cursor_are_deterministic() {
     assert_eq!(projection.episodes.len(), 1);
     assert_eq!(projection.episodes[0].observations[0].ordering_position, 1);
     assert_eq!(projection.episodes[0].observations[1].ordering_position, 2);
-
-    let bytes = serde_json::to_vec(&fold).expect("durable fold");
-    let resumed: ProviderEventFold = serde_json::from_slice(&bytes).expect("resume fold");
-    assert_eq!(fold.cursor(), resumed.cursor());
-    assert_eq!(
-        fold.session_projection(300),
-        resumed.session_projection(300)
-    );
 
     let mut changed = first;
     changed.observed_at = "2026-08-13T09:00:00Z".into();
@@ -344,12 +336,12 @@ fn stale_generation_fails_before_projection_change() {
         other => panic!("unexpected {other:?}"),
     };
     let mut fold = ProviderEventFold::new("session-1", 7, "daemon-1", 4);
-    let before = fold.cursor();
+    let before = fold.snapshot_fingerprint();
     assert_eq!(
         fold.ingest(stale),
         Err(ProviderEventFoldError::AuthorityMismatch)
     );
-    assert_eq!(before, fold.cursor());
+    assert_eq!(before, fold.snapshot_fingerprint());
     assert!(fold.session_projection(300).episodes.is_empty());
 }
 
@@ -477,54 +469,6 @@ fn unique_temp_path(label: &str) -> PathBuf {
 }
 
 #[test]
-fn durable_store_resumes_exact_cursor_and_rejects_torn_snapshot() {
-    let root = unique_temp_path("resume");
-    let path = root.join("projection.json");
-    let store = ProjectionStore::new(&path);
-    let mut fold = ProviderEventFold::new("session-1", 7, "daemon-1", 4);
-    store
-        .ingest(
-            &mut fold,
-            observation(decode(
-                ProviderKind::Claude,
-                1,
-                json!({"type":"assistant","message":{"content":"hello"}}),
-            )),
-        )
-        .unwrap();
-    let resumed = store.load().unwrap().unwrap();
-    assert_eq!(resumed.cursor(), fold.cursor());
-    assert_eq!(
-        resumed.session_projection(300),
-        fold.session_projection(300)
-    );
-
-    fs::write(&path, b"{\"schema_version\":").unwrap();
-    assert!(matches!(
-        store.load(),
-        Err(ProjectionStoreError::Malformed(_))
-    ));
-    fs::remove_dir_all(&root).unwrap();
-}
-
-#[test]
-fn failed_snapshot_write_does_not_advance_live_fold() {
-    let root = unique_temp_path("failed-write");
-    fs::create_dir_all(&root).unwrap();
-    let store = ProjectionStore::new(&root);
-    let mut fold = ProviderEventFold::new("session-1", 7, "daemon-1", 4);
-    let before = fold.cursor();
-    let result = store.ingest(
-        &mut fold,
-        observation(decode(ProviderKind::Pi, 1, json!({"type":"turn_end"}))),
-    );
-    assert!(matches!(result, Err(ProjectionStoreError::Io(_))));
-    assert_eq!(before, fold.cursor());
-    assert!(fold.session_projection(300).episodes.is_empty());
-    fs::remove_dir_all(&root).unwrap();
-}
-
-#[test]
 fn impossible_effect_and_public_private_semantics_fail_before_fold_change() {
     let mut effect = observation(decode(
         ProviderKind::Codex,
@@ -533,12 +477,12 @@ fn impossible_effect_and_public_private_semantics_fail_before_fold_change() {
     ));
     effect.effect_certainty = EffectCertainty::Applied;
     let mut fold = ProviderEventFold::new("session-1", 7, "daemon-1", 4);
-    let cursor = fold.cursor();
+    let cursor = fold.snapshot_fingerprint();
     assert!(matches!(
         fold.ingest(effect),
         Err(ProviderEventFoldError::InvalidObservation(_))
     ));
-    assert_eq!(fold.cursor(), cursor);
+    assert_eq!(fold.snapshot_fingerprint(), cursor);
 
     let mut leaked = observation(decode(
         ProviderKind::Codex,
@@ -550,7 +494,7 @@ fn impossible_effect_and_public_private_semantics_fail_before_fold_change() {
         fold.ingest(leaked),
         Err(ProviderEventFoldError::InvalidObservation(_))
     ));
-    assert_eq!(fold.cursor(), cursor);
+    assert_eq!(fold.snapshot_fingerprint(), cursor);
 }
 
 #[test]
@@ -607,7 +551,7 @@ fn four_provider_jsonl_corpora_decode_and_malformed_lines_are_bounded() {
 }
 
 #[test]
-fn transcript_reader_resumes_by_byte_offset_and_holds_incomplete_tail() {
+fn transcript_reader_uses_disposable_position_and_holds_incomplete_tail() {
     let root = unique_temp_path("reader");
     fs::create_dir_all(&root).unwrap();
     let path = root.join("session.jsonl");
@@ -623,21 +567,21 @@ fn transcript_reader_resumes_by_byte_offset_and_holds_incomplete_tail() {
     let first = read_transcript_batch(
         &context(ProviderKind::Codex),
         &boundary,
-        TranscriptCursor::default(),
+        TransientReadPosition::default(),
         1,
     )
     .unwrap();
     assert_eq!(first.outcomes.len(), 1);
     assert!(first.incomplete_tail);
     let second =
-        read_transcript_batch(&context(ProviderKind::Codex), &boundary, first.cursor, 10).unwrap();
+        read_transcript_batch(&context(ProviderKind::Codex), &boundary, first.next_position, 10).unwrap();
     assert_eq!(second.outcomes.len(), 1);
     assert!(second.incomplete_tail);
 
     fs::write(&path, b"{}\n").unwrap();
     assert!(matches!(
-        read_transcript_batch(&context(ProviderKind::Codex), &boundary, second.cursor, 10),
-        Err(TranscriptReadError::CursorBeyondEnd)
+        read_transcript_batch(&context(ProviderKind::Codex), &boundary, second.next_position, 10),
+        Err(TranscriptReadError::SourceChanged)
     ));
     fs::remove_dir_all(&root).unwrap();
 }
@@ -660,7 +604,7 @@ fn transcript_reader_rejects_symlink_and_root_escape() {
             allowed_root: root.clone(),
             transcript_path: link,
         },
-        TranscriptCursor::default(),
+        TransientReadPosition::default(),
         10,
     );
     assert!(matches!(
@@ -672,7 +616,7 @@ fn transcript_reader_rejects_symlink_and_root_escape() {
 }
 
 #[test]
-fn transcript_cursor_and_fold_commit_atomically_across_restart() {
+fn on_demand_service_writes_no_projection_files_and_restart_discards_state() {
     let root = unique_temp_path("pipeline");
     fs::create_dir_all(&root).unwrap();
     let transcript = root.join("provider.jsonl");
@@ -681,32 +625,20 @@ fn transcript_cursor_and_fold_commit_atomically_across_restart() {
         b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"ok\"}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_reasoning\",\"text\":\"private\"}}\n",
     )
     .unwrap();
-    let mut state =
-        ProviderProjectionState::new(ProviderEventFold::new("session-1", 7, "daemon-1", 4));
-    let batch = read_transcript_batch(
-        &context(ProviderKind::Codex),
-        &TranscriptReadBoundary {
-            allowed_root: root.clone(),
-            transcript_path: transcript,
-        },
-        state.transcript_cursor.clone(),
-        10,
-    )
-    .unwrap();
-    let expected_cursor = batch.cursor.clone();
-    let store = ProjectionStore::new(root.join("projection.json"));
-    store.apply_batch(&mut state, batch).unwrap();
-    let resumed = store.load_state().unwrap().unwrap();
-    assert_eq!(resumed.transcript_cursor, expected_cursor);
+    let boundary = TranscriptReadBoundary {
+        allowed_root: root.clone(),
+        transcript_path: transcript,
+    };
+    let mut service = ProviderProjectionService::open(context(ProviderKind::Codex));
+    service.refresh(&boundary, 10).unwrap();
     assert_eq!(
-        resumed.fold.session_projection(300).episodes[0]
-            .observations
-            .len(),
+        service.private_session(&authority(), &viewer("agent-1"), 300).unwrap()
+            .episodes[0].observations.len(),
         1
     );
-    let serialized = serde_json::to_string(&resumed).unwrap();
-    assert!(!serialized.contains("agent_reasoning"));
-    assert!(!serialized.contains("provider-private reasoning omitted"));
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1, "only provider source exists");
+    let restarted = ProviderProjectionService::open(context(ProviderKind::Codex));
+    assert!(restarted.private_session(&authority(), &viewer("agent-1"), 300).unwrap().episodes.is_empty());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -727,12 +659,12 @@ fn codex_turn_context_survives_cursor_resume_and_closes_on_terminal() {
     let first = read_transcript_batch(
         &context(ProviderKind::Codex),
         &boundary,
-        TranscriptCursor::default(),
+        TransientReadPosition::default(),
         2,
     )
     .unwrap();
     assert_eq!(
-        first.cursor.active_provider_turn_id.as_deref(),
+        first.next_position.active_provider_turn_id.as_deref(),
         Some("turn-9")
     );
     let observation = first
@@ -744,9 +676,14 @@ fn codex_turn_context_survives_cursor_resume_and_closes_on_terminal() {
         })
         .unwrap();
     assert_eq!(observation.provider_turn_id.as_deref(), Some("turn-9"));
-    let second =
-        read_transcript_batch(&context(ProviderKind::Codex), &boundary, first.cursor, 2).unwrap();
-    assert_eq!(second.cursor.active_provider_turn_id, None);
+    let second = read_transcript_batch(
+        &context(ProviderKind::Codex),
+        &boundary,
+        first.next_position,
+        2,
+    )
+    .unwrap();
+    assert_eq!(second.next_position.active_provider_turn_id, None);
     let terminal = second
         .outcomes
         .into_iter()
@@ -760,7 +697,7 @@ fn codex_turn_context_survives_cursor_resume_and_closes_on_terminal() {
 }
 
 #[test]
-fn service_refresh_resume_and_private_team_projections_are_one_closed_seam() {
+fn service_projects_private_and_public_views_on_demand_without_persistence() {
     let root = unique_temp_path("service");
     fs::create_dir_all(&root).unwrap();
     let transcript = root.join("pi.jsonl");
@@ -769,16 +706,11 @@ fn service_refresh_resume_and_private_team_projections_are_one_closed_seam() {
         b"{\"type\":\"message_update\",\"content\":[{\"type\":\"text\",\"text\":\"private\"}]}\n{\"type\":\"interaction_required\",\"reasonCode\":\"decision\",\"prompt\":\"Need decision\"}\n",
     )
     .unwrap();
-    let store_path = root.join("projection.json");
     let boundary = TranscriptReadBoundary {
         allowed_root: root.clone(),
         transcript_path: transcript,
     };
-    let mut service = ProviderProjectionService::open(
-        ProjectionStore::new(&store_path),
-        context(ProviderKind::Pi),
-    )
-    .unwrap();
+    let mut service = ProviderProjectionService::open(context(ProviderKind::Pi));
     assert_eq!(service.refresh(&boundary, 10).unwrap(), 2);
     assert_eq!(
         service
@@ -803,21 +735,6 @@ fn service_refresh_resume_and_private_team_projections_are_one_closed_seam() {
             ProjectionAccessError::NotSessionOwner
         ))
     ));
-    let cursor = service.cursor().clone();
-    drop(service);
-    let mut resumed = ProviderProjectionService::open(
-        ProjectionStore::new(&store_path),
-        context(ProviderKind::Pi),
-    )
-    .unwrap();
-    assert_eq!(resumed.cursor(), &cursor);
-    assert_eq!(resumed.refresh(&boundary, 10).unwrap(), 0);
-
-    let mut stale = context(ProviderKind::Pi);
-    stale.node_daemon_generation += 1;
-    assert!(matches!(
-        ProviderProjectionService::open(ProjectionStore::new(&store_path), stale),
-        Err(ProviderProjectionServiceError::StaleAuthority)
-    ));
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1, "service creates no mirror");
     fs::remove_dir_all(root).unwrap();
 }

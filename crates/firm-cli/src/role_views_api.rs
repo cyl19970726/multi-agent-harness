@@ -1869,6 +1869,87 @@ fn read_selected_native_activity(session: Option<&Value>) -> Value {
     }
 }
 
+fn unavailable_session_event_projection(reason: &str) -> Value {
+    json!({
+        "schema_version":"agentfirm.provider_observation.v1",
+        "agent_session_id":null,
+        "agent_session_generation":null,
+        "source_snapshot_fingerprint":null,
+        "episodes":[],
+        "truncated":false,
+        "disabled_reason":reason,
+    })
+}
+
+fn exact_agent_session<'a>(
+    facts: &'a Facts,
+    agent_identity_id: &str,
+    native_session: &Value,
+) -> Result<&'a Value, &'static str> {
+    let Some(native_session_id) = native_session["native_session_id"].as_str() else {
+        return Err("The selected provider-native Session has no exact native id.");
+    };
+    let current = facts
+        .agent_sessions
+        .iter()
+        .filter(|session| session["agent_identity_id"] == agent_identity_id)
+        .filter(|session| session["lifecycle"] != "closed")
+        .filter(|session| {
+            session["native_session_ref"]["native_session_id"] == native_session_id
+        })
+        .collect::<Vec<_>>();
+    match current.as_slice() {
+        [session] => Ok(*session),
+        [] => Err("No current canonical AgentSession binds this provider-native Session."),
+        _ => Err("Multiple current AgentSessions ambiguously bind this provider-native Session."),
+    }
+}
+
+fn read_session_event_projection(
+    project_id: &str,
+    team_id: &str,
+    selected_agent_id: &str,
+    viewer_identity_id: &str,
+    facts: &Facts,
+    native_session: Option<&Value>,
+) -> Value {
+    let Some(native_session_value) = native_session else {
+        return unavailable_session_event_projection(
+            "No provider-native Session is bound to this selected Agent run.",
+        );
+    };
+    let session = match exact_agent_session(facts, selected_agent_id, native_session_value) {
+        Ok(session) => session,
+        Err(reason) => return unavailable_session_event_projection(reason),
+    };
+    let native_session = match serde_json::from_value(native_session_value.clone()) {
+        Ok(value) => value,
+        Err(_) => {
+            return unavailable_session_event_projection(
+                "The canonical provider-native Session reference is malformed.",
+            )
+        }
+    };
+    crate::provider_event_api::read_historical_projection(
+        crate::provider_event_api::HistoricalProjectionRequest {
+            project_id,
+            team_id,
+            agent_identity_id: selected_agent_id,
+            agent_session_id: session["id"].as_str().unwrap_or_default(),
+            agent_session_generation: session["runtime_generation"].as_u64().unwrap_or(0),
+            node_daemon_id: session["node_daemon_id"].as_str().unwrap_or_default(),
+            node_daemon_generation: session["node_daemon_generation"].as_u64().unwrap_or(0),
+            viewer_identity_id,
+            native_session: &native_session,
+        },
+    )
+    .unwrap_or_else(|_| {
+        unavailable_session_event_projection(
+            "The server could not verify and read the bound provider-native Session.",
+        )
+    })
+}
+
 fn host_native_session_ref(run: &AgentTeamRun) -> Option<Value> {
     let thread_id = run.host_thread_id.as_deref()?.trim();
     if thread_id.is_empty() {
@@ -2187,6 +2268,39 @@ fn agent_workspace_view(
             "Provider-private Session events are visible only to the exact selected Agent identity.",
         )
     };
+    let viewer_identity_id = identity
+        .map(|identity| identity.actor.id.as_str())
+        .unwrap_or_default();
+    let session_event_projection = if may_read_private_session {
+        read_session_event_projection(
+            space_id,
+            &team.id,
+            selected_agent_id,
+            viewer_identity_id,
+            &facts,
+            native_session.as_ref(),
+        )
+    } else {
+        Value::Null
+    };
+    let live_provider_activity = if may_read_private_session {
+        selected_member_run
+            .and_then(|member_run| {
+                let native = native_session.as_ref()?;
+                let session = exact_agent_session(&facts, selected_agent_id, native).ok()?;
+                Some(crate::provider_event_api::LiveProviderScope {
+                    project_id: space_id.to_string(),
+                    team_run_id: member_run["team_run_id"].as_str()?.to_string(),
+                    member_run_id: member_run["id"].as_str()?.to_string(),
+                    agent_session_id: session["id"].as_str()?.to_string(),
+                    agent_session_generation: session["runtime_generation"].as_u64()?,
+                })
+            })
+            .as_ref()
+            .and_then(crate::provider_event_api::live_snapshot)
+    } else {
+        None
+    };
     let sessions = if !may_read_private_session {
         Vec::new()
     } else if selected_is_host {
@@ -2353,6 +2467,8 @@ fn agent_workspace_view(
             "sessions":sessions,
             "selected_session_id":native_session.as_ref().and_then(|session|session["native_session_id"].as_str()),
             "session_activity":session_activity,
+            "session_event_projection":session_event_projection,
+            "live_provider_activity":live_provider_activity,
             "messages":messages,
             "works":works,
             "configuration":configuration,
@@ -2371,6 +2487,13 @@ fn agent_workspace_view(
         .as_object_mut()
         .expect("AgentWorkspace data object")
         .remove("runtime_fabric");
+    if projection_scope == "host_member_public" {
+        let data = response["data"]
+            .as_object_mut()
+            .expect("AgentWorkspace data object");
+        data.remove("session_event_projection");
+        data.remove("live_provider_activity");
+    }
     Ok(response)
 }
 

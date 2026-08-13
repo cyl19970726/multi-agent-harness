@@ -224,6 +224,32 @@ fn locate(session: &NativeSessionRef) -> CliResult<Option<PathBuf>> {
     Ok(result)
 }
 
+/// Resolves the server-owned provider source together with its canonical
+/// containment root. This is consumed only by the on-demand Provider Event
+/// adapter; neither path may leave the server response or enter Harness data.
+pub(crate) fn locate_read_boundary(
+    session: &NativeSessionRef,
+) -> CliResult<Option<(PathBuf, PathBuf)>> {
+    let Some(path) = locate(session)? else {
+        return Ok(None);
+    };
+    let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
+        CliError::Usage("HOME is unavailable for native session discovery".into())
+    })?;
+    let root = match session.provider.as_str() {
+        "codex" => std::env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".codex"))
+            .join("sessions"),
+        "kimi" => home.join(".kimi-code/sessions"),
+        "claude" => home.join(".claude/projects"),
+        // Pi declares a fixture/conformance adapter but no provider-native
+        // same-user Session store in the current product. Never invent one.
+        _ => return Ok(None),
+    };
+    Ok(Some((root, path)))
+}
+
 fn find_file(root: &Path, suffix: &str, depth: usize) -> CliResult<Option<PathBuf>> {
     if depth == 0 || !root.is_dir() {
         return Ok(None);

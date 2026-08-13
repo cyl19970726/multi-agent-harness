@@ -66,6 +66,7 @@ mod legacy_export;
 mod mcp;
 mod native_session;
 mod pi_rpc;
+mod provider_event_api;
 mod project;
 mod provider_adapter;
 #[cfg(unix)]

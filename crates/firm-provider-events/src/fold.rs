@@ -40,8 +40,7 @@ pub struct SessionEpisode {
     pub incomplete: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderEventFold {
     pub schema_version: String,
     pub agent_session_id: String,
@@ -147,7 +146,7 @@ impl ProviderEventFold {
             schema_version: PROVIDER_OBSERVATION_SCHEMA_VERSION.into(),
             agent_session_id: self.agent_session_id.clone(),
             agent_session_generation: self.agent_session_generation,
-            cursor: self.cursor(),
+            source_snapshot_fingerprint: self.snapshot_fingerprint(),
             episodes,
             truncated,
             disabled_reason: None,
@@ -171,7 +170,7 @@ impl ProviderEventFold {
             .collect()
     }
 
-    pub fn cursor(&self) -> String {
+    pub fn snapshot_fingerprint(&self) -> String {
         let mut digest = Sha256::new();
         for (id, fingerprint) in &self.source_fingerprints {
             digest.update(id.as_bytes());

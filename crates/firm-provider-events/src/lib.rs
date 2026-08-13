@@ -11,7 +11,6 @@ mod fold;
 mod model;
 mod reader;
 mod service;
-mod store;
 
 pub use access::*;
 pub use decoder::{
@@ -22,4 +21,3 @@ pub use fold::{FoldOutcome, ProviderEventFold, ProviderEventFoldError, SessionEp
 pub use model::*;
 pub use reader::*;
 pub use service::*;
-pub use store::*;

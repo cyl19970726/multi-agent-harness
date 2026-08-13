@@ -327,7 +327,9 @@ pub struct SessionEventProjection {
     pub schema_version: String,
     pub agent_session_id: String,
     pub agent_session_generation: u64,
-    pub cursor: String,
+    /// Fingerprint of this response's bounded, on-demand projection. It is not
+    /// a cursor, history id, replay token, or evidence reference.
+    pub source_snapshot_fingerprint: String,
     pub episodes: Vec<super::SessionEpisode>,
     pub truncated: bool,
     #[serde(default)]

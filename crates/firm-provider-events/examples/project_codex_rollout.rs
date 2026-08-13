@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use firm_provider_events::{
     read_transcript_batch, DecodeContext, DecodeOutcome, ProviderEventFold, ProviderKind,
-    TranscriptCursor, TranscriptReadBoundary,
+    TranscriptReadBoundary, TransientReadPosition,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             allowed_root: root,
             transcript_path: file,
         },
-        TranscriptCursor::default(),
+        TransientReadPosition::default(),
         10_000,
     )?;
     let mut fold = ProviderEventFold::new("dogfood-session", 1, "dogfood-daemon", 1);
@@ -55,11 +55,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|episode| episode.observations.len())
         .sum::<usize>();
     println!(
-        "provider=codex observations={observations} episodes={} dropped_private={dropped} unsupported={unsupported} truncated={} incomplete_tail={} cursor={}",
+        "provider=codex observations={observations} episodes={} dropped_private={dropped} unsupported={unsupported} truncated={} incomplete_tail={} source_snapshot_fingerprint={}",
         projection.episodes.len(),
         projection.truncated,
         batch.incomplete_tail,
-        projection.cursor
+        projection.source_snapshot_fingerprint
     );
     Ok(())
 }
