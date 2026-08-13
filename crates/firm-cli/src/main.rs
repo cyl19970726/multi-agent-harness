@@ -12700,6 +12700,7 @@ fn publish_team_message(
             team_id: Some(run.agent_team_id.clone()),
             team_run_id: Some(run.id.clone()),
             work_id: message.work_id.clone(),
+            collaboration_scope: None,
             kind,
             body: message.body.clone(),
             correlation_id: message.correlation_id.clone(),
@@ -14669,6 +14670,12 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
         args,
         "team-run work list|show|create|delegate|delegation|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|reconcile-delivery|poll-github-ci",
     )?;
+    if matches!(args[0].as_str(), "delegate" | "delegation") {
+        return Err(CliError::Usage(
+            "RETIRED_WRITE_AUTHORITY: local TeamRun WorkDelegation commands are retired; use the Company Control Plane collaboration API and collaboration_delegation MCP reads"
+                .into(),
+        ));
+    }
     match args[0].as_str() {
         "list" => {
             let team_run_id = value(args, "--team-run-id");
@@ -28629,11 +28636,11 @@ fn daemon_command(args: &[String]) -> CliResult<()> {
 
 #[derive(Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AgentFirmHttpCredential {
-    token: String,
-    actor: harness_core::agentfirm_api::ActorRef,
+pub(crate) struct AgentFirmHttpCredential {
+    pub(crate) token: String,
+    pub(crate) actor: harness_core::agentfirm_api::ActorRef,
     #[serde(default)]
-    authority_actors: Vec<harness_core::agentfirm_api::ActorRef>,
+    pub(crate) authority_actors: Vec<harness_core::agentfirm_api::ActorRef>,
 }
 
 #[derive(serde::Deserialize)]
@@ -28673,6 +28680,8 @@ struct RuntimeDispatchIntent {
 #[serde(deny_unknown_fields)]
 struct RuntimeAuthorMessageIntent {
     draft: harness_core::agentfirm_api::MessageDraft,
+    #[serde(default)]
+    remote_transfer: Option<fabric_runtime::QueueCollaborationMessageRequest>,
 }
 
 fn runtime_command_capability(
@@ -28707,7 +28716,7 @@ fn runtime_control_actor_is_authorized(
     Ok(false)
 }
 
-fn resolve_agentfirm_http_credential(
+pub(crate) fn resolve_agentfirm_http_credential(
     presented_token: Option<&str>,
 ) -> Result<AgentFirmHttpCredential, String> {
     let encoded = std::env::var("AGENTFIRM_HTTP_CREDENTIALS_JSON")
@@ -28905,6 +28914,189 @@ fn handle_http_connection(
         )?;
         return Ok(());
     }
+    if method == "POST" && path_only == "/v1/collaboration/delegations" {
+        if trust_identity_override_header {
+            write_http_json(
+                &mut stream,
+                "401 Unauthorized",
+                &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":"request headers cannot select collaboration actor or authority identity"}}),
+            )?;
+            return Ok(());
+        }
+        let credential = match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
+            Ok(value) => value,
+            Err(message) => {
+                write_http_json(
+                    &mut stream,
+                    "401 Unauthorized",
+                    &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":message}}),
+                )?;
+                return Ok(());
+            }
+        };
+        let Some(idempotency_key) = trust_idempotency_key
+            .as_deref()
+            .filter(|key| !key.trim().is_empty())
+        else {
+            write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok":false,"error":{"code":"IDEMPOTENCY_CONFLICT","message":"Idempotency-Key is required"}}),
+            )?;
+            return Ok(());
+        };
+        if trust_expected_version != Some(0) {
+            write_http_json(
+                &mut stream,
+                "409 Conflict",
+                &serde_json::json!({"ok":false,"error":{"code":"EXPECTED_REVISION_CONFLICT","message":"new Delegation proposal requires If-Match: 0"}}),
+            )?;
+            return Ok(());
+        }
+        let request = match serde_json::from_slice::<
+            fabric_runtime::QueueCollaborationProposalRequest,
+        >(&body)
+        {
+            Ok(value) => value,
+            Err(error) => {
+                write_http_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &serde_json::json!({"ok":false,"error":{"code":"INVALID_PAYLOAD","message":error.to_string()}}),
+                )?;
+                return Ok(());
+            }
+        };
+        let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
+        let local_node_id = read_local_node_id()?;
+        match fabric_runtime::queue_collaboration_proposal(
+            &store_owned,
+            &firm_home,
+            &project_id,
+            &local_node_id,
+            &credential,
+            idempotency_key,
+            &request,
+            current_unix_ms_u64(),
+        ) {
+            Ok(value) => write_http_json(
+                &mut stream,
+                "202 Accepted",
+                &serde_json::json!({"ok":true,"queued":value}),
+            )?,
+            Err(error) => {
+                let status = match error.code {
+                    harness_fabric::FabricErrorCode::UnauthorizedActor => "403 Forbidden",
+                    harness_fabric::FabricErrorCode::ExpectedRevisionConflict => "409 Conflict",
+                    _ => "400 Bad Request",
+                };
+                write_http_json(
+                    &mut stream,
+                    status,
+                    &serde_json::json!({"ok":false,"error":{"code":format!("{:?}",error.code).to_ascii_uppercase(),"message":error.message}}),
+                )?;
+            }
+        }
+        return Ok(());
+    }
+    let collaboration_publication_delegation = path_only
+        .strip_prefix("/v1/collaboration/delegations/")
+        .and_then(|suffix| suffix.strip_suffix("/publications"))
+        .filter(|delegation_id| !delegation_id.is_empty() && !delegation_id.contains('/'));
+    if method == "POST" && collaboration_publication_delegation.is_some() {
+        if trust_identity_override_header {
+            write_http_json(
+                &mut stream,
+                "401 Unauthorized",
+                &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":"request headers cannot select collaboration actor or authority identity"}}),
+            )?;
+            return Ok(());
+        }
+        let credential = match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
+            Ok(value) => value,
+            Err(message) => {
+                write_http_json(
+                    &mut stream,
+                    "401 Unauthorized",
+                    &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":message}}),
+                )?;
+                return Ok(());
+            }
+        };
+        let Some(idempotency_key) = trust_idempotency_key
+            .as_deref()
+            .filter(|key| !key.trim().is_empty())
+        else {
+            write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok":false,"error":{"code":"IDEMPOTENCY_CONFLICT","message":"Idempotency-Key is required"}}),
+            )?;
+            return Ok(());
+        };
+        let Some(expected_revision) = trust_expected_version.filter(|version| *version > 0) else {
+            write_http_json(
+                &mut stream,
+                "409 Conflict",
+                &serde_json::json!({"ok":false,"error":{"code":"EXPECTED_REVISION_CONFLICT","message":"If-Match exact Delegation revision is required"}}),
+            )?;
+            return Ok(());
+        };
+        let request = match serde_json::from_slice::<
+            fabric_runtime::QueueRemoteFactPublicationRequest,
+        >(&body)
+        {
+            Ok(value) => value,
+            Err(error) => {
+                write_http_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &serde_json::json!({"ok":false,"error":{"code":"INVALID_PAYLOAD","message":error.to_string()}}),
+                )?;
+                return Ok(());
+            }
+        };
+        if Some(request.delegation_id.as_str()) != collaboration_publication_delegation {
+            write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok":false,"error":{"code":"INVALID_PAYLOAD","message":"path and body Delegation identities differ"}}),
+            )?;
+            return Ok(());
+        }
+        let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
+        let local_node_id = read_local_node_id()?;
+        match fabric_runtime::queue_remote_fact_publication(
+            &store_owned,
+            &firm_home,
+            &project_id,
+            &local_node_id,
+            &credential,
+            idempotency_key,
+            expected_revision,
+            &request,
+            current_unix_ms_u64(),
+        ) {
+            Ok(value) => write_http_json(
+                &mut stream,
+                "202 Accepted",
+                &serde_json::json!({"ok":true,"queued":value}),
+            )?,
+            Err(error) => {
+                let status = match error.code {
+                    harness_fabric::FabricErrorCode::UnauthorizedActor => "403 Forbidden",
+                    harness_fabric::FabricErrorCode::ExpectedRevisionConflict => "409 Conflict",
+                    _ => "400 Bad Request",
+                };
+                write_http_json(
+                    &mut stream,
+                    status,
+                    &serde_json::json!({"ok":false,"error":{"code":format!("{:?}",error.code).to_ascii_uppercase(),"message":error.message}}),
+                )?;
+            }
+        }
+        return Ok(());
+    }
     if method == "POST" && path_only == "/v1/agentfirm/runtime-commands" {
         if trust_identity_override_header {
             write_http_json(
@@ -28970,6 +29162,31 @@ fn handle_http_connection(
                         return Ok(());
                     }
                 };
+                let delegation_authority = if let Some(remote_transfer) =
+                    intent.remote_transfer.as_ref()
+                {
+                    match fabric_runtime::resolve_collaboration_message_authority(
+                        &store_owned,
+                        &execution_space::firm_home().map_err(execution_space_err)?,
+                        &project_id,
+                        &read_local_node_id()?,
+                        &credential,
+                        &intent.draft,
+                        remote_transfer,
+                    ) {
+                        Ok(authority) => Some(authority),
+                        Err(error) => {
+                            write_http_json(
+                                &mut stream,
+                                "403 Forbidden",
+                                &serde_json::json!({"ok":false,"error":{"code":format!("{:?}",error.code).to_ascii_uppercase(),"message":error.message}}),
+                            )?;
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    None
+                };
                 let target_node_id = intent
                     .draft
                     .team_run_id
@@ -28993,7 +29210,11 @@ fn handle_http_connection(
                 (
                     target_node_id,
                     None,
-                    serde_json::json!({"draft": intent.draft}),
+                    serde_json::json!({
+                        "draft": intent.draft,
+                        "remote_transfer": intent.remote_transfer,
+                        "delegation_authority": delegation_authority,
+                    }),
                 )
             }
             RuntimeCommandKind::StartSession => {
@@ -29218,7 +29439,7 @@ fn handle_http_connection(
             };
             actor
         } else {
-            credential.actor
+            credential.actor.clone()
         };
         let server_payload = if request.command == RuntimeCommandKind::StartSession {
             let mut payload = server_payload;
@@ -29258,7 +29479,73 @@ fn handle_http_connection(
             &envelope.target_node_id,
             &envelope,
         ) {
-            Ok(response) => write_http_json(&mut stream, "200 OK", &response)?,
+            Ok(response) => {
+                if response.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+                    write_http_json(&mut stream, "409 Conflict", &response)?;
+                    return Ok(());
+                }
+                if envelope.command == RuntimeCommandKind::AuthorMessage {
+                    if let Some(remote_transfer) = envelope
+                        .payload
+                        .get("remote_transfer")
+                        .filter(|value| !value.is_null())
+                    {
+                        let request = serde_json::from_value::<
+                            fabric_runtime::QueueCollaborationMessageRequest,
+                        >(remote_transfer.clone())
+                        .map_err(|error| {
+                            CliError::Usage(format!(
+                                "INVALID_COLLABORATION_MESSAGE_TRANSFER: {error}"
+                            ))
+                        })?;
+                        let message = serde_json::from_value::<harness_core::agentfirm_api::Message>(
+                            response.get("result").cloned().ok_or_else(|| {
+                                CliError::Usage("COLLABORATION_MESSAGE_RESULT_MISSING".into())
+                            })?,
+                        )?;
+                        match fabric_runtime::queue_collaboration_message(
+                            &firm_home,
+                            &project_id,
+                            &envelope.target_node_id,
+                            &credential,
+                            &envelope.idempotency_key,
+                            &message,
+                            &request,
+                            serde_json::from_value(
+                                envelope
+                                    .payload
+                                    .get("delegation_authority")
+                                    .cloned()
+                                    .ok_or_else(|| {
+                                        CliError::Usage(
+                                            "COLLABORATION_MESSAGE_AUTHORITY_MISSING".into(),
+                                        )
+                                    })?,
+                            )?,
+                            current_unix_ms_u64(),
+                        ) {
+                            Ok(queued) => write_http_json(
+                                &mut stream,
+                                "202 Accepted",
+                                &serde_json::json!({
+                                    "ok": true,
+                                    "message": message,
+                                    "remote_transfer": queued,
+                                }),
+                            )?,
+                            Err(error) => write_http_json(
+                                &mut stream,
+                                "409 Conflict",
+                                &serde_json::json!({"ok":false,"error":{"code":format!("{:?}",error.code).to_ascii_uppercase(),"message":error.message}}),
+                            )?,
+                        }
+                    } else {
+                        write_http_json(&mut stream, "200 OK", &response)?;
+                    }
+                } else {
+                    write_http_json(&mut stream, "200 OK", &response)?;
+                }
+            }
             Err(error) => write_http_json(
                 &mut stream,
                 "503 Service Unavailable",
@@ -30497,6 +30784,11 @@ fn handle_http_action(
     path: &str,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
+    if role_actions_api::is_retired_legacy_write_path(path) {
+        return Err(CliError::Usage(
+            "RETIRED_WRITE_AUTHORITY: legacy local Work/WorkDelegation writers are closed".into(),
+        ));
+    }
     if path == "/v1/missions" {
         return create_mission_value(store, body);
     }
@@ -49294,6 +49586,7 @@ package:com.tencent.mm
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
+    #[cfg(any())]
     #[test]
     fn http_and_mcp_work_mutations_share_atomic_delegation_rollup() {
         let (store, root) = temp_store("delegation-surface-rollup");

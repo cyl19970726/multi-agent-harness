@@ -8,6 +8,7 @@ const schemaDir=path.join(root,"schemas/role-views/agentfirm.role_views.v1");
 const names=["common","role-view","company-work","team-workspace","host-console","agent-workspace","member-workbench","operator"];
 const schemas=names.map(name=>JSON.parse(fs.readFileSync(path.join(schemaDir,`${name}.schema.json`),"utf8")));
 const ajv=new Ajv2020({strict:false,allErrors:true});
+for(const file of fs.readdirSync(path.join(root,"schemas/collaboration")).filter(file=>file.endsWith(".schema.json")))ajv.addSchema(JSON.parse(fs.readFileSync(path.join(root,"schemas/collaboration",file),"utf8")));
 for(const schema of schemas)ajv.addSchema(schema);
 for(const name of names.slice(2))assert.equal(typeof ajv.getSchema(`agentfirm.role_views.v1/${name}.schema.json`),"function",`${name} schema compiles`);
 const fixtureDir=path.join(root,"apps/agent-dashboard/fixtures/wave4-local-agentfirm-v1");
@@ -27,6 +28,20 @@ for(const name of names.slice(2)){
   closedTarget.__browser_invented_truth=true;
   assert.equal(validate(hostile),false,`${name} must reject nested unknown fields`);
 }
+const teamValidate=ajv.getSchema("agentfirm.role_views.v1/team-workspace.schema.json");
+const teamFixture=JSON.parse(fs.readFileSync(path.join(fixtureDir,"team-workspace.json"),"utf8"));
+const delegationFixture=JSON.parse(fs.readFileSync(path.join(root,"schemas/collaboration/fixtures/work-delegation-v1/valid/awaiting.json"),"utf8"));
+teamFixture.data.collaboration={company_id:"company-1",team_id:"team-a",state:"observed",as_of_store_sequence:9,delegation_count:1,attention_count:1,publication_count:0,delegations:[delegationFixture],pending_cancellations:[]};
+assert.equal(teamValidate(teamFixture),true,`closed observed collaboration projection: ${ajv.errorsText(teamValidate.errors)}`);
+teamFixture.data.collaboration.delegations[0].__browser_invented_authority=true;
+assert.equal(teamValidate(teamFixture),false,"nested Delegation authority must fail closed");
+delete teamFixture.data.collaboration.delegations[0].__browser_invented_authority;
+delete teamFixture.data.collaboration.as_of_store_sequence;
+assert.equal(teamValidate(teamFixture),false,"observed collaboration projection requires an authoritative snapshot sequence");
+const unavailableTeam=JSON.parse(fs.readFileSync(path.join(fixtureDir,"team-workspace.json"),"utf8"));
+unavailableTeam.data.collaboration={state:"unavailable",reason:"central projection invalid"};
+assert.equal(teamValidate(unavailableTeam),true,`explicit unavailable collaboration: ${ajv.errorsText(teamValidate.errors)}`);
+assert.equal(unavailableTeam.allowed_actions.some(action=>String(action.kind).startsWith("collaboration_")||String(action.kind).startsWith("delegation_")),false,"unavailable projection advertises no collaboration-dependent action");
 
 const agentWorkspaceValidate=ajv.getSchema("agentfirm.role_views.v1/agent-workspace.schema.json");
 const privateAgentWorkspaceFixture=JSON.parse(fs.readFileSync(path.join(fixtureDir,"agent-workspace.json"),"utf8"));
@@ -64,9 +79,12 @@ for(const [label,mutate] of [
 
 const operatorValidate=ajv.getSchema("agentfirm.role_views.v1/operator.schema.json");
 const operatorFixture=JSON.parse(fs.readFileSync(path.join(fixtureDir,"operator.json"),"utf8"));
-const observedRemoteFabric={company_id:"company-1",node_id:"node-1",state:"observed",reason:null,gateway_session:{company_id:"company-1",node_id:"node-1",gateway_generation:2,node_daemon_id:"daemon-1",node_daemon_generation:3,control_plane_generation:4},outbox_depth:0,oldest_outbox_age_ms:0,inbox_depth:1,recovery_required:[],control_plane_online:true,control_plane_metrics:{node_id:"node-1",administrative_status:"active",connection_status:"online",gateway_generation:2,control_plane_generation:4,certificate_expires_at_unix_ms:999,queued_operations:0,oldest_queued_age_ms:0,gateway_lease_age_ms:10,recovery_required_operations:[],last_assigned_route_seq:1,last_persisted_route_seq:1,reconcile_lag:0},store_revision:7};
+const observedRemoteFabric={company_id:"company-1",node_id:"node-1",state:"observed",reason:null,gateway_session:{company_id:"company-1",node_id:"node-1",gateway_generation:2,node_daemon_id:"daemon-1",node_daemon_generation:3,control_plane_generation:4},outbox_depth:0,oldest_outbox_age_ms:0,inbox_depth:1,recovery_required:[],control_plane_online:true,control_plane_metrics:{node_id:"node-1",administrative_status:"active",connection_status:"online",gateway_generation:2,control_plane_generation:4,certificate_expires_at_unix_ms:999,queued_operations:0,oldest_queued_age_ms:0,gateway_lease_age_ms:10,recovery_required_operations:[],last_assigned_route_seq:1,last_persisted_route_seq:1,reconcile_lag:0},collaboration:{state:"observed",delegation_count:2,attention_count:1,as_of_store_sequence:9},store_revision:7};
 operatorFixture.data.remote_fabric=observedRemoteFabric;
 assert.equal(operatorValidate(operatorFixture),true,`observed Remote Fabric projection: ${ajv.errorsText(operatorValidate.errors)}`);
+operatorFixture.data.remote_fabric={...observedRemoteFabric,collaboration:{...observedRemoteFabric.collaboration,__browser_invented_truth:true}};
+assert.equal(operatorValidate(operatorFixture),false,"collaboration projection rejects browser-invented nested truth");
+operatorFixture.data.remote_fabric=observedRemoteFabric;
 operatorFixture.data.remote_fabric={...observedRemoteFabric,__browser_invented_truth:true};
 assert.equal(operatorValidate(operatorFixture),false,"Remote Fabric projection rejects unknown server fields");
 operatorFixture.data.remote_fabric=observedRemoteFabric;

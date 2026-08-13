@@ -1,0 +1,1 @@
+{"delivery_id":"delivery-1","message_id":"message-1","recipient_actor_ref":{"kind":"agent_member","id":"member-b"},"target_node_id":"node-b","routed_operation_id":"route-1","state":"delivered","attempt_refs":[],"receipt_refs":[],"target_observed_sequence":44,"observed_at":"now"}

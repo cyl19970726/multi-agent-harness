@@ -20,7 +20,8 @@
       "enum": [
         "fabric.probe.v1", "fabric.reconcile_probe.v1",
         "runtime_command.reference.v1", "message.reference.v1",
-        "delivery_intent.reference.v1", "artifact.reference.v1"
+        "delivery_intent.reference.v1", "artifact.reference.v1",
+        "collaboration.business.v1"
       ]
     },
     "source_authority": { "enum": ["node", "control_plane"] },

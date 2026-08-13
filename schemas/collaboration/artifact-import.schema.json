@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/collaboration/artifact-import.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "company_id", "delegation_id", "artifact_id", "artifact_digest", "size_bytes", "source_node_id", "source_node_daemon_id", "source_node_daemon_generation", "source_team_id", "source_host_ref", "source_work_ref", "operation_id", "imported_at_unix_ms", "revision"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "company_id": { "type": "string", "minLength": 1 },
+    "delegation_id": { "type": "string", "minLength": 1 },
+    "artifact_id": { "type": "string", "minLength": 1 },
+    "artifact_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "size_bytes": { "type": "integer", "minimum": 0, "maximum": 67108864 },
+    "source_node_id": { "type": "string", "minLength": 1 },
+    "source_node_daemon_id": { "type": "string", "minLength": 1 },
+    "source_node_daemon_generation": { "type": "integer", "minimum": 1 },
+    "source_team_id": { "type": "string", "minLength": 1 },
+    "source_host_ref": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": { "kind": { "enum": ["human", "agent_member"] }, "id": { "type": "string", "minLength": 1 } }
+    },
+    "source_work_ref": { "$ref": "remote-work-ref.schema.json" },
+    "operation_id": { "type": "string", "minLength": 1 },
+    "imported_at_unix_ms": { "type": "integer", "minimum": 0 },
+    "revision": { "const": 1 }
+  }
+}

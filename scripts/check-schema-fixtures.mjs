@@ -20,6 +20,20 @@ function jsonFiles(dir) {
     .sort();
 }
 
+function schemaFilesRecursively(dir) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .flatMap((entry) => {
+      const path = join(dir, entry);
+      return statSync(path).isDirectory()
+        ? schemaFilesRecursively(path)
+        : path.endsWith(".schema.json")
+          ? [path]
+          : [];
+    })
+    .sort();
+}
+
 function formatErrors(errors) {
   return (errors ?? [])
     .map((error) => `${error.instancePath || "/"} ${error.message}`)
@@ -34,18 +48,18 @@ const schemaFiles = readdirSync(schemaRoot)
   .filter((entry) => entry.endsWith(".schema.json"))
   .map((entry) => join(schemaRoot, entry))
   .sort();
+const registrySchemaFiles = schemaFilesRecursively(schemaRoot);
 
-// Compile the official schema set as one registry. Wave 4C introduces
-// identity/session/message schemas with relative $refs; compiling every file
-// in an isolated Ajv instance makes valid cross-schema references look
-// missing and lets the fixture gate fail for the wrong reason.
+// Compile the complete schema tree as one registry. Top-level schemas may
+// reference nested protocol schemas (for example Message -> CollaborationScope),
+// while fixture enforcement below intentionally remains top-level here.
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 const schemas = schemaFiles.map((schemaFile) => ({
   schemaFile,
   schema: readJson(schemaFile),
 }));
-for (const { schema } of schemas) {
-  ajv.addSchema(schema);
+for (const schemaFile of registrySchemaFiles) {
+  ajv.addSchema(readJson(schemaFile));
 }
 
 for (const { schemaFile, schema } of schemas) {

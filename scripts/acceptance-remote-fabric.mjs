@@ -10,6 +10,7 @@ const fixtureRoot = join(root, "fixtures");
 const schemas = [
   ["artifact-reference.schema.json", "artifact-reference"],
   ["company-node.schema.json", "company-node"],
+  ["collaboration-business-reference.schema.json", "collaboration-business-reference"],
   ["delivery-intent-reference.schema.json", "delivery-intent-reference"],
   ["fabric-frame.schema.json", "fabric-frame"],
   ["node-enrollment.schema.json", "node-enrollment"],
@@ -92,6 +93,7 @@ const requiredKinds = [
   "message.reference.v1",
   "delivery_intent.reference.v1",
   "artifact.reference.v1",
+  "collaboration.business.v1",
 ];
 for (const kind of requiredKinds) {
   if (!protocol.includes(`\"${kind}\"`)) {

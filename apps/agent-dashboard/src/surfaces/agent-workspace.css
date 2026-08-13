@@ -202,13 +202,12 @@
     min-width: 0;
   }
 
-  .agent-workspace .aw-session-chronology > :where(.agent-authored-turn, .aw-native-authored-record) + .aw-execution-fact,
-  .agent-workspace .aw-session-chronology > .aw-execution-fact + .aw-execution-fact {
-    margin-left: 3.7rem;
+  .agent-workspace .aw-session-chronology > .aw-native-facts-trail {
+    margin-left: 3.55rem;
   }
 
-  .agent-workspace .aw-session-chronology > .aw-execution-fact + :where(.agent-authored-turn, .aw-native-authored-record) {
-    margin-top: 0.42rem;
+  .agent-workspace .aw-session-chronology > .aw-native-facts-trail + .aw-native-facts-trail {
+    margin-top: -0.1rem;
   }
 
   .agent-workspace .aw-canvas-intro {
@@ -524,9 +523,9 @@
   .agent-workspace .aw-native-authored-record {
     display: flex;
     min-width: 0;
-    gap: 0.95rem;
-    min-height: 5rem;
-    padding: 1rem 0.5rem 1rem 0;
+    gap: 0.8rem;
+    min-height: 4.1rem;
+    padding: 0.85rem 0.5rem 0.85rem 0;
     border-bottom: 1px solid var(--aw-line-soft);
     color: var(--aw-ink);
     cursor: pointer;
@@ -542,18 +541,18 @@
 
   .agent-workspace .aw-native-authored-record__mark {
     display: grid;
-    width: 2.7rem;
-    height: 2.7rem;
+    width: 2.1rem;
+    height: 2.1rem;
     flex: none;
     place-items: center;
     border: 1px solid color-mix(in srgb, var(--aw-running) 14%, var(--aw-line));
     border-radius: 50%;
-    color: var(--aw-running);
+    color: color-mix(in srgb, var(--aw-running) 78%, var(--aw-muted));
   }
 
   .agent-workspace .aw-native-authored-record__mark svg {
-    width: 1rem;
-    height: 1rem;
+    width: 0.85rem;
+    height: 0.85rem;
     stroke-width: 1.55;
   }
 
@@ -569,6 +568,59 @@
   .agent-workspace .aw-native-authored-record header time { margin-left: auto; color: var(--aw-faint); font-size: 0.64rem; }
   .agent-workspace .aw-native-authored-record p { max-width: 43rem; margin-top: 0.4rem; color: color-mix(in srgb, var(--aw-ink) 90%, transparent); font-size: 0.9rem; line-height: 1.62; }
   .agent-workspace .aw-native-authored-record footer { margin-top: 0.45rem; color: var(--aw-muted); font-size: 0.64rem; }
+
+  .agent-workspace .aw-native-facts-trail {
+    min-width: 0;
+    border-bottom: 1px solid var(--aw-line-soft);
+  }
+
+  .agent-workspace .aw-native-facts-trail > summary {
+    min-width: 0;
+    padding: 0.44rem 0.25rem 0.44rem 0;
+    color: var(--aw-faint);
+    font-size: 0.66rem;
+    line-height: 1.35;
+    cursor: pointer;
+    list-style: none;
+    transition: color 120ms ease;
+  }
+
+  .agent-workspace .aw-native-facts-trail > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .agent-workspace .aw-native-facts-trail > summary:hover {
+    color: var(--aw-muted);
+  }
+
+  .agent-workspace .aw-native-facts-trail > summary > svg {
+    width: 0.82rem;
+    height: 0.82rem;
+    flex: none;
+    stroke-width: 1.6;
+  }
+
+  .agent-workspace .aw-native-facts-trail__count {
+    color: var(--aw-muted);
+    font-weight: 620;
+  }
+
+  .agent-workspace .aw-native-facts-trail__hint {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .agent-workspace .aw-native-facts-trail > summary time {
+    margin-left: auto;
+    flex: none;
+    font-size: 0.62rem;
+  }
+
+  .agent-workspace .aw-native-facts-trail__body {
+    padding: 0.05rem 0 0.45rem 1.35rem;
+    opacity: 0.94;
+  }
 
   .agent-workspace .agent-event-row {
     min-width: 0;
@@ -853,62 +905,41 @@
 
   .agent-workspace .aw-message-thread {
     min-width: 0;
-    padding-block: 0.9rem 0.2rem;
+    padding-block: 0.7rem 0.15rem;
   }
 
   .agent-workspace .aw-message-thread + .aw-message-thread {
-    margin-top: 0.45rem;
+    margin-top: 0.25rem;
     border-top: 1px solid var(--aw-line);
   }
 
   .agent-workspace .aw-message-thread__header {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(12rem, 0.7fr);
-    gap: 1.5rem;
-    align-items: end;
-    min-width: 0;
-    padding: 0 0.35rem 0.55rem;
-  }
-
-  .agent-workspace .aw-message-thread__header > div {
-    min-width: 0;
-  }
-
-  .agent-workspace .aw-message-thread__header > div:last-child {
     display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 0.1rem;
-    color: var(--aw-muted);
-    text-align: right;
-  }
-
-  .agent-workspace .aw-message-thread__header p {
-    color: var(--aw-coral-ink);
-    font-size: 0.55rem;
-    font-weight: 680;
-    letter-spacing: 0.11em;
-    text-transform: uppercase;
+    min-width: 0;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0 0.35rem 0.42rem;
   }
 
   .agent-workspace .aw-message-thread__header h3 {
-    margin-top: 0.18rem;
+    min-width: 0;
     overflow-wrap: anywhere;
     color: var(--aw-ink);
-    font-size: 0.8rem;
-    font-weight: 630;
+    font-size: 0.83rem;
+    font-weight: 640;
     letter-spacing: -0.012em;
   }
 
-  .agent-workspace .aw-message-thread__header span {
-    overflow-wrap: anywhere;
-    font-size: 0.69rem;
-    font-weight: 560;
-  }
-
-  .agent-workspace .aw-message-thread__header small {
+  .agent-workspace .aw-message-thread__header > span {
+    flex: none;
+    max-width: 46%;
+    overflow: hidden;
     color: var(--aw-faint);
-    font-size: 0.61rem;
+    font-size: 0.62rem;
+    font-weight: 520;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .agent-workspace .aw-message-thread__turns {
@@ -992,47 +1023,18 @@
     font-size: 0.67rem;
   }
 
-  .agent-workspace .aw-work-gates {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    padding-top: 0.76rem;
-    color: var(--aw-muted);
-    font-size: 0.64rem;
-    line-height: 1.4;
-  }
-
-  .agent-workspace .aw-work-gates strong {
-    color: var(--aw-ink);
-    font-size: 0.8rem;
-    font-weight: 650;
-  }
-
-  .agent-workspace .aw-work-gate-copy {
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.3rem;
-    align-items: baseline;
-  }
-
-  .agent-workspace .aw-work-gate-track {
-    display: block;
-    width: 100%;
-    height: 2px;
-    margin-top: 0.35rem;
-    overflow: hidden;
-    background: var(--aw-line-soft);
-  }
-
-  .agent-workspace .aw-work-gate-track i {
-    display: block;
-    height: 100%;
-    background: color-mix(in srgb, var(--aw-coral) 72%, var(--aw-line));
-  }
-
-  .agent-workspace .aw-work-gates time {
-    margin-top: 0.48rem;
+  .agent-workspace .aw-work-state time {
     color: var(--aw-faint);
+    font-size: 0.64rem;
+    white-space: nowrap;
+  }
+
+  .agent-workspace .aw-work-owner {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
+    color: var(--aw-muted);
+    font-weight: 580;
   }
 
   .agent-workspace .agent-work-lens {
@@ -1202,8 +1204,8 @@
 
   .agent-workspace .aw-responsibility-strip strong {
     color: var(--aw-ink);
-    font-size: 1rem;
-    font-weight: 630;
+    font-size: 0.84rem;
+    font-weight: 620;
     line-height: 1;
   }
 

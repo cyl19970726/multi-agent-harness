@@ -47,6 +47,8 @@
         { "$ref": "#/$defs/reconcile_result" },
         { "$ref": "#/$defs/artifact_capability_request" },
         { "$ref": "#/$defs/artifact_capability_response" },
+        { "$ref": "#/$defs/artifact_download_request" },
+        { "$ref": "#/$defs/artifact_download_chunk" },
         { "$ref": "#/$defs/lease_fence" },
         { "$ref": "#/$defs/drain" },
         { "$ref": "#/$defs/protocol_shutdown" }
@@ -194,6 +196,37 @@
       "properties": {
         "frame_kind": { "const": "artifact_capability_response" },
         "payload": { "$ref": "#/$defs/artifact_capability" }
+      }
+    },
+    "artifact_download_request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "artifact_download_request" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["capability"],
+          "properties": { "capability": { "$ref": "#/$defs/artifact_capability" } }
+        }
+      }
+    },
+    "artifact_download_chunk": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "artifact_download_chunk" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["artifact_id", "artifact_digest", "offset", "total_size", "bytes", "terminal"],
+          "properties": {
+            "artifact_id": { "type": "string", "minLength": 1 },
+            "artifact_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "offset": { "type": "integer", "minimum": 0 },
+            "total_size": { "type": "integer", "minimum": 0, "maximum": 67108864 },
+            "bytes": { "type": "array", "maxItems": 131072, "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
+            "terminal": { "type": "boolean" }
+          }
+        }
       }
     },
     "artifact_capability": {

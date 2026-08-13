@@ -15,6 +15,7 @@ export function AgentMessageCommandComposer({
   recipient,
   recipients,
   works,
+  linkedWorkId,
   teamId,
   teamRunId,
   actionsCurrent,
@@ -26,6 +27,7 @@ export function AgentMessageCommandComposer({
   recipient?: {id:string;label:string};
   recipients:Array<{id:string;label:string}>;
   works:WorkSummary[];
+  linkedWorkId?:string;
   teamId:string;
   teamRunId?:string;
   actionsCurrent:boolean;
@@ -34,12 +36,13 @@ export function AgentMessageCommandComposer({
 }) {
   const initialRecipient=recipient?.id??recipients[0]?.id??"";
   const [recipientId,setRecipientId]=useState(initialRecipient);
-  const [workId,setWorkId]=useState("");
+  const [workId,setWorkId]=useState(linkedWorkId??"");
   const [body,setBody]=useState("");
   const [responseRequired,setResponseRequired]=useState(false);
   const [busy,setBusy]=useState(false);
   const [status,setStatus]=useState<string|null>(null);
   useEffect(()=>{if(recipient)setRecipientId(recipient.id);},[recipient?.id]);
+  useEffect(()=>{if(linkedWorkId!==undefined)setWorkId(linkedWorkId);},[linkedWorkId]);
   const recipientLabel=useMemo(()=>recipient?.label??recipients.find(item=>item.id===recipientId)?.label??"Select Agent",[recipient,recipientId,recipients]);
   const execute=async()=>{
     if(!actionsCurrent||busy)return;

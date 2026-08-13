@@ -851,6 +851,7 @@ fn validate_operation(
             | MESSAGE_REFERENCE_KIND
             | DELIVERY_INTENT_REFERENCE_KIND
             | ARTIFACT_REFERENCE_KIND
+            | COLLABORATION_BUSINESS_OPERATION_KIND
     ) {
         return Err(FabricError::none(
             FabricErrorCode::UnauthorizedActor,
@@ -862,6 +863,7 @@ fn validate_operation(
         RUNTIME_COMMAND_REFERENCE_KIND => "remote-runtime",
         MESSAGE_REFERENCE_KIND | DELIVERY_INTENT_REFERENCE_KIND => "remote-message",
         ARTIFACT_REFERENCE_KIND => "artifact-transfer",
+        COLLABORATION_BUSINESS_OPERATION_KIND => "cross-team-collaboration",
         _ => unreachable!("closed operation registry was checked above"),
     };
     let mut node_ids = vec![operation.target_node_id.as_str()];

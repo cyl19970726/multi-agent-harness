@@ -3,8 +3,10 @@ use std::collections::BTreeSet;
 use thiserror::Error;
 
 pub mod agentfirm_api;
+pub mod collaboration;
 pub mod company_os;
 pub mod docs_v2;
+pub use collaboration::*;
 pub use company_os::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
