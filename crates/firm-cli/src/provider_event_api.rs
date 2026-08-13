@@ -57,7 +57,7 @@ struct LiveProviderItem {
 
 #[derive(Default)]
 struct LiveRegistry {
-    next_locator: u64,
+    next_locators: BTreeMap<LiveProviderScope, u64>,
     items: BTreeMap<LiveProviderScope, VecDeque<LiveProviderItem>>,
 }
 
@@ -183,8 +183,9 @@ fn record_live_at(
     let registry = LIVE_REGISTRY.get_or_init(|| Mutex::new(LiveRegistry::default()));
     let mut registry = registry.lock().unwrap_or_else(|error| error.into_inner());
     purge_expired(&mut registry, now);
-    registry.next_locator = registry.next_locator.saturating_add(1).max(1);
-    let locator = registry.next_locator;
+    let locator = registry.next_locators.entry(scope.clone()).or_default();
+    *locator = locator.saturating_add(1).max(1);
+    let locator = *locator;
     let items = registry.items.entry(scope.clone()).or_default();
     items.push_back(LiveProviderItem {
         runtime_event_locator: format!("runtime-event-{locator}"),
@@ -234,11 +235,9 @@ fn live_event(reason: &str, scope: &LiveProviderScope, activity: Option<Value>) 
 
 pub(crate) fn clear_live(scope: &LiveProviderScope) {
     if let Some(registry) = LIVE_REGISTRY.get() {
-        registry
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .items
-            .remove(scope);
+        let mut registry = registry.lock().unwrap_or_else(|error| error.into_inner());
+        registry.items.remove(scope);
+        registry.next_locators.remove(scope);
     }
 }
 
@@ -269,15 +268,17 @@ fn clear_live_for_session_ids(
     session_ids: &BTreeSet<String>,
 ) {
     if let Some(registry) = LIVE_REGISTRY.get() {
-        registry
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .items
-            .retain(|scope, _| {
-                scope.execution_space_id != execution_space_id
-                    || scope.project_id != project_id
-                    || !session_ids.contains(&scope.agent_session_id)
-            });
+        let mut registry = registry.lock().unwrap_or_else(|error| error.into_inner());
+        registry.items.retain(|scope, _| {
+            scope.execution_space_id != execution_space_id
+                || scope.project_id != project_id
+                || !session_ids.contains(&scope.agent_session_id)
+        });
+        registry.next_locators.retain(|scope, _| {
+            scope.execution_space_id != execution_space_id
+                || scope.project_id != project_id
+                || !session_ids.contains(&scope.agent_session_id)
+        });
     }
 }
 
@@ -348,10 +349,14 @@ fn purge_expired(registry: &mut LiveRegistry, now: u64) {
         items.retain(|item| item.expires_unix_ms > now);
         !items.is_empty()
     });
+    registry
+        .next_locators
+        .retain(|scope, _| registry.items.contains_key(scope));
 }
 
 fn snapshot_locked(registry: &LiveRegistry, scope: &LiveProviderScope) -> Option<Value> {
     let items = registry.items.get(scope)?;
+    let snapshot_locator = registry.next_locators.get(scope)?;
     let expires_unix_ms = items.iter().map(|item| item.expires_unix_ms).max()?;
     Some(json!({
         "schema_version":"agentfirm.live_provider_activity.v1",
@@ -363,7 +368,7 @@ fn snapshot_locked(registry: &LiveRegistry, scope: &LiveProviderScope) -> Option
         "member_run_id":scope.member_run_id,
         "agent_session_id":scope.agent_session_id,
         "agent_session_generation":scope.agent_session_generation,
-        "runtime_snapshot_locator":format!("runtime-snapshot-{}", registry.next_locator),
+        "runtime_snapshot_locator":format!("runtime-snapshot-{snapshot_locator}"),
         "expires_unix_ms":expires_unix_ms,
         "items":items,
     }))
@@ -472,5 +477,53 @@ mod tests {
         assert!(live_snapshot_at(&owner_one, 101).is_none());
         assert!(live_snapshot_at(&owner_two, 101).is_some());
         assert!(live_snapshot_at(&other_project, 101).is_some());
+    }
+
+    #[test]
+    fn volatile_locators_are_scope_local_and_reset_with_the_overlay() {
+        let _guard = test_guard();
+        reset_live_for_test();
+        let owner_one = scope("space-a", "project-a", 1);
+        let mut owner_two = owner_one.clone();
+        owner_two.member_run_id = "member-run-2".into();
+        owner_two.agent_session_id = "agent-session-2".into();
+
+        let first = record_live_at(
+            owner_one.clone(),
+            "codex",
+            LiveProviderActivityKind::Thinking,
+            "display-safe summary".into(),
+            100,
+        );
+        let sibling = record_live_at(
+            owner_two,
+            "kimi",
+            LiveProviderActivityKind::Thinking,
+            "Kimi is thinking".into(),
+            101,
+        );
+        assert_eq!(first["runtime_snapshot_locator"], "runtime-snapshot-1");
+        assert_eq!(sibling["runtime_snapshot_locator"], "runtime-snapshot-1");
+        assert_eq!(
+            first["items"][0]["runtime_event_locator"],
+            "runtime-event-1"
+        );
+        assert_eq!(
+            sibling["items"][0]["runtime_event_locator"],
+            "runtime-event-1"
+        );
+
+        clear_live(&owner_one);
+        let after_disconnect = record_live_at(
+            owner_one,
+            "codex",
+            LiveProviderActivityKind::ToolStarted,
+            "tool started".into(),
+            102,
+        );
+        assert_eq!(
+            after_disconnect["runtime_snapshot_locator"], "runtime-snapshot-1",
+            "disconnect/terminal cleanup must discard locator history"
+        );
     }
 }
