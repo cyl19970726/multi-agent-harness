@@ -591,6 +591,11 @@ try {
   await memberPage.getByRole("tab", {name:/Session/}).waitFor();
   await memberPage.getByRole("tab", {name:/Work/}).click();
   await waitForText(memberPage, "Real browser RoleAction loop");
+  const composerActionLabels = await memberPage.getByLabel("Composer action").locator("option").allTextContents();
+  check(
+    composerActionLabels.includes("start work"),
+    "Agent Workspace composer preserves canonical RoleAction token labels",
+  );
   await memberPage.getByLabel("Composer action").selectOption({label:"start work"});
   check(await memberPage.getByRole("button", {name:/collaboration|delegation/i}).count()===0,
     "real Member browser exposes unavailable collaboration state without an executable action");
