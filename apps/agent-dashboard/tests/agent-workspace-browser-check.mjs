@@ -188,6 +188,13 @@ try{
   if(liveConfig&&(await hostPage.locator(".agent-authored-turn").count())>0)await hostPage.locator(".agent-authored-turn").first().waitFor();
   await waitForStableWriteSurface(hostPage);
   if(!liveConfig){assert.equal(await hostPage.getByText("Validated owner-bound native Session",{exact:true}).count(),0,"Member-private provider event leaked into Host Session");assert.equal(await hostPage.getByText("Read Lead inbox",{exact:true}).count(),1,"Host-native event missing");}
+  if(!liveConfig){
+    await hostPage.getByText("Current decision",{exact:true}).waitFor();
+    await hostPage.getByText("Team Inbox",{exact:true}).waitFor();
+    await hostPage.getByText("Current Session",{exact:true}).waitFor();
+    await hostPage.getByText("Decision actions",{exact:true}).waitFor();
+    assert.equal(await hostPage.getByText(/agent-mira/).count(),0,"Host decision rail exposes a raw AgentMember id instead of the canonical display identity");
+  }
   await hostPage.screenshot({path:join(evidenceDir,`host-session--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   if(liveConfig)await hostPage.locator(".agent-roster-row").filter({hasNotText:"Host"}).first().click();
   else{

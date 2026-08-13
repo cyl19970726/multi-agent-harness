@@ -847,6 +847,15 @@
     min-height: 4.9rem;
   }
 
+  .agent-workspace .agent-message-row[data-conversation-start="true"]:not(:first-child) {
+    margin-top: 0.48rem;
+    border-top: 1px solid var(--aw-line);
+  }
+
+  .agent-workspace .agent-message-row[data-thread-continuation="true"] {
+    padding-top: 0.72rem;
+  }
+
   .agent-workspace .agent-work-row {
     min-height: 6rem;
     position: relative;
