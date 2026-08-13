@@ -190,6 +190,14 @@ if (realEvidencePath) {
           const bytes = readFileSync(absolute);
           const digest = sha256(bytes);
           if (digest !== descriptor.sha256) throw new Error(`${name} digest mismatch`);
+          if (
+            name.includes("ledger") || name.includes("journal")
+          ) {
+            const serialized = bytes.toString("utf8");
+            if (/"token":"(?!<redacted-capability-token>)/.test(serialized)) {
+              throw new Error(`${name} contains unredacted capability material`);
+            }
+          }
           material[name] = { absolute, bytes };
         }
 
