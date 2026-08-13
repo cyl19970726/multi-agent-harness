@@ -573,14 +573,24 @@ fn transcript_reader_uses_disposable_position_and_holds_incomplete_tail() {
     .unwrap();
     assert_eq!(first.outcomes.len(), 1);
     assert!(first.incomplete_tail);
-    let second =
-        read_transcript_batch(&context(ProviderKind::Codex), &boundary, first.next_position, 10).unwrap();
+    let second = read_transcript_batch(
+        &context(ProviderKind::Codex),
+        &boundary,
+        first.next_position,
+        10,
+    )
+    .unwrap();
     assert_eq!(second.outcomes.len(), 1);
     assert!(second.incomplete_tail);
 
     fs::write(&path, b"{}\n").unwrap();
     assert!(matches!(
-        read_transcript_batch(&context(ProviderKind::Codex), &boundary, second.next_position, 10),
+        read_transcript_batch(
+            &context(ProviderKind::Codex),
+            &boundary,
+            second.next_position,
+            10
+        ),
         Err(TranscriptReadError::SourceChanged)
     ));
     fs::remove_dir_all(&root).unwrap();
@@ -632,13 +642,25 @@ fn on_demand_service_writes_no_projection_files_and_restart_discards_state() {
     let mut service = ProviderProjectionService::open(context(ProviderKind::Codex));
     service.refresh(&boundary, 10).unwrap();
     assert_eq!(
-        service.private_session(&authority(), &viewer("agent-1"), 300).unwrap()
-            .episodes[0].observations.len(),
+        service
+            .private_session(&authority(), &viewer("agent-1"), 300)
+            .unwrap()
+            .episodes[0]
+            .observations
+            .len(),
         1
     );
-    assert_eq!(fs::read_dir(&root).unwrap().count(), 1, "only provider source exists");
+    assert_eq!(
+        fs::read_dir(&root).unwrap().count(),
+        1,
+        "only provider source exists"
+    );
     let restarted = ProviderProjectionService::open(context(ProviderKind::Codex));
-    assert!(restarted.private_session(&authority(), &viewer("agent-1"), 300).unwrap().episodes.is_empty());
+    assert!(restarted
+        .private_session(&authority(), &viewer("agent-1"), 300)
+        .unwrap()
+        .episodes
+        .is_empty());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -735,6 +757,10 @@ fn service_projects_private_and_public_views_on_demand_without_persistence() {
             ProjectionAccessError::NotSessionOwner
         ))
     ));
-    assert_eq!(fs::read_dir(&root).unwrap().count(), 1, "service creates no mirror");
+    assert_eq!(
+        fs::read_dir(&root).unwrap().count(),
+        1,
+        "service creates no mirror"
+    );
     fs::remove_dir_all(root).unwrap();
 }

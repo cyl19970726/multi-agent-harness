@@ -8,8 +8,9 @@ use firm_env::{
     TempHome,
 };
 use harness_core::agentfirm_api::{
-    ActorKind, ActorRef, AgentIdentity, AgentMemberOrganizationStatus, DeliveryClaim,
-    MutationContext, PermissionCeiling, RuntimeDispatchMode,
+    ActorKind, ActorRef, AgentIdentity, AgentMemberOrganizationStatus, AgentSession,
+    AgentSessionStatus, DeliveryClaim, MutationContext, NativeSessionAvailability,
+    NativeSessionRef, PermissionCeiling, RuntimeDispatchMode,
 };
 use harness_core::{
     ExecutionNode, ExecutionNodeStatus, MemberRunStatus, NodeProjectRegistration,
@@ -109,6 +110,21 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert!(initialized.status.success(), "init failed: {initialized:?}");
     let project_id = current_project_id(&home);
     let space_id = current_space_id(&home);
+    let worker_native_session_id = "019f-role-view-owner-session";
+    let rollout_dir = home.home().join(".codex/sessions/2026/08/13");
+    std::fs::create_dir_all(&rollout_dir).expect("Codex rollout fixture root");
+    std::fs::write(
+        rollout_dir.join(format!(
+            "rollout-2026-08-13T00-00-00-{worker_native_session_id}.jsonl"
+        )),
+        format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{worker_native_session_id}\"}}}}\n\
+             {{\"type\":\"event_msg\",\"payload\":{{\"type\":\"agent_reasoning\",\"turn_id\":\"turn-owner-1\",\"text\":\"raw-chain-of-thought-must-not-appear\"}}}}\n\
+             {{\"type\":\"event_msg\",\"payload\":{{\"type\":\"agent_message\",\"turn_id\":\"turn-owner-1\",\"message\":\"display-safe authored result\"}}}}\n\
+             {{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_complete\",\"turn_id\":\"turn-owner-1\"}}}}\n"
+        ),
+    )
+    .expect("Codex rollout fixture");
     let run = |args: &[&str]| {
         let mut full = vec!["--project", project_id.as_str()];
         full.extend_from_slice(args);
@@ -279,7 +295,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
             "agent_team_id": team.id,
             "objective": "Store-live AgentFirm action loop",
             "members": [
-                {"agent_member_id":worker_id,"name":"worker","role":"builder","provider":"codex"},
+                {"agent_member_id":worker_id,"name":"worker","role":"builder","provider":"codex","resume_native_session_id":worker_native_session_id},
                 {"agent_member_id":sibling_worker_id,"name":"sibling","role":"builder","provider":"codex"}
             ]
         }),
@@ -288,6 +304,83 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let run_id = created_run["result"]["team_run"]["id"]
         .as_str()
         .expect("run id");
+    let daemon = store
+        .latest_node_daemon_lease(node_id)
+        .expect("NodeDaemon lease")
+        .expect("active NodeDaemon lease");
+    store
+        .create_agent_identity(
+            &MutationContext {
+                execution_space_id: space_id.clone(),
+                authenticated_actor: ActorRef {
+                    kind: ActorKind::Service,
+                    id: daemon.daemon_id.clone(),
+                },
+                authority_actor: None,
+                command_name: "test.provider_projection.identity".into(),
+                idempotency_key: "test-provider-projection-worker-identity".into(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            AgentIdentity {
+                id: worker_id.into(),
+                display_name: "Role Action Worker".into(),
+                organization_status: AgentMemberOrganizationStatus::Active,
+                permission_ceiling: PermissionCeiling::WorkspaceWrite,
+                version: 1,
+                created_at: "2026-08-13T00:00:00Z".into(),
+                updated_at: "2026-08-13T00:00:00Z".into(),
+            },
+        )
+        .expect("provider projection AgentIdentity");
+    store
+        .create_agent_session(
+            &MutationContext {
+                execution_space_id: space_id.clone(),
+                authenticated_actor: ActorRef {
+                    kind: ActorKind::Service,
+                    id: daemon.daemon_id.clone(),
+                },
+                authority_actor: None,
+                command_name: "test.provider_projection.session".into(),
+                idempotency_key: "test-provider-projection-worker-session".into(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            AgentSession {
+                id: "agent-session:role-view-owner:1".into(),
+                agent_identity_id: worker_id.into(),
+                node_id: node_id.into(),
+                execution_space_id: space_id.clone(),
+                node_daemon_id: daemon.daemon_id.clone(),
+                node_daemon_generation: daemon.generation,
+                provider_kind: "codex".into(),
+                provider_profile_ref: "codex-app-server-v1".into(),
+                permission_envelope_ref: format!("agent-member:{worker_id}:permission"),
+                effective_permission_ceiling: PermissionCeiling::WorkspaceWrite,
+                lifecycle: AgentSessionStatus::Idle,
+                runtime_generation: 1,
+                native_session_ref: Some(NativeSessionRef {
+                    provider: "codex".into(),
+                    execution_mode: "codex_app_server".into(),
+                    native_session_id: worker_native_session_id.into(),
+                    native_locator_kind: "codex_rollout".into(),
+                    provider_version: None,
+                    adapter_contract_version: "codex-app-server-v1".into(),
+                    availability: NativeSessionAvailability::Available,
+                    supports_resume: true,
+                    last_verified_at: Some("2026-08-13T00:00:00Z".into()),
+                    parent_native_session_id: None,
+                }),
+                current_turn_id: None,
+                queued_input_count: 0,
+                version: 1,
+                opened_at: "2026-08-13T00:00:00Z".into(),
+                last_active_at: "2026-08-13T00:00:00Z".into(),
+                closed_at: None,
+            },
+        )
+        .expect("provider projection AgentSession");
 
     let before = store.work_operations().expect("before operations").len();
     let legacy_route = format!("/v1/team-runs/{run_id}/works?project={project_id}");
@@ -433,6 +526,14 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .find(|run| run["agent_member_id"] == sibling_worker_id)
         .and_then(|run| run["id"].as_str())
         .expect("sibling member run id");
+    let (status, retired_native_activity) = serve.get_json_with_headers(
+        &format!("/v1/member-runs/{member_run_id}/native-activity?project={project_id}"),
+        &[("X-AgentFirm-Token", MEMBER_TOKEN)],
+    );
+    assert_eq!(
+        status, 410,
+        "run-addressed native history reader must remain retired: {retired_native_activity}"
+    );
     let member_agent_workspace_route =
         format!("/v1/views/agent-workspace/{run_id}?project={project_id}&agent_id={worker_id}");
     let (status, host_selected_member) = serve.get_json_with_headers(
@@ -452,19 +553,18 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         host_selected_member["data"]["selected_agent"]["agent_member_ref"]["id"],
         worker_id
     );
-    assert_eq!(
-        host_selected_member["data"]["session_activity"]["availability"], "unavailable",
-        "Host-selected Member must fail closed for provider-private activity"
-    );
-    assert_eq!(
-        host_selected_member["data"]["session_activity"]["items"],
-        serde_json::json!([])
-    );
-    assert_eq!(
-        host_selected_member["data"]["sessions"],
-        serde_json::json!([]),
-        "Host-selected Member must not receive private Session history"
-    );
+    for private_field in [
+        "sessions",
+        "selected_session_id",
+        "session_activity",
+        "session_event_projection",
+        "live_provider_activity",
+    ] {
+        assert!(
+            host_selected_member["data"].get(private_field).is_none(),
+            "Host-selected Member must structurally omit private field {private_field}"
+        );
+    }
     assert_eq!(
         host_selected_member["data"]["selected_agent"]["current_member_run_ref"],
         serde_json::Value::Null,
@@ -476,7 +576,6 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
             "Host-selected Member leaked selected_agent.{key}"
         );
     }
-    assert!(host_selected_member["data"]["selected_session_id"].is_null());
     for key in [
         "provider_profile_ref",
         "model_preference",
@@ -494,6 +593,13 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         serde_json::json!([]),
         "Host-selected Member leaked configured tools"
     );
+    assert!(host_selected_member["data"]["roster"]
+        .as_array()
+        .expect("public roster")
+        .iter()
+        .all(|member| member.get("runtime_state").is_none()
+            && member["coordination_status"].is_null()
+            && member["capacity"] == "not_projected"));
     assert!(host_selected_member["data"].get("runtime_fabric").is_none());
     assert!(host_selected_member["data"]["messages"]
         .as_array()
@@ -516,9 +622,8 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
                 && action["target_ref"]["id"] == member_run_id),
         "Host control projection must remain available without private Session projection"
     );
-    assert!(host_selected_member["data"]["session_activity"]["items"]
-        .as_array()
-        .is_some());
+    let before_owner_projection_ledgers = ledger_digest(serve.fixture_store_root());
+    let before_owner_projection_source = file_tree_digest(&home.home().join(".codex"));
     let (status, member_self_workspace) = serve.get_json_with_headers(
         &member_agent_workspace_route,
         &[("X-AgentFirm-Token", MEMBER_TOKEN)],
@@ -527,6 +632,53 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         status, 200,
         "exact-self Member AgentWorkspace: {member_self_workspace}"
     );
+    assert!(
+        member_self_workspace["data"]
+            .get("live_provider_activity")
+            .is_some(),
+        "exact-self view must carry the nullable volatile live slot"
+    );
+    assert!(
+        member_self_workspace["data"]
+            .get("session_event_projection")
+            .is_some(),
+        "exact-self view must carry an on-demand Session projection or an explicit unavailable result"
+    );
+    let owner_projection = &member_self_workspace["data"]["session_event_projection"];
+    assert_eq!(owner_projection["disabled_reason"], serde_json::Value::Null);
+    assert!(owner_projection["agent_session_id"]
+        .as_str()
+        .is_some_and(|id| id.starts_with("agent-session:")));
+    assert!(owner_projection["source_snapshot_fingerprint"]
+        .as_str()
+        .is_some_and(|fingerprint| fingerprint.starts_with("sha256:")));
+    assert_eq!(
+        owner_projection["episodes"][0]["provider_turn_id"],
+        "turn-owner-1"
+    );
+    assert_eq!(owner_projection["episodes"][0]["terminal"], true);
+    let serialized_owner_projection =
+        serde_json::to_string(owner_projection).expect("projection JSON");
+    assert!(serialized_owner_projection.contains("display-safe authored result"));
+    assert!(!serialized_owner_projection.contains("raw-chain-of-thought-must-not-appear"));
+    assert_eq!(
+        ledger_digest(serve.fixture_store_root()),
+        before_owner_projection_ledgers,
+        "on-demand provider projection must not write Harness ledgers"
+    );
+    assert_eq!(
+        file_tree_digest(&home.home().join(".codex")),
+        before_owner_projection_source,
+        "on-demand provider projection must not rewrite provider-native storage"
+    );
+    for retired_history_field in ["sessions", "selected_session_id", "session_activity"] {
+        assert!(
+            member_self_workspace["data"]
+                .get(retired_history_field)
+                .is_none(),
+            "legacy provider field {retired_history_field} must remain retired"
+        );
+    }
     let (status, sibling_denied) = serve.get_json_with_headers(
         &member_agent_workspace_route,
         &[("X-AgentFirm-Token", SIBLING_MEMBER_TOKEN)],
@@ -536,6 +688,28 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         "sibling Agent private Session must fail closed: {sibling_denied}"
     );
     assert_eq!(sibling_denied["error"]["code"], "NOT_AUTHORIZED");
+    let sibling_self_route = format!(
+        "/v1/views/agent-workspace/{run_id}?project={project_id}&agent_id={sibling_worker_id}"
+    );
+    let (status, sibling_self_unavailable) = serve.get_json_with_headers(
+        &sibling_self_route,
+        &[("X-AgentFirm-Token", SIBLING_MEMBER_TOKEN)],
+    );
+    assert_eq!(status, 200, "unavailable exact-self projection");
+    let unavailable = &sibling_self_unavailable["data"]["session_event_projection"];
+    for field in [
+        "agent_session_id",
+        "agent_session_generation",
+        "source_snapshot_fingerprint",
+    ] {
+        assert!(
+            unavailable[field].is_null(),
+            "unavailable provider projection must not fabricate {field}"
+        );
+    }
+    assert_eq!(unavailable["episodes"], serde_json::json!([]));
+    assert_eq!(unavailable["truncated"], false);
+    assert!(unavailable["disabled_reason"].as_str().is_some());
     let host_agent_workspace_route = format!(
         "/v1/views/agent-workspace/{run_id}?project={project_id}&agent_id={}",
         team.host_agent_id
@@ -549,6 +723,12 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(
         exact_host_workspace["data"]["selected_agent"]["is_host"],
         true
+    );
+    assert!(
+        exact_host_workspace["data"]
+            .get("session_event_projection")
+            .is_some(),
+        "exact Host self view carries an explicit owner projection state"
     );
     let (status, member_denied_host) = serve.get_json_with_headers(
         &host_agent_workspace_route,

@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use harness_core::agentfirm_api::{ActorKind, ActorRef};
-use harness_core::{AgentTeam, AgentTeamRun, Work, WorkCondition, WorkPhase};
+use harness_core::{AgentTeam, AgentTeamRun, NativeSessionRef, Work, WorkCondition, WorkPhase};
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
@@ -42,7 +42,6 @@ impl Query {
             "host_id",
             "member_id",
             "agent_id",
-            "session_id",
             "phase",
             "condition",
             "resolution",
@@ -1822,53 +1821,6 @@ fn team_view(
     ))
 }
 
-fn unavailable_native_activity(
-    native_session_id: Option<&str>,
-    provider: Option<&str>,
-    execution_mode: Option<&str>,
-    reason: &str,
-) -> Value {
-    json!({
-        "native_session_id":native_session_id,
-        "provider":provider,
-        "execution_mode":execution_mode,
-        "availability":"unavailable",
-        "items":[],
-        "truncated":false,
-        "disabled_reason":reason,
-    })
-}
-
-fn read_selected_native_activity(session: Option<&Value>) -> Value {
-    let Some(session) = session else {
-        return unavailable_native_activity(
-            None,
-            None,
-            None,
-            "No provider-native Session is bound to this selected Agent run.",
-        );
-    };
-    match crate::native_session::read_activity_value(session) {
-        Ok(mut activity) => {
-            if let Some(items) = activity.get_mut("items").and_then(Value::as_array_mut) {
-                for (index, item) in items.iter_mut().enumerate() {
-                    if let Some(item) = item.as_object_mut() {
-                        item.insert("event_id".into(), json!(format!("native-event-{index}")));
-                    }
-                }
-            }
-            activity["disabled_reason"] = Value::Null;
-            activity
-        }
-        Err(_) => unavailable_native_activity(
-            session.get("native_session_id").and_then(Value::as_str),
-            session.get("provider").and_then(Value::as_str),
-            session.get("execution_mode").and_then(Value::as_str),
-            "The server could not verify and read the bound provider-native Session.",
-        ),
-    }
-}
-
 fn unavailable_session_event_projection(reason: &str) -> Value {
     json!({
         "schema_version":"agentfirm.provider_observation.v1",
@@ -1881,52 +1833,132 @@ fn unavailable_session_event_projection(reason: &str) -> Value {
     })
 }
 
-fn exact_agent_session<'a>(
+fn normalized_provider(provider: &str) -> &str {
+    match provider {
+        "codex-app" | "codex_app" | "codex_app_server" => "codex",
+        "kimi-code" | "kimi_code" | "kimi_acp" => "kimi",
+        "claude-code" | "claude_code" | "claude_agent_sdk" => "claude",
+        value => value,
+    }
+}
+
+/// Resolve one current canonical AgentSession and return its server-owned
+/// NativeSessionRef. MemberRun/TeamRun values are selectors only; they never
+/// become a replacement source of provider identity or filesystem authority.
+fn exact_agent_session_binding<'a>(
     facts: &'a Facts,
+    project_id: &str,
     agent_identity_id: &str,
-    native_session: &Value,
-) -> Result<&'a Value, &'static str> {
-    let Some(native_session_id) = native_session["native_session_id"].as_str() else {
+    native_session_id: &str,
+    provider: Option<&str>,
+    runtime_generation: Option<u64>,
+) -> Result<(&'a Value, NativeSessionRef), &'static str> {
+    if native_session_id.trim().is_empty() {
         return Err("The selected provider-native Session has no exact native id.");
-    };
+    }
+    let expected_provider = provider.map(normalized_provider);
     let current = facts
         .agent_sessions
         .iter()
+        .filter(|session| session["execution_space_id"] == project_id)
         .filter(|session| session["agent_identity_id"] == agent_identity_id)
         .filter(|session| session["lifecycle"] != "closed")
         .filter(|session| {
-            session["native_session_ref"]["native_session_id"] == native_session_id
+            runtime_generation
+                .is_none_or(|generation| session["runtime_generation"].as_u64() == Some(generation))
+        })
+        .filter_map(|session| {
+            let native = serde_json::from_value::<NativeSessionRef>(
+                session.get("native_session_ref")?.clone(),
+            )
+            .ok()?;
+            (native.native_session_id == native_session_id
+                && expected_provider.is_none_or(|expected| {
+                    normalized_provider(&native.provider) == expected
+                        && session["provider_kind"]
+                            .as_str()
+                            .is_some_and(|value| normalized_provider(value) == expected)
+                }))
+            .then_some((session, native))
         })
         .collect::<Vec<_>>();
     match current.as_slice() {
-        [session] => Ok(*session),
+        [(session, native)] => Ok((*session, native.clone())),
         [] => Err("No current canonical AgentSession binds this provider-native Session."),
         _ => Err("Multiple current AgentSessions ambiguously bind this provider-native Session."),
     }
 }
 
 fn read_session_event_projection(
+    store: &HarnessStore,
     project_id: &str,
     team_id: &str,
     selected_agent_id: &str,
     viewer_identity_id: &str,
     facts: &Facts,
-    native_session: Option<&Value>,
+    run: Option<&AgentTeamRun>,
+    selected_member_run: Option<&Value>,
 ) -> Value {
-    let Some(native_session_value) = native_session else {
-        return unavailable_session_event_projection(
-            "No provider-native Session is bound to this selected Agent run.",
-        );
+    let selector = if let Some(member_run) = selected_member_run {
+        let Some(native) = member_run
+            .get("native_session")
+            .filter(|value| !value.is_null())
+        else {
+            return unavailable_session_event_projection(
+                "No provider-native Session is bound to this selected Agent run.",
+            );
+        };
+        let Some(native_id) = native["native_session_id"].as_str() else {
+            return unavailable_session_event_projection(
+                "The selected provider-native Session has no exact native id.",
+            );
+        };
+        (
+            native_id,
+            native["provider"].as_str(),
+            member_run["runtime_generation"].as_u64(),
+        )
+    } else {
+        let Some(run) = run else {
+            return unavailable_session_event_projection(
+                "No current TeamRun binds the selected Host Agent Session.",
+            );
+        };
+        let Some(native_id) = run
+            .host_thread_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+        else {
+            return unavailable_session_event_projection(
+                "No provider-native Session is bound to the selected Host run.",
+            );
+        };
+        (native_id, Some(run.host_surface.as_str()), None)
     };
-    let session = match exact_agent_session(facts, selected_agent_id, native_session_value) {
-        Ok(session) => session,
+    let (session, native_session) = match exact_agent_session_binding(
+        facts,
+        project_id,
+        selected_agent_id,
+        selector.0,
+        selector.1,
+        selector.2,
+    ) {
+        Ok(binding) => binding,
         Err(reason) => return unavailable_session_event_projection(reason),
     };
-    let native_session = match serde_json::from_value(native_session_value.clone()) {
-        Ok(value) => value,
-        Err(_) => {
+    let node_id = session["node_id"].as_str().unwrap_or_default();
+    let lease = match store.latest_node_daemon_lease(node_id) {
+        Ok(Some(lease))
+            if enum_string(&lease.status) == "active"
+                && lease.expires_unix_ms > crate::current_unix_ms_u64()
+                && session["node_daemon_id"].as_str() == Some(lease.daemon_id.as_str())
+                && session["node_daemon_generation"].as_u64() == Some(lease.generation) =>
+        {
+            lease
+        }
+        _ => {
             return unavailable_session_event_projection(
-                "The canonical provider-native Session reference is malformed.",
+                "The canonical AgentSession is not owned by the current NodeDaemon generation.",
             )
         }
     };
@@ -1937,8 +1969,8 @@ fn read_session_event_projection(
             agent_identity_id: selected_agent_id,
             agent_session_id: session["id"].as_str().unwrap_or_default(),
             agent_session_generation: session["runtime_generation"].as_u64().unwrap_or(0),
-            node_daemon_id: session["node_daemon_id"].as_str().unwrap_or_default(),
-            node_daemon_generation: session["node_daemon_generation"].as_u64().unwrap_or(0),
+            node_daemon_id: &lease.daemon_id,
+            node_daemon_generation: lease.generation,
             viewer_identity_id,
             native_session: &native_session,
         },
@@ -1948,37 +1980,6 @@ fn read_session_event_projection(
             "The server could not verify and read the bound provider-native Session.",
         )
     })
-}
-
-fn host_native_session_ref(run: &AgentTeamRun) -> Option<Value> {
-    let thread_id = run.host_thread_id.as_deref()?.trim();
-    if thread_id.is_empty() {
-        return None;
-    }
-    let provider = match run.host_surface.as_str() {
-        "codex" | "codex-app" | "codex_app" | "codex_app_server" => "codex",
-        "kimi" | "kimi-code" | "kimi_code" | "kimi_acp" => "kimi",
-        "claude" | "claude-code" | "claude_code" | "claude_agent_sdk" => "claude",
-        _ => return None,
-    };
-    let locator = match provider {
-        "codex" => "codex_rollout",
-        "kimi" => "kimi_code_session",
-        "claude" => "claude_project_session",
-        _ => "provider_native_session",
-    };
-    Some(json!({
-        "provider":provider,
-        "execution_mode":"host_native",
-        "native_session_id":thread_id,
-        "native_locator_kind":locator,
-        "provider_version":null,
-        "adapter_contract_version":"host-native-read-v1",
-        "availability":"available",
-        "supports_resume":true,
-        "last_verified_at":null,
-        "parent_native_session_id":null,
-    }))
 }
 
 fn agent_workspace_view(
@@ -2192,6 +2193,14 @@ fn agent_workspace_view(
             if !is_selected || projection_scope == "host_member_public" {
                 object.remove("runtime_state");
             }
+            if projection_scope == "host_member_public" {
+                // The public Host-selected surface is responsibility and
+                // coordination only. Provider-derived or Member-private live
+                // state is structurally absent, including roster rollups.
+                object.remove("coordination_status");
+                object.insert("coordination_status".into(), Value::Null);
+                object.insert("capacity".into(), json!("not_projected"));
+            }
         }
     }
 
@@ -2218,27 +2227,14 @@ fn agent_workspace_view(
                     .cmp(&left["runtime_generation"].as_u64())
             })
     });
-    let requested_session_id = query
-        .values
-        .get("session_id")
-        .and_then(|values| values.first())
-        .map(String::as_str);
     let selected_member_run = if selected_is_host {
         None
     } else {
-        requested_session_id
-            .and_then(|session_id| {
-                member_runs.iter().find(|member_run| {
-                    member_run["native_session"]["native_session_id"] == session_id
-                        || member_run["id"] == session_id
-                })
-            })
-            .or_else(|| {
-                run_id.and_then(|current_run_id| {
-                    member_runs
-                        .iter()
-                        .find(|member_run| member_run["team_run_id"] == current_run_id)
-                })
+        run_id
+            .and_then(|current_run_id| {
+                member_runs
+                    .iter()
+                    .find(|member_run| member_run["team_run_id"] == current_run_id)
             })
             .or_else(|| member_runs.first())
     };
@@ -2248,98 +2244,41 @@ fn agent_workspace_view(
     // coordination/Work facts and never that Member's native Session internals.
     let may_read_private_session =
         (selected_is_host && exact_host_identity) || (!selected_is_host && exact_selected_identity);
-    let native_session = if !may_read_private_session {
-        None
-    } else if selected_is_host {
-        run.and_then(host_native_session_ref)
-    } else {
-        selected_member_run
-            .and_then(|member_run| member_run.get("native_session"))
-            .filter(|session| !session.is_null())
-            .cloned()
-    };
-    let session_activity = if may_read_private_session {
-        read_selected_native_activity(native_session.as_ref())
-    } else {
-        unavailable_native_activity(
-            None,
-            None,
-            None,
-            "Provider-private Session events are visible only to the exact selected Agent identity.",
-        )
-    };
+    // The owner-only historical projection is decoded on demand. It is
+    // independent from the volatile live overlay and never enters a ledger.
     let viewer_identity_id = identity
         .map(|identity| identity.actor.id.as_str())
         .unwrap_or_default();
-    let session_event_projection = if may_read_private_session {
+    let session_event_projection = may_read_private_session.then(|| {
         read_session_event_projection(
+            store,
             space_id,
             &team.id,
             selected_agent_id,
             viewer_identity_id,
             &facts,
-            native_session.as_ref(),
+            run,
+            selected_member_run,
         )
-    } else {
-        Value::Null
-    };
+    });
+    // Only an exact MemberRun + AgentSession generation can receive the
+    // process-local live overlay. Host runs without a MemberRun remain null.
     let live_provider_activity = if may_read_private_session {
         selected_member_run
             .and_then(|member_run| {
-                let native = native_session.as_ref()?;
-                let session = exact_agent_session(&facts, selected_agent_id, native).ok()?;
-                Some(crate::provider_event_api::LiveProviderScope {
-                    project_id: space_id.to_string(),
-                    team_run_id: member_run["team_run_id"].as_str()?.to_string(),
-                    member_run_id: member_run["id"].as_str()?.to_string(),
-                    agent_session_id: session["id"].as_str()?.to_string(),
-                    agent_session_generation: session["runtime_generation"].as_u64()?,
-                })
+                let typed_member = serde_json::from_value(member_run.clone()).ok()?;
+                crate::provider_event_api::exact_live_scope(
+                    store,
+                    space_id,
+                    member_run["team_run_id"].as_str()?,
+                    &typed_member,
+                )
+                .ok()
             })
             .as_ref()
             .and_then(crate::provider_event_api::live_snapshot)
     } else {
         None
-    };
-    let sessions = if !may_read_private_session {
-        Vec::new()
-    } else if selected_is_host {
-        run.into_iter()
-            .map(|run| {
-                json!({
-                    "session_id":run.host_thread_id,
-                    "member_run_id":null,
-                    "team_run_id":run.id,
-                    "provider":run.host_surface,
-                    "execution_mode":"host_native",
-                    "coordination_status":enum_string(&run.status),
-                    "runtime_status":enum_string(&run.status),
-                    "runtime_generation":null,
-                    "started_at":run.created_at,
-                    "last_active_at":run.updated_at,
-                    "ended_at":run.completed_at,
-                })
-            })
-            .collect::<Vec<_>>()
-    } else {
-        member_runs
-            .iter()
-            .map(|member_run| {
-                json!({
-                    "session_id":member_run["native_session"]["native_session_id"],
-                    "member_run_id":member_run["id"],
-                    "team_run_id":member_run["team_run_id"],
-                    "provider":member_run["native_session"]["provider"],
-                    "execution_mode":member_run["native_session"]["execution_mode"],
-                    "coordination_status":member_run["coordination_status"],
-                    "runtime_status":member_run["runtime_status"],
-                    "runtime_generation":member_run["runtime_generation"],
-                    "started_at":member_run["started_at"],
-                    "last_active_at":member_run["last_event_at"],
-                    "ended_at":member_run["finished_at"],
-                })
-            })
-            .collect()
     };
     let selected_member = facts
         .members
@@ -2407,8 +2346,8 @@ fn agent_workspace_view(
         "organization_status":selected_member.and_then(|member|member["organization_status"].as_str()).unwrap_or("unknown"),
         "is_host":selected_is_host,
         "current_member_run_ref":if may_read_private_session {selected_member_run_id} else {None},
-        "provider":native_session.as_ref().and_then(|session|session["provider"].as_str()),
-        "execution_mode":native_session.as_ref().and_then(|session|session["execution_mode"].as_str()),
+        "provider":if may_read_private_session {selected_member_run.and_then(|run|run["provider"].as_str())} else {None},
+        "execution_mode":if may_read_private_session {selected_member_run.and_then(|run|run["execution_mode"].as_str())} else {None},
         "runtime_status":if may_read_private_session {selected_runtime_status} else {None},
     });
     let unread_count = if projection_scope == "host_member_public" {
@@ -2464,9 +2403,6 @@ fn agent_workspace_view(
             "team":safe_team,
             "selected_agent":selected,
             "roster":roster,
-            "sessions":sessions,
-            "selected_session_id":native_session.as_ref().and_then(|session|session["native_session_id"].as_str()),
-            "session_activity":session_activity,
             "session_event_projection":session_event_projection,
             "live_provider_activity":live_provider_activity,
             "messages":messages,
@@ -2476,7 +2412,7 @@ fn agent_workspace_view(
                 "current_work_id":current_work_id,
                 "message_count":messages.len(),
                 "unread_count":unread_count,
-                "last_activity_at":session_activity["items"].as_array().and_then(|items|items.last()).and_then(|item|item["occurred_at"].as_str()),
+                "last_activity_at":selected_member_run.and_then(|member_run|member_run["last_event_at"].as_str()),
                 "authorization_count":allowed_actions.iter().filter(|action|action["disabled_reason"].is_null()).count(),
             },
         }),

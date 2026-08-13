@@ -66,9 +66,9 @@ mod legacy_export;
 mod mcp;
 mod native_session;
 mod pi_rpc;
-mod provider_event_api;
 mod project;
 mod provider_adapter;
+mod provider_event_api;
 #[cfg(unix)]
 mod remote_fabric;
 mod resident;
@@ -17220,14 +17220,12 @@ fn member_supervisor_test_idle_grace() -> Option<Duration> {
         .map(Duration::from_millis)
 }
 
-/// Live member thinking is an ephemeral operator hint, never a ledger row.
-/// Each preview expires in the browser shortly after publication and is not
-/// available to reconnecting clients.
-const LIVE_MEMBER_ACTIVITY_TTL_MS: u128 = 10_000;
-const LIVE_MEMBER_ACTIVITY_MAX_CHARS: usize = 240;
-const LIVE_MEMBER_ACTIVITY_THROTTLE: Duration = Duration::from_secs(1);
-static LIVE_MEMBER_ACTIVITY_REVISION: AtomicU64 = AtomicU64::new(1);
-static LIVE_MEMBER_ACTIVITY_INGRESS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+/// Display-safe provider activity is an ephemeral operator hint, never a
+/// ledger row. The serve process owns the TTL registry and current-subscriber
+/// SSE fan-out; provider supervisors only send short, typed updates into it.
+const LIVE_PROVIDER_ACTIVITY_MAX_CHARS: usize = 240;
+const LIVE_PROVIDER_ACTIVITY_THROTTLE: Duration = Duration::from_secs(1);
+static LIVE_PROVIDER_ACTIVITY_TOKEN: OnceLock<String> = OnceLock::new();
 
 /// Process-local control plane for provider sessions started by `serve` or the
 /// MCP server. The durable TeamMessageProjection remains the conversation record; this
@@ -19012,15 +19010,94 @@ fn dispatch_live_member_control(
     }
 }
 
-#[derive(Clone, Debug)]
-struct LiveMemberActivityPreview {
-    team_run_id: String,
-    member_run_id: String,
-    provider: String,
-    preview: String,
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum LiveProviderActivityUpdate {
+    Updated {
+        team_run_id: String,
+        member_run_id: String,
+        provider: String,
+        kind: provider_event_api::LiveProviderActivityKind,
+        display_summary: String,
+    },
+    Terminal {
+        team_run_id: String,
+        member_run_id: String,
+    },
 }
 
-type LiveMemberActivitySink = Arc<dyn Fn(LiveMemberActivityPreview) + Send + Sync>;
+type LiveMemberActivitySink = Arc<dyn Fn(LiveProviderActivityUpdate) + Send + Sync>;
+
+fn emit_live_provider_activity(
+    sink: &LiveMemberActivitySink,
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    kind: provider_event_api::LiveProviderActivityKind,
+    display_summary: String,
+) {
+    sink(LiveProviderActivityUpdate::Updated {
+        team_run_id: ledger.run_id.clone(),
+        member_run_id: member.id.clone(),
+        provider: member.provider.clone(),
+        kind,
+        display_summary,
+    });
+}
+
+fn emit_live_provider_terminal(
+    sink: Option<&LiveMemberActivitySink>,
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+) {
+    if let Some(sink) = sink {
+        sink(LiveProviderActivityUpdate::Terminal {
+            team_run_id: ledger.run_id.clone(),
+            member_run_id: member.id.clone(),
+        });
+    }
+}
+
+fn display_safe_tool_status(status: &str, started_event: bool) -> &'static str {
+    match status {
+        "in_progress" | "running" | "started" => "running",
+        "completed" | "success" | "succeeded" => "completed",
+        "failed" | "error" => "failed",
+        "cancelled" | "canceled" => "cancelled",
+        _ if started_event => "running",
+        _ => "completed",
+    }
+}
+
+struct LiveProviderTurnGuard {
+    sink: Option<LiveMemberActivitySink>,
+    team_run_id: String,
+    member_run_id: String,
+}
+
+impl LiveProviderTurnGuard {
+    fn new(
+        sink: Option<LiveMemberActivitySink>,
+        team_run_id: String,
+        member_run_id: String,
+    ) -> Self {
+        Self {
+            sink,
+            team_run_id,
+            member_run_id,
+        }
+    }
+}
+
+impl Drop for LiveProviderTurnGuard {
+    fn drop(&mut self) {
+        if let Some(sink) = &self.sink {
+            sink(LiveProviderActivityUpdate::Terminal {
+                team_run_id: self.team_run_id.clone(),
+                member_run_id: self.member_run_id.clone(),
+            });
+        }
+    }
+}
 
 /// The orchestrator's serialized view of one run's ledger. Read paths are
 /// unlocked (append-only JSONL); every "compute next seq + append" pair holds
@@ -20969,6 +21046,29 @@ pub(crate) fn ensure_team_runtime_fabric(
             )));
         }
     } else {
+        let host_native_session_ref = body
+            .run
+            .host_thread_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .map(|id| harness_core::agentfirm_api::NativeSessionRef {
+                provider: host_provider.to_string(),
+                execution_mode: "host_native".to_string(),
+                native_session_id: id.to_string(),
+                native_locator_kind: match host_provider {
+                    "codex" => "codex_rollout",
+                    "kimi" => "kimi_code_session",
+                    "claude" => "claude_project_session",
+                    _ => "provider_native_session",
+                }
+                .to_string(),
+                provider_version: None,
+                adapter_contract_version: "host-native-read-v1".to_string(),
+                availability: harness_core::agentfirm_api::NativeSessionAvailability::Unknown,
+                supports_resume: true,
+                last_verified_at: None,
+                parent_native_session_id: None,
+            });
         store.create_agent_session(
             &MutationContext {
                 execution_space_id: execution_space_id.to_string(),
@@ -20998,7 +21098,7 @@ pub(crate) fn ensure_team_runtime_fabric(
                 effective_permission_ceiling: host.permission_ceiling,
                 lifecycle: AgentSessionStatus::Cold,
                 runtime_generation: 1,
-                native_session_ref: None,
+                native_session_ref: host_native_session_ref,
                 current_turn_id: None,
                 queued_input_count: 0,
                 version: 1,
@@ -22842,29 +22942,19 @@ fn project_codex_team_event_live(
     let title = match item_type {
         "command_execution" => "Bash".to_string(),
         "file_change" => "File change".to_string(),
-        "mcp_tool_call" => item
-            .get("tool")
-            .or_else(|| item.get("name"))
-            .and_then(|value| value.as_str())
-            .map(|name| format!("MCP · {name}"))
-            .unwrap_or_else(|| "MCP tool".to_string()),
+        "mcp_tool_call" => "MCP tool".to_string(),
         "web_search" => "Web search".to_string(),
-        other => other.replace('_', " "),
+        _ => "Tool".to_string(),
     };
     let provider_status = item
         .get("status")
         .and_then(|value| value.as_str())
-        .unwrap_or(if event_type == "item.started" {
-            "in_progress"
-        } else {
-            "completed"
-        });
+        .unwrap_or_default();
+    let provider_status = display_safe_tool_status(provider_status, event_type == "item.started");
     let summary = match item_type {
-        "command_execution" => item
-            .get("command")
-            .and_then(|value| value.as_str())
-            .map(|command| truncate_on_char_boundary(command, 240).to_string())
-            .unwrap_or_else(|| format!("command {provider_status}")),
+        // Tool progress is display-safe metadata, not command arguments or
+        // provider transcript content.
+        "command_execution" => format!("Bash {provider_status}"),
         "file_change" => format!(
             "{} file change(s)",
             item.get("changes")
@@ -22875,12 +22965,14 @@ fn project_codex_team_event_live(
         _ => format!("{title} {provider_status}"),
     };
     if let Some(sink) = live_sink {
-        sink(LiveMemberActivityPreview {
-            team_run_id: ledger.run_id.clone(),
-            member_run_id: member.id.clone(),
-            provider: member.provider.clone(),
-            preview: summary,
-        });
+        let kind = if event_type == "item.started" {
+            provider_event_api::LiveProviderActivityKind::ToolStarted
+        } else if matches!(provider_status, "failed" | "cancelled") {
+            provider_event_api::LiveProviderActivityKind::ToolFailed
+        } else {
+            provider_event_api::LiveProviderActivityKind::ToolCompleted
+        };
+        emit_live_provider_activity(sink, ledger, member, kind, summary);
     }
 }
 
@@ -22933,6 +23025,8 @@ fn run_codex_app_server_turn(
         active_work,
         lineage,
     } = context;
+    let _live_turn_guard =
+        LiveProviderTurnGuard::new(live_sink.clone(), ledger.run_id.clone(), member.id.clone());
     require_provider_session_authority(ledger, &member.agent_member_id, true)?;
     let mut turn_id = client.start_turn(prompt)?;
     // The turn/start response is the earliest honest evidence that the
@@ -22956,7 +23050,7 @@ fn run_codex_app_server_turn(
     let mut active_turn_id = turn_id.clone();
     let mut final_text = String::new();
     let mut last_activity = Instant::now();
-    let mut last_live_activity = Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE;
+    let mut last_live_activity = Instant::now() - LIVE_PROVIDER_ACTIVITY_THROTTLE;
     let mut interrupt_requested = false;
     let mut close_requested = false;
     let mut pending_native_controls =
@@ -23119,22 +23213,38 @@ fn run_codex_app_server_turn(
                     Some("item/agentMessage/delta") => {
                         if let Some(delta) = params.get("delta").and_then(|value| value.as_str()) {
                             final_text.push_str(delta);
+                            if last_live_activity.elapsed() >= LIVE_PROVIDER_ACTIVITY_THROTTLE {
+                                if let Some(sink) = &live_sink {
+                                    last_live_activity = Instant::now();
+                                    emit_live_provider_activity(
+                                        sink,
+                                        ledger,
+                                        member,
+                                        provider_event_api::LiveProviderActivityKind::ResponseStreaming,
+                                        format!("assistant response streaming · {} chars", final_text.len()),
+                                    );
+                                }
+                            }
                         }
                     }
-                    Some("item/reasoning/summaryTextDelta") | Some("item/reasoning/textDelta") => {
+                    // Only the provider's display-safe reasoning summary is
+                    // eligible. Raw reasoning text/CoT notifications are
+                    // intentionally ignored.
+                    Some("item/reasoning/summaryTextDelta") => {
                         let preview = params
                             .get("delta")
                             .and_then(|value| value.as_str())
                             .and_then(sanitize_live_member_preview);
-                        if last_live_activity.elapsed() >= LIVE_MEMBER_ACTIVITY_THROTTLE {
+                        if last_live_activity.elapsed() >= LIVE_PROVIDER_ACTIVITY_THROTTLE {
                             if let (Some(sink), Some(preview)) = (&live_sink, preview) {
                                 last_live_activity = Instant::now();
-                                sink(LiveMemberActivityPreview {
-                                    team_run_id: ledger.run_id.clone(),
-                                    member_run_id: member.id.clone(),
-                                    provider: member.provider.clone(),
+                                emit_live_provider_activity(
+                                    sink,
+                                    ledger,
+                                    member,
+                                    provider_event_api::LiveProviderActivityKind::Thinking,
                                     preview,
-                                });
+                                );
                             }
                         }
                     }
@@ -23366,6 +23476,9 @@ fn run_claude_agent_sdk_team_member(
     let cwd = &context.cwd;
     let idle_timeout = context.idle_timeout;
     let turn_leases = &context.turn_leases;
+    let live_sink = context.live_sink.clone();
+    let _live_member_guard =
+        LiveProviderTurnGuard::new(live_sink.clone(), ledger.run_id.clone(), member.id.clone());
     let runner = claude_agent_sdk_runner_path(cwd)?;
 
     let mut member_row = member.clone();
@@ -23638,6 +23751,7 @@ fn run_claude_agent_sdk_team_member(
     let mut closed_cleanly = false;
     let mut transport_disconnected = false;
     let mut idle_since = inflight_works.is_empty().then(Instant::now);
+    let mut last_live_activity = Instant::now() - LIVE_PROVIDER_ACTIVITY_THROTTLE;
 
     loop {
         require_provider_session_authority(ledger, &member.agent_member_id, false)?;
@@ -23799,11 +23913,49 @@ fn run_claude_agent_sdk_team_member(
                     }
                 }
                 "assistant_message" => {
+                    let mut emitted_tool = false;
+                    let mut emitted_text = false;
                     if let Some(blocks) = data.get("content").and_then(|v| v.as_array()) {
                         for block in blocks {
-                            if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                                turn_text.push_str(text);
+                            match block.get("type").and_then(|value| value.as_str()) {
+                                Some("text") => {
+                                    if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                                        turn_text.push_str(text);
+                                        emitted_text = true;
+                                    }
+                                }
+                                Some("tool_use") => emitted_tool = true,
+                                // Thinking blocks are provider-private. The SDK
+                                // does not label them as display-safe summaries,
+                                // so their contents are discarded here.
+                                Some("thinking" | "redacted_thinking") => {}
+                                _ => {}
                             }
+                        }
+                    }
+                    if emitted_tool {
+                        if let Some(sink) = &live_sink {
+                            emit_live_provider_activity(
+                                sink,
+                                ledger,
+                                &member_row,
+                                provider_event_api::LiveProviderActivityKind::ToolStarted,
+                                "tool started".to_string(),
+                            );
+                        }
+                    }
+                    if emitted_text
+                        && last_live_activity.elapsed() >= LIVE_PROVIDER_ACTIVITY_THROTTLE
+                    {
+                        if let Some(sink) = &live_sink {
+                            last_live_activity = Instant::now();
+                            emit_live_provider_activity(
+                                sink,
+                                ledger,
+                                &member_row,
+                                provider_event_api::LiveProviderActivityKind::ResponseStreaming,
+                                format!("assistant response streaming · {} chars", turn_text.len()),
+                            );
                         }
                     }
                 }
@@ -23847,6 +23999,7 @@ fn run_claude_agent_sdk_team_member(
                     }
                 }
                 "turn_complete" => {
+                    emit_live_provider_terminal(live_sink.as_ref(), ledger, &member_row);
                     let turn_evidence_refs: Vec<String> = data
                         .get("evidenceRefs")
                         .and_then(|value| value.as_array())
@@ -23977,6 +24130,7 @@ fn run_claude_agent_sdk_team_member(
                     turn_lease.take();
                 }
                 "interrupted" => {
+                    emit_live_provider_terminal(live_sink.as_ref(), ledger, &member_row);
                     let mut retained = Vec::new();
                     for pending in pending_control_effects.drain(..) {
                         if pending.action
@@ -24014,6 +24168,7 @@ fn run_claude_agent_sdk_team_member(
                     turn_lease.take();
                 }
                 "member_closed" => {
+                    emit_live_provider_terminal(live_sink.as_ref(), ledger, &member_row);
                     for pending in pending_control_effects.drain(..) {
                         crate::provider_adapter::settle_team_control(
                             ledger,
@@ -24041,6 +24196,7 @@ fn run_claude_agent_sdk_team_member(
                     break;
                 }
                 "runner_error" => {
+                    emit_live_provider_terminal(live_sink.as_ref(), ledger, &member_row);
                     crate::provider_adapter::settle_team_controls_without_terminal_ack(
                         ledger,
                         pending_control_effects.drain(..),
@@ -24348,6 +24504,8 @@ fn run_claude_team_turn(
     ledger: &TeamRunLedger,
     collaboration_env: &[(String, String)],
 ) -> CliResult<ClaudeTeamTurn> {
+    let _live_turn_guard =
+        LiveProviderTurnGuard::new(live_sink.clone(), ledger.run_id.clone(), member.id.clone());
     let mut cmd = Command::new("claude");
     cmd.arg("-p")
         .arg(prompt)
@@ -24496,16 +24654,13 @@ fn project_claude_team_event_live(
         if block.get("type").and_then(|value| value.as_str()) != Some("tool_use") {
             continue;
         }
-        let title = block
-            .get("name")
-            .and_then(|value| value.as_str())
-            .unwrap_or("tool");
-        sink(LiveMemberActivityPreview {
-            team_run_id: ledger.run_id.clone(),
-            member_run_id: member.id.clone(),
-            provider: member.provider.clone(),
-            preview: format!("tool started · {title}"),
-        });
+        emit_live_provider_activity(
+            sink,
+            ledger,
+            member,
+            provider_event_api::LiveProviderActivityKind::ToolStarted,
+            "tool started".to_string(),
+        );
     }
 }
 
@@ -24869,6 +25024,11 @@ fn run_kimi_member(
         let mut provider_effect_started = false;
         let outcome_result = {
             let _turn_lease = turn_leases.acquire();
+            let _live_turn_guard = LiveProviderTurnGuard::new(
+                live_sink.clone(),
+                ledger.run_id.clone(),
+                member.id.clone(),
+            );
             let claimed_reverse_response = Arc::new(Mutex::new(None::<TeamMessageProjection>));
             let claimed_for_request = Arc::clone(&claimed_reverse_response);
             let claimed_after_write = Arc::clone(&claimed_reverse_response);
@@ -24888,6 +25048,15 @@ fn run_kimi_member(
                 |update| mapper.handle(update),
                 |request| {
                     require_provider_session_authority(ledger, &member.agent_member_id, true)?;
+                    if let Some(sink) = &live_sink {
+                        emit_live_provider_activity(
+                            sink,
+                            ledger,
+                            &member_row,
+                            provider_event_api::LiveProviderActivityKind::InteractionWaiting,
+                            "Kimi is waiting for interaction".to_string(),
+                        );
+                    }
                     let reply = handle_kimi_provider_request(ledger, &member_row, request)?;
                     *claimed_for_request
                         .lock()
@@ -25625,8 +25794,6 @@ fn run_pi_team_member(
     loop {
         round += 1;
         let prompt = prompt_text.clone();
-        let member_id_clone = member.id.clone();
-        let member_provider = member.provider.clone();
         let source_record_id = active_work
             .as_ref()
             .map(|claimed| claimed.delivery.id.as_str())
@@ -25642,18 +25809,18 @@ fn run_pi_team_member(
 
         let turn_result = {
             let _turn_lease = turn_leases.acquire();
+            let _live_turn_guard = LiveProviderTurnGuard::new(
+                live_sink.clone(),
+                ledger.run_id.clone(),
+                member.id.clone(),
+            );
             pi_client.prompt(
                 &prompt,
                 idle_timeout,
                 |event| {
-                    if let Some(preview) = pi_rpc::PiRpcClient::project_live(event) {
+                    if let Some((kind, preview)) = pi_rpc::PiRpcClient::project_live(event) {
                         if let Some(sink) = &live_sink {
-                            sink(LiveMemberActivityPreview {
-                                team_run_id: ledger.run_id.clone(),
-                                member_run_id: member_id_clone.clone(),
-                                provider: member_provider.clone(),
-                                preview,
-                            });
+                            emit_live_provider_activity(sink, ledger, member, kind, preview);
                         }
                     }
                 },
@@ -26280,9 +26447,27 @@ fn sanitize_live_member_preview(value: &str) -> Option<String> {
         .join(" ");
     let preview = normalized
         .chars()
-        .take(LIVE_MEMBER_ACTIVITY_MAX_CHARS)
+        .take(LIVE_PROVIDER_ACTIVITY_MAX_CHARS)
         .collect::<String>();
     (!preview.is_empty()).then_some(preview)
+}
+
+fn new_live_provider_activity_token() -> String {
+    let mut bytes = [0u8; 32];
+    if std::fs::File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(&mut bytes))
+        .is_ok()
+    {
+        return bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    }
+    // A callback token is process-local defense-in-depth over a user-owned
+    // Unix control socket. Fall back without creating a durable identifier.
+    format!(
+        "serve-{}-{}-{}",
+        std::process::id(),
+        current_unix_ms_u64(),
+        generated_id("live-token")
+    )
 }
 
 fn kimi_interaction_prompt(frame: &serde_json::Value) -> String {
@@ -26936,19 +27121,15 @@ fn handle_kimi_provider_request(
 }
 
 /// Maps `session/update` frames of one prompt round onto the member ledger.
-/// Reasoning streams (`agent_thought_chunk`) are intentionally ignored here:
-/// no MemberAction or other durable record may contain thinking. A future
-/// transient live channel can surface a sanitized, non-replayable indicator
-/// without changing this ledger contract.
+/// Reasoning streams (`agent_thought_chunk`) are eligible only for the
+/// transient display-safe channel; no MemberAction or other durable record may
+/// contain them.
 struct MemberUpdateMapper<'a> {
     ledger: &'a TeamRunLedger,
     member: ProviderRuntimeProjection,
     live_sink: Option<LiveMemberActivitySink>,
     last_live_activity_at: Instant,
     text: String,
-    /// toolCallId → title retained only in memory so a completion projection
-    /// stays readable. Provider tool activity is never written to Harness.
-    open_tools: std::collections::HashMap<String, String>,
 }
 
 impl<'a> MemberUpdateMapper<'a> {
@@ -26961,9 +27142,8 @@ impl<'a> MemberUpdateMapper<'a> {
             ledger,
             member,
             live_sink,
-            last_live_activity_at: Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE,
+            last_live_activity_at: Instant::now() - LIVE_PROVIDER_ACTIVITY_THROTTLE,
             text: String::new(),
-            open_tools: std::collections::HashMap::new(),
         }
     }
 
@@ -26972,22 +27152,20 @@ impl<'a> MemberUpdateMapper<'a> {
             return;
         };
         if kind.contains("thought") {
-            if self.last_live_activity_at.elapsed() < LIVE_MEMBER_ACTIVITY_THROTTLE {
+            if self.last_live_activity_at.elapsed() < LIVE_PROVIDER_ACTIVITY_THROTTLE {
                 return;
             }
-            let preview = update
-                .get("content")
-                .and_then(|content| content.get("text"))
-                .and_then(|text| text.as_str())
-                .and_then(sanitize_live_member_preview);
-            if let (Some(sink), Some(preview)) = (&self.live_sink, preview) {
+            // Kimi ACP does not label thought chunks as display-safe reasoning
+            // summaries. Surface only the phase fact and discard its text.
+            if let Some(sink) = &self.live_sink {
                 self.last_live_activity_at = Instant::now();
-                sink(LiveMemberActivityPreview {
-                    team_run_id: self.ledger.run_id.clone(),
-                    member_run_id: self.member.id.clone(),
-                    provider: self.member.provider.clone(),
-                    preview,
-                });
+                emit_live_provider_activity(
+                    sink,
+                    self.ledger,
+                    &self.member,
+                    provider_event_api::LiveProviderActivityKind::Thinking,
+                    "Kimi is thinking".to_string(),
+                );
             }
             return;
         }
@@ -26999,18 +27177,16 @@ impl<'a> MemberUpdateMapper<'a> {
             {
                 self.text.push_str(text);
             }
-            if self.last_live_activity_at.elapsed() >= LIVE_MEMBER_ACTIVITY_THROTTLE {
+            if self.last_live_activity_at.elapsed() >= LIVE_PROVIDER_ACTIVITY_THROTTLE {
                 if let Some(sink) = &self.live_sink {
                     self.last_live_activity_at = Instant::now();
-                    sink(LiveMemberActivityPreview {
-                        team_run_id: self.ledger.run_id.clone(),
-                        member_run_id: self.member.id.clone(),
-                        provider: self.member.provider.clone(),
-                        preview: format!(
-                            "assistant response streaming · {} chars",
-                            self.text.len()
-                        ),
-                    });
+                    emit_live_provider_activity(
+                        sink,
+                        self.ledger,
+                        &self.member,
+                        provider_event_api::LiveProviderActivityKind::ResponseStreaming,
+                        format!("assistant response streaming · {} chars", self.text.len()),
+                    );
                 }
             }
             return;
@@ -27019,35 +27195,46 @@ impl<'a> MemberUpdateMapper<'a> {
             return;
         }
         if kind.contains("tool") {
-            let tool_id = update
-                .get("toolCallId")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let title = update
-                .get("title")
-                .and_then(|v| v.as_str())
-                .or_else(|| update.get("kind").and_then(|v| v.as_str()))
-                .unwrap_or("tool call")
-                .to_string();
-            let status = update.get("status").and_then(|v| v.as_str()).unwrap_or("");
-            let terminal = matches!(status, "completed" | "failed" | "error" | "cancelled");
-            let preview = if kind == "tool_call" || !kind.contains("update") {
-                self.open_tools.insert(tool_id.clone(), title.clone());
-                Some(format!("tool started · {title}"))
+            let raw_status = update.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            let terminal = matches!(
+                raw_status,
+                "completed"
+                    | "success"
+                    | "succeeded"
+                    | "failed"
+                    | "error"
+                    | "cancelled"
+                    | "canceled"
+            );
+            let status = display_safe_tool_status(raw_status, !terminal);
+            let (activity_kind, preview) = if kind == "tool_call" || !kind.contains("update") {
+                (
+                    provider_event_api::LiveProviderActivityKind::ToolStarted,
+                    Some("tool started".to_string()),
+                )
             } else if terminal {
-                let title = self.open_tools.remove(&tool_id).unwrap_or(title);
-                Some(format!("tool {status} · {title}"))
+                (
+                    if matches!(status, "failed" | "cancelled") {
+                        provider_event_api::LiveProviderActivityKind::ToolFailed
+                    } else {
+                        provider_event_api::LiveProviderActivityKind::ToolCompleted
+                    },
+                    Some(format!("tool {status}")),
+                )
             } else {
-                None
+                (
+                    provider_event_api::LiveProviderActivityKind::ToolStarted,
+                    None,
+                )
             };
             if let (Some(sink), Some(preview)) = (&self.live_sink, preview) {
-                sink(LiveMemberActivityPreview {
-                    team_run_id: self.ledger.run_id.clone(),
-                    member_run_id: self.member.id.clone(),
-                    provider: self.member.provider.clone(),
+                emit_live_provider_activity(
+                    sink,
+                    self.ledger,
+                    &self.member,
+                    activity_kind,
                     preview,
-                });
+                );
             }
         }
         // Anything else (available_commands_update, plan, ...): not journaled.
@@ -27851,39 +28038,42 @@ fn hook_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     Ok(())
 }
 
-fn broadcast_live_member_activity(
+fn broadcast_live_provider_activity(
     manager: &sse::SseManager,
     project_id: &str,
-    activity: LiveMemberActivityPreview,
+    owner_agent_identity_id: &str,
+    event: serde_json::Value,
 ) -> serde_json::Value {
-    let emitted_ms = current_unix_ms();
-    let value = serde_json::json!({
-        "team_run_id": activity.team_run_id,
-        "member_run_id": activity.member_run_id,
-        "provider": activity.provider,
-        "kind": "thinking",
-        "preview": activity.preview,
-        "revision": LIVE_MEMBER_ACTIVITY_REVISION.fetch_add(1, Ordering::Relaxed),
-        "emitted_at": format!("unix-ms:{emitted_ms}"),
-        "expires_at": format!("unix-ms:{}", emitted_ms + LIVE_MEMBER_ACTIVITY_TTL_MS),
-    });
-    manager.broadcast_member_activity(project_id, value.clone());
-    value
+    manager.broadcast_live_provider_activity(project_id, owner_agent_identity_id, event.clone());
+    event
 }
 
 fn handle_sse_stream(
+    store: &HarnessStore,
     execution_space_id: &str,
     company_scope_id: Option<&str>,
+    private_agent_identity_id: Option<&str>,
     mut stream: TcpStream,
     sse_manager: sse::SseManager,
 ) -> CliResult<()> {
     use std::time::Duration;
 
+    // A private live overlay is valid only for one connected stream lifetime.
+    // Clear any pre-connection residue before subscribing so reconnect cannot
+    // turn process memory into a replay surface.
+    if let Some(agent_identity_id) = private_agent_identity_id {
+        provider_event_api::clear_live_for_agent(store, execution_space_id, agent_identity_id)?;
+    }
+
     // Subscribe before exposing the initial snapshot marker. The browser starts
     // its authoritative GET after that marker; registering first guarantees
     // that a write crossing the marker -> GET boundary is queued for this
     // stream instead of falling into a gap between the GET and subscription.
-    let rx = sse_manager.subscribe_scoped(execution_space_id, company_scope_id);
+    let rx = sse_manager.subscribe_scoped_private(
+        execution_space_id,
+        company_scope_id,
+        private_agent_identity_id,
+    );
 
     // Send SSE header
     sse::write_sse_header(&mut stream)?;
@@ -27899,8 +28089,9 @@ fn handle_sse_stream(
     let snapshot_json = serde_json::json!({
         "generated_at": now_string(),
         "execution_space_id": execution_space_id,
-        "company_scope_id": company_scope_id,
-        "stream_epoch": sse_manager.stream_epoch(),
+                "company_scope_id": company_scope_id,
+                "private_provider_activity": private_agent_identity_id.is_some(),
+                "stream_epoch": sse_manager.stream_epoch(),
     });
     sse::write_sse_frame(&mut stream, "snapshot", &snapshot_json)?;
 
@@ -28029,8 +28220,9 @@ fn handle_sse_stream(
                             }
                         }
                     }
-                    sse::SseEventFrame::MemberActivity(activity) => {
-                        if sse::write_sse_frame(&mut stream, "member_activity", &activity).is_err()
+                    sse::SseEventFrame::LiveProviderActivity(activity) => {
+                        if sse::write_sse_frame(&mut stream, "live_provider_activity", &activity)
+                            .is_err()
                         {
                             break;
                         }
@@ -28049,6 +28241,13 @@ fn handle_sse_stream(
                 break; // Channel closed, exit
             }
         }
+    }
+
+    if let Some(agent_identity_id) = private_agent_identity_id {
+        // The transport is already gone; cleanup is best-effort and must not
+        // turn an ordinary disconnect into a new HTTP error response.
+        let _ =
+            provider_event_api::clear_live_for_agent(store, execution_space_id, agent_identity_id);
     }
 
     Ok(())
@@ -28423,7 +28622,8 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
     // startup (per-project truncation drops in-flight events for ALL projects at
     // once — see Risks). Production serve always truncates.
     let listener = TcpListener::bind(&addr)?;
-    println!("serving harness API on http://{addr}");
+    let bound_addr = listener.local_addr()?;
+    println!("serving harness API on http://{bound_addr}");
     // Show WHICH store this serve reads — the #1 confusion in issue #89 item 3 was
     // serve and run-script silently using different `.harness` dirs. Print the
     // absolute path so it can be compared against run-script's at a glance.
@@ -28444,6 +28644,39 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
     );
 
     let sse_manager = sse::SseManager::new();
+
+    // Register this exact serve process as the NodeDaemon's volatile activity
+    // sink. No endpoint or token is durable; either process restarting drops
+    // the bridge until serve registers again.
+    #[cfg(unix)]
+    if let Some(firm_home) = projects.firm_home.clone() {
+        if bound_addr.ip().is_loopback() {
+            let token = LIVE_PROVIDER_ACTIVITY_TOKEN
+                .get_or_init(new_live_provider_activity_token)
+                .clone();
+            if let Ok(node_id) = read_local_node_id() {
+                let callback_authority = bound_addr.to_string();
+                std::thread::spawn(move || loop {
+                    match supervisor_daemon::register_live_provider_activity_via_socket(
+                        &firm_home,
+                        &node_id,
+                        &callback_authority,
+                        &token,
+                    ) {
+                        Some(Ok(response)) if response.contains("\"ok\":true") => {}
+                        Some(Ok(response)) => eprintln!(
+                            "serve: NodeDaemon rejected volatile activity sink: {response}"
+                        ),
+                        Some(Err(error)) => {
+                            eprintln!("serve: cannot register volatile activity sink: {error}")
+                        }
+                        None => {}
+                    }
+                    std::thread::sleep(Duration::from_secs(2));
+                });
+            }
+        }
+    }
 
     // Start one Execution-Space-multiplexed SSE watcher. The watcher re-scans the
     // registry so spaces registered after serve starts become live without a
@@ -28819,6 +29052,7 @@ fn handle_http_connection(
     let mut trust_expected_version = None;
     let mut trust_confirmed_action = None;
     let mut trust_identity_override_header = false;
+    let mut live_provider_activity_token = None;
     loop {
         let mut line = String::new();
         reader.read_line(&mut line)?;
@@ -28844,6 +29078,9 @@ fn handle_http_connection(
             }
             if name.eq_ignore_ascii_case("x-agentfirm-confirm") {
                 trust_confirmed_action = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("x-agentfirm-live-token") {
+                live_provider_activity_token = Some(value.trim().to_string());
             }
             if matches!(
                 name.to_ascii_lowercase().as_str(),
@@ -29839,11 +30076,37 @@ fn handle_http_connection(
                 )?
             }
             "/v1/events" => {
+                let private_agent_identity_id = match trust_transport_token.as_deref() {
+                    None => None,
+                    Some(_) => {
+                        match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
+                            Ok(credential)
+                                if credential.actor.kind
+                                    == harness_core::agentfirm_api::ActorKind::AgentMember =>
+                            {
+                                Some(credential.actor.id)
+                            }
+                            Ok(_) => None,
+                            Err(message) => {
+                                write_http_json(
+                                    &mut stream,
+                                    "401 Unauthorized",
+                                    &serde_json::json!({"ok":false,"error":{"code":"NOT_AUTHORIZED","message":message}}),
+                                )?;
+                                return Ok(());
+                            }
+                        }
+                    }
+                };
                 // Scope coordination to the selected Execution Space and Company
                 // invalidations to the independently selected Company Store.
+                // Private live provider activity additionally requires the
+                // exact AgentIdentity actor; Host authority never widens it.
                 handle_sse_stream(
+                    &store_owned,
                     &project_id,
                     company_store_owned.as_ref().map(|(id, _)| id.as_str()),
+                    private_agent_identity_id.as_deref(),
                     stream,
                     sse_manager,
                 )?
@@ -29864,75 +30127,27 @@ fn handle_http_connection(
                 if member_path.starts_with("/v1/member-runs/")
                     && member_path.ends_with("/native-activity") =>
             {
-                let member_run_id = member_path
-                    .strip_prefix("/v1/member-runs/")
-                    .and_then(|rest| rest.strip_suffix("/native-activity"))
-                    .unwrap_or_default();
-                let member = latest_member_runs_in_append_order(store)?
-                    .into_iter()
-                    .find(|member| member.id == member_run_id);
-                match member {
-                    Some(member) => match member.native_session.as_ref() {
-                        Some(session) => write_http_json(
-                            &mut stream,
-                            "200 OK",
-                            &native_session::read_activity(session)?,
-                        )?,
-                        None => write_http_json(
-                            &mut stream,
-                            "409 Conflict",
-                            &serde_json::json!({
-                                "error": "native_session_unbound",
-                                "member_run_id": member_run_id,
-                            }),
-                        )?,
-                    },
-                    None => write_http_json(
-                        &mut stream,
-                        "404 Not Found",
-                        &serde_json::json!({
-                            "error": "member_run_not_found",
-                            "member_run_id": member_run_id,
-                        }),
-                    )?,
-                }
+                write_http_json(
+                    &mut stream,
+                    "410 Gone",
+                    &serde_json::json!({
+                        "error": "legacy_native_activity_route_retired",
+                        "detail": "This unscoped route cannot prove the exact Session owner. Use the authenticated AgentWorkspace session_event_projection; provider-native open/resume remains a separate authorized action."
+                    }),
+                )?
             }
             step_path
                 if step_path.starts_with("/v1/workflow-steps/")
                     && step_path.ends_with("/native-activity") =>
             {
-                let step_id = step_path
-                    .strip_prefix("/v1/workflow-steps/")
-                    .and_then(|rest| rest.strip_suffix("/native-activity"))
-                    .unwrap_or_default();
-                let step = latest_workflow_steps_in_append_order(store)?
-                    .into_iter()
-                    .find(|step| step.id == step_id);
-                match step {
-                    Some(step) => match step.native_session.as_ref() {
-                        Some(session) => write_http_json(
-                            &mut stream,
-                            "200 OK",
-                            &native_session::read_activity(session)?,
-                        )?,
-                        None => write_http_json(
-                            &mut stream,
-                            "409 Conflict",
-                            &serde_json::json!({
-                                "error": "native_session_unbound",
-                                "workflow_step_id": step_id,
-                            }),
-                        )?,
-                    },
-                    None => write_http_json(
-                        &mut stream,
-                        "404 Not Found",
-                        &serde_json::json!({
-                            "error": "workflow_step_not_found",
-                            "workflow_step_id": step_id,
-                        }),
-                    )?,
-                }
+                write_http_json(
+                    &mut stream,
+                    "410 Gone",
+                    &serde_json::json!({
+                        "error": "legacy_native_activity_route_retired",
+                        "detail": "Workflow output remains Harness-owned result truth. Provider-native Session history is not exposed through this unscoped route."
+                    }),
+                )?
             }
             // GET /v1/workflows — the registered (built-in) workflow catalog,
             // run-independent { name, summary } pairs from the compiled registry.
@@ -30081,73 +30296,124 @@ fn handle_http_connection(
         return Ok(());
     }
 
-    // POST /v1/live/member-activity — optional ingress for provider adapters
-    // running outside this process. It validates the project/run/member join,
-    // sanitizes one short preview, and broadcasts only to current subscribers.
-    // No store method is called and reconnecting clients cannot replay it.
     if path_only == "/v1/live/member-activity" {
-        let result = (|| -> CliResult<serde_json::Value> {
-            let team_run_id = required_json_string(&body_json, "team_run_id")?;
-            let member_run_id = required_json_string(&body_json, "member_run_id")?;
-            let preview =
-                sanitize_live_member_preview(&required_json_string(&body_json, "preview")?)
-                    .ok_or_else(|| {
-                        CliError::Usage("member activity preview must not be empty".to_string())
-                    })?;
-            let run = latest_team_run(store, &team_run_id)?;
-            if run.status != TeamRunStatus::Running {
-                return Err(CliError::Usage(format!(
-                    "team run {team_run_id} is {}, not running",
-                    serde_snake_label(&run.status)
-                )));
+        write_http_json(
+            &mut stream,
+            "410 Gone",
+            &serde_json::json!({
+                "ok": false,
+                "error": "retired_live_member_activity",
+                "detail": "Use the typed, exact-AgentSession /v1/live/provider-activity bridge."
+            }),
+        )?;
+        return Ok(());
+    }
+
+    // POST /v1/live/provider-activity — private loopback ingress from the one
+    // local NodeDaemon. The body cannot select an AgentSession: serve resolves
+    // the exact current session from canonical runtime state or fails closed.
+    // Registry and SSE output are process-memory-only and never replayed.
+    if path_only == "/v1/live/provider-activity" {
+        let expected_token = LIVE_PROVIDER_ACTIVITY_TOKEN.get();
+        if expected_token.is_none()
+            || live_provider_activity_token.as_deref() != expected_token.map(String::as_str)
+        {
+            write_http_json(
+                &mut stream,
+                "401 Unauthorized",
+                &serde_json::json!({"ok": false, "error": "invalid_live_provider_activity_token"}),
+            )?;
+            return Ok(());
+        }
+        let update = match serde_json::from_value::<LiveProviderActivityUpdate>(body_json) {
+            Ok(update) => update,
+            Err(error) => {
+                write_http_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &serde_json::json!({"ok": false, "error": format!("invalid live provider activity: {error}")}),
+                )?;
+                return Ok(());
             }
-            let member = latest_member_runs_in_append_order(store)?
+        };
+        let result = (|| -> CliResult<serde_json::Value> {
+            let (team_run_id, member_run_id) = match &update {
+                LiveProviderActivityUpdate::Updated {
+                    team_run_id,
+                    member_run_id,
+                    ..
+                }
+                | LiveProviderActivityUpdate::Terminal {
+                    team_run_id,
+                    member_run_id,
+                } => (team_run_id.clone(), member_run_id.clone()),
+            };
+            let member = latest_member_runs_in_append_order(&store_owned)?
                 .into_iter()
                 .find(|member| member.id == member_run_id)
                 .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
-            if member.team_run_id != team_run_id {
-                return Err(CliError::Usage(format!(
-                    "member run {member_run_id} does not belong to team run {team_run_id}"
-                )));
-            }
-            ensure_member_coordination_open(&member)?;
-            if matches!(
-                member.status,
-                MemberRunStatus::Completed
-                    | MemberRunStatus::Failed
-                    | MemberRunStatus::Stopped
-                    | MemberRunStatus::Blocked
-            ) {
-                return Err(CliError::Usage(format!(
-                    "member run {member_run_id} is terminal and cannot publish live activity"
-                )));
-            }
-            let ingress_key = format!("{project_id}:{member_run_id}");
-            let ingress = LIVE_MEMBER_ACTIVITY_INGRESS.get_or_init(|| Mutex::new(HashMap::new()));
-            let mut last_by_member = ingress.lock().unwrap_or_else(|error| error.into_inner());
-            // This registry is only a short-lived ingress throttle. Drop stale
-            // member keys so transient provider sessions cannot grow it without
-            // bound over the lifetime of the server.
-            last_by_member.retain(|_, last| last.elapsed() < Duration::from_secs(60));
-            if last_by_member
-                .get(&ingress_key)
-                .is_some_and(|last| last.elapsed() < LIVE_MEMBER_ACTIVITY_THROTTLE)
-            {
-                return Err(CliError::Usage(
-                    "member activity preview is rate limited".to_string(),
-                ));
-            }
-            last_by_member.insert(ingress_key, Instant::now());
-            drop(last_by_member);
-            Ok(broadcast_live_member_activity(
+            let scope = provider_event_api::exact_live_scope(
+                &store_owned,
+                &project_id,
+                &team_run_id,
+                &member,
+            )
+            .map_err(|reason| CliError::Usage(reason.to_string()))?;
+            let event = match update {
+                LiveProviderActivityUpdate::Updated {
+                    provider,
+                    kind,
+                    display_summary,
+                    ..
+                } => {
+                    let run = latest_team_run(&store_owned, &team_run_id)?;
+                    if run.status != TeamRunStatus::Running {
+                        return Err(CliError::Usage(format!(
+                            "team run {team_run_id} is {}, not running",
+                            serde_snake_label(&run.status)
+                        )));
+                    }
+                    ensure_member_coordination_open(&member)?;
+                    if matches!(
+                        member.status,
+                        MemberRunStatus::Completed
+                            | MemberRunStatus::Failed
+                            | MemberRunStatus::Stopped
+                            | MemberRunStatus::Blocked
+                    ) {
+                        return Err(CliError::Usage(format!(
+                            "member run {member_run_id} is terminal and cannot publish live activity"
+                        )));
+                    }
+                    if provider != member.provider {
+                        return Err(CliError::Usage(
+                            "provider activity does not match the canonical MemberRun provider"
+                                .to_string(),
+                        ));
+                    }
+                    let display_summary = sanitize_live_member_preview(&display_summary)
+                        .ok_or_else(|| {
+                            CliError::Usage(
+                                "live provider activity summary must not be empty".to_string(),
+                            )
+                        })?;
+                    let activity = provider_event_api::record_live(
+                        scope.clone(),
+                        &member.provider,
+                        kind,
+                        display_summary,
+                    );
+                    provider_event_api::updated_live_event(&scope, activity)
+                }
+                LiveProviderActivityUpdate::Terminal { .. } => {
+                    provider_event_api::clear_live_terminal(&scope)
+                }
+            };
+            Ok(broadcast_live_provider_activity(
                 &sse_manager,
                 &project_id,
-                LiveMemberActivityPreview {
-                    team_run_id,
-                    member_run_id,
-                    provider: member.provider,
-                    preview,
-                },
+                &member.agent_member_id,
+                event,
             ))
         })();
         match result {
@@ -35247,8 +35513,8 @@ fn count_unique_worktree_diff_files(diff: &str) -> usize {
 }
 
 /// `workflow get-output <run_id> [--step <label>]` — retrieve a run's leaf
-/// durable WorkflowStep outcomes in authored order and join optional native
-/// provider activity through each step's `NativeSessionRef`.
+/// durable WorkflowStep outcomes in authored order. The generic workflow
+/// command does not join private provider-native Session history.
 fn workflow_get_output_value(
     store: &HarnessStore,
     args: &[String],
@@ -35294,18 +35560,13 @@ fn workflow_get_output_value(
             }
         }
         let output = step.output_summary.clone().unwrap_or_default();
-        let native_activity = step
-            .native_session
-            .as_ref()
-            .map(native_session::read_activity)
-            .transpose()?;
         out_steps.push(serde_json::json!({
             "label": step.label,
             "status": serde_json::to_value(step.status)?,
             "native_session": step.native_session,
             "source": "workflow_step",
             "result": step.result,
-            "native_activity": native_activity,
+            "provider_native_history": "not_exposed_by_workflow_output",
             "output": output,
         }));
     }
@@ -45703,6 +45964,18 @@ agent("a NEW second leaf that changes the ordinal alignment")
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn provider_tool_status_is_a_closed_display_safe_vocabulary() {
+        assert_eq!(display_safe_tool_status("in_progress", true), "running");
+        assert_eq!(display_safe_tool_status("failed", false), "failed");
+        assert_eq!(display_safe_tool_status("cancelled", false), "cancelled");
+        assert_eq!(display_safe_tool_status("/private/path", true), "running");
+        assert_eq!(
+            display_safe_tool_status("secret-provider-status", false),
+            "completed"
+        );
+    }
 
     trait TestSupervisorLeaseExt {
         fn acquire_test_supervisor_lease(

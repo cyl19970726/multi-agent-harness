@@ -130,11 +130,12 @@ and runtime contracts, not frontend-only state.
 
 ## Thinking Boundary
 
-The Console can show sanitized, truncated, rate-limited member activity while a
-provider is streaming it. A `thinking` preview is sent only as a project-scoped
-SSE `member_activity` frame, includes an expiry, and disappears on refresh or
-TTL expiry. It never enters snapshot history, JSONL, replay, evidence,
-messages, or peer context.
+The Console can show sanitized, truncated, rate-limited provider activity while
+a provider is streaming it. A `thinking` preview is sent only as the exact
+owner's Execution-Space-scoped SSE `live_provider_activity` frame, includes an
+expiry, and disappears on terminal state, refresh/reconnect, TTL expiry, or
+process restart. It never enters snapshot history, JSONL, replay, evidence,
+messages, Host inspection, or peer context.
 
 New Kimi writes do not persist thinking, and active stores do not retain
 `MemberAction(type=thinking)` rows. The live preview is intentionally

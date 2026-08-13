@@ -155,7 +155,9 @@ governance during migration, not a mandatory product contract for every Wave.
 
 The target contract makes thinking transient live-only state.
 
-- It may appear in a live host UI or SSE stream when a provider exposes it.
+- A provider-declared display-safe summary may appear only in the exact Session
+  owner's live UI/SSE stream. Host role alone does not grant Member-private live
+  access.
 - It is bounded and sanitized.
 - It is never persisted as canonical harness history.
 - It is never replayable state.
@@ -168,10 +170,11 @@ artifact/check references, control acknowledgements, and explicit outcomes inste
 chat/tool/command/file/turn history remains in the native session.
 
 New Kimi execution does not persist `thinking` actions, and active stores do
-not retain historical thinking rows. The Console has a
-sanitized `member_activity` SSE preview with expiry: it is delivered only to
-currently connected clients, is project-scoped, and is never added to JSONL,
-snapshots, replay, messages, or evidence. It is a preview, not an audit trail.
+not retain historical thinking rows. The Console has a sanitized
+`live_provider_activity` SSE preview with expiry: it is delivered only to the
+currently connected exact AgentIdentity owner, is Execution-Space scoped, and
+is never added to JSONL, snapshots, replay, messages, or evidence. It is a
+preview, not an audit trail.
 
 ## Current And Future Layers
 

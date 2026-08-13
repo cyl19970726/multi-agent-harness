@@ -1,29 +1,30 @@
 //! Provider-native historical projection and volatile live activity.
 //!
-//! Historical events are adapted on demand from provider-owned Session files.
-//! Live activity exists only in this process and is delivered as an ephemeral
+//! Historical events are adapted on demand from the provider-owned Session.
+//! Live activity exists only in this process and is delivered as a bounded
 //! snapshot/SSE overlay. Neither path writes Harness ledgers or a mirror store.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use harness_core::NativeSessionRef;
 use harness_provider_events::{
-    DecodeContext, ProjectionAuthority, ProjectionViewer, ProviderKind,
-    ProviderProjectionService, TranscriptReadBoundary,
+    DecodeContext, ProjectionAuthority, ProjectionViewer, ProviderKind, ProviderProjectionService,
+    TranscriptReadBoundary,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{CliError, CliResult};
 
 const MAX_HISTORICAL_EVENTS: usize = 10_000;
 const MAX_LIVE_ITEMS: usize = 24;
-const LIVE_TTL_MS: u64 = 10_000;
+pub(crate) const LIVE_TTL_MS: u64 = 10_000;
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub(crate) struct LiveProviderScope {
     pub project_id: String,
     pub team_run_id: String,
@@ -32,10 +33,21 @@ pub(crate) struct LiveProviderScope {
     pub agent_session_generation: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LiveProviderActivityKind {
+    Thinking,
+    ResponseStreaming,
+    ToolStarted,
+    ToolCompleted,
+    ToolFailed,
+    InteractionWaiting,
+}
+
+#[derive(Clone, Debug, Serialize)]
 struct LiveProviderItem {
-    locator: u64,
-    kind: &'static str,
+    runtime_event_locator: String,
+    kind: LiveProviderActivityKind,
     provider: String,
     display_summary: String,
     emitted_unix_ms: u64,
@@ -81,6 +93,9 @@ pub(crate) struct HistoricalProjectionRequest<'a> {
     pub native_session: &'a NativeSessionRef,
 }
 
+/// Decode a bounded private projection directly from the provider-owned
+/// Session. The service is disposable and no decoded row, fold state,
+/// fingerprint, or cursor is persisted by Harness.
 pub(crate) fn read_historical_projection(
     request: HistoricalProjectionRequest<'_>,
 ) -> CliResult<Value> {
@@ -97,7 +112,7 @@ pub(crate) fn read_historical_projection(
     let context = DecodeContext {
         provider,
         native_source_ref: format!(
-            "provider-session:{}:{}:{}",
+            "evidence:provider_session:{}:{}:{}",
             provider.as_str(),
             request.agent_session_id,
             request.agent_session_generation
@@ -145,10 +160,19 @@ pub(crate) fn read_historical_projection(
 pub(crate) fn record_live(
     scope: LiveProviderScope,
     provider: &str,
-    kind: &'static str,
+    kind: LiveProviderActivityKind,
     display_summary: String,
 ) -> Value {
-    let now = now_unix_ms();
+    record_live_at(scope, provider, kind, display_summary, now_unix_ms())
+}
+
+fn record_live_at(
+    scope: LiveProviderScope,
+    provider: &str,
+    kind: LiveProviderActivityKind,
+    display_summary: String,
+    now: u64,
+) -> Value {
     let expires = now.saturating_add(LIVE_TTL_MS);
     let registry = LIVE_REGISTRY.get_or_init(|| Mutex::new(LiveRegistry::default()));
     let mut registry = registry.lock().unwrap_or_else(|error| error.into_inner());
@@ -157,7 +181,7 @@ pub(crate) fn record_live(
     let locator = registry.next_locator;
     let items = registry.items.entry(scope.clone()).or_default();
     items.push_back(LiveProviderItem {
-        locator,
+        runtime_event_locator: format!("runtime-event-{locator}"),
         kind,
         provider: provider.to_string(),
         display_summary,
@@ -167,15 +191,39 @@ pub(crate) fn record_live(
     while items.len() > MAX_LIVE_ITEMS {
         items.pop_front();
     }
-    snapshot_locked(&registry, &scope, now).unwrap_or(Value::Null)
+    snapshot_locked(&registry, &scope).expect("recorded live scope must have a snapshot")
 }
 
 pub(crate) fn live_snapshot(scope: &LiveProviderScope) -> Option<Value> {
-    let now = now_unix_ms();
+    live_snapshot_at(scope, now_unix_ms())
+}
+
+fn live_snapshot_at(scope: &LiveProviderScope, now: u64) -> Option<Value> {
     let registry = LIVE_REGISTRY.get_or_init(|| Mutex::new(LiveRegistry::default()));
     let mut registry = registry.lock().unwrap_or_else(|error| error.into_inner());
     purge_expired(&mut registry, now);
-    snapshot_locked(&registry, scope, now)
+    snapshot_locked(&registry, scope)
+}
+
+/// Terminal provider state invalidates the whole turn overlay immediately.
+/// The returned event is suitable for the live SSE stream and intentionally
+/// contains no activity payload that a reconnecting client could replay.
+pub(crate) fn clear_live_terminal(scope: &LiveProviderScope) -> Value {
+    clear_live(scope);
+    live_event("terminal", scope, None)
+}
+
+pub(crate) fn updated_live_event(scope: &LiveProviderScope, activity: Value) -> Value {
+    live_event("updated", scope, Some(activity))
+}
+
+fn live_event(reason: &str, scope: &LiveProviderScope, activity: Option<Value>) -> Value {
+    json!({
+        "schema_version":"agentfirm.live_provider_activity_event.v1",
+        "reason":reason,
+        "scope":scope,
+        "activity":activity,
+    })
 }
 
 pub(crate) fn clear_live(scope: &LiveProviderScope) {
@@ -188,6 +236,88 @@ pub(crate) fn clear_live(scope: &LiveProviderScope) {
     }
 }
 
+/// Drop every volatile overlay owned by one AgentIdentity in one Execution
+/// Space. SSE connection boundaries call this both before subscribing and
+/// after disconnect so reconnecting clients cannot recover an earlier live
+/// snapshot through the RoleView GET surface.
+pub(crate) fn clear_live_for_agent(
+    store: &harness_store::HarnessStore,
+    project_id: &str,
+    agent_identity_id: &str,
+) -> CliResult<()> {
+    let session_ids = store
+        .fabric_agent_sessions(project_id)?
+        .into_iter()
+        .filter(|session| session.execution_space_id == project_id)
+        .filter(|session| session.agent_identity_id == agent_identity_id)
+        .map(|session| session.id)
+        .collect::<BTreeSet<_>>();
+    clear_live_for_session_ids(project_id, &session_ids);
+    Ok(())
+}
+
+fn clear_live_for_session_ids(project_id: &str, session_ids: &BTreeSet<String>) {
+    if let Some(registry) = LIVE_REGISTRY.get() {
+        registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .items
+            .retain(|scope, _| {
+                scope.project_id != project_id || !session_ids.contains(&scope.agent_session_id)
+            });
+    }
+}
+
+/// Resolve the exact canonical AgentSession scope for a provider update. The
+/// provider transport never supplies a session id: accepting one would allow a
+/// caller to fabricate or cross-bind private runtime activity.
+pub(crate) fn exact_live_scope(
+    store: &harness_store::HarnessStore,
+    project_id: &str,
+    team_run_id: &str,
+    member_run: &harness_core::ProviderRuntimeProjection,
+) -> Result<LiveProviderScope, &'static str> {
+    if member_run.team_run_id != team_run_id {
+        return Err("member run does not belong to the selected TeamRun");
+    }
+    let sessions = store
+        .fabric_agent_sessions(project_id)
+        .map_err(|_| "AgentSession registry is unavailable")?;
+    let current = sessions
+        .into_iter()
+        .filter(|session| session.agent_identity_id == member_run.agent_member_id)
+        .filter(|session| session.execution_space_id == project_id)
+        .filter(|session| session.provider_kind == member_run.provider)
+        .filter(|session| session.runtime_generation == member_run.runtime_generation)
+        .filter(|session| {
+            session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
+        })
+        .filter(|session| {
+            store
+                .latest_node_daemon_lease(&session.node_id)
+                .ok()
+                .flatten()
+                .is_some_and(|lease| {
+                    lease.status == harness_core::NodeDaemonLeaseStatus::Active
+                        && lease.expires_unix_ms > now_unix_ms()
+                        && lease.daemon_id == session.node_daemon_id
+                        && lease.generation == session.node_daemon_generation
+                })
+        })
+        .collect::<Vec<_>>();
+    match current.as_slice() {
+        [session] => Ok(LiveProviderScope {
+            project_id: project_id.to_string(),
+            team_run_id: team_run_id.to_string(),
+            member_run_id: member_run.id.clone(),
+            agent_session_id: session.id.clone(),
+            agent_session_generation: session.runtime_generation,
+        }),
+        [] => Err("no exact current AgentSession binds this MemberRun generation"),
+        _ => Err("multiple current AgentSessions ambiguously bind this MemberRun generation"),
+    }
+}
+
 fn purge_expired(registry: &mut LiveRegistry, now: u64) {
     registry.items.retain(|_, items| {
         items.retain(|item| item.expires_unix_ms > now);
@@ -195,7 +325,7 @@ fn purge_expired(registry: &mut LiveRegistry, now: u64) {
     });
 }
 
-fn snapshot_locked(registry: &LiveRegistry, scope: &LiveProviderScope, now: u64) -> Option<Value> {
+fn snapshot_locked(registry: &LiveRegistry, scope: &LiveProviderScope) -> Option<Value> {
     let items = registry.items.get(scope)?;
     let expires_unix_ms = items.iter().map(|item| item.expires_unix_ms).max()?;
     Some(json!({
@@ -207,16 +337,9 @@ fn snapshot_locked(registry: &LiveRegistry, scope: &LiveProviderScope, now: u64)
         "member_run_id":scope.member_run_id,
         "agent_session_id":scope.agent_session_id,
         "agent_session_generation":scope.agent_session_generation,
-        "runtime_snapshot_locator":format!("runtime-snapshot-{}", registry.next_locator.max(now)),
+        "runtime_snapshot_locator":format!("runtime-snapshot-{}", registry.next_locator),
         "expires_unix_ms":expires_unix_ms,
-        "items":items.iter().map(|item|json!({
-            "runtime_event_locator":format!("runtime-event-{}",item.locator),
-            "kind":item.kind,
-            "provider":item.provider,
-            "display_summary":item.display_summary,
-            "emitted_unix_ms":item.emitted_unix_ms,
-            "expires_unix_ms":item.expires_unix_ms,
-        })).collect::<Vec<_>>()
+        "items":items,
     }))
 }
 
@@ -224,5 +347,101 @@ fn snapshot_locked(registry: &LiveRegistry, scope: &LiveProviderScope, now: u64)
 pub(crate) fn reset_live_for_test() {
     if let Some(registry) = LIVE_REGISTRY.get() {
         *registry.lock().unwrap_or_else(|error| error.into_inner()) = LiveRegistry::default();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn scope(project_id: &str, generation: u64) -> LiveProviderScope {
+        LiveProviderScope {
+            project_id: project_id.into(),
+            team_run_id: "team-run-1".into(),
+            member_run_id: "member-run-1".into(),
+            agent_session_id: format!("agent-session-{generation}"),
+            agent_session_generation: generation,
+        }
+    }
+
+    #[test]
+    fn live_activity_is_exact_scope_ttl_bounded_and_not_cross_project() {
+        let _guard = test_guard();
+        reset_live_for_test();
+        let project_a = scope("project-a", 1);
+        let project_b = scope("project-b", 1);
+        let activity = record_live_at(
+            project_a.clone(),
+            "kimi",
+            LiveProviderActivityKind::Thinking,
+            "display-safe summary".into(),
+            100,
+        );
+        assert_eq!(activity["project_id"], "project-a");
+        assert_eq!(activity["agent_session_id"], "agent-session-1");
+        assert!(live_snapshot_at(&project_b, 101).is_none());
+        assert!(live_snapshot_at(&project_a, 100 + LIVE_TTL_MS - 1).is_some());
+        assert!(live_snapshot_at(&project_a, 100 + LIVE_TTL_MS).is_none());
+    }
+
+    #[test]
+    fn terminal_clear_does_not_cross_session_generation() {
+        let _guard = test_guard();
+        reset_live_for_test();
+        let generation_one = scope("project-a", 1);
+        let generation_two = scope("project-a", 2);
+        record_live_at(
+            generation_one.clone(),
+            "codex",
+            LiveProviderActivityKind::ToolStarted,
+            "tool started".into(),
+            100,
+        );
+        record_live_at(
+            generation_two.clone(),
+            "codex",
+            LiveProviderActivityKind::ResponseStreaming,
+            "response streaming".into(),
+            100,
+        );
+        let event = clear_live_terminal(&generation_one);
+        assert_eq!(event["reason"], "terminal");
+        assert!(event["activity"].is_null());
+        assert!(live_snapshot_at(&generation_one, 101).is_none());
+        assert!(live_snapshot_at(&generation_two, 101).is_some());
+    }
+
+    #[test]
+    fn connection_clear_is_owner_session_scoped_and_project_isolated() {
+        let _guard = test_guard();
+        reset_live_for_test();
+        let owner_one = scope("project-a", 1);
+        let owner_two = scope("project-a", 2);
+        let other_project = scope("project-b", 1);
+        for candidate in [&owner_one, &owner_two, &other_project] {
+            record_live_at(
+                candidate.clone(),
+                "claude",
+                LiveProviderActivityKind::Thinking,
+                "provider supplied summary".into(),
+                100,
+            );
+        }
+        clear_live_for_session_ids(
+            "project-a",
+            &BTreeSet::from([owner_one.agent_session_id.clone()]),
+        );
+        assert!(live_snapshot_at(&owner_one, 101).is_none());
+        assert!(live_snapshot_at(&owner_two, 101).is_some());
+        assert!(live_snapshot_at(&other_project, 101).is_some());
     }
 }

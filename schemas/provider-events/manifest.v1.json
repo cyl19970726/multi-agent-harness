@@ -4,6 +4,7 @@
   "adapter_manifest_schema": "adapter-manifest.schema.json",
   "session_projection_schema": "session-event-projection.schema.json",
   "live_activity_schema": "live-provider-activity.schema.json",
+  "live_activity_event_schema": "live-provider-activity-event.schema.json",
   "team_activity_schema": "team-runtime-activity.schema.json",
   "providers": ["codex", "claude", "kimi", "pi"],
   "semantic_kinds": [

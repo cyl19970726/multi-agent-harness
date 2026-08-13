@@ -408,36 +408,46 @@ impl PiRpcClient {
         text
     }
 
-    /// Project a pi tool execution event to a live-activity preview string.
-    pub(crate) fn project_live(event: &serde_json::Value) -> Option<String> {
+    /// Project a pi tool execution event to a typed, volatile live activity.
+    pub(crate) fn project_live(
+        event: &serde_json::Value,
+    ) -> Option<(crate::provider_event_api::LiveProviderActivityKind, String)> {
         match event.get("type").and_then(|v| v.as_str()) {
             Some("tool_execution_start") => {
                 let tool = event.get("toolName").and_then(|v| v.as_str())?;
-                let args = event.get("args").unwrap_or(&serde_json::Value::Null);
-                match tool {
-                    "bash" => {
-                        let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("?");
-                        Some(format!("Bash: {}", cmd))
-                    }
-                    "edit" => {
-                        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
-                        Some(format!("Edit: {}", path))
-                    }
-                    "write" => {
-                        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
-                        Some(format!("Write: {}", path))
-                    }
-                    "read" => {
-                        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
-                        Some(format!("Read: {}", path))
-                    }
+                let summary = match tool {
+                    "bash" => Some("Bash running".to_string()),
+                    "edit" => Some("Editing file".to_string()),
+                    "write" => Some("Writing file".to_string()),
+                    "read" => Some("Reading file".to_string()),
                     "grep" => Some("Grep".to_string()),
                     "find" => Some("Find".to_string()),
                     "ls" => Some("Ls".to_string()),
-                    other => Some(format!("Tool: {}", other)),
-                }
+                    _ => Some("Tool running".to_string()),
+                }?;
+                Some((
+                    crate::provider_event_api::LiveProviderActivityKind::ToolStarted,
+                    summary,
+                ))
             }
-            Some("tool_execution_end") => None,
+            Some("tool_execution_end") => {
+                let failed = event
+                    .get("isError")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+                Some((
+                    if failed {
+                        crate::provider_event_api::LiveProviderActivityKind::ToolFailed
+                    } else {
+                        crate::provider_event_api::LiveProviderActivityKind::ToolCompleted
+                    },
+                    if failed {
+                        "tool failed".to_string()
+                    } else {
+                        "tool completed".to_string()
+                    },
+                ))
+            }
             _ => None,
         }
     }
@@ -564,7 +574,9 @@ impl Drop for PiRpcClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_session_has_no_persisted_thinking, value_contains_persisted_thinking};
+    use super::{
+        ensure_session_has_no_persisted_thinking, value_contains_persisted_thinking, PiRpcClient,
+    };
 
     #[test]
     fn detects_persisted_thinking_blocks_without_rejecting_level_metadata() {
@@ -602,5 +614,18 @@ mod tests {
         let error = ensure_session_has_no_persisted_thinking(&path).unwrap_err();
         assert!(error.to_string().contains("persisted provider thinking"));
         std::fs::remove_dir_all(dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn live_tool_projection_omits_unknown_names_arguments_and_paths() {
+        let event = serde_json::json!({
+            "type":"tool_execution_start",
+            "toolName":"secret-plugin-name",
+            "args":{"command":"print-secret", "path":"/private/member/file"}
+        });
+        let (_, summary) = PiRpcClient::project_live(&event).expect("tool activity");
+        assert_eq!(summary, "Tool running");
+        assert!(!summary.contains("secret"));
+        assert!(!summary.contains("/private"));
     }
 }

@@ -232,7 +232,7 @@ GET /v1/dashboard/snapshot
 GET /v1/events
 GET /v1/team-runs/host-inbox
 GET /v1/team-runs/{id}/members/{member-run-id}/inbox
-GET /v1/member-runs/{id}/native-activity
+GET /v1/views/agent-workspace/{team-run-or-member-run}?agent_id={exact-owner}
 ```
 
 The local API also exposes safe control-plane actions used by the Agent

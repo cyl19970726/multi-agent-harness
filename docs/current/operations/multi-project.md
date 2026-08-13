@@ -255,9 +255,11 @@ POST /v1/projects/switch
 `?company=<id>` selects Company OS truth.
 
 The Dashboard TopBar shows separate **Execution Space**, **Project Binding**,
-and **Company Store** controls. Member and Workflow native-activity reads carry
-both space and project selectors so switching spaces cannot display another
-space's execution object.
+and **Company Store** controls. AgentWorkspace provider history resolves its
+Session from the selected Execution Space and its source from the server-owned
+Project Binding. Private live SSE additionally binds the authenticated exact
+AgentIdentity owner, so switching spaces or selecting another Member cannot
+display another execution object's provider data.
 
 ## Compatibility boundary
 

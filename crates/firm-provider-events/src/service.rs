@@ -2,9 +2,9 @@ use thiserror::Error;
 
 use crate::{
     project_private_session, project_team_activity, read_transcript_batch, DecodeContext,
-    DecodeOutcome, ProjectionAccessError, ProjectionAuthority, ProjectionViewer,
-    ProviderEventFold, ProviderEventFoldError, SessionEventProjection, TeamRuntimeActivity,
-    TranscriptReadBoundary, TranscriptReadError, TransientReadPosition,
+    DecodeOutcome, ProjectionAccessError, ProjectionAuthority, ProjectionViewer, ProviderEventFold,
+    ProviderEventFoldError, SessionEventProjection, TeamRuntimeActivity, TranscriptReadBoundary,
+    TranscriptReadError, TransientReadPosition,
 };
 
 #[derive(Debug, Error)]
@@ -72,10 +72,7 @@ impl ProviderProjectionService {
         limit: usize,
     ) -> Result<SessionEventProjection, ProviderProjectionServiceError> {
         Ok(project_private_session(
-            &self.fold,
-            authority,
-            viewer,
-            limit,
+            &self.fold, authority, viewer, limit,
         )?)
     }
 
