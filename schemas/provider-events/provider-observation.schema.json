@@ -9,8 +9,8 @@
     "native_source_ref", "agent_identity_id", "agent_session_id",
     "agent_session_generation", "node_daemon_id", "node_daemon_generation",
     "ordering_position", "observed_at", "semantic_kind", "lifecycle_phase",
-    "completeness", "effect_certainty", "visibility", "validated_references",
-    "redacted", "truncated", "source_content_fingerprint", "payload"
+    "completeness", "effect_certainty", "visibility", "redacted", "truncated",
+    "source_content_fingerprint", "payload"
   ],
   "properties": {
     "schema_version": {"const": "agentfirm.provider_observation.v1"},
@@ -47,18 +47,6 @@
     "completeness": {"enum": ["partial", "complete", "incomplete", "recovery_required"]},
     "effect_certainty": {"enum": ["none", "not_applied", "applied", "unknown"]},
     "visibility": {"enum": ["session_owner_private", "team_public", "operator_only"]},
-    "validated_references": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["kind", "id"],
-        "properties": {
-          "kind": {"enum": ["work", "message", "delivery", "evidence"]},
-          "id": {"type": "string", "minLength": 1}
-        }
-      }
-    },
     "redacted": {"type": "boolean"},
     "truncated": {"type": "boolean"},
     "source_content_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Provider-native content fingerprint for response-local dedupe; not a Harness Evidence reference."},

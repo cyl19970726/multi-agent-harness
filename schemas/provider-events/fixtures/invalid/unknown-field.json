@@ -16,7 +16,6 @@
   "completeness": "partial",
   "effect_certainty": "none",
   "visibility": "session_owner_private",
-  "validated_references": [],
   "redacted": false,
   "truncated": false,
   "source_content_fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",

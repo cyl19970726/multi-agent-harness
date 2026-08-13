@@ -84,22 +84,6 @@ pub enum ObservationVisibility {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ValidatedReference {
-    pub kind: ValidatedReferenceKind,
-    pub id: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ValidatedReferenceKind {
-    Work,
-    Message,
-    Delivery,
-    Evidence,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ObservationPayload {
     AuthoredResponse {
@@ -189,8 +173,6 @@ pub struct ProviderObservation {
     pub completeness: Completeness,
     pub effect_certainty: EffectCertainty,
     pub visibility: ObservationVisibility,
-    #[serde(default)]
-    pub validated_references: Vec<ValidatedReference>,
     pub redacted: bool,
     pub truncated: bool,
     /// Fingerprint of the provider-native content used for response-local
@@ -230,13 +212,6 @@ impl ProviderObservation {
             || self.source_content_fingerprint.len() != 71
         {
             return Err(ObservationValidationError::InvalidAuthorityOrSource);
-        }
-        if self
-            .validated_references
-            .iter()
-            .any(|reference| reference.id.trim().is_empty())
-        {
-            return Err(ObservationValidationError::InvalidReference);
         }
         if self.visibility == ObservationVisibility::TeamPublic
             && !self.is_team_public_allowlisted()
@@ -320,8 +295,6 @@ pub enum ObservationValidationError {
     PayloadMismatch,
     #[error("authority generation or evidence identity is invalid")]
     InvalidAuthorityOrSource,
-    #[error("validated references must be non-empty server-owned identifiers")]
-    InvalidReference,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

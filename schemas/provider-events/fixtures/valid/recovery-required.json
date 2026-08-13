@@ -23,7 +23,6 @@
   "completeness": "recovery_required",
   "effect_certainty": "unknown",
   "visibility": "team_public",
-  "validated_references": [],
   "redacted": false,
   "truncated": false,
   "source_content_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
