@@ -64,6 +64,14 @@ cases. Evidence must be secret-free and bind exact SHAs, identities,
 generations, operation ids, Work revisions and artifact digests. It must also
 prove all child processes and test listeners were stopped.
 
+The DEV-7 affected rerun may use the explicitly authorized, pre-existing
+Tailscale overlay as a user-provided trusted network path. That exception does
+not make Tailscale, NAT traversal, Internet exposure or peer discovery an
+AgentFirm product capability. The Control Plane gateway listener binds only
+the authorized Tailscale address, its TLS certificate carries that exact IP
+SAN, Host REST remains loopback-only, and AgentFirm mTLS, enrollment, actor and
+generation fences remain authoritative over the overlay.
+
 The submission gate accepts only the recomputable
 `agentfirm.wave6-two-mac-evidence.v3` bundle. Its manifest hashes the raw
 central collaboration ledger, Control Plane and both Node Fabric journals,

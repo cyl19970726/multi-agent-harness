@@ -11,6 +11,12 @@ transcripts and one-use artifact capability are deliberately absent. The
 machine-readable companion is
 [`dev-7-wave6-two-mac.json`](dev-7-wave6-two-mac.json).
 
+The affected v3 rerun uses an explicitly authorized, pre-existing Tailscale
+overlay only as user-provided trusted network transport between the two real
+Macs. It does not claim a shared physical LAN or AgentFirm support for
+Tailscale, NAT traversal, public exposure or P2P discovery. AgentFirm mTLS,
+enrollment, generation and actor authority remain independently enforced.
+
 ## Fixed authority
 
 - Company: `agentfirm-wave5-dogfood`
