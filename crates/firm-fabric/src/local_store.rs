@@ -597,8 +597,11 @@ impl NodeLocalFabricStore {
                 "target inbox operation or attempt does not match this Node authority",
             ));
         }
-        if operation.control_plane_generation != session.control_plane_generation
-            || attempt.target_gateway_generation != session.gateway_generation
+        // The immutable operation records the Control Plane generation that
+        // originally accepted it. A later Control Plane may safely route that
+        // same closed operation through a successor attempt; the current
+        // attempt, not the immutable origin envelope, owns the delivery fence.
+        if attempt.target_gateway_generation != session.gateway_generation
             || attempt.control_plane_generation != session.control_plane_generation
         {
             return Err(FabricError::none(
@@ -684,7 +687,8 @@ impl NodeLocalFabricStore {
                 attempt.state,
                 RouteAttemptState::Queued | RouteAttemptState::Sent
             )
-            || operation.control_plane_generation != session.control_plane_generation
+            // Expiry likewise consumes the current successor attempt while
+            // preserving the immutable operation's originating generation.
             || attempt.target_gateway_generation != session.gateway_generation
             || attempt.control_plane_generation != session.control_plane_generation
         {

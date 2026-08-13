@@ -89,8 +89,13 @@ The target Work-owning Node remains authority for full Reports, Findings and
 Failure analyses. Publication accepts only a server-resolved canonical native
 fact authored by the exact target Host or current Work owner. It creates an
 immutable, redacted and digest-bound `RemoteFactSnapshot`; callers cannot
-upload an arbitrary fact body. The Control Plane stores the publication and
-the source Node receives a read-only cache.
+upload an arbitrary fact body. `fact_work_ref` remains byte-equal to the
+Delegation's immutable target-Work creation reference, while
+`native_fact_work_ref` proves the exact later Work revision and active binding
+that authored the fact. The target Node derives the former from its applied
+target-Work receipt; the Control Plane independently resolves the live central
+Delegation before storing the publication. The source Node receives a read-only
+cache.
 
 Large/private evidence uses the accepted Wave 5 artifact service. Manifests,
 encrypted blobs and one-use capabilities are not duplicated in the

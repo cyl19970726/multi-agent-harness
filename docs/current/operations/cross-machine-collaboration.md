@@ -72,9 +72,10 @@ artifact bytes. `scripts/acceptance-cross-machine-collaboration.mjs`
 independently derives the current Delegation/Work, Node and Gateway
 generations, immutable Message replica, per-recipient Delivery, terminal
 receipt, provider markers and artifact digest. Self-reported success booleans
-are not evidence. The bundle must bind the exact submitted revision; a later
-evidence-only commit is allowed only when the validator proves every intervening
-path is under `docs/current/operations/evidence/`.
+are not evidence. The bundle binds the submitted revision to the validator's
+exact Git `HEAD`, avoiding a self-referential SHA inside the evidence commit. A
+later evidence-only commit is allowed only when the validator proves every
+intervening path is under `docs/current/operations/evidence/`.
 
 If the second authorized Mac or its approved endpoint is unavailable, report
 the real-machine gate as blocked. A second process on one Mac is deterministic

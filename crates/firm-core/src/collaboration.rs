@@ -323,7 +323,13 @@ pub struct RemoteFactPublication {
     pub delegation_id: String,
     pub origin_node_id: String,
     pub origin_team_id: String,
+    /// Immutable target Work reference frozen when the Delegation was accepted.
+    /// This must remain byte-equal to `WorkDelegationV1.target_work_ref`.
     pub fact_work_ref: RemoteWorkRef,
+    /// Exact native Work revision on which the fact was authored. A target Work
+    /// may advance after Delegation acceptance, so this proof is deliberately
+    /// separate from the relationship's immutable `fact_work_ref`.
+    pub native_fact_work_ref: RemoteWorkRef,
     pub delegation_source_work_ref: RemoteWorkRef,
     pub fact_kind: RemoteFactKind,
     pub fact_id: String,

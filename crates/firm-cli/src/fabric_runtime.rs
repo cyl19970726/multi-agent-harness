@@ -1365,9 +1365,11 @@ pub(crate) fn queue_collaboration_proposal(
         id: format!("work-application:{execution_space_id}"),
     };
     let mut attestation = harness_core::collaboration::SourceWorkAttestation {
-        id: format!(
-            "source-work-attestation:{}:{}:{}",
-            work.id, work.version, session.gateway_generation
+        id: source_work_attestation_id(
+            &work.id,
+            work.version,
+            session.gateway_generation,
+            idempotency_key,
         ),
         company_id: request.company_id.clone(),
         source_work_ref,
@@ -1481,6 +1483,17 @@ pub(crate) fn queue_collaboration_proposal(
     }))
 }
 
+fn source_work_attestation_id(
+    work_id: &str,
+    work_revision: u64,
+    gateway_generation: u64,
+    idempotency_key: &str,
+) -> String {
+    format!(
+        "source-work-attestation:{work_id}:{work_revision}:{gateway_generation}:{idempotency_key}"
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn queue_remote_fact_publication(
     store: &HarnessStore,
@@ -1515,6 +1528,38 @@ pub(crate) fn queue_remote_fact_publication(
             "remote fact publication requires exact Delegation/source placement, immutable fact identity, idempotency and future expiry",
         ));
     }
+
+    let layout = RemoteFabricStoreLayout::open(firm_home)?;
+    let local = layout.open_node_local(&request.company_id, local_node_id)?;
+    let target_work_result_id = format!("route-target-work-{}", request.delegation_id);
+    let target_work_result = local
+        .snapshot()?
+        .results
+        .get(&target_work_result_id)
+        .cloned()
+        .filter(|result| {
+            result.result_schema == "agentfirm.collaboration.target_work_created.v1"
+                && result.effect == harness_fabric::EffectCertainty::Applied
+        })
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::ExpectedRevisionConflict,
+                "remote fact requires the applied target Work receipt for this Delegation",
+            )
+        })?;
+    let relationship_target_work_ref = serde_json::from_value::<RemoteWorkRef>(
+        target_work_result
+            .result
+            .get("target_work_ref")
+            .cloned()
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::ExpectedRevisionConflict,
+                    "applied target Work receipt lacks target_work_ref",
+                )
+            })?,
+    )
+    .map_err(|error| FabricError::none(FabricErrorCode::InvalidPayload, error.to_string()))?;
 
     let (
         fact_work_id,
@@ -1714,7 +1759,7 @@ pub(crate) fn queue_remote_fact_publication(
             "remote fact requires the exact current target Work owner and active WorkExecutionBinding",
         ));
     }
-    let target_work_ref = RemoteWorkRef {
+    let native_fact_work_ref = RemoteWorkRef {
         schema_version: "agentfirm.remote-work-ref.v1".into(),
         execution_space_id: execution_space_id.into(),
         node_id: local_node_id.into(),
@@ -1734,7 +1779,7 @@ pub(crate) fn queue_remote_fact_publication(
             execution_space_id,
             &work.id,
             report_id,
-            &target_work_ref,
+            &native_fact_work_ref,
             &team.host_agent_id,
         )?,
         None => None,
@@ -1757,7 +1802,8 @@ pub(crate) fn queue_remote_fact_publication(
         delegation_id: request.delegation_id.clone(),
         origin_node_id: local_node_id.into(),
         origin_team_id: team.id.clone(),
-        fact_work_ref: target_work_ref,
+        fact_work_ref: relationship_target_work_ref.clone(),
+        native_fact_work_ref,
         delegation_source_work_ref: request.source_work_ref.clone(),
         fact_kind: request.fact_kind,
         fact_id: request.fact_id.clone(),
@@ -1778,32 +1824,18 @@ pub(crate) fn queue_remote_fact_publication(
         created_at: format!("unix-ms:{now_unix_ms}"),
         retain_until: request.retain_until.clone(),
     };
-    let layout = RemoteFabricStoreLayout::open(firm_home)?;
-    let collaboration = layout.open_collaboration_store(&request.company_id)?;
-    let delegation = collaboration
-        .collaboration_delegation(&request.company_id, &request.delegation_id)
-        .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?
-        .ok_or_else(|| {
-            FabricError::none(
-                FabricErrorCode::ExpectedRevisionConflict,
-                "remote fact references no central Delegation",
-            )
-        })?;
-    if delegation.revision != expected_delegation_revision
-        || !matches!(
-            delegation.state,
-            harness_core::collaboration::DelegationState::Active
-                | harness_core::collaboration::DelegationState::ResultAvailable
-                | harness_core::collaboration::DelegationState::CancellationRequested
-        )
-        || delegation.target_work_ref.as_ref() != Some(&publication.fact_work_ref)
-        || delegation.source_work_ref != request.source_work_ref
-        || delegation.target_placement.team_id != publication.origin_team_id
-        || delegation.target_placement.node_id != publication.origin_node_id
+    if publication.native_fact_work_ref.work_id != publication.fact_work_ref.work_id
+        || publication.native_fact_work_ref.team_id != publication.fact_work_ref.team_id
+        || publication.native_fact_work_ref.node_id != publication.fact_work_ref.node_id
+        || publication.native_fact_work_ref.placement_generation
+            != publication.fact_work_ref.placement_generation
+        || publication.fact_work_ref != relationship_target_work_ref
+        || publication.origin_team_id != relationship_target_work_ref.team_id
+        || publication.origin_node_id != relationship_target_work_ref.node_id
     {
         return Err(FabricError::none(
             FabricErrorCode::UnauthorizedActor,
-            "remote fact disagrees with the exact current Delegation target Work or source Work",
+            "remote fact disagrees with the exact locally applied target Work receipt",
         ));
     }
     let source_placement = TargetPlacementRef {
@@ -1827,7 +1859,6 @@ pub(crate) fn queue_remote_fact_publication(
             local_node_id,
         )
         .map_err(|error| FabricError::none(FabricErrorCode::InvalidPayload, error.to_string()))?;
-    let local = layout.open_node_local(&request.company_id, local_node_id)?;
     let session = local.active_session()?.ok_or_else(|| {
         FabricError::none(
             FabricErrorCode::NodeStaleGeneration,
@@ -5038,6 +5069,20 @@ fn fabric_error(error: FabricError) -> CliError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn source_work_attestation_identity_is_stable_per_proposal_not_per_work_revision() {
+        let first = super::source_work_attestation_id("work-a", 3, 9, "proposal-a");
+        assert_eq!(
+            first,
+            super::source_work_attestation_id("work-a", 3, 9, "proposal-a")
+        );
+        assert_ne!(
+            first,
+            super::source_work_attestation_id("work-a", 3, 9, "proposal-b"),
+            "independent proposals for one frozen Work revision need independent immutable attestations"
+        );
+    }
+
     use super::*;
 
     #[test]

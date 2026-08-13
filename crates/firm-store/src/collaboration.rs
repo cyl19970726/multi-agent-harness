@@ -1501,7 +1501,7 @@ impl HarnessStore {
         let work = self
             .latest_works()?
             .into_iter()
-            .find(|work| work.id == publication.fact_work_ref.work_id)
+            .find(|work| work.id == publication.native_fact_work_ref.work_id)
             .ok_or_else(|| {
                 collaboration_error(
                     FabricErrorCode::PublicationScopeMismatch,
@@ -1534,8 +1534,8 @@ impl HarnessStore {
                 .operational_decision_ref
                 .as_ref()
                 .is_some_and(|decision| {
-                    decision.work_ref == publication.fact_work_ref
-                        && work.version == publication.fact_work_ref.work_revision + 1
+                    decision.work_ref == publication.native_fact_work_ref
+                        && work.version == publication.native_fact_work_ref.work_revision + 1
                         && work.phase == firm_core::WorkPhase::Closed
                         && work.resolution == Some(firm_core::WorkResolution::Accepted)
                 });
@@ -1545,9 +1545,14 @@ impl HarnessStore {
             || publication.fact_revision == 0
             || publication.company_id != context.company_id
             || publication.origin_node_id != current_node_id
-            || publication.fact_work_ref.node_id != current_node_id
-            || publication.fact_work_ref.team_id != team.id
-            || (publication.fact_work_ref.work_revision != work.version
+            || publication.native_fact_work_ref.node_id != current_node_id
+            || publication.native_fact_work_ref.team_id != team.id
+            || publication.native_fact_work_ref.work_id != publication.fact_work_ref.work_id
+            || publication.native_fact_work_ref.node_id != publication.fact_work_ref.node_id
+            || publication.native_fact_work_ref.team_id != publication.fact_work_ref.team_id
+            || publication.native_fact_work_ref.placement_generation
+                != publication.fact_work_ref.placement_generation
+            || (publication.native_fact_work_ref.work_revision != work.version
                 && !accepted_result_revision)
             || publication.fact_digest != canonical_digest
             || publication.snapshot.canonical_digest != canonical_digest
@@ -2172,6 +2177,11 @@ impl HarnessStore {
             || publication.origin_node_id != delegation.target_placement.node_id
             || publication.origin_team_id != delegation.target_placement.team_id
             || delegation.target_work_ref.as_ref() != Some(&publication.fact_work_ref)
+            || publication.native_fact_work_ref.work_id != publication.fact_work_ref.work_id
+            || publication.native_fact_work_ref.team_id != publication.fact_work_ref.team_id
+            || publication.native_fact_work_ref.node_id != publication.fact_work_ref.node_id
+            || publication.native_fact_work_ref.placement_generation
+                != publication.fact_work_ref.placement_generation
             || publication.fact_work_ref.team_id != delegation.target_placement.team_id
             || publication.fact_work_ref.node_id != delegation.target_placement.node_id
             || publication.fact_work_ref.placement_generation
@@ -2361,7 +2371,7 @@ impl HarnessStore {
             || publication.fact_work_ref.work_id != target_work.work_id
             || operational_decision.work_ref.work_id != target_work.work_id
             || operational_decision.work_ref.work_revision
-                != publication.fact_work_ref.work_revision
+                != publication.native_fact_work_ref.work_revision
         {
             return Err(collaboration_error(
                 FabricErrorCode::PublicationScopeMismatch,

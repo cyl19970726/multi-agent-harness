@@ -110,6 +110,7 @@ if (realEvidencePath) {
       "delegation_id",
       "proposal_operation_id",
       "target_work_revision",
+      "native_fact_work_revision",
       "publication_id",
       "terminal_receipt_id",
       "cleanup_verified",
@@ -135,25 +136,25 @@ if (realEvidencePath) {
         const exactHead = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" });
         if (exactHead.status !== 0) throw new Error("cannot resolve exact repository HEAD");
         const head = exactHead.stdout.trim();
-        if (evidence.submitted_revision !== head) {
-          throw new Error(`evidence submitted revision ${evidence.submitted_revision} is not exact HEAD ${head}`);
+        if (evidence.submitted_revision_binding !== "git_head_at_validation") {
+          throw new Error("evidence must bind the submitted revision to the validator's exact git HEAD");
         }
         const ancestor = spawnSync(
           "git",
-          ["merge-base", "--is-ancestor", evidence.base_revision, evidence.submitted_revision],
+          ["merge-base", "--is-ancestor", evidence.base_revision, head],
           { encoding: "utf8" },
         );
         if (ancestor.status !== 0) throw new Error("evidence base is not an ancestor of its submitted revision");
         const buildAncestor = spawnSync(
           "git",
-          ["merge-base", "--is-ancestor", evidence.build_sha, evidence.submitted_revision],
+          ["merge-base", "--is-ancestor", evidence.build_sha, head],
           { encoding: "utf8" },
         );
         if (buildAncestor.status !== 0) throw new Error("tested build is not an ancestor of the submitted revision");
-        if (evidence.build_sha !== evidence.submitted_revision) {
+        if (evidence.build_sha !== head) {
           const changed = spawnSync(
             "git",
-            ["diff", "--name-only", `${evidence.build_sha}..${evidence.submitted_revision}`],
+            ["diff", "--name-only", `${evidence.build_sha}..${head}`],
             { encoding: "utf8" },
           );
           if (changed.status !== 0) throw new Error("cannot prove the post-test revision delta");
@@ -175,6 +176,8 @@ if (realEvidencePath) {
           "target_node_fabric_journal",
           "source_trust_ledger",
           "target_trust_ledger",
+          "source_work_ledger",
+          "target_work_ledger",
           "source_provider_transcript",
           "target_provider_transcript",
           "artifact",
@@ -209,6 +212,17 @@ if (realEvidencePath) {
         )?.resulting_projection;
         if (!publication || publication.delegation_id !== evidence.delegation_id) {
           throw new Error("central ledger has no exact remote publication for the Delegation");
+        }
+        if (JSON.stringify(publication.fact_work_ref) !== JSON.stringify(delegation.target_work_ref)) {
+          throw new Error("publication relationship Work ref is not the exact frozen Delegation target Work ref");
+        }
+        if (
+          publication.native_fact_work_ref?.work_id !== delegation.target_work_ref?.work_id ||
+          publication.native_fact_work_ref?.team_id !== delegation.target_work_ref?.team_id ||
+          publication.native_fact_work_ref?.node_id !== delegation.target_work_ref?.node_id ||
+          publication.native_fact_work_ref?.work_revision !== evidence.native_fact_work_revision
+        ) {
+          throw new Error("publication native fact Work ref is not the exact current target Work revision");
         }
 
         const fabric = lastState(
@@ -255,6 +269,8 @@ if (realEvidencePath) {
 
         const sourceTrustObjects = objects(readJsonLines(material.source_trust_ledger.absolute));
         const targetTrustObjects = objects(readJsonLines(material.target_trust_ledger.absolute));
+        const sourceWorkObjects = objects(readJsonLines(material.source_work_ledger.absolute));
+        const targetWorkObjects = objects(readJsonLines(material.target_work_ledger.absolute));
         const sourceMessage = sourceTrustObjects.find((value) => value.id === evidence.message_id);
         const targetMessage = targetTrustObjects.find((value) => value.id === evidence.message_id);
         const delivery = targetTrustObjects.find((value) => value.id === evidence.message_delivery_id);
@@ -263,6 +279,26 @@ if (realEvidencePath) {
         }
         if (sourceMessage.body_digest !== targetMessage.body_digest) {
           throw new Error("source and target immutable Message bytes disagree");
+        }
+        const nativeTargetWork = targetWorkObjects.find(
+          (value) =>
+            value.id === publication.native_fact_work_ref.work_id &&
+            value.version === publication.native_fact_work_ref.work_revision,
+        );
+        const activeBinding = targetTrustObjects.find(
+          (value) =>
+            value.work_id === publication.native_fact_work_ref.work_id &&
+            value.work_revision === publication.native_fact_work_ref.work_revision &&
+            value.status === "active" &&
+            value.agent_identity_id === publication.created_by.id,
+        );
+        const sourceWork = sourceWorkObjects.find(
+          (value) =>
+            value.id === delegation.source_work_ref.work_id &&
+            value.version === delegation.source_work_ref.work_revision,
+        );
+        if (!nativeTargetWork || !activeBinding || !sourceWork) {
+          throw new Error("source Work, current target Work, or exact active target WorkExecutionBinding is absent");
         }
 
         for (const [side, marker] of [

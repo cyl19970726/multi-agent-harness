@@ -1104,6 +1104,10 @@ fn active_cancellation_is_only_a_source_request_and_target_host_decision() {
 fn remote_fact_is_redacted_digest_bound_and_target_scoped() {
     let test = TestStore::new("publication");
     let target = active_delegation(&test.store);
+    let mut native_target = target.clone();
+    native_target.work_revision += 1;
+    native_target.work_event_id = "event-b-2".into();
+    native_target.digest = format!("sha256:{:064x}", 2);
     let fact = serde_json::json!({
         "submitted_work_revision": 1,
         "outcome": "implemented",
@@ -1118,7 +1122,8 @@ fn remote_fact_is_redacted_digest_bound_and_target_scoped() {
         delegation_id: "delegation-1".into(),
         origin_node_id: "node-b".into(),
         origin_team_id: "team-b".into(),
-        fact_work_ref: target,
+        fact_work_ref: target.clone(),
+        native_fact_work_ref: native_target,
         delegation_source_work_ref: source_attestation().source_work_ref,
         fact_kind: RemoteFactKind::Report,
         fact_id: "report-b-1".into(),
@@ -1207,7 +1212,7 @@ fn remote_fact_is_redacted_digest_bound_and_target_scoped() {
 
     let operational_decision = WorkOperationalDecisionRef {
         decision_id: "work-decision-b-1".into(),
-        work_ref: publication.fact_work_ref.clone(),
+        work_ref: publication.native_fact_work_ref.clone(),
         decision_revision: 1,
         digest: format!("sha256:{:064x}", 77),
     };
@@ -2203,6 +2208,7 @@ fn target_work_create_applies_once_through_native_work_authority() {
     );
     let mut target_work_ref: RemoteWorkRef =
         serde_json::from_value(first.1["target_work_ref"].clone()).unwrap();
+    let relationship_target_work_ref = target_work_ref.clone();
 
     let cancellation_request = DelegationCancellationRequest {
         id: "cancel-native-1".into(),
@@ -2415,7 +2421,8 @@ fn target_work_create_applies_once_through_native_work_authority() {
         delegation_id: "delegation-native-1".into(),
         origin_node_id: TARGET_NODE_UUID.into(),
         origin_team_id: "team-b".into(),
-        fact_work_ref: target_work_ref,
+        fact_work_ref: relationship_target_work_ref,
+        native_fact_work_ref: target_work_ref,
         delegation_source_work_ref: source_work,
         fact_kind: RemoteFactKind::Report,
         fact_id: "report-routed-1".into(),
