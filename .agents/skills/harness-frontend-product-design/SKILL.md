@@ -1,300 +1,292 @@
 ---
 name: harness-frontend-product-design
-description: "Orchestrate frontend product design, implementation, and visual acceptance through independent subagents or multiple sessions. Use when a frontend task needs product-source research, page discovery, divergent UX/visual concepts, critical review, responsive layout contracts, screenshot-guided implementation, or independent browser acceptance."
+description: "Lead a frontend feature from product definition through UX, UI, architecture, implementation, and visual acceptance. Use when a team must discover what a product module actually contains, decide its pages and states from user journeys, create approved design references, freeze a versioned frontend module spec, plan the full implementation path, or review exact-revision browser evidence against that spec."
 ---
 
 # Frontend Product Design Harness
 
-Run frontend product work as a multi-session design process. Keep project
-meaning in the project's own sources; keep this skill limited to collaboration,
-artifact, handoff, and acceptance methods.
+Treat a complete product capability—not a ticket, page, component, or example
+named in this skill—as the unit of design, implementation, and acceptance.
+
+The Product Manager must first discover what the capability actually contains.
+Its pages and states come from users, product rules, jobs, journeys, information
+architecture, and risk. There is no universal page list. A module may be one
+focused surface or a family of routes, modes, overlays, and responsive states.
+
+Names such as card, detail page, drawer, or dialog are possible UI forms, never
+required product objects. Do not add one because this skill, an old implementation,
+or a reference example happens to mention it.
 
 ## Hard Boundary
 
 Do not embed or infer a specific project's:
 
 - product objects, lifecycle, organization model, or vocabulary;
-- canonical pages, routes, modules, or navigation;
+- required pages, routes, navigation, actions, or state names;
 - storage schema, command line, task system, provider, or framework;
 - repository paths or document-system hierarchy.
 
-Load those facts at runtime from user-provided references, authoritative product
-sources, the current repository, and the working application. Cite the sources
-inside the design artifacts. If sources conflict, report the conflict instead of
-creating a new product definition in the skill.
+Load project truth at runtime from the user request, authoritative product sources,
+the current product, and the repository. Cite those sources in the design artifacts.
+If they conflict, expose the decision instead of inventing product meaning.
 
-## Operating Model
+## Non-Negotiable Contract
 
-Use a Host session to coordinate independent working contexts. Prefer fresh
-subagents for bounded parallel work and fresh persistent sessions when a role
-needs multiple rounds or browser interaction.
-
-Minimum roles for material design work:
-
-- Product Researcher: reconstructs user outcome, workflows, constraints, and
-  authority from raw sources.
-- UX/IA Designer: discovers pages and interaction structure from workflows.
-- Visual Designer: proposes concrete responsive compositions.
-- Critic: challenges assumptions, missing states, usability, and feasibility.
-- Implementer: changes the product and produces exact-revision evidence.
-- Independent Reviewer: judges the frozen reference against the working UI.
-
-Combine research roles for small work. Keep Implementer and Independent
-Reviewer in different execution contexts for any acceptance claim. A renamed
-role inside the same context is not independent.
-
-For high-risk work, split Independent Reviewer into two fresh contexts:
-
-- Product Reviewer: judges workflow, comprehension, and product correctness.
-- Usability/Visual Reviewer: operates the UI and judges interaction, responsive
-  behavior, and reference fidelity.
-
-Have them submit independently before either reads the other's conclusion.
-
-## Context Isolation
-
-Give each role only what it needs:
-
-- Researchers receive raw product sources and the user request.
-- Designers receive the research brief, references, constraints, and relevant
-  existing UI—not the Host's preferred answer.
-- Critics receive candidate artifacts and source refs—not a recommendation.
-- Implementers receive the selected design and acceptance contract.
-- Reviewers receive the frozen reference, exact-revision screenshots or live
-  URL, declared deviations, and acceptance contract—not implementation effort,
-  test success, or completion persuasion.
-
-Record a context id or session/thread reference for every material contribution.
-Do not present parallel outputs as independent if they share one reasoning
-history.
-
-## Artifact Envelope
-
-Keep the protocol storage-neutral. Each material artifact should identify:
+For material frontend work, build this evidence chain:
 
 ```text
-artifact type and round:
-author role and context id:
-status: draft | submitted | accepted | rejected | superseded | blocked
-input refs:
-scope and non-goals:
-known facts:
-inferences:
-unknowns:
-claims and evidence refs:
-findings and open questions:
-requested next action:
-supersedes:
+authority and product problem
+  -> PM module brief and capability boundary
+  -> user journeys and justified page/surface inventory
+  -> UX/IA contract
+  -> approved UI direction and visual references
+  -> architecture and complete implementation path
+  -> owner-approved Frontend Module Spec
+  -> staged implementation and complete self-review
+  -> exact-revision independent spec review
+  -> owner acceptance
 ```
 
-The Host may store these artifacts wherever the project records design work.
-Do not require a particular database, task system, file path, or id format.
+Do not start implementation because one attractive mockup exists. Implementation
+starts only after the spec explains what the whole module contains, why each
+surface exists, how users move through it, what it looks like, how it is built,
+and how it will be accepted.
+
+## Roles And Independence
+
+Use separate working contexts where independent judgment matters:
+
+- Product Manager: owns the problem, users, outcomes, capability boundary,
+  product rules, success measures, page/surface inventory, and scope decisions.
+- Product Researcher: gathers authority and current-state evidence when needed.
+- UX/IA Designer: owns journeys, information architecture, navigation,
+  interaction, content hierarchy, responsive behavior, and accessibility.
+- UI/Visual Designer: owns composition, visual system, assets, motion, and
+  approved expected designs for visually consequential states.
+- Critic: challenges completeness, assumptions, usability, coherence, and feasibility.
+- Architect: maps the approved product/UX/UI contract to the real code and data path.
+- Implementer: builds the complete authorized module and produces revision-bound evidence.
+- Independent Reviewer: judges the implementation against the frozen spec and references.
+- Owner/User: approves the spec and accepts or rejects the delivered product.
+
+Small modules may combine PM, research, UX, UI, and architecture roles. Never
+combine Implementer and Independent Reviewer for an acceptance claim. Changing
+the role prompt inside one reasoning context does not create independence.
+
+## Context And Artifact Discipline
+
+Give each role only what it needs. Designers receive reconciled product findings,
+not the coordinating session's preferred layout. Critics receive raw candidates
+and authority, not a recommendation. Reviewers receive the frozen spec, immutable
+reference revisions, deviations, rubric, and exact-revision product—not
+implementation effort or test persuasion.
+
+Each material artifact records:
+
+```text
+type, id, revision, round, status:
+author role and execution-context id:
+input authority and immutable references:
+scope, non-goals, facts, assumptions, and unknowns:
+decisions, rationale, evidence, and open questions:
+requested next action and superseded artifact:
+```
+
+Use one canonical spec URI/id and revision. Mirrors must identify the canonical
+source; repository and external-document copies cannot both claim authority.
 
 ## Workflow
 
 ### 1. Build the source packet
 
-The Host gathers:
+Gather the user request, product authority and revisions, current product behavior,
+research, analytics or support evidence when available, approved brand/design
+references, representative real data, implementation entry points, and delivery,
+accessibility, responsive, privacy, and technical constraints.
 
-- user request and success criteria;
-- authoritative product sources and revision markers;
-- approved visual references, if any;
-- relevant implementation routes and representative data;
-- technical, accessibility, responsive, and delivery constraints;
-- known unknowns and conflicting sources.
+Separate fact, inference, and unknown. Do not reconstruct product truth from the
+component tree when a stronger authority exists.
 
-Do not ask designers to reverse-engineer product truth from the current
-component tree when better authority exists.
+### 2. Have the PM define the module before designing pages
 
-### 2. Run independent discovery
+Read [`references/product-module-discovery.md`](references/product-module-discovery.md).
+The PM produces a module brief containing:
 
-Dispatch Product Researcher and UX/IA Designer independently when scope is
-unclear or structural. Their outputs must state source refs, assumptions, user
-workflows, primary questions, failure modes, and proposed page/surface
-boundaries.
+- problem, target users, jobs/outcomes, success measures, and product principles;
+- capabilities and business rules required to achieve the outcome;
+- in-scope, non-goals, dependencies, assumptions, unknowns, and risks;
+- current-state failures and decisions that need owner authority;
+- an initial journey set and a justified candidate page/surface inventory.
 
-The Host reconciles them into a discovery brief without silently resolving
-material product conflicts. Escalate a missing authority decision when it would
-change the product.
+Every candidate surface must state which user decision or sustained task it serves
+and why it deserves its own place in the experience. Reject inventories copied
+from old routes, implementation components, generic dashboard patterns, or examples
+in this skill.
 
-### 3. Generate divergent concepts
+The PM gate passes only when the Owner agrees that this is the right product
+module to build. Visual design cannot repair a wrong product boundary.
 
-Ask two or three Visual Designer contexts for materially different solutions.
-Vary the design premise, information hierarchy, interaction model, density, or
-responsive strategy—not merely color, radius, or spacing.
+### 3. Turn the product brief into a complete UX/IA contract
 
-Each concept must include:
+The UX/IA Designer walks each journey from entry through success, interruption,
+failure, recovery, and return. Define information architecture, navigation,
+interaction states, content hierarchy, progressive disclosure, keyboard/focus,
+responsive transformation, and honest loading/empty/restricted/error behavior.
 
-- design premise and target workflow;
-- page/surface map derived from the source packet;
-- desktop, tablet, and mobile composition;
-- first-viewport hierarchy and primary action;
-- loading, empty, warning, error, and long-content behavior;
-- accessibility and keyboard implications;
-- data/read-model needs and implementation risks;
-- explicit departures from the supplied reference.
+Build a graph of the surfaces actually discovered by those journeys. Follow every
+affordance to its visible consequence, but do not manufacture pages to satisfy a
+generic checklist. The graph is closed when every scoped transition targets a
+known state and every included surface has a reason, contract, and coverage plan.
 
-For a localized change, one concept plus one independent challenge can be
-enough. Do not force three concepts when the decision is already constrained.
+Run the discovery and closure checks in `references/product-module-discovery.md`
+before visual concept approval.
 
-### 4. Run blind critique
+### 4. Design the module as one coherent UI system
 
-Give the Critic raw candidate artifacts, discovery brief, and sources. Ask for:
+Ask for divergent concepts when the design premise is genuinely open. Vary
+information hierarchy, spatial model, interaction, density, or responsive strategy,
+not just colors and radii.
 
-- a rubric defined before scoring;
-- unsupported assumptions and missing workflows;
-- hierarchy, comprehension, navigation, responsive, accessibility, and
-  feasibility findings;
-- P0/P1/P2 risks with evidence;
-- useful parts worth preserving from rejected concepts;
-- a recommendation or a request for another concept round.
+Each concept must show how the discovered module works as a family:
 
-The Critic must not know which option the Host or user prefers.
+- primary user journey and first-viewport hierarchy;
+- visually consequential pages, modes, and transitions;
+- representative real-density, long-content, empty, error, permission, and
+  responsive states where they materially change the design;
+- typography, spacing, color, surface, control, icon/asset, focus, and motion language;
+- accessibility, data, and implementation implications;
+- what existing behavior or design is preserved, adapted, removed, or added, and why.
 
-### 5. Select and contract
+Do not overproduce pictures. Require approved visual references for identity-defining,
+novel, high-risk, or acceptance-critical states. Lower-risk states may use a precise
+approved pattern and written contract. A few correct core frames plus a complete
+spec are better than many inconsistent generated images.
 
-The Host records:
+### 5. Critique the whole product design and obtain owner direction
 
-```text
-selected concept:
-why it won:
-parts borrowed from other concepts:
-rejected concepts and reasons:
-remaining weaknesses:
-authority and reference refs:
-open product decisions:
-```
+Give the Critic the source packet, PM brief, UX graph, and raw UI candidates.
+Require findings on product completeness, missing journeys, unnecessary surfaces,
+hierarchy, usability, responsive behavior, accessibility, visual coherence,
+technical feasibility, and P0/P1/P2 risks.
 
-Then create a page-local implementation contract for each changed surface:
+For adapted or legacy designs, record a decision for each relevant element:
+preserve, adapt, remove, or add. Explain product rationale and spatial consequence;
+removing an area without reallocating its space is not a complete design decision.
 
-```text
-surface and route:
-target user workflow:
-responsive diagrams:
-first viewport:
-regions and dimensions:
-scroll ownership:
-interaction and keyboard order:
-state matrix:
-data density and wrapping rules:
-component and read-model needs:
-approved deviations:
-screenshot viewports and scenarios:
-observable pass/fail conditions:
-```
+The Owner approves the design direction. Critic preference does not replace owner
+approval, and an approved picture does not yet authorize implementation.
 
-Use ASCII box diagrams when the contract must travel reliably through Markdown,
-terminals, and agent transcripts. A list of components is not a layout contract.
+### 6. Design architecture and the complete implementation path
 
-### 6. Decide implementation architecture
+The Architect inspects the repository and maps every included journey and surface
+to routes, components, shared primitives, assets, state/read models, APIs, cache or
+realtime behavior, mutations, permissions, accessibility, dependencies, migration,
+old-code disposition, feature flags, tests, and owned paths.
 
-Have an Architect or the Implementer inspect the actual repository and propose
-the narrowest viable architecture. Record routing, state/read-model boundary,
-component ownership, styling approach, accessibility strategy, dependencies,
-and old-code disposition. Do not freeze a technology stack in this skill.
+Distinguish semantic reuse, visual reuse, adaptation, and replacement. Reusing
+data logic does not make an old visual shell acceptable. Identify missing backend
+or design-system capabilities before frontend implementation starts.
 
-### 7. Implement through screenshot checkpoints
+Plan all implementation slices and dependencies before coding. Each slice names
+the product requirements, surfaces, owned paths, data/API needs, tests/journeys,
+screenshot checkpoints, and local stop threshold. UI quality is part of every
+slice, not an undefined final polish phase.
 
-The Implementer works in slices:
+### 7. Freeze and validate the Frontend Module Spec
 
-```text
-shell or high-risk slice
-  -> engineering checks
-  -> representative browser state
-  -> exact-revision screenshot
-  -> compare with contract/reference
-  -> repair or return to design
-  -> next slice
-```
+Build one versioned contract using
+[`references/frontend-module-spec.md`](references/frontend-module-spec.md) and
+[`assets/frontend-module-spec.template.json`](assets/frontend-module-spec.template.json).
+It joins PM, UX, UI, architecture, implementation, and review decisions.
 
-Capture the first structural screenshot early. Stop patching and return to
-design when the result reveals a systemic composition failure, inaccessible
-interaction, uncontrolled overflow, a raw/debug-first experience, or a contract
-too vague to judge.
+The template is a field scaffold, not an example product. Replace its placeholders
+with project-derived content; do not preserve its surface count, ids, sequence, or
+form unless discovery independently justifies them.
 
-### 8. Self-review before handoff
+Run `scripts/validate_frontend_module_spec.py <spec.json>`. Structural PASS does
+not prove that the product definition or design is good. Require PM, Critic,
+Architect, and Owner readiness decisions before implementation.
 
-The Implementer completes the declared scope and freezes one evidence bundle:
+### 8. Implement through staged internal gates
 
-- exact implementation revision;
-- reference and contract revisions;
-- route, viewport, and representative-state screenshots;
-- comparison findings;
-- console, overflow, keyboard, accessibility, and relevant engineering checks;
-- declared deviations and unresolved findings.
-
-Resolve all P0/P1 self-review findings before requesting independent review.
-Self-review grants eligibility to review; it is not acceptance.
-
-### 9. Run independent visual and product review
-
-Create a fresh Reviewer context. Require one observation for every frozen
-screenshot or tested scenario. Each defect must include:
+Use [`references/fidelity-and-review.md`](references/fidelity-and-review.md):
 
 ```text
-severity:
-observed result:
-screenshot or browser evidence:
-reference/contract comparison:
-likely causal layer:
-specific repair:
-observable recheck condition:
+product and data foundation
+  -> module composition and navigation
+  -> primary journey
+  -> remaining discovered surfaces and states
+  -> shared UI/interaction system
+  -> responsive and accessibility coverage
+  -> exact-revision complete-module evidence
 ```
 
-Require a page-level systemic diagnosis in addition to local defects. Reject
-verdict-only reviews, generic polish requests, and acceptance justified only by
-passing tests or component presence.
+At each stage, implement the bounded slice, run relevant engineering checks,
+capture representative states, compare them with the frozen spec/references, and
+repair or return to the responsible design layer. Do not advance while a hard
+invariant fails, a stage-blocking frame misses its threshold, or P0/P1 remains.
 
-Run separate product/usability and visual-fidelity reviewers when either axis is
-high risk. Both reconstruct their checklist from the source packet; neither uses
-a product checklist stored in this skill.
+Do not request independent review after each small change. The Implementer should
+finish the planned module, use internal critique during development, and submit
+one coherent candidate only after complete self-review.
 
-### 10. Iterate and close
+### 9. Complete exact-revision self-review
 
-Route review findings back to the appropriate context:
+Freeze an evidence bundle containing implementation and runtime revisions, spec
+revision, approved reference hashes, representative real-data identity, coverage
+for every required journey/surface/state/viewport, comparisons for blocking frames,
+per-frame diagnostic scores, deviations, console/network/overflow/keyboard/
+accessibility/performance checks, and unresolved findings.
 
-- source or workflow ambiguity -> Product Researcher / user;
-- page boundary or interaction failure -> UX/IA Designer;
-- composition or visual-system failure -> Visual Designer;
-- implementation mismatch -> Implementer;
-- weak acceptance contract -> Host and Critic.
+The default visual bar is at least 95/100 for every blocking frame, not an average.
+Resolve P0/P1 before handoff. Self-review grants review eligibility, not acceptance.
 
-Freeze a new evidence bundle after changes. Do not reuse a previous PASS across
-a changed revision or reference.
+### 10. Run independent spec-conformance review and owner acceptance
 
-Close with the selected/rejected decisions, final evidence, remaining waivers,
-and reusable process learning. Store them where the project keeps design and
-delivery records; this skill does not prescribe a repository path.
+Create a fresh Reviewer context. Require one reference-bound observation for every
+blocking frame and tested journey plus a systemic diagnosis. Each defect names:
+
+```text
+requirement, journey, and surface:
+severity and observed evidence:
+spec/reference difference:
+causal layer: product | UX | UI system | architecture | implementation | evidence
+repair and observable recheck condition:
+```
+
+Reject verdict-only reviews, generic polish, component-presence acceptance, and
+averages that hide a failed frame. Route findings back to the causal role.
+
+Any relevant implementation, runtime, spec, reference, coverage, threshold,
+deviation, or owner decision change invalidates affected review evidence. Close
+only when independent review passes and the Owner accepts the complete module.
 
 ## Stop Conditions
 
-Stop and ask for authority or user direction when:
+Stop for owner authority when product sources conflict, success or scope is
+ambiguous, or a UX-changing business decision is missing.
 
-- product sources conflict on a decision that changes the UX;
-- required reference assets are missing;
-- the target route or representative state cannot be run;
-- a destructive architecture change exceeds the authorized scope.
+Stop design when the PM brief is unapproved, journeys do not justify the surface
+inventory, core visual references are absent, or visual language is only adjectives.
 
-Stop implementation and return to design when:
+Stop implementation when the spec is incomplete, architecture/API gaps are hidden
+with frontend invention, repeated local styling does not fix systemic composition,
+or the implementation is being allowed to redefine the approved product design.
 
-- screenshots cannot be judged against an explicit contract;
-- local fixes repeat without correcting a page-level composition problem;
-- mobile/tablet behavior becomes an unstructured stack;
-- implementation structure, rather than user workflow, dictates the design.
-
-Do not claim independent acceptance when no separate execution context was
-available. Report implementer self-review instead.
+Do not claim independent acceptance without a separate execution context. Report
+Implementer self-review only.
 
 ## Quality Standard
 
-Judge screenshots across:
+Judge the delivered module across:
 
-1. product legibility and action confidence;
-2. composition and dominant work surface;
-3. density, spacing, typography, and alignment rhythm;
-4. surface hierarchy, color restraint, and control proportions;
-5. responsive transformation, overflow, focus, and state behavior;
-6. fidelity to the approved reference and declared deviations.
+1. product problem, users, outcomes, rules, scope, and success;
+2. journey completeness and justified page/surface architecture;
+3. UX hierarchy, navigation, interaction, content, responsive behavior, and accessibility;
+4. UI composition, density, typography, spacing, surfaces, controls, assets, and motion;
+5. fidelity to each approved reference and declared deviation;
+6. architecture, data/API truth, permissions, maintainability, and migration;
+7. complete implementation, exact-revision evidence, independent review, and owner acceptance.
 
-Rendered data, a clean console, passing tests, accessible primitives, or a
-completed checklist cannot alone establish frontend product quality.
+Passing tests, rendered data, a clean console, a completed checklist, or one good
+screenshot cannot alone establish frontend product quality.

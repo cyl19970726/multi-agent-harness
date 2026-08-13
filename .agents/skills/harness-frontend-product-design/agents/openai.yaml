@@ -1,4 +1,4 @@
 interface:
   display_name: "Frontend Product Design Harness"
-  short_description: "Orchestrate independent frontend design sessions"
-  default_prompt: "Use $harness-frontend-product-design to run independent product research, design variants, implementation, and browser review for this frontend change."
+  short_description: "Lead complete frontend product modules"
+  default_prompt: "Use $harness-frontend-product-design to define the product module, discover its justified pages and journeys, freeze its UX, UI, architecture, and implementation spec, then review exact-revision browser evidence."
