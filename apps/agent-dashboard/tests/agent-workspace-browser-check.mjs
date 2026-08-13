@@ -137,14 +137,23 @@ try{
   });
   assert.deepEqual(visibleTogether.filter(item=>!item.visible),[],`Messages mode lost normative first viewport after event expansion: ${JSON.stringify(visibleTogether)}`);
   assert.equal(await page.locator('[role="tabpanel"][data-state="active"] [data-radix-scroll-area-viewport]').evaluate(node=>node.scrollTop),0,"Messages canvas did not reset to top after mode change");
+  if(!liveConfig){
+    const recordKind=page.locator(".aw-record-kind").first();
+    const recordStyle=await recordKind.evaluate(node=>{const style=getComputedStyle(node);return {size:parseFloat(style.fontSize),weight:Number(style.fontWeight),color:style.color,clipped:node.scrollWidth>node.clientWidth};});
+    const actorStyle=await page.locator(".agent-message-row b").first().evaluate(node=>{const style=getComputedStyle(node);return {size:parseFloat(style.fontSize),weight:Number(style.fontWeight),color:style.color};});
+    assert.ok(recordStyle.size<actorStyle.size&&recordStyle.weight<actorStyle.weight,"Message route metadata competes with the authored actor");
+    assert.equal(recordStyle.clipped,false,"Message route metadata is clipped");
+  }
   await page.screenshot({path:join(evidenceDir,`member-messages--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   await page.getByRole("tab",{name:/Work/}).click();
   if(!liveConfig)await page.getByRole("button",{name:/Restore authored conversation dominance/}).waitFor();
   else await page.locator(".agent-work-row").first().waitFor();
   await waitForStableWriteSurface(page);
+  if(!liveConfig)assert.equal(await page.locator('.agent-work-row[data-current="true"]').first().getByText("Restore authored conversation dominance",{exact:true}).count(),1,"Current Work emphasis does not follow context_summary.current_work_id");
   await page.screenshot({path:join(evidenceDir,`member-work--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   const profileOpener=page.getByRole("button",{name:/Open .* configuration/});
   await profileOpener.click();await page.getByRole("dialog").waitFor();
+  assert.equal(await page.getByRole("dialog").getByText(/\b(?:none|null|not_model(?:ed)?|not modeled)\b/i).count(),0,"Configuration exposes raw empty-model tokens as primary UI");
   const profileClose=page.getByRole("button",{name:"Close Agent configuration"});
   await profileClose.waitFor();assert.equal(await profileClose.evaluate(node=>node===document.activeElement),true,"Profile dialog moves focus inside");
   await page.keyboard.press("Tab");assert.equal(await profileClose.evaluate(node=>node===document.activeElement),true,"Profile dialog traps forward Tab");
