@@ -219,6 +219,13 @@ try{
     const file=`${name}--1440x1000--${capturedSourceSha}.png`;
     captures.push({name,file,viewport:{width:1440,height:1000},sha256:createHash("sha256").update(await readFile(join(evidenceDir,file))).digest("hex")});
   }
+  const liveMeta=liveConfig?await fetch(`${liveConfig.api}/v1/meta?space=${encodeURIComponent(liveConfig.space)}&project=${encodeURIComponent(liveConfig.project)}`).then(async response=>{assert.equal(response.ok,true,`live meta ${response.status}`);return response.json();}):null;
+  if(liveMeta){
+    assert.equal(liveMeta.build_sha,capturedSourceSha,"live server build SHA differs from frozen frontend SHA");
+    assert.equal(liveMeta.git_rev,capturedSourceSha,"live server git revision differs from frozen frontend SHA");
+    assert.equal(await page.getByText(/Stale build:/).count(),0,"Member live evidence displays a stale-build warning");
+    assert.equal(await hostPage.getByText(/Stale build:/).count(),0,"Host live evidence displays a stale-build warning");
+  }
   const liveMemberEvidence=liveConfig?await fetch(`${liveConfig.api}/v1/views/agent-workspace/${encodeURIComponent(liveConfig.teamRun)}?space=${encodeURIComponent(liveConfig.space)}&project=${encodeURIComponent(liveConfig.project)}&agent_id=${encodeURIComponent(liveConfig.member)}`,{headers:{"X-AgentFirm-Token":liveConfig.memberToken}}).then(async response=>{assert.equal(response.ok,true,`live evidence RoleView ${response.status}`);return response.json();}):null;
   const manifest={
     evidence_kind:liveConfig?"canonical_store_live":"automated_contract_fixture",
@@ -228,6 +235,7 @@ try{
     project_binding_id:liveConfig?.project??"fixture-project",
     source_store_identity:liveMemberEvidence?.source_store_identity??"fixture-store",
     as_of_event_sequence:liveMemberEvidence?.as_of_event_sequence??72,
+    runtime_revisions:{frontend:captureSourceRevision(capturedSourceSha),server_build:liveMeta?.build_sha??"fixture-server",server_git:liveMeta?.git_rev??"fixture-server"},
     canonical_objects:liveConfig?{team_run_id:liveConfig.teamRun,host_agent_member_id:liveConfig.host,member_agent_member_id:liveConfig.member,member_run_id:liveConfig.memberRun}:null,
     native_session_claim:liveConfig?{availability:liveMemberEvidence?.data?.session_activity?.availability??"unknown",native_session_id:liveMemberEvidence?.data?.selected_session_id??null,claim:liveMemberEvidence?.data?.selected_session_id?"owner-bound native Session captured":"not claimed: no bound provider-native Session in the canonical store"}:"deterministic fixture only",
     captures,
@@ -235,3 +243,5 @@ try{
   await writeFile(join(evidenceDir,"evidence-manifest.json"),`${JSON.stringify(manifest,null,2)}\n`);
   console.log(`agent workspace browser check: PASS (${liveConfig?"store-live":"fixture"}; ${evidenceDir})`);
 }finally{await browser.close();await vite.close();}
+
+function captureSourceRevision(value){return value==="working-tree"?value:String(value);}
