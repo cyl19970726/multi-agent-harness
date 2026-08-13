@@ -2944,30 +2944,17 @@ impl NodeApplication for Wave4cApplication {
                 "artifact download is not an artifact grant",
             ));
         }
-        let payload: CollaborationArtifactGrantEnvelope = serde_json::from_value(reference.payload)
-            .map_err(|error| {
+        let payload: CollaborationArtifactGrantEnvelope =
+            serde_json::from_value(reference.payload.clone()).map_err(|error| {
                 FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
             })?;
-        if &payload.read_capability != capability
-            || capability.node_id != self.node_id
-            || capability.company_id != operation.company_id
-            || capability.purpose != harness_fabric::ArtifactCapabilityPurpose::Download
-        {
-            return Err(FabricError::none(
-                FabricErrorCode::UnauthorizedActor,
-                "artifact capability changed or is outside the authenticated source Node",
-            ));
-        }
-        let (_, store) = self.target_store(operation)?;
-        harness_store::apply_collaboration_target_operation(
-            &store,
+        validate_artifact_grant_authority(
+            &payload,
+            capability,
+            &reference,
             operation,
-            &format!(
-                "unix-ms:{}",
-                harness_fabric::gateway_runtime::now_unix_ms()?
-            ),
-        )?;
-        Ok(())
+            &self.node_id,
+        )
     }
 
     fn replay_downloaded_artifact(
@@ -2983,8 +2970,8 @@ impl NodeApplication for Wave4cApplication {
         if reference.business_kind != "artifact_grant" {
             return Ok(None);
         }
-        let payload: CollaborationArtifactGrantEnvelope = serde_json::from_value(reference.payload)
-            .map_err(|error| {
+        let payload: CollaborationArtifactGrantEnvelope =
+            serde_json::from_value(reference.payload.clone()).map_err(|error| {
                 FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
             })?;
         let (_, store) = self.target_store(operation)?;
@@ -3106,40 +3093,23 @@ impl NodeApplication for Wave4cApplication {
                 "downloaded artifact is not an artifact grant",
             ));
         }
-        let payload: CollaborationArtifactGrantEnvelope = serde_json::from_value(reference.payload)
-            .map_err(|error| {
+        let payload: CollaborationArtifactGrantEnvelope =
+            serde_json::from_value(reference.payload.clone()).map_err(|error| {
                 FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
             })?;
-        let delegation_id = payload.delegation_id.as_str();
+        validate_artifact_grant_authority(
+            &payload,
+            &payload.read_capability,
+            &reference,
+            operation,
+            &self.node_id,
+        )?;
+        let delegation_id = payload.delegation_id.clone();
         let (_, store) = self.target_store(operation)?;
-        let delegation = store
-            .collaboration_delegation(&operation.company_id, delegation_id)
-            .map_err(|error| {
-                FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
-            })?
-            .ok_or_else(|| {
-                FabricError::none(
-                    FabricErrorCode::ExpectedRevisionConflict,
-                    "artifact import Delegation does not exist",
-                )
-            })?;
-        let attestation = store
-            .collaboration_source_work_attestation(
-                &operation.company_id,
-                &delegation.source_work_attestation_id,
-            )
-            .map_err(|error| {
-                FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
-            })?
-            .ok_or_else(|| {
-                FabricError::none(
-                    FabricErrorCode::UnauthorizedActor,
-                    "artifact import source Work attestation does not exist",
-                )
-            })?;
+        let delegation = payload.delegation;
+        let attestation = payload.source_work_attestation;
         if delegation.source_node_id != self.node_id
             || operation.target_node_id != self.node_id
-            || payload.source_placement.node_id != self.node_id
             || payload.manifest.id != artifact_id
             || payload.manifest.sha256 != artifact_digest
             || payload.manifest.size_bytes != bytes.len() as u64
@@ -3156,7 +3126,7 @@ impl NodeApplication for Wave4cApplication {
         let import = harness_core::collaboration::ArtifactImport {
             id: format!("artifact-import:{artifact_id}"),
             company_id: operation.company_id.clone(),
-            delegation_id: delegation_id.into(),
+            delegation_id,
             artifact_id: artifact_id.into(),
             artifact_digest: artifact_digest.into(),
             size_bytes: bytes.len() as u64,
@@ -3654,9 +3624,58 @@ struct CollaborationArtifactRetentionHttpRequest {
 #[serde(deny_unknown_fields)]
 struct CollaborationArtifactGrantEnvelope {
     delegation_id: String,
+    delegation: harness_core::collaboration::WorkDelegationV1,
+    source_work_attestation: harness_core::collaboration::SourceWorkAttestation,
     manifest: harness_fabric::RemoteArtifactManifest,
     read_capability: harness_fabric::ArtifactCapability,
     source_placement: harness_core::collaboration::TargetPlacementRef,
+}
+
+fn validate_artifact_grant_authority(
+    payload: &CollaborationArtifactGrantEnvelope,
+    capability: &harness_fabric::ArtifactCapability,
+    reference: &harness_fabric::CollaborationBusinessReference,
+    operation: &harness_fabric::RoutedOperation,
+    source_node_id: &str,
+) -> Result<(), FabricError> {
+    let actor_matches = payload.delegation.target_host_ref.id == reference.business_actor_id
+        && matches!(
+            (
+                &payload.delegation.target_host_ref.kind,
+                reference.business_actor_kind.as_str()
+            ),
+            (harness_core::agentfirm_api::ActorKind::Human, "human")
+                | (
+                    harness_core::agentfirm_api::ActorKind::AgentMember,
+                    "agent_member"
+                )
+        );
+    if &payload.read_capability != capability
+        || capability.node_id != source_node_id
+        || capability.company_id != operation.company_id
+        || capability.purpose != harness_fabric::ArtifactCapabilityPurpose::Download
+        || payload.delegation.id != payload.delegation_id
+        || payload.delegation.company_id != operation.company_id
+        || payload.delegation.source_node_id != source_node_id
+        || payload.delegation.source_work_attestation_id != payload.source_work_attestation.id
+        || payload.source_work_attestation.company_id != operation.company_id
+        || payload.source_work_attestation.source_work_ref != payload.delegation.source_work_ref
+        || payload.source_work_attestation.source_owner_ref != payload.delegation.source_owner_ref
+        || payload.source_work_attestation.source_host_ref.id != capability.issued_to
+        || !actor_matches
+        || payload.source_placement.team_id != payload.delegation.source_team_id
+        || payload.source_placement.team_revision
+            != payload.delegation.source_work_ref.team_revision
+        || payload.source_placement.node_id != source_node_id
+        || payload.source_placement.placement_generation
+            != payload.delegation.source_work_ref.placement_generation
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::UnauthorizedActor,
+            "artifact capability or frozen central collaboration authority changed or is outside the authenticated source Node",
+        ));
+    }
+    Ok(())
 }
 
 fn unix_ms_timestamp(value: &str) -> Option<u64> {

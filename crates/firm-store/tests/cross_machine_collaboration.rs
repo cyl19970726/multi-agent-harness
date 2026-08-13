@@ -1895,6 +1895,17 @@ fn complete_artifact_grant_is_delegation_scoped_and_targets_exact_source_host_no
     hostile.body_digest = json_digest(&hostile.body).unwrap();
     assert!(apply_collaboration_target_operation(&source.store, &hostile, "unix-ms:104").is_err());
     assert_eq!(source.store.collaboration_operations().unwrap(), before);
+
+    let mut hostile_snapshot = hostile;
+    hostile_snapshot.body["payload"]["read_capability"]["issued_to"] = serde_json::json!("host-a");
+    hostile_snapshot.body["payload"]["delegation"]["source_node_id"] =
+        serde_json::json!("node-hostile");
+    hostile_snapshot.body_digest = json_digest(&hostile_snapshot.body).unwrap();
+    assert!(
+        apply_collaboration_target_operation(&source.store, &hostile_snapshot, "unix-ms:105")
+            .is_err()
+    );
+    assert_eq!(source.store.collaboration_operations().unwrap(), before);
 }
 
 fn canonical_delivery(

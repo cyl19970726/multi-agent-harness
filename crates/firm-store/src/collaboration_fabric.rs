@@ -74,6 +74,8 @@ struct DelegationCancelDecidePayload {
 #[serde(deny_unknown_fields)]
 struct ArtifactGrantPayload {
     delegation_id: String,
+    delegation: firm_core::collaboration::WorkDelegationV1,
+    source_work_attestation: firm_core::collaboration::SourceWorkAttestation,
     manifest: firm_fabric::RemoteArtifactManifest,
     read_capability: firm_fabric::ArtifactCapability,
     source_placement: firm_core::collaboration::TargetPlacementRef,
@@ -694,6 +696,16 @@ pub fn apply_collaboration_target_operation(
                 )
             })?;
         if payload.delegation_id.trim().is_empty()
+            || payload.delegation.id != payload.delegation_id
+            || payload.delegation.company_id != operation.company_id
+            || payload.delegation.source_work_attestation_id != payload.source_work_attestation.id
+            || payload.delegation.source_work_ref != payload.source_work_attestation.source_work_ref
+            || payload.delegation.source_owner_ref
+                != payload.source_work_attestation.source_owner_ref
+            || payload.source_work_attestation.company_id != operation.company_id
+            || payload.source_work_attestation.source_host_ref.id != team.host_agent_id
+            || payload.delegation.source_team_id != payload.source_placement.team_id
+            || payload.delegation.source_node_id != payload.source_placement.node_id
             || payload.source_placement.team_id != reference.target_team_id
             || payload.source_placement.team_revision != reference.target_team_revision
             || payload.source_placement.node_id != operation.target_node_id

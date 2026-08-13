@@ -2174,6 +2174,8 @@ impl HarnessStore {
         };
         let payload = serde_json::json!({
             "delegation_id": delegation.id,
+            "delegation": delegation,
+            "source_work_attestation": source_attestation,
             "manifest": manifest,
             "read_capability": capability,
             "source_placement": source_placement,
