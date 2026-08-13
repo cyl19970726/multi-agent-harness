@@ -18,5 +18,11 @@
       {"type":"object","additionalProperties":false,"required":["type","state"],"properties":{"type":{"const":"runtime"},"state":{"type":"string"}}},
       {"type":"object","additionalProperties":false,"required":["type","reason_code"],"properties":{"type":{"enum":["transport","recovery"]},"reason_code":{"type":"string"}}}
     ]}
-  }
+  },
+  "allOf": [
+    {"if":{"properties":{"semantic_kind":{"enum":["interaction_required","interaction_resolved"]}}},"then":{"properties":{"payload":{"type":"object","additionalProperties":false,"required":["type","reason_code","prompt"],"properties":{"type":{"const":"interaction"},"reason_code":{"type":"string"},"prompt":{"type":"string"}}}}}},
+    {"if":{"properties":{"semantic_kind":{"enum":["runtime_started","runtime_ready","runtime_stopped"]}}},"then":{"properties":{"payload":{"type":"object","additionalProperties":false,"required":["type","state"],"properties":{"type":{"const":"runtime"},"state":{"type":"string"}}}}}},
+    {"if":{"properties":{"semantic_kind":{"const":"transport_interrupted"}}},"then":{"properties":{"payload":{"type":"object","additionalProperties":false,"required":["type","reason_code"],"properties":{"type":{"const":"transport"},"reason_code":{"type":"string"}}}}}},
+    {"if":{"properties":{"semantic_kind":{"const":"command_recovery_required"}}},"then":{"properties":{"effect_certainty":{"const":"unknown"},"completeness":{"const":"recovery_required"},"payload":{"type":"object","additionalProperties":false,"required":["type","reason_code"],"properties":{"type":{"const":"recovery"},"reason_code":{"type":"string"}}}}}}
+  ]
 }

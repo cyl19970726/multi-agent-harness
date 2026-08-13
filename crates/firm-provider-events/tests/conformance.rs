@@ -262,6 +262,53 @@ fn missing_terminal_is_explicitly_incomplete() {
 }
 
 #[test]
+fn truncation_is_explicit_and_retains_the_latest_native_positions() {
+    let mut fold = ProviderEventFold::new("session-1", 7, "daemon-1", 4);
+    for position in 1..=5 {
+        fold.ingest(observation(decode(
+            ProviderKind::Codex,
+            position,
+            json!({"type":"event_msg","payload":{"type":"agent_message","message":format!("row-{position}")}}),
+        )))
+        .unwrap();
+    }
+    let projection = fold.session_projection(2);
+    assert!(projection.truncated);
+    assert_eq!(projection.episodes[0].observations[0].ordering_position, 4);
+    assert_eq!(projection.episodes[0].observations[1].ordering_position, 5);
+}
+
+#[test]
+fn zero_generation_and_unscoped_source_are_rejected_before_decode() {
+    let mut invalid = context(ProviderKind::Pi);
+    invalid.agent_session_generation = 0;
+    assert!(decode_native_event(
+        &invalid,
+        NativeEvent {
+            native_event_id: None,
+            provider_turn_id: None,
+            ordering_position: 1,
+            occurred_at: None,
+            raw: json!({"type":"turn_end"}),
+        }
+    )
+    .is_err());
+    let mut invalid = context(ProviderKind::Pi);
+    invalid.native_source_ref = "/private/provider/path".into();
+    assert!(decode_native_event(
+        &invalid,
+        NativeEvent {
+            native_event_id: None,
+            provider_turn_id: None,
+            ordering_position: 1,
+            occurred_at: None,
+            raw: json!({"type":"turn_end"}),
+        }
+    )
+    .is_err());
+}
+
+#[test]
 fn stale_generation_fails_before_projection_change() {
     let mut stale_context = context(ProviderKind::Claude);
     stale_context.agent_session_generation = 6;
