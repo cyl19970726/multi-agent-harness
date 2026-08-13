@@ -993,8 +993,23 @@ impl MultiTeamDaemon {
                                         "idempotency_key": envelope.idempotency_key,
                                     }),
                                 );
+                                let collaboration_authority = envelope
+                                    .payload
+                                    .get("delegation_authority")
+                                    .filter(|value| !value.is_null())
+                                    .map(|value| {
+                                        serde_json::from_value::<
+                                            harness_core::collaboration::CollaborationMessageAuthority,
+                                        >(value.clone())
+                                        .map_err(|error| {
+                                            CliError::Usage(format!(
+                                                "INVALID_COLLABORATION_MESSAGE_AUTHORITY: {error}"
+                                            ))
+                                        })
+                                    })
+                                    .transpose()?;
                                 store
-                                    .author_message(
+                                    .author_message_with_collaboration_authority(
                                         &effect_mutation,
                                         harness_core::agentfirm_api::Message {
                                             id: format!("message:{}", envelope.idempotency_key),
@@ -1024,6 +1039,7 @@ impl MultiTeamDaemon {
                                             idempotency_key: envelope.idempotency_key.clone(),
                                             created_at: accepted_at.clone(),
                                         },
+                                        collaboration_authority.as_ref(),
                                     )
                                     .map_err(|error| CliError::Usage(error.to_string()))
                                     .and_then(|result| {

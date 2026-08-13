@@ -1280,6 +1280,64 @@ fn company_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult 
     ))
 }
 
+fn list_team_collaboration_delegations(
+    store: &HarnessStore,
+    company_id: &str,
+    team_id: &str,
+) -> Result<(u64, Vec<harness_core::collaboration::WorkDelegationV1>), String> {
+    let source_filter = harness_store::CollaborationDelegationFilter {
+        source_team_id: Some(team_id.to_string()),
+        target_team_id: None,
+        node_id: None,
+        state: None,
+    };
+    let mut source_page = store
+        .list_collaboration_delegations(company_id, &source_filter, None, 500)
+        .map_err(|error| error.to_string())?;
+    let as_of_store_sequence = source_page.as_of_store_sequence;
+    let mut by_id = BTreeMap::new();
+    loop {
+        for delegation in source_page.items {
+            by_id.insert(delegation.id.clone(), delegation);
+        }
+        let Some(cursor) = source_page.next_cursor else {
+            break;
+        };
+        source_page = store
+            .list_collaboration_delegations(company_id, &source_filter, Some(cursor), 500)
+            .map_err(|error| error.to_string())?;
+    }
+    let target_filter = harness_store::CollaborationDelegationFilter {
+        source_team_id: None,
+        target_team_id: Some(team_id.to_string()),
+        node_id: None,
+        state: None,
+    };
+    let mut target_page = store
+        .list_collaboration_delegations(
+            company_id,
+            &target_filter,
+            Some(harness_store::CollaborationCursor {
+                as_of_store_sequence,
+                offset: 0,
+            }),
+            500,
+        )
+        .map_err(|error| error.to_string())?;
+    loop {
+        for delegation in target_page.items {
+            by_id.insert(delegation.id.clone(), delegation);
+        }
+        let Some(cursor) = target_page.next_cursor else {
+            break;
+        };
+        target_page = store
+            .list_collaboration_delegations(company_id, &target_filter, Some(cursor), 500)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok((as_of_store_sequence, by_id.into_values().collect()))
+}
+
 fn collaboration_projection(
     company_id: Option<&str>,
     team_id: &str,
@@ -1304,26 +1362,10 @@ fn collaboration_projection(
             }));
         }
         let store = HarnessStore::new(root);
-        let page = store
-            .list_collaboration_delegations(
-                company_id,
-                &harness_store::CollaborationDelegationFilter {
-                    source_team_id: None,
-                    target_team_id: None,
-                    node_id: None,
-                    state: None,
-                },
-                None,
-                200,
-            )
-            .map_err(|error| error.to_string())?;
-        let mut delegations = page
-            .items
+        let (as_of_store_sequence, all_team_delegations) =
+            list_team_collaboration_delegations(&store, company_id, team_id)?;
+        let mut delegations = all_team_delegations
             .into_iter()
-            .filter(|delegation| {
-                delegation.source_work_ref.team_id == team_id
-                    || delegation.target_placement.team_id == team_id
-            })
             .filter(|delegation| {
                 member_work_ids.is_none_or(|work_ids| {
                     delegation.state == harness_core::collaboration::DelegationState::Active
@@ -1380,7 +1422,8 @@ fn collaboration_projection(
             "company_id":company_id,
             "team_id":team_id,
             "state":"observed",
-            "as_of_store_sequence":page.as_of_store_sequence,
+            "as_of_store_sequence":as_of_store_sequence,
+            "delegation_count":delegations.len(),
             "delegations":delegations,
             "pending_cancellations":pending_cancellations,
             "publication_count":publication_count,
@@ -2566,6 +2609,7 @@ fn operator_view(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::path::PathBuf;
     #[test]
     fn query_is_closed_and_bounded() {
@@ -2622,5 +2666,75 @@ mod tests {
             &sibling_delivery,
             &team_work_ids
         ));
+    }
+
+    #[test]
+    fn collaboration_projection_filters_by_team_before_any_page_limit() {
+        let root = PathBuf::from(format!(
+            "/tmp/agentfirm-role-view-collaboration-page-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir_all(&root).unwrap();
+        let fixture =
+            serde_json::from_str::<harness_core::collaboration::WorkDelegationV1>(include_str!(
+                "../../../schemas/collaboration/fixtures/work-delegation-v1/valid/awaiting.json"
+            ))
+            .unwrap();
+        let ledger = root.join("agentfirm_collaboration_operations.jsonl");
+        let mut writer = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&ledger)
+            .unwrap();
+        for index in 0..=205_u64 {
+            let mut delegation = fixture.clone();
+            delegation.id = if index == 205 {
+                "zzz-visible-after-company-first-200".into()
+            } else {
+                format!("noise-{index:03}")
+            };
+            delegation.source_work_attestation_id = format!("attestation-{index}");
+            delegation.source_work_ref.work_id = format!("source-work-{index}");
+            delegation.source_team_id = "noise-source-team".into();
+            delegation.source_work_ref.team_id = delegation.source_team_id.clone();
+            delegation.target_placement.team_id = if index == 205 {
+                "team-visible".into()
+            } else {
+                "noise-target-team".into()
+            };
+            let operation = harness_store::CollaborationOperation {
+                store_version: harness_core::collaboration::COLLABORATION_STORE_VERSION.into(),
+                company_id: "company-1".into(),
+                command_name: "fixture.insert".into(),
+                authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                    kind: harness_core::agentfirm_api::ActorKind::Service,
+                    id: "fixture".into(),
+                },
+                idempotency_key: format!("fixture-{index}"),
+                request_fingerprint: format!("sha256:{index:064x}"),
+                aggregate_kind: "work_delegation_v1".into(),
+                aggregate_id: delegation.id.clone(),
+                store_sequence: index + 1,
+                resulting_revision: delegation.revision,
+                resulting_projection: serde_json::to_value(&delegation).unwrap(),
+                immutable_side_records: Vec::new(),
+                created_at: format!("unix-ms:{index}"),
+            };
+            writeln!(writer, "{}", serde_json::to_string(&operation).unwrap()).unwrap();
+        }
+        writer.flush().unwrap();
+        let (as_of, visible) = list_team_collaboration_delegations(
+            &HarnessStore::new(&root),
+            "company-1",
+            "team-visible",
+        )
+        .unwrap();
+        assert_eq!(as_of, 206);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].id, "zzz-visible-after-company-first-200");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

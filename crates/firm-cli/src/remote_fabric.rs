@@ -227,7 +227,19 @@ pub(crate) fn resolved_message_from_operation(
             if reference.business_kind == "team_message_deliver"
                 && reference.required_capability == "collaboration.team_message_deliver" =>
         {
-            serde_json::from_value::<MessageReference>(reference.payload).map_err(|error| {
+            serde_json::from_value::<MessageReference>(
+                reference
+                    .payload
+                    .get("message_reference")
+                    .cloned()
+                    .ok_or_else(|| {
+                        FabricError::none(
+                            FabricErrorCode::InvalidPayload,
+                            "team_message_deliver lacks server-frozen message_reference",
+                        )
+                    })?,
+            )
+            .map_err(|error| {
                 FabricError::none(
                     FabricErrorCode::InvalidPayload,
                     format!("team_message_deliver payload is not a MessageReference: {error}"),

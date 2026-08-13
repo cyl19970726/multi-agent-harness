@@ -1,6 +1,11 @@
 # DEV-7 Wave 6 · two-Mac collaboration evidence
 
-This is the secret-free record of the authorized real-machine Wave 6 journey.
+This is the historical secret-free record of the first authorized real-machine
+Wave 6 journey. It predates the recomputable v2 evidence contract and is not
+valid for a later submitted revision. The final DEV-7 submission must attach a
+new v2 bundle and pass the executable validator against that exact revision.
+
+This record describes the authorized real-machine Wave 6 journey.
 The machine credentials, bearer values, certificate bodies, provider session
 transcripts and one-use artifact capability are deliberately absent. The
 machine-readable companion is

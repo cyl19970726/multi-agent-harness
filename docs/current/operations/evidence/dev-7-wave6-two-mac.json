@@ -1,4 +1,5 @@
 {
+  "evidence_schema_version": "agentfirm.wave6-two-mac-evidence.v1-historical",
   "build_sha": "de600f5a41e166373f9d621cfba29339619ecbe9",
   "company_id": "agentfirm-wave5-dogfood",
   "protocol_schema_digest": "f4b82259bb854f6cf51957d1487e62b399830f7e8c20a683f69d51bec54e87dc",

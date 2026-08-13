@@ -204,6 +204,27 @@ pub struct WorkDelegationV1 {
     pub updated_at: String,
 }
 
+/// Frozen, digest-bound authority carried with a cross-node Message route.
+/// The source server derives it from the current central Delegation; callers
+/// cannot construct or widen it. The target revalidates this snapshot against
+/// the immutable Message and its own canonical Team/Work placement before any
+/// Message or Delivery mutation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollaborationMessageAuthority {
+    pub company_id: String,
+    pub delegation_id: String,
+    pub delegation_revision: u64,
+    pub source_work_ref: RemoteWorkRef,
+    pub target_work_ref: RemoteWorkRef,
+    pub target_placement: TargetPlacementRef,
+    pub source_owner_ref: ActorRef,
+    pub source_host_ref: ActorRef,
+    pub target_host_ref: ActorRef,
+    pub inbound_policy_snapshot: DelegationInboundPolicySnapshot,
+    pub authority_digest: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DelegationDecisionKind {

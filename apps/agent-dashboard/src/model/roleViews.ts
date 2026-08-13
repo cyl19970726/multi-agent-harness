@@ -216,10 +216,36 @@ export interface RuntimeFabricSummary {
   agent_identities:RoleRecordSummary[]; agent_sessions:RoleRecordSummary[]; team_memberships:RoleRecordSummary[];
   work_execution_bindings:RoleRecordSummary[]; messages:RoleRecordSummary[]; message_deliveries:RoleRecordSummary[];
 }
+export interface CollaborationActorRef { kind:"human"|"agent_member"|"external"|"service"; id:string }
+export interface CollaborationRemoteWorkRef {
+  schema_version:string; execution_space_id:string; node_id:string; team_id:string;
+  team_revision:number; placement_generation:1; work_id:string; work_revision:number;
+  work_event_id:string; digest:string;
+}
+export interface CollaborationTargetPlacementRef { team_id:string; team_revision:number; node_id:string; placement_generation:1 }
+export interface CollaborationInboundPolicySnapshot {
+  policy_id:string; policy_revision:number; policy_digest:string; mode:"host_approval_required"|"auto_accept";
+  allowed_outcome_classes:string[]; max_active_delegations:number;
+}
+export interface CollaborationDelegationProjection {
+  id:string; company_id:string; source_work_attestation_id:string; source_work_ref:CollaborationRemoteWorkRef;
+  source_owner_ref:CollaborationActorRef; source_team_id:string; source_node_id:string;
+  target_placement:CollaborationTargetPlacementRef; target_host_ref:CollaborationActorRef;
+  requested_outcome:string; outcome_class:string; acceptance_contract:string;
+  inbound_policy_snapshot:CollaborationInboundPolicySnapshot; target_work_ref?:CollaborationRemoteWorkRef|null;
+  state:"proposed"|"awaiting_target_decision"|"provisioning_target_work"|"active"|"result_available"|"cancellation_requested"|"terminal";
+  terminal_outcome?:"completed"|"rejected"|"cancelled"|"failed"|null; revision:number;
+  operation_id:string; idempotency_key:string; created_by:CollaborationActorRef; created_at:string; updated_at:string;
+}
+export interface CollaborationCancellationProjection {
+  id:string; delegation_id:string; expected_delegation_revision:number; requested_by:CollaborationActorRef;
+  reason:string; state:"pending"|"accepted"|"rejected"; revision:number; created_at:string; updated_at:string;
+  target_host_decision_ref?:string|null;
+}
 export interface CollaborationProjectionSummary {
   company_id?:string; team_id?:string; state:"observed"|"unavailable"; reason?:string;
   as_of_store_sequence?:number; delegation_count?:number; attention_count?:number; publication_count?:number;
-  delegations?:Array<Record<string,unknown>>; pending_cancellations?:Array<Record<string,unknown>>;
+  delegations?:CollaborationDelegationProjection[]; pending_cancellations?:CollaborationCancellationProjection[];
 }
 export interface TeamPressureSummary {active_turns:number;ready_members:number;total_members:number;ready_work:number;review_work:number;blocked_work:number}
 export interface LatestTeamRunSummary {

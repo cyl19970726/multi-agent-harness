@@ -69,6 +69,16 @@ content-addressed immutable object reference). The target NodeDaemon verifies
 the source identity, schema, fingerprint and body digest, persists a remote
 replica, then creates the existing per-recipient `CanonicalMessageDelivery`.
 
+`CollaborationScope` is an intent hint, not authority. Before authoring, the
+server resolves a frozen `CollaborationMessageAuthority` from the current
+central `WorkDelegation`, accepted target Work, exact source Work binding,
+target Host decision, current placement and non-revoked inbound policy. The
+source Store checks that proof again under its Message write lock. The Control
+Plane re-resolves the same central records before accepting the route, and the
+target Store checks the frozen Work/Team/placement tuple before replica or
+Delivery persistence. Nonexistent, pending, rejected, cancelled, stale or
+caller-widened authority has zero Message, route, Delivery or provider effect.
+
 Control Plane route receipts are transport evidence only. Company and Team
 surfaces may show `CrossNodeDeliveryProjection`, but that projection cannot be
 acknowledged or mutated as delivery authority.
@@ -86,7 +96,9 @@ Large/private evidence uses the accepted Wave 5 artifact service. Manifests,
 encrypted blobs and one-use capabilities are not duplicated in the
 collaboration store. Delegation scope binds writer Team/Work and exact reader
 Host. Retention starts only after transport, terminal Delegation and source
-durable import are all terminal; the latest anchor wins.
+durable import are all terminal; the latest anchor wins. All three times are
+derived from canonical Fabric manifest/receipt and Delegation stores. Public
+callers cannot submit retention anchors.
 
 ## Public and operator surfaces
 
@@ -94,6 +106,9 @@ durable import are all terminal; the latest anchor wins.
   Work truth and queues them through the NodeGateway.
 - Control Plane Host REST lists/reads Delegations and publications and performs
   exact-revision Host decisions, cancellation decisions and artifact grants.
+  Read projections are restricted to the exact source owner, source Host or
+  target Host resolved from the authenticated credential; Company, Team and
+  Execution Space are never caller-selected authority.
 - MCP collaboration tools are read-only central projections. Retired local
   WorkDelegation writers are absent and fail as unknown tools with zero Store
   delta.
@@ -105,4 +120,3 @@ The executable contracts are
 `crates/firm-store/tests/cross_machine_collaboration.rs`,
 `crates/firm-fabric/tests/fabric_contract.rs`, and
 `scripts/check-collaboration-foundation.mjs`.
-

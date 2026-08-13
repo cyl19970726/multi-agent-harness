@@ -2171,6 +2171,7 @@ impl HarnessStore {
         ) || publication.company_id != context.company_id
             || publication.origin_node_id != delegation.target_placement.node_id
             || publication.origin_team_id != delegation.target_placement.team_id
+            || delegation.target_work_ref.as_ref() != Some(&publication.fact_work_ref)
             || publication.fact_work_ref.team_id != delegation.target_placement.team_id
             || publication.fact_work_ref.node_id != delegation.target_placement.node_id
             || publication.fact_work_ref.placement_generation

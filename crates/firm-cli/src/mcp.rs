@@ -195,8 +195,8 @@ pub(crate) fn call_tool(
         "team_run_work_reconcile_delivery" => {
             tool_team_run_work_reconcile_delivery(store, &arguments)
         }
-        "collaboration_delegation_list" => tool_collaboration_delegation_list(&arguments),
-        "collaboration_delegation_show" => tool_collaboration_delegation_show(&arguments),
+        "collaboration_delegation_list" => tool_collaboration_delegation_list(resolved, &arguments),
+        "collaboration_delegation_show" => tool_collaboration_delegation_show(resolved, &arguments),
         "execution_node_list" => tool_execution_node_list(store, &arguments),
         "execution_node_show" => tool_execution_node_show(store, &arguments),
         "remote_fabric_status" => tool_remote_fabric_status(resolved, &arguments),
@@ -707,9 +707,45 @@ fn collaboration_store(company_id: &str) -> Result<HarnessStore, String> {
     Ok(HarnessStore::new(root))
 }
 
-fn tool_collaboration_delegation_list(arguments: &Value) -> Result<Value, String> {
+fn resolved_mcp_collaboration_scope(
+    resolved: &ResolvedStore,
+) -> Result<(String, crate::AgentFirmHttpCredential), String> {
+    let company_id = resolved
+        .execution_space_context
+        .as_ref()
+        .and_then(|space| space.company_id.clone())
+        .ok_or_else(|| {
+            "collaboration MCP reads require a selected Execution Space bound to one Company"
+                .to_string()
+        })?;
+    let token = std::env::var("AGENTFIRM_MCP_CREDENTIAL_TOKEN").map_err(|_| {
+        "collaboration MCP reads require server-configured AGENTFIRM_MCP_CREDENTIAL_TOKEN"
+            .to_string()
+    })?;
+    let credential = crate::resolve_agentfirm_http_credential(Some(&token))?;
+    Ok((company_id, credential))
+}
+
+fn mcp_actor_can_read_delegation(
+    store: &HarnessStore,
+    company_id: &str,
+    actor: &harness_core::agentfirm_api::ActorRef,
+    delegation: &harness_core::collaboration::WorkDelegationV1,
+) -> Result<bool, String> {
+    let source_host = store
+        .collaboration_source_work_attestation(company_id, &delegation.source_work_attestation_id)
+        .map_err(|error| error.to_string())?
+        .map(|attestation| attestation.source_host_ref);
+    Ok(actor == &delegation.source_owner_ref
+        || source_host.as_ref() == Some(actor)
+        || actor == &delegation.target_host_ref)
+}
+
+fn tool_collaboration_delegation_list(
+    resolved: &ResolvedStore,
+    arguments: &Value,
+) -> Result<Value, String> {
     const ALLOWED: &[&str] = &[
-        "company_id",
         "source_team_id",
         "target_team_id",
         "node_id",
@@ -717,50 +753,76 @@ fn tool_collaboration_delegation_list(arguments: &Value) -> Result<Value, String
         "limit",
     ];
     reject_unknown_arguments(arguments, "collaboration_delegation_list", ALLOWED)?;
-    let company_id = required_non_empty_str(arguments, "company_id")?;
+    let (company_id, credential) = resolved_mcp_collaboration_scope(resolved)?;
     let state = optional_non_empty_str(arguments, "state")?
         .map(|value| serde_json::from_value(json!(value)).map_err(|error| error.to_string()))
         .transpose()?;
-    let store = collaboration_store(company_id)?;
-    let page = store
-        .list_collaboration_delegations(
-            company_id,
-            &harness_store::CollaborationDelegationFilter {
-                source_team_id: optional_non_empty_str(arguments, "source_team_id")?,
-                target_team_id: optional_non_empty_str(arguments, "target_team_id")?,
-                node_id: optional_non_empty_str(arguments, "node_id")?,
-                state,
-            },
-            None,
-            arguments
-                .get("limit")
-                .and_then(Value::as_u64)
-                .unwrap_or(100) as usize,
-        )
-        .map_err(|error| error.to_string())?;
-    serde_json::to_value(page).map_err(|error| error.to_string())
+    let store = collaboration_store(&company_id)?;
+    let filter = harness_store::CollaborationDelegationFilter {
+        source_team_id: optional_non_empty_str(arguments, "source_team_id")?,
+        target_team_id: optional_non_empty_str(arguments, "target_team_id")?,
+        node_id: optional_non_empty_str(arguments, "node_id")?,
+        state,
+    };
+    let limit = arguments
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(100) as usize;
+    let mut cursor = None;
+    let mut visible = Vec::new();
+    let mut as_of_store_sequence = None;
+    loop {
+        let page = store
+            .list_collaboration_delegations(&company_id, &filter, cursor, 500)
+            .map_err(|error| error.to_string())?;
+        as_of_store_sequence.get_or_insert(page.as_of_store_sequence);
+        for delegation in page.items {
+            if mcp_actor_can_read_delegation(&store, &company_id, &credential.actor, &delegation)?
+                && visible.len() < limit
+            {
+                visible.push(delegation);
+            }
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    Ok(json!({
+        "items": visible,
+        "as_of_store_sequence": as_of_store_sequence.unwrap_or(0),
+        "next_cursor": null,
+    }))
 }
 
-fn tool_collaboration_delegation_show(arguments: &Value) -> Result<Value, String> {
+fn tool_collaboration_delegation_show(
+    resolved: &ResolvedStore,
+    arguments: &Value,
+) -> Result<Value, String> {
     reject_unknown_arguments(
         arguments,
         "collaboration_delegation_show",
-        &["company_id", "delegation_id"],
+        &["delegation_id"],
     )?;
-    let company_id = required_non_empty_str(arguments, "company_id")?;
+    let (company_id, credential) = resolved_mcp_collaboration_scope(resolved)?;
     let delegation_id = required_non_empty_str(arguments, "delegation_id")?;
-    let store = collaboration_store(company_id)?;
+    let store = collaboration_store(&company_id)?;
     let delegation = store
-        .collaboration_delegation(company_id, delegation_id)
+        .collaboration_delegation(&company_id, delegation_id)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("collaboration Delegation not found: {delegation_id}"))?;
+    if !mcp_actor_can_read_delegation(&store, &company_id, &credential.actor, &delegation)? {
+        return Err(
+            "UNAUTHORIZED_ACTOR: Delegation is outside the authenticated MCP actor scope".into(),
+        );
+    }
     Ok(json!({
         "delegation": delegation,
         "cancellation_requests": store
-            .collaboration_cancellation_requests(company_id, delegation_id)
+            .collaboration_cancellation_requests(&company_id, delegation_id)
             .map_err(|error| error.to_string())?,
         "publications": store
-            .collaboration_publications(company_id, delegation_id)
+            .collaboration_publications(&company_id, delegation_id)
             .map_err(|error| error.to_string())?,
     }))
 }
@@ -1663,12 +1725,12 @@ fn tool_definitions() -> Value {
         {
             "name": "collaboration_delegation_list",
             "description": "Read the Company Control Plane's canonical cross-Team Delegations. This tool never folds an Execution Space's retired local WorkDelegation ledger.",
-            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"company_id": {"type": "string", "minLength": 1}, "source_team_id": {"type": "string", "minLength": 1}, "target_team_id": {"type": "string", "minLength": 1}, "node_id": {"type": "string", "minLength": 1}, "state": {"type": "string", "enum": ["proposed", "awaiting_target_decision", "provisioning_target_work", "active", "result_available", "cancellation_requested", "terminal"]}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, "required": ["company_id"]}
+            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"source_team_id": {"type": "string", "minLength": 1}, "target_team_id": {"type": "string", "minLength": 1}, "node_id": {"type": "string", "minLength": 1}, "state": {"type": "string", "enum": ["proposed", "awaiting_target_decision", "provisioning_target_work", "active", "result_available", "cancellation_requested", "terminal"]}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}}
         },
         {
             "name": "collaboration_delegation_show",
             "description": "Read one canonical Company WorkDelegation with its cancellation requests and immutable remote publications.",
-            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"company_id": {"type": "string", "minLength": 1}, "delegation_id": {"type": "string", "minLength": 1}}, "required": ["company_id", "delegation_id"]}
+            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"delegation_id": {"type": "string", "minLength": 1}}, "required": ["delegation_id"]}
         },
         {
             "name": "execution_node_list",

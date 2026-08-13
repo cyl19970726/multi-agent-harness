@@ -29162,6 +29162,31 @@ fn handle_http_connection(
                         return Ok(());
                     }
                 };
+                let delegation_authority = if let Some(remote_transfer) =
+                    intent.remote_transfer.as_ref()
+                {
+                    match fabric_runtime::resolve_collaboration_message_authority(
+                        &store_owned,
+                        &execution_space::firm_home().map_err(execution_space_err)?,
+                        &project_id,
+                        &read_local_node_id()?,
+                        &credential,
+                        &intent.draft,
+                        remote_transfer,
+                    ) {
+                        Ok(authority) => Some(authority),
+                        Err(error) => {
+                            write_http_json(
+                                &mut stream,
+                                "403 Forbidden",
+                                &serde_json::json!({"ok":false,"error":{"code":format!("{:?}",error.code).to_ascii_uppercase(),"message":error.message}}),
+                            )?;
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    None
+                };
                 let target_node_id = intent
                     .draft
                     .team_run_id
@@ -29188,6 +29213,7 @@ fn handle_http_connection(
                     serde_json::json!({
                         "draft": intent.draft,
                         "remote_transfer": intent.remote_transfer,
+                        "delegation_authority": delegation_authority,
                     }),
                 )
             }
@@ -29485,6 +29511,17 @@ fn handle_http_connection(
                             &envelope.idempotency_key,
                             &message,
                             &request,
+                            serde_json::from_value(
+                                envelope
+                                    .payload
+                                    .get("delegation_authority")
+                                    .cloned()
+                                    .ok_or_else(|| {
+                                        CliError::Usage(
+                                            "COLLABORATION_MESSAGE_AUTHORITY_MISSING".into(),
+                                        )
+                                    })?,
+                            )?,
                             current_unix_ms_u64(),
                         ) {
                             Ok(queued) => write_http_json(

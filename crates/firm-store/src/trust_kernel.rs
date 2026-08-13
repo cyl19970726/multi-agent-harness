@@ -10,10 +10,12 @@ use firm_core::agentfirm_api::{
     MessageSubscriptionKind, MessageSubscriptionStatus, MutationContext, ProviderInvocation,
     ProviderReceipt, RuntimeCommandKind, RuntimeCommandRecord, RuntimeCommandStatus,
     RuntimeEffectCertainty, RuntimeRecoveryResolution, SubscriptionCursor, TeamMembership,
-    TeamMembershipStatus, TrustError, TrustErrorCode, WorkDelivery, WorkDeliveryStatus,
-    WorkExecutionBinding, WorkExecutionBindingStatus, WorkFinding, WorkModuleBinding, WorkReport,
-    WorkReportKind, WorkspaceLifecycle, WorkspaceMode, WorkspaceOwnership, WorkspaceSafetyProof,
+    TeamMembershipRole, TeamMembershipStatus, TrustError, TrustErrorCode, WorkDelivery,
+    WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus, WorkFinding,
+    WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
+    WorkspaceOwnership, WorkspaceSafetyProof,
 };
+use firm_core::collaboration::CollaborationMessageAuthority;
 use firm_core::{TeamActorKind, TeamActorRef, Work, WorkCommandContext, WorkDelegationRevision};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -5025,6 +5027,15 @@ impl HarnessStore {
         context: &MutationContext,
         message: Message,
     ) -> StoreResult<CanonicalMutationResult<Message>> {
+        self.author_message_with_collaboration_authority(context, message, None)
+    }
+
+    pub fn author_message_with_collaboration_authority(
+        &self,
+        context: &MutationContext,
+        message: Message,
+        collaboration_authority: Option<&CollaborationMessageAuthority>,
+    ) -> StoreResult<CanonicalMutationResult<Message>> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         required(&message.id, "Message.id")?;
@@ -5094,6 +5105,120 @@ impl HarnessStore {
         let subscriptions = self.fabric_message_subscriptions(&context.execution_space_id)?;
         let sessions = self.fabric_agent_sessions(&context.execution_space_id)?;
         let memberships = self.fabric_team_memberships(&context.execution_space_id)?;
+        if let Some(authority) = collaboration_authority {
+            let scope = message.collaboration_scope.as_ref().ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::UnauthorizedActor,
+                    "cross-Team Message lacks frozen CollaborationScope",
+                    "message",
+                    &message.id,
+                    None,
+                )
+            })?;
+            let expected_authority_digest = canonical_json_fingerprint(&serde_json::json!({
+                "company_id": authority.company_id,
+                "delegation_id": authority.delegation_id,
+                "delegation_revision": authority.delegation_revision,
+                "source_work_ref": authority.source_work_ref,
+                "target_work_ref": authority.target_work_ref,
+                "target_placement": authority.target_placement,
+                "source_owner_ref": authority.source_owner_ref,
+                "source_host_ref": authority.source_host_ref,
+                "target_host_ref": authority.target_host_ref,
+                "inbound_policy_snapshot": authority.inbound_policy_snapshot,
+            }));
+            let source_work = self
+                .latest_works()?
+                .into_iter()
+                .find(|work| work.id == authority.source_work_ref.work_id)
+                .ok_or_else(|| {
+                    trust_error(
+                        TrustErrorCode::UnauthorizedActor,
+                        "Delegation source Work is not current in the source Execution Space",
+                        "message",
+                        &message.id,
+                        None,
+                    )
+                })?;
+            let source_team_revision = self
+                .teams()?
+                .iter()
+                .filter(|team| team.id == authority.source_work_ref.team_id)
+                .count() as u64;
+            let exact_source_scope = authority.authority_digest == expected_authority_digest
+                && authority.delegation_revision > 0
+                && scope.delegation_id.as_deref() == Some(authority.delegation_id.as_str())
+                && scope.expected_delegation_revision == Some(authority.delegation_revision)
+                && scope.source_work_ref.as_ref() == Some(&authority.source_work_ref)
+                && scope.target_work_ref.as_ref() == Some(&authority.target_work_ref)
+                && scope.source_team_id == authority.source_work_ref.team_id
+                && scope.target_team_id == authority.target_placement.team_id
+                && message.team_id.as_deref() == Some(authority.source_work_ref.team_id.as_str())
+                && message.work_id.as_deref() == Some(authority.source_work_ref.work_id.as_str())
+                && authority.source_work_ref.execution_space_id == context.execution_space_id
+                && authority.source_work_ref.node_id == message.source_node_id
+                && authority.source_work_ref.placement_generation == 1
+                && authority.source_work_ref.team_revision == source_team_revision
+                && source_work.id == authority.source_work_ref.work_id
+                && source_work.team_id.as_deref()
+                    == Some(authority.source_work_ref.team_id.as_str())
+                && source_work.version == authority.source_work_ref.work_revision;
+            let current_owner_bindings = self
+                .fabric_work_execution_bindings(&context.execution_space_id)?
+                .into_iter()
+                .filter(|binding| {
+                    binding.work_id == source_work.id
+                        && binding.work_revision == source_work.version
+                        && binding.team_id == authority.source_work_ref.team_id
+                        && binding.agent_identity_id == authority.source_owner_ref.id
+                        && sessions.iter().any(|session| {
+                            session.id == binding.agent_session_id
+                                && session.runtime_generation == binding.agent_session_generation
+                                && session.node_daemon_generation
+                                    == message.source_authority_generation
+                                && session.lifecycle != AgentSessionStatus::Closed
+                        })
+                        && binding.status == WorkExecutionBindingStatus::Active
+                })
+                .collect::<Vec<_>>();
+            let exact_owner_binding = message.sender_actor_ref == authority.source_owner_ref
+                && message.sender_agent_id.as_deref()
+                    == Some(authority.source_owner_ref.id.as_str())
+                && current_owner_bindings.len() == 1
+                && message.sender_session_id.as_deref()
+                    == Some(current_owner_bindings[0].agent_session_id.as_str());
+            let exact_source_host = message.sender_actor_ref == authority.source_host_ref
+                && message.sender_agent_id.as_deref()
+                    == Some(authority.source_host_ref.id.as_str())
+                && memberships
+                    .iter()
+                    .filter(|membership| {
+                        membership.team_id == authority.source_work_ref.team_id
+                            && membership.agent_identity_id == authority.source_host_ref.id
+                            && membership.role == TeamMembershipRole::Host
+                            && membership.state == TeamMembershipStatus::Active
+                    })
+                    .count()
+                    == 1
+                && current_owner_bindings.len() == 1;
+            if !exact_source_scope || (!exact_owner_binding && !exact_source_host) {
+                return Err(trust_error(
+                    TrustErrorCode::UnauthorizedActor,
+                    "cross-Team Message requires exact current Delegation, source Work, and source owner binding or Host membership",
+                    "message",
+                    &message.id,
+                    Some(source_work.version),
+                ));
+            }
+        } else if message.collaboration_scope.is_some() {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "cross-Team Message authoring requires server-frozen Delegation authority",
+                "message",
+                &message.id,
+                None,
+            ));
+        }
         if let Some(team_id) = message.team_id.as_deref() {
             let sender_is_member = message.sender_agent_id.as_deref().is_some_and(|sender| {
                 memberships.iter().any(|membership| {
@@ -5269,44 +5394,87 @@ impl HarnessStore {
             "message",
             &message.id,
         )?;
-        let reference = match operation.closed_body().map_err(|error| {
-            trust_error(
-                TrustErrorCode::InvalidStateTransition,
-                format!("Remote Message route is invalid: {error}"),
-                "message",
-                &message.id,
-                None,
-            )
-        })? {
-            firm_fabric::ClosedOperationBody::Message(reference) => reference,
-            firm_fabric::ClosedOperationBody::CollaborationBusiness(reference)
-                if reference.business_kind == "team_message_deliver"
-                    && reference.required_capability == "collaboration.team_message_deliver" =>
-            {
-                serde_json::from_value::<firm_fabric::MessageReference>(reference.payload).map_err(
-                    |error| {
-                        trust_error(
+        let (reference, collaboration_authority) =
+            match operation.closed_body().map_err(|error| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    format!("Remote Message route is invalid: {error}"),
+                    "message",
+                    &message.id,
+                    None,
+                )
+            })? {
+                firm_fabric::ClosedOperationBody::Message(reference) => (reference, None),
+                firm_fabric::ClosedOperationBody::CollaborationBusiness(reference)
+                    if reference.business_kind == "team_message_deliver"
+                        && reference.required_capability
+                            == "collaboration.team_message_deliver" =>
+                {
+                    let message_reference =
+                        serde_json::from_value::<firm_fabric::MessageReference>(
+                            reference
+                                .payload
+                                .get("message_reference")
+                                .cloned()
+                                .ok_or_else(|| {
+                                    trust_error(
                             TrustErrorCode::InvalidStateTransition,
-                            format!(
+                            "team_message_deliver lacks server-frozen message_reference",
+                            "message",
+                            &message.id,
+                            None,
+                        )
+                                })?,
+                        )
+                        .map_err(|error| {
+                            trust_error(
+                                TrustErrorCode::InvalidStateTransition,
+                                format!(
                                 "team_message_deliver payload is not a MessageReference: {error}"
+                            ),
+                                "message",
+                                &message.id,
+                                None,
+                            )
+                        })?;
+                    let authority = serde_json::from_value::<CollaborationMessageAuthority>(
+                        reference
+                            .payload
+                            .get("delegation_authority")
+                            .cloned()
+                            .ok_or_else(|| {
+                                trust_error(
+                                    TrustErrorCode::UnauthorizedActor,
+                                    "team_message_deliver lacks central Delegation authority",
+                                    "message",
+                                    &message.id,
+                                    None,
+                                )
+                            })?,
+                    )
+                    .map_err(|error| {
+                        trust_error(
+                            TrustErrorCode::UnauthorizedActor,
+                            format!(
+                                "team_message_deliver Delegation authority is invalid: {error}"
                             ),
                             "message",
                             &message.id,
                             None,
                         )
-                    },
-                )?
-            }
-            _ => {
-                return Err(trust_error(
-                    TrustErrorCode::InvalidStateTransition,
-                    "Remote persistence requires a closed Message route",
-                    "message",
-                    &message.id,
-                    None,
-                ))
-            }
-        };
+                    })?;
+                    (message_reference, Some(authority))
+                }
+                _ => {
+                    return Err(trust_error(
+                        TrustErrorCode::InvalidStateTransition,
+                        "Remote persistence requires a closed Message route",
+                        "message",
+                        &message.id,
+                        None,
+                    ))
+                }
+            };
         if operation.target_node_id != target_node_id
             || operation.target_execution_space_id.as_deref()
                 != Some(context.execution_space_id.as_str())
@@ -5334,6 +5502,93 @@ impl HarnessStore {
             ));
         }
         crate::validate_message_collaboration_scope(&message)?;
+        if let Some(authority) = collaboration_authority.as_ref() {
+            let scope = message.collaboration_scope.as_ref().ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::UnauthorizedActor,
+                    "cross-Team Message lacks CollaborationScope",
+                    "message",
+                    &message.id,
+                    None,
+                )
+            })?;
+            let expected_authority_digest = canonical_json_fingerprint(&serde_json::json!({
+                "company_id": authority.company_id,
+                "delegation_id": authority.delegation_id,
+                "delegation_revision": authority.delegation_revision,
+                "source_work_ref": authority.source_work_ref,
+                "target_work_ref": authority.target_work_ref,
+                "target_placement": authority.target_placement,
+                "source_owner_ref": authority.source_owner_ref,
+                "source_host_ref": authority.source_host_ref,
+                "target_host_ref": authority.target_host_ref,
+                "inbound_policy_snapshot": authority.inbound_policy_snapshot,
+            }));
+            let target_work = self
+                .latest_works()?
+                .into_iter()
+                .find(|work| work.id == authority.target_work_ref.work_id)
+                .ok_or_else(|| {
+                    trust_error(
+                        TrustErrorCode::UnauthorizedActor,
+                        "Delegation target Work is not present on the target Node",
+                        "message",
+                        &message.id,
+                        None,
+                    )
+                })?;
+            let target_teams = self.teams()?;
+            let target_team_revision = target_teams
+                .iter()
+                .filter(|team| team.id == authority.target_placement.team_id)
+                .count() as u64;
+            let target_team = target_teams
+                .into_iter()
+                .rev()
+                .find(|team| team.id == authority.target_placement.team_id)
+                .ok_or_else(|| {
+                    trust_error(
+                        TrustErrorCode::UnauthorizedActor,
+                        "Delegation target Team is not present on the target Node",
+                        "message",
+                        &message.id,
+                        None,
+                    )
+                })?;
+            if authority.authority_digest != expected_authority_digest
+                || authority.delegation_revision == 0
+                || scope.delegation_id.as_deref() != Some(authority.delegation_id.as_str())
+                || scope.expected_delegation_revision != Some(authority.delegation_revision)
+                || scope.source_work_ref.as_ref() != Some(&authority.source_work_ref)
+                || scope.target_work_ref.as_ref() != Some(&authority.target_work_ref)
+                || scope.source_team_id != authority.source_work_ref.team_id
+                || scope.target_team_id != authority.target_placement.team_id
+                || operation.expected_target_revision != Some(authority.delegation_revision)
+                || operation.target_node_id != authority.target_placement.node_id
+                || target_team.node_id != target_node_id
+                || target_team_revision != authority.target_placement.team_revision
+                || target_team.id != authority.target_work_ref.team_id
+                || target_work.team_id.as_deref() != Some(target_team.id.as_str())
+                || target_work.id != authority.target_work_ref.work_id
+                || target_work.version != authority.target_work_ref.work_revision
+            {
+                return Err(trust_error(
+                    TrustErrorCode::UnauthorizedActor,
+                    "target Message application rejected stale or widened Delegation/Work authority",
+                    "message",
+                    &message.id,
+                    None,
+                ));
+            }
+        } else if message.collaboration_scope.is_some() {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "cross-Team Message route requires server-frozen Delegation authority",
+                "message",
+                &message.id,
+                None,
+            ));
+        }
         let request_fingerprint = match context.request_fingerprint.clone() {
             Some(fingerprint) => fingerprint,
             None => canonical_json_fingerprint(&serde_json::to_value(operation)?),
@@ -6889,6 +7144,62 @@ mod tests {
     }
 
     fn append_runtime_team(store: &HarnessStore, team_id: &str, run_id: &str) {
+        if !store.teams().unwrap().iter().any(|team| team.id == team_id) {
+            let mission_id = format!("mission-{team_id}");
+            if !store
+                .trust_agent_members("space-test")
+                .unwrap()
+                .iter()
+                .any(|member| member.id == "fixture-host")
+            {
+                store
+                    .create_trust_agent_member(
+                        &context("host", "agent_member.create", "fixture-host", 0),
+                        member("fixture-host"),
+                    )
+                    .unwrap();
+            }
+            if !store
+                .latest_missions()
+                .unwrap()
+                .iter()
+                .any(|mission| mission.id == mission_id)
+            {
+                store
+                    .append_mission(&firm_core::Mission {
+                        id: mission_id.clone(),
+                        title: mission_id.clone(),
+                        objective: "runtime authority fixture".into(),
+                        context: String::new(),
+                        desired_outcome: None,
+                        status: firm_core::MissionStatus::Running,
+                        wave_ids: Vec::new(),
+                        outcome_summary: None,
+                        completed_by: None,
+                        created_at: "t1".into(),
+                        updated_at: "t1".into(),
+                        completed_at: None,
+                    })
+                    .unwrap();
+            }
+            store
+                .append_jsonl(
+                    "teams.jsonl",
+                    &firm_core::AgentTeam {
+                        id: team_id.into(),
+                        name: team_id.into(),
+                        description: "runtime authority fixture".into(),
+                        mission_id,
+                        host_agent_id: "fixture-host".into(),
+                        node_id: "11111111-1111-4111-8111-111111111111".into(),
+                        status: firm_core::AgentTeamStatus::Active,
+                        member_ids: Vec::new(),
+                        created_at: "t1".into(),
+                        updated_at: "t1".into(),
+                    },
+                )
+                .unwrap();
+        }
         store
             .append_team_run(&firm_core::AgentTeamRun {
                 id: run_id.into(),
@@ -7353,7 +7664,7 @@ mod tests {
     }
 
     #[test]
-    fn source_node_authors_cross_node_message_without_inventing_target_delivery() {
+    fn source_node_authors_cross_node_message_only_with_frozen_delegation_authority() {
         let (store, root) = fabric_store();
         store
             .create_agent_identity(
@@ -7373,8 +7684,103 @@ mod tests {
             "source-membership",
             "source-team",
             "remote-sender",
-            firm_core::agentfirm_api::TeamMembershipRole::Member,
+            firm_core::agentfirm_api::TeamMembershipRole::Host,
         );
+        let source_work =
+            insert_runtime_work(&store, "source-work", "source-team", "source-team-run");
+        store
+            .bind_work_execution(
+                &context("fixture-host", "work.bind", "source-work-binding", 0),
+                WorkExecutionBinding {
+                    id: "source-work-binding".into(),
+                    work_id: source_work.id.clone(),
+                    work_revision: source_work.version,
+                    team_id: "source-team".into(),
+                    team_membership_id: "source-membership".into(),
+                    agent_identity_id: "remote-sender".into(),
+                    agent_session_id: "session-remote-sender".into(),
+                    agent_session_generation: 1,
+                    delivery_id: "source-work-delivery".into(),
+                    binding_generation: 1,
+                    status: WorkExecutionBindingStatus::Active,
+                    version: 1,
+                    created_by: actor("fixture-host"),
+                    bound_at: "t-binding".into(),
+                    ended_at: None,
+                },
+            )
+            .unwrap();
+        let source_work_ref = firm_core::collaboration::RemoteWorkRef {
+            schema_version: "agentfirm.remote-work-ref.v1".into(),
+            execution_space_id: "space-test".into(),
+            node_id: "11111111-1111-4111-8111-111111111111".into(),
+            team_id: "source-team".into(),
+            team_revision: 1,
+            placement_generation: 1,
+            work_id: source_work.id.clone(),
+            work_revision: source_work.version,
+            work_event_id: "source-work-event".into(),
+            digest: canonical_json_fingerprint(&serde_json::to_value(&source_work).unwrap()),
+        };
+        let target_work_ref = firm_core::collaboration::RemoteWorkRef {
+            schema_version: "agentfirm.remote-work-ref.v1".into(),
+            execution_space_id: "space-target".into(),
+            node_id: "22222222-2222-4222-8222-222222222222".into(),
+            team_id: "target-team".into(),
+            team_revision: 1,
+            placement_generation: 1,
+            work_id: "target-work".into(),
+            work_revision: 1,
+            work_event_id: "target-work-event".into(),
+            digest: format!("sha256:{:064x}", 2),
+        };
+        let policy = firm_core::collaboration::DelegationInboundPolicySnapshot {
+            policy_id: "policy-source-target".into(),
+            policy_revision: 1,
+            policy_digest: format!("sha256:{:064x}", 3),
+            mode: firm_core::collaboration::DelegationInboundMode::HostApprovalRequired,
+            allowed_outcome_classes: vec!["implementation".into()],
+            max_active_delegations: 1,
+        };
+        let mut authority = CollaborationMessageAuthority {
+            company_id: "company-test".into(),
+            delegation_id: "delegation-a-b".into(),
+            delegation_revision: 3,
+            source_work_ref: source_work_ref.clone(),
+            target_work_ref: target_work_ref.clone(),
+            target_placement: firm_core::collaboration::TargetPlacementRef {
+                team_id: "target-team".into(),
+                team_revision: 1,
+                node_id: "22222222-2222-4222-8222-222222222222".into(),
+                placement_generation: 1,
+            },
+            source_owner_ref: ActorRef {
+                kind: ActorKind::AgentMember,
+                id: "remote-sender".into(),
+            },
+            source_host_ref: ActorRef {
+                kind: ActorKind::AgentMember,
+                id: "remote-sender".into(),
+            },
+            target_host_ref: ActorRef {
+                kind: ActorKind::AgentMember,
+                id: "target-host-on-another-node".into(),
+            },
+            inbound_policy_snapshot: policy,
+            authority_digest: String::new(),
+        };
+        authority.authority_digest = canonical_json_fingerprint(&serde_json::json!({
+            "company_id": authority.company_id,
+            "delegation_id": authority.delegation_id,
+            "delegation_revision": authority.delegation_revision,
+            "source_work_ref": authority.source_work_ref,
+            "target_work_ref": authority.target_work_ref,
+            "target_placement": authority.target_placement,
+            "source_owner_ref": authority.source_owner_ref,
+            "source_host_ref": authority.source_host_ref,
+            "target_host_ref": authority.target_host_ref,
+            "inbound_policy_snapshot": authority.inbound_policy_snapshot,
+        }));
         let recipients = vec![firm_core::agentfirm_api::MessageRecipientRef {
             kind: MessageRecipientKind::AgentIdentity,
             id: "target-host-on-another-node".into(),
@@ -7396,14 +7802,14 @@ mod tests {
             recipients,
             team_id: Some("source-team".into()),
             team_run_id: Some("source-team-run".into()),
-            work_id: None,
+            work_id: Some(source_work.id.clone()),
             collaboration_scope: Some(firm_core::collaboration::CollaborationScope {
                 source_team_id: "source-team".into(),
                 target_team_id: "target-team".into(),
                 delegation_id: Some("delegation-a-b".into()),
                 expected_delegation_revision: Some(3),
-                source_work_ref: None,
-                target_work_ref: None,
+                source_work_ref: Some(source_work_ref),
+                target_work_ref: Some(target_work_ref),
             }),
             kind: firm_core::agentfirm_api::MessageKind::Message,
             body: "cross-node immutable body".into(),
@@ -7419,12 +7825,81 @@ mod tests {
         };
         message.content_fingerprint = message_content_fingerprint(&message);
 
-        let authored = store
+        let before = store.canonical_operations().unwrap();
+        let messages_before = store.fabric_messages("space-test").unwrap();
+        let deliveries_before = store.fabric_message_deliveries("space-test").unwrap();
+        store
             .author_message(
                 &service_context("message.author", "cross-node-message", 0),
                 message.clone(),
             )
-            .expect("source Node owns Message authorship without target delivery authority");
+            .expect_err("caller-built collaboration scope is not Message authority");
+        assert_eq!(store.canonical_operations().unwrap(), before);
+        assert_eq!(
+            store.fabric_messages("space-test").unwrap(),
+            messages_before
+        );
+        assert_eq!(
+            store.fabric_message_deliveries("space-test").unwrap(),
+            deliveries_before
+        );
+        store
+            .create_agent_identity(
+                &context("host", "identity.create", "identity-wrong-source", 0),
+                identity("wrong-source"),
+            )
+            .unwrap();
+        store
+            .create_agent_session(
+                &service_context("session.create", "wrong-source-session", 0),
+                session("session-wrong-source", "wrong-source"),
+            )
+            .unwrap();
+        join_runtime_membership(
+            &store,
+            "wrong-source-membership",
+            "source-team",
+            "wrong-source",
+            firm_core::agentfirm_api::TeamMembershipRole::Member,
+        );
+        let mut wrong_source = message.clone();
+        wrong_source.id = "cross-node-message-wrong-source".into();
+        wrong_source.sender_actor_ref = ActorRef {
+            kind: ActorKind::AgentMember,
+            id: "wrong-source".into(),
+        };
+        wrong_source.sender_agent_id = Some("wrong-source".into());
+        wrong_source.sender_session_id = Some("session-wrong-source".into());
+        wrong_source.idempotency_key = wrong_source.id.clone();
+        wrong_source.content_fingerprint = message_content_fingerprint(&wrong_source);
+        let before_wrong_source = store.canonical_operations().unwrap();
+        store
+            .author_message_with_collaboration_authority(
+                &service_context("message.author", &wrong_source.id, 0),
+                wrong_source,
+                Some(&authority),
+            )
+            .expect_err("ordinary source Team Member cannot impersonate Delegation authority");
+        assert_eq!(
+            store.canonical_operations().unwrap(),
+            before_wrong_source,
+            "hostile source actor has zero Message/Delivery side effects"
+        );
+        assert_eq!(
+            store.fabric_messages("space-test").unwrap(),
+            messages_before
+        );
+        assert_eq!(
+            store.fabric_message_deliveries("space-test").unwrap(),
+            deliveries_before
+        );
+        let authored = store
+            .author_message_with_collaboration_authority(
+                &service_context("message.author", "cross-node-message", 0),
+                message.clone(),
+                Some(&authority),
+            )
+            .expect("source Node validates frozen Delegation authority under the Store lock");
         assert_eq!(authored.projection, message);
         assert!(store
             .fabric_message_deliveries("space-test")
@@ -7449,6 +7924,8 @@ mod tests {
             )
             .unwrap();
         append_runtime_team(&store, "target-team", "target-team-run");
+        let target_work =
+            insert_runtime_work(&store, "target-work", "target-team", "target-team-run");
         join_runtime_membership(
             &store,
             "target-membership",
@@ -7512,14 +7989,38 @@ mod tests {
                 recipients,
                 team_id: Some("source-team".into()),
                 team_run_id: None,
-                work_id: None,
+                work_id: Some("source-work".into()),
                 collaboration_scope: Some(firm_core::collaboration::CollaborationScope {
                     source_team_id: "source-team".into(),
                     target_team_id: "target-team".into(),
                     delegation_id: Some("delegation-source-target".into()),
                     expected_delegation_revision: Some(3),
-                    source_work_ref: None,
-                    target_work_ref: None,
+                    source_work_ref: Some(firm_core::collaboration::RemoteWorkRef {
+                        schema_version: "agentfirm.remote-work-ref.v1".into(),
+                        execution_space_id: "space-source".into(),
+                        node_id: "22222222-2222-4222-8222-222222222222".into(),
+                        team_id: "source-team".into(),
+                        team_revision: 1,
+                        placement_generation: 1,
+                        work_id: "source-work".into(),
+                        work_revision: 1,
+                        work_event_id: "source-work-event".into(),
+                        digest: format!("sha256:{:064x}", 1),
+                    }),
+                    target_work_ref: Some(firm_core::collaboration::RemoteWorkRef {
+                        schema_version: "agentfirm.remote-work-ref.v1".into(),
+                        execution_space_id: "space-test".into(),
+                        node_id: "11111111-1111-4111-8111-111111111111".into(),
+                        team_id: "target-team".into(),
+                        team_revision: 1,
+                        placement_generation: 1,
+                        work_id: target_work.id.clone(),
+                        work_revision: target_work.version,
+                        work_event_id: "target-work-event".into(),
+                        digest: canonical_json_fingerprint(
+                            &serde_json::to_value(&target_work).unwrap(),
+                        ),
+                    }),
                 }),
                 kind: firm_core::agentfirm_api::MessageKind::Message,
                 body: body.into(),
@@ -7537,17 +8038,75 @@ mod tests {
             message
         };
         let make_operation = |message: &Message| {
-            let body = serde_json::to_value(firm_fabric::MessageReference {
+            let scope = message.collaboration_scope.as_ref().unwrap();
+            let policy = firm_core::collaboration::DelegationInboundPolicySnapshot {
+                policy_id: "policy-source-target".into(),
+                policy_revision: 1,
+                policy_digest: format!("sha256:{:064x}", 4),
+                mode: firm_core::collaboration::DelegationInboundMode::HostApprovalRequired,
+                allowed_outcome_classes: vec!["implementation".into()],
+                max_active_delegations: 1,
+            };
+            let mut authority = CollaborationMessageAuthority {
+                company_id: "company-test".into(),
+                delegation_id: scope.delegation_id.clone().unwrap(),
+                delegation_revision: scope.expected_delegation_revision.unwrap(),
+                source_work_ref: scope.source_work_ref.clone().unwrap(),
+                target_work_ref: scope.target_work_ref.clone().unwrap(),
+                target_placement: firm_core::collaboration::TargetPlacementRef {
+                    team_id: "target-team".into(),
+                    team_revision: 1,
+                    node_id: "11111111-1111-4111-8111-111111111111".into(),
+                    placement_generation: 1,
+                },
+                source_owner_ref: message.sender_actor_ref.clone(),
+                source_host_ref: message.sender_actor_ref.clone(),
+                target_host_ref: ActorRef {
+                    kind: ActorKind::AgentMember,
+                    id: "target-host".into(),
+                },
+                inbound_policy_snapshot: policy,
+                authority_digest: String::new(),
+            };
+            authority.authority_digest = canonical_json_fingerprint(&serde_json::json!({
+                "company_id": authority.company_id,
+                "delegation_id": authority.delegation_id,
+                "delegation_revision": authority.delegation_revision,
+                "source_work_ref": authority.source_work_ref,
+                "target_work_ref": authority.target_work_ref,
+                "target_placement": authority.target_placement,
+                "source_owner_ref": authority.source_owner_ref,
+                "source_host_ref": authority.source_host_ref,
+                "target_host_ref": authority.target_host_ref,
+                "inbound_policy_snapshot": authority.inbound_policy_snapshot,
+            }));
+            let message_reference = firm_fabric::MessageReference {
                 message_id: message.id.clone(),
                 body_digest: message.body_digest.clone(),
                 canonical_message_envelope: Some(serde_json::to_value(message).unwrap()),
                 message_object_ref: None,
+            };
+            let payload = serde_json::json!({
+                "message_reference": message_reference,
+                "delegation_authority": authority,
+            });
+            let body = serde_json::to_value(firm_fabric::CollaborationBusinessReference {
+                business_kind: "team_message_deliver".into(),
+                required_capability: "collaboration.team_message_deliver".into(),
+                business_actor_kind: "agent_member".into(),
+                business_actor_id: "remote-sender".into(),
+                target_team_id: "target-team".into(),
+                target_team_revision: 1,
+                placement_generation: 1,
+                expected_revision: 3,
+                payload_digest: canonical_json_fingerprint(&payload),
+                payload,
             })
             .unwrap();
             firm_fabric::RoutedOperation {
                 id: "remote-route-1".into(),
                 company_id: "company-test".into(),
-                kind: firm_fabric::MESSAGE_REFERENCE_KIND.into(),
+                kind: firm_fabric::COLLABORATION_BUSINESS_OPERATION_KIND.into(),
                 source_authority: firm_fabric::OperationSourceAuthority::Node,
                 source_node_id: Some(message.source_node_id.clone()),
                 target_node_id: "11111111-1111-4111-8111-111111111111".into(),
@@ -7567,16 +8126,23 @@ mod tests {
                     expires_at_unix_ms: 90_000,
                 },
                 actor_runtime_generation: Some(3),
-                authorization_context: BTreeMap::from([(
-                    "capability".into(),
-                    "remote-message".into(),
-                )]),
+                authorization_context: BTreeMap::from([
+                    ("target_team_id".into(), "target-team".into()),
+                    ("target_team_revision".into(), "1".into()),
+                    ("placement_generation".into(), "1".into()),
+                    (
+                        "required_capability".into(),
+                        "collaboration.team_message_deliver".into(),
+                    ),
+                    ("business_actor_kind".into(), "agent_member".into()),
+                    ("business_actor_id".into(), "remote-sender".into()),
+                ]),
                 idempotency_key: "remote-route-1".into(),
                 ordering_key: "message:remote-recipient".into(),
                 correlation_id: message.correlation_id.clone(),
                 causation_id: None,
-                expected_target_revision: Some(0),
-                body_schema: firm_fabric::MESSAGE_REFERENCE_SCHEMA.into(),
+                expected_target_revision: Some(3),
+                body_schema: firm_fabric::COLLABORATION_BUSINESS_OPERATION_SCHEMA.into(),
                 body_digest: firm_fabric::json_digest(&body).unwrap(),
                 body,
                 priority: firm_fabric::OperationPriority::Normal,
@@ -7590,6 +8156,44 @@ mod tests {
 
         let message = make_message("remote hello");
         let operation = make_operation(&message);
+        let mut no_delegation_authority = operation.clone();
+        no_delegation_authority
+            .body
+            .get_mut("payload")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap()
+            .remove("delegation_authority");
+        no_delegation_authority.body_digest =
+            firm_fabric::json_digest(&no_delegation_authority.body).unwrap();
+        let mut rejected_context =
+            service_context("remote_message_persist", &no_delegation_authority.id, 0);
+        rejected_context.request_fingerprint =
+            Some(firm_fabric::json_digest(&no_delegation_authority).unwrap());
+        let operations_before_reject = store.canonical_operations().unwrap();
+        let messages_before_reject = store.fabric_messages("space-test").unwrap();
+        let deliveries_before_reject = store.fabric_message_deliveries("space-test").unwrap();
+        store
+            .persist_remote_message(
+                &rejected_context,
+                &no_delegation_authority,
+                message.clone(),
+                "11111111-1111-4111-8111-111111111111",
+                "daemon-1",
+                1,
+            )
+            .expect_err("target application requires the frozen Delegation authority");
+        assert_eq!(
+            store.canonical_operations().unwrap(),
+            operations_before_reject
+        );
+        assert_eq!(
+            store.fabric_messages("space-test").unwrap(),
+            messages_before_reject
+        );
+        assert_eq!(
+            store.fabric_message_deliveries("space-test").unwrap(),
+            deliveries_before_reject
+        );
         let mut persist_context = service_context("remote_message_persist", &operation.id, 0);
         persist_context.request_fingerprint = Some(firm_fabric::json_digest(&operation).unwrap());
         let before = store.canonical_operations().unwrap().len();

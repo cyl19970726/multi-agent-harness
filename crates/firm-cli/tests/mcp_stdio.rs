@@ -794,6 +794,31 @@ fn mcp_stdio_agent_team_tools() {
         assert!(tool["description"].is_string(), "tool description: {tool}");
         assert_eq!(tool["inputSchema"]["type"].as_str(), Some("object"));
     }
+    for name in [
+        "collaboration_delegation_list",
+        "collaboration_delegation_show",
+    ] {
+        let schema = &tools
+            .iter()
+            .find(|tool| tool["name"].as_str() == Some(name))
+            .unwrap()["inputSchema"];
+        assert!(
+            schema["properties"].get("company_id").is_none(),
+            "MCP collaboration reads must resolve Company from the selected Execution Space"
+        );
+    }
+    let collaboration_scope_spoof = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "collaboration_delegation_list",
+            "arguments": {"company_id": "caller-selected-company"}
+        }),
+    );
+    assert_eq!(collaboration_scope_spoof["result"]["isError"], true);
+    assert!(collaboration_scope_spoof["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("unknown arguments"));
     let remote_status = call_payload(&mcp.request(
         "tools/call",
         serde_json::json!({

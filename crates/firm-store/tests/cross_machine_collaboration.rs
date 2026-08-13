@@ -1159,6 +1159,31 @@ fn remote_fact_is_redacted_digest_bound_and_target_scoped() {
         .is_err());
     assert_eq!(test.store.collaboration_operations().unwrap(), before);
 
+    let mut wrong_target_work = publication.clone();
+    wrong_target_work.id = "publication-wrong-target-work".into();
+    wrong_target_work.fact_work_ref.work_id = "work-b-sibling".into();
+    wrong_target_work.snapshot.publication_id = wrong_target_work.id.clone();
+    let before = test.store.collaboration_operations().unwrap();
+    assert!(test
+        .store
+        .publish_remote_fact(
+            &context(
+                wrong_target_work.created_by.clone(),
+                "remote_fact.publish",
+                "publish-wrong-target-work",
+                0,
+            ),
+            &wrong_target_work,
+            std::slice::from_ref(&wrong_target_work.created_by),
+            &placement(13),
+        )
+        .is_err());
+    assert_eq!(
+        test.store.collaboration_operations().unwrap(),
+        before,
+        "a fact for a sibling target Work must not append any collaboration operation"
+    );
+
     let published = test
         .store
         .publish_remote_fact(
