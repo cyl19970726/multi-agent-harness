@@ -473,6 +473,29 @@ fn retired_mcp_team_run_message_writer_fails_closed_with_zero_store_delta() {
         before,
         "retired MCP writer must produce a byte-zero store delta"
     );
+
+    for retired in ["work_delegation_create", "work_delegation_cancel"] {
+        let response = mcp.request(
+            "tools/call",
+            serde_json::json!({
+                "name": retired,
+                "arguments": {
+                    "delegation_id": "hostile-delegation",
+                    "idempotency_key": "must-not-write"
+                }
+            }),
+        );
+        let error = response["error"]["message"]
+            .as_str()
+            .expect("removed tool must fail as an unknown JSON-RPC tool")
+            .to_string();
+        assert!(error.contains("unknown tool"), "{retired}: {error}");
+        assert_eq!(
+            directory_snapshot(&home.spaces_dir()),
+            before,
+            "retired local WorkDelegation MCP authority must stay byte-zero"
+        );
+    }
 }
 
 // Historical Wave4A reverse-request writer flow. Canonical provider requests
@@ -742,10 +765,8 @@ fn mcp_stdio_agent_team_tools() {
             "team_run_work_request_changes",
             "team_run_work_cancel",
             "team_run_work_reconcile_delivery",
-            "work_delegation_create",
-            "work_delegation_list",
-            "work_delegation_show",
-            "work_delegation_cancel",
+            "collaboration_delegation_list",
+            "collaboration_delegation_show",
             "execution_node_list",
             "execution_node_show",
             "team_run_add_member",
@@ -773,6 +794,31 @@ fn mcp_stdio_agent_team_tools() {
         assert!(tool["description"].is_string(), "tool description: {tool}");
         assert_eq!(tool["inputSchema"]["type"].as_str(), Some("object"));
     }
+    for name in [
+        "collaboration_delegation_list",
+        "collaboration_delegation_show",
+    ] {
+        let schema = &tools
+            .iter()
+            .find(|tool| tool["name"].as_str() == Some(name))
+            .unwrap()["inputSchema"];
+        assert!(
+            schema["properties"].get("company_id").is_none(),
+            "MCP collaboration reads must resolve Company from the selected Execution Space"
+        );
+    }
+    let collaboration_scope_spoof = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "collaboration_delegation_list",
+            "arguments": {"company_id": "caller-selected-company"}
+        }),
+    );
+    assert_eq!(collaboration_scope_spoof["result"]["isError"], true);
+    assert!(collaboration_scope_spoof["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("unknown arguments"));
     let remote_status = call_payload(&mcp.request(
         "tools/call",
         serde_json::json!({

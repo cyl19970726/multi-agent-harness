@@ -950,10 +950,12 @@ dependencies = [
  "firm-provider-events",
  "firm-store",
  "firm-workflow",
+ "hmac",
  "libc",
  "notify",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
 ]
 

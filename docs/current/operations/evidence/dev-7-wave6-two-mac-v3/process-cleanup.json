@@ -1,0 +1,12 @@
+{
+  "source":{"scoped_processes_remaining":0},
+  "target":{"scoped_processes_remaining":0},
+  "commands":[
+    {"command_ref":"owner-session:ctrl-c:source-gateway-60452","exit_code":0},
+    {"command_ref":"owner-session:ctrl-c:target-gateway-26679","exit_code":0},
+    {"command_ref":"owner-session:ctrl-c:source-daemon-51629","exit_code":0},
+    {"command_ref":"owner-session:ctrl-c:control-plane-37641","exit_code":0},
+    {"command_ref":"ssh:agentfirm-macmini:firm-584455c2-daemon-stop","exit_code":0}
+  ],
+  "secret_material_recorded":false
+}

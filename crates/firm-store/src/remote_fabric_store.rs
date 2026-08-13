@@ -57,6 +57,32 @@ impl RemoteFabricStoreLayout {
             .join(company_id))
     }
 
+    /// Company-scoped Wave 6 business registry. This is deliberately adjacent
+    /// to, but not inside, the FabricStore: route journals and collaboration
+    /// relationships have distinct authorities and recovery lifecycles.
+    pub fn collaboration_root(&self, company_id: &str) -> Result<PathBuf, FabricError> {
+        validate_id(company_id, "Company")?;
+        Ok(self
+            .firm_home
+            .join("companies")
+            .join(company_id)
+            .join("collaboration-v1"))
+    }
+
+    pub fn open_collaboration_store(
+        &self,
+        company_id: &str,
+    ) -> Result<crate::HarnessStore, FabricError> {
+        let store = crate::HarnessStore::new(self.collaboration_root(company_id)?);
+        store.init().map_err(|error| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                format!("Company collaboration Store failed: {error}"),
+            )
+        })?;
+        Ok(store)
+    }
+
     pub fn open_control_plane(&self, company_id: &str) -> Result<FabricStore, FabricError> {
         FabricStore::open(self.control_plane_root(company_id)?)
     }
@@ -123,9 +149,13 @@ mod tests {
         let node = layout
             .open_node_local("company-a", "node-a")
             .expect("node store");
+        let collaboration = layout
+            .open_collaboration_store("company-a")
+            .expect("collaboration store");
         assert!(control.root().starts_with(layout.firm_home()));
         assert!(node.root().starts_with(layout.firm_home()));
         assert_ne!(control.root(), node.root());
+        assert_ne!(control.root(), collaboration.root());
         assert_eq!(
             layout
                 .open_node_local("company-b", "node-a")

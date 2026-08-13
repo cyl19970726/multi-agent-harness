@@ -20,7 +20,11 @@ fixtures.operator.data.node={node_id:"node-fixture-1",daemon_generation:4,status
 const vite=await createServer({configFile:join(dashboardRoot,"vite.config.ts"),server:{host:"127.0.0.1",port:0},logLevel:"silent"});await vite.listen();const base=`http://127.0.0.1:${vite.httpServer.address().port}`;const browser=await chromium.launch({headless:true});
 try{
  for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
-  const page=await browser.newPage({viewport});await page.addInitScript(()=>{
+  const page=await browser.newPage({viewport});
+  page.on("pageerror",error=>console.error("browser page error:",error));
+  page.on("console",message=>{if(message.type()==="error")console.error("browser console error:",message.text())});
+  page.on("response",async response=>{if(response.status()>=500)console.error("browser response error:",response.status(),response.url(),await response.text())});
+  await page.addInitScript(()=>{
     window.__AGENTFIRM_BOOTSTRAP__={capabilityToken:"fixture-token"};
     class LiveFixtureEventSource{
       constructor(url){this.url=url;this.timers=[]}

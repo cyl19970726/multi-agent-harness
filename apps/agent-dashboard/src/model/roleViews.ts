@@ -216,6 +216,37 @@ export interface RuntimeFabricSummary {
   agent_identities:RoleRecordSummary[]; agent_sessions:RoleRecordSummary[]; team_memberships:RoleRecordSummary[];
   work_execution_bindings:RoleRecordSummary[]; messages:RoleRecordSummary[]; message_deliveries:RoleRecordSummary[];
 }
+export interface CollaborationActorRef { kind:"human"|"agent_member"|"external"|"service"; id:string }
+export interface CollaborationRemoteWorkRef {
+  schema_version:string; execution_space_id:string; node_id:string; team_id:string;
+  team_revision:number; placement_generation:1; work_id:string; work_revision:number;
+  work_event_id:string; digest:string;
+}
+export interface CollaborationTargetPlacementRef { team_id:string; team_revision:number; node_id:string; placement_generation:1 }
+export interface CollaborationInboundPolicySnapshot {
+  policy_id:string; policy_revision:number; policy_digest:string; mode:"host_approval_required"|"auto_accept";
+  allowed_outcome_classes:string[]; max_active_delegations:number;
+}
+export interface CollaborationDelegationProjection {
+  id:string; company_id:string; source_work_attestation_id:string; source_work_ref:CollaborationRemoteWorkRef;
+  source_owner_ref:CollaborationActorRef; source_team_id:string; source_node_id:string;
+  target_placement:CollaborationTargetPlacementRef; target_host_ref:CollaborationActorRef;
+  requested_outcome:string; outcome_class:string; acceptance_contract:string;
+  inbound_policy_snapshot:CollaborationInboundPolicySnapshot; target_work_ref?:CollaborationRemoteWorkRef|null;
+  state:"proposed"|"awaiting_target_decision"|"provisioning_target_work"|"active"|"result_available"|"cancellation_requested"|"terminal";
+  terminal_outcome?:"completed"|"rejected"|"cancelled"|"failed"|null; revision:number;
+  operation_id:string; idempotency_key:string; created_by:CollaborationActorRef; created_at:string; updated_at:string;
+}
+export interface CollaborationCancellationProjection {
+  id:string; delegation_id:string; expected_delegation_revision:number; requested_by:CollaborationActorRef;
+  reason:string; state:"pending"|"accepted"|"rejected"; revision:number; created_at:string; updated_at:string;
+  target_host_decision_ref?:string|null;
+}
+export interface CollaborationProjectionSummary {
+  company_id?:string; team_id?:string; state:"observed"|"unavailable"; reason?:string;
+  as_of_store_sequence?:number; delegation_count?:number; attention_count?:number; publication_count?:number;
+  delegations?:CollaborationDelegationProjection[]; pending_cancellations?:CollaborationCancellationProjection[];
+}
 export interface TeamPressureSummary {active_turns:number;ready_members:number;total_members:number;ready_work:number;review_work:number;blocked_work:number}
 export interface LatestTeamRunSummary {
   id:string; status:string; created_at:string|null; completed_at:string|null; execution_node_id:string|null;
@@ -231,7 +262,7 @@ export interface TeamWorkspaceData {
   works: WorkSummary[]; members: MemberCapacitySummary[]; messages: MessageSummary[]; activity:TeamActivitySummary[]; activity_truncated:boolean; pressure_summary:TeamPressureSummary;
   reports: RoleRecordSummary[]; findings: RoleRecordSummary[]; failures: RoleRecordSummary[]; gate_requirements: RoleRecordSummary[];
   gate_evaluations: RoleRecordSummary[]; gate_waivers: RoleRecordSummary[]; workspace_attention: RoleRecordSummary[];
-  delegation_provenance: RoleRecordSummary[]; page: {as_of_event_sequence:number;item_count:number;next_cursor:string|null}; runtime_fabric:RuntimeFabricSummary;
+  delegation_provenance: RoleRecordSummary[]; collaboration:CollaborationProjectionSummary; page: {as_of_event_sequence:number;item_count:number;next_cursor:string|null}; runtime_fabric:RuntimeFabricSummary;
 }
 export interface MissionContextSummary {id:string; title:string; objective:string; context:string; desired_outcome:string|null; status:string; outcome_summary:string|null; created_at:string; updated_at:string; completed_at:string|null; log:Array<{id:string;revision:number;kind:string;body:string;actor:string;created_at:string}>}
 export interface TeamSupervisorSummary {team_run_id:string; supervisor_id:string; generation:number; current:boolean; heartbeat_unix_ms:number; expires_unix_ms:number; owner_locator:string; node_daemon_generation:number; status:string}
@@ -241,7 +272,7 @@ export interface HostConsoleData {
   workspace_conflicts:RoleRecordSummary[]; provider_capacity_attention:Array<{state:"not_modeled";reason:string}>; deliveries_requiring_reconcile:RoleRecordSummary[];
   gate_attention:RoleRecordSummary[]; daemon_summary:{node_id:string;lease_status:string|null;generation:number|null};
   mission_context:MissionContextSummary|null; team_supervisor:TeamSupervisorSummary|null; host_inbox:MessageSummary[];
-  member_runtime:MemberCapacitySummary[]; runtime_recovery:RoleRecordSummary[]; pressure_summary:TeamPressureSummary; runtime_fabric:RuntimeFabricSummary;
+  member_runtime:MemberCapacitySummary[]; runtime_recovery:RoleRecordSummary[]; pressure_summary:TeamPressureSummary; collaboration:CollaborationProjectionSummary; runtime_fabric:RuntimeFabricSummary;
 }
 export interface AgentWorkspaceSession {
   session_id:string|null; member_run_id:string|null; team_run_id:string; provider:string|null; execution_mode:string|null;
@@ -291,7 +322,7 @@ export interface MemberWorkbenchData {
   eligible_ready_pool:WorkSummary[]; unread_messages:MessageSummary[]; queued_deliveries:RoleRecordSummary[];
   workspace_binding:RoleRecordSummary|null; native_session_health:string; pending_provider_interactions:RoleRecordSummary[];
   report_history:RoleRecordSummary[]; finding_history:RoleRecordSummary[]; failure_history:RoleRecordSummary[]; gate_requirements:RoleRecordSummary[];
-  runtime_fabric:RuntimeFabricSummary;
+  collaboration:CollaborationProjectionSummary; runtime_fabric:RuntimeFabricSummary;
 }
 export interface OperatorViewData {
   node:{node_id:string;node_revision:number;daemon_generation:number|null;status:string}; build:{build_sha:string;protocol_version:string;schema_version:string};
@@ -302,6 +333,7 @@ export interface OperatorViewData {
     gateway_session?:{company_id:string;node_id:string;gateway_generation:number;node_daemon_id:string;node_daemon_generation:number;control_plane_generation:number}|null;
     outbox_depth?:number;oldest_outbox_age_ms?:number;inbox_depth?:number;recovery_required?:string[];store_revision?:number;
     control_plane_online?:boolean|null;
+    collaboration?:CollaborationProjectionSummary;
     control_plane_metrics?:null|{node_id:string;administrative_status:string;connection_status:string;gateway_generation:number|null;control_plane_generation:number|null;certificate_expires_at_unix_ms:number|null;queued_operations:number;oldest_queued_age_ms:number;gateway_lease_age_ms:number|null;recovery_required_operations:string[];last_assigned_route_seq:number;last_persisted_route_seq:number;reconcile_lag:number};
   };
   runtime_fabric:RuntimeFabricSummary;

@@ -37,9 +37,9 @@ type ContextSelection =
   | null;
 
 export function AgentConversationWorkspace({
-  apiUrl,space,project,routeIdentity,selection,refreshKey,onAction,actionsEnabled,onSelectionChange,
+  apiUrl,space,project,company,routeIdentity,selection,refreshKey,onAction,actionsEnabled,onSelectionChange,
 }:{
-  apiUrl:string; space:string; project:string; routeIdentity:string; selection:SelectionState;
+  apiUrl:string; space:string; project:string; company?:string; routeIdentity:string; selection:SelectionState;
   refreshKey?:string; onAction:RoleActionExecutor; actionsEnabled:boolean;
   onSelectionChange:(next:Partial<SelectionState>)=>void;
 }) {
@@ -65,12 +65,12 @@ export function AgentConversationWorkspace({
     let live=true;
     setLoading(true);
     setError(null);
-    fetchRoleView<AgentWorkspaceData>(apiUrl,requestPath,{space,project})
+    fetchRoleView<AgentWorkspaceData>(apiUrl,requestPath,{space,project,company})
       .then((next)=>{if(live){setView(next);setViewRequestPath(requestPath);setError(null);setContextSelection(null);}})
       .catch((reason)=>{if(live)setError(String(reason));})
       .finally(()=>{if(live)setLoading(false);});
     return()=>{live=false;};
-  },[apiUrl,space,project,requestPath,refreshKey,refresh]);
+  },[apiUrl,space,project,company,requestPath,refreshKey,refresh]);
 
   const currentView=viewRequestPath===requestPath?view:null;
   if(!currentView)return <main className="agent-team-surface h-full min-h-0 flex-1"><ViewState loading={loading} error={error} identityLabel={`Agent Workspace · ${routeIdentity}`} onRetry={()=>setRefresh(value=>value+1)}>{null}</ViewState></main>;
