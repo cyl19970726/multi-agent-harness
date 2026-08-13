@@ -1,10 +1,10 @@
 # MemberRun Focus Page Spec
 
 ```text
-status: authenticated Agent Conversation implemented; full profile retained
+status: authenticated unified Agent Workspace implemented; follow-up projections remain explicit
 owner_role: dashboard
 canonical_for: one autonomous MemberRun working within one AgentTeamRun
-route_or_surface: Agent Teams -> TeamRun -> Agent Conversation -> Full profile
+route_or_surface: Agent Teams -> TeamRun -> Agent Workspace -> Session / Messages / Work / profile
 ```
 
 ## User Problem
@@ -18,11 +18,22 @@ four questions in the first viewport:
 3. What is it doing or waiting for now?
 4. What output supports its contribution to the Mission and current Work?
 
-The default selected-member experience is a focused, continuous Agent
-Conversation: durable Harness coordination, relevant Works, on-demand native
-provider activity and messages appear in one chronological presentation. It is
-not a copied provider transcript or a duplicate Team Kanban. A separate Full
-Profile deep link carries durable identity and expanded historical detail.
+The selected-member experience is a focused Agent Workspace shared with the
+Host layout language. Session is the default continuous conversation/event
+canvas; Messages and Work are adjacent lenses rather than peer dashboard
+pages. Native provider activity is server-read only after exact identity
+authorization and is compact by default. Authored provider responses and
+TeamMessages remain prominent; display-safe tool/runtime events disclose
+details on demand. It is not a copied provider transcript or a duplicate Team
+Kanban. The Agent header opens an in-context profile drawer for durable
+identity, configuration, skills/tools/permissions, runtime, workspace and
+Session history.
+
+The browser consumes one server-built `agent_workspace` RoleView. It does not
+join Team snapshots, MemberRuns, native activity or deliveries itself. Session
+selection is URL-addressable and causes an authenticated refetch for that exact
+provider-native Session. Empty, restricted and unavailable sources remain
+honest states; production code does not pad them with sample rows.
 
 ## Canonical Data And Semantics
 
@@ -88,8 +99,8 @@ is accepted. The older Workbench V2 image is historical baseline only.
 
 ### Desktop — `1440x1000`
 
-Use the shared Workbench shell: compact product rail, a 240–256px Team agent
-navigator, dominant central conversation, and a conditional 260–288px fact
+Use the shared Workbench shell: quiet 80px brand rail, a 300px Team agent
+navigator, dominant central conversation, and a 314px selection-aware fact
 rail. The central stream, not a tab bar, owns the page. When no current fact or
 authorized action exists, omit the right rail and give that width to chat.
 
@@ -213,6 +224,14 @@ exposes cooperative turn interruption. Close is a separate Host-owned action:
 it sends the selected adapter's real close/cancel protocol and must not be
 presented as ordinary turn completion. Completion of the MemberRun is an
 execution fact, not an implicit Wave advance.
+
+Current implementation boundary: the authenticated RoleAction adapter projects
+MemberRun close/reopen/retire/resume and exact Work/Message actions. It does not
+yet project AgentSession `CancelProviderTurn`, `StopSession`, or `ResumeSession`
+RuntimeCommands, delivery retry, or Operator-only reconciliation into this
+surface. Those controls remain absent or honestly disabled until a frozen
+authority contract exists; MemberRun lifecycle is never relabeled to simulate
+them.
 
 Full-contract follow-up: render the latest `TeamMemberCloseRequest` beside
 those controls once HostConsole projects it. `pending`

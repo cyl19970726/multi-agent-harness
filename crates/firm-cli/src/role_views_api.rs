@@ -41,6 +41,8 @@ impl Query {
             "node_id",
             "host_id",
             "member_id",
+            "agent_id",
+            "session_id",
             "phase",
             "condition",
             "resolution",
@@ -982,6 +984,8 @@ pub(crate) fn handle_get(
         team_view(current_space_id, current, team_id, false, identity)
     } else if let Some(team_id) = path.strip_prefix("/v1/views/host-console/") {
         team_view(current_space_id, current, team_id, true, identity)
+    } else if let Some(route_ref) = path.strip_prefix("/v1/views/agent-workspace/") {
+        agent_workspace_view(current_space_id, current, route_ref, &query, identity)
     } else if let Some(member_run_id) = path.strip_prefix("/v1/views/member-workbench/") {
         member_view(current_space_id, current, member_run_id, identity)
     } else if let Some(node_id) = path.strip_prefix("/v1/views/operator/") {
@@ -1816,6 +1820,558 @@ fn team_view(
         identity_attention,
         actions,
     ))
+}
+
+fn unavailable_native_activity(
+    native_session_id: Option<&str>,
+    provider: Option<&str>,
+    execution_mode: Option<&str>,
+    reason: &str,
+) -> Value {
+    json!({
+        "native_session_id":native_session_id,
+        "provider":provider,
+        "execution_mode":execution_mode,
+        "availability":"unavailable",
+        "items":[],
+        "truncated":false,
+        "disabled_reason":reason,
+    })
+}
+
+fn read_selected_native_activity(session: Option<&Value>) -> Value {
+    let Some(session) = session else {
+        return unavailable_native_activity(
+            None,
+            None,
+            None,
+            "No provider-native Session is bound to this selected Agent run.",
+        );
+    };
+    match crate::native_session::read_activity_value(session) {
+        Ok(mut activity) => {
+            if let Some(items) = activity.get_mut("items").and_then(Value::as_array_mut) {
+                for (index, item) in items.iter_mut().enumerate() {
+                    if let Some(item) = item.as_object_mut() {
+                        item.insert("event_id".into(), json!(format!("native-event-{index}")));
+                    }
+                }
+            }
+            activity["disabled_reason"] = Value::Null;
+            activity
+        }
+        Err(_) => unavailable_native_activity(
+            session.get("native_session_id").and_then(Value::as_str),
+            session.get("provider").and_then(Value::as_str),
+            session.get("execution_mode").and_then(Value::as_str),
+            "The server could not verify and read the bound provider-native Session.",
+        ),
+    }
+}
+
+fn host_native_session_ref(run: &AgentTeamRun) -> Option<Value> {
+    let thread_id = run.host_thread_id.as_deref()?.trim();
+    if thread_id.is_empty() {
+        return None;
+    }
+    let provider = match run.host_surface.as_str() {
+        "codex" | "codex-app" | "codex_app" | "codex_app_server" => "codex",
+        "kimi" | "kimi-code" | "kimi_code" | "kimi_acp" => "kimi",
+        "claude" | "claude-code" | "claude_code" | "claude_agent_sdk" => "claude",
+        _ => return None,
+    };
+    let locator = match provider {
+        "codex" => "codex_rollout",
+        "kimi" => "kimi_code_session",
+        "claude" => "claude_project_session",
+        _ => "provider_native_session",
+    };
+    Some(json!({
+        "provider":provider,
+        "execution_mode":"host_native",
+        "native_session_id":thread_id,
+        "native_locator_kind":locator,
+        "provider_version":null,
+        "adapter_contract_version":"host-native-read-v1",
+        "availability":"available",
+        "supports_resume":true,
+        "last_verified_at":null,
+        "parent_native_session_id":null,
+    }))
+}
+
+fn agent_workspace_view(
+    space_id: &str,
+    store: &HarnessStore,
+    route_ref: &str,
+    query: &Query,
+    identity: Option<&ReadIdentity>,
+) -> ViewResult {
+    let facts = Facts::read(space_id, store)
+        .map_err(|e| ("500 Internal Server Error", "ROLE_VIEW_BUILD_FAILED", e))?;
+    let route_member_run = facts.member_runs.iter().find(|run| run["id"] == route_ref);
+    let route_run = facts
+        .runs
+        .iter()
+        .find(|run| run.id == route_ref)
+        .or_else(|| {
+            route_member_run
+                .and_then(|member_run| member_run["team_run_id"].as_str())
+                .and_then(|id| facts.runs.iter().find(|run| run.id == id))
+        });
+    let resolved_team_id = route_run
+        .map(|run| run.agent_team_id.as_str())
+        .unwrap_or(route_ref);
+    let team = facts
+        .teams
+        .iter()
+        .find(|team| team.id == resolved_team_id)
+        .ok_or(("404 Not Found", "TEAM_NOT_FOUND", route_ref.to_string()))?;
+    let run = route_run.or_else(|| facts.latest_run(resolved_team_id));
+    let run_id = run.map(|run| run.id.as_str());
+    let selected_agent_id = query
+        .values
+        .get("agent_id")
+        .and_then(|values| values.first())
+        .map(String::as_str)
+        .or_else(|| route_member_run.and_then(|run| run["agent_member_id"].as_str()))
+        .unwrap_or(team.host_agent_id.as_str());
+    let selected_is_host = selected_agent_id == team.host_agent_id;
+    let selected_is_member = team
+        .member_ids
+        .iter()
+        .any(|member_id| member_id == selected_agent_id);
+    if !selected_is_host && !selected_is_member {
+        return Err((
+            "404 Not Found",
+            "AGENT_NOT_IN_TEAM",
+            format!(
+                "AgentMember {selected_agent_id} is not part of Team {}",
+                team.id
+            ),
+        ));
+    }
+    let exact_host_identity = identity.is_some_and(|identity| {
+        (identity.actor.kind == ActorKind::AgentMember && identity.actor.id == team.host_agent_id)
+            || identity
+                .authority_actors
+                .iter()
+                .any(|actor| actor.kind == ActorKind::AgentMember && actor.id == team.host_agent_id)
+    });
+    let exact_selected_identity = identity.is_some_and(|identity| {
+        identity.actor.kind == ActorKind::AgentMember && identity.actor.id == selected_agent_id
+    });
+    if !(exact_host_identity || exact_selected_identity) {
+        return Err((
+            "403 Forbidden",
+            "NOT_AUTHORIZED",
+            "AgentWorkspace requires the exact selected AgentMember or this Team's exact Host authority"
+                .into(),
+        ));
+    }
+    if selected_is_host && !exact_host_identity {
+        return Err((
+            "403 Forbidden",
+            "NOT_AUTHORIZED",
+            "Host Agent Session is visible only to this Team's exact Host authority".into(),
+        ));
+    }
+    let projection_scope = if selected_is_host {
+        "host_self_private"
+    } else if exact_selected_identity {
+        "member_self_private"
+    } else {
+        "host_member_public"
+    };
+
+    // Reuse the bounded TeamWorkspace summaries; no browser-side ledger joins
+    // or second Work/Message model is introduced by AgentWorkspace.
+    let team_envelope = team_view(space_id, store, route_ref, false, identity)?;
+    let team_data = &team_envelope["data"];
+    let all_works = team_data["works"].as_array().cloned().unwrap_or_default();
+    let all_messages = team_data["messages"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let selected_recipient_ids = facts
+        .member_runs
+        .iter()
+        .filter(|member_run| member_run["agent_member_id"] == selected_agent_id)
+        .filter_map(|member_run| member_run["id"].as_str())
+        .chain(std::iter::once(selected_agent_id))
+        .collect::<BTreeSet<_>>();
+    let mut messages = all_messages
+        .into_iter()
+        .filter(|message| {
+            message["sender"]["id"]
+                .as_str()
+                .is_some_and(|id| selected_recipient_ids.contains(id))
+                || message["recipients"].as_array().is_some_and(|recipients| {
+                    recipients.iter().any(|recipient| {
+                        recipient["id"]
+                            .as_str()
+                            .is_some_and(|id| selected_recipient_ids.contains(id))
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    let mut works = all_works
+        .into_iter()
+        .filter(|work| {
+            selected_is_host
+                || work["owner_actor_ref"]["id"] == selected_agent_id
+                || work["eligible_member_ids"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == selected_agent_id))
+        })
+        .collect::<Vec<_>>();
+    let public_unread_count = messages
+        .iter()
+        .filter(|message| {
+            message["deliveries"].as_array().is_some_and(|deliveries| {
+                deliveries.iter().any(|delivery| {
+                    matches!(delivery["status"].as_str(), Some("queued" | "delivered"))
+                })
+            })
+        })
+        .count();
+    if projection_scope == "host_member_public" {
+        // Coordination content and responsibility are public to the exact Host,
+        // but delivery receipts, runtime bindings, and workspace bindings are
+        // execution-private. Redact them before the RoleView leaves the server.
+        for message in &mut messages {
+            message["deliveries"] = json!([]);
+        }
+        for work in &mut works {
+            work["current_member_run_ref"] = Value::Null;
+            work["runtime_summary"] = json!({
+                "state":"not_projected",
+                "generation":null,
+                "freshness":"unknown",
+            });
+            work["workspace_summary"] = json!({
+                "binding_id":null,
+                "lifecycle":"not_projected",
+                "safety":"unknown",
+            });
+        }
+    }
+    let selected_work_ids = works
+        .iter()
+        .filter_map(|work| work["work_id"].as_str())
+        .collect::<BTreeSet<_>>();
+
+    let mut roster = team_data["members"].as_array().cloned().unwrap_or_default();
+    roster.retain(|member| member["agent_member_ref"]["id"] != team.host_agent_id);
+    let host_member = facts
+        .members
+        .iter()
+        .find(|member| member["id"] == team.host_agent_id);
+    roster.insert(
+        0,
+        json!({
+            "agent_member_ref":{"kind":"agent_member","id":team.host_agent_id},
+            "display_name":host_member.and_then(|member|member["name"].as_str()).unwrap_or("Host Agent"),
+            "role":host_member.and_then(|member|member["role"].as_str()).unwrap_or("Host"),
+            "organization_status":host_member.and_then(|member|member["organization_status"].as_str()).unwrap_or("active"),
+            "coordination_status":run.map(|run|enum_string(&run.status)),
+            "provider":run.map(|run|run.host_surface.clone()),
+            "model":null,
+            "native_session_health":if run.and_then(|run|run.host_thread_id.as_ref()).is_some(){"available"}else{"unknown"},
+            "current_member_run_ref":null,
+            "runtime_state":run.map(|run|enum_string(&run.status)),
+            "runtime_generation":null,
+            "capacity":"unknown",
+            "active_work_count":0,
+            "queued_work_count":0,
+            "review_work_count":0,
+            "blocked_work_count":0,
+            "latest_action":null,
+            "is_host":true,
+        }),
+    );
+    for member in &mut roster {
+        if let Some(object) = member.as_object_mut() {
+            object.entry("is_host").or_insert(json!(false));
+            let is_selected = object
+                .get("agent_member_ref")
+                .and_then(|value| value.get("id"))
+                .and_then(Value::as_str)
+                == Some(selected_agent_id);
+            for key in [
+                "provider",
+                "model",
+                "native_session_health",
+                "current_member_run_ref",
+                "runtime_generation",
+                "latest_action",
+            ] {
+                object.remove(key);
+            }
+            if !is_selected || projection_scope == "host_member_public" {
+                object.remove("runtime_state");
+            }
+        }
+    }
+
+    let mut member_runs = facts
+        .member_runs
+        .iter()
+        .filter(|member_run| member_run["agent_member_id"] == selected_agent_id)
+        .filter(|member_run| {
+            member_run["team_run_id"].as_str().is_some_and(|candidate| {
+                facts.runs.iter().any(|candidate_run| {
+                    candidate_run.id == candidate && candidate_run.agent_team_id == team.id
+                })
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    member_runs.sort_by(|left, right| {
+        right["started_at"]
+            .as_str()
+            .cmp(&left["started_at"].as_str())
+            .then_with(|| {
+                right["runtime_generation"]
+                    .as_u64()
+                    .cmp(&left["runtime_generation"].as_u64())
+            })
+    });
+    let requested_session_id = query
+        .values
+        .get("session_id")
+        .and_then(|values| values.first())
+        .map(String::as_str);
+    let selected_member_run = if selected_is_host {
+        None
+    } else {
+        requested_session_id
+            .and_then(|session_id| {
+                member_runs.iter().find(|member_run| {
+                    member_run["native_session"]["native_session_id"] == session_id
+                        || member_run["id"] == session_id
+                })
+            })
+            .or_else(|| {
+                run_id.and_then(|current_run_id| {
+                    member_runs
+                        .iter()
+                        .find(|member_run| member_run["team_run_id"] == current_run_id)
+                })
+            })
+            .or_else(|| member_runs.first())
+    };
+    // Provider-private Session data is owner-bound, not merely Team-authorized.
+    // The exact Host can read the Host Session. The exact Member can read that
+    // Member's Session. Host authority selecting a Member receives only public
+    // coordination/Work facts and never that Member's native Session internals.
+    let may_read_private_session =
+        (selected_is_host && exact_host_identity) || (!selected_is_host && exact_selected_identity);
+    let native_session = if !may_read_private_session {
+        None
+    } else if selected_is_host {
+        run.and_then(host_native_session_ref)
+    } else {
+        selected_member_run
+            .and_then(|member_run| member_run.get("native_session"))
+            .filter(|session| !session.is_null())
+            .cloned()
+    };
+    let session_activity = if may_read_private_session {
+        read_selected_native_activity(native_session.as_ref())
+    } else {
+        unavailable_native_activity(
+            None,
+            None,
+            None,
+            "Provider-private Session events are visible only to the exact selected Agent identity.",
+        )
+    };
+    let sessions = if !may_read_private_session {
+        Vec::new()
+    } else if selected_is_host {
+        run.into_iter()
+            .map(|run| {
+                json!({
+                    "session_id":run.host_thread_id,
+                    "member_run_id":null,
+                    "team_run_id":run.id,
+                    "provider":run.host_surface,
+                    "execution_mode":"host_native",
+                    "coordination_status":enum_string(&run.status),
+                    "runtime_status":enum_string(&run.status),
+                    "runtime_generation":null,
+                    "started_at":run.created_at,
+                    "last_active_at":run.updated_at,
+                    "ended_at":run.completed_at,
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        member_runs
+            .iter()
+            .map(|member_run| {
+                json!({
+                    "session_id":member_run["native_session"]["native_session_id"],
+                    "member_run_id":member_run["id"],
+                    "team_run_id":member_run["team_run_id"],
+                    "provider":member_run["native_session"]["provider"],
+                    "execution_mode":member_run["native_session"]["execution_mode"],
+                    "coordination_status":member_run["coordination_status"],
+                    "runtime_status":member_run["runtime_status"],
+                    "runtime_generation":member_run["runtime_generation"],
+                    "started_at":member_run["started_at"],
+                    "last_active_at":member_run["last_event_at"],
+                    "ended_at":member_run["finished_at"],
+                })
+            })
+            .collect()
+    };
+    let selected_member = facts
+        .members
+        .iter()
+        .find(|member| member["id"] == selected_agent_id);
+    let selected_roster = roster
+        .iter()
+        .find(|member| member["agent_member_ref"]["id"] == selected_agent_id);
+    let selected_member_run_id = selected_member_run.and_then(|run| run["id"].as_str());
+    let workspace_binding = selected_member_run_id
+        .and_then(|member_run_id| current_workspace(&facts, member_run_id))
+        .map(|workspace| record_summary("workspace_binding", workspace));
+    let configuration = json!({
+        "description":selected_member.and_then(|member|member["description"].as_str()),
+        "prompt_ref":null,
+        "prompt_projection":"not_modeled",
+        "skill_refs":selected_member.and_then(|member|member["skill_refs"].as_array()).cloned().unwrap_or_default(),
+        "capabilities":selected_member.and_then(|member|member["capabilities"].as_array()).cloned().unwrap_or_default(),
+        "tool_refs":[],
+        "tools_projection":"not_modeled_by_agent_member",
+        "provider_profile_ref":if may_read_private_session {selected_member.and_then(|member|member["provider_profile_ref"].as_str())} else {None},
+        "model_preference":if may_read_private_session {selected_member.and_then(|member|member["model_preference"].as_str())} else {None},
+        "workspace_policy":if may_read_private_session {selected_member.and_then(|member|member["workspace_policy"].as_str())} else {None},
+        "permission_ceiling":if may_read_private_session {selected_member.and_then(|member|member["permission_ceiling"].as_str())} else {None},
+        "forbidden_actions":[],
+        "forbidden_actions_projection":"not_modeled",
+        "workspace_binding":if may_read_private_session {workspace_binding} else {None},
+    });
+
+    let authority_envelope = if exact_host_identity {
+        team_view(space_id, store, route_ref, true, identity)?
+    } else if let Some(member_run_id) = selected_member_run_id {
+        member_view(space_id, store, member_run_id, identity)?
+    } else {
+        json!({"allowed_actions":[]})
+    };
+    let allowed_actions = authority_envelope["allowed_actions"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|action| match action["target_ref"]["kind"].as_str() {
+            Some("team_run") => true,
+            // Host control authority and provider-private observation are
+            // separate planes. A Host-selected public projection may expose
+            // exact, server-authorized MemberRun controls without exposing the
+            // Member's Session, runtime facts, or workspace binding.
+            Some("member_run") => {
+                selected_member_run_id.is_some_and(|id| action["target_ref"]["id"] == id)
+            }
+            Some("work") => action["target_ref"]["id"]
+                .as_str()
+                .is_some_and(|id| selected_work_ids.contains(id)),
+            _ => false,
+        })
+        .collect::<Vec<_>>();
+
+    let selected_runtime_status = selected_member_run
+        .and_then(|member_run| member_run["runtime_status"].as_str().map(str::to_owned))
+        .or_else(|| run.map(|run| enum_string(&run.status)));
+    let selected = json!({
+        "agent_member_ref":{"kind":"agent_member","id":selected_agent_id},
+        "display_name":selected_member.and_then(|member|member["name"].as_str()).or_else(||selected_roster.and_then(|member|member["display_name"].as_str())).unwrap_or(if selected_is_host{"Host Agent"}else{"Agent"}),
+        "role":selected_member.and_then(|member|member["role"].as_str()).or_else(||selected_roster.and_then(|member|member["role"].as_str())).unwrap_or(if selected_is_host{"Host"}else{"Agent"}),
+        "organization_status":selected_member.and_then(|member|member["organization_status"].as_str()).unwrap_or("unknown"),
+        "is_host":selected_is_host,
+        "current_member_run_ref":if may_read_private_session {selected_member_run_id} else {None},
+        "provider":native_session.as_ref().and_then(|session|session["provider"].as_str()),
+        "execution_mode":native_session.as_ref().and_then(|session|session["execution_mode"].as_str()),
+        "runtime_status":if may_read_private_session {selected_runtime_status} else {None},
+    });
+    let unread_count = if projection_scope == "host_member_public" {
+        public_unread_count
+    } else {
+        messages
+            .iter()
+            .filter(|message| {
+                message["deliveries"].as_array().is_some_and(|deliveries| {
+                    deliveries.iter().any(|delivery| {
+                        matches!(delivery["status"].as_str(), Some("queued" | "delivered"))
+                    })
+                })
+            })
+            .count()
+    };
+    let safe_team = json!({
+        "team_id":team_data["team"]["team_id"],
+        "display_name":team_data["team"]["display_name"],
+        "team_revision":team_data["team"]["team_revision"],
+        "mission_id":team_data["team"]["mission_id"],
+        "host_agent_id":team_data["team"]["host_agent_id"],
+        "viewer_role":team_data["team"]["viewer_role"],
+        "status":team_data["team"]["status"],
+        "latest_run_id":team_data["team"]["latest_run"]["id"],
+    });
+    let current_work_id = works
+        .iter()
+        .filter(|work| selected_is_host || work["owner_actor_ref"]["id"] == selected_agent_id)
+        .find(|work| work["phase"] == "active")
+        .or_else(|| {
+            works
+                .iter()
+                .filter(|work| {
+                    selected_is_host || work["owner_actor_ref"]["id"] == selected_agent_id
+                })
+                .find(|work| work["phase"] == "review")
+        })
+        .or_else(|| {
+            works
+                .iter()
+                .filter(|work| {
+                    selected_is_host || work["owner_actor_ref"]["id"] == selected_agent_id
+                })
+                .find(|work| work["phase"] == "open")
+        })
+        .and_then(|work| work["work_id"].as_str());
+    let mut response = envelope(
+        "agent_workspace",
+        &facts,
+        json!({
+            "projection_scope":projection_scope,
+            "team":safe_team,
+            "selected_agent":selected,
+            "roster":roster,
+            "sessions":sessions,
+            "selected_session_id":native_session.as_ref().and_then(|session|session["native_session_id"].as_str()),
+            "session_activity":session_activity,
+            "messages":messages,
+            "works":works,
+            "configuration":configuration,
+            "context_summary":{
+                "current_work_id":current_work_id,
+                "message_count":messages.len(),
+                "unread_count":unread_count,
+                "last_activity_at":session_activity["items"].as_array().and_then(|items|items.last()).and_then(|item|item["occurred_at"].as_str()),
+                "authorization_count":allowed_actions.iter().filter(|action|action["disabled_reason"].is_null()).count(),
+            },
+        }),
+        vec![],
+        allowed_actions,
+    );
+    response["data"]
+        .as_object_mut()
+        .expect("AgentWorkspace data object")
+        .remove("runtime_fabric");
+    Ok(response)
 }
 
 fn member_view(
