@@ -4,6 +4,7 @@ This is the unified, provider-neutral distribution package for Codex, Claude
 Code, and Kimi.
 It installs experience adapters only:
 
+- the simple AgentFirm Brain -> Task -> Dev -> Review loop;
 - generated mirrors of the canonical Host and Member skills;
 - optional Harness MCP registration over the same application services as CLI;
 - Mission/Team shortcuts and historical Kimi command aliases;
@@ -32,6 +33,11 @@ their canonical sources under `skills/`, then run:
 node scripts/sync-star-harness-plugin-skills.mjs
 node scripts/sync-star-harness-plugin-skills.mjs --check
 ```
+
+The package includes `agentfirm-development-loop` for ordinary development
+Tasks. It keeps one Task as current authority, binds each Review to an exact
+revision, and returns rejected work to the same Task without introducing a
+Candidate/readiness stage.
 
 The repository marketplace publishes this directory as `star-harness`. Install
 it after building and placing `harness` on `PATH`:

@@ -11,8 +11,8 @@ The [AgentFirm Home](https://app.notion.com/p/3b849a4fa3798115939cca2b0b9e6f2d)
 is the current authority for the product mental model, Architecture Decisions,
 Implementation Crosswalk, and the live Development System. The
 [Development Playbook](https://app.notion.com/p/3b849a4fa37981a990a5cf0059dcfa4a)
-defines the operating path from accepted Specification through Delivery Run,
-evidence, exact-candidate Review, merge, and closeout.
+defines the operating path from an accepted Specification through one current
+Task, Dev submission, exact-revision Review, merge, and closeout.
 
 This repository remains authoritative for versioned implementation facts:
 source code, schemas, executable contracts, tests, CI, release artifacts, and
@@ -88,6 +88,7 @@ integrating project repository, not in the generic core docs.
 
 | Skill | Use |
 | --- | --- |
+| [agentfirm-development-loop](../skills/agentfirm-development-loop/SKILL.md) | Simple Brain -> Task -> Dev -> exact-revision Review loop. A failed Review returns the same Task to Dev; there is no Candidate/readiness stage. |
 | [orchestrate-mission-waves](../skills/orchestrate-mission-waves/SKILL.md) | Thin Host guidance for durable Mission context, versioned Wave memos, shared Works, Mission-linked long-lived Teams, and advance/re-plan. CLI remains the authority. |
 | [collaborate-as-agent-team-member](../skills/collaborate-as-agent-team-member/SKILL.md) | Provider-neutral member guidance for Work claim/start/block/submit, Work-linked conversation, native subagents, evidence, and Host acceptance. |
 | [star-workflow](../skills/star-workflow/SKILL.md) | Optional Dynamic Workflow authoring capability; not a Mission/Wave planning authority. |

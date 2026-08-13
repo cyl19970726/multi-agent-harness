@@ -10,11 +10,12 @@
     {
       "name": "star-harness",
       "displayName": "Star Harness",
-      "description": "Mission/Wave orchestration and autonomous Agent Team collaboration for Codex, Claude Code, and Kimi.",
-      "version": "0.4.4",
+      "description": "AgentFirm Task/Review workflow, Mission/Wave orchestration, and autonomous Agent Team collaboration for Codex, Claude Code, and Kimi.",
+      "version": "0.4.5",
       "category": "orchestration",
       "keywords": [
         "agent-team",
+        "development-workflow",
         "mission",
         "wave",
         "mcp",

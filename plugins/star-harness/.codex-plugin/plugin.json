@@ -1,7 +1,7 @@
 {
   "name": "star-harness",
-  "version": "0.4.4",
-  "description": "Thin Mission and autonomous Agent Team integration for Codex.",
+  "version": "0.4.5",
+  "description": "AgentFirm development loop plus thin Mission and autonomous Agent Team integration for Codex.",
   "author": {
     "name": "Multi-Agent Harness",
     "email": "noreply@example.com",
@@ -14,8 +14,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Star Harness",
-    "shortDescription": "Plan Missions and coordinate autonomous Agent Teams.",
-    "longDescription": "Adds provider-neutral Host and Member skills, Harness MCP registration, lifecycle status hooks, CLI shortcuts, and Dashboard deep links. Product state remains in Harness and provider execution remains in native sessions.",
+    "shortDescription": "Run AgentFirm Tasks and coordinate autonomous Agent Teams.",
+    "longDescription": "Adds the AgentFirm Brain/Dev/Review loop, provider-neutral Host and Member skills, Harness MCP registration, lifecycle status hooks, CLI shortcuts, and Dashboard deep links. Product state remains in Harness and provider execution remains in native sessions.",
     "developerName": "Multi-Agent Harness",
     "category": "Developer Tools",
     "capabilities": ["Skills", "MCP", "Hooks", "Agent Teams"],
@@ -23,6 +23,7 @@
     "privacyPolicyURL": "https://github.com/cyl19970726/multi-agent-harness",
     "termsOfServiceURL": "https://github.com/cyl19970726/multi-agent-harness",
     "defaultPrompt": [
+      "Run a development Task through Dev submission and exact-revision Review.",
       "Create a Mission and plan its first phase.",
       "Start an Agent Team for this Mission.",
       "Show the active Team and Lead Inbox."
