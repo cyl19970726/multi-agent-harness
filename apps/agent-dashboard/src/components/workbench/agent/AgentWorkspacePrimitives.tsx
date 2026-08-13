@@ -1,4 +1,29 @@
-import { ArrowDownRight, ArrowRight, Circle, LockKeyhole, SlidersHorizontal } from "lucide-react";
+import {
+  ArrowDownRight,
+  Ban,
+  BriefcaseBusiness,
+  Circle,
+  CircleStop,
+  LockKeyhole,
+  MessageSquareText,
+  RefreshCw,
+  RotateCcw,
+  ShieldCheck,
+  SlidersHorizontal,
+} from "lucide-react";
+
+function ActionIcon({kind}:{kind:string}) {
+  const normalized=kind.toLowerCase();
+  const Icon=/message/.test(normalized)?MessageSquareText
+    :/assign|reassign|work/.test(normalized)?BriefcaseBusiness
+    :/review|gate/.test(normalized)?ShieldCheck
+    :/retry|reconcile/.test(normalized)?RefreshCw
+    :/resume|reopen/.test(normalized)?RotateCcw
+    :/interrupt/.test(normalized)?Ban
+    :/stop|close|retire|cancel/.test(normalized)?CircleStop
+    :ArrowDownRight;
+  return <Icon aria-hidden="true"/>;
+}
 
 export function WorkspaceSection({
   title,
@@ -66,7 +91,7 @@ export function WorkspaceActionIndex({
   return <div className="aw-action-index" aria-label={label}>
     <p><SlidersHorizontal aria-hidden="true"/>Choose in composer</p>
     <ul>{actions.map(action=><li key={action.key} className="aw-action-row" data-danger={/close|retire|cancel|interrupt|stop/i.test(action.label)||undefined} data-disabled={Boolean(action.disabledReason)||undefined} title={action.disabledReason??undefined}>
-      <ArrowRight aria-hidden="true"/>
+      <ActionIcon kind={action.key}/>
       <span>{action.label}</span>
     </li>)}</ul>
   </div>;

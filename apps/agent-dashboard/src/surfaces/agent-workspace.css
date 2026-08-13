@@ -193,6 +193,7 @@
     min-width: 0;
     margin-inline: auto;
     background: var(--aw-canvas);
+    padding-bottom: 4.7rem;
   }
 
   .agent-workspace .aw-canvas-intro {
@@ -332,8 +333,8 @@
     display: flex;
     gap: 0.85rem;
     min-width: 0;
-    min-height: 4.5rem;
-    padding: 1.05rem 0.5rem 1.05rem 0;
+    min-height: 4.15rem;
+    padding: 0.88rem 0.5rem 0.88rem 0;
     border-bottom: 1px solid var(--aw-line-soft);
     border-radius: 0;
     background: transparent;
@@ -638,6 +639,10 @@
     transition: background-color 120ms ease;
   }
 
+  .agent-workspace .agent-work-stream {
+    padding-top: 0.72rem;
+  }
+
   .agent-workspace .agent-message-row {
     min-height: 4.9rem;
   }
@@ -674,8 +679,16 @@
     content: "";
   }
 
+  .agent-workspace .agent-work-row[data-current="true"] {
+    margin-top: 0.18rem;
+  }
+
   .agent-workspace .aw-work-kicker {
-    display: block;
+    display: inline-flex;
+    min-height: 1rem;
+    align-items: center;
+    padding: 0.18rem 0.38rem 0.16rem;
+    background: var(--aw-canvas);
     color: var(--aw-faint);
     font-size: 0.56rem;
     font-weight: 700;
@@ -1089,15 +1102,20 @@
     outline-color: var(--aw-coral);
   }
 
+  .agent-workspace .agent-profile-drawer > header button:not(:focus-visible) {
+    border-color: transparent;
+  }
+
   .agent-workspace .agent-profile-drawer > header button:hover {
     background: var(--aw-rail);
     color: var(--aw-ink);
   }
 
   .agent-workspace .agent-profile-drawer > header button:focus-visible {
-    outline-width: 1px;
-    outline-offset: 1px;
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--aw-coral) 9%, transparent);
+    border-color: transparent !important;
+    outline: 1px solid var(--aw-line) !important;
+    outline-offset: 1px !important;
+    box-shadow: none !important;
   }
 
   .agent-workspace .aw-sheet-backdrop {
