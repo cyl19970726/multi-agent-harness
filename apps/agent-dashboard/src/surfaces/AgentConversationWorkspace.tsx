@@ -1,7 +1,7 @@
 import * as ScrollArea from "@radix-ui/react-scroll-area";
 import * as Tabs from "@radix-ui/react-tabs";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft, BriefcaseBusiness, ChevronRight, Circle, Clock3,
   Inbox, MessageSquare,
@@ -223,9 +223,22 @@ function AuthoredTurn({data,message,selectedAgentId,onSelect}:{data:AgentWorkspa
 
 function ExpandableEvent({data,event,onSelect}:{data:AgentWorkspaceData;event:AgentWorkspaceActivityItem;onSelect:()=>void}){
   const [open,setOpen]=useState(false);
+  const [boundaryAligned,setBoundaryAligned]=useState(false);
+  const anchorRef=useRef<HTMLDivElement>(null);
   const authored=event.kind==="message";
+  useLayoutEffect(()=>{
+    if(!open)return;
+    const viewport=anchorRef.current?.closest<HTMLElement>('[data-radix-scroll-area-viewport]');
+    if(!viewport)return;
+    const bounds=viewport.getBoundingClientRect();
+    const bottomPartial=[...viewport.querySelectorAll<HTMLElement>('.agent-authored-turn')]
+      .map(record=>record.getBoundingClientRect())
+      .find(rect=>rect.top<bounds.bottom&&rect.bottom>bounds.bottom);
+    if(bottomPartial)viewport.scrollTop+=bottomPartial.bottom-bounds.bottom;
+    setBoundaryAligned(true);
+  },[open]);
   if(authored)return <article role="button" tabIndex={0} aria-label={`Open provider-authored reply from ${data.selected_agent.display_name}`} className="agent-authored-turn" data-provider-reply="true" onClick={onSelect} onKeyDown={keyEvent=>activateOnKeyDown(keyEvent,onSelect)} onKeyUp={keyEvent=>activateOnKeyUp(keyEvent,onSelect)}><Avatar name={data.selected_agent.display_name} identity={`${data.selected_agent.agent_member_ref.id} ${data.selected_agent.role}`} size="md" tone={data.selected_agent.runtime_status==="running"?"running":"idle"}/><div className="min-w-0 flex-1"><header className="mb-1 flex items-baseline gap-2"><p className="text-[12px] font-semibold">{data.selected_agent.display_name}</p><span className="aw-record-kind">Provider reply</span><time className="aw-record-time ml-auto">{formatTime(event.occurred_at)}</time></header><div className="aw-authored-body"><Markdown source={event.summary??"Provider recorded an authored response."}/></div></div></article>;
-  return <OperationalFactRow kind={event.kind} status={event.status} title={event.title} summary={event.summary} timestamp={formatTime(event.occurred_at)} expanded={open} onToggle={()=>setOpen(value=>!value)} onSelect={onSelect}>{open&&<p>Selected event details and provenance are shown in the context rail.</p>}</OperationalFactRow>;
+  return <div ref={anchorRef} data-boundary-aligned={open&&boundaryAligned||undefined}><OperationalFactRow kind={event.kind} status={event.status} title={event.title} summary={event.summary} timestamp={formatTime(event.occurred_at)} expanded={open} onToggle={()=>setOpen(value=>{setBoundaryAligned(false);return !value;})} onSelect={onSelect}>{open&&<p>Selected event details and provenance are shown in the context rail.</p>}</OperationalFactRow></div>;
 }
 
 function MessagesCanvas({data,onSelect}:{data:AgentWorkspaceData;onSelect:(next:ContextSelection)=>void}){

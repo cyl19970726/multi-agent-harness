@@ -193,6 +193,7 @@
     min-width: 0;
     margin-inline: auto;
     background: var(--aw-canvas);
+    overflow-anchor: none;
     padding-bottom: 4.7rem;
   }
 
@@ -290,12 +291,16 @@
   }
 
   .agent-workspace .aw-session-context-strip {
+    position: sticky;
+    z-index: 2;
+    top: 0;
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
     gap: 0.8rem;
     align-items: center;
     min-height: 2.35rem;
     border-bottom: 1px solid var(--aw-line);
+    background: color-mix(in srgb, var(--aw-canvas) 97%, transparent);
     color: var(--aw-muted);
     font-size: 0.66rem;
   }
@@ -595,6 +600,7 @@
 
   .agent-workspace .aw-stream-fact__detail {
     display: grid;
+    min-height: 5rem;
     grid-template-columns: 9.35rem minmax(0, 1fr);
     padding: 0.7rem 0.8rem 0.85rem 0;
     border-top: 1px solid color-mix(in srgb, var(--aw-line-soft) 72%, transparent);
@@ -1304,6 +1310,7 @@
     }
 
     .agent-workspace .aw-stream-fact__detail {
+      min-height: 3.75rem;
       grid-template-columns: 3.5rem minmax(0, 1fr);
     }
 

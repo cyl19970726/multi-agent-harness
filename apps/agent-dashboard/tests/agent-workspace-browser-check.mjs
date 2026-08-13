@@ -131,6 +131,16 @@ try{
     const providerReply=page.getByRole("button",{name:/Open provider-authored reply from Mira Chen/}).first();
     await providerReply.focus();await page.keyboard.press("Space");await page.getByText("Selected Event",{exact:true}).waitFor();
     const toolRow=page.getByRole("button",{name:/Validated owner-bound native Session/});await toolRow.focus();await page.keyboard.press("Enter");assert.equal(await toolRow.getAttribute("aria-expanded"),"true","event row keyboard expansion");
+    await page.locator('[data-boundary-aligned="true"]').waitFor();
+    const partialAuthoredRecords=await page.locator('[role="tabpanel"][data-state="active"] [data-radix-scroll-area-viewport]').evaluate(viewport=>{
+      const bounds=viewport.getBoundingClientRect();
+      return [...viewport.querySelectorAll('.agent-authored-turn')].filter(record=>{
+        const rect=record.getBoundingClientRect();
+        const visible=rect.bottom>bounds.top+0.5&&rect.top<bounds.bottom-0.5;
+        return visible&&(rect.top<bounds.top-0.5||rect.bottom>bounds.bottom+0.5);
+      }).map(record=>{const rect=record.getBoundingClientRect();return {label:record.getAttribute('aria-label')??record.textContent?.trim().slice(0,80),recordTop:rect.top,recordBottom:rect.bottom,viewportTop:bounds.top,viewportBottom:bounds.bottom};});
+    });
+    assert.deepEqual(partialAuthoredRecords,[],`expanded event viewport exposes a partial authored record: ${JSON.stringify(partialAuthoredRecords)}`);
     await page.screenshot({path:join(evidenceDir,`member-event-detail--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   }
   await page.getByRole("tab",{name:/Messages/}).click();await page.getByRole("button",{name:"inbox",exact:true}).waitFor();
