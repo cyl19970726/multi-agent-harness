@@ -847,9 +847,72 @@
     min-height: 4.9rem;
   }
 
-  .agent-workspace .agent-message-row[data-conversation-start="true"]:not(:first-child) {
-    margin-top: 0.48rem;
+  .agent-workspace .agent-message-stream {
+    padding-block: 0.2rem 1.4rem;
+  }
+
+  .agent-workspace .aw-message-thread {
+    min-width: 0;
+    padding-block: 0.9rem 0.2rem;
+  }
+
+  .agent-workspace .aw-message-thread + .aw-message-thread {
+    margin-top: 0.45rem;
     border-top: 1px solid var(--aw-line);
+  }
+
+  .agent-workspace .aw-message-thread__header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(12rem, 0.7fr);
+    gap: 1.5rem;
+    align-items: end;
+    min-width: 0;
+    padding: 0 0.35rem 0.55rem;
+  }
+
+  .agent-workspace .aw-message-thread__header > div {
+    min-width: 0;
+  }
+
+  .agent-workspace .aw-message-thread__header > div:last-child {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.1rem;
+    color: var(--aw-muted);
+    text-align: right;
+  }
+
+  .agent-workspace .aw-message-thread__header p {
+    color: var(--aw-coral-ink);
+    font-size: 0.55rem;
+    font-weight: 680;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+  }
+
+  .agent-workspace .aw-message-thread__header h3 {
+    margin-top: 0.18rem;
+    overflow-wrap: anywhere;
+    color: var(--aw-ink);
+    font-size: 0.8rem;
+    font-weight: 630;
+    letter-spacing: -0.012em;
+  }
+
+  .agent-workspace .aw-message-thread__header span {
+    overflow-wrap: anywhere;
+    font-size: 0.69rem;
+    font-weight: 560;
+  }
+
+  .agent-workspace .aw-message-thread__header small {
+    color: var(--aw-faint);
+    font-size: 0.61rem;
+  }
+
+  .agent-workspace .aw-message-thread__turns {
+    border-top: 1px solid var(--aw-line-soft);
   }
 
   .agent-workspace .agent-message-row[data-thread-continuation="true"] {
@@ -943,6 +1006,28 @@
     color: var(--aw-ink);
     font-size: 0.8rem;
     font-weight: 650;
+  }
+
+  .agent-workspace .aw-work-gate-copy {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.3rem;
+    align-items: baseline;
+  }
+
+  .agent-workspace .aw-work-gate-track {
+    display: block;
+    width: 100%;
+    height: 2px;
+    margin-top: 0.35rem;
+    overflow: hidden;
+    background: var(--aw-line-soft);
+  }
+
+  .agent-workspace .aw-work-gate-track i {
+    display: block;
+    height: 100%;
+    background: color-mix(in srgb, var(--aw-coral) 72%, var(--aw-line));
   }
 
   .agent-workspace .aw-work-gates time {
