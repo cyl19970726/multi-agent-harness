@@ -722,6 +722,37 @@ fn latest_service_marks_a_source_tail_as_truncated_without_persisting_a_cursor()
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn latest_service_marks_an_incomplete_provider_tail_as_truncated() {
+    let root = unique_temp_path("latest-incomplete-service");
+    fs::create_dir_all(&root).unwrap();
+    let transcript = root.join("provider.jsonl");
+    fs::write(
+        &transcript,
+        concat!(
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"complete prefix\"}}\n",
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\""
+        ),
+    )
+    .unwrap();
+    let boundary = TranscriptReadBoundary {
+        allowed_root: root.clone(),
+        transcript_path: transcript,
+    };
+    let mut service = ProviderProjectionService::open(context(ProviderKind::Codex));
+    assert_eq!(service.refresh_latest(&boundary, 10).unwrap(), 1);
+    let projection = service
+        .private_session(&authority(), &viewer("agent-1"), 300)
+        .unwrap();
+    assert!(
+        projection.truncated,
+        "an omitted half-written provider row must be explicit"
+    );
+    assert_eq!(projection.episodes[0].observations.len(), 1);
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn transcript_reader_rejects_symlink_and_root_escape() {

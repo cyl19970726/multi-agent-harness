@@ -89,7 +89,11 @@ impl ProviderProjectionService {
             }
         }
         self.transient_position = TransientReadPosition::default();
-        self.source_truncated = batch.source_truncated;
+        // A provider may be appending its final JSONL row while this request
+        // reads the frozen source length. The incomplete row is intentionally
+        // omitted, so the response must say that its source view is truncated
+        // rather than presenting the visible prefix as exhaustive history.
+        self.source_truncated = batch.source_truncated || batch.incomplete_tail;
         Ok(read_count)
     }
 
