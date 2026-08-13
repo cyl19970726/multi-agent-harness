@@ -12,6 +12,8 @@ use harness_core::NativeSessionRef;
 
 use crate::{CliError, CliResult};
 
+const MAX_DISCOVERY_LINE_BYTES: usize = 1024 * 1024;
+
 /// Find the canonical Codex rollout whose own `session_meta.payload.id`
 /// exactly names `session_id`.
 ///
@@ -102,9 +104,22 @@ fn find_codex_rollout_with_metadata(
 
 fn validate_codex_rollout_metadata(path: &Path, session_id: &str) -> CliResult<()> {
     let file = fs::File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut bytes = Vec::new();
     let mut session_meta_id = None;
-    for line in BufReader::new(file).lines() {
-        let line = line?;
+    loop {
+        let read = read_bounded_line(&mut reader, &mut bytes)?;
+        if read == 0 {
+            break;
+        }
+        if !bytes.ends_with(b"\n") {
+            // The provider may be appending the final row. It is not valid
+            // metadata yet and the projection reader will expose the omitted
+            // tail as truncated; complete malformed rows remain errors.
+            break;
+        }
+        let line = std::str::from_utf8(&bytes[..bytes.len() - 1])
+            .map_err(|_| CliError::Usage("Codex rollout metadata is not UTF-8".into()))?;
         let row = serde_json::from_str::<serde_json::Value>(&line)?;
         if row.get("type").and_then(|value| value.as_str()) != Some("session_meta") {
             continue;
@@ -137,6 +152,31 @@ fn validate_codex_rollout_metadata(path: &Path, session_id: &str) -> CliResult<(
         )));
     }
     Ok(())
+}
+
+fn read_bounded_line(reader: &mut impl BufRead, bytes: &mut Vec<u8>) -> CliResult<usize> {
+    bytes.clear();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(bytes.len());
+        }
+        let take = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |position| position + 1);
+        if bytes.len().saturating_add(take) > MAX_DISCOVERY_LINE_BYTES {
+            return Err(CliError::Usage(
+                "provider-native Session discovery line exceeds 1 MiB".into(),
+            ));
+        }
+        let terminal = available[take - 1] == b'\n';
+        bytes.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if terminal {
+            return Ok(bytes.len());
+        }
+    }
 }
 
 fn locate(session: &NativeSessionRef) -> CliResult<Option<PathBuf>> {
@@ -412,6 +452,27 @@ mod tests {
         )
         .expect("rollout");
         assert!(discover_codex_rollout(&home, session_id).is_err());
+        fs::remove_dir_all(home).expect("cleanup");
+    }
+
+    #[test]
+    fn incomplete_codex_tail_does_not_hide_exact_complete_metadata() {
+        let home = codex_home("incomplete-tail");
+        let session_id = "019f-incomplete-tail";
+        let rollout = home
+            .join("sessions/2026/08/09")
+            .join(format!("rollout-2026-08-09T00-00-00-{session_id}.jsonl"));
+        fs::write(
+            &rollout,
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\"}}}}\n{{\"type\":\"event_msg\""
+            ),
+        )
+        .expect("active rollout");
+        assert_eq!(
+            discover_codex_rollout(&home, session_id).expect("active discovery"),
+            Some(fs::canonicalize(rollout).expect("canonical active rollout"))
+        );
         fs::remove_dir_all(home).expect("cleanup");
     }
 
