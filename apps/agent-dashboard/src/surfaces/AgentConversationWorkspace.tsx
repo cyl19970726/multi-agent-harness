@@ -21,7 +21,7 @@ import {
   WorkspaceState,
 } from "@/components/workbench/agent/AgentWorkspacePrimitives";
 import { AgentMessageCommandComposer } from "@/components/workbench/agent/AgentMessageCommandComposer";
-import { OperationalFactRow } from "@/components/workbench/agent/AgentStreamPrimitives";
+import { eventPresentation, OperationalFactRow } from "@/components/workbench/agent/AgentStreamPrimitives";
 import type { SelectionState } from "../app/selection";
 import {
   fetchRoleView,
@@ -39,6 +39,27 @@ import { ViewProvenance, ViewState } from "./RoleViewPrimitives";
 import "./agent-workspace.css";
 
 type WorkspaceMode = "session" | "messages" | "work";
+/**
+ * Client-only provider activity. The shell may inject the latest exact-run
+ * preview from its in-memory SSE registry; this surface never fetches,
+ * persists, replays or manufactures one.
+ */
+export interface AgentWorkspaceLiveActivity {
+  team_run_id:string;
+  member_run_id:string;
+  provider:string;
+  kind:string;
+  title?:string;
+  summary:string;
+  status?:string;
+  revision:number;
+  emitted_at:string;
+  expires_at:string;
+  provider_event_ref?:string|null;
+  agent_session_id?:string|null;
+  runtime_generation?:number|null;
+  stream_seq?:number|null;
+}
 type ContextSelection =
   | {kind:"event"; event:AgentWorkspaceActivityItem}
   | {kind:"message"; message:MessageSummary}
@@ -46,9 +67,10 @@ type ContextSelection =
   | null;
 
 export function AgentConversationWorkspace({
-  apiUrl,space,project,routeIdentity,selection,refreshKey,onAction,actionsEnabled,onSelectionChange,
+  apiUrl,space,project,company,routeIdentity,selection,refreshKey,liveActivity,onAction,actionsEnabled,onSelectionChange,
 }:{
-  apiUrl:string; space:string; project:string; routeIdentity:string; selection:SelectionState;
+  apiUrl:string; space:string; project:string; company?:string; routeIdentity:string; selection:SelectionState;
+  liveActivity?:AgentWorkspaceLiveActivity|null;
   refreshKey?:string; onAction:RoleActionExecutor; actionsEnabled:boolean;
   onSelectionChange:(next:Partial<SelectionState>)=>void;
 }) {
@@ -75,12 +97,12 @@ export function AgentConversationWorkspace({
     let live=true;
     setLoading(true);
     setError(null);
-    fetchRoleView<AgentWorkspaceData>(apiUrl,requestPath,{space,project})
+    fetchRoleView<AgentWorkspaceData>(apiUrl,requestPath,{space,project,company})
       .then((next)=>{if(live){setView(next);setViewRequestPath(requestPath);setError(null);setContextSelection(null);}})
       .catch((reason)=>{if(live)setError(String(reason));})
       .finally(()=>{if(live)setLoading(false);});
     return()=>{live=false;};
-  },[apiUrl,space,project,requestPath,refreshKey,refresh]);
+  },[apiUrl,space,project,company,requestPath,refreshKey,refresh]);
   useEffect(()=>{
     const frame=window.requestAnimationFrame(()=>{
       const root=workspaceRef.current;
@@ -99,6 +121,14 @@ export function AgentConversationWorkspace({
   const selected=data.selected_agent;
   const publicProjection=data.projection_scope==="host_member_public";
   const selectedRunId=selected.current_member_run_ref;
+  const currentLiveActivity=!publicProjection
+    && liveActivity
+    && selectedRunId
+    && liveActivity.member_run_id===selectedRunId
+    && liveActivity.team_run_id===data.team.latest_run_id
+    && isUnexpiredActivity(liveActivity)
+      ? liveActivity
+      : null;
   const selectedRoster=data.roster.find(item=>item.agent_member_ref.id===selected.agent_member_ref.id);
   const currentWork=data.works.find(work=>work.work_id===(contextSelection?.kind==="work"?contextSelection.work.work_id:data.context_summary.current_work_id));
   const selectAgent=(agent:AgentWorkspaceRosterItem)=>{
@@ -146,7 +176,7 @@ export function AgentConversationWorkspace({
               </Tabs.List>
               <div className="ml-auto flex h-full items-center gap-3 text-[10px] text-muted-foreground">{mode==="session"&&data.sessions.length>1&&<SessionSelect data={data} onChange={sessionId=>onSelectionChange({agentSessionId:sessionId||undefined})}/>}<span className="flex items-center gap-1.5"><ShieldCheck className="size-3.5"/>{data.projection_scope==="host_member_public"?"Public coordination only":selected.is_host?"Host-owned Session":data.session_activity.availability==="available"?"Owner-bound Session":"Native Session unavailable"}</span></div>
             </div>
-            <Tabs.Content value="session" className="min-h-0 flex-1 outline-none"><SessionCanvas data={data} onSelect={setContextSelection}/></Tabs.Content>
+            <Tabs.Content value="session" className="min-h-0 flex-1 outline-none"><SessionCanvas data={data} liveActivity={currentLiveActivity} onSelect={setContextSelection}/></Tabs.Content>
             <Tabs.Content value="messages" className="min-h-0 flex-1 outline-none"><MessagesCanvas data={data} onSelect={setContextSelection}/></Tabs.Content>
             <Tabs.Content value="work" className="min-h-0 flex-1 outline-none"><WorkCanvas data={data} onSelect={(work)=>{setContextSelection({kind:"work",work});onSelectionChange({teamWorkId:work.work_id});}}/></Tabs.Content>
           </Tabs.Root>
@@ -185,7 +215,7 @@ function AgentRoster({data,selectedId,onBack,onSelect}:{data:AgentWorkspaceData;
   </div>;
 }
 
-function SessionCanvas({data,onSelect}:{data:AgentWorkspaceData;onSelect:(next:ContextSelection)=>void}){
+function SessionCanvas({data,liveActivity,onSelect}:{data:AgentWorkspaceData;liveActivity:AgentWorkspaceLiveActivity|null;onSelect:(next:ContextSelection)=>void}){
   const [selectedEventId,setSelectedEventId]=useState<string|null>(null);
   const rows=useMemo(()=>[
     ...data.messages.map(message=>({kind:"message" as const,at:message.created_at,message})),
@@ -193,22 +223,39 @@ function SessionCanvas({data,onSelect}:{data:AgentWorkspaceData;onSelect:(next:C
   ].sort((left,right)=>timestampKey(left.at)-timestampKey(right.at)),[data.messages,data.session_activity.items]);
   const publicProjection=data.projection_scope==="host_member_public";
   const currentWork=data.works.find(work=>work.work_id===data.context_summary.current_work_id);
+  const seenConversations=new Set<string>();
   return <ScrollArea.Root className="h-full overflow-hidden"><ScrollArea.Viewport className="size-full"><div className="agent-session-stream w-full px-5 pb-8 sm:px-7">
     <div className="aw-session-context-strip">
-      <span className="aw-session-context-strip__label">{publicProjection?<ShieldCheck aria-hidden="true"/>:<Sparkles aria-hidden="true"/>}{publicProjection?"Public coordination":"Current conversation"}</span>
-      <strong>{currentWork?.title??(publicProjection?"Authored Messages and Work facts":"Agent and Host exchange")}</strong>
+      <span className="aw-session-context-strip__label">{publicProjection?<ShieldCheck aria-hidden="true"/>:<Sparkles aria-hidden="true"/>}{publicProjection?"Public coordination":"Messages + owner-bound Session"}</span>
+      <strong>{currentWork?.title??(publicProjection?"Authored Messages and Work facts":"Harness Messages and native Session activity")}</strong>
       <span>{currentWork?`${humanizeToken(currentWork.phase)} Work · `:""}{data.messages.length} messages{publicProjection?"":` · ${data.session_activity.items.length} native facts`}</span>
     </div>
+    {liveActivity&&<CurrentExecutionSlot activity={liveActivity}/>}
     {rows.length
-      ? <div className="aw-session-chronology" aria-label="Chronological authored Messages and native Session facts">{rows.map(row=>row.kind==="message"
-        ? <AuthoredTurn key={`message:${row.message.message_id}`} data={data} message={row.message} selectedAgentId={data.selected_agent.agent_member_ref.id} onSelect={()=>onSelect({kind:"message",message:row.message})}/>
-        : row.event.kind==="message"
+      ? <div className="aw-session-chronology" aria-label="Harness Messages and owner-bound native Session facts ordered by recorded time">{rows.map(row=>{
+        if(row.kind==="message"){
+          const continuation=seenConversations.has(row.message.correlation_id);
+          seenConversations.add(row.message.correlation_id);
+          return <AuthoredTurn key={`message:${row.message.message_id}`} data={data} message={row.message} selectedAgentId={data.selected_agent.agent_member_ref.id} continuation={continuation} onSelect={()=>onSelect({kind:"message",message:row.message})}/>;
+        }
+        return row.event.kind==="message"
           ? <NativeAuthoredRecord key={`native:${row.event.event_id}`} event={row.event} selected={selectedEventId===row.event.event_id} onSelect={()=>{setSelectedEventId(row.event.event_id);onSelect({kind:"event",event:row.event});}}/>
-          : <div key={`native:${row.event.event_id}`} className="aw-execution-fact"><ExpandableEvent event={row.event} selected={selectedEventId===row.event.event_id} onSelect={()=>{setSelectedEventId(row.event.event_id);onSelect({kind:"event",event:row.event});}}/></div>)}</div>
+          : <div key={`native:${row.event.event_id}`} className="aw-execution-fact"><ExpandableEvent event={row.event} selected={selectedEventId===row.event.event_id} onSelect={()=>{setSelectedEventId(row.event.event_id);onSelect({kind:"event",event:row.event});}}/></div>;
+      })}</div>
       : <EmptyCanvas compact title={data.selected_agent.is_host?"No Host-owned Session events or public Messages yet":"No Session activity yet"} detail={data.session_activity.disabled_reason??"Display-safe provider events and public authored Messages will appear here when recorded."}/>
     }
     {data.session_activity.truncated&&<p className="mt-4 border-t border-border pt-3 text-[10px] text-muted-foreground">Showing the latest bounded provider-native events.</p>}
   </div></ScrollArea.Viewport><ScrollArea.Scrollbar orientation="vertical" className="flex w-2 p-0.5"><ScrollArea.Thumb className="rounded-full bg-border"/></ScrollArea.Scrollbar></ScrollArea.Root>;
+}
+
+function CurrentExecutionSlot({activity}:{activity:AgentWorkspaceLiveActivity}){
+  const presentation=eventPresentation(activity.kind,activity.status);
+  const Icon=presentation.icon;
+  return <section className="aw-current-execution" data-family={presentation.family} data-status={activity.status??"running"} aria-label="Current provider execution" aria-live="polite">
+    <span className="aw-current-execution__pulse" aria-hidden="true"><Icon/></span>
+    <span className="aw-current-execution__copy"><span className="aw-current-execution__eyebrow">Live · transient</span><strong>{activity.title??presentation.label}</strong><span>{activity.summary}</span></span>
+    <span className="aw-current-execution__source"><b>{humanizeToken(activity.provider)}</b><small>{humanizeToken(activity.status??"running")}</small></span>
+  </section>;
 }
 
 function NativeAuthoredRecord({event,selected,onSelect}:{event:AgentWorkspaceActivityItem;selected:boolean;onSelect:()=>void}){
@@ -222,14 +269,14 @@ function SessionSelect({data,onChange}:{data:AgentWorkspaceData;onChange:(sessio
   return <label className="flex shrink-0 items-center gap-2 text-[10px] text-muted-foreground"><Clock3 className="size-3.5"/><span className="sr-only">Selected Session</span><select aria-label="Selected Session" value={data.selected_session_id??""} onChange={event=>onChange(event.target.value)} className="h-8 max-w-52 rounded-md border border-border bg-background px-2 text-[10px] text-foreground">{data.sessions.length?data.sessions.map(session=><option key={session.session_id??session.member_run_id??session.team_run_id} value={session.session_id??session.member_run_id??""}>{session.runtime_status} · {shortId(session.session_id??session.member_run_id)}</option>):<option value="">No Session bound</option>}</select></label>;
 }
 
-function AuthoredTurn({data,message,selectedAgentId,onSelect}:{data:AgentWorkspaceData;message:MessageSummary;selectedAgentId:string;onSelect:()=>void}){
+function AuthoredTurn({data,message,selectedAgentId,continuation,onSelect}:{data:AgentWorkspaceData;message:MessageSummary;selectedAgentId:string;continuation:boolean;onSelect:()=>void}){
   const fromSelected=message.sender.id===selectedAgentId;
   const actor=data.roster.find(item=>item.agent_member_ref.id===message.sender.id);
   const name=actor?.display_name??(fromSelected?data.selected_agent.display_name:message.sender.id);
-  return <article role="button" tabIndex={0} aria-label={`Open authored Message from ${name}`} data-from-selected={fromSelected||undefined} className="agent-authored-turn" onClick={onSelect} onKeyDown={event=>activateOnKeyDown(event,onSelect)} onKeyUp={event=>activateOnKeyUp(event,onSelect)}>
+  return <article role="button" tabIndex={0} aria-label={`Open authored Message from ${name}`} data-from-selected={fromSelected||undefined} data-thread-continuation={continuation||undefined} className="agent-authored-turn" onClick={onSelect} onKeyDown={event=>activateOnKeyDown(event,onSelect)} onKeyUp={event=>activateOnKeyUp(event,onSelect)}>
     <Avatar name={name} identity={`${message.sender.id} ${actor?.role??""}`} size="md" tone={actor?.runtime_state==="running"?"running":"idle"}/><div className="min-w-0 flex-1"><header className="mb-1 flex items-baseline gap-2"><p className="truncate text-[12px] font-semibold">{name}</p><span className="aw-record-kind">Message</span><time className="ml-auto text-[10px] text-muted-foreground">{formatTime(message.created_at)}</time></header>
     <div className="aw-authored-body"><Markdown source={message.body}/></div>
-    <div className="aw-record-meta">{message.work_id&&<span>Work · {shortId(message.work_id)}</span>}{message.correlation_id&&<span>Correlation · {shortId(message.correlation_id)}</span>}{message.deliveries.length>0&&<span>Delivery · {message.deliveries.map(delivery=>humanizeToken(delivery.status)).join(" · ")}</span>}</div></div>
+    <div className="aw-record-meta">{message.work_id&&<span>Work · {shortId(message.work_id)}</span>}<span title={`Correlation ${message.correlation_id}`}>{message.causation_id?"Reply in conversation":"Authored conversation"}</span>{message.deliveries.length>0&&<span>Delivery · {message.deliveries.map(delivery=>humanizeToken(delivery.status)).join(" · ")}</span>}</div></div>
   </article>;
 }
 
@@ -249,8 +296,22 @@ function MessagesCanvas({data,onSelect}:{data:AgentWorkspaceData;onSelect:(next:
   return <ScrollArea.Root className="h-full overflow-hidden"><ScrollArea.Viewport className="size-full"><div className="agent-messages-canvas mx-auto max-w-[58rem] px-5 pb-10 sm:px-7" data-empty={!visible.length||undefined}>
     <WorkspaceCanvasIntro compact eyebrow="Harness messages" title={`${data.selected_agent.display_name} · Inbox and Outbox`} detail="Authored coordination stays linked to its sender, recipient, delivery and Work." facts={[`${data.messages.length} total`,`${data.context_summary.unread_count} unread`]}/>
     <div className="agent-message-toolbar aw-filter-strip flex flex-wrap items-center gap-2 border-y border-border"><div className="flex">{(["all","inbox","outbox","unread"] as const).map(item=><button key={item} type="button" data-active={lens===item} onClick={()=>setLens(item)} className="px-3 text-[10px] font-semibold capitalize text-muted-foreground">{item}</button>)}</div><label className="relative ml-auto min-w-[14rem] flex-1 sm:max-w-[20rem]"><Search className="pointer-events-none absolute left-3 top-2.5 size-3.5 text-muted-foreground"/><span className="sr-only">Search messages</span><input value={query} onChange={event=>setQuery(event.target.value)} placeholder="Search messages" className="h-9 w-full border-0 bg-transparent pl-9 pr-3 text-xs outline-none"/></label></div>
-    {visible.length?<div className="agent-message-stream">{visible.map(message=>{const actor=data.roster.find(item=>item.agent_member_ref.id===message.sender.id);const actorName=actor?.display_name??message.sender.id;const recipients=message.recipients.map(recipient=>data.roster.find(item=>item.agent_member_ref.id===recipient.id)?.display_name??recipient.id).join(", ");return <button key={message.message_id} type="button" className="agent-message-row flex w-full gap-3 text-left" onClick={()=>onSelect({kind:"message",message})}><Avatar name={actorName} identity={`${message.sender.id} ${actor?.role??""}`} size="md" tone={actor?.runtime_state==="running"?"running":"idle"}/><span className="min-w-0 flex-1"><span className="flex items-baseline gap-2"><b className="truncate text-[12.5px]">{actorName}</b><span className="aw-record-kind">{message.sender.id===selectedId?"Outbox":"Inbox"} → {recipients}</span><time className="ml-auto text-[10.5px] text-muted-foreground">{formatTime(message.created_at)}</time></span><span className="mt-1.5 block max-w-[42rem] whitespace-pre-wrap text-[13.5px] leading-[1.58] text-foreground/90">{message.body}</span><span className="aw-record-meta">{message.work_id&&<span>Work · {shortId(message.work_id)}</span>}<span>{message.deliveries.map(delivery=>humanizeToken(delivery.status)).join(", ")||"Recorded"}</span></span></span></button>})}</div>:<EmptyCanvas title={query||lens!=="all"?"No messages match this view":"No authored messages yet"} detail={query||lens!=="all"?"Clear the current filter to return to the full authored record.":"Use the command surface below to start a durable, Work-linked conversation."}/>}
+    {visible.length
+      ? <MessageThreads data={data} messages={visible} selectedId={selectedId} onSelect={onSelect}/>
+      : <EmptyCanvas title={query||lens!=="all"?"No messages match this view":"No authored messages yet"} detail={query||lens!=="all"?"Clear the current filter to return to the full authored record.":"Use the command surface below to start a durable, Work-linked conversation."}/>
+    }
   </div></ScrollArea.Viewport></ScrollArea.Root>;
+}
+
+function MessageThreads({data,messages,selectedId,onSelect}:{data:AgentWorkspaceData;messages:MessageSummary[];selectedId:string;onSelect:(next:ContextSelection)=>void}){
+  const seen=new Set<string>();
+  return <div className="agent-message-stream">{messages.map(message=>{
+    const actor=data.roster.find(item=>item.agent_member_ref.id===message.sender.id);
+    const actorName=actor?.display_name??message.sender.id;
+    const recipients=message.recipients.map(recipient=>data.roster.find(item=>item.agent_member_ref.id===recipient.id)?.display_name??recipient.id).join(", ");
+    const continuation=seen.has(message.correlation_id);seen.add(message.correlation_id);
+    return <button key={message.message_id} type="button" data-thread-continuation={continuation||undefined} className="agent-message-row flex w-full gap-3 text-left" onClick={()=>onSelect({kind:"message",message})}><Avatar name={actorName} identity={`${message.sender.id} ${actor?.role??""}`} size="md" tone={actor?.runtime_state==="running"?"running":"idle"}/><span className="min-w-0 flex-1"><span className="flex items-baseline gap-2"><b className="truncate text-[12.5px]">{actorName}</b><span className="aw-record-kind">{message.sender.id===selectedId?"Outbox":"Inbox"} → {recipients}</span><time className="ml-auto text-[10.5px] text-muted-foreground">{formatTime(message.created_at)}</time></span><span className="mt-1.5 block max-w-[42rem] whitespace-pre-wrap text-[13.5px] leading-[1.58] text-foreground/90">{message.body}</span><span className="aw-record-meta">{message.work_id&&<span>Work · {shortId(message.work_id)}</span>}<span title={`Correlation ${message.correlation_id}`}>{message.causation_id?"Reply":"Conversation"}</span><span>{message.deliveries.map(delivery=>humanizeToken(delivery.status)).join(", ")||"Recorded"}</span></span></span></button>;
+  })}</div>;
 }
 
 function WorkCanvas({data,onSelect}:{data:AgentWorkspaceData;onSelect:(work:WorkSummary)=>void}){
@@ -258,18 +319,20 @@ function WorkCanvas({data,onSelect}:{data:AgentWorkspaceData;onSelect:(work:Work
   const memberId=data.selected_agent.agent_member_ref.id;
   const owns=(work:WorkSummary)=>work.owner_actor_ref?.id===memberId;
   const visible=data.works.filter(work=>lens==="current"?owns(work)&&work.phase!=="closed":lens==="eligible"?!owns(work)&&work.eligible_member_ids.includes(memberId):work.phase===lens);
+  const ordered=[...visible].sort((left,right)=>workVisualRank(left,data.context_summary.current_work_id)-workVisualRank(right,data.context_summary.current_work_id)||timestampKey(right.updated_at)-timestampKey(left.updated_at));
   const ownedCount=data.works.filter(owns).length;
   const reviewCount=data.works.filter(work=>work.phase==="review").length;
   return <ScrollArea.Root className="h-full overflow-hidden"><ScrollArea.Viewport className="size-full"><div className="agent-work-canvas mx-auto max-w-[60rem] px-5 pb-10 sm:px-7">
     <WorkspaceCanvasIntro compact eyebrow="Responsibility" title={`${data.selected_agent.display_name} · Work`} detail="Ownership, execution phase, condition and gate progress stay distinct." facts={[`${ownedCount} owned`,`${reviewCount} in review`,`${data.works.length-ownedCount} eligible or shared`]}/>
     <div className="aw-filter-strip flex flex-wrap items-center gap-5 border-y border-border">{(["current","open","active","review","closed","eligible"] as const).map(item=><button key={item} type="button" data-active={lens===item} onClick={()=>setLens(item)} className="agent-work-lens relative text-[10px] font-semibold capitalize text-muted-foreground data-[active=true]:text-foreground">{item}</button>)}<span className="ml-auto text-[10px] text-muted-foreground">{visible.length} {visible.length===1?"record":"records"}</span></div>
-    {visible.length?<div className="agent-work-stream">{visible.map((work)=>{const current=work.work_id===data.context_summary.current_work_id;return <button key={work.work_id} type="button" data-current={current||undefined} className="agent-work-row grid w-full grid-cols-[minmax(0,1fr)_6.5rem_7.5rem] gap-5 text-left" onClick={()=>onSelect(work)}><span className="min-w-0">{current&&<span className="aw-work-kicker">Current focus</span>}<span className={current?"mt-1 flex items-center gap-2":"flex items-center gap-2"}><span className="break-words text-[13.5px] font-semibold leading-[1.35]">{work.title||work.work_id}</span>{work.condition!=="normal"&&<WorkspaceState label={humanizeToken(String(work.condition))} tone="bad"/>}</span>{work.completion_criteria_markdown&&<span className="mt-1 block max-w-[42rem] line-clamp-1 text-[12.5px] leading-[1.5] text-foreground/75">{work.completion_criteria_markdown}</span>}<span className="aw-record-meta"><span>{work.owner_actor_ref?.id===memberId?"Owned responsibility":"Eligible responsibility"}</span><span>{shortId(work.work_id)} · revision {work.work_revision}</span><span>{humanizeToken(String(work.priority))} priority</span></span></span><span className="aw-work-state"><WorkspaceState label={humanizeToken(work.phase)} tone={work.phase==="active"?"running":work.phase==="review"?"warn":work.phase==="closed"?"good":"muted"}/>{work.delivery_summary.recovery_class&&work.delivery_summary.recovery_class!=="none"&&<span>{humanizeToken(String(work.delivery_summary.recovery_class))}</span>}</span><span className="aw-work-gates text-right"><strong>{work.gate_summary.passed}/{work.gate_summary.required}</strong><span>gates passed</span><time>{formatTime(work.updated_at)}</time></span></button>})}</div>:<EmptyCanvas title="No Work in this view" detail="Eligibility is not ownership. Work remains authoritative in the Team Work kernel."/>}
+    {ordered.length?<div className="agent-work-stream">{ordered.map((work,index)=>{const current=work.work_id===data.context_summary.current_work_id;const group=workGroupLabel(work,current,lens);const prior=index>0?workGroupLabel(ordered[index-1],ordered[index-1].work_id===data.context_summary.current_work_id,lens):null;return <div key={work.work_id}>{group!==prior&&<p className="aw-work-group-label">{group}</p>}<button type="button" data-current={current||undefined} data-phase={work.phase} data-condition={work.condition} className="agent-work-row grid w-full grid-cols-[minmax(0,1fr)_6.5rem_7.5rem] gap-5 text-left" onClick={()=>onSelect(work)}><span className="min-w-0">{current&&<span className="aw-work-kicker">Current Work</span>}<span className={current?"mt-1 flex items-center gap-2":"flex items-center gap-2"}><span className="break-words text-[13.5px] font-semibold leading-[1.35]">{work.title||work.work_id}</span>{work.condition!=="normal"&&<WorkspaceState label={humanizeToken(String(work.condition))} tone="bad"/>}</span>{work.completion_criteria_markdown&&<span className="mt-1 block max-w-[42rem] line-clamp-1 text-[12.5px] leading-[1.5] text-foreground/75">{work.completion_criteria_markdown}</span>}<span className="aw-record-meta"><span>{work.owner_actor_ref?.id===memberId?"Owned responsibility":"Eligible responsibility"}</span><span>{shortId(work.work_id)} · revision {work.work_revision}</span><span>{humanizeToken(String(work.priority))} priority</span></span></span><span className="aw-work-state"><WorkspaceState label={humanizeToken(work.phase)} tone={work.phase==="active"?"running":work.phase==="review"?"warn":work.phase==="closed"?"good":"muted"}/>{meaningfulRecovery(work)&&<span>{humanizeToken(String(work.delivery_summary.recovery_class))}</span>}</span><span className="aw-work-gates text-right"><strong>{work.gate_summary.passed}/{work.gate_summary.required}</strong><span>gates passed</span><time>{formatTime(work.updated_at)}</time></span></button></div>})}</div>:<EmptyCanvas title="No Work in this view" detail="Eligibility is not ownership. Work remains authoritative in the Team Work kernel."/>}
   </div></ScrollArea.Viewport></ScrollArea.Root>;
 }
 
 function AgentContextRail({view,data,selected,currentWork,actions}:{view:RoleView<AgentWorkspaceData>;data:AgentWorkspaceData;selected:ContextSelection;currentWork?:WorkSummary;actions:AllowedAction[]}){
   const selfPrivate=data.projection_scope!=="host_member_public";
   const isHost=data.selected_agent.is_host;
+  const publicProjection=data.projection_scope==="host_member_public";
   const ownedWorks=data.works.filter(work=>work.owner_actor_ref?.id===data.selected_agent.agent_member_ref.id);
   const eligibleWorks=data.works.filter(work=>work.owner_actor_ref?.id!==data.selected_agent.agent_member_ref.id&&work.eligible_member_ids.includes(data.selected_agent.agent_member_ref.id));
   const activeWorks=data.works.filter(work=>work.phase==="active"||work.phase==="review");
@@ -277,26 +340,30 @@ function AgentContextRail({view,data,selected,currentWork,actions}:{view:RoleVie
   const evidenceWorks=data.works.filter(work=>work.latest_report_ref||work.latest_finding_refs.length||work.latest_failure_ref||work.artifact_refs.length||work.check_refs.length);
   const incoming=data.messages.filter(message=>message.sender.id!==data.selected_agent.agent_member_ref.id);
   const unreadIncoming=incoming.filter(message=>message.deliveries.some(delivery=>["queued","delivered"].includes(delivery.status)));
+  const latestExchange=[...data.messages].sort((left,right)=>timestampKey(right.created_at)-timestampKey(left.created_at))[0];
   const actionIndex=[...actions.reduce((index,action)=>{
     const existing=index.get(action.kind);
     if(!existing||existing.disabled_reason&& !action.disabled_reason)index.set(action.kind,action);
     return index;
   },new Map<string,AllowedAction>()).values()];
   const anchoredWork=selected?.kind==="work"?selected.work:currentWork;
+  const anchoredNeedsJudgment=Boolean(anchoredWork&&(anchoredWork.phase==="review"||anchoredWork.condition==="blocked"));
   return <ScrollArea.Root className="h-full min-w-0 overflow-hidden"><ScrollArea.Viewport className="size-full min-w-0 [&>div]:!block [&>div]:!min-w-0"><div className="aw-context-story min-w-0 overflow-hidden px-5 pb-8 pt-5">
-    <WorkContext title={isHost?(anchoredWork?.owner_actor_ref?.id===data.selected_agent.agent_member_ref.id?"Host Current Work":"Current Team Work"):"Current Work"} work={anchoredWork}/>
+    <p className="aw-context-story__eyebrow">{isHost?"Host operations":publicProjection?"Public Agent context":"Agent operations"}</p>
+    <WorkContext work={anchoredWork} title={isHost&&anchoredNeedsJudgment?"Current decision":"Now"}/>
     {(selected?.kind==="message"||selected?.kind==="event")&&<div className="aw-context-selection-inset" aria-label="Selected context">{selected.kind==="message"?<MessageContext data={data} message={selected.message}/>:<EventContext event={selected.event}/>}</div>}
-    {!isHost&&<div className="aw-responsibility-summary" aria-label="My Work summary"><span>My Work</span><p>{ownedWorks.filter(work=>work.phase==="open").length} open · {ownedWorks.filter(work=>work.phase==="active").length} active · {ownedWorks.filter(work=>work.phase==="review").length} review{eligibleWorks.length>0?` · ${eligibleWorks.length} eligible`:""}</p></div>}
-    {isHost&&unreadIncoming.length>0&&<ContextSection title="Needs Host" hint={`${unreadIncoming.length} unread`}>{unreadIncoming.slice(0,2).map(message=><ContextMessageRow key={message.message_id} data={data} message={message}/>)}</ContextSection>}
-    {isHost&&attentionWorks.length>0&&<ContextSection title="Review and blocked Work" hint={`${attentionWorks.length} records`}>{attentionWorks.slice(0,2).map(work=><ContextWorkRow key={work.work_id} work={work}/>)}</ContextSection>}
-    {evidenceWorks.length>0&&<ContextSection title="Latest evidence">{evidenceWorks.slice(0,2).map(work=><ContextWorkRow key={work.work_id} work={work} evidence/>)}</ContextSection>}
-    {selfPrivate?<ContextSection title={isHost?"Host runtime":"Runtime"}><ContextFact label="State" value={data.selected_agent.runtime_status??"unknown"}/><ContextFact label="Provider" value={data.selected_agent.provider??"not bound"}/><ContextFact label="Session" value={shortId(data.selected_session_id)}/><ContextFact label="Last activity" value={formatTime(data.context_summary.last_activity_at)}/></ContextSection>:<ContextSection title="Privacy boundary"><div className="aw-privacy-notice"><ShieldCheck aria-hidden="true"/><p>Provider-private Session, runtime and workspace facts are owner-bound and are not part of this Host view.</p></div></ContextSection>}
+    {isHost&&attentionWorks.length>0&&<ContextSection title="Needs Host" hint={`${attentionWorks.length} ${attentionWorks.length===1?"responsibility":"responsibilities"}`}>{attentionWorks.filter(work=>work.work_id!==anchoredWork?.work_id).slice(0,2).map(work=><ContextWorkRow key={work.work_id} work={work}/>)}</ContextSection>}
+    {isHost&&unreadIncoming.length>0&&<ContextSection title="Incoming" hint={`${unreadIncoming.length} unsettled`}><ContextMessageRow data={data} message={unreadIncoming[0]}/></ContextSection>}
+    {!isHost&&latestExchange&&<ContextSection title="Why" hint="Latest authored exchange"><ContextMessageRow data={data} message={latestExchange}/></ContextSection>}
+    {!isHost&&<div className="aw-responsibility-summary" aria-label="Responsibility summary"><span>Responsibility</span><p>{ownedWorks.filter(work=>work.phase==="open").length} open · {ownedWorks.filter(work=>work.phase==="active").length} active · {ownedWorks.filter(work=>work.phase==="review").length} review{eligibleWorks.length>0?` · ${eligibleWorks.length} eligible`:""}</p></div>}
+    {evidenceWorks.some(work=>work.work_id===anchoredWork?.work_id)&&<ContextSection title="Evidence"><ContextWorkRow work={evidenceWorks.find(work=>work.work_id===anchoredWork?.work_id)!} evidence/></ContextSection>}
+    {selfPrivate?<ContextSection title="Runtime"><ContextFact label="State" value={humanizeToken(data.selected_agent.runtime_status??"unknown")}/><ContextFact label="Provider" value={data.selected_agent.provider?humanizeToken(data.selected_agent.provider):"Not bound"}/><ContextFact label="Session" value={shortId(data.selected_session_id)}/><ContextFact label="Last activity" value={formatTime(data.context_summary.last_activity_at)}/></ContextSection>:<ContextSection title="Privacy"><div className="aw-privacy-notice"><ShieldCheck aria-hidden="true"/><p>This view includes public Messages and Work only. The selected Agent's private Session, tools and runtime are structurally absent.</p></div></ContextSection>}
     {actionIndex.some(action=>!action.disabled_reason)&&<ContextSection title="Next"><WorkspaceActionIndex label={isHost?"Available Host Controls":"Available Controls"} actions={actionIndex.filter(action=>!action.disabled_reason).slice(0,6).map(action=>({key:action.kind,label:actionLabel(action.kind)}))}/></ContextSection>}
     <details className="mt-5 border-t border-border pt-4"><summary className="cursor-pointer text-[10px] font-semibold text-muted-foreground">Projection · {view.freshness} · seq {view.as_of_event_sequence}</summary><div className="mt-3"><ViewProvenance view={view}/></div></details>
   </div></ScrollArea.Viewport><ScrollArea.Scrollbar orientation="vertical" className="flex w-2 p-0.5"><ScrollArea.Thumb className="rounded-full bg-border"/></ScrollArea.Scrollbar></ScrollArea.Root>;
 }
 
-function WorkContext({title="Current Work",work}:{title?:string;work?:WorkSummary}){return <ContextSection title={title} primary>{work?<><h3 className="aw-context-work-title text-[14px] font-semibold leading-5">{work.title||work.work_id}</h3><div className="mt-2 flex items-center gap-2"><WorkspaceState label={humanizeToken(work.phase)} tone={work.phase==="active"?"running":work.phase==="review"?"warn":work.phase==="closed"?"good":"muted"}/><span className="text-[10px] text-muted-foreground">{shortId(work.work_id)} · v{work.work_revision}</span></div><div className="mt-4"><ContextFact label="Condition" value={humanizeToken(String(work.condition))}/><ContextFact label="Priority" value={humanizeToken(String(work.priority))}/>{work.delivery_summary.recovery_class&&work.delivery_summary.recovery_class!=="none"&&<ContextFact label="Delivery recovery" value={humanizeToken(String(work.delivery_summary.recovery_class))}/>}<ContextFact label="Gates" value={`${work.gate_summary.passed}/${work.gate_summary.required}`}/></div></>:<p className="text-[11px] leading-5 text-muted-foreground">No Work is currently owned or eligible for this Agent.</p>}</ContextSection>}
+function WorkContext({work,title}:{work?:WorkSummary;title:string}){return <ContextSection title={title} primary>{work?<><h3 className="aw-context-work-title text-[14px] font-semibold leading-5">{work.title||work.work_id}</h3><p className="aw-context-work-narrative">{workNarrative(work)}</p><div className="mt-2 flex items-center gap-2"><WorkspaceState label={humanizeToken(work.phase)} tone={work.phase==="active"?"running":work.phase==="review"?"warn":work.phase==="closed"?"good":"muted"}/><span className="text-[10px] text-muted-foreground">{shortId(work.work_id)} · v{work.work_revision}</span></div><div className="mt-3"><ContextFact label="Condition" value={humanizeToken(String(work.condition))}/><ContextFact label="Priority" value={humanizeToken(String(work.priority))}/>{meaningfulRecovery(work)&&<ContextFact label="Delivery recovery" value={humanizeToken(String(work.delivery_summary.recovery_class))}/>}<ContextFact label="Gates" value={`${work.gate_summary.passed}/${work.gate_summary.required}`}/></div></>:<p className="text-[11px] leading-5 text-muted-foreground">No current Work is projected for this Agent.</p>}</ContextSection>}
 function MessageContext({data,message}:{data:AgentWorkspaceData;message:MessageSummary}){const actor=data.roster.find(item=>item.agent_member_ref.id===message.sender.id);return <ContextSection title="Message in focus" hint={formatTime(message.created_at)}><p className="aw-context-focus-title">{actor?.display_name??message.sender.id}</p><p className="aw-context-focus-copy">{message.body}</p><div className="mt-3"><ContextFact label="Delivery" value={message.deliveries.map(item=>humanizeToken(item.status)).join(", ")||"Recorded"}/>{message.work_id&&<ContextFact label="Linked Work" value={shortId(message.work_id)}/>}</div></ContextSection>}
 function EventContext({event}:{event:AgentWorkspaceActivityItem}){return <ContextSection title="Native fact in focus" hint={formatTime(event.occurred_at)}><p className="aw-context-focus-title">{event.title}</p><p className="aw-context-focus-copy">{event.summary??"Display-safe provider-native fact."}</p><div className="mt-3"><ContextFact label="Source" value="Provider native"/><ContextFact label="Status" value={humanizeToken(event.status)}/></div></ContextSection>}
 
@@ -320,6 +387,8 @@ function ProfileDialog({data,onClose,closeRef,openerRef}:{data:AgentWorkspaceDat
   const selected=data.selected_agent,c=data.configuration;
   const hasProviderConfiguration=Boolean(selected.provider||selected.execution_mode||c.provider_profile_ref||c.permission_ceiling||c.workspace_policy);
   const hasRestrictions=Boolean(c.prompt_ref||c.forbidden_actions.length);
+  const currentSession=data.sessions.find(session=>session.session_id===data.selected_session_id)??data.sessions[0];
+  const priorSessions=data.sessions.filter(session=>session!==currentSession);
   const dialogRef=useRef<HTMLElement>(null);
   const onCloseRef=useRef(onClose);
   onCloseRef.current=onClose;
@@ -344,12 +413,11 @@ function ProfileDialog({data,onClose,closeRef,openerRef}:{data:AgentWorkspaceDat
   },[closeRef,openerRef]);
   return <div className="fixed inset-0 z-50 bg-[#3b2f27]/12" role="presentation" onMouseDown={event=>{if(event.target===event.currentTarget)onClose();}}><section ref={dialogRef} role="dialog" aria-modal="true" aria-label={`${selected.display_name} configuration`} tabIndex={-1} className="agent-profile-drawer absolute inset-y-0 right-0 w-[min(92vw,29rem)] overflow-y-auto border-l border-border bg-background shadow-[0_0_28px_rgb(55_43_35_/_0.04)]">
     <header className="sticky top-0 z-10 flex min-h-14 items-center gap-3 border-b border-border bg-background/95 px-5 py-2"><Avatar name={selected.display_name} identity={`${selected.agent_member_ref.id} ${selected.role}`} size="lg" tone="running"/><div className="min-w-0 flex-1"><h2 className="truncate text-xl font-semibold tracking-[-0.02em]">{selected.display_name}</h2><p className="mt-0.5 text-[10px] text-muted-foreground">{humanizeToken(selected.role)} · durable AgentMember</p></div><Button ref={closeRef} size="icon" variant="ghost" onClick={onClose} aria-label="Close Agent configuration"><X className="size-4"/></Button></header>
-    <div className="space-y-7 px-6 py-6"><ProfileSection title="Identity"><ContextFact label="Role" value={humanizeToken(selected.role)} canonical={selected.role}/><ContextFact label="Organization" value={humanizeToken(selected.organization_status)} canonical={selected.organization_status}/>{c.description&&<p className="aw-profile-description">{c.description}</p>}<p className="aw-profile-canonical" title={selected.agent_member_ref.id}>AgentMember · {shortId(selected.agent_member_ref.id)}</p></ProfileSection>
-      <ProfileSection title="Provider and permissions">{hasProviderConfiguration?<><ContextFact label="Provider" value={selected.provider?humanizeToken(selected.provider):"No provider bound"} canonical={selected.provider??undefined}/><ContextFact label="Execution mode" value={selected.execution_mode?humanizeToken(selected.execution_mode):"No execution mode"} canonical={selected.execution_mode??undefined}/>{c.provider_profile_ref&&<ContextFact label="Provider profile" value={humanizeToken(c.provider_profile_ref)} canonical={c.provider_profile_ref}/>} {c.permission_ceiling&&<ContextFact label="Permission ceiling" value={humanizeToken(c.permission_ceiling)} canonical={c.permission_ceiling}/>} {c.workspace_policy&&<ContextFact label="Workspace policy" value={humanizeToken(c.workspace_policy)} canonical={c.workspace_policy}/>}</>:<p className="aw-profile-empty">No provider or execution policy is bound to this Agent.</p>}</ProfileSection>
-      <ProfileSection title="Skills, tools and capabilities"><ProfileList label="Skills" values={c.skill_refs} empty="No skills projected."/><ProfileList label="Configured tools" values={c.tool_refs} humanize empty="No tool allowlist projected."/><ProfileList label="Capabilities" values={c.capabilities} humanize empty="No capabilities projected."/></ProfileSection>
-      {hasRestrictions&&<ProfileSection title="Prompt and restrictions">{c.prompt_ref&&<ContextFact label="Prompt reference" value={c.prompt_ref}/>} {c.forbidden_actions.length>0&&<ProfileList label="Forbidden actions" values={c.forbidden_actions} humanize empty=""/>}</ProfileSection>}
-      <ProfileSection title="Session history">{data.sessions.length?data.sessions.map((session,index)=><div key={session.session_id??session.member_run_id??session.team_run_id} className="aw-session-history-row"><div className="flex items-center justify-between gap-3"><b>{index===0?"Current session":`Previous session ${index}`}</b><Badge tone={session.runtime_status==="running"?"good":"muted"}>{humanizeToken(session.runtime_status)}</Badge></div><p>{session.provider?humanizeToken(session.provider):"Provider not bound"} · {formatTime(session.last_active_at)}</p><small title={session.session_id??session.member_run_id??undefined}>{shortId(session.session_id??session.member_run_id)}</small></div>):<p className="aw-profile-empty">No native Session history is projected.</p>}</ProfileSection>
-      {c.workspace_binding&&<ProfileSection title="Workspace"><ContextFact label="Binding" value={c.workspace_binding.status?humanizeToken(c.workspace_binding.status):"Bound"} canonical={c.workspace_binding.id}/>{c.workspace_binding.locator&&<ContextFact label="Path" value={c.workspace_binding.locator}/>}</ProfileSection>}
+    <div className="space-y-7 px-6 py-6"><ProfileSection title="Who"><ContextFact label="Role" value={humanizeToken(selected.role)} canonical={selected.role}/><ContextFact label="Organization" value={humanizeToken(selected.organization_status)} canonical={selected.organization_status}/>{c.description&&<p className="aw-profile-description">{c.description}</p>}<p className="aw-profile-canonical" title={selected.agent_member_ref.id}>Durable AgentMember · {shortId(selected.agent_member_ref.id)}</p></ProfileSection>
+      <ProfileSection title="Authority">{hasProviderConfiguration?<><ContextFact label="Permission ceiling" value={c.permission_ceiling?humanizeToken(c.permission_ceiling):"Not projected"} canonical={c.permission_ceiling??undefined}/><ContextFact label="Workspace policy" value={c.workspace_policy?humanizeToken(c.workspace_policy):"Not projected"} canonical={c.workspace_policy??undefined}/>{c.prompt_ref&&<ContextFact label="Prompt reference" value={c.prompt_ref}/>} {c.forbidden_actions.length>0&&<ProfileList label="Forbidden actions" values={c.forbidden_actions} humanize empty=""/>}</>:<p className="aw-profile-empty">No execution authority is projected for this Agent.</p>}</ProfileSection>
+      {(c.skill_refs.length>0||c.tool_refs.length>0||c.capabilities.length>0)&&<ProfileSection title="Capabilities">{c.skill_refs.length>0&&<ProfileList label="Skills" values={c.skill_refs} empty=""/>}{c.capabilities.length>0&&<ProfileList label="Capabilities" values={c.capabilities} humanize empty=""/>}{c.tool_refs.length>0&&<ProfileList label="Configured tools" values={c.tool_refs} humanize empty=""/>}</ProfileSection>}
+      <ProfileSection title="Runtime">{hasProviderConfiguration?<><ContextFact label="Provider" value={selected.provider?humanizeToken(selected.provider):"Not bound"} canonical={selected.provider??undefined}/><ContextFact label="Execution mode" value={selected.execution_mode?humanizeToken(selected.execution_mode):"Not bound"} canonical={selected.execution_mode??undefined}/>{c.provider_profile_ref&&<ContextFact label="Provider profile" value={humanizeToken(c.provider_profile_ref)} canonical={c.provider_profile_ref}/>}</>:<p className="aw-profile-empty">No provider runtime is projected for this Agent.</p>}{currentSession&&<div className="aw-profile-current-session"><div><span>Current Session</span><Badge tone={currentSession.runtime_status==="running"?"good":"muted"}>{humanizeToken(currentSession.runtime_status)}</Badge></div><strong>{currentSession.provider?humanizeToken(currentSession.provider):"Provider not bound"}</strong><p>{formatTime(currentSession.last_active_at)} · <span title={currentSession.session_id??currentSession.member_run_id??undefined}>{shortId(currentSession.session_id??currentSession.member_run_id)}</span></p></div>}{c.workspace_binding&&<div className="mt-3"><ContextFact label="Workspace" value={c.workspace_binding.status?humanizeToken(c.workspace_binding.status):"Bound"} canonical={c.workspace_binding.id}/>{c.workspace_binding.locator&&<ContextFact label="Path" value={c.workspace_binding.locator}/>}</div>}</ProfileSection>
+      <ProfileSection title="History">{priorSessions.length?priorSessions.map((session,index)=><div key={session.session_id??session.member_run_id??session.team_run_id} className="aw-session-history-row"><div className="flex items-center justify-between gap-3"><b>Previous Session {index+1}</b><Badge tone={session.runtime_status==="running"?"good":"muted"}>{humanizeToken(session.runtime_status)}</Badge></div><p>{session.provider?humanizeToken(session.provider):"Provider not bound"} · {formatTime(session.last_active_at)}</p><small title={session.session_id??session.member_run_id??undefined}>{shortId(session.session_id??session.member_run_id)}</small></div>):<p className="aw-profile-empty">No previous native Session is projected.</p>}</ProfileSection>
     </div>
   </section></div>;
 }
@@ -367,9 +435,14 @@ function ProfileList({label,values,empty,humanize=false}:{label:string;values:st
 function EmptyCanvas({title,detail,compact=false}:{title:string;detail:string;compact?:boolean}){return <div className="aw-empty-state" data-compact={compact||undefined}><Inbox aria-hidden="true"/><div><h3>{title}</h3><p>{detail}</p></div></div>}
 function actionLabel(kind:string){return ({send_message:"Send message",assign_work:"Assign work",rebind_work:"Reassign work",close_member_run:"Close member run",reopen_member_run:"Reopen member run",retire_member_run:"Retire agent from team",resume_native_session:"Resume native session",reconcile_delivery:"Reconcile work delivery",reconcile_message_delivery:"Reconcile message delivery",request_gate_evaluation:"Request gate review",request_changes:"Request work changes",accept_work:"Accept work",cancel_work:"Cancel work"} as Record<string,string>)[kind]??humanizeToken(kind)}
 function keyForAction(action:AllowedAction){return `${action.kind}:${action.target_ref.kind}:${action.target_ref.id}`}
+function meaningfulRecovery(work:WorkSummary){const value=work.delivery_summary.recovery_class;return typeof value==="string"&&!['','none','null','not_modeled','not_projected'].includes(value)}
+function workVisualRank(work:WorkSummary,currentWorkId:string|null){if(work.work_id===currentWorkId)return 0;if(work.condition==="blocked")return 1;if(work.phase==="review")return 2;if(work.phase==="active")return 3;if(work.phase==="open")return 4;return 5}
+function workGroupLabel(work:WorkSummary,current:boolean,lens:string){if(lens!=="current")return humanizeToken(lens);if(current)return "Current Work";if(work.condition==="blocked")return "Blocked";if(work.phase==="review")return "Awaiting review";if(work.phase==="active")return "Active responsibility";return "Open responsibility"}
+function workNarrative(work:WorkSummary){if(work.condition==="blocked")return work.blocker_reason?`Blocked: ${work.blocker_reason}`:"Progress is blocked; resolution has not yet been recorded.";if(work.phase==="review")return "Submitted responsibility is awaiting review against its gates and evidence.";if(work.phase==="active")return "Execution is active under the current owner and revision.";if(work.phase==="open")return "Responsibility is open and has not entered active execution.";if(work.phase==="closed")return work.result_summary??"Responsibility is closed.";return `${humanizeToken(work.phase)} responsibility.`}
 function shortId(value:string|null|undefined){if(!value)return "Not linked";return value.length>24?`${value.slice(0,12)}…${value.slice(-7)}`:value}
 function humanizeToken(value:string){return value.split(/[_-]+/).filter(Boolean).map((part,index)=>index===0?`${part.charAt(0).toUpperCase()}${part.slice(1)}`:part).join(" ")}
 function timestampKey(value:string|null|undefined){if(!value)return 0;if(value.startsWith("unix-ms:")){const parsed=Number(value.slice(8));return Number.isFinite(parsed)?parsed:0;}const parsed=Date.parse(value);return Number.isFinite(parsed)?parsed:0}
+function isUnexpiredActivity(activity:AgentWorkspaceLiveActivity){const expiresAt=timestampKey(activity.expires_at);return expiresAt>0&&expiresAt>Date.now()}
 function formatTime(value:string|null|undefined){if(!value)return "unknown";const timestamp=timestampKey(value);if(!timestamp)return value;return new Date(timestamp).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}
 function activateOnKeyDown(event:React.KeyboardEvent<HTMLElement>,activate:()=>void){if(event.target!==event.currentTarget)return;if(event.key==="Enter"){event.preventDefault();activate();}else if(event.key===" ")event.preventDefault();}
 function activateOnKeyUp(event:React.KeyboardEvent<HTMLElement>,activate:()=>void){if(event.target===event.currentTarget&&event.key===" "){event.preventDefault();activate();}}

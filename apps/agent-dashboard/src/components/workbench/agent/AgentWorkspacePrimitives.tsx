@@ -48,7 +48,7 @@ export function WorkspaceSection({
 export function WorkspaceFact({label,value,canonicalValue}:{label:string;value:string;canonicalValue?:string}) {
   return <div className="aw-fact-row">
     <span>{label}</span>
-    <strong title={canonicalValue??value}>{value}{canonicalValue&&canonicalValue!==value&&<small>{canonicalValue}</small>}</strong>
+    <strong title={canonicalValue&&canonicalValue!==value?`Canonical: ${canonicalValue}`:value}>{value}</strong>
   </div>;
 }
 

@@ -70,12 +70,12 @@ export function eventPresentation(kind:string|null|undefined,status?:string|null
 
   const exceptional=statusOverride==="danger"||statusOverride==="warning"?statusOverride:null;
   if(/message|authored|reply|turn/.test(canonicalKind))return {family:"authored",icon:MessageSquareText,tone:exceptional??"accent",label:"Authored message"};
-  if(/thinking|reasoning|analysis|plan/.test(canonicalKind))return {family:"reasoning",icon:BrainCircuit,tone:statusOverride??"neutral",label:"Reasoning"};
-  if(/tool|command|shell|terminal/.test(canonicalKind))return {family:"tool",icon:Wrench,tone:exceptional??"info",label:"Tool activity"};
+  if(/thinking|reasoning|analysis|plan/.test(canonicalKind))return {family:"reasoning",icon:BrainCircuit,tone:statusOverride??"neutral",label:"Thinking"};
+  if(/tool|command|shell|terminal/.test(canonicalKind))return {family:"tool",icon:Wrench,tone:exceptional??"neutral",label:"Tool"};
   if(/work|assignment|responsibility/.test(canonicalKind))return {family:"work",icon:BriefcaseBusiness,tone:exceptional??"accent",label:"Work update"};
   if(/gate|review|approval|finding/.test(canonicalKind))return {family:"review",icon:FileCheck2,tone:statusOverride??"warning",label:"Review gate"};
   if(/delivery|artifact|evidence|report/.test(canonicalKind))return {family:"delivery",icon:PackageCheck,tone:statusOverride??"positive",label:"Delivery"};
-  if(/runtime|session|provider|supervisor|reconnect/.test(canonicalKind))return {family:"runtime",icon:RadioTower,tone:exceptional??"info",label:"Runtime"};
+  if(/runtime|session|provider|supervisor|reconnect/.test(canonicalKind))return {family:"runtime",icon:RadioTower,tone:exceptional??"neutral",label:"Runtime"};
   if(/result|outcome|complete|success/.test(canonicalKind))return {family:"result",icon:CheckCheck,tone:statusOverride??"positive",label:"Result"};
   if(/error|failure|exception|fatal/.test(canonicalKind))return {family:"error",icon:CircleAlert,tone:"danger",label:"Error"};
   return {family:"fact",icon:canonicalKind?TerminalSquare:CircleDot,tone:statusOverride??"neutral",label:canonicalKind?readableToken(canonicalKind):"Operational fact"};

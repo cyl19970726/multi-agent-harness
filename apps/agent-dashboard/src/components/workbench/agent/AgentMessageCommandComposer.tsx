@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowRight, BriefcaseBusiness, CornerDownLeft, MessageSquareText, Paperclip, SendHorizontal } from "lucide-react";
+import { BriefcaseBusiness, CornerDownLeft, MessageSquareText, Paperclip, SendHorizontal } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -58,19 +58,17 @@ export function AgentMessageCommandComposer({
     if(recipientId&&body.trim()&&!busy&&!action.disabled_reason)void execute();
   };
   return <section className="aw-command-composer" aria-label="Agent command composer">
-    <div className="aw-command-route">
+    <div className="aw-command-route" aria-label={`Command route: ${recipientLabel}`}>
       <div className="aw-command-action">{actionControl}</div>
-      <ArrowRight aria-hidden="true"/>
-      <label className="aw-command-target"><MessageSquareText aria-hidden="true"/><span>To</span>{recipient?<strong title={recipient.label}>{recipient.label}</strong>:<select aria-label="Recipient Agent" value={recipientId} onChange={event=>setRecipientId(event.target.value)}><option value="">Select Agent</option>{recipients.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select>}</label>
-      <ArrowRight aria-hidden="true"/>
-      <label className="aw-command-work"><BriefcaseBusiness aria-hidden="true"/><span>Work</span><select aria-label="Related Work" value={workId} onChange={event=>setWorkId(event.target.value)}><option value="">No Work link</option>{works.map(work=><option key={work.work_id} value={work.work_id}>{work.title||work.work_id}</option>)}</select></label>
+      <label className="aw-command-target"><MessageSquareText aria-hidden="true"/><span>to</span>{recipient?<strong title={recipient.label}>{recipient.label}</strong>:<select aria-label="Recipient Agent" value={recipientId} onChange={event=>setRecipientId(event.target.value)} required><option value="">Choose an Agent</option>{recipients.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select>}</label>
+      <label className="aw-command-work"><BriefcaseBusiness aria-hidden="true"/><span>about</span><select aria-label="Related Work" value={workId} onChange={event=>setWorkId(event.target.value)}><option value="">No related Work</option>{works.map(work=><option key={work.work_id} value={work.work_id}>{work.title||work.work_id}</option>)}</select></label>
       <label className="aw-command-response"><input type="checkbox" checked={responseRequired} onChange={event=>setResponseRequired(event.target.checked)}/><span>Response requested</span></label>
     </div>
     <div className="aw-command-input">
       <textarea aria-label="Message" value={body} onChange={event=>setBody(event.target.value)} onKeyDown={onMessageKeyDown} placeholder={`Write to ${recipientLabel}…`} rows={2}/>
-      <div className="aw-command-input__footer"><span className="aw-command-attachment" aria-label="Attachments are recorded through canonical evidence actions"><Paperclip aria-hidden="true"/>Evidence or file</span><span className="aw-command-submit-hint"><CornerDownLeft aria-hidden="true"/>Enter to send · Shift + Enter for a new line</span><Button size="sm" disabled={!actionsCurrent||busy||!recipientId||!body.trim()||Boolean(action.disabled_reason)} title={action.disabled_reason??undefined} onClick={execute}><SendHorizontal aria-hidden="true"/>{busy?"Sending…":"Send"}</Button></div>
+      <div className="aw-command-input__footer"><span className="aw-command-attachment" aria-label="Attachments are recorded through canonical evidence actions"><Paperclip aria-hidden="true"/>Evidence or file</span><span className="aw-command-submit-hint"><CornerDownLeft aria-hidden="true"/>Enter sends · Shift + Enter adds a line</span><Button size="sm" disabled={!actionsCurrent||busy||!recipientId||!body.trim()||Boolean(action.disabled_reason)} title={action.disabled_reason??undefined} onClick={execute}><SendHorizontal aria-hidden="true"/>{busy?"Sending…":"Send"}</Button></div>
     </div>
-    <footer><span>Authenticated Message · never current-turn Steer</span>{action.disabled_reason&&<span>{action.disabled_reason}</span>}</footer>
+    <footer><span>Authenticated Harness Message · separate from current-turn control</span>{action.disabled_reason&&<span>{action.disabled_reason}</span>}</footer>
     {status&&<p className="aw-command-status" role="status">{status}</p>}
   </section>;
 }
