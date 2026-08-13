@@ -56,8 +56,8 @@ export interface AgentWorkspaceLiveActivity {
   emitted_at:string;
   expires_at:string;
   provider_event_ref?:string|null;
-  agent_session_id?:string|null;
-  runtime_generation?:number|null;
+  agent_session_id:string;
+  runtime_generation:number;
   stream_seq?:number|null;
 }
 type ContextSelection =
@@ -121,11 +121,14 @@ export function AgentConversationWorkspace({
   const selected=data.selected_agent;
   const publicProjection=data.projection_scope==="host_member_public";
   const selectedRunId=selected.current_member_run_ref;
+  const selectedSession=data.sessions.find(session=>session.session_id===data.selected_session_id);
   const currentLiveActivity=!publicProjection
     && liveActivity
     && selectedRunId
     && liveActivity.member_run_id===selectedRunId
     && liveActivity.team_run_id===data.team.latest_run_id
+    && liveActivity.agent_session_id===data.selected_session_id
+    && liveActivity.runtime_generation===selectedSession?.runtime_generation
     && isUnexpiredActivity(liveActivity)
       ? liveActivity
       : null;
