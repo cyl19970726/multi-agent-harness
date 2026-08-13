@@ -138,6 +138,11 @@ impl ProviderEventFold {
             );
             episode.observations.push((*observation).clone());
         }
+        for episode in &mut episodes {
+            // A visible episode without a terminal observation is explicitly
+            // incomplete, even when every individual streaming row was valid.
+            episode.incomplete |= !episode.terminal;
+        }
         SessionEventProjection {
             schema_version: PROVIDER_OBSERVATION_SCHEMA_VERSION.into(),
             agent_session_id: self.agent_session_id.clone(),

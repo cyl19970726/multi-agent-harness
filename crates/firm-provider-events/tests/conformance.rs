@@ -248,6 +248,20 @@ fn episode_order_follows_native_position_not_turn_identifier_sort() {
 }
 
 #[test]
+fn missing_terminal_is_explicitly_incomplete() {
+    let mut fold = ProviderEventFold::new("session-1", 7, "daemon-1", 4);
+    fold.ingest(observation(decode(
+        ProviderKind::Codex,
+        1,
+        json!({"type":"event_msg","payload":{"type":"agent_message","message":"streaming"}}),
+    )))
+    .unwrap();
+    let projection = fold.session_projection(300);
+    assert!(!projection.episodes[0].terminal);
+    assert!(projection.episodes[0].incomplete);
+}
+
+#[test]
 fn stale_generation_fails_before_projection_change() {
     let mut stale_context = context(ProviderKind::Claude);
     stale_context.agent_session_generation = 6;
@@ -612,11 +626,11 @@ fn transcript_cursor_and_fold_commit_atomically_across_restart() {
             allowed_root: root.clone(),
             transcript_path: transcript,
         },
-        state.transcript_cursor,
+        state.transcript_cursor.clone(),
         10,
     )
     .unwrap();
-    let expected_cursor = batch.cursor;
+    let expected_cursor = batch.cursor.clone();
     let store = ProjectionStore::new(root.join("projection.json"));
     store.apply_batch(&mut state, batch).unwrap();
     let resumed = store.load_state().unwrap().unwrap();
@@ -630,5 +644,54 @@ fn transcript_cursor_and_fold_commit_atomically_across_restart() {
     let serialized = serde_json::to_string(&resumed).unwrap();
     assert!(!serialized.contains("agent_reasoning"));
     assert!(!serialized.contains("provider-private reasoning omitted"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn codex_turn_context_survives_cursor_resume_and_closes_on_terminal() {
+    let root = unique_temp_path("turn-cursor");
+    fs::create_dir_all(&root).unwrap();
+    let transcript = root.join("codex.jsonl");
+    fs::write(
+        &transcript,
+        b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-9\"}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"one\"}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-9\"}}\n",
+    )
+    .unwrap();
+    let boundary = TranscriptReadBoundary {
+        allowed_root: root.clone(),
+        transcript_path: transcript,
+    };
+    let first = read_transcript_batch(
+        &context(ProviderKind::Codex),
+        &boundary,
+        TranscriptCursor::default(),
+        2,
+    )
+    .unwrap();
+    assert_eq!(
+        first.cursor.active_provider_turn_id.as_deref(),
+        Some("turn-9")
+    );
+    let observation = first
+        .outcomes
+        .into_iter()
+        .find_map(|outcome| match outcome {
+            DecodeOutcome::Observation(value) => Some(value),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(observation.provider_turn_id.as_deref(), Some("turn-9"));
+    let second =
+        read_transcript_batch(&context(ProviderKind::Codex), &boundary, first.cursor, 2).unwrap();
+    assert_eq!(second.cursor.active_provider_turn_id, None);
+    let terminal = second
+        .outcomes
+        .into_iter()
+        .find_map(|outcome| match outcome {
+            DecodeOutcome::Observation(value) => Some(value),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(terminal.provider_turn_id.as_deref(), Some("turn-9"));
     fs::remove_dir_all(root).unwrap();
 }

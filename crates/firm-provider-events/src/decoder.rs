@@ -46,7 +46,9 @@ pub fn adapter_manifest(provider: ProviderKind) -> AdapterManifest {
             &[
                 SemanticKind::AuthoredResponse,
                 SemanticKind::ToolCallRequested,
+                SemanticKind::ToolCallStarted,
                 SemanticKind::ToolCallCompleted,
+                SemanticKind::UsageReported,
                 SemanticKind::TransportInterrupted,
                 SemanticKind::TurnCompleted,
                 SemanticKind::TurnFailed,
@@ -267,7 +269,9 @@ pub fn decode_native_event(
         node_daemon_id: context.node_daemon_id.clone(),
         node_daemon_generation: context.node_daemon_generation,
         provider_thread_id: context.provider_thread_id.clone(),
-        provider_turn_id: event.provider_turn_id,
+        provider_turn_id: event
+            .provider_turn_id
+            .or_else(|| native_turn_id(&event.raw)),
         provider_event_id: event.native_event_id,
         ordering_position: event.ordering_position,
         causal_parent_id: decoded.causal_parent_id,
@@ -513,30 +517,84 @@ fn decode_codex(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
         ("event_msg", Some("agent_message")) => {
             Ok(Some(authored(string(&event.raw, "/payload/message")?)))
         }
-        ("response_item", Some("function_call")) => Ok(Some(tool(
-            SemanticKind::ToolCallRequested,
-            LifecyclePhase::Requested,
+        ("event_msg", Some("task_complete")) => Ok(Some(turn("completed"))),
+        ("event_msg", Some("token_count")) => Ok(Some(codex_usage(&event.raw))),
+        ("response_item", Some("reasoning")) => Ok(Some(reasoning_drop())),
+        ("response_item", Some("message"))
+            if event
+                .raw
+                .pointer("/payload/role")
+                .and_then(|value| value.as_str())
+                == Some("assistant") =>
+        {
+            Ok(text_from_parts(
+                event
+                    .raw
+                    .pointer("/payload/content")
+                    .unwrap_or(&serde_json::Value::Null),
+            )
+            .map(|text| authored(&text)))
+        }
+        ("response_item", Some("function_call" | "custom_tool_call")) => Ok(Some(tool(
+            if payload_type == Some("custom_tool_call") {
+                SemanticKind::ToolCallStarted
+            } else {
+                SemanticKind::ToolCallRequested
+            },
+            if payload_type == Some("custom_tool_call") {
+                LifecyclePhase::Started
+            } else {
+                LifecyclePhase::Requested
+            },
             event.raw.pointer("/payload/name").and_then(|v| v.as_str()),
             event
                 .raw
                 .pointer("/payload/call_id")
                 .and_then(|v| v.as_str()),
         ))),
-        ("response_item", Some("function_call_output")) => Ok(Some(tool(
-            SemanticKind::ToolCallCompleted,
-            LifecyclePhase::Terminal,
-            Some("tool"),
-            event
-                .raw
-                .pointer("/payload/call_id")
-                .and_then(|v| v.as_str()),
-        ))),
+        ("response_item", Some("function_call_output" | "custom_tool_call_output")) => {
+            Ok(Some(tool(
+                SemanticKind::ToolCallCompleted,
+                LifecyclePhase::Terminal,
+                Some("tool"),
+                event
+                    .raw
+                    .pointer("/payload/call_id")
+                    .and_then(|v| v.as_str()),
+            )))
+        }
         ("turn/completed", _) | ("turn_completed", _) => Ok(Some(turn("completed"))),
         ("turn/failed", _) | ("turn_failed", _) => Ok(Some(turn("failed"))),
         ("turn/cancelled", _) | ("turn_cancelled", _) => Ok(Some(turn("cancelled"))),
         ("transport_interrupted", _) => Ok(Some(transport("provider_transport_interrupted"))),
         _ => Ok(None),
     }
+}
+
+fn codex_usage(raw: &serde_json::Value) -> Decoded {
+    let usage = raw.pointer("/payload/info/total_token_usage");
+    private(
+        ObservationPayload::Usage {
+            input_tokens: usage
+                .and_then(|value| value.get("input_tokens"))
+                .and_then(|value| value.as_u64()),
+            output_tokens: usage
+                .and_then(|value| value.get("output_tokens"))
+                .and_then(|value| value.as_u64()),
+            total_tokens: usage
+                .and_then(|value| value.get("total_tokens"))
+                .and_then(|value| value.as_u64()),
+        },
+        SemanticKind::UsageReported,
+        LifecyclePhase::Progress,
+    )
+}
+
+fn native_turn_id(raw: &serde_json::Value) -> Option<String> {
+    raw.pointer("/payload/turn_id")
+        .or_else(|| raw.pointer("/turn_id"))
+        .and_then(|value| value.as_str())
+        .map(str::to_owned)
 }
 
 fn decode_claude(event: &NativeEvent) -> Result<Option<Decoded>, DecodeError> {
@@ -825,9 +883,12 @@ fn text_from_parts(value: &serde_json::Value) -> Option<String> {
         .as_array()?
         .iter()
         .filter_map(|part| {
-            (part.get("type").and_then(|v| v.as_str()) == Some("text"))
-                .then(|| part.get("text").and_then(|v| v.as_str()))
-                .flatten()
+            matches!(
+                part.get("type").and_then(|v| v.as_str()),
+                Some("text" | "output_text")
+            )
+            .then(|| part.get("text").and_then(|v| v.as_str()))
+            .flatten()
         })
         .collect::<Vec<_>>()
         .join("\n");

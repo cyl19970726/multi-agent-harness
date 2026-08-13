@@ -11,11 +11,13 @@ use crate::{decode_native_json_line, DecodeContext, DecodeError, DecodeOutcome};
 
 const MAX_NATIVE_LINE_BYTES: usize = 1024 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct TranscriptCursor {
     pub byte_offset: u64,
     pub next_ordering_position: u64,
+    #[serde(default)]
+    pub active_provider_turn_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,10 +72,11 @@ pub fn read_transcript_batch(
         return Err(TranscriptReadError::CursorBeyondEnd);
     }
     if max_events == 0 {
+        let incomplete_tail = metadata.len() > cursor.byte_offset;
         return Ok(TranscriptBatch {
             outcomes: vec![],
             cursor,
-            incomplete_tail: metadata.len() > cursor.byte_offset,
+            incomplete_tail,
         });
     }
 
@@ -84,6 +87,7 @@ pub fn read_transcript_batch(
     let mut outcomes = Vec::new();
     let mut consumed = 0usize;
     let mut ordering = cursor.next_ordering_position.max(1);
+    let mut active_turn_id = cursor.active_provider_turn_id.clone();
     for segment in bytes.split_inclusive(|byte| *byte == b'\n') {
         if outcomes.len() >= max_events || !segment.ends_with(b"\n") {
             break;
@@ -94,14 +98,21 @@ pub fn read_transcript_batch(
         let line_bytes = &segment[..segment.len() - 1];
         let line = std::str::from_utf8(line_bytes).map_err(|_| TranscriptReadError::InvalidUtf8)?;
         if !line.trim().is_empty() {
+            let parsed = serde_json::from_str::<serde_json::Value>(line).ok();
+            if let Some(turn_id) = parsed.as_ref().and_then(provider_turn_id) {
+                active_turn_id = Some(turn_id.to_owned());
+            }
             outcomes.push(decode_native_json_line(
                 context,
                 Some(format!("offset-{}", cursor.byte_offset + consumed as u64)),
-                None,
+                active_turn_id.clone(),
                 ordering,
                 None,
                 line,
             )?);
+            if parsed.as_ref().is_some_and(is_turn_terminal) {
+                active_turn_id = None;
+            }
             ordering += 1;
         }
         consumed += segment.len();
@@ -111,9 +122,35 @@ pub fn read_transcript_batch(
         cursor: TranscriptCursor {
             byte_offset: cursor.byte_offset + consumed as u64,
             next_ordering_position: ordering,
+            active_provider_turn_id: active_turn_id,
         },
         incomplete_tail: consumed < bytes.len(),
     })
+}
+
+fn provider_turn_id(value: &serde_json::Value) -> Option<&str> {
+    value
+        .pointer("/payload/turn_id")
+        .or_else(|| value.pointer("/turn_id"))
+        .and_then(|value| value.as_str())
+}
+
+fn is_turn_terminal(value: &serde_json::Value) -> bool {
+    matches!(
+        value
+            .pointer("/payload/type")
+            .or_else(|| value.get("type"))
+            .and_then(|value| value.as_str()),
+        Some(
+            "task_complete"
+                | "turn_completed"
+                | "turn/completed"
+                | "turn_failed"
+                | "turn/failed"
+                | "turn_cancelled"
+                | "turn/cancelled"
+        )
+    )
 }
 
 pub fn is_within(root: &Path, path: &Path) -> bool {
