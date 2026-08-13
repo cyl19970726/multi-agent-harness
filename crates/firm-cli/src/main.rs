@@ -26445,11 +26445,71 @@ fn sanitize_live_member_preview(value: &str) -> Option<String> {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    let preview = normalized
+    if normalized.contains("-----BEGIN ") && normalized.contains("PRIVATE KEY-----") {
+        return Some("[REDACTED PRIVATE KEY]".into());
+    }
+    let redacted = normalized
+        .split_whitespace()
+        .map(|token| {
+            let lower = token.to_ascii_lowercase();
+            if let Some((marker, index)) = ["token=", "password=", "secret=", "api_key="]
+                .iter()
+                .find_map(|marker| lower.find(marker).map(|index| (*marker, index)))
+            {
+                return format!("{}{}[REDACTED]", &token[..index], marker);
+            }
+            if token.starts_with("sk-") && token.len() >= 20 {
+                return "[REDACTED TOKEN]".into();
+            }
+            if token.starts_with('/')
+                && (token.contains("/Users/")
+                    || token.contains("/.ssh/")
+                    || token.contains("/.config/"))
+            {
+                return "[REDACTED PATH]".into();
+            }
+            token.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let preview = redacted
         .chars()
         .take(LIVE_PROVIDER_ACTIVITY_MAX_CHARS)
         .collect::<String>();
     (!preview.is_empty()).then_some(preview)
+}
+
+#[cfg(test)]
+mod tests_live_provider_preview {
+    use super::*;
+
+    #[test]
+    fn live_preview_is_bounded_single_line_and_redacts_secret_shapes() {
+        let preview = sanitize_live_member_preview(
+            "Inspecting\n/Users/alice/.config/private token=abc123 \
+             sk-123456789012345678901234 password=hunter2",
+        )
+        .expect("sanitized preview");
+        assert!(!preview.contains('\n'));
+        assert!(!preview.contains("/Users/alice"));
+        assert!(!preview.contains("abc123"));
+        assert!(!preview.contains("123456789012345678901234"));
+        assert!(!preview.contains("hunter2"));
+        assert!(preview.contains("[REDACTED PATH]"));
+        assert!(preview.chars().count() <= LIVE_PROVIDER_ACTIVITY_MAX_CHARS);
+    }
+
+    #[test]
+    fn live_preview_replaces_private_key_blocks_and_drops_empty_input() {
+        assert_eq!(
+            sanitize_live_member_preview(
+                "-----BEGIN OPENSSH PRIVATE KEY----- secret -----END OPENSSH PRIVATE KEY-----"
+            )
+            .as_deref(),
+            Some("[REDACTED PRIVATE KEY]")
+        );
+        assert_eq!(sanitize_live_member_preview("\u{0}\n\t"), None);
+    }
 }
 
 fn new_live_provider_activity_token() -> String {
