@@ -293,7 +293,7 @@ pub enum ObservationValidationError {
     InvalidRecovery,
     #[error("semantic kind and payload variant do not match")]
     PayloadMismatch,
-    #[error("authority generation or evidence identity is invalid")]
+    #[error("authority generation or provider-source provenance is invalid")]
     InvalidAuthorityOrSource,
 }
 
