@@ -946,29 +946,48 @@ fn redact_display_text(value: &str) -> (String, bool) {
                 redacted = true;
                 return "[REDACTED PRIVATE KEY]".to_string();
             }
+            let mut redact_next_credential = false;
             line.split_whitespace()
                 .map(|token| {
-                    let sensitive_assignment = ["token=", "password=", "secret=", "api_key="]
-                        .iter()
-                        .find_map(|marker| {
-                            token
-                                .to_ascii_lowercase()
-                                .find(marker)
-                                .map(|index| (marker, index))
-                        });
+                    if redact_next_credential {
+                        redact_next_credential = false;
+                        redacted = true;
+                        return "[REDACTED TOKEN]".to_string();
+                    }
+                    let lower = token.to_ascii_lowercase();
+                    if lower.trim_matches(|character: char| !character.is_ascii_alphanumeric())
+                        == "bearer"
+                    {
+                        redact_next_credential = true;
+                        return token.to_string();
+                    }
+                    let sensitive_assignment = [
+                        "token=",
+                        "password=",
+                        "secret=",
+                        "api_key=",
+                        "authorization=",
+                    ]
+                    .iter()
+                    .find_map(|marker| lower.find(marker).map(|index| (marker, index)));
                     if let Some((marker, index)) = sensitive_assignment {
                         redacted = true;
                         return format!("{}{}[REDACTED]", &token[..index], marker);
                     }
-                    if token.starts_with("sk-") && token.len() >= 20 {
+                    let unquoted = token.trim_start_matches(['\"', '\'', '(', '[', '{']);
+                    if unquoted.starts_with("sk-") && unquoted.len() >= 20 {
                         redacted = true;
                         return "[REDACTED TOKEN]".into();
                     }
-                    if token.starts_with('/')
-                        && (token.contains("/Users/")
-                            || token.contains("/.ssh/")
-                            || token.contains("/.config/"))
-                    {
+                    let bytes = unquoted.as_bytes();
+                    let absolute_path = unquoted.starts_with('/')
+                        || unquoted.starts_with("~/")
+                        || unquoted.starts_with("\\\\")
+                        || (bytes.len() >= 3
+                            && bytes[0].is_ascii_alphabetic()
+                            && bytes[1] == b':'
+                            && matches!(bytes[2], b'/' | b'\\'));
+                    if absolute_path {
                         redacted = true;
                         return "[REDACTED PATH]".into();
                     }

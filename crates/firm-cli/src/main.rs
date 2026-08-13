@@ -26448,24 +26448,45 @@ fn sanitize_live_member_preview(value: &str) -> Option<String> {
     if normalized.contains("-----BEGIN ") && normalized.contains("PRIVATE KEY-----") {
         return Some("[REDACTED PRIVATE KEY]".into());
     }
+    let mut redact_next_credential = false;
     let redacted = normalized
         .split_whitespace()
         .map(|token| {
+            if redact_next_credential {
+                redact_next_credential = false;
+                return "[REDACTED TOKEN]".to_string();
+            }
             let lower = token.to_ascii_lowercase();
-            if let Some((marker, index)) = ["token=", "password=", "secret=", "api_key="]
-                .iter()
-                .find_map(|marker| lower.find(marker).map(|index| (*marker, index)))
+            if lower.trim_matches(|character: char| !character.is_ascii_alphanumeric()) == "bearer"
+            {
+                redact_next_credential = true;
+                return token.to_string();
+            }
+            if let Some((marker, index)) = [
+                "token=",
+                "password=",
+                "secret=",
+                "api_key=",
+                "authorization=",
+            ]
+            .iter()
+            .find_map(|marker| lower.find(marker).map(|index| (*marker, index)))
             {
                 return format!("{}{}[REDACTED]", &token[..index], marker);
             }
-            if token.starts_with("sk-") && token.len() >= 20 {
+            let unquoted = token.trim_start_matches(['\"', '\'', '(', '[', '{']);
+            if unquoted.starts_with("sk-") && unquoted.len() >= 20 {
                 return "[REDACTED TOKEN]".into();
             }
-            if token.starts_with('/')
-                && (token.contains("/Users/")
-                    || token.contains("/.ssh/")
-                    || token.contains("/.config/"))
-            {
+            let bytes = unquoted.as_bytes();
+            let absolute_path = unquoted.starts_with('/')
+                || unquoted.starts_with("~/")
+                || unquoted.starts_with("\\\\")
+                || (bytes.len() >= 3
+                    && bytes[0].is_ascii_alphabetic()
+                    && bytes[1] == b':'
+                    && matches!(bytes[2], b'/' | b'\\'));
+            if absolute_path {
                 return "[REDACTED PATH]".into();
             }
             token.to_string()
@@ -26487,7 +26508,8 @@ mod tests_live_provider_preview {
     fn live_preview_is_bounded_single_line_and_redacts_secret_shapes() {
         let preview = sanitize_live_member_preview(
             "Inspecting\n/Users/alice/.config/private token=abc123 \
-             sk-123456789012345678901234 password=hunter2",
+             sk-123456789012345678901234 password=hunter2 /tmp/provider.log \
+             C:\\Users\\alice\\secret Bearer bearer-secret",
         )
         .expect("sanitized preview");
         assert!(!preview.contains('\n'));
@@ -26495,6 +26517,9 @@ mod tests_live_provider_preview {
         assert!(!preview.contains("abc123"));
         assert!(!preview.contains("123456789012345678901234"));
         assert!(!preview.contains("hunter2"));
+        assert!(!preview.contains("/tmp/provider.log"));
+        assert!(!preview.contains("C:\\Users"));
+        assert!(!preview.contains("bearer-secret"));
         assert!(preview.contains("[REDACTED PATH]"));
         assert!(preview.chars().count() <= LIVE_PROVIDER_ACTIVITY_MAX_CHARS);
     }
