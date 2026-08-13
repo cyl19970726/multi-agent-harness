@@ -94,6 +94,20 @@
   },
   "allOf": [
     {
+      "if": {"properties": {"effect_certainty": {"enum": ["not_applied", "applied", "unknown"]}}},
+      "then": {"properties": {"runtime_command_id": {"type": "string", "minLength": 1}}}
+    },
+    {"if":{"properties":{"semantic_kind":{"const":"authored_response"}}},"then":{"properties":{"payload":{"$ref":"#/$defs/authoredResponse"}}}},
+    {"if":{"properties":{"semantic_kind":{"const":"reasoning_summary"}}},"then":{"properties":{"payload":{"$ref":"#/$defs/reasoningSummary"}}}},
+    {"if":{"properties":{"semantic_kind":{"enum":["tool_call_requested","tool_call_started","tool_call_completed","tool_call_failed"]}}},"then":{"properties":{"payload":{"$ref":"#/$defs/tool"}}}},
+    {"if":{"properties":{"semantic_kind":{"const":"artifact_created"}}},"then":{"properties":{"payload":{"$ref":"#/$defs/artifact"}}}},
+    {"if":{"properties":{"semantic_kind":{"const":"usage_reported"}}},"then":{"properties":{"payload":{"$ref":"#/$defs/usage"}}}},
+    {"if":{"properties":{"semantic_kind":{"enum":["interaction_required","interaction_resolved"]}}},"then":{"properties":{"payload":{"$ref":"#/$defs/interaction"}}}},
+    {"if":{"properties":{"semantic_kind":{"enum":["runtime_started","runtime_ready","runtime_stopped"]}}},"then":{"properties":{"payload":{"$ref":"#/$defs/runtime"}}}},
+    {"if":{"properties":{"semantic_kind":{"const":"transport_interrupted"}}},"then":{"properties":{"payload":{"$ref":"#/$defs/transport"}}}},
+    {"if":{"properties":{"semantic_kind":{"enum":["turn_completed","turn_failed","turn_cancelled"]}}},"then":{"properties":{"payload":{"$ref":"#/$defs/turn"}}}},
+    {"if":{"properties":{"semantic_kind":{"const":"malformed_or_incomplete"}}},"then":{"properties":{"payload":{"$ref":"#/$defs/malformed"}}}},
+    {
       "if": {"properties": {"semantic_kind": {"const": "command_recovery_required"}}},
       "then": {
         "properties": {

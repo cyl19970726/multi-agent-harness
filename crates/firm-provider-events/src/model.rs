@@ -220,6 +220,21 @@ impl ProviderObservation {
         if self.ordering_position == 0 {
             return Err(ObservationValidationError::InvalidOrdering);
         }
+        if self.agent_session_generation == 0
+            || self.node_daemon_generation == 0
+            || !self.native_source_ref.starts_with("evidence:")
+            || !self.source_evidence_fingerprint.starts_with("sha256:")
+            || self.source_evidence_fingerprint.len() != 71
+        {
+            return Err(ObservationValidationError::InvalidAuthorityOrEvidence);
+        }
+        if self
+            .validated_references
+            .iter()
+            .any(|reference| reference.id.trim().is_empty())
+        {
+            return Err(ObservationValidationError::InvalidReference);
+        }
         if self.visibility == ObservationVisibility::TeamPublic
             && !self.is_team_public_allowlisted()
         {
@@ -300,6 +315,10 @@ pub enum ObservationValidationError {
     InvalidRecovery,
     #[error("semantic kind and payload variant do not match")]
     PayloadMismatch,
+    #[error("authority generation or evidence identity is invalid")]
+    InvalidAuthorityOrEvidence,
+    #[error("validated references must be non-empty server-owned identifiers")]
+    InvalidReference,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -43,7 +43,11 @@ exactSet(adapters.map(({ provider }) => provider), manifest.providers, "provider
 exactSet(observationSchema.properties.provider.enum, manifest.providers, "observation providers");
 exactSet(adapterSchema.properties.provider.enum, manifest.providers, "adapter providers");
 exactSet(observationSchema.properties.semantic_kind.enum, manifest.semantic_kinds, "semantic kinds");
-const publicKinds = observationSchema.allOf[1].then.properties.semantic_kind.enum;
+const publicRule = observationSchema.allOf.find(
+  (rule) => rule.if?.properties?.visibility?.const === "team_public",
+);
+if (!publicRule) failures.push("observation schema lacks Team public allowlist rule");
+const publicKinds = publicRule?.then?.properties?.semantic_kind?.enum ?? [];
 exactSet(publicKinds, manifest.team_public_allowlist, "Team public allowlist");
 
 const decoder = readFileSync("crates/firm-provider-events/src/decoder.rs", "utf8");

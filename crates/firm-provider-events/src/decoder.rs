@@ -405,11 +405,13 @@ fn malformed_observation(
 }
 
 fn validate_context(context: &DecodeContext, event: &NativeEvent) -> Result<(), DecodeError> {
-    if context.native_source_ref.trim().is_empty()
+    if !context.native_source_ref.starts_with("evidence:")
         || context.agent_identity_id.trim().is_empty()
         || context.agent_session_id.trim().is_empty()
         || context.node_daemon_id.trim().is_empty()
         || context.observed_at.trim().is_empty()
+        || context.agent_session_generation == 0
+        || context.node_daemon_generation == 0
     {
         return Err(DecodeError::InvalidContext);
     }
