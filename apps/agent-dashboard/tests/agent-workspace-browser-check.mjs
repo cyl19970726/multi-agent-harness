@@ -119,6 +119,10 @@ try{
   assert.deepEqual(await page.locator(".aw-context-work-title, .aw-context-work-row-title, .aw-context-work-row-meta").evaluateAll(nodes=>nodes.filter(node=>node.scrollWidth>node.clientWidth).map(node=>node.textContent)),[],"Current or assigned Work is visually clipped");
   assert.deepEqual(await page.locator(".agent-team-composer span[title]").evaluateAll(nodes=>nodes.filter(node=>node.scrollWidth>node.clientWidth).map(node=>node.textContent)),[],"Composer recipient target is visually clipped");
   if(!liveConfig){await page.getByText(/Implemented the owner-bound Session projection/).waitFor();await page.getByText("Validated owner-bound native Session",{exact:true}).waitFor();}
+  if(!liveConfig){
+    assert.ok(await page.locator('.aw-stream-fact[data-family="tool"]').count()>=2,"canonical tool events do not use the shared Tool presentation family");
+    assert.equal(await page.locator('.aw-stream-fact[data-family="tool"] .aw-stream-kind').first().getAttribute("data-tone"),"info","completed Tool activity is incorrectly presented as delivery success");
+  }
   await waitForStableWriteSurface(page);
   await page.screenshot({path:join(evidenceDir,`member-session--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   if(!liveConfig){

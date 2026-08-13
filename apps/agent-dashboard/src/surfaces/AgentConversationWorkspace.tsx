@@ -3,10 +3,10 @@ import * as Tabs from "@radix-ui/react-tabs";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowLeft, BriefcaseBusiness, ChevronDown, ChevronRight, Circle, Clock3,
-  Command, Inbox, MessageSquare,
+  ArrowLeft, BriefcaseBusiness, ChevronRight, Circle, Clock3,
+  Inbox, MessageSquare,
   PanelRight, Search, ShieldCheck, SlidersHorizontal, Sparkles, TerminalSquare,
-  Users, Wrench, X,
+  Users, X,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -20,6 +20,7 @@ import {
   WorkspaceSection,
   WorkspaceState,
 } from "@/components/workbench/agent/AgentWorkspacePrimitives";
+import { OperationalFactRow } from "@/components/workbench/agent/AgentStreamPrimitives";
 import { TeamMessageComposer } from "@/components/workbench/team/TeamMessageComposer";
 import type { SelectionState } from "../app/selection";
 import {
@@ -83,7 +84,6 @@ export function AgentConversationWorkspace({
   useEffect(()=>{
     const frame=window.requestAnimationFrame(()=>{
       const root=workspaceRef.current;
-      root?.scrollIntoView({block:"start",behavior:"auto"});
       root?.querySelector<HTMLElement>('[role="tabpanel"][data-state="active"] [data-radix-scroll-area-viewport]')?.scrollTo({top:0,left:0,behavior:"auto"});
     });
     return()=>window.cancelAnimationFrame(frame);
@@ -100,7 +100,7 @@ export function AgentConversationWorkspace({
   const publicProjection=data.projection_scope==="host_member_public";
   const selectedRunId=selected.current_member_run_ref;
   const selectedRoster=data.roster.find(item=>item.agent_member_ref.id===selected.agent_member_ref.id);
-  const currentWork=data.works.find(work=>work.work_id===(contextSelection?.kind==="work"?contextSelection.work.work_id:data.context_summary.current_work_id)) ?? data.works[0];
+  const currentWork=data.works.find(work=>work.work_id===(contextSelection?.kind==="work"?contextSelection.work.work_id:data.context_summary.current_work_id));
   const selectAgent=(agent:AgentWorkspaceRosterItem)=>{
     onSelectionChange({
       teamConversation:agent.is_host ? "host" : agent.agent_member_ref.id,
@@ -191,7 +191,7 @@ function SessionCanvas({data,onSelect}:{data:AgentWorkspaceData;onSelect:(next:C
     ...data.session_activity.items.map(event=>({kind:"event" as const,at:event.occurred_at??"",event})),
   ].sort((left,right)=>timestampKey(left.at)-timestampKey(right.at)),[data.messages,data.session_activity.items]);
   const publicProjection=data.projection_scope==="host_member_public";
-  const currentWork=data.works.find(work=>work.work_id===data.context_summary.current_work_id)??data.works[0];
+  const currentWork=data.works.find(work=>work.work_id===data.context_summary.current_work_id);
   return <ScrollArea.Root className="h-full overflow-hidden"><ScrollArea.Viewport className="size-full"><div className="agent-session-stream w-full px-5 pb-8 sm:px-7">
     <div className="aw-session-context-strip">
       <span className="aw-session-context-strip__label">{publicProjection?<><ShieldCheck aria-hidden="true"/>Public coordination</>:<><Sparkles aria-hidden="true"/>Session stream</>}</span>
@@ -223,14 +223,9 @@ function AuthoredTurn({data,message,selectedAgentId,onSelect}:{data:AgentWorkspa
 
 function ExpandableEvent({data,event,onSelect}:{data:AgentWorkspaceData;event:AgentWorkspaceActivityItem;onSelect:()=>void}){
   const [open,setOpen]=useState(false);
-  const Icon=event.kind==="tool"?Wrench:event.kind==="message"?MessageSquare:event.kind==="error"?TerminalSquare:Command;
-  const eventTone=event.kind==="tool"?"agent-event-icon--tool":event.kind==="error"?"agent-event-icon--error":event.kind==="result"?"agent-event-icon--result":"agent-event-icon--fact";
   const authored=event.kind==="message";
   if(authored)return <article role="button" tabIndex={0} aria-label={`Open provider-authored reply from ${data.selected_agent.display_name}`} className="agent-authored-turn" data-provider-reply="true" onClick={onSelect} onKeyDown={keyEvent=>activateOnKeyDown(keyEvent,onSelect)} onKeyUp={keyEvent=>activateOnKeyUp(keyEvent,onSelect)}><Avatar name={data.selected_agent.display_name} identity={`${data.selected_agent.agent_member_ref.id} ${data.selected_agent.role}`} size="md" tone={data.selected_agent.runtime_status==="running"?"running":"idle"}/><div className="min-w-0 flex-1"><header className="mb-1 flex items-baseline gap-2"><p className="text-[12px] font-semibold">{data.selected_agent.display_name}</p><span className="aw-record-kind">Provider reply</span><time className="aw-record-time ml-auto">{formatTime(event.occurred_at)}</time></header><div className="aw-authored-body"><Markdown source={event.summary??"Provider recorded an authored response."}/></div></div></article>;
-  return <article className="agent-event-row border-b border-border/65" data-kind={event.kind} data-open={open}>
-    <button type="button" className="flex min-h-10 w-full items-start gap-2.5 py-2 text-left" aria-expanded={open} onClick={()=>{setOpen(value=>!value);onSelect();}}>{open?<ChevronDown className="mt-2 size-3 text-muted-foreground"/>:<ChevronRight className="mt-2 size-3 text-muted-foreground"/>}<span className={`agent-event-icon ${eventTone}`}><Icon className="size-[15px]"/></span><span className="min-w-0 flex-1"><span className="flex min-w-0 items-baseline gap-2"><span className="aw-event-title min-w-0 truncate">{event.title}</span><span className="aw-event-status">{humanizeToken(event.status)}</span></span>{!open&&event.summary&&<span className="aw-event-preview line-clamp-1">{event.summary}</span>}</span><span className="aw-record-time w-[4.5rem] pt-1 text-right">{formatTime(event.occurred_at)}</span></button>
-    {open&&<div className="aw-event-detail pb-3 pl-[4.6rem] pr-4"><Markdown source={event.summary??"Provider recorded this event without exposing private reasoning or raw output."}/></div>}
-  </article>;
+  return <OperationalFactRow kind={event.kind} status={event.status} title={event.title} summary={event.summary} timestamp={formatTime(event.occurred_at)} expanded={open} onToggle={()=>setOpen(value=>!value)} onSelect={onSelect}>{<Markdown source={event.summary??"Provider recorded this event without exposing private reasoning or raw output."}/>}</OperationalFactRow>;
 }
 
 function MessagesCanvas({data,onSelect}:{data:AgentWorkspaceData;onSelect:(next:ContextSelection)=>void}){

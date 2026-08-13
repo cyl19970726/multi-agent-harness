@@ -478,6 +478,131 @@
   .agent-workspace .agent-event-icon--result { color: var(--aw-good); }
   .agent-workspace .agent-event-icon--fact { color: var(--aw-running); }
 
+  .agent-workspace .aw-stream-fact {
+    border-bottom: 1px solid var(--aw-line-soft);
+    background: transparent;
+  }
+
+  .agent-workspace .aw-stream-fact[data-family="tool"],
+  .agent-workspace .aw-stream-fact[data-family="runtime"] {
+    background: color-mix(in srgb, #edf4f2 50%, var(--aw-canvas));
+  }
+
+  .agent-workspace .aw-stream-fact[data-family="work"],
+  .agent-workspace .aw-stream-fact[data-family="review"],
+  .agent-workspace .aw-stream-fact[data-family="delivery"] {
+    background: color-mix(in srgb, var(--aw-rail) 58%, var(--aw-canvas));
+  }
+
+  .agent-workspace .aw-stream-fact__trigger {
+    display: grid;
+    width: 100%;
+    min-height: 3.45rem;
+    grid-template-columns: 0.85rem 7.6rem minmax(0, 1fr) 4.8rem;
+    gap: 0.45rem;
+    align-items: center;
+    padding: 0.52rem 0.35rem 0.52rem 0.15rem;
+    color: var(--aw-ink);
+    text-align: left;
+    transition: background-color 120ms ease;
+  }
+
+  .agent-workspace .aw-stream-fact__trigger:hover {
+    background: color-mix(in srgb, var(--aw-rail) 62%, transparent);
+  }
+
+  .agent-workspace .aw-stream-fact__trigger:focus-visible {
+    outline: 0;
+    background: color-mix(in srgb, var(--aw-coral-wash) 36%, var(--aw-canvas));
+    box-shadow: inset 2px 0 0 var(--aw-coral);
+  }
+
+  .agent-workspace .aw-stream-fact__disclosure {
+    width: 0.72rem;
+    height: 0.72rem;
+    color: var(--aw-muted);
+  }
+
+  .agent-workspace .aw-stream-kind {
+    display: inline-flex;
+    min-width: 0;
+    align-items: center;
+    gap: 0.45rem;
+    color: var(--aw-muted);
+    font-size: 0.62rem;
+    font-weight: 610;
+  }
+
+  .agent-workspace .aw-stream-kind svg {
+    width: 1.55rem;
+    height: 1.55rem;
+    padding: 0.36rem;
+    border-radius: 0.36rem;
+    background: color-mix(in srgb, currentColor 7%, transparent);
+  }
+
+  .agent-workspace .aw-stream-kind[data-tone="positive"] { color: var(--aw-good); }
+  .agent-workspace .aw-stream-kind[data-tone="warning"] { color: var(--aw-warn); }
+  .agent-workspace .aw-stream-kind[data-tone="danger"] { color: var(--aw-bad); }
+  .agent-workspace .aw-stream-kind[data-tone="info"] { color: var(--aw-running); }
+  .agent-workspace .aw-stream-kind[data-tone="accent"] { color: var(--aw-coral-ink); }
+
+  .agent-workspace .aw-stream-fact__content {
+    min-width: 0;
+  }
+
+  .agent-workspace .aw-stream-fact__heading {
+    display: flex;
+    min-width: 0;
+    align-items: baseline;
+    gap: 0.55rem;
+  }
+
+  .agent-workspace .aw-stream-fact__heading strong {
+    overflow: hidden;
+    color: color-mix(in srgb, var(--aw-ink) 90%, transparent);
+    font-size: 0.76rem;
+    font-weight: 610;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .agent-workspace .aw-stream-fact__status {
+    flex: none;
+    color: var(--aw-muted);
+    font-size: 0.61rem;
+  }
+
+  .agent-workspace .aw-stream-fact__summary {
+    display: block;
+    overflow: hidden;
+    margin-top: 0.2rem;
+    color: var(--aw-muted);
+    font-size: 0.69rem;
+    line-height: 1.4;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .agent-workspace .aw-stream-fact__time {
+    color: var(--aw-faint);
+    font-size: 0.63rem;
+    line-height: 1.35;
+    text-align: right;
+  }
+
+  .agent-workspace .aw-stream-fact__detail {
+    padding: 0 0.7rem 0.85rem 9.5rem;
+    color: var(--aw-muted);
+    font-size: 0.74rem;
+    line-height: 1.6;
+  }
+
+  .agent-workspace .aw-stream-fact[data-expanded="true"] {
+    background: color-mix(in srgb, var(--aw-coral-wash) 28%, var(--aw-canvas));
+    box-shadow: inset 2px 0 0 var(--aw-coral);
+  }
+
   .agent-workspace .agent-message-toolbar,
   .agent-workspace .aw-filter-strip {
     min-width: 0;
@@ -1135,6 +1260,24 @@
 
     .agent-workspace .agent-event-row > button {
       gap: 0.45rem;
+    }
+
+    .agent-workspace .aw-stream-fact__trigger {
+      grid-template-columns: 0.75rem 2rem minmax(0, 1fr) 3.8rem;
+      gap: 0.35rem;
+    }
+
+    .agent-workspace .aw-stream-kind > span {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+    }
+
+    .agent-workspace .aw-stream-fact__detail {
+      padding-left: 3.5rem;
     }
 
     .agent-workspace .agent-event-row > button > :last-child {
