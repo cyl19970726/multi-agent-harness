@@ -150,7 +150,10 @@ or remains unknown; resolution never blindly repeats the native effect.
 Codex, Claude, Kimi, and Pi expose separate, closed capability tuples:
 
 - requested permission must fit both the AgentIdentity ceiling and provider
-  adapter capability;
+  adapter capability, and the ceiling must be verifiably enforced — the
+  adapter names its `security_enforcement_locus` in the provider profile
+  (provider-native policy, adapter tool allowlist, adapter auto-approval, OS
+  sandbox, network/credential boundary, or honestly `none_verified`);
 - safe current-turn injection requires both adapter support and an observed
   safe point;
 - unsupported or unprovable permission, queue, interrupt, resume, or stop
@@ -164,6 +167,14 @@ Codex, Claude, Kimi, and Pi expose separate, closed capability tuples:
   Claude, Kimi, and Pi, including permission mapping, safe-injection downgrade,
   terminal acknowledgement, replay, and recovery. It is contract evidence,
   not a claim that an unavailable provider passed a live run;
+- the persistent Team member loop is provider-neutral
+  (`crates/firm-cli/src/runtime_adapter.rs`): wake → claim → ExecutionCycle →
+  settle is shared, and each binding compiles the semantic intents
+  (open/resume, start cycle, inject current cycle, queue at native boundary,
+  interrupt, continuation inspection, release) into provider primitives with
+  an executable per-intent capability report. Pi is the first migrated
+  binding; Codex, Claude, and Kimi still run branded loops until their
+  migration proves the same contract;
 - Codex has a proven NodeDaemon-owned app-server start/resume/stop path;
   standalone cancel remains disabled until a native turn is bound;
 - Claude, Kimi, and Pi remain disabled for standalone AgentSession lifecycle

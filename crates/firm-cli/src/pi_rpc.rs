@@ -54,6 +54,11 @@ pub(crate) struct PiSpawnOptions<'a> {
     pub session_dir: &'a Path,
     pub member_name: &'a str,
     pub collaboration_env: &'a [(String, String)],
+    /// Compiled permission ceiling (`runtime_adapter::pi_tools_allowlist_for_ceiling`).
+    /// `Some` passes `--tools <csv>` to the process; `None` runs the Pi
+    /// default toolset and the profile must record
+    /// `security_enforcement_locus = none_verified`.
+    pub tools: Option<&'a str>,
 }
 
 pub(crate) struct PiTurnOutcome {
@@ -110,6 +115,11 @@ impl PiRpcClient {
 
         if let Some(model) = options.model {
             command.arg("--model").arg(model);
+        }
+        if let Some(tools) = options.tools {
+            // Real adapter-level permission enforcement: the allowlist is
+            // compiled into the process, not just mapped and dropped.
+            command.arg("--tools").arg(tools);
         }
         if let Some(session_file) = options.resume_session_file {
             command.arg("--session").arg(session_file);
@@ -252,12 +262,65 @@ impl PiRpcClient {
         Ok(())
     }
 
+    /// Compile one cycle's control intents into Pi RPC frames. Steer bodies
+    /// become `steer` frames (current-cycle injection at Pi's tool-call
+    /// boundary); close/interrupt become `abort`. Both are fire-and-forget:
+    /// acceptance is observable in the native session, and the Harness-side
+    /// control reply already acknowledged compilation at this boundary.
+    fn apply_cycle_control(&mut self, control: &crate::runtime_adapter::CycleControl) {
+        for inject in &control.injects {
+            let _ = self.write_frame(&serde_json::json!({
+                "type": "steer",
+                "message": inject,
+            }));
+        }
+        if control.close || control.interrupt {
+            let _ = self.write_frame(&serde_json::json!({
+                "type": "abort"
+            }));
+        }
+    }
+
+    /// Queue input at Pi's native session boundary (`follow_up`): consumed by
+    /// the current session-level run before it fully settles. This is NOT the
+    /// Harness message queue — ordinary TeamMessages stay durable-side by
+    /// design (DOC-89 §13.1), so production has no caller yet; the RPC-level
+    /// unit test is the conformance consumer.
+    #[allow(dead_code)]
+    pub(crate) fn follow_up(&mut self, text: &str) -> CliResult<serde_json::Value> {
+        self.request_blocking(
+            "follow_up",
+            serde_json::json!({"message": text}),
+            HANDSHAKE_TIMEOUT,
+        )
+    }
+
+    /// Point-in-time native queue observation (steering/follow-up mode and
+    /// pending message count from `get_state`). Observation only; it is not a
+    /// durable Harness fact. Consumed by the RPC-level unit test today.
+    #[allow(dead_code)]
+    pub(crate) fn queue_snapshot(&mut self) -> CliResult<serde_json::Value> {
+        let state = self.request_blocking("get_state", serde_json::json!({}), HANDSHAKE_TIMEOUT)?;
+        let data = state
+            .get("data")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        Ok(serde_json::json!({
+            "steering_mode": data.get("steeringMode"),
+            "follow_up_mode": data.get("followUpMode"),
+            "pending_message_count": data.get("pendingMessageCount"),
+            "is_streaming": data.get("isStreaming"),
+        }))
+    }
+
     /// Send a prompt and block until `agent_settled`.
     ///
     /// `on_event` receives every non-response event so the orchestrator can
-    /// project live tool activity. `should_cancel` returns `(close_requested,
-    /// interrupt)` — when interrupt is true an `abort` is sent but the loop
-    /// continues reading until `agent_settled`.
+    /// project live tool activity. `poll_control` returns a
+    /// [`CycleControl`](crate::runtime_adapter::CycleControl): explicit Steer
+    /// bodies are compiled into `steer` frames at this boundary, and
+    /// close/interrupt sends `abort` while the loop continues reading until
+    /// `agent_settled`.
     ///
     /// Returns `PiTurnOutcome` with `final_text` extracted from the last
     /// `turn_end.message` content blocks.
@@ -266,11 +329,11 @@ impl PiRpcClient {
         text: &str,
         idle_timeout: Duration,
         mut on_event: F,
-        mut should_cancel: C,
+        mut poll_control: C,
     ) -> CliResult<PiTurnOutcome>
     where
         F: FnMut(&serde_json::Value),
-        C: FnMut() -> (bool, bool),
+        C: FnMut() -> crate::runtime_adapter::CycleControl,
     {
         self.request_blocking(
             "prompt",
@@ -290,17 +353,13 @@ impl PiRpcClient {
                     last_idle = Instant::now();
                     let event_type = frame.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
-                    // Check for cancellation.
-                    let (close, interrupt) = should_cancel();
-                    if close || interrupt {
+                    // Check for control intents (close/interrupt/steer).
+                    let control = poll_control();
+                    if control.close || control.interrupt {
                         interrupted = true;
-                        close_requested = close;
-                        // Send abort — don't wait for response, just fire and
-                        // continue reading events.
-                        let _ = self.write_frame(&serde_json::json!({
-                            "type": "abort"
-                        }));
+                        close_requested = control.close;
                     }
+                    self.apply_cycle_control(&control);
 
                     match event_type {
                         "agent_settled" => break,
@@ -321,14 +380,12 @@ impl PiRpcClient {
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {
-                    // Check cancellation even during idle.
-                    let (close, interrupt) = should_cancel();
-                    if close || interrupt {
+                    // Poll control intents even during idle.
+                    let control = poll_control();
+                    self.apply_cycle_control(&control);
+                    if control.close || control.interrupt {
                         interrupted = true;
-                        close_requested = close;
-                        let _ = self.write_frame(&serde_json::json!({
-                            "type": "abort"
-                        }));
+                        close_requested = control.close;
                     }
                     if last_idle.elapsed() > idle_timeout {
                         // Wedged — abort, then kill.
@@ -511,6 +568,165 @@ impl PiRpcClient {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Provider-neutral adapter binding
+// ---------------------------------------------------------------------------
+
+/// The Pi binding of [`TeamRuntimeAdapter`](crate::runtime_adapter::TeamRuntimeAdapter):
+/// a live `pi --mode rpc` child as the process-local RuntimeHandle. Durable
+/// identity stays with AgentSession/NativeSessionRef; this handle is
+/// disposable and never an authority.
+pub(crate) struct PiTeamRuntime {
+    client: PiRpcClient,
+}
+
+impl PiTeamRuntime {
+    pub(crate) fn new(client: PiRpcClient) -> Self {
+        Self { client }
+    }
+}
+
+impl crate::runtime_adapter::TeamRuntimeAdapter for PiTeamRuntime {
+    fn provider(&self) -> &'static str {
+        "pi"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Pi"
+    }
+
+    fn capability_bindings() -> Vec<crate::runtime_adapter::CapabilityBinding> {
+        use crate::runtime_adapter::{CapabilityBinding, CapabilityStatus};
+        vec![
+            CapabilityBinding {
+                capability: "open_or_resume_native_session",
+                status: CapabilityStatus::Supported,
+                evidence: "pi --mode rpc --session <file>; tests/pi_team_member.rs".into(),
+                security_enforcement_locus: None,
+            },
+            CapabilityBinding {
+                capability: "start_cycle",
+                status: CapabilityStatus::Supported,
+                evidence: "prompt RPC → agent_settled; tests/pi_team_member.rs journey".into(),
+                security_enforcement_locus: None,
+            },
+            CapabilityBinding {
+                capability: "inject_current_cycle",
+                status: CapabilityStatus::Supported,
+                evidence: "steer RPC frame compiled at the cycle control boundary".into(),
+                security_enforcement_locus: None,
+            },
+            CapabilityBinding {
+                capability: "queue_at_native_boundary",
+                status: CapabilityStatus::Supported,
+                evidence: "follow_up RPC; ordinary Harness Messages never use it".into(),
+                security_enforcement_locus: None,
+            },
+            CapabilityBinding {
+                capability: "interrupt_current_cycle",
+                status: CapabilityStatus::Supported,
+                evidence: "abort RPC + agent_settled observation".into(),
+                security_enforcement_locus: None,
+            },
+            CapabilityBinding {
+                capability: "inspect_continuation",
+                status: CapabilityStatus::Unsupported,
+                evidence: "Pi has no native Goal/continuation object".into(),
+                security_enforcement_locus: None,
+            },
+            CapabilityBinding {
+                capability: "inhibit_continuation",
+                status: CapabilityStatus::Unsupported,
+                evidence: "Pi has no native Goal/continuation object".into(),
+                security_enforcement_locus: None,
+            },
+            CapabilityBinding {
+                capability: "resume_continuation",
+                status: CapabilityStatus::Unsupported,
+                evidence: "Pi has no native Goal/continuation object".into(),
+                security_enforcement_locus: None,
+            },
+            CapabilityBinding {
+                capability: "observe_native_queue",
+                status: CapabilityStatus::Supported,
+                evidence: "get_state steering/followUp/pendingMessageCount snapshot".into(),
+                security_enforcement_locus: None,
+            },
+            CapabilityBinding {
+                capability: "inspect_effect",
+                status: CapabilityStatus::Degraded,
+                evidence: "native JSONL entry observation only; no semantic effect proof".into(),
+                security_enforcement_locus: None,
+            },
+            CapabilityBinding {
+                capability: "reconcile_effect",
+                status: CapabilityStatus::Unsupported,
+                evidence: "no provider-side operation id to reconcile against".into(),
+                security_enforcement_locus: None,
+            },
+            CapabilityBinding {
+                capability: "permission_enforcement",
+                status: CapabilityStatus::Supported,
+                evidence: "ceiling compiled to --tools allowlist at spawn".into(),
+                security_enforcement_locus: Some(
+                    "adapter tool allowlist (restricted) / none_verified (full access)".into(),
+                ),
+            },
+        ]
+    }
+
+    fn ensure_alive(&mut self) -> CliResult<()> {
+        self.client.ensure_transport_alive()
+    }
+
+    fn native_session_locator(&self) -> &str {
+        self.client.session_file()
+    }
+
+    fn native_locator_kind(&self) -> &'static str {
+        "pi_session"
+    }
+
+    fn run_cycle(
+        &mut self,
+        input: &str,
+        idle_timeout: Duration,
+        on_event: &mut dyn FnMut(&serde_json::Value),
+        poll_control: &mut dyn FnMut() -> crate::runtime_adapter::CycleControl,
+    ) -> CliResult<crate::runtime_adapter::ExecutionCycleOutcome> {
+        let outcome =
+            self.client
+                .prompt(input, idle_timeout, &mut *on_event, &mut *poll_control)?;
+        Ok(crate::runtime_adapter::ExecutionCycleOutcome {
+            final_text: outcome.final_text,
+            interrupted: outcome.interrupted,
+            close_requested_by_harness: outcome.close_requested_by_harness,
+            tool_call_count: outcome.tool_call_count,
+        })
+    }
+
+    fn project_live(
+        event: &serde_json::Value,
+    ) -> Option<(crate::provider_event_api::LiveProviderActivityKind, String)> {
+        PiRpcClient::project_live(event)
+    }
+
+    fn native_control<'a>(
+        close: &'a mut bool,
+        interrupt: &'a mut bool,
+    ) -> Box<dyn crate::provider_adapter::ProviderNativeControl + 'a> {
+        Box::new(crate::provider_adapter::PiNativeControl { close, interrupt })
+    }
+
+    fn supports_inject_current_cycle(&self) -> bool {
+        true
+    }
+
+    fn supports_native_boundary_queue(&self) -> bool {
+        true
+    }
+}
+
 fn ensure_session_has_no_persisted_thinking(path: &Path) -> CliResult<()> {
     let file = std::fs::File::open(path).map_err(|error| {
         CliError::Usage(format!(
@@ -577,6 +793,101 @@ mod tests {
     use super::{
         ensure_session_has_no_persisted_thinking, value_contains_persisted_thinking, PiRpcClient,
     };
+
+    /// Spawn a minimal fake `pi --mode rpc` shim and exercise the RPC-level
+    /// adapter surface: handshake, follow_up acknowledgement, queue
+    /// observation, and the --tools permission compilation in the spawn argv.
+    #[test]
+    fn follow_up_queue_snapshot_and_tools_compilation() {
+        let dir = std::env::temp_dir().join(format!(
+            "pi-rpc-rpc-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session_file = dir.join("session.jsonl");
+        std::fs::write(&session_file, "{\"type\":\"agent_start\"}\n").unwrap();
+        let args_marker = dir.join("argv.json");
+        let shim = dir.join("pi");
+        let script = format!(
+            r##"#!/usr/bin/env python3
+import sys, json, os
+with open('{args_marker}', 'w') as f:
+    json.dump(sys.argv[1:], f)
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        cmd = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    t = cmd.get('type', '')
+    cid = cmd.get('id', '')
+    if t == 'get_state':
+        resp = {{'id': cid, 'type': 'response', 'command': 'get_state', 'success': True,
+                 'data': {{'sessionFile': '{session_file}', 'autoCompactionEnabled': False,
+                           'steeringMode': 'one-at-a-time', 'followUpMode': 'one-at-a-time',
+                           'pendingMessageCount': 2, 'isStreaming': False}}}}
+    elif t == 'follow_up':
+        resp = {{'id': cid, 'type': 'response', 'command': 'follow_up', 'success': True}}
+    else:
+        resp = {{'id': cid, 'type': 'response', 'command': t, 'success': True}}
+    print(json.dumps(resp), flush=True)
+"##,
+            args_marker = args_marker.display(),
+            session_file = session_file.display(),
+        );
+        std::fs::write(&shim, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&shim).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&shim, perms).unwrap();
+        }
+
+        let mut client = PiRpcClient::spawn(
+            shim.to_str().unwrap(),
+            super::PiSpawnOptions {
+                cwd: &dir,
+                model: None,
+                resume_session_file: None,
+                session_dir: &dir,
+                member_name: "rpc-test",
+                collaboration_env: &[],
+                tools: Some("read,grep,find,ls"),
+            },
+        )
+        .expect("spawn shim");
+
+        // Permission compilation proof: the allowlist is in the process argv.
+        let argv: Vec<String> =
+            serde_json::from_str(&std::fs::read_to_string(&args_marker).unwrap()).unwrap();
+        let tools_pos = argv.iter().position(|arg| arg == "--tools");
+        assert_eq!(
+            tools_pos.map(|pos| argv[pos + 1].as_str()),
+            Some("read,grep,find,ls"),
+            "restricted ceiling must compile to --tools in the spawn argv: {argv:?}"
+        );
+
+        let ack = client.follow_up("queued at the native boundary").unwrap();
+        assert_eq!(ack.get("success").and_then(|v| v.as_bool()), Some(true));
+
+        let snapshot = client.queue_snapshot().unwrap();
+        assert_eq!(
+            snapshot["pending_message_count"].as_u64(),
+            Some(2),
+            "queue observation must surface the native pending count: {snapshot}"
+        );
+        assert_eq!(snapshot["steering_mode"].as_str(), Some("one-at-a-time"));
+
+        drop(client);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn detects_persisted_thinking_blocks_without_rejecting_level_metadata() {
