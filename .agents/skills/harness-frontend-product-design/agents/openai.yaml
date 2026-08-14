@@ -1,4 +1,4 @@
 interface:
   display_name: "Frontend Product Design Harness"
-  short_description: "Lead complete frontend product modules"
-  default_prompt: "Use $harness-frontend-product-design to define the product module, discover its justified pages and journeys, freeze its UX, UI, architecture, and implementation spec, then review exact-revision browser evidence."
+  short_description: "Contract-to-acceptance frontend product workflow"
+  default_prompt: "Use $harness-frontend-product-design to run the five-phase pipeline: write the text contract first, explore design images only after the Owner confirms the contract, measure the frozen direction into a written visual spec, implement against the spec with mechanical and render verification, and present exact-revision screenshot evidence for Owner acceptance. Translate and verify; never judge visuals yourself."
