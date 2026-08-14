@@ -11394,41 +11394,48 @@ fn build_member_run_for_team(
     })
 }
 
+/// Convert the ledger-facing NativeSessionRef into the trust-fabric
+/// agentfirm_api shape. Only the binding fields cross this boundary; the
+/// provider stream itself never enters the trust store.
+fn agentfirm_native_session_ref(
+    session: &NativeSessionRef,
+) -> harness_core::agentfirm_api::NativeSessionRef {
+    harness_core::agentfirm_api::NativeSessionRef {
+        provider: session.provider.clone(),
+        execution_mode: session.execution_mode.clone(),
+        native_session_id: session.native_session_id.clone(),
+        native_locator_kind: session.native_locator_kind.clone(),
+        provider_version: session.provider_version.clone(),
+        adapter_contract_version: session.adapter_contract_version.clone(),
+        availability: match session.availability {
+            NativeSessionAvailability::Available => {
+                harness_core::agentfirm_api::NativeSessionAvailability::Available
+            }
+            NativeSessionAvailability::Stale => {
+                harness_core::agentfirm_api::NativeSessionAvailability::Stale
+            }
+            NativeSessionAvailability::Missing => {
+                harness_core::agentfirm_api::NativeSessionAvailability::Missing
+            }
+            NativeSessionAvailability::Incompatible => {
+                harness_core::agentfirm_api::NativeSessionAvailability::Incompatible
+            }
+            NativeSessionAvailability::Unknown => {
+                harness_core::agentfirm_api::NativeSessionAvailability::Unknown
+            }
+        },
+        supports_resume: session.supports_resume,
+        last_verified_at: session.last_verified_at.clone(),
+        parent_native_session_id: session.parent_native_session_id.clone(),
+    }
+}
+
 fn materialize_canonical_member_run(
     store: &HarnessStore,
     execution_space_id: &str,
     runtime: &ProviderRuntimeProjection,
 ) -> CliResult<()> {
-    let native_session = runtime.native_session.as_ref().map(|session| {
-        harness_core::agentfirm_api::NativeSessionRef {
-            provider: session.provider.clone(),
-            execution_mode: session.execution_mode.clone(),
-            native_session_id: session.native_session_id.clone(),
-            native_locator_kind: session.native_locator_kind.clone(),
-            provider_version: session.provider_version.clone(),
-            adapter_contract_version: session.adapter_contract_version.clone(),
-            availability: match session.availability {
-                NativeSessionAvailability::Available => {
-                    harness_core::agentfirm_api::NativeSessionAvailability::Available
-                }
-                NativeSessionAvailability::Stale => {
-                    harness_core::agentfirm_api::NativeSessionAvailability::Stale
-                }
-                NativeSessionAvailability::Missing => {
-                    harness_core::agentfirm_api::NativeSessionAvailability::Missing
-                }
-                NativeSessionAvailability::Incompatible => {
-                    harness_core::agentfirm_api::NativeSessionAvailability::Incompatible
-                }
-                NativeSessionAvailability::Unknown => {
-                    harness_core::agentfirm_api::NativeSessionAvailability::Unknown
-                }
-            },
-            supports_resume: session.supports_resume,
-            last_verified_at: session.last_verified_at.clone(),
-            parent_native_session_id: session.parent_native_session_id.clone(),
-        }
-    });
+    let native_session = runtime.native_session.as_ref().map(agentfirm_native_session_ref);
     let run = harness_core::agentfirm_api::MemberRun {
         id: runtime.id.clone(),
         agent_member_id: runtime.agent_member_id.clone(),
@@ -19580,7 +19587,151 @@ impl TeamRunLedger {
         next: &ProviderRuntimeProjection,
     ) -> CliResult<()> {
         let _guard = self.write_lock();
-        Ok(self.store.compare_and_append_member_run(expected, next)?)
+        self.store.compare_and_append_member_run(expected, next)?;
+        if let Err(error) = self.sync_trust_native_session_binding(expected, next) {
+            // The ledger append above is the committed MemberRun revision; the
+            // trust write-back is a projection sync and must never turn a
+            // successful save into a failure. The skip is loud so a missing
+            // binding is diagnosable from the driver log.
+            eprintln!(
+                "[team-run-ledger] trust native-session binding sync skipped for {}: {error}",
+                next.id
+            );
+        }
+        Ok(())
+    }
+
+    /// Post-settle write-back of the provider-native Session binding onto the
+    /// trust fabric. A fresh-start MemberRun/AgentSession is materialized
+    /// before the provider thread exists, so the settled binding must reach
+    /// the trust MemberRun and the current AgentSession here — every provider
+    /// driver persists its settle through `save_member_run`. Only the binding
+    /// fields cross; `provider-source:` stays provenance and no provider
+    /// stream enters a Harness ledger. Best-effort: stores without
+    /// materialized trust fabric skip, and a stale-generation settle never
+    /// rebinds a newer trust row.
+    fn sync_trust_native_session_binding(
+        &self,
+        expected: &ProviderRuntimeProjection,
+        next: &ProviderRuntimeProjection,
+    ) -> CliResult<()> {
+        let binding_changed = match (&expected.native_session, &next.native_session) {
+            (None, Some(_)) => true,
+            (Some(before), Some(after)) => before.native_session_id != after.native_session_id,
+            _ => false,
+        };
+        let Some(native) = next.native_session.as_ref().filter(|_| binding_changed) else {
+            return Ok(());
+        };
+        let Some(space_id) = self.store.trust_member_run_scope(&next.id)? else {
+            return Ok(());
+        };
+        let native_ref = agentfirm_native_session_ref(native);
+        // Trust MemberRun binding. One re-read retry absorbs a concurrent trust
+        // mutation (close/reopen) racing this settle.
+        for attempt in 0..2 {
+            let Some(trust_run) = self
+                .store
+                .trust_member_runs(&space_id)?
+                .into_iter()
+                .find(|run| run.id == next.id)
+            else {
+                break;
+            };
+            if trust_run.runtime_generation != next.runtime_generation {
+                break;
+            }
+            if trust_run
+                .native_session
+                .as_ref()
+                .is_some_and(|current| current.native_session_id == native.native_session_id)
+            {
+                break;
+            }
+            let context = harness_core::agentfirm_api::MutationContext {
+                execution_space_id: space_id.clone(),
+                authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                    kind: harness_core::agentfirm_api::ActorKind::Service,
+                    id: "node-daemon:member-run-native-bind".into(),
+                },
+                authority_actor: None,
+                command_name: "team_run.member_run_native_session.bind".into(),
+                idempotency_key: format!(
+                    "member-run-native-bind:{}:{}",
+                    next.id, native.native_session_id
+                ),
+                expected_version: trust_run.version,
+                request_fingerprint: None,
+            };
+            match self.store.bind_member_run_native_session(
+                &context,
+                &next.id,
+                next.runtime_generation,
+                native_ref.clone(),
+                &now_string(),
+            ) {
+                Ok(_) => break,
+                Err(error) if attempt == 0 => {
+                    let _ = error;
+                    continue;
+                }
+                Err(error) => return Err(CliError::Store(error)),
+            }
+        }
+        // Current AgentSession binding for the same identity + generation. The
+        // daemon actor is read from the session row: the bind mutation proves
+        // the exact owning NodeDaemon generation.
+        for attempt in 0..2 {
+            let sessions = self
+                .store
+                .fabric_agent_sessions(&space_id)?
+                .into_iter()
+                .filter(|session| {
+                    session.agent_identity_id == next.agent_member_id
+                        && session.runtime_generation == next.runtime_generation
+                        && session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
+                })
+                .collect::<Vec<_>>();
+            let [session] = sessions.as_slice() else {
+                break;
+            };
+            if session
+                .native_session_ref
+                .as_ref()
+                .is_some_and(|current| current.native_session_id == native.native_session_id)
+            {
+                break;
+            }
+            let context = harness_core::agentfirm_api::MutationContext {
+                execution_space_id: space_id.clone(),
+                authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                    kind: harness_core::agentfirm_api::ActorKind::Service,
+                    id: session.node_daemon_id.clone(),
+                },
+                authority_actor: None,
+                command_name: "runtime_fabric.session_native_session.bind".into(),
+                idempotency_key: format!(
+                    "agent-session-native-bind:{}:{}",
+                    session.id, native.native_session_id
+                ),
+                expected_version: session.version,
+                request_fingerprint: None,
+            };
+            match self.store.bind_agent_session_native_session(
+                &context,
+                &session.id,
+                next.runtime_generation,
+                native_ref.clone(),
+            ) {
+                Ok(_) => break,
+                Err(error) if attempt == 0 => {
+                    let _ = error;
+                    continue;
+                }
+                Err(error) => return Err(CliError::Store(error)),
+            }
+        }
+        Ok(())
     }
 
     fn latest_member_run(
@@ -20899,36 +21050,10 @@ pub(crate) fn ensure_team_runtime_fabric(
                 )));
             }
         } else {
-            let native_session_ref = member.native_session.as_ref().map(|native| {
-                harness_core::agentfirm_api::NativeSessionRef {
-                    provider: native.provider.clone(),
-                    execution_mode: native.execution_mode.clone(),
-                    native_session_id: native.native_session_id.clone(),
-                    native_locator_kind: native.native_locator_kind.clone(),
-                    provider_version: native.provider_version.clone(),
-                    adapter_contract_version: native.adapter_contract_version.clone(),
-                    availability: match native.availability {
-                        NativeSessionAvailability::Available => {
-                            harness_core::agentfirm_api::NativeSessionAvailability::Available
-                        }
-                        NativeSessionAvailability::Stale => {
-                            harness_core::agentfirm_api::NativeSessionAvailability::Stale
-                        }
-                        NativeSessionAvailability::Missing => {
-                            harness_core::agentfirm_api::NativeSessionAvailability::Missing
-                        }
-                        NativeSessionAvailability::Incompatible => {
-                            harness_core::agentfirm_api::NativeSessionAvailability::Incompatible
-                        }
-                        NativeSessionAvailability::Unknown => {
-                            harness_core::agentfirm_api::NativeSessionAvailability::Unknown
-                        }
-                    },
-                    supports_resume: native.supports_resume,
-                    last_verified_at: native.last_verified_at.clone(),
-                    parent_native_session_id: native.parent_native_session_id.clone(),
-                }
-            });
+            let native_session_ref = member
+                .native_session
+                .as_ref()
+                .map(agentfirm_native_session_ref);
             store.create_agent_session(
                 &MutationContext {
                     execution_space_id: execution_space_id.to_string(),
@@ -51693,6 +51818,95 @@ package:com.tencent.mm
             .expect("member exists");
         assert_eq!(latest.name, "conflict-3");
         assert!(latest.provider_environment_observation.is_none());
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn save_member_run_settle_syncs_native_binding_to_trust_fabric() {
+        let (store, root) = temp_store("settle-syncs-native-binding");
+        let created = create_two_member_team_run(&store);
+        let lease = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-settle-sync",
+                std::process::id(),
+                "test://settle-sync",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire Supervisor lease");
+        ensure_test_runtime_fabric(&store, &created, &lease);
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let expected = created.member_runs[0].clone();
+        assert!(expected.native_session.is_none(), "fresh-start precondition");
+        let mut settled = expected.clone();
+        settled.native_session = Some(capacity_test_session());
+        settled.status = MemberRunStatus::Idle;
+        settled.last_event_at = Some(now_string());
+        ledger
+            .save_member_run(&expected, &settled)
+            .expect("settle save succeeds");
+
+        let space_id = store
+            .trust_member_run_scope(&settled.id)
+            .expect("trust MemberRun scope")
+            .expect("trust fabric exists");
+        let trust_run = store
+            .trust_member_runs(&space_id)
+            .expect("trust MemberRuns")
+            .into_iter()
+            .find(|run| run.id == settled.id)
+            .expect("canonical trust MemberRun");
+        assert_eq!(
+            trust_run
+                .native_session
+                .as_ref()
+                .map(|session| session.native_session_id.as_str()),
+            Some("thread-capacity-recovery"),
+            "save_member_run must sync the settled binding onto the trust MemberRun"
+        );
+        let sessions = store
+            .fabric_agent_sessions(&space_id)
+            .expect("canonical AgentSessions")
+            .into_iter()
+            .filter(|session| session.agent_identity_id == settled.agent_member_id)
+            .collect::<Vec<_>>();
+        assert_eq!(sessions.len(), 1, "one current AgentSession: {sessions:?}");
+        assert_eq!(
+            sessions[0]
+                .native_session_ref
+                .as_ref()
+                .map(|session| session.native_session_id.as_str()),
+            Some("thread-capacity-recovery"),
+            "save_member_run must sync the settled binding onto the canonical AgentSession"
+        );
+
+        // A same-id save is a no-op for the trust rows; an unchanged save
+        // never touches them either.
+        let before = store
+            .canonical_operations()
+            .expect("operations before idempotent saves")
+            .len();
+        let latest = ledger
+            .latest_member_run(&settled.id)
+            .expect("latest member")
+            .expect("member exists");
+        let mut status_only = latest.clone();
+        status_only.last_event_at = Some(now_string());
+        ledger
+            .save_member_run(&latest, &status_only)
+            .expect("status-only save succeeds");
+        let after = store
+            .canonical_operations()
+            .expect("operations after idempotent saves")
+            .len();
+        assert_eq!(before, after, "unchanged binding writes no trust mutation");
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 

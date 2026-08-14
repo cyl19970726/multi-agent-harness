@@ -27,6 +27,7 @@ use firm_env::{
     create_canonical_agent_member, current_project_id, latest_works, run_firm, work_deliveries,
     TempHome,
 };
+use harness_store::HarnessStore;
 
 static TEST_NODE_DAEMONS: OnceLock<Mutex<Vec<std::process::Child>>> = OnceLock::new();
 
@@ -375,10 +376,59 @@ fn run_with_fake_kimi(
     output
 }
 
+/// DEV-21 regression guard: the settled native Session binding must reach the
+/// trust MemberRun (selector layer) and the canonical AgentSession (exact
+/// binding layer), not just the ledger ProviderRuntimeProjection.
+fn assert_trust_native_binding_synced(
+    home: &TempHome,
+    project_id: &str,
+    member_run_id: &str,
+    expected_native_id: &str,
+) {
+    let store = HarnessStore::new(home.spaces_dir().join(project_id));
+    let space_id = store
+        .trust_member_run_scope(member_run_id)
+        .expect("read trust MemberRun scope")
+        .expect("trust MemberRun fabric exists for the settled run");
+    let trust_run = store
+        .trust_member_runs(&space_id)
+        .expect("read trust MemberRuns")
+        .into_iter()
+        .find(|run| run.id == member_run_id)
+        .expect("canonical trust MemberRun");
+    assert_eq!(
+        trust_run
+            .native_session
+            .as_ref()
+            .map(|session| session.native_session_id.as_str()),
+        Some(expected_native_id),
+        "provider settle must sync the native Session binding onto the trust MemberRun: {trust_run:?}"
+    );
+    let sessions = store
+        .fabric_agent_sessions(&space_id)
+        .expect("read canonical AgentSessions")
+        .into_iter()
+        .filter(|session| session.agent_identity_id == trust_run.agent_member_id)
+        .filter(|session| session.runtime_generation == trust_run.runtime_generation)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sessions.len(),
+        1,
+        "exactly one current AgentSession for the settled generation: {sessions:?}"
+    );
+    assert_eq!(
+        sessions[0]
+            .native_session_ref
+            .as_ref()
+            .map(|session| session.native_session_id.as_str()),
+        Some(expected_native_id),
+        "provider settle must sync the native Session binding onto the canonical AgentSession"
+    );
+}
+
 /// Read one store JSONL file with latest-wins-per-id projection, in append
 /// order (mirrors the harness's own projections).
-fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::Value> {
-    let path = home.spaces_dir().join(project_id).join(file);
+fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::Value> {    let path = home.spaces_dir().join(project_id).join(file);
     let text =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let mut ids: Vec<String> = Vec::new();
@@ -908,6 +958,12 @@ fn kimi_member_explicitly_resumes_provider_native_session() {
     );
     assert_eq!(member["native_session"]["availability"], "available");
     assert_eq!(member["native_session"]["supports_resume"], true);
+    assert_trust_native_binding_synced(
+        &home,
+        &project_id,
+        member["id"].as_str().expect("member run id"),
+        "session_prior_native",
+    );
 }
 
 #[test]
@@ -968,6 +1024,12 @@ fn claude_member_uses_native_session_without_provider_activity_mirror() {
     assert_eq!(
         member["native_session"]["native_locator_kind"],
         "claude_project_session"
+    );
+    assert_trust_native_binding_synced(
+        &home,
+        &project_id,
+        member["id"].as_str().expect("claude id"),
+        "session_prior_claude",
     );
     assert_collaboration_env(
         &home,
@@ -1052,6 +1114,12 @@ fn claude_failure_keeps_native_session_and_provider_error_without_mirroring_stre
         "session_fake_claude_failed"
     );
     assert_eq!(member["native_session"]["availability"], "available");
+    assert_trust_native_binding_synced(
+        &home,
+        &project_id,
+        member["id"].as_str().expect("member run id"),
+        "session_fake_claude_failed",
+    );
 
     let actions = store_rows(&home, &project_id, "member_actions.jsonl");
     let failure = actions

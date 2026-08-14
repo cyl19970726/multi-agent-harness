@@ -62,6 +62,59 @@ fn wait_for_file(path: &std::path::Path, context: &str) {
     panic!("timed out waiting for {context}: {}", path.display());
 }
 
+/// DEV-21 regression guard: a provider-driven settle persists the native
+/// Session binding through `TeamRunLedger::save_member_run`, which must sync
+/// the same binding onto the trust MemberRun (selector layer) and the current
+/// canonical AgentSession (exact binding layer) of the same runtime generation.
+fn assert_trust_native_binding_synced(
+    store: &HarnessStore,
+    member_run_id: &str,
+    expected_native_id: &str,
+) {
+    let space_id = store
+        .trust_member_run_scope(member_run_id)
+        .expect("read trust MemberRun scope")
+        .expect("trust MemberRun fabric exists for the settled run");
+    let trust_run = store
+        .trust_member_runs(&space_id)
+        .expect("read trust MemberRuns")
+        .into_iter()
+        .find(|run| run.id == member_run_id)
+        .expect("canonical trust MemberRun");
+    assert_eq!(
+        trust_run
+            .native_session
+            .as_ref()
+            .map(|session| session.native_session_id.as_str()),
+        Some(expected_native_id),
+        "provider settle must sync the native Session binding onto the trust MemberRun: {trust_run:?}"
+    );
+    let sessions = store
+        .fabric_agent_sessions(&space_id)
+        .expect("read canonical AgentSessions")
+        .into_iter()
+        .filter(|session| session.agent_identity_id == trust_run.agent_member_id)
+        .filter(|session| session.runtime_generation == trust_run.runtime_generation)
+        .filter(|session| {
+            session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sessions.len(),
+        1,
+        "exactly one current AgentSession for the settled generation: {sessions:?}"
+    );
+    assert_eq!(
+        sessions[0]
+            .native_session_ref
+            .as_ref()
+            .map(|session| session.native_session_id.as_str()),
+        Some(expected_native_id),
+        "provider settle must sync the native Session binding onto the canonical AgentSession: {:?}",
+        sessions[0]
+    );
+}
+
 fn current_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3047,7 +3100,7 @@ fn kimi_terminal_frame_is_fenced_before_stale_semantic_writes() {
 #[test]
 fn codex_app_server_member_can_be_steered_in_place() {
     let home = TempHome::new("team-run-codex-app-server");
-    let _project_id = init_project(&home, "alpha");
+    let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_codex_team_shim(&home.base().join("fakebin-codex-app"));
     let path = format!(
         "{}:{}",
@@ -3152,6 +3205,11 @@ fn codex_app_server_member_can_be_steered_in_place() {
         idle,
         "steered member did not return to persistent idle; snapshot: {diagnostic_snapshot}"
     );
+
+    // DEV-21: the fresh-start settle above wrote the native Session through
+    // save_member_run; the trust selector + exact-binding layers must carry it.
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    assert_trust_native_binding_synced(&store, &member_id, "thread_fake_codex_app_server");
 }
 
 #[test]
@@ -4730,7 +4788,7 @@ fn host_close_terminates_kimi_0310_runtime_without_conflating_interrupt() {
 #[test]
 fn idle_kimi_member_consumes_late_mail_on_the_same_native_session() {
     let home = TempHome::new("team-run-kimi-late-mail");
-    let _project_id = init_project(&home, "alpha");
+    let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_kimi = fake_bin.join("kimi").display().to_string();
     let serve = ServeHandle::spawn_with_env(
@@ -4850,6 +4908,11 @@ fn idle_kimi_member_consumes_late_mail_on_the_same_native_session() {
         second_round,
         "late Kimi mail was not delivered exactly once on the same native session"
     );
+
+    // DEV-21: the fresh-start settle wrote the native Session through
+    // save_member_run; the trust selector + exact-binding layers must carry it.
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    assert_trust_native_binding_synced(&store, &member_id, &first_session);
 }
 
 #[test]
