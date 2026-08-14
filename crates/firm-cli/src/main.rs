@@ -46,8 +46,8 @@ use harness_core::{
     WorkflowStepStatus, WorkflowTerminalReason, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
-    canonical_surface, HarnessStore, HostAttentionClaimResult, MessageDeliveryClaimResult,
-    StoreError,
+    canonical_surface, CanonicalMemberRunAdmission, HarnessStore, HostAttentionClaimResult,
+    MessageDeliveryClaimResult, StoreError,
 };
 use thiserror::Error;
 
@@ -11449,11 +11449,10 @@ fn agentfirm_native_session_ref(
     }
 }
 
-fn materialize_canonical_member_run(
-    store: &HarnessStore,
+fn canonical_member_run_admission(
     execution_space_id: &str,
     runtime: &ProviderRuntimeProjection,
-) -> CliResult<()> {
+) -> CanonicalMemberRunAdmission {
     let native_session = runtime
         .native_session
         .as_ref()
@@ -11497,23 +11496,24 @@ fn materialize_canonical_member_run(
         last_event_at: runtime.last_event_at.clone(),
         finished_at: runtime.finished_at.clone(),
     };
-    let context = harness_core::agentfirm_api::MutationContext {
-        execution_space_id: execution_space_id.to_string(),
-        authenticated_actor: harness_core::agentfirm_api::ActorRef {
-            kind: harness_core::agentfirm_api::ActorKind::Service,
-            id: "node-daemon:team-run-create".into(),
+    CanonicalMemberRunAdmission {
+        context: harness_core::agentfirm_api::MutationContext {
+            execution_space_id: execution_space_id.to_string(),
+            authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                kind: harness_core::agentfirm_api::ActorKind::Service,
+                id: "node-daemon:team-run-create".into(),
+            },
+            authority_actor: Some(harness_core::agentfirm_api::ActorRef {
+                kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+                id: runtime.agent_member_id.clone(),
+            }),
+            command_name: "team_run.materialize_member_run".into(),
+            idempotency_key: format!("team-run-member-run:{}", runtime.id),
+            expected_version: 0,
+            request_fingerprint: None,
         },
-        authority_actor: Some(harness_core::agentfirm_api::ActorRef {
-            kind: harness_core::agentfirm_api::ActorKind::AgentMember,
-            id: runtime.agent_member_id.clone(),
-        }),
-        command_name: "team_run.materialize_member_run".into(),
-        idempotency_key: format!("team-run-member-run:{}", runtime.id),
-        expected_version: 0,
-        request_fingerprint: None,
-    };
-    store_conflict_as_usage(store.create_trust_member_run(&context, run))?;
-    Ok(())
+        run,
+    }
 }
 
 fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Value {
@@ -11898,7 +11898,16 @@ fn create_team_run(
 
     // A freshly-generated run id has no events yet, so seq starts at 1.
     let mut seq = next_team_run_seq(store, &run_id)?;
-    store_conflict_as_usage(store.create_team_run_from_agent_team(&team_run, execution_space_id))?;
+    let canonical_member_runs = member_runs
+        .iter()
+        .map(|runtime| canonical_member_run_admission(execution_space_id, runtime))
+        .collect::<Vec<_>>();
+    store_conflict_as_usage(store.create_team_run_with_member_runs_from_agent_team(
+        &team_run,
+        execution_space_id,
+        &member_runs,
+        &canonical_member_runs,
+    ))?;
     append_team_run_event(
         store,
         &run_id,
@@ -11916,8 +11925,6 @@ fn create_team_run(
     // `member_runs` is built from `members` in order above, so zip pairs each
     // ProviderRuntimeProjection with the spec that produced it and its optional initial Work.
     for (member, member_run) in members.iter().zip(&member_runs) {
-        store.materialize_initial_member_run(member_run)?;
-        materialize_canonical_member_run(store, execution_space_id, member_run)?;
         append_team_run_event(
             store,
             &run_id,
@@ -12036,8 +12043,14 @@ fn add_team_run_member(
     let mut next = current.clone();
     next.member_run_ids.push(member_run.id.clone());
     next.updated_at = now_string();
-    store_conflict_as_usage(store.admit_member_run(&current, &next, &member_run))?;
-    materialize_canonical_member_run(store, &execution_space_id, &member_run)?;
+    let canonical_member_run = canonical_member_run_admission(&execution_space_id, &member_run);
+    store_conflict_as_usage(store.admit_member_run_with_canonical(
+        &current,
+        &next,
+        &member_run,
+        &execution_space_id,
+        &canonical_member_run,
+    ))?;
     append_team_run_event(
         store,
         team_run_id,
@@ -50036,6 +50049,25 @@ package:com.tencent.mm
         (HarnessStore::new(&root), root)
     }
 
+    fn durable_store_file_bytes(store: &HarnessStore) -> BTreeMap<String, Vec<u8>> {
+        let mut files = BTreeMap::new();
+        if !store.root().exists() {
+            return files;
+        }
+        for entry in std::fs::read_dir(store.root()).expect("read test Store") {
+            let entry = entry.expect("read Store entry");
+            let file_type = entry.file_type().expect("read Store entry type");
+            if !file_type.is_file() || entry.file_name() == ".store.lock" {
+                continue;
+            }
+            files.insert(
+                entry.file_name().to_string_lossy().into_owned(),
+                std::fs::read(entry.path()).expect("read durable Store file"),
+            );
+        }
+        files
+    }
+
     #[test]
     fn team_run_materializes_canonical_member_runs_in_its_execution_space() {
         let (store, root) = temp_store("canonical-member-run-materialization");
@@ -50053,6 +50085,255 @@ package:com.tencent.mm
             assert_eq!(projection.team_run_id, created.team_run.id);
             assert_eq!(projection.runtime_generation, runtime.runtime_generation);
         }
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn initial_member_admission_rejects_foreign_only_identity_without_any_durable_write() {
+        let (store, root) = temp_store("initial-member-admission-space-fence");
+        let (project_context, team_id) =
+            ensure_legacy_unit_test_team_binding(&store).expect("seed exact Team binding");
+        let local = TeamMemberSpec {
+            agent_member_id: "agent-initial-local".into(),
+            name: "InitialLocal".into(),
+            role: "builder".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: vec!["crates/local".into()],
+            resume_native_session_id: None,
+            initial_work: Some("deliver the local half".into()),
+        };
+        let foreign_only = TeamMemberSpec {
+            agent_member_id: "agent-initial-foreign-only".into(),
+            name: "InitialForeignOnly".into(),
+            role: "builder".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: vec!["crates/foreign".into()],
+            resume_native_session_id: None,
+            initial_work: Some("deliver the foreign half".into()),
+        };
+        ensure_unit_test_canonical_members(
+            &store,
+            "unit-test-space",
+            &team_id,
+            std::slice::from_ref(&local),
+        )
+        .expect("seed local AgentMember");
+        ensure_unit_test_canonical_members(
+            &store,
+            "foreign-member-space",
+            &team_id,
+            std::slice::from_ref(&foreign_only),
+        )
+        .expect("seed foreign-only AgentMember");
+        let members = vec![local, foreign_only];
+        let before = durable_store_file_bytes(&store);
+
+        let error = match create_team_run(
+            &store,
+            Some(&project_context),
+            Some("unit-test-space"),
+            None,
+            "Reject a mixed-scope initial roster atomically",
+            None,
+            "test",
+            None,
+            None,
+            Some(team_id.clone()),
+            None,
+            None,
+            &members,
+        ) {
+            Ok(_) => panic!("foreign-only AgentMember must fail exact-space admission"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("selected Execution Space"),
+            "unexpected scoped error: {error}"
+        );
+        assert_eq!(
+            durable_store_file_bytes(&store),
+            before,
+            "failed initial admission must not write TeamRun, runtime, event, Work, provider, or canonical ledgers"
+        );
+
+        ensure_unit_test_canonical_members(
+            &store,
+            "unit-test-space",
+            &team_id,
+            std::slice::from_ref(&members[1]),
+        )
+        .expect("materialize the same AgentMember in the selected space");
+        let retried = create_team_run(
+            &store,
+            Some(&project_context),
+            Some("unit-test-space"),
+            None,
+            "Retry the same initial roster",
+            None,
+            "test",
+            None,
+            None,
+            Some(team_id),
+            None,
+            None,
+            &members,
+        )
+        .expect("zero-write rejection must leave the roster retryable");
+        assert_eq!(retried.member_runs.len(), 2);
+        assert_eq!(retried.works.len(), 2);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn dynamic_member_admission_rejects_foreign_only_identity_without_any_durable_write() {
+        let (store, root) = temp_store("dynamic-member-admission-space-fence");
+        let created = create_two_member_team_run(&store);
+        let late = TeamMemberSpec {
+            agent_member_id: "agent-dynamic-foreign-only".into(),
+            name: "DynamicForeignOnly".into(),
+            role: "reviewer".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: vec!["crates/review".into()],
+            resume_native_session_id: None,
+            initial_work: None,
+        };
+        ensure_unit_test_canonical_members(
+            &store,
+            "foreign-member-space",
+            &created.team_run.agent_team_id,
+            std::slice::from_ref(&late),
+        )
+        .expect("seed foreign-only AgentMember");
+        let before = durable_store_file_bytes(&store);
+
+        let error = add_team_run_member(
+            &store,
+            None,
+            &created.team_run.id,
+            &late,
+            Some("review the accepted result"),
+        )
+        .expect_err("foreign-only AgentMember must fail dynamic exact-space admission");
+        assert!(
+            error.to_string().contains("selected Execution Space"),
+            "unexpected scoped error: {error}"
+        );
+        assert_eq!(
+            durable_store_file_bytes(&store),
+            before,
+            "failed dynamic admission must have byte-zero durable side effects"
+        );
+
+        ensure_unit_test_canonical_members(
+            &store,
+            "unit-test-space",
+            &created.team_run.agent_team_id,
+            std::slice::from_ref(&late),
+        )
+        .expect("materialize the same AgentMember in the selected space");
+        let (run, member, work) = add_team_run_member(
+            &store,
+            None,
+            &created.team_run.id,
+            &late,
+            Some("review the accepted result"),
+        )
+        .expect("zero-write rejection must leave the same name and identity retryable");
+        assert!(run.member_run_ids.contains(&member.id));
+        assert!(work.is_some());
+        assert!(store
+            .trust_member_runs("unit-test-space")
+            .expect("canonical MemberRuns")
+            .iter()
+            .any(|candidate| candidate.id == member.id));
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn dynamic_member_admission_revalidates_paused_local_identity_before_writing() {
+        let (store, root) = temp_store("dynamic-member-admission-paused-fence");
+        let created = create_two_member_team_run(&store);
+        let late = TeamMemberSpec {
+            agent_member_id: "agent-dynamic-paused-local".into(),
+            name: "DynamicPausedLocal".into(),
+            role: "reviewer".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: Vec::new(),
+            resume_native_session_id: None,
+            initial_work: None,
+        };
+        ensure_unit_test_canonical_members(
+            &store,
+            "unit-test-space",
+            &created.team_run.agent_team_id,
+            std::slice::from_ref(&late),
+        )
+        .expect("seed local AgentMember");
+        ensure_unit_test_canonical_members(
+            &store,
+            "foreign-member-space",
+            &created.team_run.agent_team_id,
+            std::slice::from_ref(&late),
+        )
+        .expect("seed active foreign decoy for the old all-space precheck");
+        store
+            .transition_trust_agent_member(
+                &harness_core::agentfirm_api::MutationContext {
+                    execution_space_id: "unit-test-space".into(),
+                    authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                        kind: harness_core::agentfirm_api::ActorKind::Service,
+                        id: "test-host".into(),
+                    },
+                    authority_actor: None,
+                    command_name: "test.agent_member.pause".into(),
+                    idempotency_key: "pause-local-before-admission".into(),
+                    expected_version: 1,
+                    request_fingerprint: None,
+                },
+                &late.agent_member_id,
+                harness_core::agentfirm_api::AgentMemberOrganizationStatus::Paused,
+                "unix-ms:3",
+            )
+            .expect("pause selected-space AgentMember");
+        let before = durable_store_file_bytes(&store);
+
+        let error = add_team_run_member(
+            &store,
+            None,
+            &created.team_run.id,
+            &late,
+            Some("must not start while paused"),
+        )
+        .expect_err("selected-space paused state must win over active foreign decoy");
+        assert!(
+            error.to_string().contains("AGENT_MEMBER_PAUSED"),
+            "unexpected paused error: {error}"
+        );
+        assert_eq!(
+            durable_store_file_bytes(&store),
+            before,
+            "paused exact-space revalidation must occur before every durable admission write"
+        );
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 

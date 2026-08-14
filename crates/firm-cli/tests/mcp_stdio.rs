@@ -534,6 +534,7 @@ fn inject_foreign_space_copy_of_message(
     source_execution_space_id: &str,
     foreign_execution_space_id: &str,
     message_id: &str,
+    _exclusive_store_guard: &harness_store::StoreExclusiveMigrationGuard,
 ) {
     let ledger = store_root.join("agentfirm_trust_operations.jsonl");
     let source = std::fs::read_to_string(&ledger).expect("read canonical operation ledger");
@@ -788,11 +789,21 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
         )
     });
     let foreign_execution_space_id = "mcp-space-foreign-same-run-id";
+    // The NodeDaemon settles the RuntimeCommand immediately after authoring
+    // the request Message. Both canonical mutations atomically replace the
+    // complete trust ledger, so an out-of-band hostile fixture append must
+    // share the ordinary Store writer lock or the settle rename can discard
+    // it. Retain the guard through the read-only MCP projections to prove the
+    // foreign row exists while status/inbox ignore it.
+    let hostile_fixture_guard = store
+        .acquire_exclusive_migration_guard()
+        .expect("serialize hostile fixture with canonical Store writers");
     inject_foreign_space_copy_of_message(
         &home.spaces_dir().join("mcp-space-provider-interaction"),
         execution_space_id,
         foreign_execution_space_id,
         &request_id,
+        &hostile_fixture_guard,
     );
     assert_eq!(
         store
@@ -835,6 +846,7 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
             .is_some_and(|messages| messages.iter().any(|message| message["id"] == request_id)),
         "canonical Host inbox must expose the unanswered request: {host_inbox_before_answer}"
     );
+    drop(hostile_fixture_guard);
 
     let mut impostor = McpClient::spawn(
         &home,

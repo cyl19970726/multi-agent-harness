@@ -45,6 +45,15 @@ pub struct CanonicalMutationResult<T> {
     pub replayed: bool,
 }
 
+/// The exact canonical half of one current MemberRun admission. The legacy
+/// runtime projection and this canonical projection are validated together by
+/// the Store before either side is mutated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanonicalMemberRunAdmission {
+    pub context: MutationContext,
+    pub run: MemberRun,
+}
+
 fn trust_conflict(error: TrustError) -> StoreError {
     StoreError::Conflict(serde_json::to_string(&error).unwrap_or_else(|_| error.message.clone()))
 }
@@ -1003,13 +1012,12 @@ impl HarnessStore {
             .map(|envelope| envelope.execution_space_id))
     }
 
-    pub fn create_trust_member_run(
+    fn validate_trust_member_run_authority_unlocked(
         &self,
         context: &MutationContext,
-        run: MemberRun,
-    ) -> StoreResult<CanonicalMutationResult<MemberRun>> {
-        self.init()?;
-        let _trust_lock = self.acquire_write_lock()?;
+        run: &MemberRun,
+        team_run: &firm_core::AgentTeamRun,
+    ) -> StoreResult<()> {
         required(&run.id, "MemberRun.id")?;
         required(&run.agent_member_id, "MemberRun.agent_member_id")?;
         required(&run.team_run_id, "MemberRun.team_run_id")?;
@@ -1022,6 +1030,15 @@ impl HarnessStore {
                 Some(0),
             ));
         }
+        if run.team_run_id != team_run.id {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "MemberRun does not belong to the admitted TeamRun",
+                "member_run",
+                &run.id,
+                None,
+            ));
+        }
         let member = self
             .trust_agent_members(&context.execution_space_id)?
             .into_iter()
@@ -1029,7 +1046,7 @@ impl HarnessStore {
             .ok_or_else(|| {
                 trust_error(
                     TrustErrorCode::InvalidStateTransition,
-                    "MemberRun references a missing AgentMember",
+                    "MemberRun references a missing AgentMember in the selected Execution Space",
                     "member_run",
                     &run.id,
                     None,
@@ -1044,7 +1061,7 @@ impl HarnessStore {
                     "agent_member",
                     &member.id,
                     Some(member.version),
-                ))
+                ));
             }
             AgentMemberOrganizationStatus::Retired => {
                 return Err(trust_error(
@@ -1053,23 +1070,9 @@ impl HarnessStore {
                     "agent_member",
                     &member.id,
                     Some(member.version),
-                ))
+                ));
             }
         }
-        let team_run = self
-            .team_runs()?
-            .into_iter()
-            .rev()
-            .find(|candidate| candidate.id == run.team_run_id)
-            .ok_or_else(|| {
-                trust_error(
-                    TrustErrorCode::InvalidStateTransition,
-                    "MemberRun references a missing TeamRun",
-                    "member_run",
-                    &run.id,
-                    None,
-                )
-            })?;
         let team = self
             .latest_teams()?
             .remove(&team_run.agent_team_id)
@@ -1093,6 +1096,180 @@ impl HarnessStore {
                 None,
             ));
         }
+        Ok(())
+    }
+
+    /// Validate every proposed canonical MemberRun against one frozen TeamRun
+    /// and exact Execution Space while the caller holds the Store write lock.
+    /// This is deliberately stricter than idempotent standalone create: current
+    /// admission must materialize new, absent canonical rows.
+    pub(crate) fn validate_new_trust_member_runs_unlocked(
+        &self,
+        execution_space_id: &str,
+        team_run: &firm_core::AgentTeamRun,
+        admissions: &[CanonicalMemberRunAdmission],
+    ) -> StoreResult<()> {
+        let existing = self.trust_operation_envelopes_unlocked()?;
+        let mut proposed_ids = BTreeSet::new();
+        let mut proposed_idempotency = BTreeSet::new();
+        for admission in admissions {
+            let context = &admission.context;
+            let run = &admission.run;
+            if context.execution_space_id != execution_space_id {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "MemberRun admission changed Execution Space",
+                    "member_run",
+                    &run.id,
+                    None,
+                ));
+            }
+            self.validate_trust_member_run_authority_unlocked(context, run, team_run)?;
+            if !proposed_ids.insert(run.id.clone()) {
+                return Err(trust_error(
+                    TrustErrorCode::VersionConflict,
+                    "MemberRun admission contains a duplicate id",
+                    "member_run",
+                    &run.id,
+                    Some(0),
+                ));
+            }
+            let idempotency_identity = (
+                context.execution_space_id.clone(),
+                context.authenticated_actor.kind,
+                context.authenticated_actor.id.clone(),
+                context.command_name.clone(),
+                context.idempotency_key.clone(),
+            );
+            if !proposed_idempotency.insert(idempotency_identity.clone()) {
+                return Err(trust_error(
+                    TrustErrorCode::IdempotencyKeyReused,
+                    "MemberRun admission contains a duplicate idempotency key",
+                    "member_run",
+                    &run.id,
+                    None,
+                ));
+            }
+            if existing.iter().any(|envelope| {
+                envelope.execution_space_id == execution_space_id
+                    && envelope.operation.event.aggregate_kind == "member_run"
+                    && envelope.operation.event.aggregate_id == run.id
+            }) {
+                return Err(trust_error(
+                    TrustErrorCode::VersionConflict,
+                    "MemberRun already exists in the selected Execution Space",
+                    "member_run",
+                    &run.id,
+                    Some(1),
+                ));
+            }
+            if existing.iter().any(|envelope| {
+                envelope.execution_space_id == idempotency_identity.0
+                    && envelope.authenticated_actor_kind == idempotency_identity.1
+                    && envelope.authenticated_actor_id == idempotency_identity.2
+                    && envelope.command_name == idempotency_identity.3
+                    && envelope.operation.event.idempotency_key == idempotency_identity.4
+            }) {
+                return Err(trust_error(
+                    TrustErrorCode::IdempotencyKeyReused,
+                    "MemberRun admission idempotency key already exists",
+                    "member_run",
+                    &run.id,
+                    None,
+                ));
+            }
+            // Prove the complete canonical payload is serializable before the
+            // caller performs the first legacy-ledger append.
+            serde_json::to_value(run)?;
+        }
+        Ok(())
+    }
+
+    /// Commit a previously validated set of new MemberRuns in one atomic
+    /// replacement of the canonical trust ledger. The caller must retain the
+    /// Store write lock from validation through this call.
+    pub(crate) fn commit_new_trust_member_runs_unlocked(
+        &self,
+        admissions: &[CanonicalMemberRunAdmission],
+    ) -> StoreResult<Vec<CanonicalMutationResult<MemberRun>>> {
+        let mut committed = self.trust_operation_envelopes_unlocked()?;
+        let first_store_sequence = committed
+            .iter()
+            .map(|envelope| envelope.operation.event.store_sequence)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let mut results = Vec::with_capacity(admissions.len());
+        for (next_store_sequence, admission) in (first_store_sequence..).zip(admissions) {
+            let context = &admission.context;
+            let run = &admission.run;
+            let payload = serde_json::to_value(run)?;
+            let fingerprint = context
+                .request_fingerprint
+                .clone()
+                .unwrap_or_else(|| canonical_json_fingerprint(&payload));
+            let event = CanonicalMutationEvent {
+                id: format!("trust-event-{next_store_sequence}"),
+                aggregate_kind: "member_run".to_string(),
+                aggregate_id: run.id.clone(),
+                sequence: 1,
+                store_sequence: next_store_sequence,
+                transition: "created".to_string(),
+                expected_version: 0,
+                resulting_version: 1,
+                performed_by_actor: context.authenticated_actor.clone(),
+                authority_actor: context.authority_actor.clone(),
+                causation_ref: None,
+                idempotency_key: context.idempotency_key.clone(),
+                canonical_request_fingerprint: fingerprint,
+                payload,
+                created_at: now_string(),
+            };
+            let operation = CanonicalOperation {
+                event: event.clone(),
+                resulting_projection: serde_json::to_value(run)?,
+                immutable_side_records: Vec::new(),
+                initial_outbox_records: Vec::new(),
+            };
+            committed.push(TrustOperationEnvelope {
+                execution_space_id: context.execution_space_id.clone(),
+                authenticated_actor_kind: context.authenticated_actor.kind,
+                authenticated_actor_id: context.authenticated_actor.id.clone(),
+                command_name: context.command_name.clone(),
+                operation,
+            });
+            results.push(CanonicalMutationResult {
+                projection: run.clone(),
+                event,
+                replayed: false,
+            });
+        }
+        self.write_trust_operation_envelopes_atomic_unlocked(&committed)?;
+        Ok(results)
+    }
+
+    pub fn create_trust_member_run(
+        &self,
+        context: &MutationContext,
+        run: MemberRun,
+    ) -> StoreResult<CanonicalMutationResult<MemberRun>> {
+        self.init()?;
+        let _trust_lock = self.acquire_write_lock()?;
+        let team_run = self
+            .team_runs()?
+            .into_iter()
+            .rev()
+            .find(|candidate| candidate.id == run.team_run_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "MemberRun references a missing TeamRun",
+                    "member_run",
+                    &run.id,
+                    None,
+                )
+            })?;
+        self.validate_trust_member_run_authority_unlocked(context, &run, &team_run)?;
         self.commit_trust_projection_unlocked(
             context,
             "member_run",
