@@ -14,6 +14,7 @@
 //! - `tools/call` → `{content:[{type:"text",text:<result JSON>}], isError}`.
 //! - unknown method → JSON-RPC -32601. stdin EOF exits.
 
+use std::collections::BTreeSet;
 use std::io::{BufRead, Write};
 
 use harness_core::{
@@ -27,9 +28,8 @@ use crate::{
     add_team_run_member, agentfirm_api, answer_provider_message_value, close_mission,
     close_team_member_value, create_mission, create_team_run, current_unix_ms_u64,
     deactivate_team_run_member, delegate_team_run_to_node_daemon, format_work_brief_line,
-    generated_id, has_actionable_delivered_manual_ack, host_inbox_for_native_thread,
-    interrupt_team_member_value, latest_member_runs_in_append_order,
-    latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
+    generated_id, host_inbox_for_native_thread, interrupt_team_member_value,
+    latest_member_runs_in_append_order, latest_team_run, latest_team_runs_in_append_order,
     mutate_team_work_value, now_string, reconcile_team_work_delivery_value, rename_team_run_member,
     reopen_team_member_value, reopened_member_requires_supervisor_start, revise_mission_context,
     serde_snake_label, steer_team_member_value, team_member_specs_from_definition,
@@ -180,14 +180,11 @@ pub(crate) fn call_tool(
         "team_run_deactivate_member" => tool_team_run_deactivate_member(store, &arguments),
         "team_run_start" => tool_team_run_start(store, resolved, &arguments),
         "team_run_cancel" => tool_team_run_cancel(store, resolved, &arguments),
-        "team_message_acknowledge" => tool_team_message_acknowledge(store, resolved, &arguments),
         "team_run_list" => tool_team_run_list(store, &arguments),
         "team_run_status" => tool_team_run_status(store, resolved, &arguments),
         "team_run_board_summary" => tool_team_run_board_summary(store, &arguments),
         "team_run_host_inbox" => tool_team_run_host_inbox(store, &arguments),
         "team_run_inbox" => tool_team_run_inbox(store, &arguments),
-        "team_run_send_message" => tool_team_run_send_message(store, &arguments),
-        "team_run_reconcile_delivery" => tool_team_run_reconcile_delivery(store, &arguments),
         "team_run_answer_message" => tool_team_run_answer_message(store, &arguments),
         "team_run_steer_member" => tool_team_run_steer_member(store, &arguments),
         "team_run_interrupt_member" => tool_team_run_interrupt_member(store, &arguments),
@@ -949,14 +946,6 @@ fn tool_team_run_cancel(
     Ok(json!({"team_run": run, "dashboard_url": team_dashboard_url(store, resolved, id)}))
 }
 
-fn tool_team_message_acknowledge(
-    _store: &HarnessStore,
-    _resolved: &ResolvedStore,
-    _arguments: &Value,
-) -> Result<Value, String> {
-    Err("RETIRED_WRITE_AUTHORITY: team_message_acknowledge cannot authenticate the recipient session; acknowledge canonical MessageDelivery through the target NodeDaemon".to_string())
-}
-
 /// Read a required string argument, or the tool-error message.
 fn required_str<'a>(arguments: &'a Value, key: &str) -> Result<&'a str, String> {
     arguments
@@ -1250,9 +1239,8 @@ fn tool_team_run_list(store: &HarnessStore, arguments: &Value) -> Result<Value, 
 }
 
 /// `team_run_status` — one run with its members (each carrying the latest
-/// MemberAction, if any), the compatibility `unacked_messages` count of
-/// actionable delivered `manual_ack` messages, and the dashboard URL. Mirrors
-/// the `team-run status --json` projection.
+/// MemberAction, if any), a current canonical Message-fabric summary, and the
+/// dashboard URL. Historical `team_messages.jsonl` rows never participate.
 fn tool_team_run_status(
     store: &HarnessStore,
     resolved: &ResolvedStore,
@@ -1267,8 +1255,6 @@ fn tool_team_run_status(
         .collect();
     let actions =
         visible_member_actions_in_append_order(store).map_err(|error| error.to_string())?;
-    let messages =
-        latest_team_messages_in_append_order(store).map_err(|error| error.to_string())?;
     let members: Vec<Value> = member_runs
         .iter()
         .map(|member| {
@@ -1282,11 +1268,7 @@ fn tool_team_run_status(
             })
         })
         .collect();
-    let unacked_messages = messages
-        .iter()
-        .filter(|message| message.team_run_id == id)
-        .filter(|message| has_actionable_delivered_manual_ack(message))
-        .count();
+    let message_summary = canonical_message_summary_for_run(store, id)?;
     let supervisor = store
         .latest_team_supervisor_lease(id)
         .map_err(|error| error.to_string())?;
@@ -1297,7 +1279,7 @@ fn tool_team_run_status(
     Ok(json!({
         "team_run": run,
         "members": members,
-        "unacked_messages": unacked_messages,
+        "message_summary": message_summary,
         "supervisor": {
             "lease": supervisor,
             "current": supervisor_current,
@@ -1306,24 +1288,90 @@ fn tool_team_run_status(
     }))
 }
 
-/// The retired MCP tool cannot authenticate a stable sender identity. Keep the
-/// name as an explicit hard-rejection surface until the MCP manifest removes
-/// it; canonical authorship is an authenticated Role Action or source
-/// NodeDaemon RuntimeCommand.
-fn tool_team_run_send_message(_store: &HarnessStore, _arguments: &Value) -> Result<Value, String> {
-    Err("RETIRED_WRITE_AUTHORITY: team_run_send_message cannot select a sender identity; use an authenticated AgentFirm Role Action or source NodeDaemon RuntimeCommand".to_string())
-}
-
-fn tool_team_run_reconcile_delivery(
-    _store: &HarnessStore,
-    _arguments: &Value,
+fn canonical_message_summary_for_run(
+    store: &HarnessStore,
+    team_run_id: &str,
 ) -> Result<Value, String> {
-    Err("RETIRED_WRITE_AUTHORITY: team_run_reconcile_delivery cannot supply target NodeDaemon authority; use canonical target-NodeDaemon reconciliation".to_string())
+    let mut messages = Vec::new();
+    let mut deliveries = Vec::new();
+    for execution_space_id in store
+        .canonical_execution_space_ids()
+        .map_err(|error| error.to_string())?
+    {
+        let space_messages = store
+            .fabric_messages(&execution_space_id)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|message| message.team_run_id.as_deref() == Some(team_run_id))
+            .collect::<Vec<_>>();
+        let space_message_ids = space_messages
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<BTreeSet<_>>();
+        deliveries.extend(
+            store
+                .fabric_message_deliveries(&execution_space_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .filter(|delivery| space_message_ids.contains(delivery.message_id.as_str())),
+        );
+        messages.extend(space_messages);
+    }
+    messages.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let answered_request_ids = messages
+        .iter()
+        .filter(|message| {
+            message.kind == harness_core::agentfirm_api::MessageKind::ProviderInteractionResponse
+        })
+        .filter_map(|message| message.causation_id.as_deref())
+        .collect::<BTreeSet<_>>();
+    let provider_interaction_requests = messages
+        .iter()
+        .filter(|message| {
+            message.kind == harness_core::agentfirm_api::MessageKind::ProviderInteractionRequest
+        })
+        .count();
+    let provider_interaction_responses = messages
+        .iter()
+        .filter(|message| {
+            message.kind == harness_core::agentfirm_api::MessageKind::ProviderInteractionResponse
+        })
+        .count();
+    let awaiting_host_response = messages
+        .iter()
+        .filter(|message| {
+            message.kind == harness_core::agentfirm_api::MessageKind::ProviderInteractionRequest
+                && !answered_request_ids.contains(message.id.as_str())
+        })
+        .count();
+    let actionable_deliveries = deliveries
+        .iter()
+        .filter(|delivery| {
+            matches!(
+                delivery.status,
+                harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Queued
+                    | harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Routed
+                    | harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Claimed
+                    | harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::ProviderReceived
+            )
+        })
+        .count();
+    Ok(json!({
+        "total": messages.len(),
+        "provider_interaction_requests": provider_interaction_requests,
+        "provider_interaction_responses": provider_interaction_responses,
+        "awaiting_host_response": awaiting_host_response,
+        "actionable_deliveries": actionable_deliveries,
+    }))
 }
 
-/// `team_run_inbox` — latest-wins coordination mail addressed to one member.
-/// The default projection is actionable queued/delivered mail; `all=true`
-/// returns all received messages at their latest stored state.
+/// `team_run_inbox` — canonical Message/MessageDelivery projection addressed
+/// to one member. `all=true` includes terminal delivery history; the retired
+/// `team_messages.jsonl` ledger is never consulted.
 fn tool_team_run_inbox(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
     let team_run_id = required_str(arguments, "team_run_id")?;
     let member_run_id = required_str(arguments, "member_run_id")?;
@@ -1336,7 +1384,7 @@ fn tool_team_run_inbox(store: &HarnessStore, arguments: &Value) -> Result<Value,
     Ok(json!({"messages": messages}))
 }
 
-/// `team_run_host_inbox` — aggregate actionable Host mail only for TeamRuns
+/// `team_run_host_inbox` — aggregate canonical Host mail only for TeamRuns
 /// bound to the exact provider-native Host thread.
 fn tool_team_run_host_inbox(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
     let host_surface = required_str(arguments, "host_surface")?;
@@ -1684,18 +1732,6 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "team_message_acknowledge",
-            "description": "Acknowledge one delivery of a TeamMessageProjection for an explicit member or the reserved host recipient.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "message_id": {"type": "string"},
-                    "member_id": {"type": "string", "description": "Recipient member-run id or `host`."}
-                },
-                "required": ["message_id", "member_id"]
-            }
-        },
-        {
             "name": "team_run_list",
             "description": "List team runs in the store (latest projection, append order). One Execution Space store holds every tenant bound to it, so pass project_binding_id to see only one project's runs and status to drop finished ones. Mission is derived through AgentTeam; Legacy Wave rows never participate.",
             "inputSchema": {"type": "object", "properties": {
@@ -1705,7 +1741,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_status",
-            "description": "Show one team run: the run row, every member run with its latest MemberAction, compatibility field unacked_messages (the count of messages with at least one delivered manual_ack delivery awaiting acknowledgement), and the live dashboard URL. Provider questions are ordinary correlated Messages.",
+            "description": "Show one team run: the run row, every member run with its latest MemberAction, a canonical Message-fabric summary, and the live dashboard URL. Historical team_messages.jsonl rows are excluded.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1727,7 +1763,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_host_inbox",
-            "description": "Read Host mail across only those TeamRuns explicitly bound to one exact provider-native Host surface/thread. This is the safe Plugin/App integration path: it never leaks another Host task's inbox. By default returns actionable mail; all=true includes acknowledged history.",
+            "description": "Read canonical Host mail across only those TeamRuns explicitly bound to one exact provider-native Host surface/thread. This is the safe Plugin/App integration path: it never leaks another Host task's inbox. By default returns actionable mail; all=true includes terminal canonical delivery history.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1740,7 +1776,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_inbox",
-            "description": "Read latest-wins Harness coordination mail addressed to one ProviderRuntimeProjection (or the reserved host recipient). By default returns actionable queued/delivered messages; all=true returns every received message at its latest stored state, not raw append revisions. Provider-native transcript and tool history are intentionally excluded.",
+            "description": "Read the canonical Message/MessageDelivery projection addressed to one ProviderRuntimeProjection (or the reserved host recipient). By default returns actionable mail; all=true includes terminal delivery history. Historical team_messages.jsonl rows and provider-native transcript/tool history are excluded.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1749,46 +1785,6 @@ fn tool_definitions() -> Value {
                     "all": {"type": "boolean", "default": false}
                 },
                 "required": ["team_run_id", "member_run_id"]
-            }
-        },
-        {
-            "name": "team_run_send_message",
-            "description": "Route one conversation message inside a team run and fold it into the run's event log. Durable responsibility lives on Work; pass work_id only to link the discussion. MCP Host calls default to sender_kind=host; external gateways must identify operator/service explicitly and may not impersonate a driven ProviderRuntimeProjection. Omit lineage fields for a fresh conversation correlation.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "team_run_id": {"type": "string"},
-                    "sender_runtime_id": {"type": "string", "description": "Compatibility sender projection. Use `host` for MCP Host calls; operator/service gateways provide their stable id here."},
-                    "sender_kind": {"type": "string", "enum": ["host", "operator", "service", "agent_member"], "description": "Authenticated MCP actor provenance. Unbound MCP cannot author AgentMember messages for driven members; those originate from the bound provider runtime. The declared exception is a non-driven external_interactive member, whose user-driven session may self-author here and is recorded with authn_source=mcp:external_interactive."},
-                    "sender_id": {"type": "string", "description": "Stable id of the typed sender; defaults to sender_runtime_id."},
-                    "sender_name": {"type": "string"},
-                    "recipient_runtime_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}, "description": "One or more recipient member run ids, or the reserved host recipient."},
-                    "kind": {"type": "string", "enum": ["message", "handoff", "control"], "description": "Use `message` for planning, questions, answers, progress, blockers, review, broadcasts, and peer coordination. Work owns assignment and lifecycle."},
-                    "body": {"type": "string"},
-                    "work_id": {"type": "string", "description": "Optional Work discussed by this message. It must belong to the same TeamRun."},
-                    "correlation_id": {"type": "string", "description": "Optional existing conversation correlation to reuse."},
-                    "causation_id": {"type": "string", "description": "Optional earlier TeamMessageProjection id in this team run. When paired with correlation_id, it must carry that same correlation."}
-                    ,"response_intent": {"type": "string", "enum": ["informational", "response_required"], "description": "Explicit response intent (ADR 0046 §4). Omit for the kind+sender default: handoff/control always require a response round; ordinary message mail from the coordination plane (host/operator/service) requires one too, while peer member-to-member message mail stays informational and never starts a provider round on its own."}
-                },
-                "required": ["team_run_id", "sender_runtime_id", "recipient_runtime_ids", "kind", "body"]
-            }
-        },
-        {
-            "name": "team_run_reconcile_delivery",
-            "description": "Resolve one TeamMessageProjection delivery left in claimed state after a Supervisor crash. This never guesses provider consumption: choose provider_accepted=true with an audited provider_receipt_id, or requeue=true.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "team_run_id": {"type": "string"},
-                    "message_id": {"type": "string"},
-                    "member_run_id": {"type": "string"},
-                    "claim_id": {"type": "string"},
-                    "provider_accepted": {"type": "boolean"},
-                    "provider_receipt_id": {"type": "string"},
-                    "requeue": {"type": "boolean"},
-                    "reason": {"type": "string", "minLength": 1}
-                },
-                "required": ["team_run_id", "message_id", "member_run_id", "claim_id", "reason"]
             }
         },
         {
@@ -1807,7 +1803,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_steer_member",
-            "description": "Inject operator or Lead input into a currently active provider turn. This is capability-gated and currently requires codex_app_server; batch modes must use team_run_send_message for the next round.",
+            "description": "Inject operator or Lead input into a currently active provider turn. This is capability-gated and currently requires codex_app_server; when no turn is active, publish a canonical Message through the normal AgentTeam message surface.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

@@ -14,12 +14,11 @@ use firm_core::{
     NodeProjectRegistration, NodeProjectRegistrationStatus, Proposal, ProviderChildThread,
     ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
     ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
-    ProviderCompatibilityStatus, ProviderDispatchIntent, ProviderExecutionStatus,
-    ProviderIntegrationProfile, ProviderInteractionResponseBody, ProviderLaunchProfile,
-    ProviderProcess, ProviderRuntimeProjection, ProviderWorkDispatch, ProviderWorkDispatchStatus,
-    ProviderWorkDispatchUpdate, RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage,
-    Review, TeamActorKind, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
-    TeamMessageProjection, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
+    ProviderCompatibilityStatus, ProviderExecutionStatus, ProviderIntegrationProfile,
+    ProviderLaunchProfile, ProviderProcess, ProviderRuntimeProjection, ProviderWorkDispatch,
+    ProviderWorkDispatchStatus, ProviderWorkDispatchUpdate, RegistryDeliveryAttempt,
+    RegistryDeliveryStatus, RegistryMessage, Review, TeamActorKind, TeamMemberCloseRequest,
+    TeamMemberCloseStatus, TeamMessageProjection, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
     TeamSupervisorLeaseStatus, Validate, Vision, Work, WorkClaimMode, WorkCommandContext,
     WorkCondition, WorkConditionRecord, WorkDelegation, WorkDelegationEvent,
     WorkDelegationRevision, WorkDelegationState, WorkDelegationTransition, WorkEvent,
@@ -2233,7 +2232,6 @@ impl HarnessStore {
     pub fn insert_work(&self, mut work: Work, context: WorkCommandContext) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             &work.id,
@@ -2408,7 +2406,6 @@ impl HarnessStore {
     ) -> StoreResult<(WorkDelegation, Work)> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
 
         let request_fingerprint =
             work_delegation_request_fingerprint(&delegation, &target_work, &context);
@@ -2683,7 +2680,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -2734,7 +2730,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -2856,7 +2851,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -2920,7 +2914,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -3062,7 +3055,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -3136,7 +3128,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -3539,7 +3530,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -3714,7 +3704,6 @@ impl HarnessStore {
         }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -3758,7 +3747,6 @@ impl HarnessStore {
         }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -3801,7 +3789,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) =
             self.idempotent_work_operation_unlocked(&context.idempotency_key, work_id, kind)?
         {
@@ -3863,7 +3850,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) =
             self.idempotent_work_operation_unlocked(&context.idempotency_key, work_id, kind)?
         {
@@ -3909,7 +3895,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -4178,14 +4163,6 @@ impl HarnessStore {
         }
         self.ensure_host_attention_for_work_operation_unlocked(&operation)?;
         Ok(next)
-    }
-
-    fn ensure_work_store_compatible_unlocked(&self) -> StoreResult<()> {
-        // `assignment` is no longer a ProviderDispatchIntent, so a legacy row fails
-        // deserialization before any Work mutation can be accepted. We do not
-        // migrate or reinterpret that history: use a fresh Execution Space.
-        let _ = self.read_jsonl::<TeamMessageProjection>("team_messages.jsonl")?;
-        Ok(())
     }
 
     fn require_team_run_unlocked(&self, team_run_id: &str) -> StoreResult<AgentTeamRun> {
@@ -6130,6 +6107,7 @@ impl HarnessStore {
     /// Claim one queued TeamMessageProjection delivery under the same durable lock used
     /// for the Supervisor lease. A claim must be completed with a real provider
     /// receipt or explicitly reconciled; it is never auto-requeued on expiry.
+    #[cfg(any())]
     #[allow(clippy::too_many_arguments, unreachable_code, unused_variables)]
     pub fn claim_team_message_delivery(
         &self,
@@ -6216,6 +6194,7 @@ impl HarnessStore {
         Ok(TeamMessageDeliveryClaimResult::Claimed(Box::new(message)))
     }
 
+    #[cfg(any())]
     #[allow(clippy::too_many_arguments, unreachable_code, unused_variables)]
     pub fn complete_team_message_delivery_claim(
         &self,
@@ -6306,12 +6285,14 @@ impl HarnessStore {
         Ok(message)
     }
 
-    /// Atomically acknowledge one already-delivered TeamMessageProjection recipient.
+    /// Retired compatibility seam for the historical `team_messages.jsonl`
+    /// delivery projection.
     ///
-    /// ACK does not require a live Supervisor because the Host or operator may
-    /// read and acknowledge mail while the provider runtime is idle or down.
-    /// It does require a real delivered receipt and never advances a queued or
-    /// uncertain claim.
+    /// Current callers must acknowledge the identity-first canonical Delivery
+    /// through [`HarnessStore::acknowledge_message_delivery`]. Historical
+    /// `TeamMessageProjection` rows remain readable, but this method must never
+    /// append a compatibility mutation or bypass canonical actor authority.
+    #[allow(unused_variables)]
     pub fn acknowledge_team_message_delivery(
         &self,
         team_run_id: &str,
@@ -6319,54 +6300,19 @@ impl HarnessStore {
         member_run_id: &str,
         updated_at: &str,
     ) -> StoreResult<TeamMessageProjection> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        let mut message = latest_by_id(
-            self.read_jsonl::<TeamMessageProjection>("team_messages.jsonl")?,
-            |message| message.id.clone(),
-        )
-        .remove(message_id)
-        .ok_or_else(|| StoreError::Conflict(format!("team message not found: {message_id}")))?;
-        if message.team_run_id != team_run_id {
-            return Err(StoreError::Conflict(format!(
-                "message {message_id} belongs to {}, not {team_run_id}",
-                message.team_run_id
-            )));
-        }
-        let delivery = message
-            .deliveries
-            .iter_mut()
-            .find(|delivery| delivery.member_id == member_run_id)
-            .ok_or_else(|| {
-                StoreError::Conflict(format!(
-                    "message {message_id} has no delivery for {member_run_id}"
-                ))
-            })?;
-        match delivery.status {
-            TeamDeliveryStatus::Acknowledged => return Ok(message),
-            TeamDeliveryStatus::Delivered => {}
-            TeamDeliveryStatus::Queued | TeamDeliveryStatus::Claimed => {
-                return Err(StoreError::Conflict(format!(
-                    "message {message_id} has not been delivered to {member_run_id}"
-                )));
-            }
-            TeamDeliveryStatus::Failed | TeamDeliveryStatus::Expired => {
-                return Err(StoreError::Conflict(format!(
-                    "message {message_id} delivery to {member_run_id} cannot be acknowledged from {:?}",
-                    delivery.status
-                )));
-            }
-        }
-        delivery.status = TeamDeliveryStatus::Acknowledged;
-        delivery.updated_at = updated_at.to_string();
-        self.append_jsonl_unlocked("team_messages.jsonl", &message)?;
-        Ok(message)
+        Err(StoreError::Conflict(
+            "RETIRED_RUNTIME_WRITER: use identity-first canonical Delivery acknowledgement".into(),
+        ))
     }
 
-    /// Resolve a claimed delivery after a crash. `provider_accepted=true`
-    /// records a reviewed native receipt; false explicitly returns it to the
-    /// queue. No automatic timeout path calls this method.
-    #[allow(clippy::too_many_arguments)]
+    /// Retired compatibility seam for reconciling the historical
+    /// `team_messages.jsonl` delivery projection.
+    ///
+    /// Current operator recovery must route through
+    /// [`HarnessStore::reconcile_canonical_message_delivery`], which fences the
+    /// exact NodeDaemon and canonical delivery generation before mutation.
+    /// Historical rows are read-only and are never dual-written.
+    #[allow(clippy::too_many_arguments, unused_variables)]
     pub fn reconcile_team_message_delivery_claim(
         &self,
         team_run_id: &str,
@@ -6377,56 +6323,10 @@ impl HarnessStore {
         provider_receipt_id: Option<&str>,
         updated_at: &str,
     ) -> StoreResult<TeamMessageProjection> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        let mut message = latest_by_id(
-            self.read_jsonl::<TeamMessageProjection>("team_messages.jsonl")?,
-            |message| message.id.clone(),
-        )
-        .remove(message_id)
-        .ok_or_else(|| StoreError::Conflict(format!("team message not found: {message_id}")))?;
-        if message.team_run_id != team_run_id {
-            return Err(StoreError::Conflict(format!(
-                "message {message_id} belongs to {}, not {team_run_id}",
-                message.team_run_id
-            )));
-        }
-        let delivery = message
-            .deliveries
-            .iter_mut()
-            .find(|delivery| delivery.member_id == member_run_id)
-            .ok_or_else(|| {
-                StoreError::Conflict(format!(
-                    "message {message_id} has no delivery for {member_run_id}"
-                ))
-            })?;
-        if delivery.status != TeamDeliveryStatus::Claimed
-            || delivery.claim_id.as_deref() != Some(claim_id)
-        {
-            return Err(StoreError::Conflict(format!(
-                "message {message_id} does not have active claim {claim_id} for {member_run_id}"
-            )));
-        }
-        if provider_accepted {
-            let receipt = provider_receipt_id.ok_or_else(|| {
-                StoreError::Conflict(
-                    "provider-accepted reconciliation requires a native receipt id".to_string(),
-                )
-            })?;
-            delivery.status = TeamDeliveryStatus::Delivered;
-            delivery.provider_receipt_id = Some(receipt.to_string());
-        } else {
-            delivery.status = TeamDeliveryStatus::Queued;
-            delivery.claim_id = None;
-            delivery.claimed_by_supervisor_id = None;
-            delivery.claimed_generation = None;
-            delivery.claimed_unix_ms = None;
-            delivery.claim_expires_unix_ms = None;
-            delivery.provider_receipt_id = None;
-        }
-        delivery.updated_at = updated_at.to_string();
-        self.append_jsonl_unlocked("team_messages.jsonl", &message)?;
-        Ok(message)
+        Err(StoreError::Conflict(
+            "RETIRED_RUNTIME_WRITER: use canonical Delivery reconciliation under exact NodeDaemon authority"
+                .into(),
+        ))
     }
 
     /// Fail a TeamMessageProjection delivery that can never be completed because the
@@ -6435,6 +6335,7 @@ impl HarnessStore {
     /// Transitions from `Queued` (pre-bind failure) or `Claimed` (transport
     /// disconnect) to `Failed`. A delivery already at `Failed` with the same
     /// reason is idempotent.
+    #[cfg(any())]
     #[allow(clippy::too_many_arguments, unreachable_code, unused_variables)]
     pub fn fail_team_message_delivery(
         &self,
@@ -7077,7 +6978,12 @@ impl HarnessStore {
         Ok(rows)
     }
 
-    pub fn team_messages(&self) -> StoreResult<Vec<TeamMessageProjection>> {
+    /// Read the append-only pre-canonical message projection for explicit
+    /// migration, export, and historical inspection only.
+    ///
+    /// Current runtime, delivery, reply lineage, and status projections must
+    /// use the identity-first canonical Message fabric instead.
+    pub fn legacy_team_messages(&self) -> StoreResult<Vec<TeamMessageProjection>> {
         self.read_jsonl("team_messages.jsonl")
     }
 
@@ -8468,6 +8374,121 @@ mod tests {
                 && !checked_writer.contains("Acknowledged"),
             "retired checked writer must not retain a hidden ledger mutation or ACK path"
         );
+    }
+
+    #[test]
+    fn legacy_team_message_delivery_mutators_are_explicit_read_only_seams() {
+        let source = include_str!("lib.rs");
+        let ambiguous_reader = ["pub fn team_", "messages("].concat();
+        assert!(
+            !source.contains(&ambiguous_reader),
+            "historical TeamMessageProjection reads must be explicitly Legacy-named"
+        );
+        assert!(
+            source.contains("pub fn legacy_team_messages("),
+            "the explicit Legacy history reader must remain available"
+        );
+        let retired_work_gate = ["ensure_work_store_", "compatible_unlocked"].concat();
+        assert!(
+            !source.contains(&retired_work_gate),
+            "retired TeamMessage history must never gate current Work mutations"
+        );
+        for retired_function in [
+            "pub fn claim_team_message_delivery(",
+            "pub fn complete_team_message_delivery_claim(",
+            "pub fn fail_team_message_delivery(",
+        ] {
+            let function_offset = source
+                .find(retired_function)
+                .unwrap_or_else(|| panic!("retired seam missing: {retired_function}"));
+            let attribute_window = &source[function_offset.saturating_sub(180)..function_offset];
+            assert!(
+                attribute_window.contains("#[cfg(any())]"),
+                "{retired_function} must not compile into the production Store API"
+            );
+        }
+        let acknowledge_writer = source
+            .split("pub fn acknowledge_team_message_delivery")
+            .nth(1)
+            .and_then(|tail| {
+                tail.split("pub fn reconcile_team_message_delivery_claim")
+                    .next()
+            })
+            .expect("legacy acknowledgement seam remains explicit");
+        let reconcile_writer = source
+            .split("pub fn reconcile_team_message_delivery_claim")
+            .nth(1)
+            .and_then(|tail| tail.split("pub fn fail_team_message_delivery").next())
+            .expect("legacy reconciliation seam remains explicit");
+
+        for retired_writer in [acknowledge_writer, reconcile_writer] {
+            assert!(
+                retired_writer.contains("RETIRED_RUNTIME_WRITER"),
+                "legacy delivery mutators must fail closed"
+            );
+            assert!(
+                !retired_writer.contains("append_jsonl_unlocked")
+                    && !retired_writer.contains("acquire_write_lock"),
+                "legacy delivery mutators must not retain a hidden ledger write path"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_team_message_delivery_mutators_reject_with_zero_store_side_effects() {
+        let root = team_test_root("retired-team-message-delivery-writers");
+        let store = HarnessStore::new(&root);
+        store.init().expect("init legacy-history store");
+        append_sparse_row(
+            &root,
+            "team_messages.jsonl",
+            r#"{"id":"tm-history","team_run_id":"tr-history","sender_runtime_id":"host","kind":"message","body":"history","correlation_id":"corr-history","created_at":"unix-ms:1"}"#,
+        );
+        let ledger_path = root.join("team_messages.jsonl");
+        let before = std::fs::read(&ledger_path).expect("read historical ledger before rejection");
+
+        let acknowledge_error = store
+            .acknowledge_team_message_delivery(
+                "tr-history",
+                "tm-history",
+                "member-history",
+                "unix-ms:2",
+            )
+            .expect_err("legacy acknowledgement must fail closed");
+        assert!(acknowledge_error
+            .to_string()
+            .contains("RETIRED_RUNTIME_WRITER"));
+        assert_eq!(
+            std::fs::read(&ledger_path).expect("read ledger after acknowledgement rejection"),
+            before,
+            "rejected legacy acknowledgement must not append or rewrite history"
+        );
+
+        let reconcile_error = store
+            .reconcile_team_message_delivery_claim(
+                "tr-history",
+                "tm-history",
+                "member-history",
+                "claim-history",
+                true,
+                Some("provider-receipt-history"),
+                "unix-ms:3",
+            )
+            .expect_err("legacy reconciliation must fail closed");
+        assert!(reconcile_error
+            .to_string()
+            .contains("RETIRED_RUNTIME_WRITER"));
+        assert_eq!(
+            std::fs::read(&ledger_path).expect("read ledger after reconciliation rejection"),
+            before,
+            "rejected legacy reconciliation must not append or rewrite history"
+        );
+
+        assert!(
+            !root.join(".store.lock").exists(),
+            "retired seams must reject before acquiring a writer lock"
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
     #[test]
@@ -10803,7 +10824,7 @@ mod tests {
             .ensure_host_attention(&attention)
             .expect("append attention");
         assert!(
-            store.team_messages().expect("messages").is_empty(),
+            store.legacy_team_messages().expect("messages").is_empty(),
             "Work state attention must not fabricate TeamMessageProjection conversation"
         );
         let unbound = store
@@ -10999,7 +11020,10 @@ mod tests {
         assert_eq!(blocked_attention.kind, HostAttentionKind::WorkBlocked);
         assert_eq!(blocked_attention.work_version, blocked.version);
         assert!(
-            store.team_messages().expect("TeamMessages").is_empty(),
+            store
+                .legacy_team_messages()
+                .expect("Legacy TeamMessages")
+                .is_empty(),
             "Work-state attention must not fabricate conversation"
         );
 
@@ -11472,7 +11496,9 @@ mod tests {
             r#"{"id":"tm-sparse","team_run_id":"tr-1","sender_runtime_id":"host","kind":"message","body":"hi","correlation_id":"corr-2","created_at":"unix-ms:3"}"#,
         );
 
-        let messages = store.team_messages().expect("read team messages");
+        let messages = store
+            .legacy_team_messages()
+            .expect("read legacy team messages");
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0], message);
         let sparse = &messages[1];
@@ -11694,9 +11720,10 @@ mod tests {
             .expect("same stable id and semantic reply returns existing");
         assert_eq!(retried.id, response.id);
 
-        let messages = latest_by_id(store.team_messages().expect("messages"), |message| {
-            message.id.clone()
-        });
+        let messages = latest_by_id(
+            store.legacy_team_messages().expect("legacy messages"),
+            |message| message.id.clone(),
+        );
         let request_after = messages.get(&request.id).expect("request remains");
         assert_eq!(
             request_after.deliveries[0].status,
@@ -11866,7 +11893,7 @@ mod tests {
             .contains("cannot be acknowledged"));
         assert_eq!(
             store
-                .team_messages()
+                .legacy_team_messages()
                 .expect("messages")
                 .iter()
                 .filter(
@@ -11947,7 +11974,7 @@ mod tests {
         assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
         assert_eq!(
             store
-                .team_messages()
+                .legacy_team_messages()
                 .expect("messages")
                 .iter()
                 .filter(
@@ -12471,7 +12498,7 @@ mod tests {
         assert!(conflict.to_string().contains("already handed off"));
         assert_eq!(
             store
-                .team_messages()
+                .legacy_team_messages()
                 .expect("messages")
                 .into_iter()
                 .filter(|message| message.kind == ProviderDispatchIntent::Message)
@@ -12760,7 +12787,7 @@ mod tests {
             .expect("append queued message");
 
         // Pre-bind failure: member never bound, delivery is still Queued.
-        let msgs = store.team_messages().expect("read messages");
+        let msgs = store.legacy_team_messages().expect("read legacy messages");
         let queued = msgs
             .iter()
             .find(|m| m.id == "tm-orphan")
@@ -12827,7 +12854,9 @@ mod tests {
         // RegistryMessage survives store reopen.
         drop(store);
         let reopened = HarnessStore::new(&root);
-        let msgs_after = reopened.team_messages().expect("read after reopen");
+        let msgs_after = reopened
+            .legacy_team_messages()
+            .expect("read legacy messages after reopen");
         let reloaded = latest_by_id(msgs_after, |m| m.id.clone())
             .remove("tm-orphan")
             .expect("tm-orphan survived reopen");
@@ -15454,7 +15483,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_assignment_message_is_not_readable_by_works_store() {
+    fn legacy_assignment_message_is_ignored_by_current_work_store() {
         let (root, store, run, _, _) = work_test_fixture("legacy-work-store");
         append_sparse_row(
             &root,
@@ -15464,13 +15493,20 @@ mod tests {
                 run.id
             ),
         );
-        let error = store
+        let legacy_path = root.join("team_messages.jsonl");
+        let legacy_before = std::fs::read(&legacy_path).expect("read legacy message history");
+        let created = store
             .insert_work(
-                unassigned_test_work(&run.id, "work-rejected"),
-                host_work_context("we-rejected", "create-rejected", "unix-ms:2"),
+                unassigned_test_work(&run.id, "work-current"),
+                host_work_context("we-current", "create-current", "unix-ms:2"),
             )
-            .expect_err("legacy store must be rejected");
-        assert!(error.to_string().contains("assignment"));
+            .expect("retired TeamMessage history must not gate current Work");
+        assert_eq!(created.id, "work-current");
+        assert_eq!(
+            std::fs::read(&legacy_path).expect("re-read legacy message history"),
+            legacy_before,
+            "current Work mutation must not reinterpret or rewrite legacy TeamMessage rows"
+        );
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 

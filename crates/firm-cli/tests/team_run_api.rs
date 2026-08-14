@@ -167,7 +167,7 @@ fn member_semantic_row_counts(store: &HarnessStore, member_id: &str) -> (usize, 
         .filter(|action| action.member_run_id == member_id)
         .count();
     let handoffs = store
-        .team_messages()
+        .legacy_team_messages()
         .expect("team messages")
         .into_iter()
         .filter(|message| {
@@ -2516,8 +2516,16 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
     );
 }
 
+// Historical TeamMessageProjection end-to-end scenario. Its private
+// claim/receipt helpers were removed from the integration surface by the
+// canonical MessageDelivery clean cutover, so keep the source as migration
+// evidence without compiling it against current APIs. One-for-one executable
+// coverage lives in `member_execution_trust`:
+// - `delivery_claim_and_receipt_are_generation_fenced_and_reconcile_is_explicit`
+// - `successor_supervisor_fences_stale_claim_before_any_canonical_side_effect`
+#[cfg(any())]
 #[test]
-#[ignore = "retired projection claim API; canonical supervisor/message generation fences have dedicated trust-kernel coverage"]
+#[ignore = "retired TeamMessageProjection claim API; canonical MessageDelivery generation/receipt coverage replaces it"]
 fn stale_supervisor_quiesces_and_successor_resumes_mail_once() {
     let home = TempHome::new("team-run-stale-supervisor-quiescence");
     let project_id = init_project_selector_clean(&home, "alpha");

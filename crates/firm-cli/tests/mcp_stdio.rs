@@ -1,7 +1,7 @@
 //! Integration coverage for `harness mcp`: the binary is spawned as a stdio
 //! MCP server against an isolated HOME and driven with line-delimited
 //! JSON-RPC 2.0 — initialize handshake, tools/list, the Agent Team control
-//! surface end to end (create → start/status → route/reconcile → send/ACK →
+//! surface end to end (create → start/status → canonical question/reply →
 //! events), and the -32601 unknown-method error.
 
 use std::io::{BufRead, BufReader, Write};
@@ -380,6 +380,16 @@ fn mcp_current_surface_is_mission_only_and_rejects_legacy_wave_tools() {
         names.iter().all(|name| !name.starts_with("wave_")),
         "Legacy Wave tools must not be advertised: {names:?}"
     );
+    for removed in [
+        "team_run_send_message",
+        "team_message_acknowledge",
+        "team_run_reconcile_delivery",
+    ] {
+        assert!(
+            !names.contains(removed),
+            "retired TeamMessageProjection tombstone must not be advertised: {removed}"
+        );
+    }
 
     let team_run_create = tools
         .iter()
@@ -418,6 +428,34 @@ fn mcp_current_surface_is_mission_only_and_rejects_legacy_wave_tools() {
         before,
         "removed Legacy Wave MCP tool must have a byte-zero store delta"
     );
+    for removed in [
+        "team_run_send_message",
+        "team_message_acknowledge",
+        "team_run_reconcile_delivery",
+    ] {
+        let response = mcp.request(
+            "tools/call",
+            serde_json::json!({
+                "name": removed,
+                "arguments": {
+                    "team_run_id": "must-not-exist",
+                    "message_id": "must-not-exist",
+                    "member_id": "must-not-exist"
+                }
+            }),
+        );
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("unknown tool")),
+            "removed MCP tombstone must fail as unknown: {removed}: {response}"
+        );
+        assert_eq!(
+            directory_snapshot(&home.spaces_dir()),
+            before,
+            "removed MCP tombstone must have a byte-zero store delta: {removed}"
+        );
+    }
 }
 
 fn call_payload(response: &serde_json::Value) -> serde_json::Value {
@@ -528,7 +566,7 @@ fn remote_fabric_mcp_surface_is_read_only_and_server_resolves_local_node() {
 }
 
 #[test]
-fn retired_mcp_team_run_message_writer_fails_closed_with_zero_store_delta() {
+fn removed_mcp_team_run_message_writer_fails_unknown_with_zero_store_delta() {
     let home = TempHome::new("mcp-retired-message-writer");
     let project_id = init_project(&home, "mcp-retired-message-project");
     let mut mcp = McpClient::spawn(&home, &project_id, &[]);
@@ -555,8 +593,10 @@ fn retired_mcp_team_run_message_writer_fails_closed_with_zero_store_delta() {
             }
         }),
     );
-    let error = call_error_text(&response);
-    assert!(error.contains("RETIRED_WRITE_AUTHORITY"), "{error}");
+    let error = response["error"]["message"]
+        .as_str()
+        .expect("removed tool must fail as unknown");
+    assert!(error.contains("unknown tool"), "{error}");
     assert_eq!(
         directory_snapshot(&home.spaces_dir()),
         before,
@@ -718,6 +758,39 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
         )
     });
 
+    let status_before_answer = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_status",
+            "arguments": {"team_run_id": run_id}
+        }),
+    ));
+    assert_eq!(
+        status_before_answer["message_summary"]["provider_interaction_requests"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(
+        status_before_answer["message_summary"]["provider_interaction_responses"].as_u64(),
+        Some(0)
+    );
+    assert_eq!(
+        status_before_answer["message_summary"]["awaiting_host_response"].as_u64(),
+        Some(1)
+    );
+    let host_inbox_before_answer = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_inbox",
+            "arguments": {"team_run_id": run_id, "member_run_id": "host"}
+        }),
+    ));
+    assert!(
+        host_inbox_before_answer["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.iter().any(|message| message["id"] == request_id)),
+        "canonical Host inbox must expose the unanswered request: {host_inbox_before_answer}"
+    );
+
     let mut impostor = McpClient::spawn(
         &home,
         &project_id,
@@ -802,6 +875,52 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
         }),
     ));
     assert_eq!(retry["id"], payload["id"]);
+    let status_after_retry = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_status",
+            "arguments": {"team_run_id": run_id}
+        }),
+    ));
+    assert_eq!(
+        status_after_retry["message_summary"]["provider_interaction_requests"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(
+        status_after_retry["message_summary"]["provider_interaction_responses"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(
+        status_after_retry["message_summary"]["awaiting_host_response"].as_u64(),
+        Some(0),
+        "exact retry must leave one visible resolved correlation: {status_after_retry}"
+    );
+    let actionable_host_inbox = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_inbox",
+            "arguments": {"team_run_id": run_id, "member_run_id": "host"}
+        }),
+    ));
+    assert!(
+        actionable_host_inbox["messages"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
+        "answered request must leave the actionable canonical Host inbox: {actionable_host_inbox}"
+    );
+    let historical_host_inbox = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_inbox",
+            "arguments": {"team_run_id": run_id, "member_run_id": "host", "all": true}
+        }),
+    ));
+    assert!(
+        historical_host_inbox["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.iter().any(|message| message["id"] == request_id)),
+        "canonical delivery history must preserve the answered request: {historical_host_inbox}"
+    );
     let responses = store
         .fabric_messages(execution_space_id)
         .expect("canonical messages")
@@ -822,10 +941,18 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
     );
     assert!(
         store
-            .team_messages()
+            .legacy_team_messages()
             .expect("legacy message projection")
             .is_empty(),
         "canonical provider question/answer must not revive the retired TeamMessage writer"
+    );
+    assert!(
+        !home
+            .spaces_dir()
+            .join(execution_space_id)
+            .join("team_messages.jsonl")
+            .exists(),
+        "canonical provider question/answer must not create the retired ledger"
     );
 }
 
@@ -1343,7 +1470,7 @@ fn mcp_stdio_agent_team_tools() {
     // requeue, so the normal inbox remains actionable exactly once.
     let store = HarnessStore::new(home.spaces_dir().join("mcp-space-main"));
     let mut claimed_message = store
-        .team_messages()
+        .legacy_team_messages()
         .expect("team messages")
         .into_iter()
         .rev()
@@ -1544,7 +1671,7 @@ fn mcp_stdio_agent_team_tools() {
     // appears in the run event stream. The provider-specific start tests own
     // actual delivery; this test owns the Host-facing MCP contract.
     let mut delivered_message = store
-        .team_messages()
+        .legacy_team_messages()
         .expect("team messages")
         .into_iter()
         .rev()
@@ -1914,7 +2041,7 @@ fn mcp_stdio_external_interactive_member_authorship() {
     );
     let store = HarnessStore::new(home.spaces_dir().join("mcp-space-external"));
     let reply = store
-        .team_messages()
+        .legacy_team_messages()
         .expect("team messages")
         .into_iter()
         .rev()

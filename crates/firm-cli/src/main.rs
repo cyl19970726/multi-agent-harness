@@ -105,16 +105,18 @@ impl CliError {
     }
 }
 
-/// Whether a routed message is currently actionable as a manual acknowledgement.
-///
-/// The compatibility `unacked_messages` projection deliberately excludes queued,
-/// injected, failed, expired, and already-acknowledged deliveries. A message is
-/// counted once when at least one recipient has a `manual_ack` delivery that has
-/// reached `delivered`.
-pub(crate) fn has_actionable_delivered_manual_ack(message: &TeamMessageProjection) -> bool {
+/// Whether canonical Message fabric still exposes a Host delivery that has not
+/// reached acknowledgement. The compatibility TeamMessage delivery policy is
+/// not authority for this current status projection.
+pub(crate) fn has_actionable_unacknowledged_host_delivery(message: &TeamMessageProjection) -> bool {
     message.deliveries.iter().any(|delivery| {
-        delivery.policy == TeamDeliveryPolicy::ManualAck
-            && delivery.status == TeamDeliveryStatus::Delivered
+        delivery.member_id == "host"
+            && matches!(
+                delivery.status,
+                TeamDeliveryStatus::Queued
+                    | TeamDeliveryStatus::Claimed
+                    | TeamDeliveryStatus::Delivered
+            )
     })
 }
 
@@ -12902,7 +12904,16 @@ fn canonical_team_messages_for_run(
                         && recipient.id == host_identity
                 })
             {
-                projected.push(project_canonical_inbox_message(&message, "host", None));
+                let mut row = project_canonical_inbox_message(&message, "host", None);
+                row.sender_runtime_id = if message.sender_actor_ref.id == host_identity {
+                    "host".to_string()
+                } else {
+                    identity_to_runtime
+                        .get(&message.sender_actor_ref.id)
+                        .cloned()
+                        .unwrap_or_else(|| message.sender_actor_ref.id.clone())
+                };
+                projected.push(row);
                 continue;
             }
             let Some((first_runtime, first_delivery)) = recipient_rows.first() else {
@@ -12910,6 +12921,14 @@ fn canonical_team_messages_for_run(
             };
             let mut row =
                 project_canonical_inbox_message(&message, first_runtime, Some(first_delivery));
+            row.sender_runtime_id = if message.sender_actor_ref.id == host_identity {
+                "host".to_string()
+            } else {
+                identity_to_runtime
+                    .get(&message.sender_actor_ref.id)
+                    .cloned()
+                    .unwrap_or_else(|| message.sender_actor_ref.id.clone())
+            };
             row.recipient_runtime_ids = recipient_rows
                 .iter()
                 .map(|(runtime_id, _)| runtime_id.clone())
@@ -12940,6 +12959,16 @@ fn canonical_team_messages_for_run(
             .then_with(|| left.id.cmp(&right.id))
     });
     Ok(projected)
+}
+
+fn team_run_unacknowledged_message_count(
+    store: &HarnessStore,
+    team_run_id: &str,
+) -> CliResult<usize> {
+    Ok(canonical_team_messages_for_run(store, team_run_id)?
+        .iter()
+        .filter(|message| has_actionable_unacknowledged_host_delivery(message))
+        .count())
 }
 
 fn project_canonical_inbox_message(
@@ -13112,7 +13141,7 @@ fn resolve_team_message_lineage(
     supplied_correlation_id: Option<String>,
     supplied_causation_id: Option<String>,
 ) -> CliResult<(String, Option<String>)> {
-    let messages = latest_team_messages_in_append_order(store)?;
+    let messages = canonical_team_messages_for_run(store, team_run_id)?;
     let has_explicit_correlation = supplied_correlation_id.is_some();
 
     if let Some(correlation_id) = supplied_correlation_id.as_deref() {
@@ -16037,7 +16066,7 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|board-summary|work|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|answer-message|events|wait|complete|cancel",
+        "team-run create|list|status|board-summary|work|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|answer-message|events|wait|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -16320,7 +16349,6 @@ fn team_run_command(
                     .filter(|member| member.team_run_id == id)
                     .collect();
             let actions = visible_member_actions_in_append_order(store)?;
-            let messages = latest_team_messages_in_append_order(store)?;
             let works: Vec<Work> = store
                 .latest_works()?
                 .into_iter()
@@ -16334,11 +16362,7 @@ fn team_run_command(
                     })
                     .max_by_key(|action| action.seq)
             };
-            let unacked_messages = messages
-                .iter()
-                .filter(|message| message.team_run_id == id)
-                .filter(|message| has_actionable_delivered_manual_ack(message))
-                .count();
+            let unacked_messages = team_run_unacknowledged_message_count(store, &id)?;
             let supervisor = store.latest_team_supervisor_lease(&id)?;
             let supervisor_current = supervisor.as_ref().is_some_and(is_supervisor_current);
             #[cfg(unix)]
@@ -16410,7 +16434,7 @@ fn team_run_command(
                         last
                     );
                 }
-                println!("unacked_messages (delivered manual ACKs): {unacked_messages}");
+                println!("unacked_messages (canonical Host deliveries): {unacked_messages}");
                 if unacked_messages > 0 && run.host_thread_id.is_none() {
                     eprintln!(
                         "[WARNING] {unacked_messages} unacked message(s) queued without host binding — member messages may be waiting silently.\n\
@@ -17057,10 +17081,7 @@ fn member_run_detail_json(
         .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
     let team_run = latest_team_run(store, &member.team_run_id)?;
 
-    let messages = latest_team_messages_in_append_order(store)?
-        .into_iter()
-        .filter(|message| message.team_run_id == member.team_run_id)
-        .collect::<Vec<_>>();
+    let messages = canonical_team_messages_for_run(store, &member.team_run_id)?;
     let inbox = messages
         .iter()
         .filter(|message| {
@@ -19754,7 +19775,7 @@ impl TeamRunLedger {
     }
 
     /// Latest-wins messages of this run, in append order.
-    fn team_messages(&self) -> CliResult<Vec<TeamMessageProjection>> {
+    fn canonical_team_messages(&self) -> CliResult<Vec<TeamMessageProjection>> {
         canonical_team_messages_for_run(&self.store, &self.run_id)
     }
 
@@ -20083,7 +20104,7 @@ impl TeamRunLedger {
     /// member's own sends, which it obviously already "has").
     fn queued_messages_for(&self, member_id: &str) -> CliResult<Vec<TeamMessageProjection>> {
         Ok(self
-            .team_messages()?
+            .canonical_team_messages()?
             .into_iter()
             .filter(|message| message.sender_runtime_id != member_id)
             .filter(|message| {
@@ -20329,7 +20350,7 @@ fn refresh_member_after_provider_callbacks(
         validate_provider_callback_drift(round_start, &latest)?;
     }
     if latest.status == MemberRunStatus::Waiting {
-        let messages = ledger.team_messages()?;
+        let messages = ledger.canonical_team_messages()?;
         let message_unresolved = messages.iter().any(|request| {
             request.kind == ProviderDispatchIntent::ProviderInteractionRequest
                 && request.sender_runtime_id == latest.id
@@ -24571,7 +24592,7 @@ fn active_assignment_for_round(
 
 fn member_handoff_ids(ledger: &TeamRunLedger, member_run_id: &str) -> CliResult<HashSet<String>> {
     Ok(ledger
-        .team_messages()?
+        .canonical_team_messages()?
         .into_iter()
         .filter(|message| {
             message.sender_runtime_id == member_run_id
@@ -24647,7 +24668,7 @@ fn latest_member_handoff_for_turn(
     member_run_id: &str,
     lineage: &MemberTurnLineage<'_>,
 ) -> CliResult<Option<TeamMessageProjection>> {
-    let messages = ledger.team_messages()?;
+    let messages = ledger.canonical_team_messages()?;
     Ok(messages
         .iter()
         .rev()
@@ -27227,7 +27248,42 @@ fn classify_kimi_acp_v1_interaction(
         return ProviderInteractionType::PlanReview;
     }
 
+    // These titles are reserved Kimi user-decision protocols. Once a callback
+    // claims either title, any non-canonical allow-bearing shape is unknown;
+    // it must never fall through into unattended tool approval.
+    if matches!(title, "AskUserQuestion" | "ExitPlanMode") {
+        return ProviderInteractionType::Unknown;
+    }
+
     ProviderInteractionType::ToolApproval
+}
+
+/// Decode the reviewed Kimi ACP v1 option array as one indivisible wire
+/// shape. Silently dropping one malformed entry can turn a reserved question
+/// or plan prompt into a tool approval, so any absent, non-string, empty, or
+/// otherwise incomplete option invalidates the whole callback.
+fn decode_kimi_acp_v1_options(
+    params: &serde_json::Value,
+) -> Option<Vec<ProviderInteractionMessageOption>> {
+    let raw = params.get("options")?.as_array()?;
+    if raw.is_empty() {
+        return None;
+    }
+    raw.iter()
+        .map(|option| {
+            let id = option.get("optionId")?.as_str()?.trim();
+            let label = option.get("name")?.as_str()?.trim();
+            let intent = option.get("kind")?.as_str()?.trim();
+            if id.is_empty() || label.is_empty() || intent.is_empty() {
+                return None;
+            }
+            Some(ProviderInteractionMessageOption {
+                id: id.to_string(),
+                label: label.to_string(),
+                intent: Some(intent.to_string()),
+            })
+        })
+        .collect()
 }
 
 fn handle_kimi_provider_request(
@@ -27237,26 +27293,7 @@ fn handle_kimi_provider_request(
 ) -> CliResult<ProviderInteractionReply> {
     let supplied_member = member;
     let params = frame.get("params").unwrap_or(frame);
-    let options = params
-        .get("options")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|option| {
-            Some(ProviderInteractionMessageOption {
-                id: option.get("optionId")?.as_str()?.to_string(),
-                label: option
-                    .get("name")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("Option")
-                    .to_string(),
-                intent: option
-                    .get("kind")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string),
-            })
-        })
-        .collect::<Vec<_>>();
+    let options = decode_kimi_acp_v1_options(params).unwrap_or_default();
     let title = params
         .pointer("/toolCall/title")
         .and_then(|value| value.as_str())
@@ -32785,93 +32822,6 @@ fn ack_host_attention_value(
         store.acknowledge_host_attention(attention_id, &surface, &thread, &now),
     )?;
     Ok(serde_json::json!({ "attention": final_attention, "idempotent": false }))
-}
-
-/// POST /v1/team-runs/{run}/messages/{message}/ack — acknowledge only a
-/// delivered recipient row belonging to the TeamRun named by the URL.
-#[cfg(any())]
-fn acknowledge_team_message_value(
-    store: &HarnessStore,
-    team_run_id: &str,
-    message_id: &str,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    let member_id = required_json_string(body, "member_id")?;
-    let message = latest_team_messages_in_append_order(store)?
-        .into_iter()
-        .find(|message| message.id == message_id)
-        .ok_or_else(|| CliError::Usage(format!("team message not found: {message_id}")))?;
-    if message.team_run_id != team_run_id {
-        return Err(CliError::Usage(format!(
-            "message {message_id} does not belong to team run {team_run_id}"
-        )));
-    }
-    Ok(serde_json::to_value(acknowledge_team_message(
-        store, message_id, &member_id,
-    )?)?)
-}
-
-/// Explicit operator reconciliation for a delivery left in `claimed` after a
-/// Supervisor crash. It never guesses whether the provider consumed content.
-#[cfg(any())]
-pub(crate) fn reconcile_team_message_delivery_value(
-    store: &HarnessStore,
-    team_run_id: &str,
-    message_id: &str,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    let member_run_id = required_json_string(body, "member_run_id")?;
-    let claim_id = required_json_string(body, "claim_id")?;
-    let reason = required_json_string(body, "reason")?;
-    if reason.trim().is_empty() {
-        return Err(CliError::Usage("reason must not be empty".to_string()));
-    }
-    let provider_accepted = json_bool(body, "provider_accepted").unwrap_or(false);
-    let requeue = json_bool(body, "requeue").unwrap_or(false);
-    if provider_accepted == requeue {
-        return Err(CliError::Usage(
-            "choose exactly one of provider_accepted=true or requeue=true".to_string(),
-        ));
-    }
-    let provider_receipt_id = optional_json_string(body, "provider_receipt_id")?;
-    if provider_accepted && provider_receipt_id.is_none() {
-        return Err(CliError::Usage(
-            "provider_accepted requires provider_receipt_id".to_string(),
-        ));
-    }
-    if requeue && provider_receipt_id.is_some() {
-        return Err(CliError::Usage(
-            "provider_receipt_id is invalid when requeue=true".to_string(),
-        ));
-    }
-    let message = store_conflict_as_usage(store.reconcile_team_message_delivery_claim(
-        team_run_id,
-        message_id,
-        &member_run_id,
-        &claim_id,
-        provider_accepted,
-        provider_receipt_id.as_deref(),
-        &now_string(),
-    ))?;
-    append_team_run_event(
-        store,
-        team_run_id,
-        next_team_run_seq(store, team_run_id)?,
-        TeamRunEventSourceKind::Operator,
-        None,
-        "message",
-        message_id,
-        "updated",
-        &format!(
-            "delivery for {member_run_id} reconciled as {}: {reason}",
-            if provider_accepted {
-                "provider_accepted"
-            } else {
-                "requeued"
-            }
-        ),
-    )?;
-    Ok(serde_json::to_value(message)?)
 }
 
 /// Explicit successor-Supervisor reconciliation for a stale Work delivery
@@ -39436,19 +39386,6 @@ fn latest_member_runs_in_append_order(
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
-fn latest_team_messages_in_append_order(
-    store: &HarnessStore,
-) -> CliResult<Vec<TeamMessageProjection>> {
-    let mut ids = Vec::new();
-    let mut by_id = BTreeMap::new();
-    for message in store.team_messages()? {
-        ids.retain(|id| id != &message.id);
-        ids.push(message.id.clone());
-        by_id.insert(message.id.clone(), message);
-    }
-    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
-}
-
 fn latest_team_supervisor_leases_in_append_order(
     store: &HarnessStore,
 ) -> CliResult<Vec<TeamSupervisorLease>> {
@@ -42310,7 +42247,7 @@ fn print_help() {
   mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <md>
   mission log show --mission-id <id> [--tail <n>]
   legacy wave list|show|history (historical reads only)
-  team-run create|list|status|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|answer-message|events|complete|cancel
+  team-run create|list|status|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|answer-message|events|complete|cancel
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.
@@ -47645,7 +47582,10 @@ mod tests {
             "codex_app_server",
             "thread-multi-question",
         );
-        let messages_before = store.team_messages().expect("team messages before").len();
+        let messages_before = store
+            .legacy_team_messages()
+            .expect("Legacy messages before")
+            .len();
         let actions_before = store.member_actions().expect("member actions before").len();
         let frame = serde_json::json!({
             "id": 700,
@@ -47668,7 +47608,10 @@ mod tests {
             "unexpected error: {error}"
         );
         assert_eq!(
-            store.team_messages().expect("team messages after").len(),
+            store
+                .legacy_team_messages()
+                .expect("Legacy messages after")
+                .len(),
             messages_before,
             "unsupported request must not create a provider request message"
         );
@@ -47865,6 +47808,19 @@ mod tests {
                 ProviderInteractionType::Unknown,
             ),
             (
+                "AskUserQuestion",
+                vec![option("q0_opt_0", "allow_once")],
+                ProviderInteractionType::Unknown,
+            ),
+            (
+                "ExitPlanMode",
+                vec![
+                    option("plan_approve", "allow_once"),
+                    option("plan_revise", "reject_once"),
+                ],
+                ProviderInteractionType::Unknown,
+            ),
+            (
                 "Bash",
                 vec![option("plan_approve", "allow_once")],
                 ProviderInteractionType::ToolApproval,
@@ -47883,7 +47839,9 @@ mod tests {
             "kimi_acp",
             "session-hostile-option-id-collision",
         );
-        let messages_before = store.team_messages().expect("team messages before");
+        let messages_before = store
+            .legacy_team_messages()
+            .expect("Legacy messages before");
         let actions_before = store.member_actions().expect("member actions before");
         let members_before = store.member_runs().expect("member runs before");
         let operations_before = store
@@ -47920,7 +47878,7 @@ mod tests {
         }
 
         assert_eq!(
-            store.team_messages().expect("team messages after"),
+            store.legacy_team_messages().expect("Legacy messages after"),
             messages_before,
             "hostile callbacks must not create Message waits"
         );
@@ -47940,6 +47898,114 @@ mod tests {
                 .expect("canonical operations after"),
             operations_before,
             "hostile callbacks must not write canonical operations"
+        );
+    }
+
+    #[test]
+    fn kimi_reserved_prompts_decode_options_all_or_nothing_and_fail_without_side_effects() {
+        let (store, _root) = temp_store("kimi-all-or-nothing-options");
+        let (ledger, member) = persisted_native_test_member(
+            &store,
+            "kimi",
+            "kimi_acp",
+            "session-all-or-nothing-options",
+        );
+        let legacy_messages_before = store
+            .legacy_team_messages()
+            .expect("Legacy messages before");
+        let actions_before = store.member_actions().expect("member actions before");
+        let members_before = store.member_runs().expect("member runs before");
+        let operations_before = store
+            .canonical_operations()
+            .expect("canonical operations before");
+        let fabric_messages_before = store
+            .fabric_messages("unit-test-space")
+            .expect("fabric messages before");
+        let fabric_deliveries_before = store
+            .fabric_message_deliveries("unit-test-space")
+            .expect("fabric deliveries before");
+
+        let malformed_options = vec![
+            serde_json::json!([
+                {"optionId": "q0_opt_0", "name": "Yes", "kind": "allow_once"},
+                {"optionId": "q0_skip", "name": "Skip"}
+            ]),
+            serde_json::json!([
+                {"optionId": "plan_approve", "name": "Approve", "kind": "allow_once"},
+                {"name": "Revise", "kind": "reject_once"},
+                {"optionId": "plan_reject_and_exit", "name": "Reject", "kind": "reject_once"}
+            ]),
+            serde_json::json!([
+                {"optionId": "q0_opt_0", "kind": "allow_once"},
+                {"optionId": "q0_skip", "name": "Skip", "kind": "reject_once"}
+            ]),
+            serde_json::json!([
+                {"optionId": 7, "name": "Approve", "kind": "allow_once"},
+                {"optionId": "plan_revise", "name": "Revise", "kind": "reject_once"},
+                {"optionId": "plan_reject_and_exit", "name": "Reject", "kind": "reject_once"}
+            ]),
+            serde_json::json!([
+                {"optionId": "q0_opt_0", "name": "Yes", "kind": "allow_once"}
+            ]),
+            serde_json::json!([
+                {"optionId": "plan_approve", "name": "Approve", "kind": "allow_once"},
+                {"optionId": "plan_revise", "name": "Revise", "kind": "reject_once"}
+            ]),
+        ];
+        for (index, options) in malformed_options.into_iter().enumerate() {
+            let title = if index % 2 == 0 {
+                "AskUserQuestion"
+            } else {
+                "ExitPlanMode"
+            };
+            let frame = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 820 + index,
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": "session-all-or-nothing-options",
+                    "options": options,
+                    "toolCall": {
+                        "toolCallId": format!("{}:hostile", 820 + index),
+                        "title": title
+                    }
+                }
+            });
+            let outcome = handle_kimi_provider_request(&ledger, &member, &frame)
+                .expect("malformed reserved callback cancels in-process");
+            assert_eq!(outcome.result["outcome"]["outcome"], "cancelled");
+            assert!(outcome.claimed_response.is_none());
+        }
+
+        assert_eq!(
+            store.legacy_team_messages().expect("Legacy messages after"),
+            legacy_messages_before
+        );
+        assert_eq!(
+            store.member_actions().expect("member actions after"),
+            actions_before
+        );
+        assert_eq!(
+            store.member_runs().expect("member runs after"),
+            members_before
+        );
+        assert_eq!(
+            store
+                .canonical_operations()
+                .expect("canonical operations after"),
+            operations_before
+        );
+        assert_eq!(
+            store
+                .fabric_messages("unit-test-space")
+                .expect("fabric messages after"),
+            fabric_messages_before
+        );
+        assert_eq!(
+            store
+                .fabric_message_deliveries("unit-test-space")
+                .expect("fabric deliveries after"),
+            fabric_deliveries_before
         );
     }
 
@@ -49993,7 +50059,7 @@ package:com.tencent.mm
             Some("provider-receipt-canonical")
         );
         assert!(store
-            .team_messages()
+            .legacy_team_messages()
             .expect("legacy TeamMessages")
             .iter()
             .all(|message| message.id != claimed.id));
@@ -50448,6 +50514,305 @@ package:com.tencent.mm
             lease.node_daemon_generation,
         )
         .expect("materialize canonical test AgentSessions and TeamMemberships");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn author_test_canonical_message(
+        store: &HarnessStore,
+        created: &CreatedTeamRun,
+        lease: &TeamSupervisorLease,
+        id: &str,
+        sender_identity_id: &str,
+        recipient_identity_id: &str,
+        kind: harness_core::agentfirm_api::MessageKind,
+        body: &str,
+        correlation_id: &str,
+        causation_id: Option<&str>,
+        response_intent: harness_core::agentfirm_api::ResponseIntent,
+    ) -> harness_core::agentfirm_api::Message {
+        use harness_core::agentfirm_api::{
+            ActorKind, ActorRef, Message, MessageAddressKind, MessageRecipientKind,
+            MessageRecipientRef, MutationContext,
+        };
+        use sha2::{Digest, Sha256};
+
+        let session = store
+            .fabric_agent_sessions(&lease.execution_space_id)
+            .expect("canonical test AgentSessions")
+            .into_iter()
+            .find(|session| session.agent_identity_id == sender_identity_id)
+            .expect("sender has one canonical AgentSession");
+        let sender = ActorRef {
+            kind: ActorKind::AgentMember,
+            id: sender_identity_id.to_string(),
+        };
+        let recipient = MessageRecipientRef {
+            kind: MessageRecipientKind::AgentIdentity,
+            id: recipient_identity_id.to_string(),
+        };
+        let recipients = vec![recipient.clone()];
+        let body_digest = format!("sha256:{:x}", Sha256::digest(body.as_bytes()));
+        let idempotency_key = format!("test-author:{id}");
+        let content_fingerprint = harness_store::canonical_json_fingerprint(&serde_json::json!({
+            "sender_actor_ref": sender,
+            "sender_agent_id": sender_identity_id,
+            "sender_session_id": session.id,
+            "address_kind": MessageAddressKind::DirectAgent,
+            "target_ref": recipient,
+            "recipients": recipients,
+            "team_id": created.team_run.agent_team_id,
+            "team_run_id": created.team_run.id,
+            "work_id": null,
+            "collaboration_scope": null,
+            "kind": kind,
+            "body": body,
+            "body_digest": body_digest,
+            "correlation_id": correlation_id,
+            "causation_id": causation_id,
+            "response_intent": response_intent,
+            "evidence_refs": Vec::<String>::new(),
+            "schema_version": 1,
+            "idempotency_key": idempotency_key,
+        }));
+        let message = Message {
+            id: id.to_string(),
+            source_execution_space_id: lease.execution_space_id.clone(),
+            source_node_id: session.node_id.clone(),
+            source_node_daemon_id: lease.node_daemon_id.clone(),
+            source_authority_generation: lease.node_daemon_generation,
+            sender_actor_ref: sender,
+            sender_agent_id: Some(sender_identity_id.to_string()),
+            sender_session_id: Some(session.id),
+            address_kind: MessageAddressKind::DirectAgent,
+            target_ref: recipient,
+            recipients,
+            team_id: Some(created.team_run.agent_team_id.clone()),
+            team_run_id: Some(created.team_run.id.clone()),
+            work_id: None,
+            collaboration_scope: None,
+            kind,
+            body: body.to_string(),
+            body_digest,
+            correlation_id: correlation_id.to_string(),
+            causation_id: causation_id.map(str::to_string),
+            response_intent,
+            evidence_refs: Vec::new(),
+            content_fingerprint,
+            schema_version: 1,
+            idempotency_key: idempotency_key.clone(),
+            created_at: now_string(),
+        };
+        store
+            .author_message(
+                &MutationContext {
+                    execution_space_id: lease.execution_space_id.clone(),
+                    authenticated_actor: ActorRef {
+                        kind: ActorKind::Service,
+                        id: lease.node_daemon_id.clone(),
+                    },
+                    authority_actor: None,
+                    command_name: "test.message.author".into(),
+                    idempotency_key,
+                    expected_version: 0,
+                    request_fingerprint: None,
+                },
+                message.clone(),
+            )
+            .expect("author canonical Message");
+        message
+    }
+
+    #[test]
+    fn canonical_message_fabric_drives_lineage_status_and_member_detail_without_legacy_rows() {
+        let (store, root) = temp_store("canonical-current-message-projections");
+        let created = create_two_member_team_run(&store);
+        let lease = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "canonical-current-message-projections",
+                std::process::id(),
+                "test://canonical-current-message-projections",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire canonical test Supervisor");
+        ensure_test_runtime_fabric(&store, &created, &lease);
+        let team = store
+            .latest_teams()
+            .expect("test Team")
+            .remove(&created.team_run.agent_team_id)
+            .expect("Team exists");
+        let member = &created.member_runs[0];
+        let legacy_path = store.root().join("team_messages.jsonl");
+        std::fs::write(&legacy_path, b"{malformed legacy archive")
+            .expect("seed unreadable Legacy archive sentinel");
+        let legacy_before = std::fs::read(&legacy_path).expect("legacy bytes before");
+
+        author_test_canonical_message(
+            &store,
+            &created,
+            &lease,
+            "canonical-host-request",
+            &team.host_agent_id,
+            &member.agent_member_id,
+            harness_core::agentfirm_api::MessageKind::Message,
+            "Please report status",
+            "canonical-conversation",
+            None,
+            harness_core::agentfirm_api::ResponseIntent::ResponseRequired,
+        );
+        author_test_canonical_message(
+            &store,
+            &created,
+            &lease,
+            "canonical-member-reply",
+            &member.agent_member_id,
+            &team.host_agent_id,
+            harness_core::agentfirm_api::MessageKind::Reply,
+            "Status complete",
+            "canonical-conversation",
+            Some("canonical-host-request"),
+            harness_core::agentfirm_api::ResponseIntent::Informational,
+        );
+
+        let lineage = resolve_team_message_lineage(
+            &store,
+            &created.team_run.id,
+            &ProviderDispatchIntent::Message,
+            None,
+            Some("canonical-member-reply".into()),
+        )
+        .expect("canonical reply supplies lineage");
+        assert_eq!(lineage.0, "canonical-conversation");
+        assert_eq!(lineage.1.as_deref(), Some("canonical-member-reply"));
+        assert_eq!(
+            team_run_unacknowledged_message_count(&store, &created.team_run.id)
+                .expect("canonical status count"),
+            1,
+            "member-to-Host canonical delivery is current unacknowledged status"
+        );
+        let detail = member_run_detail_json(&store, &member.id).expect("canonical member detail");
+        assert_eq!(detail["mailbox"]["inbox"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            detail["mailbox"]["outbox"].as_array().map(Vec::len),
+            Some(1),
+            "canonical sender identity must project back to its MemberRun"
+        );
+        assert_eq!(
+            std::fs::read(&legacy_path).expect("legacy bytes after"),
+            legacy_before,
+            "current lineage/status/detail must neither read nor write the Legacy archive"
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn provider_request_replay_uses_canonical_message_only() {
+        let (store, root) = temp_store("canonical-provider-request-replay");
+        let created = create_two_member_team_run(&store);
+        let lease = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "canonical-provider-request-replay",
+                std::process::id(),
+                "test://canonical-provider-request-replay",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire canonical test Supervisor");
+        ensure_test_runtime_fabric(&store, &created, &lease);
+        let team = store
+            .latest_teams()
+            .expect("test Team")
+            .remove(&created.team_run.agent_team_id)
+            .expect("Team exists");
+        let mut member = created.member_runs[0].clone();
+        let expected = member.clone();
+        member.native_session = Some(NativeSessionRef {
+            provider: member.provider.clone(),
+            execution_mode: "codex_app_server".into(),
+            native_session_id: "canonical-replay-session".into(),
+            native_locator_kind: "codex_thread".into(),
+            provider_version: None,
+            adapter_contract_version: "test".into(),
+            availability: NativeSessionAvailability::Available,
+            supports_resume: true,
+            last_verified_at: None,
+            parent_native_session_id: None,
+        });
+        store
+            .compare_and_append_member_run(&expected, &member)
+            .expect("bind provider-native session");
+        let options = vec![ProviderInteractionMessageOption {
+            id: "answer::0".into(),
+            label: "Proceed".into(),
+            intent: Some("answer".into()),
+        }];
+        let body = ProviderInteractionRequestBody {
+            interaction_type: ProviderInteractionType::Question,
+            prompt: "Continue?".into(),
+            options: options.clone(),
+            provider: member.provider.clone(),
+            provider_request_id: "native-request-7".into(),
+            method: "item/tool/requestUserInput".into(),
+            session: "canonical-replay-session".into(),
+            member: member.id.clone(),
+            generation: member.runtime_generation,
+        };
+        let canonical_body = body.to_canonical_json().expect("canonical request body");
+        let correlation = body.correlation_id();
+        let legacy_path = store.root().join("team_messages.jsonl");
+        std::fs::write(&legacy_path, b"{malformed legacy archive")
+            .expect("seed unreadable Legacy archive sentinel");
+        let legacy_before = std::fs::read(&legacy_path).expect("legacy bytes before");
+        let authored = author_test_canonical_message(
+            &store,
+            &created,
+            &lease,
+            "canonical-provider-request",
+            &member.agent_member_id,
+            &team.host_agent_id,
+            harness_core::agentfirm_api::MessageKind::ProviderInteractionRequest,
+            &canonical_body,
+            &correlation,
+            None,
+            harness_core::agentfirm_api::ResponseIntent::ResponseRequired,
+        );
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let (replayed, created_again) = provider_interaction_request_message(
+            &ledger,
+            &member,
+            "native-request-7",
+            "item/tool/requestUserInput",
+            ProviderInteractionType::Question,
+            "Continue?".into(),
+            options,
+        )
+        .expect("exact canonical provider request replay converges");
+        assert!(!created_again);
+        assert_eq!(replayed.id, authored.id);
+        assert_eq!(
+            canonical_team_messages_for_run(&store, &created.team_run.id)
+                .expect("canonical messages")
+                .iter()
+                .filter(|message| {
+                    message.kind == ProviderDispatchIntent::ProviderInteractionRequest
+                })
+                .count(),
+            1
+        );
+        assert_eq!(
+            std::fs::read(&legacy_path).expect("legacy bytes after"),
+            legacy_before,
+            "provider request replay must neither read nor write the Legacy archive"
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
     }
 
     struct FaithfulProviderControlShim {
@@ -51150,7 +51515,8 @@ package:com.tencent.mm
             )
             .expect("replacement completes after native write");
 
-        let messages = latest_team_messages_in_append_order(&store).expect("messages");
+        let messages = canonical_team_messages_for_run(&store, &created.team_run.id)
+            .expect("canonical messages");
         let latest_request = messages
             .iter()
             .find(|message| message.id == request.id)

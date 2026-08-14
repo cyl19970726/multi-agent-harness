@@ -34,13 +34,20 @@ even though every AgentSession already has an effective permission ceiling.
    labels and option-id substrings never grant permission.
 5. Protected Company effects remain governed by their domain approval policy;
    that policy is separate from provider tool permission.
-6. Historical JSONL files are not migrated, read, projected, dual-written, or
-   mutated after this cutover.
+6. Historical JSONL files are not migrated, read by current status, lineage,
+   detail, inbox, or replay projections, dual-written, or mutated after this
+   cutover. `team_messages.jsonl` remains available only through the explicit
+   read-only Legacy archive/export path.
 
 ## Consequences
 
 - CLI/MCP use `answer-message` / `team_run_answer_message`; HTTP uses the
-  message-scoped `/messages/{id}/answer` route.
+  message-scoped `/messages/{id}/answer` route. MCP does not advertise or
+  dispatch the retired `team_run_send_message`, `team_message_acknowledge`, or
+  `team_run_reconcile_delivery` tombstones: calls fail closed as unknown tools.
+- MCP status and inbox views project only canonical `Message` plus
+  `CanonicalMessageDelivery`. Status exposes current request/reply and
+  unresolved-response counts, never the historical manual-ACK projection.
 - Provider-native session records remain transcript/tool/turn truth.
 - `MessageDelivery` and provider receipts remain transport evidence.
 - Answer authority comes from the transport-authenticated AgentMember and must
@@ -56,6 +63,12 @@ even though every AgentSession already has an effective permission ceiling.
 - active source and current docs contain no operational reference to the
   retired object, ledger, route, or projection;
 - question/reply idempotency and authority tests pass on exact Messages;
+- MCP `tools/list` excludes the retired acknowledgement/reconciliation tools,
+  their direct invocation is byte-zero and unknown, and canonical status makes
+  the request visible before reply and resolved after exact retry;
+- governance rejects every production `team_messages.jsonl` mutator and every
+  current lineage/status/detail/inbox/replay reader while retaining exactly one
+  explicit read-only Legacy export inventory entry;
 - Codex launches with its mapped sandbox and `approvalPolicy=never`;
 - unexpected Codex approval callbacks fail closed with no question Message;
 - schema, Rust, Dashboard, governance, and plugin checks pass.
@@ -76,7 +89,7 @@ not a prose waiver:
 | `claude_member_uses_native_session_without_provider_activity_mirror` | `agent_sdk_member_binds_one_native_session_and_turn_completion_is_idle` |
 | `claude_failure_keeps_native_session_and_provider_error_without_mirroring_stream` | `agent_sdk_member_records_provider_errors_instead_of_successful_rounds`; `a_silent_provider_turn_is_a_provider_error_and_stays_reconstructable` |
 | `team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning` | provider-neutral start/lease coverage in `team_run_daemon`; Codex and Kimi lifecycle tests in `team_run_api`; transient-reasoning assertions remain in each adapter test rather than one mixed fixture |
-| `kimi_question_waits_for_lead_resolution_and_resumes_same_turn` | provider-neutral response/ACK contract in `provider_answer_response_first_retry_recovers_without_duplicate_or_early_ack`; live reverse-question journey in `codex_app_server_question_routes_to_lead_and_resumes_same_turn`; MCP transport identity, spoof rejection, exact-option validation, and retry idempotency in `mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retry`; Kimi waiting cancellation tests cover its ACP callback boundary |
+| `kimi_question_waits_for_lead_resolution_and_resumes_same_turn` | provider-neutral response/ACK contract in `provider_answer_response_first_retry_recovers_without_duplicate_or_early_ack`; live reverse-question journey in `codex_app_server_question_routes_to_lead_and_resumes_same_turn`; MCP transport identity, spoof rejection, exact-option validation, request/reply status visibility, actionable-plus-history inbox visibility, retry idempotency, and zero Legacy writes in `mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retry`; Kimi waiting cancellation tests cover its ACP callback boundary |
 | `kimi_full_access_tool_permissions_acknowledge_without_pending_interactions` | `kimi_full_access_safe_approvals_converge_to_one_bounded_receipt`; `kimi_safe_approval_rejects_closed_retired_generation_and_session_drift` |
 | `kimi_reject_only_tool_permission_fails_closed_to_policy` | `kimi_permission_matching_uses_exact_intent_not_option_id_substrings` |
 | `kimi_unknown_permission_request_fails_closed_to_human` | `kimi_permission_matching_uses_exact_intent_not_option_id_substrings`; `scripted_unknown_reverse_method_publishes_no_receipt` |

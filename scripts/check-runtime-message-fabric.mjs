@@ -183,6 +183,18 @@ if (legacyStore.match(/pub fn append_team_message_checked[\s\S]{0,450}RETIRED_RU
 if (/fn record_provider_interaction_response\s*\(/.test(legacyStore)) {
   failures.push("retired provider-interaction response writer remains production-executable");
 }
+if (/append_jsonl(?:_unlocked)?\s*\(\s*"team_messages\.jsonl"/.test(legacyStore)) {
+  failures.push("production Store retains a team_messages.jsonl mutator; the ledger is Legacy archive-only");
+}
+if (/read_jsonl\s*::<\s*TeamMessageProjection\s*>\s*\(\s*"team_messages\.jsonl"/.test(legacyStore)) {
+  failures.push("production Store retains an implicit team_messages.jsonl reader; expose history only through an explicit Legacy archive seam");
+}
+if (/pub fn team_messages\s*\(/.test(legacyStore)) {
+  failures.push("Store exposes ambiguous team_messages(); the historical reader must be named legacy_team_messages()");
+}
+if (!/pub fn legacy_team_messages\s*\(/.test(legacyStore)) {
+  failures.push("Store is missing the explicitly named read-only legacy_team_messages() archive seam");
+}
 try {
   readFileSync("schemas/provider-dispatch-envelope.schema.json", "utf8");
   failures.push("retired provider-dispatch-envelope schema still exists");
@@ -228,13 +240,26 @@ for (const [command, marker] of [
   }
 }
 const mcp = readFileSync("crates/firm-cli/src/mcp.rs", "utf8");
-for (const [tool, marker] of [
-  ["team_run_send_message", "cannot select a sender identity"],
-  ["team_message_acknowledge", "cannot authenticate the recipient session"],
-  ["team_run_reconcile_delivery", "cannot supply target NodeDaemon authority"],
+for (const removedTool of [
+  "team_run_send_message",
+  "team_message_acknowledge",
+  "team_run_reconcile_delivery",
 ]) {
-  if (!mcp.includes(`RETIRED_WRITE_AUTHORITY: ${tool} ${marker}`)) {
-    failures.push(`${tool} MCP tool is not a hard-retired writer`);
+  if (mcp.includes(`\"name\": \"${removedTool}\"`) || mcp.includes(`\"${removedTool}\" =>`)) {
+    failures.push(`${removedTool} remains advertised or dispatchable instead of failing closed as an unknown MCP tool`);
+  }
+}
+for (const retiredReader of [
+  "latest_team_messages_in_append_order",
+  "has_actionable_delivered_manual_ack",
+]) {
+  if (productionRust("crates/firm-cli/src/mcp.rs").includes(retiredReader)) {
+    failures.push(`MCP current status/inbox retains legacy TeamMessageProjection reader: ${retiredReader}`);
+  }
+}
+for (const canonicalReader of ["fabric_messages", "fabric_message_deliveries", "message_summary"]) {
+  if (!mcp.includes(canonicalReader)) {
+    failures.push(`MCP current status lacks canonical Message-fabric visibility: ${canonicalReader}`);
   }
 }
 for (const routeToken of [
@@ -254,9 +279,40 @@ const providerDispatchLedgerMatches = [
 if (providerDispatchLedgerMatches !== 1 || !legacyExport.includes('ledger: "provider_dispatch_events.jsonl"')) {
   failures.push("provider_dispatch_events historical allowlist must be exactly one read-only legacy export entry");
 }
+const legacyTeamMessageLedgerMatches = [
+  ...legacyExport.matchAll(/team_messages\.jsonl/g),
+].length;
+if (legacyTeamMessageLedgerMatches !== 1 || !legacyExport.includes('ledger: "team_messages.jsonl"')) {
+  failures.push("team_messages historical allowlist must be exactly one explicit read-only Legacy export entry");
+}
 for (const path of activeRuntimeSources) {
   if (productionRust(path).includes("provider_dispatch_events.jsonl")) {
     failures.push(`${path} retains current provider_dispatch ledger authority`);
+  }
+}
+
+// No current lineage, status, detail, inbox, or replay projection may consult
+// the retired append-only TeamMessageProjection ledger. Explicit Legacy export
+// is the sole historical read path. Disabled tests and frozen historical source
+// are stripped before this production audit.
+for (const path of [
+  "crates/firm-cli/src/main.rs",
+  "crates/firm-cli/src/mcp.rs",
+  "crates/firm-cli/src/supervisor_daemon.rs",
+  "crates/firm-cli/src/fabric_runtime.rs",
+  "crates/firm-cli/src/role_actions_api.rs",
+  "crates/firm-cli/src/role_views_api.rs",
+]) {
+  const text = productionRust(path);
+  for (const retiredReader of [
+    "latest_team_messages_in_append_order",
+    "store.legacy_team_messages()",
+    "store.legacy_team_messages()?",
+    'read_jsonl::<TeamMessageProjection>("team_messages.jsonl")',
+  ]) {
+    if (text.includes(retiredReader)) {
+      failures.push(`${path} retains a current team_messages.jsonl lineage/status/detail/replay reader: ${retiredReader}`);
+    }
   }
 }
 
