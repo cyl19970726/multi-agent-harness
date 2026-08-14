@@ -1578,7 +1578,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         session.native_session_id = "duplicate-active-session".into();
     }
     store
-        .create_trust_member_run(
+        .legacy_import_create_trust_member_run_projection(
             &MutationContext {
                 execution_space_id: space_id.clone(),
                 authenticated_actor: ActorRef {

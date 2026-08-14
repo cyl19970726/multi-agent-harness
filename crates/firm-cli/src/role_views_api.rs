@@ -282,14 +282,25 @@ impl Facts {
                 *revisions.entry(team.id.clone()).or_insert(0) += 1;
                 revisions
             });
+        let mut all_latest_runs = BTreeMap::new();
+        for run in &run_rows {
+            all_latest_runs.insert(run.id.clone(), run.clone());
+        }
+        let mut latest_runs = BTreeMap::new();
+        for (id, run) in all_latest_runs {
+            let resolved_space = store
+                .current_team_run_execution_space(&run)
+                .map_err(|error| error.to_string())?;
+            if resolved_space == space_id {
+                latest_runs.insert(id, run);
+            }
+        }
         let run_revisions = run_rows.iter().fold(BTreeMap::new(), |mut revisions, run| {
-            *revisions.entry(run.id.clone()).or_insert(0) += 1;
+            if latest_runs.contains_key(&run.id) {
+                *revisions.entry(run.id.clone()).or_insert(0) += 1;
+            }
             revisions
         });
-        let mut latest_runs = BTreeMap::new();
-        for run in run_rows {
-            latest_runs.insert(run.id.clone(), run);
-        }
         let store_identity = std::fs::canonicalize(store.root())
             .unwrap_or_else(|_| store.root().to_path_buf())
             .display()

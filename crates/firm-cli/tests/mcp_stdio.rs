@@ -2844,6 +2844,26 @@ fn mcp_stdio_work_list_brief_since_and_board_summary() {
             "{tool}: {response}"
         );
     }
+    let mut lifecycle_mcp = McpClient::spawn(
+        &home,
+        &project_id,
+        &[
+            ("AGENTFIRM_MCP_ACTOR_KIND", "agent_member"),
+            ("AGENTFIRM_MCP_ACTOR_ID", "mcp-host-board-reads"),
+        ],
+    );
+    let partial_close = lifecycle_mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "agentfirm_member_trust_mutate",
+            "arguments": {
+                "command": {"command": "close_member_run", "member_run_id": alice_id, "updated_at": "unix-ms:partial-close"},
+                "idempotency_key": "partial-close-zero-effect",
+                "expected_version": 1
+            }
+        }),
+    );
+    assert!(call_error_text(&partial_close).contains(dangling_id));
     assert_eq!(directory_snapshot(&home.spaces_dir()), before);
 
     let mut legacy = store
@@ -2872,7 +2892,7 @@ fn mcp_stdio_work_list_brief_since_and_board_summary() {
         id: canonical.agent_member_id.clone(),
     };
     store
-        .create_trust_member_run(
+        .legacy_import_create_trust_member_run_projection(
             &harness_core::agentfirm_api::MutationContext {
                 execution_space_id: execution_space_id.to_string(),
                 authenticated_actor: actor.clone(),
@@ -2889,4 +2909,44 @@ fn mcp_stdio_work_list_brief_since_and_board_summary() {
         "tools/call",
         serde_json::json!({"name": "team_run_board_summary", "arguments": {"team_run_id": team_run_id}}),
     ));
+    let foreign_space_id = "mcp-space-board-reads-foreign";
+    let foreign = run_firm(
+        &home,
+        &project_root,
+        &[
+            "space",
+            "init",
+            "--id",
+            foreign_space_id,
+            "--project-binding",
+            &project_id,
+        ],
+    );
+    assert!(foreign.status.success(), "foreign space init: {foreign:?}");
+    let mut foreign_mcp = McpClient::spawn(
+        &home,
+        &project_id,
+        &[
+            ("AGENTFIRM_MCP_ACTOR_KIND", "agent_member"),
+            ("AGENTFIRM_MCP_ACTOR_ID", "mcp-host-board-reads"),
+        ],
+    );
+    let before_wrong_space = directory_snapshot(&home.spaces_dir());
+    let wrong_space_close = foreign_mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "agentfirm_member_trust_mutate",
+            "arguments": {
+                "command": {"command": "close_member_run", "member_run_id": alice_id, "updated_at": "unix-ms:wrong-space-close"},
+                "idempotency_key": "wrong-space-close-zero-effect",
+                "expected_version": 1
+            }
+        }),
+    );
+    let wrong_space_error = call_error_text(&wrong_space_close);
+    assert!(
+        wrong_space_error.contains("UNAUTHORIZED_ACTOR"),
+        "wrong-space lifecycle authority must fail closed: {wrong_space_error}"
+    );
+    assert_eq!(directory_snapshot(&home.spaces_dir()), before_wrong_space);
 }

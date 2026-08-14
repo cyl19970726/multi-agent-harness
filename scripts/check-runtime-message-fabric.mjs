@@ -245,6 +245,25 @@ if (memberTrustTransport.includes("CreateMemberRun")
     || memberTrustTransport.includes('path.ends_with("/member-runs")')) {
   failures.push("HTTP Member Trust transport still exposes standalone MemberRun creation");
 }
+for (const lifecycleToken of [
+  "transition_current_team_member_lifecycle",
+  "CurrentTeamMemberLifecycleTransition::Close",
+  "CurrentTeamMemberLifecycleTransition::Reopen",
+  "CurrentTeamMemberLifecycleTransition::Retire",
+  "CurrentTeamMemberLifecycleTransition::ResumeNativeSession",
+]) {
+  if (!memberTrustTransport.includes(lifecycleToken)) {
+    failures.push(`current Member lifecycle transport bypasses combined TeamRun authority: ${lifecycleToken}`);
+  }
+}
+for (const retiredLifecycleCall of [
+  ".transition_trust_member_run(",
+  ".resume_trust_native_session(",
+]) {
+  if (memberTrustTransport.includes(retiredLifecycleCall)) {
+    failures.push(`current Member lifecycle transport retains canonical-only mutation: ${retiredLifecycleCall}`);
+  }
+}
 if (!mcp.includes("const MCP_MEMBER_TRUST_COMMANDS")
     || mcp.includes('"create_member_run"')
     || !mcp.includes("MemberRun creation is available only through team_run_create or team_run_add_member")) {
@@ -304,6 +323,15 @@ if (!summaryBody.includes("execution_space_id: &str")
 for (const authorityToken of ["current_team_run_execution_space(run)", "EXECUTION_SPACE_SCOPE_MISMATCH"]) {
   if (!mcp.includes(authorityToken)) {
     failures.push(`MCP TeamRun Execution Space resolver is missing: ${authorityToken}`);
+  }
+}
+const roleViewTransport = productionRust("crates/firm-cli/src/role_views_api.rs");
+for (const roleViewScopeToken of [
+  "current_team_run_execution_space(&run)",
+  "resolved_space == space_id",
+]) {
+  if (!roleViewTransport.includes(roleViewScopeToken)) {
+    failures.push(`RoleView current TeamRun projection bypasses strict exact-space authority: ${roleViewScopeToken}`);
   }
 }
 for (const routeToken of [

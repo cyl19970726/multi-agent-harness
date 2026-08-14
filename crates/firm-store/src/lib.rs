@@ -2,6 +2,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -325,12 +327,15 @@ pub enum HostAttentionClaimResult {
 pub struct HarnessStore {
     root: PathBuf,
     provider_compatibility_scope: Option<(String, String)>,
+    process_write_lock: Arc<AtomicBool>,
 }
 
 impl HarnessStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
         Self {
-            root: root.into(),
+            process_write_lock: process_write_lock_for(&root),
+            root,
             provider_compatibility_scope: None,
         }
     }
@@ -1883,9 +1888,8 @@ impl HarnessStore {
     /// Reconstruct one raw historical ProviderRuntimeProjection during an
     /// explicit Legacy import. It is intentionally not a current admission
     /// path and never materializes the canonical MemberRun.
-    #[cfg(test)]
     #[doc(hidden)]
-    pub(crate) fn legacy_import_append_member_run_projection(
+    pub fn legacy_import_append_member_run_projection(
         &self,
         value: &ProviderRuntimeProjection,
     ) -> StoreResult<()> {
@@ -1968,7 +1972,15 @@ impl HarnessStore {
         ensure_provider_compatibility_cause_unchanged(&current, next)?;
         next.validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        self.append_jsonl_unlocked("member_runs.jsonl", next)
+        let execution_space_id = self.require_current_member_mutation_scope_unlocked(&current)?;
+        let canonical =
+            self.prepare_current_member_runtime_sync_unlocked(&execution_space_id, next)?;
+        serde_json::to_value(next)?;
+        self.append_jsonl_unlocked("member_runs.jsonl", next)?;
+        if let Some(canonical) = canonical {
+            self.commit_prepared_current_member_sync_unlocked(canonical)?;
+        }
+        Ok(())
     }
 
     /// Atomically enter a compatibility-owned Blocked state. This is the only
@@ -2036,7 +2048,13 @@ impl HarnessStore {
         next.last_event_at = Some(last_event_at.to_string());
         next.validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        let execution_space_id = self.require_current_member_mutation_scope_unlocked(&current)?;
+        let canonical =
+            self.prepare_current_member_runtime_sync_unlocked(&execution_space_id, &next)?;
         self.append_jsonl_unlocked("member_runs.jsonl", &next)?;
+        if let Some(canonical) = canonical {
+            self.commit_prepared_current_member_sync_unlocked(canonical)?;
+        }
         Ok(next)
     }
 
@@ -2166,7 +2184,13 @@ impl HarnessStore {
         next.last_event_at = Some(last_event_at.to_string());
         next.validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        let execution_space_id = self.require_current_member_mutation_scope_unlocked(&current)?;
+        let canonical =
+            self.prepare_current_member_runtime_sync_unlocked(&execution_space_id, &next)?;
         self.append_jsonl_unlocked("member_runs.jsonl", &next)?;
+        if let Some(canonical) = canonical {
+            self.commit_prepared_current_member_sync_unlocked(canonical)?;
+        }
         Ok(next)
     }
 
@@ -2260,14 +2284,18 @@ impl HarnessStore {
                     )))
                 }
             };
-            if canonical.team_run_id != run.id
-                || canonical.agent_member_id != legacy.agent_member_id
-                || canonical.runtime_generation != legacy.runtime_generation
-                || canonical.role_snapshot != legacy.role
-            {
+            let mismatch_fields = current_member_lifecycle_mismatch_fields(canonical, legacy)?;
+            if !mismatch_fields.is_empty() {
                 return Err(StoreError::Conflict(format!(
-                    "MEMBER_RUN_MATERIALIZATION_MISMATCH: TeamRun {} MemberRun {} legacy/canonical team, identity, generation, or role differs in Execution Space {}",
-                    run.id, member_run_id, scope
+                    "MEMBER_RUN_MATERIALIZATION_MISMATCH: TeamRun {} MemberRun {} legacy/canonical projection differs in Execution Space {} for fields {}; legacy_status={:?} canonical_status={:?} legacy_last_event_at={:?} canonical_last_event_at={:?}",
+                    run.id,
+                    member_run_id,
+                    scope,
+                    mismatch_fields.join(","),
+                    legacy.status,
+                    canonical.runtime_status,
+                    legacy.last_event_at,
+                    canonical.last_event_at
                 )));
             }
             if let Some(expected) = resolved_scope.as_deref() {
@@ -2289,21 +2317,48 @@ impl HarnessStore {
         })
     }
 
-    /// Public current-path resolver. It fences a stale caller snapshot and
-    /// validates the whole declared member set without taking the mutation
-    /// lock, so read-only status remains available while a writer is bounded
-    /// on that lock. Mutations must re-run the private resolver after acquiring
-    /// the Store lock, as the combined admission path does above.
+    /// Public current-path resolver. The consistent fast path stays read-only.
+    /// If it observes an incomplete/mismatched dual projection, it retries
+    /// under the cross-process Store lock: this distinguishes a bounded
+    /// legacy-append -> canonical-replace writer window from durable corrupt
+    /// state without making healthy status reads contend with writers.
     pub fn current_team_run_execution_space(&self, run: &AgentTeamRun) -> StoreResult<String> {
         self.init()?;
-        let current = self.require_team_run_unlocked(&run.id)?;
-        if current != *run {
+        for _ in 0..20 {
+            let current = self.require_team_run_unlocked(&run.id)?;
+            if current != *run {
+                return Err(StoreError::Conflict(format!(
+                    "TEAM_RUN_CHANGED: TeamRun {} changed concurrently; retry scope resolution",
+                    run.id
+                )));
+            }
+            match self.current_team_run_execution_space_unlocked(&current) {
+                Ok(scope) => return Ok(scope),
+                Err(StoreError::Conflict(message))
+                    if message.starts_with("MEMBER_RUN_MATERIALIZATION_INCOMPLETE:")
+                        || message.starts_with("MEMBER_RUN_MATERIALIZATION_MISMATCH:") =>
+                {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        // A current read that observed the narrow Legacy-append -> canonical-
+        // replace window waits for that writer independently of the mutation
+        // timeout override. Tests and operators may intentionally reduce the
+        // mutation timeout to surface a retryable 503; that must not make an
+        // otherwise healthy concurrent status read report durable corruption.
+        // Coherent reads still take the lock-free fast path above.
+        let _lock =
+            self.acquire_write_lock_with_policy(Duration::from_secs(2), Duration::from_millis(1))?;
+        let locked_current = self.require_team_run_unlocked(&run.id)?;
+        if locked_current != *run {
             return Err(StoreError::Conflict(format!(
                 "TEAM_RUN_CHANGED: TeamRun {} changed concurrently; retry scope resolution",
                 run.id
             )));
         }
-        self.current_team_run_execution_space_unlocked(&current)
+        self.current_team_run_execution_space_unlocked(&locked_current)
     }
 
     /// Fence a current MemberRun mutation against the complete owning
@@ -4920,7 +4975,6 @@ impl HarnessStore {
     /// member. A same-team ProviderRuntimeProjection row is not membership authority: the
     /// append-only ledger can contain stale or forged rows that were never
     /// admitted to the TeamRun.
-    #[cfg(test)]
     fn ensure_unique_member_identity_unlocked(
         &self,
         team_run: &AgentTeamRun,
@@ -6012,6 +6066,29 @@ impl HarnessStore {
             return Err(StoreError::Conflict(format!(
                 "TEAM_RUN_NODE_MISMATCH: TeamRun {team_run_id} is bound to Node {} / project {}, not {node_id} / {project_binding_id}",
                 run.execution_node_id, run.project_binding_id
+            )));
+        }
+        let resolved_execution_space_id = self.current_team_run_execution_space_unlocked(&run)?;
+        if resolved_execution_space_id != execution_space_id {
+            return Err(StoreError::Conflict(format!(
+                "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {team_run_id} belongs to Execution Space {resolved_execution_space_id}, not {execution_space_id}"
+            )));
+        }
+        let registrations = latest_by_id(
+            self.read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?,
+            node_project_registration_identity,
+        )
+        .into_values()
+        .filter(|registration| {
+            registration.node_id == node_id
+                && registration.project_binding_id == project_binding_id
+                && registration.execution_space_id == execution_space_id
+                && registration.status == NodeProjectRegistrationStatus::Active
+        })
+        .count();
+        if registrations != 1 {
+            return Err(StoreError::Conflict(format!(
+                "PROJECT_NOT_REGISTERED_ON_NODE: expected one active registration for TeamRun {team_run_id} in Execution Space {execution_space_id}, found {registrations}"
             )));
         }
         let parent = latest_by_id(
@@ -8056,7 +8133,7 @@ impl HarnessStore {
     pub fn current_team_run_events(&self, team_run_id: &str) -> StoreResult<Vec<TeamRunEvent>> {
         self.init()?;
         let run = self.require_team_run_unlocked(team_run_id)?;
-        self.current_team_run_execution_space_unlocked(&run)?;
+        self.current_team_run_execution_space(&run)?;
         Ok(self
             .read_jsonl("team_run_events.jsonl")?
             .into_iter()
@@ -8074,7 +8151,6 @@ impl HarnessStore {
         let mut row = Vec::new();
         serde_json::to_writer(&mut row, value)?;
         row.push(b'\n');
-
         let path = self.root.join(file_name);
         let creates_ledger = !path.exists();
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
@@ -8233,25 +8309,54 @@ impl HarnessStore {
         poll_interval: Duration,
     ) -> StoreResult<StoreWriteLock> {
         let lock_path = self.root.join(".store.lock");
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self
+                .process_write_lock
+                .compare_exchange(
+                    false,
+                    true,
+                    AtomicOrdering::Acquire,
+                    AtomicOrdering::Relaxed,
+                )
+                .is_ok()
+            {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(StoreError::LockTimeout(lock_path.display().to_string()));
+            }
+            thread::sleep(poll_interval.min(deadline.saturating_duration_since(Instant::now())));
+        }
+        let process_write_lock = self.process_write_lock.clone();
         let file = OpenOptions::new()
             .create(true)
             .read(true)
             .truncate(false)
             .write(true)
-            .open(&lock_path)?;
-        let deadline = Instant::now() + timeout;
+            .open(&lock_path)
+            .inspect_err(|_| process_write_lock.store(false, AtomicOrdering::Release))?;
         loop {
             match lock_file_exclusive(&file) {
-                Ok(()) => return Ok(StoreWriteLock { file }),
+                Ok(()) => {
+                    return Ok(StoreWriteLock {
+                        file,
+                        process_write_lock,
+                    })
+                }
                 Err(error) if would_block_lock(&error) => {
                     if Instant::now() >= deadline {
+                        process_write_lock.store(false, AtomicOrdering::Release);
                         return Err(StoreError::LockTimeout(lock_path.display().to_string()));
                     }
                     thread::sleep(
                         poll_interval.min(deadline.saturating_duration_since(Instant::now())),
                     );
                 }
-                Err(error) => return Err(StoreError::Io(error)),
+                Err(error) => {
+                    process_write_lock.store(false, AtomicOrdering::Release);
+                    return Err(StoreError::Io(error));
+                }
             }
         }
     }
@@ -8606,13 +8711,32 @@ fn would_block_lock(error: &std::io::Error) -> bool {
         || error.kind() == std::io::ErrorKind::WouldBlock
 }
 
+fn process_write_lock_for(root: &Path) -> Arc<AtomicBool> {
+    static LOCKS: OnceLock<Mutex<std::collections::HashMap<PathBuf, Weak<AtomicBool>>>> =
+        OnceLock::new();
+    let locks = LOCKS.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    let mut locks = locks
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(lock) = locks.get(root).and_then(Weak::upgrade) {
+        return lock;
+    }
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    let lock = Arc::new(AtomicBool::new(false));
+    locks.insert(root.to_path_buf(), Arc::downgrade(&lock));
+    lock
+}
+
 struct StoreWriteLock {
     file: File,
+    process_write_lock: Arc<AtomicBool>,
 }
 
 impl Drop for StoreWriteLock {
     fn drop(&mut self) {
         unlock_file(&self.file);
+        self.process_write_lock
+            .store(false, AtomicOrdering::Release);
     }
 }
 
@@ -10774,11 +10898,58 @@ mod tests {
                 provider_profile_snapshot: None,
                 requested_controls: serde_json::json!({}),
                 effective_controls: serde_json::json!({}),
-                coordination_status: firm_core::agentfirm_api::MemberCoordinationStatus::Active,
-                runtime_status: firm_core::agentfirm_api::MemberRuntimeStatus::Idle,
+                coordination_status: match runtime.coordination_status {
+                    firm_core::MemberCoordinationStatus::Active => {
+                        firm_core::agentfirm_api::MemberCoordinationStatus::Active
+                    }
+                    firm_core::MemberCoordinationStatus::Closed => {
+                        firm_core::agentfirm_api::MemberCoordinationStatus::Closed
+                    }
+                    firm_core::MemberCoordinationStatus::Retired => {
+                        firm_core::agentfirm_api::MemberCoordinationStatus::Retired
+                    }
+                },
+                runtime_status: match runtime.status {
+                    MemberRunStatus::Starting => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Starting
+                    }
+                    MemberRunStatus::Idle => firm_core::agentfirm_api::MemberRuntimeStatus::Idle,
+                    MemberRunStatus::Queued => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Queued
+                    }
+                    MemberRunStatus::Running => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Running
+                    }
+                    MemberRunStatus::Waiting => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Waiting
+                    }
+                    MemberRunStatus::Disconnected => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Disconnected
+                    }
+                    MemberRunStatus::Reviewing => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Reviewing
+                    }
+                    MemberRunStatus::Blocked => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Blocked
+                    }
+                    MemberRunStatus::Completed => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Completed
+                    }
+                    MemberRunStatus::Failed => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Failed
+                    }
+                    MemberRunStatus::Stopped => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Stopped
+                    }
+                },
                 runtime_generation: runtime.runtime_generation,
                 workspace_binding_id: None,
-                native_session: None,
+                native_session: runtime.native_session.as_ref().map(|session| {
+                    serde_json::from_value(
+                        serde_json::to_value(session).expect("serialize native session"),
+                    )
+                    .expect("map native session")
+                }),
                 version: 1,
                 started_at: runtime.started_at.clone(),
                 last_event_at: runtime.last_event_at.clone(),
@@ -11607,11 +11778,41 @@ mod tests {
     }
 
     fn seed_lease_run(store: &HarnessStore, id: &str) {
+        let node_id = "00000000-0000-4000-8000-000000000001";
+        if !store
+            .latest_execution_nodes()
+            .expect("read Nodes")
+            .iter()
+            .any(|node| node.id == node_id)
+        {
+            store
+                .insert_execution_node(&ExecutionNode {
+                    id: node_id.into(),
+                    display_name: "test-node".into(),
+                    status: ExecutionNodeStatus::Active,
+                    created_at: "unix-ms:1".into(),
+                    updated_at: "unix-ms:1".into(),
+                })
+                .expect("seed Node");
+        }
+        store
+            .register_node_project(
+                &NodeProjectRegistration {
+                    node_id: node_id.into(),
+                    execution_space_id: "space-test".into(),
+                    project_binding_id: "project-test".into(),
+                    status: NodeProjectRegistrationStatus::Active,
+                    created_at: "unix-ms:1".into(),
+                    updated_at: "unix-ms:1".into(),
+                },
+                "space-test",
+            )
+            .expect("seed project registration");
         store
             .legacy_import_append_team_run_projection(&AgentTeamRun {
                 id: id.into(),
                 agent_team_id: format!("team-{id}"),
-                execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
+                execution_node_id: node_id.into(),
                 project_binding_id: "project-test".into(),
                 previous_run_id: None,
                 host_surface: "codex-app".into(),
@@ -11828,6 +12029,48 @@ mod tests {
             .expect("present");
         assert_eq!(live.supervisor_id, "sup-2");
         assert_eq!(live.generation, 2);
+    }
+
+    #[test]
+    fn supervisor_lease_rejects_caller_selected_foreign_execution_space_without_write() {
+        let root = team_test_root("lease-space-fence");
+        let store = HarnessStore::new(&root);
+        seed_lease_run(&store, "run-a");
+        let parent = store
+            .acquire_node_daemon_lease(
+                "00000000-0000-4000-8000-000000000001",
+                "daemon-test",
+                "instance-test",
+                1_000,
+                60_000,
+            )
+            .expect("parent lease");
+        let before = store
+            .team_supervisor_leases()
+            .expect("read Supervisor leases");
+        let error = store
+            .acquire_team_supervisor_under_node_lease(
+                "run-a",
+                "00000000-0000-4000-8000-000000000001",
+                &parent.daemon_id,
+                parent.generation,
+                "foreign-space",
+                "project-test",
+                "supervisor-hostile",
+                1,
+                "tcp://127.0.0.1:1",
+                1_001,
+                60_000,
+            )
+            .expect_err("caller-selected foreign Execution Space must fail closed");
+        assert!(error.to_string().contains("EXECUTION_SPACE_SCOPE_MISMATCH"));
+        assert_eq!(
+            store
+                .team_supervisor_leases()
+                .expect("read Supervisor leases after rejection"),
+            before
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
     }
 
     fn append_sparse_row(root: &Path, file_name: &str, row: &str) {

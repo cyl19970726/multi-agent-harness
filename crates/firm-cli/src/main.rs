@@ -31082,6 +31082,12 @@ fn handle_http_connection(
                 .find(|member| member.id == member_run_id)
                 .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
             let run = latest_team_run(&store_owned, &team_run_id)?;
+            let current_execution_space_id = team_run_execution_space_id(&store_owned, &run)?;
+            if current_execution_space_id != project_id {
+                return Err(CliError::Usage(format!(
+                    "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {team_run_id} belongs to Execution Space {current_execution_space_id}, not {project_id}"
+                )));
+            }
             let project_binding_id = run.project_binding_id.clone();
             let scope = provider_event_api::exact_live_scope(
                 &store_owned,
@@ -50297,6 +50303,16 @@ package:com.tencent.mm
         let dangling = build_member_run_for_team(None, &created.team_run.id, &dangling_spec)
             .expect("build historical dangling runtime projection");
         let current = latest_team_run(&store, &created.team_run.id).expect("current TeamRun");
+        let lease = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-partial-fence",
+                std::process::id(),
+                "tcp://127.0.0.1:1",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("seed current Supervisor before reconstructing partial history");
         let mut partial = current.clone();
         partial.member_run_ids.push(dangling.id.clone());
         partial.updated_at = "unix-ms:s6-partial".into();
@@ -50353,16 +50369,6 @@ package:com.tencent.mm
             std::slice::from_ref(&third),
         )
         .expect("seed valid third identity before the zero-write boundary");
-        let lease = store
-            .acquire_test_supervisor_lease(
-                &created.team_run.id,
-                "supervisor-partial-fence",
-                std::process::id(),
-                "tcp://127.0.0.1:1",
-                current_unix_ms_u64(),
-                60_000,
-            )
-            .expect("seed current Supervisor before the zero-write boundary");
         let (control_rx, _control_registration) =
             register_live_member_control(&created.member_runs[0], 2);
         let before = durable_store_file_bytes(&store);
@@ -50374,6 +50380,23 @@ package:com.tencent.mm
                 "partial current TeamRun must name the exact missing member: {rendered}"
             );
         };
+        expect_incomplete(CliError::Store(
+            store
+                .acquire_team_supervisor_under_node_lease(
+                    &partial.id,
+                    &partial.execution_node_id,
+                    &lease.node_daemon_id,
+                    lease.node_daemon_generation,
+                    &lease.execution_space_id,
+                    &partial.project_binding_id,
+                    &lease.supervisor_id,
+                    lease.owner_process_id,
+                    &lease.owner_locator,
+                    current_unix_ms_u64(),
+                    60_000,
+                )
+                .expect_err("partial TeamRun cannot acquire or reuse Supervisor authority"),
+        ));
 
         expect_incomplete(
             add_team_run_member(
@@ -50511,7 +50534,7 @@ package:com.tencent.mm
 
         let canonical = canonical_member_run_admission("unit-test-space", &dangling);
         store
-            .create_trust_member_run(&canonical.context, canonical.run)
+            .legacy_import_create_trust_member_run_projection(&canonical.context, canonical.run)
             .expect("explicit test-only reconstruction restores canonical completeness");
         assert_eq!(
             store
@@ -50560,7 +50583,7 @@ package:com.tencent.mm
         .expect("seed the foreign AgentMember identity");
         let duplicate = canonical_member_run_admission("foreign-duplicate-member-space", &member);
         store
-            .create_trust_member_run(&duplicate.context, duplicate.run)
+            .legacy_import_create_trust_member_run_projection(&duplicate.context, duplicate.run)
             .expect("reconstruct duplicate cross-space canonical projection");
 
         let error = store
@@ -53328,8 +53351,9 @@ package:com.tencent.mm
             "save_member_run must sync the settled binding onto the canonical AgentSession"
         );
 
-        // A same-id save is a no-op for the trust rows; an unchanged save
-        // never touches them either.
+        // Lifecycle timestamps are part of the strict current projection and
+        // therefore advance both ledgers even when the native binding itself
+        // is unchanged.
         let before = store
             .canonical_operations()
             .expect("operations before idempotent saves")
@@ -53347,7 +53371,14 @@ package:com.tencent.mm
             .canonical_operations()
             .expect("operations after idempotent saves")
             .len();
-        assert_eq!(before, after, "unchanged binding writes no trust mutation");
+        assert_eq!(after, before + 1, "lifecycle timestamp syncs canonically");
+        let canonical_after = store
+            .trust_member_runs(&space_id)
+            .expect("trust MemberRuns after timestamp update")
+            .into_iter()
+            .find(|run| run.id == settled.id)
+            .expect("canonical trust MemberRun after timestamp update");
+        assert_eq!(canonical_after.last_event_at, status_only.last_event_at);
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 

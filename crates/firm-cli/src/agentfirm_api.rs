@@ -5,11 +5,13 @@
 
 use harness_core::agentfirm_api::{
     ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus, DeliveryReconcileOutcome,
-    FailureAnalysis, GateEvaluation, GateRequirement, GateWaiver, MemberCoordinationStatus,
-    MemberWorkspaceBinding, MutationContext, TeamMessage, WorkFinding, WorkModuleBinding,
-    WorkReport, WorkspaceLifecycle, WorkspaceSafetyProof,
+    FailureAnalysis, GateEvaluation, GateRequirement, GateWaiver, MemberWorkspaceBinding,
+    MutationContext, TeamMessage, WorkFinding, WorkModuleBinding, WorkReport, WorkspaceLifecycle,
+    WorkspaceSafetyProof,
 };
-use harness_store::{CanonicalMutationResult, HarnessStore, StoreError};
+use harness_store::{
+    CanonicalMutationResult, CurrentTeamMemberLifecycleTransition, HarnessStore, StoreError,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -637,34 +639,55 @@ pub fn execute(
         TrustCommand::CloseMemberRun {
             member_run_id,
             updated_at,
-        } => result(store.transition_trust_member_run(
-            &context,
-            &member_run_id,
-            MemberCoordinationStatus::Closed,
-            &updated_at,
-        )?),
+        } => result(
+            store
+                .transition_current_team_member_lifecycle(
+                    &context,
+                    &member_run_id,
+                    CurrentTeamMemberLifecycleTransition::Close,
+                    &updated_at,
+                )?
+                .canonical,
+        ),
         TrustCommand::ReopenMemberRun {
             member_run_id,
             updated_at,
-        } => result(store.transition_trust_member_run(
-            &context,
-            &member_run_id,
-            MemberCoordinationStatus::Active,
-            &updated_at,
-        )?),
+        } => result(
+            store
+                .transition_current_team_member_lifecycle(
+                    &context,
+                    &member_run_id,
+                    CurrentTeamMemberLifecycleTransition::Reopen,
+                    &updated_at,
+                )?
+                .canonical,
+        ),
         TrustCommand::RetireMemberRun {
             member_run_id,
             updated_at,
-        } => result(store.transition_trust_member_run(
-            &context,
-            &member_run_id,
-            MemberCoordinationStatus::Retired,
-            &updated_at,
-        )?),
+        } => result(
+            store
+                .transition_current_team_member_lifecycle(
+                    &context,
+                    &member_run_id,
+                    CurrentTeamMemberLifecycleTransition::Retire,
+                    &updated_at,
+                )?
+                .canonical,
+        ),
         TrustCommand::ResumeNativeSession {
             member_run_id,
             updated_at,
-        } => result(store.resume_trust_native_session(&context, &member_run_id, &updated_at)?),
+        } => result(
+            store
+                .transition_current_team_member_lifecycle(
+                    &context,
+                    &member_run_id,
+                    CurrentTeamMemberLifecycleTransition::ResumeNativeSession,
+                    &updated_at,
+                )?
+                .canonical,
+        ),
         TrustCommand::CreateTeamMessage { .. }
         | TrustCommand::RetryMessageDelivery { .. }
         | TrustCommand::ReconcileMessageDelivery { .. } => Err(StoreError::Conflict(

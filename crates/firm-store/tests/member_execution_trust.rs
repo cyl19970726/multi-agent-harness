@@ -21,11 +21,14 @@ use firm_core::agentfirm_api::{
 };
 use firm_core::{
     AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, MemberRunStatus,
-    Mission, MissionStatus, ProviderRuntimeProjection as RuntimeMemberRun, TeamActorKind,
-    TeamActorRef, TeamRunStatus, Work, WorkClaimMode, WorkCommandContext, WorkCondition,
-    WorkDelegation, WorkDelegationState, WorkPhase, WorkPriority, WorkRef,
+    Mission, MissionStatus, NodeProjectRegistration, NodeProjectRegistrationStatus,
+    ProviderRuntimeProjection as RuntimeMemberRun, TeamActorKind, TeamActorRef, TeamRunStatus,
+    Work, WorkClaimMode, WorkCommandContext, WorkCondition, WorkDelegation, WorkDelegationState,
+    WorkPhase, WorkPriority, WorkRef,
 };
-use firm_store::{canonical_json_fingerprint, HarnessStore, StoreError};
+use firm_store::{
+    canonical_json_fingerprint, CurrentTeamMemberLifecycleTransition, HarnessStore, StoreError,
+};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
 const SPACE: &str = "space-trust-test";
@@ -209,6 +212,31 @@ fn seed_team(store: &HarnessStore, label: &str, member_ids: &[&str]) -> AgentTea
                 updated_at: "t1".into(),
             })
             .expect("insert node");
+    }
+    if !store
+        .latest_node_project_registrations()
+        .expect("read project registrations")
+        .iter()
+        .any(|registration| {
+            registration.node_id == NODE
+                && registration.execution_space_id == SPACE
+                && registration.project_binding_id == "project-test"
+                && registration.status == NodeProjectRegistrationStatus::Active
+        })
+    {
+        store
+            .register_node_project(
+                &NodeProjectRegistration {
+                    node_id: NODE.into(),
+                    execution_space_id: SPACE.into(),
+                    project_binding_id: "project-test".into(),
+                    status: NodeProjectRegistrationStatus::Active,
+                    created_at: "t1".into(),
+                    updated_at: "t1".into(),
+                },
+                SPACE,
+            )
+            .expect("register project on node");
     }
     store
         .insert_agent_team_with_unique_mission(&AgentTeam {
@@ -482,7 +510,7 @@ fn create_member_and_run(
         .expect("create member");
     let run = member_run(run_id, member_id, team_run_id, resumable);
     store
-        .create_trust_member_run(
+        .legacy_import_create_trust_member_run_projection(
             &context(
                 creator.clone(),
                 "member_run.create",
@@ -492,7 +520,208 @@ fn create_member_and_run(
             run.clone(),
         )
         .expect("create member run");
+    store
+        .legacy_import_append_member_run_projection(&RuntimeMemberRun {
+            id: run.id.clone(),
+            team_run_id: run.team_run_id.clone(),
+            slot_id: None,
+            agent_member_id: run.agent_member_id.clone(),
+            name: format!("Member {member_id}"),
+            role: run.role_snapshot.clone(),
+            provider: "codex".into(),
+            model: None,
+            provider_controls: Default::default(),
+            provider_profile: None,
+            provider_capacity: None,
+            provider_compatibility_block_cause: None,
+            coordination_status: firm_core::MemberCoordinationStatus::Active,
+            runtime_generation: run.runtime_generation,
+            status: MemberRunStatus::Idle,
+            native_session: run.native_session.as_ref().map(|session| {
+                serde_json::from_value(
+                    serde_json::to_value(session).expect("serialize native session"),
+                )
+                .expect("map native session")
+            }),
+            provider_cwd_hint: None,
+            provider_environment_observation: None,
+            owned_paths: Vec::new(),
+            zero_output_streak: 0,
+            last_consumed_work_version: None,
+            started_at: run.started_at.clone(),
+            last_event_at: run.last_event_at.clone(),
+            finished_at: run.finished_at.clone(),
+        })
+        .expect("create Legacy runtime projection for current Team Member");
     run
+}
+
+#[test]
+fn current_team_member_lifecycle_updates_both_projections_and_fences_foreign_space() {
+    let harness = TestStore::new("combined-member-lifecycle");
+    let host = human("host");
+    let team_run = seed_team(&harness.store, "combined-member-lifecycle", &["member-a"]);
+    create_member_and_run(
+        &harness.store,
+        &host,
+        &team_run.id,
+        "member-a",
+        "runtime-member-a",
+        true,
+    );
+
+    let legacy_before = harness.store.member_runs().expect("read runtime rows");
+    let canonical_before = harness
+        .store
+        .trust_member_runs(SPACE)
+        .expect("read canonical rows");
+    let operations_before = harness
+        .store
+        .canonical_operations()
+        .expect("read canonical operations");
+    let mut foreign = context(host.clone(), "member_run.close", "foreign-close", 1);
+    foreign.execution_space_id = "foreign-space".into();
+    let error = harness
+        .store
+        .transition_current_team_member_lifecycle(
+            &foreign,
+            "runtime-member-a",
+            CurrentTeamMemberLifecycleTransition::Close,
+            "t2",
+        )
+        .expect_err("caller-selected foreign Execution Space must fail closed");
+    assert!(error.to_string().contains("EXECUTION_SPACE_SCOPE_MISMATCH"));
+    assert_eq!(harness.store.member_runs().unwrap(), legacy_before);
+    assert_eq!(
+        harness.store.trust_member_runs(SPACE).unwrap(),
+        canonical_before
+    );
+    assert_eq!(
+        harness.store.canonical_operations().unwrap(),
+        operations_before
+    );
+
+    let close_context = context(host.clone(), "member_run.close", "close-current", 1);
+    let closed = harness
+        .store
+        .transition_current_team_member_lifecycle(
+            &close_context,
+            "runtime-member-a",
+            CurrentTeamMemberLifecycleTransition::Close,
+            "t2",
+        )
+        .expect("close current Team Member");
+    assert_eq!(
+        closed.runtime_projection.coordination_status,
+        firm_core::MemberCoordinationStatus::Closed
+    );
+    assert_eq!(closed.runtime_projection.status, MemberRunStatus::Stopped);
+    assert_eq!(
+        closed.canonical.projection.coordination_status,
+        MemberCoordinationStatus::Closed
+    );
+    assert_eq!(
+        closed.canonical.projection.runtime_status,
+        MemberRuntimeStatus::Stopped
+    );
+
+    let legacy_after_close = harness.store.member_runs().unwrap();
+    let operations_after_close = harness.store.canonical_operations().unwrap();
+    let close_replay = harness
+        .store
+        .transition_current_team_member_lifecycle(
+            &close_context,
+            "runtime-member-a",
+            CurrentTeamMemberLifecycleTransition::Close,
+            "t2",
+        )
+        .expect("exact close retry replays");
+    assert!(close_replay.canonical.replayed);
+    assert_eq!(harness.store.member_runs().unwrap(), legacy_after_close);
+    assert_eq!(
+        harness.store.canonical_operations().unwrap(),
+        operations_after_close
+    );
+
+    let stale_version_error = harness
+        .store
+        .transition_current_team_member_lifecycle(
+            &context(
+                host.clone(),
+                "member_run.resume_native_session",
+                "resume-stale-version",
+                1,
+            ),
+            "runtime-member-a",
+            CurrentTeamMemberLifecycleTransition::ResumeNativeSession,
+            "t3",
+        )
+        .expect_err("stale canonical CAS must reject before either ledger changes");
+    assert_eq!(
+        trust_code(stale_version_error),
+        TrustErrorCode::VersionConflict
+    );
+    assert_eq!(harness.store.member_runs().unwrap(), legacy_after_close);
+    assert_eq!(
+        harness.store.canonical_operations().unwrap(),
+        operations_after_close
+    );
+
+    let resumed = harness
+        .store
+        .transition_current_team_member_lifecycle(
+            &context(
+                host.clone(),
+                "member_run.resume_native_session",
+                "resume-current",
+                2,
+            ),
+            "runtime-member-a",
+            CurrentTeamMemberLifecycleTransition::ResumeNativeSession,
+            "t3",
+        )
+        .expect("resume current Team Member native session");
+    assert_eq!(resumed.runtime_projection.runtime_generation, 2);
+    assert_eq!(resumed.runtime_projection.status, MemberRunStatus::Queued);
+    assert_eq!(resumed.canonical.projection.runtime_generation, 2);
+    assert_eq!(
+        resumed.canonical.projection.runtime_status,
+        MemberRuntimeStatus::Queued
+    );
+    assert_eq!(
+        resumed.canonical.projection.native_session,
+        resumed
+            .runtime_projection
+            .native_session
+            .as_ref()
+            .map(|session| serde_json::from_value(serde_json::to_value(session).unwrap()).unwrap())
+    );
+
+    let retired = harness
+        .store
+        .transition_current_team_member_lifecycle(
+            &context(host, "member_run.retire", "retire-current", 3),
+            "runtime-member-a",
+            CurrentTeamMemberLifecycleTransition::Retire,
+            "t4",
+        )
+        .expect("retire current Team Member");
+    assert_eq!(
+        retired.runtime_projection.coordination_status,
+        firm_core::MemberCoordinationStatus::Retired
+    );
+    assert_eq!(
+        retired.canonical.projection.coordination_status,
+        MemberCoordinationStatus::Retired
+    );
+    assert_eq!(
+        retired.runtime_projection.finished_at.as_deref(),
+        Some("t4")
+    );
+    assert_eq!(
+        retired.canonical.projection.finished_at.as_deref(),
+        Some("t4")
+    );
 }
 
 #[cfg(any())]
@@ -649,7 +878,7 @@ fn paused_and_retired_members_cannot_start_runs() {
         trust_code(
             harness
                 .store
-                .create_trust_member_run(
+                .legacy_import_create_trust_member_run_projection(
                     &context(host.clone(), "member_run.create", "run-paused", 0),
                     member_run("run-paused", "paused", &team_run.id, false),
                 )
@@ -670,7 +899,7 @@ fn paused_and_retired_members_cannot_start_runs() {
         trust_code(
             harness
                 .store
-                .create_trust_member_run(
+                .legacy_import_create_trust_member_run_projection(
                     &context(host, "member_run.create", "run-retired", 0),
                     member_run("run-retired", "retired", &team_run.id, false),
                 )
@@ -691,7 +920,7 @@ fn fanout_is_atomic_and_creates_exactly_one_delivery_per_recipient() {
         &host,
         &team_run.id,
         "member-a",
-        "run-a",
+        "runtime-member-a",
         false,
     );
     create_member_and_run(
@@ -824,7 +1053,7 @@ fn close_reopen_and_retire_fence_queued_delivery_by_generation() {
         &host,
         &team_run.id,
         "member-a",
-        "run-a",
+        "runtime-member-a",
         true,
     );
     harness
@@ -1189,7 +1418,7 @@ fn stale_work_revision_requires_current_supervisor_before_invalidation() {
         &host,
         &team_run.id,
         "member-a",
-        "run-a",
+        "runtime-member-a",
         true,
     );
     seed_team_work_from_run(&harness.store, &team_run, "work-stale");
@@ -1200,7 +1429,7 @@ fn stale_work_revision_requires_current_supervisor_before_invalidation() {
             "work-event-stale",
             "work-stale",
             1,
-            &["run-a".into()],
+            &["runtime-member-a".into()],
             "t2",
         )
         .expect("queue canonical WorkDelivery");
@@ -1237,7 +1466,7 @@ fn stale_work_revision_requires_current_supervisor_before_invalidation() {
                     .store
                     .claim_trust_work_delivery(
                         &context(actor, "work_delivery.claim", claim_id, 0),
-                        "work-event-stale:run-a",
+                        "work-event-stale:runtime-member-a",
                         delivery_claim(claim_id, generation, 1),
                         2,
                         "t3",
@@ -1284,7 +1513,7 @@ fn stale_work_revision_requires_current_supervisor_before_invalidation() {
                         "current-invalidates-stale",
                         0,
                     ),
-                    "work-event-stale:run-a",
+                    "work-event-stale:runtime-member-a",
                     delivery_claim("current-invalidates-stale", current.generation, 1,),
                     2,
                     "t4",
@@ -1476,7 +1705,7 @@ fn member_owned_work_records_require_the_exact_active_execution_binding() {
         .expect("TeamRun");
     harness
         .store
-        .create_trust_member_run(
+        .legacy_import_create_trust_member_run_projection(
             &context(human("host"), "member_run.create", "create-successor", 0),
             member_run("runtime-worker-successor", "worker", &run.id, false),
         )
@@ -2147,7 +2376,7 @@ fn workspace_binding_requires_exact_member_run_and_project_placement() {
         &host,
         &team_run.id,
         "member-a",
-        "run-a",
+        "runtime-member-a",
         false,
     );
 
@@ -2169,7 +2398,7 @@ fn workspace_binding_requires_exact_member_run_and_project_placement() {
 
     let mut wrong_project = workspace_binding("wrong-project", "/trust-test/project", &host);
     wrong_project.team_run_id = team_run.id.clone();
-    wrong_project.member_run_id = "run-a".into();
+    wrong_project.member_run_id = "runtime-member-a".into();
     wrong_project.project_binding_id = "project-other".into();
     assert_eq!(
         trust_code(
@@ -2195,7 +2424,7 @@ fn workspace_transitions_reobserve_git_links_dirty_state_and_cleanup_safety() {
         &host,
         &team_run.id,
         "member-a",
-        "run-a",
+        "runtime-member-a",
         false,
     );
     let repo = harness.root.join("workspace");
@@ -2231,7 +2460,7 @@ fn workspace_transitions_reobserve_git_links_dirty_state_and_cleanup_safety() {
     let canonical_root = std::fs::canonicalize(&repo).unwrap();
     let mut binding = workspace_binding("workspace-real", canonical_root.to_str().unwrap(), &host);
     binding.team_run_id = team_run.id;
-    binding.member_run_id = "run-a".into();
+    binding.member_run_id = "runtime-member-a".into();
     let created = harness
         .store
         .create_trust_workspace_binding(
