@@ -176,8 +176,12 @@ for (const token of [
 ]) {
   if (!server.includes(token)) failures.push(`missing executable hard-cutover fence: ${token}`);
 }
-if (readFileSync("crates/firm-store/src/lib.rs", "utf8").match(/pub fn append_team_message[\s\S]{0,450}RETIRED_RUNTIME_WRITER/g)?.length !== 2) {
-  failures.push("retired Team message Store writer entry points are not both hard rejected");
+const legacyStore = productionRust("crates/firm-store/src/lib.rs");
+if (legacyStore.match(/pub fn append_team_message_checked[\s\S]{0,450}RETIRED_RUNTIME_WRITER/g)?.length !== 1) {
+  failures.push("retired manual TeamMessage Store seam is not a single fail-closed entry point");
+}
+if (/fn record_provider_interaction_response\s*\(/.test(legacyStore)) {
+  failures.push("retired provider-interaction response writer remains production-executable");
 }
 try {
   readFileSync("schemas/provider-dispatch-envelope.schema.json", "utf8");

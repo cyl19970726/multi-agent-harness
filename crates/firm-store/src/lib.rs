@@ -6,21 +6,20 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use firm_core::{
-    content_hash_hex16, provider_interaction_response_id, AgentTeam, AgentTeamRun, Decision,
-    DelegationRun, Evidence, ExecutionNode, ExecutionNodeStatus, Gap, GitHubLink, HostAttention,
-    HostAttentionInbox, HostAttentionKind, HostAttentionStatus, HostBindingLease,
-    HostBindingLeaseOwnerKind, HostBindingLeaseStatus, LegacyWave, LegacyWaveGateStatus,
-    LegacyWaveStatus, MemberAction, MessageTerminalSource, Mission, MissionLogEntry, MissionStatus,
-    NodeDaemonLease, NodeDaemonLeaseStatus, NodeProjectRegistration, NodeProjectRegistrationStatus,
-    Proposal, ProviderChildThread, ProviderCompatibilityAdmission,
-    ProviderCompatibilityAdmissionLifecycle, ProviderCompatibilityBlockBoundary,
-    ProviderCompatibilityBlockCause, ProviderCompatibilityStatus, ProviderDispatchIntent,
-    ProviderExecutionStatus, ProviderIntegrationProfile, ProviderInteractionRequestBody,
-    ProviderInteractionResponseBody, ProviderLaunchProfile, ProviderProcess,
-    ProviderRuntimeProjection, ProviderWorkDispatch, ProviderWorkDispatchStatus,
+    content_hash_hex16, AgentTeam, AgentTeamRun, Decision, DelegationRun, Evidence, ExecutionNode,
+    ExecutionNodeStatus, Gap, GitHubLink, HostAttention, HostAttentionInbox, HostAttentionKind,
+    HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind, HostBindingLeaseStatus,
+    LegacyWave, LegacyWaveGateStatus, LegacyWaveStatus, MemberAction, MessageTerminalSource,
+    Mission, MissionLogEntry, MissionStatus, NodeDaemonLease, NodeDaemonLeaseStatus,
+    NodeProjectRegistration, NodeProjectRegistrationStatus, Proposal, ProviderChildThread,
+    ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
+    ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
+    ProviderCompatibilityStatus, ProviderDispatchIntent, ProviderExecutionStatus,
+    ProviderIntegrationProfile, ProviderInteractionResponseBody, ProviderLaunchProfile,
+    ProviderProcess, ProviderRuntimeProjection, ProviderWorkDispatch, ProviderWorkDispatchStatus,
     ProviderWorkDispatchUpdate, RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage,
-    Review, TeamActorKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
-    TeamMemberCloseStatus, TeamMessageProjection, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
+    Review, TeamActorKind, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
+    TeamMessageProjection, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
     TeamSupervisorLeaseStatus, Validate, Vision, Work, WorkClaimMode, WorkCommandContext,
     WorkCondition, WorkConditionRecord, WorkDelegation, WorkDelegationEvent,
     WorkDelegationRevision, WorkDelegationState, WorkDelegationTransition, WorkEvent,
@@ -309,82 +308,6 @@ pub enum MessageDeliveryClaimResult {
 pub enum TeamMessageDeliveryClaimResult {
     Claimed(Box<TeamMessageProjection>),
     NotQueued,
-}
-
-#[allow(dead_code)]
-fn reject_raw_provider_interaction_append(value: &TeamMessageProjection) -> StoreResult<()> {
-    if matches!(
-        value.kind,
-        ProviderDispatchIntent::ProviderInteractionRequest
-            | ProviderDispatchIntent::ProviderInteractionResponse
-    ) {
-        return Err(StoreError::Conflict(
-            "PROVIDER_INTERACTION_RAW_APPEND_FORBIDDEN: use append_team_message_checked for requests or record_provider_interaction_response for responses"
-                .to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn same_provider_interaction_response(
-    existing: &TeamMessageProjection,
-    retry: &TeamMessageProjection,
-) -> bool {
-    existing.team_run_id == retry.team_run_id
-        && existing.work_id == retry.work_id
-        && existing.source_plan_ref == retry.source_plan_ref
-        && existing.sender == retry.sender
-        && existing.sender_runtime_id == retry.sender_runtime_id
-        && existing.recipients == retry.recipients
-        && existing.recipient_runtime_ids == retry.recipient_runtime_ids
-        && existing.kind == retry.kind
-        && existing.body == retry.body
-        && existing.correlation_id == retry.correlation_id
-        && existing.causation_id == retry.causation_id
-        && existing.response_intent == retry.response_intent
-        && existing.evidence_refs == retry.evidence_refs
-        && existing.deliveries.len() == retry.deliveries.len()
-        && existing
-            .deliveries
-            .iter()
-            .zip(&retry.deliveries)
-            .all(|(existing, retry)| {
-                existing.member_id == retry.member_id && existing.policy == retry.policy
-            })
-}
-
-/// Returns true when the request row changed and must be appended.
-fn acknowledge_provider_interaction_request(
-    request: &mut TeamMessageProjection,
-    acknowledged_at: &str,
-) -> StoreResult<bool> {
-    let host_deliveries = request
-        .deliveries
-        .iter_mut()
-        .filter(|delivery| delivery.member_id == "host")
-        .collect::<Vec<_>>();
-    if host_deliveries.len() != 1 {
-        return Err(StoreError::Conflict(
-            "provider interaction request requires exactly one Host delivery".to_string(),
-        ));
-    }
-    let delivery = host_deliveries.into_iter().next().expect("one delivery");
-    if delivery.policy != TeamDeliveryPolicy::ManualAck {
-        return Err(StoreError::Conflict(
-            "provider interaction request Host delivery must use manual_ack".to_string(),
-        ));
-    }
-    match delivery.status {
-        TeamDeliveryStatus::Acknowledged => Ok(false),
-        TeamDeliveryStatus::Delivered => {
-            delivery.status = TeamDeliveryStatus::Acknowledged;
-            delivery.updated_at = acknowledged_at.to_string();
-            Ok(true)
-        }
-        status => Err(StoreError::Conflict(format!(
-            "provider interaction request Host delivery cannot be acknowledged from {status:?}"
-        ))),
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5553,318 +5476,15 @@ impl HarnessStore {
         ))
     }
 
-    /// Append a manually-authored TeamMessageProjection under the global lock.
-    #[allow(unreachable_code, unused_variables)]
-    pub fn append_team_message_checked(&self, value: &TeamMessageProjection) -> StoreResult<()> {
-        return Err(StoreError::Conflict(
-            "RETIRED_RUNTIME_WRITER: use NodeDaemon-authored canonical Message".into(),
-        ));
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        value
-            .validate_provider_interaction_contract()
-            .map_err(StoreError::Conflict)?;
-        if value.kind == ProviderDispatchIntent::ProviderInteractionResponse {
-            return Err(StoreError::Conflict(
-                "PROVIDER_INTERACTION_RESPONSE_REQUIRES_ATOMIC_RECORD: use record_provider_interaction_response"
-                    .to_string(),
-            ));
-        }
-        let messages = latest_by_id(
-            self.read_jsonl::<TeamMessageProjection>("team_messages.jsonl")?,
-            |message| message.id.clone(),
-        );
-        if messages.contains_key(&value.id) {
-            return Err(StoreError::Conflict(format!(
-                "team message already exists: {}",
-                value.id
-            )));
-        }
-        if value.kind == ProviderDispatchIntent::ProviderInteractionRequest {
-            let body = ProviderInteractionRequestBody::parse_canonical_json(&value.body)
-                .map_err(StoreError::Conflict)?;
-            let member = self.require_member_run_unlocked(&body.member, &value.team_run_id)?;
-            if !member.coordination_is_active() || member.runtime_generation != body.generation {
-                return Err(StoreError::Conflict(format!(
-                    "provider interaction request generation {} is not active on ProviderRuntimeProjection {} generation {}",
-                    body.generation, body.member, member.runtime_generation,
-                )));
-            }
-            let native_session = member.native_session.as_ref().ok_or_else(|| {
-                StoreError::Conflict(format!(
-                    "provider interaction request ProviderRuntimeProjection {} has no native session",
-                    body.member
-                ))
-            })?;
-            if member.provider != body.provider
-                || native_session.provider != body.provider
-                || native_session.native_session_id != body.session
-            {
-                return Err(StoreError::Conflict(format!(
-                    "provider interaction request does not match ProviderRuntimeProjection {} provider/native session",
-                    body.member
-                )));
-            }
-            let host_deliveries = value
-                .deliveries
-                .iter()
-                .filter(|delivery| delivery.member_id == "host")
-                .collect::<Vec<_>>();
-            if host_deliveries.len() != 1 {
-                return Err(StoreError::Conflict(
-                    "provider interaction request requires exactly one Host delivery".to_string(),
-                ));
-            }
-            let host_delivery = host_deliveries[0];
-            if host_delivery.policy != TeamDeliveryPolicy::ManualAck
-                || host_delivery.status != TeamDeliveryStatus::Delivered
-            {
-                return Err(StoreError::Conflict(
-                    "new provider interaction request Host delivery must be delivered manual_ack"
-                        .to_string(),
-                ));
-            }
-        }
-        if let Some(work_id) = value.work_id.as_deref() {
-            let work = self
-                .latest_works_unlocked()?
-                .remove(work_id)
-                .ok_or_else(|| StoreError::Conflict(format!("Work not found: {work_id}")))?;
-            if work.team_run_id != value.team_run_id {
-                return Err(StoreError::Conflict(format!(
-                    "Work {work_id} belongs to TeamRun {}, not {}",
-                    work.team_run_id, value.team_run_id
-                )));
-            }
-        }
-        self.append_jsonl_unlocked("team_messages.jsonl", value)
-    }
-
-    /// Record one provider-interaction response and consume/acknowledge its
-    /// request under the Store write lock. Causation is the idempotency key:
-    /// an exact semantic retry returns the existing response, while a second
-    /// answer or changed actor/routing conflicts.
+    /// Retired TeamMessageProjection write seam.
     ///
-    /// The response row is appended before the request ACK. If a process dies
-    /// between those two JSONL writes, an exact retry observes the response and
-    /// completes the ACK; it can never append a second semantic answer.
-    pub fn record_provider_interaction_response(
-        &self,
-        response: &TeamMessageProjection,
-        acknowledged_at: &str,
-    ) -> StoreResult<TeamMessageProjection> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        response
-            .validate_provider_interaction_contract()
-            .map_err(StoreError::Conflict)?;
-        if response.kind != ProviderDispatchIntent::ProviderInteractionResponse {
-            return Err(StoreError::Conflict(
-                "provider interaction atomic response boundary requires provider_interaction_response"
-                    .to_string(),
-            ));
-        }
-        let response_body = ProviderInteractionResponseBody::parse_canonical_json(&response.body)
-            .map_err(StoreError::Conflict)?;
-        let request_id = response.causation_id.as_deref().ok_or_else(|| {
-            StoreError::Conflict(
-                "provider interaction response requires request causation_id".to_string(),
-            )
-        })?;
-        let messages = latest_by_id(
-            self.read_jsonl::<TeamMessageProjection>("team_messages.jsonl")?,
-            |message| message.id.clone(),
-        );
-        let mut request = messages.get(request_id).cloned().ok_or_else(|| {
-            StoreError::Conflict(format!(
-                "provider interaction request not found: {request_id}"
-            ))
-        })?;
-        let stable_response_id =
-            provider_interaction_response_id(request_id).map_err(StoreError::Conflict)?;
-        if response.id != stable_response_id {
-            return Err(StoreError::Conflict(format!(
-                "provider interaction response id must be stable `{stable_response_id}`, got `{}`",
-                response.id
-            )));
-        }
-        if request.kind != ProviderDispatchIntent::ProviderInteractionRequest {
-            return Err(StoreError::Conflict(format!(
-                "provider interaction response causation {request_id} is not a request"
-            )));
-        }
-        request
-            .validate_provider_interaction_contract()
-            .map_err(StoreError::Conflict)?;
-        let request_body = ProviderInteractionRequestBody::parse_canonical_json(&request.body)
-            .map_err(StoreError::Conflict)?;
-        self.validate_provider_interaction_response_pair(
-            &request,
-            &request_body,
-            response,
-            &response_body,
-        )?;
-        let request_ack_changed =
-            acknowledge_provider_interaction_request(&mut request, acknowledged_at)?;
-
-        let prior_response = messages
-            .values()
-            .find(|message| {
-                message.kind == ProviderDispatchIntent::ProviderInteractionResponse
-                    && message.causation_id.as_deref() == Some(request_id)
-            })
-            .cloned();
-        if let Some(existing) = prior_response {
-            if !same_provider_interaction_response(&existing, response) {
-                return Err(StoreError::Conflict(format!(
-                    "PROVIDER_INTERACTION_RESPONSE_CONFLICT: request {request_id} already has a different response"
-                )));
-            }
-            if request_ack_changed {
-                self.append_jsonl_unlocked("team_messages.jsonl", &request)?;
-            }
-            return Ok(existing);
-        }
-        self.validate_provider_interaction_live_member(&request, &request_body)?;
-        if messages.contains_key(&response.id) {
-            return Err(StoreError::Conflict(format!(
-                "team message already exists: {}",
-                response.id
-            )));
-        }
-
-        // Response-first makes a torn two-row append recoverable by the exact
-        // retry path above. The global lock makes concurrent responders choose
-        // one winner.
-        self.append_jsonl_unlocked("team_messages.jsonl", response)?;
-        if request_ack_changed {
-            self.append_jsonl_unlocked("team_messages.jsonl", &request)?;
-        }
-        Ok(response.clone())
-    }
-
-    fn validate_provider_interaction_response_pair(
-        &self,
-        request: &TeamMessageProjection,
-        request_body: &ProviderInteractionRequestBody,
-        response: &TeamMessageProjection,
-        response_body: &ProviderInteractionResponseBody,
-    ) -> StoreResult<()> {
-        if response.team_run_id != request.team_run_id
-            || response.correlation_id != request.correlation_id
-        {
-            return Err(StoreError::Conflict(
-                "provider interaction response must preserve request TeamRun and correlation_id"
-                    .to_string(),
-            ));
-        }
-        if response_body.interaction_type != request_body.interaction_type
-            || response_body.session != request_body.session
-            || response_body.member != request_body.member
-            || response_body.generation != request_body.generation
-        {
-            return Err(StoreError::Conflict(
-                "provider interaction response type/session/member/generation does not match request"
-                    .to_string(),
-            ));
-        }
-        if let Some(choice) = response_body.choice.as_deref() {
-            if !request_body
-                .options
-                .iter()
-                .any(|option| option.id == choice)
-            {
-                return Err(StoreError::Conflict(format!(
-                    "provider interaction response choice `{choice}` is not a request option"
-                )));
-            }
-        }
-        if response_body.text.is_some() && canonical_surface(&request_body.provider) != "codex" {
-            return Err(StoreError::Conflict(
-                "free-text provider interaction responses are supported only for Codex requests"
-                    .to_string(),
-            ));
-        }
-        let target_deliveries = response
-            .deliveries
-            .iter()
-            .filter(|delivery| delivery.member_id == request_body.member)
-            .collect::<Vec<_>>();
-        if !response
-            .recipient_runtime_ids
-            .iter()
-            .any(|member| member == &request_body.member)
-            || target_deliveries.len() != 1
-        {
-            return Err(StoreError::Conflict(format!(
-                "provider interaction response requires exactly one delivery to ProviderRuntimeProjection {}",
-                request_body.member
-            )));
-        }
-        let target_delivery = target_deliveries[0];
-        if target_delivery.policy != TeamDeliveryPolicy::Inject
-            || target_delivery.status != TeamDeliveryStatus::Queued
-            || target_delivery.attempt != 0
-            || target_delivery.claim_id.is_some()
-            || target_delivery.provider_receipt_id.is_some()
-        {
-            return Err(StoreError::Conflict(
-                "new provider interaction response delivery must be unclaimed Inject+Queued"
-                    .to_string(),
-            ));
-        }
-        let run = self.require_team_run_unlocked(&request.team_run_id)?;
-        let coordination_sender =
-            response
-                .sender
-                .as_ref()
-                .is_some_and(|sender| match sender.kind {
-                    TeamActorKind::Host => {
-                        response.sender_runtime_id == "host"
-                            && (sender.id == "host"
-                                || run
-                                    .host_actor
-                                    .as_ref()
-                                    .is_some_and(|actor| actor.id == sender.id))
-                    }
-                    TeamActorKind::Operator => {
-                        response.sender_runtime_id == format!("operator:{}", sender.id)
-                    }
-                    TeamActorKind::Service => {
-                        response.sender_runtime_id == format!("service:{}", sender.id)
-                    }
-                    TeamActorKind::ProviderRuntimeProjection | TeamActorKind::AgentMember => false,
-                });
-        if !coordination_sender {
-            return Err(StoreError::Conflict(
-                "provider interaction response requires Host, Operator, or Service authorship"
-                    .to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn validate_provider_interaction_live_member(
-        &self,
-        request: &TeamMessageProjection,
-        request_body: &ProviderInteractionRequestBody,
-    ) -> StoreResult<()> {
-        let member =
-            self.require_member_run_unlocked(&request_body.member, &request.team_run_id)?;
-        let same_live_generation = member.coordination_is_active()
-            && member.runtime_generation == request_body.generation
-            && member.provider == request_body.provider
-            && member.native_session.as_ref().is_some_and(|native| {
-                native.provider == request_body.provider
-                    && native.native_session_id == request_body.session
-            });
-        if !same_live_generation {
-            return Err(StoreError::Conflict(format!(
-                "provider interaction request is stale for ProviderRuntimeProjection {} generation/session",
-                request_body.member
-            )));
-        }
-        Ok(())
+    /// Historical rows remain readable, but new runtime messages must use the
+    /// identity-first canonical Message path owned by the NodeDaemon.
+    pub fn append_team_message_checked(&self, value: &TeamMessageProjection) -> StoreResult<()> {
+        let _ = value;
+        Err(StoreError::Conflict(
+            "RETIRED_RUNTIME_WRITER: use NodeDaemon-authored canonical Message".into(),
+        ))
     }
 
     pub fn insert_execution_node(&self, value: &ExecutionNode) -> StoreResult<()> {
@@ -8822,6 +8442,32 @@ mod tests {
             .expect("open store lock");
         lock_file_exclusive(&file).expect("hold store lock");
         file
+    }
+
+    #[test]
+    fn retired_provider_interaction_response_writer_cannot_reenter_the_store_api() {
+        let source = include_str!("lib.rs");
+        let retired_writer = ["fn record_provider_", "interaction_response"].concat();
+        assert!(
+            !source.contains(&retired_writer),
+            "retired provider-interaction response writer must not be compiled into the Store"
+        );
+
+        let checked_writer = source
+            .split("pub fn append_team_message_checked")
+            .nth(1)
+            .and_then(|tail| tail.split("pub fn insert_execution_node").next())
+            .expect("retired checked writer remains an explicit fail-closed API");
+        assert!(
+            checked_writer.contains("RETIRED_RUNTIME_WRITER"),
+            "retired checked writer must fail closed"
+        );
+        assert!(
+            !checked_writer.contains("append_jsonl_unlocked")
+                && !checked_writer.contains("team_messages.jsonl")
+                && !checked_writer.contains("Acknowledged"),
+            "retired checked writer must not retain a hidden ledger mutation or ACK path"
+        );
     }
 
     #[test]

@@ -828,7 +828,7 @@ fn execution_space_json(space: &ExecutionSpace, current: &str) -> serde_json::Va
         "company_id": space.company_id,
         "is_current": space.id == current,
         "identity_boundary": "execution_space",
-        "owns": ["mission", "wave", "agent_team", "team_run", "member_run", "team_message", "workflow"],
+        "owns": ["mission", "mission_log", "agent_team", "team_run", "member_run", "team_message", "workflow"],
     })
 }
 
@@ -27139,6 +27139,97 @@ fn handle_codex_provider_request(
     )))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KimiAcpV1PermissionIntent {
+    AllowOnce,
+    AllowAlways,
+    RejectOnce,
+    RejectAlways,
+}
+
+impl KimiAcpV1PermissionIntent {
+    fn parse(value: Option<&str>) -> Option<Self> {
+        match value {
+            Some("allow_once") => Some(Self::AllowOnce),
+            Some("allow_always") => Some(Self::AllowAlways),
+            Some("reject_once") => Some(Self::RejectOnce),
+            Some("reject_always") => Some(Self::RejectAlways),
+            _ => None,
+        }
+    }
+
+    fn is_allow(self) -> bool {
+        matches!(self, Self::AllowOnce | Self::AllowAlways)
+    }
+}
+
+fn kimi_acp_v1_indexed_option_id(id: &str, prefix: &str) -> bool {
+    id.strip_prefix(prefix).is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+/// Classify the reviewed Kimi ACP v1 `session/request_permission` wire shape.
+///
+/// Permission `kind` is the canonical discriminator. Opaque option ids are
+/// considered only after every kind is recognized and at least one exact
+/// allow intent exists. This prevents a reject-only or future/unknown tool
+/// callback from becoming a user-facing Message merely by colliding with the
+/// current Kimi Code question or plan option-id namespace.
+fn classify_kimi_acp_v1_interaction(
+    title: &str,
+    options: &[ProviderInteractionMessageOption],
+) -> ProviderInteractionType {
+    if options.is_empty() {
+        return ProviderInteractionType::Unknown;
+    }
+    let Some(intents) = options
+        .iter()
+        .map(|option| KimiAcpV1PermissionIntent::parse(option.intent.as_deref()))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return ProviderInteractionType::Unknown;
+    };
+    if !intents.iter().any(|intent| intent.is_allow()) {
+        return ProviderInteractionType::RejectOnly;
+    }
+
+    let question_shape = title == "AskUserQuestion"
+        && options.iter().zip(&intents).all(|(option, intent)| {
+            matches!(intent, KimiAcpV1PermissionIntent::AllowOnce)
+                && kimi_acp_v1_indexed_option_id(&option.id, "q0_opt_")
+                || matches!(intent, KimiAcpV1PermissionIntent::RejectOnce) && option.id == "q0_skip"
+        })
+        && intents
+            .iter()
+            .any(|intent| matches!(intent, KimiAcpV1PermissionIntent::AllowOnce))
+        && options.iter().any(|option| option.id == "q0_skip");
+    if question_shape {
+        return ProviderInteractionType::Question;
+    }
+
+    let plan_shape = title == "ExitPlanMode"
+        && options.iter().zip(&intents).all(|(option, intent)| {
+            matches!(intent, KimiAcpV1PermissionIntent::AllowOnce)
+                && (option.id == "plan_approve"
+                    || kimi_acp_v1_indexed_option_id(&option.id, "plan_opt_"))
+                || matches!(intent, KimiAcpV1PermissionIntent::RejectOnce)
+                    && matches!(option.id.as_str(), "plan_revise" | "plan_reject_and_exit")
+        })
+        && intents
+            .iter()
+            .any(|intent| matches!(intent, KimiAcpV1PermissionIntent::AllowOnce))
+        && options.iter().any(|option| option.id == "plan_revise")
+        && options
+            .iter()
+            .any(|option| option.id == "plan_reject_and_exit");
+    if plan_shape {
+        return ProviderInteractionType::PlanReview;
+    }
+
+    ProviderInteractionType::ToolApproval
+}
+
 fn handle_kimi_provider_request(
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,
@@ -27171,25 +27262,7 @@ fn handle_kimi_provider_request(
         .and_then(|value| value.as_str())
         .unwrap_or("Provider question")
         .to_string();
-    let question =
-        title == "AskUserQuestion" || options.iter().any(|option| option.id.starts_with("q0_"));
-    let plan_review = options.iter().any(|option| option.id.starts_with("plan_"));
-    let interaction_type = if question {
-        ProviderInteractionType::Question
-    } else if plan_review {
-        ProviderInteractionType::PlanReview
-    } else if options.iter().any(|option| {
-        matches!(
-            option.intent.as_deref(),
-            Some("allow_once" | "allow_always")
-        )
-    }) {
-        ProviderInteractionType::ToolApproval
-    } else if !options.is_empty() {
-        ProviderInteractionType::RejectOnly
-    } else {
-        ProviderInteractionType::Unknown
-    };
+    let interaction_type = classify_kimi_acp_v1_interaction(&title, &options);
     let provider_request_id = frame
         .get("id")
         .map(|value| {
@@ -27253,11 +27326,6 @@ fn handle_kimi_provider_request(
         interaction_type,
         ProviderInteractionType::RejectOnly | ProviderInteractionType::Unknown
     ) {
-        ledger.append_provider_control_receipt_once(
-            &member,
-            "Kimi permission callback rejected",
-            "session-start permission ceiling is immutable; callback had no safe in-ceiling allow option",
-        )?;
         return Ok(ProviderInteractionReply {
             result: serde_json::json!({"outcome": {"outcome": "cancelled"}}),
             claimed_response: None,
@@ -47748,6 +47816,130 @@ mod tests {
                 .into_iter()
                 .all(|action| action.title != "Kimi full-access tool permission acknowledged"),
             "misleading option ids must never create an approval receipt"
+        );
+    }
+
+    #[test]
+    fn kimi_acp_v1_discriminator_requires_canonical_intent_and_exact_wire_shape() {
+        let option = |id: &str, intent: &str| ProviderInteractionMessageOption {
+            id: id.into(),
+            label: "Hostile display label".into(),
+            intent: Some(intent.into()),
+        };
+
+        assert_eq!(
+            classify_kimi_acp_v1_interaction(
+                "AskUserQuestion",
+                &[
+                    option("q0_opt_0", "allow_once"),
+                    option("q0_skip", "reject_once"),
+                ],
+            ),
+            ProviderInteractionType::Question
+        );
+        assert_eq!(
+            classify_kimi_acp_v1_interaction(
+                "ExitPlanMode",
+                &[
+                    option("plan_approve", "allow_once"),
+                    option("plan_revise", "reject_once"),
+                    option("plan_reject_and_exit", "reject_once"),
+                ],
+            ),
+            ProviderInteractionType::PlanReview
+        );
+        for (title, options, expected) in [
+            (
+                "AskUserQuestion",
+                vec![option("q0_opt_0", "reject_once")],
+                ProviderInteractionType::RejectOnly,
+            ),
+            (
+                "ExitPlanMode",
+                vec![option("plan_approve", "reject_always")],
+                ProviderInteractionType::RejectOnly,
+            ),
+            (
+                "AskUserQuestion",
+                vec![option("q0_opt_0", "future_allow")],
+                ProviderInteractionType::Unknown,
+            ),
+            (
+                "Bash",
+                vec![option("plan_approve", "allow_once")],
+                ProviderInteractionType::ToolApproval,
+            ),
+        ] {
+            assert_eq!(classify_kimi_acp_v1_interaction(title, &options), expected);
+        }
+    }
+
+    #[test]
+    fn kimi_hostile_colliding_option_ids_cancel_with_zero_durable_side_effects() {
+        let (store, _root) = temp_store("kimi-hostile-option-id-collision");
+        let (ledger, member) = persisted_native_test_member(
+            &store,
+            "kimi",
+            "kimi_acp",
+            "session-hostile-option-id-collision",
+        );
+        let messages_before = store.team_messages().expect("team messages before");
+        let actions_before = store.member_actions().expect("member actions before");
+        let members_before = store.member_runs().expect("member runs before");
+        let operations_before = store
+            .canonical_operations()
+            .expect("canonical operations before");
+
+        for (id, title, option_id, intent) in [
+            (811, "AskUserQuestion", "q0_opt_0", "reject_once"),
+            (812, "ExitPlanMode", "plan_approve", "reject_always"),
+            (813, "AskUserQuestion", "q0_opt_7", "future_allow"),
+            (814, "ExitPlanMode", "plan_revise", "future_reject"),
+        ] {
+            let frame = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": "session-hostile-option-id-collision",
+                    "options": [{
+                        "optionId": option_id,
+                        "name": "Prefix collision must not route",
+                        "kind": intent
+                    }],
+                    "toolCall": {
+                        "toolCallId": format!("{id}:hostile"),
+                        "title": title
+                    }
+                }
+            });
+            let outcome = handle_kimi_provider_request(&ledger, &member, &frame)
+                .expect("hostile callback must cancel in-process");
+            assert_eq!(outcome.result["outcome"]["outcome"], "cancelled");
+            assert!(outcome.claimed_response.is_none());
+        }
+
+        assert_eq!(
+            store.team_messages().expect("team messages after"),
+            messages_before,
+            "hostile callbacks must not create Message waits"
+        );
+        assert_eq!(
+            store.member_actions().expect("member actions after"),
+            actions_before,
+            "hostile callbacks must not write provider-control receipts"
+        );
+        assert_eq!(
+            store.member_runs().expect("member runs after"),
+            members_before,
+            "hostile callbacks must not move the Member into Waiting"
+        );
+        assert_eq!(
+            store
+                .canonical_operations()
+                .expect("canonical operations after"),
+            operations_before,
+            "hostile callbacks must not write canonical operations"
         );
     }
 

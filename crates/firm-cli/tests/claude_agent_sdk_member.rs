@@ -65,7 +65,158 @@ fn init_project(home: &TempHome, name: &str) -> String {
     std::fs::create_dir_all(&root).unwrap();
     let out = run_firm(home, &root, &["init"]);
     assert!(out.status.success(), "init {name} failed: {out:?}");
-    current_project_id(home)
+    let project_id = current_project_id(home);
+    let member = serde_json::json!({
+        "command": "create_agent_member",
+        "member": {
+            "id": "SdkMember",
+            "name": "SDK Member",
+            "description": "deterministic Claude Agent SDK integration fixture",
+            "role": "Runtime owner",
+            "capabilities": ["provider-runtime"],
+            "skill_refs": [],
+            "provider_profile_ref": "claude",
+            "model_preference": null,
+            "workspace_policy": "managed-worktree",
+            "permission_ceiling": "workspace_write",
+            "organization_status": "active",
+            "version": 1,
+            "created_by": {"kind": "human", "id": "test-operator"},
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1"
+        }
+    })
+    .to_string();
+    let created = run_firm(
+        home,
+        &root,
+        &[
+            "member-trust",
+            "mutate",
+            "--actor-kind",
+            "human",
+            "--actor-id",
+            "test-operator",
+            "--idempotency-key",
+            "create-claude-sdk-member",
+            "--expected-version",
+            "0",
+            "--json",
+            &member,
+        ],
+    );
+    assert!(
+        created.status.success(),
+        "create canonical SDK Member failed: {created:?}"
+    );
+    let host = serde_json::json!({
+        "command": "create_agent_member",
+        "member": {
+            "id": "SdkHost",
+            "name": "SDK Host",
+            "description": "deterministic Host fixture",
+            "role": "host",
+            "capabilities": ["coordination"],
+            "skill_refs": [],
+            "provider_profile_ref": "codex",
+            "model_preference": null,
+            "workspace_policy": "managed-worktree",
+            "permission_ceiling": "workspace_write",
+            "organization_status": "active",
+            "version": 1,
+            "created_by": {"kind": "human", "id": "test-operator"},
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1"
+        }
+    })
+    .to_string();
+    let created = run_firm(
+        home,
+        &root,
+        &[
+            "member-trust",
+            "mutate",
+            "--actor-kind",
+            "human",
+            "--actor-id",
+            "test-operator",
+            "--idempotency-key",
+            "create-claude-sdk-host",
+            "--expected-version",
+            "0",
+            "--json",
+            &host,
+        ],
+    );
+    assert!(
+        created.status.success(),
+        "create canonical SDK Host failed: {created:?}"
+    );
+    let mission = run_firm(
+        home,
+        &root,
+        &[
+            "mission",
+            "create",
+            "--id",
+            "claude-sdk-mission",
+            "--title",
+            "Claude SDK deterministic integration",
+            "--objective",
+            "Exercise one persistent Claude Agent SDK member",
+        ],
+    );
+    assert!(
+        mission.status.success(),
+        "create Mission failed: {mission:?}"
+    );
+    let node = run_firm(home, &root, &["node", "init"]);
+    assert!(node.status.success(), "initialize Node failed: {node:?}");
+    let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node JSON");
+    let node_id = node["id"].as_str().expect("node id");
+    let registered = run_firm(
+        home,
+        &root,
+        &[
+            "node",
+            "project",
+            "register",
+            "--node-id",
+            node_id,
+            "--project-binding-id",
+            &project_id,
+        ],
+    );
+    assert!(
+        registered.status.success(),
+        "register project on Node failed: {registered:?}"
+    );
+    let team = run_firm(
+        home,
+        &root,
+        &[
+            "team",
+            "create",
+            "--id",
+            "claude-sdk-team",
+            "--name",
+            "Claude SDK Team",
+            "--description",
+            "deterministic integration fixture",
+            "--mission-id",
+            "claude-sdk-mission",
+            "--host-agent-id",
+            "SdkHost",
+            "--node-id",
+            node_id,
+            "--member",
+            "SdkHost",
+            "--member",
+            "SdkMember",
+        ],
+    );
+    assert!(team.status.success(), "create AgentTeam failed: {team:?}");
+    project_id
 }
 
 /// Which turn shape the fake runner reproduces.
@@ -251,6 +402,20 @@ fn start_with_fake_runner(
     grace_ms: &str,
     run_id: &str,
 ) -> std::process::Output {
+    let daemon = std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
+        .args(["daemon", "start"])
+        .current_dir(root)
+        .envs(home.envs())
+        .env("FIRM_CLAUDE_MEMBER_RUNNER", runner)
+        .env("FIRM_CLAUDE_AGENT_SDK_IDLE_GRACE_MS", grace_ms)
+        .env("FIRM_BIN", env!("CARGO_BIN_EXE_firm"))
+        .env_remove("FIRM_ROOT")
+        .env_remove("FIRM_PROJECT")
+        .env_remove("FIRM_SPACE")
+        .env_remove("FIRM_COMPANY")
+        .output()
+        .expect("daemon start");
+    assert!(daemon.status.success(), "daemon start failed: {daemon:?}");
     std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
         .args(["team-run", "start", "--id", run_id])
         .current_dir(root)
@@ -273,6 +438,8 @@ fn create_run(home: &TempHome, root: &Path) -> String {
         &[
             "team-run",
             "create",
+            "--agent-team-id",
+            "claude-sdk-team",
             "--objective",
             "deterministic agent-sdk coverage",
             "--member",
@@ -281,6 +448,40 @@ fn create_run(home: &TempHome, root: &Path) -> String {
     );
     assert!(out.status.success(), "create failed: {out:?}");
     String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn wait_for_member_detail(
+    home: &TempHome,
+    root: &Path,
+    run_id: &str,
+    ready: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let mut latest = serde_json::Value::Null;
+    for _ in 0..200 {
+        let status = run_firm(
+            home,
+            root,
+            &["team-run", "status", "--id", run_id, "--json"],
+        );
+        assert!(status.status.success(), "status failed: {status:?}");
+        let status_json: serde_json::Value =
+            serde_json::from_slice(&status.stdout).expect("status JSON");
+        let member_id = status_json["members"][0]["member_run"]["id"]
+            .as_str()
+            .expect("member id");
+        let detail = run_firm(
+            home,
+            root,
+            &["member-run", "show", "--id", member_id, "--json"],
+        );
+        assert!(detail.status.success(), "show failed: {detail:?}");
+        latest = serde_json::from_slice(&detail.stdout).expect("member detail JSON");
+        if ready(&latest) {
+            return latest;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("member detail did not reach deterministic condition: {latest}")
 }
 
 // TODO: Fake-runner tests are non-deterministically flaky in CI (timing).
@@ -481,10 +682,7 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
     );
 }
 
-// TODO: Fake-runner tests are non-deterministically flaky in CI (timing).
-// Annotated #[ignore] until the CI environment provides stable subprocess timing.
 #[test]
-#[ignore = "flaky-in-ci-timing"]
 fn agent_sdk_member_records_provider_errors_instead_of_successful_rounds() {
     // Issue #293: a provider API failure (e.g. 403 from a blocked egress)
     // arrives with subtype "success". The ledger must show a failed
@@ -502,25 +700,14 @@ fn agent_sdk_member_records_provider_errors_instead_of_successful_rounds() {
     let out = start_with_fake_runner(&home, &root, &runner, "500", &run_id);
     assert!(out.status.success(), "start failed: {out:?}");
 
-    let status = run_firm(
-        &home,
-        &root,
-        &["team-run", "status", "--id", &run_id, "--json"],
-    );
-    assert!(status.status.success(), "status failed: {status:?}");
-    let status_json: serde_json::Value =
-        serde_json::from_slice(&status.stdout).expect("status JSON");
-    let member_id = status_json["members"][0]["member_run"]["id"]
-        .as_str()
-        .expect("member id");
-    let detail = run_firm(
-        &home,
-        &root,
-        &["member-run", "show", "--id", member_id, "--json"],
-    );
-    assert!(detail.status.success(), "show failed: {detail:?}");
-    let detail_json: serde_json::Value =
-        serde_json::from_slice(&detail.stdout).expect("member detail JSON");
+    let detail_json = wait_for_member_detail(&home, &root, &run_id, |detail| {
+        detail["member_run"]["status"] == "idle"
+            && detail["actions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|action| action["action_type"] == "provider_error")
+    });
 
     let actions = detail_json["actions"].as_array().expect("actions");
     let provider_errors = actions
@@ -560,10 +747,7 @@ fn agent_sdk_member_records_provider_errors_instead_of_successful_rounds() {
     );
 }
 
-// TODO: This test requires live Claude SDK credentials; CI runners lack them.
-// Annotated #[ignore] until the CI environment provides the SDK key (tracked in #XXX).
 #[test]
-#[ignore = "needs-claude-sdk-credentials"]
 fn a_silent_provider_turn_is_a_provider_error_and_stays_reconstructable() {
     // The unclassified half of the same defect: a terminal provider failure the
     // runner cannot label ends the turn with NO agent message. `## RESULT`
@@ -582,26 +766,18 @@ fn a_silent_provider_turn_is_a_provider_error_and_stays_reconstructable() {
     let out = start_with_fake_runner(&home, &root, &runner, "500", &run_id);
     assert!(out.status.success(), "start failed: {out:?}");
 
-    let status = run_firm(
-        &home,
-        &root,
-        &["team-run", "status", "--id", &run_id, "--json"],
-    );
-    assert!(status.status.success(), "status failed: {status:?}");
-    let status_json: serde_json::Value =
-        serde_json::from_slice(&status.stdout).expect("status JSON");
-    let member_id = status_json["members"][0]["member_run"]["id"]
+    let detail_json = wait_for_member_detail(&home, &root, &run_id, |detail| {
+        detail["member_run"]["status"] == "idle"
+            && detail["actions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|action| action["action_type"] == "provider_error")
+    });
+    let member_id = detail_json["member_run"]["id"]
         .as_str()
         .expect("member id")
         .to_string();
-    let detail = run_firm(
-        &home,
-        &root,
-        &["member-run", "show", "--id", &member_id, "--json"],
-    );
-    assert!(detail.status.success(), "show failed: {detail:?}");
-    let detail_json: serde_json::Value =
-        serde_json::from_slice(&detail.stdout).expect("member detail JSON");
 
     // 1. No semantic completion, fabricated message, or Work submit.
     let actions = detail_json["actions"].as_array().expect("actions");
@@ -663,10 +839,7 @@ fn a_silent_provider_turn_is_a_provider_error_and_stays_reconstructable() {
     );
 }
 
-// TODO: This test asserts against hardcoded agent-sdk version strings that
-// drift across SDK upgrades. Annotated #[ignore] until version matrix is stable.
 #[test]
-#[ignore = "version-guard-drift"]
 fn agent_sdk_member_binds_one_native_session_and_turn_completion_is_idle() {
     let home = TempHome::new("agent-sdk-session-bind");
     init_project(&home, "proj");
@@ -677,28 +850,23 @@ fn agent_sdk_member_binds_one_native_session_and_turn_completion_is_idle() {
     let out = start_with_fake_runner(&home, &root, &runner, "500", &run_id);
     assert!(out.status.success(), "start failed: {out:?}");
 
-    let status = run_firm(
-        &home,
-        &root,
-        &["team-run", "status", "--id", &run_id, "--json"],
+    let detail = wait_for_member_detail(&home, &root, &run_id, |detail| {
+        detail["member_run"]["native_session"]["native_session_id"] == "fake-native-session-0001"
+            && detail["member_run"]["status"] == "idle"
+    });
+    assert_eq!(
+        detail["member_run"]["native_session"]["native_session_id"],
+        "fake-native-session-0001"
     );
-    let body = String::from_utf8_lossy(&status.stdout);
-    assert!(
-        body.contains("fake-native-session-0001"),
-        "native session should be bound from the runner's session_bound event.\n{body}"
+    assert_eq!(
+        detail["member_run"]["provider_profile"]["execution_mode"],
+        "claude_agent_sdk"
     );
-    assert!(
-        body.contains("claude_agent_sdk"),
-        "member profile should record the agent-sdk execution mode.\n{body}"
+    assert_eq!(
+        detail["member_run"]["provider_profile"]["provider_version"],
+        "2.1.220"
     );
-    assert!(
-        body.contains("2.1.220"),
-        "the profile and native session must use the SDK-reported execution-mode version.\n{body}"
-    );
-    assert!(
-        body.contains("\"status\": \"idle\""),
-        "provider turn completion must not terminalize the ProviderRuntimeProjection.\n{body}"
-    );
+    assert_eq!(detail["member_run"]["status"], "idle");
 }
 
 // TODO: Fake-runner tests are non-deterministically flaky in CI (timing).

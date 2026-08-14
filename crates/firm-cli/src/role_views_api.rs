@@ -1,8 +1,8 @@
 //! Server-built, read-only RoleViews for the local AgentFirm product loop.
 //!
 //! The browser consumes these bounded projections and never folds ledgers or
-//! invents lifecycle state. All writes remain on the Wave 4A canonical
-//! mutation service.
+//! invents lifecycle state. All writes remain on the canonical Mission Log
+//! mutation service shipped by the historical Wave 4A development batch.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};

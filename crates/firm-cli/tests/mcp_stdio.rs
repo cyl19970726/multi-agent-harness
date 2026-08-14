@@ -6,10 +6,12 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::time::Duration;
 
 mod fake_provider;
 mod firm_env;
-use firm_env::{current_project_id, run_firm, TempHome};
+use firm_env::{current_project_id, run_firm, run_firm_with_env, TempHome};
+use harness_store::HarnessStore;
 
 /// `harness init` a project rooted at `<base>/<name>` and return its id.
 fn init_project(home: &TempHome, name: &str) -> String {
@@ -49,7 +51,7 @@ fn seed_agent_team(home: &TempHome, project_root: &std::path::Path, suffix: &str
             "role": "host",
             "capabilities": ["coordination"],
             "skill_refs": [],
-            "provider_profile_ref": "codex-default",
+            "provider_profile_ref": "codex",
             "model_preference": null,
             "workspace_policy": "managed-worktree",
             "permission_ceiling": "workspace_write",
@@ -134,6 +136,16 @@ fn seed_member_in_active_space(
     suffix: &str,
     role: &str,
 ) -> String {
+    seed_member_in_active_space_with_provider(home, project_root, suffix, role, "kimi")
+}
+
+fn seed_member_in_active_space_with_provider(
+    home: &TempHome,
+    project_root: &std::path::Path,
+    suffix: &str,
+    role: &str,
+    provider: &str,
+) -> String {
     let member_id = format!("mcp-member-{suffix}");
     let command = serde_json::json!({
         "command": "create_agent_member",
@@ -144,7 +156,7 @@ fn seed_member_in_active_space(
             "role": role,
             "capabilities": [role],
             "skill_refs": [],
-            "provider_profile_ref": "kimi-default",
+            "provider_profile_ref": provider,
             "model_preference": null,
             "workspace_policy": "managed-worktree",
             "permission_ceiling": "workspace_write",
@@ -575,121 +587,65 @@ fn retired_mcp_team_run_message_writer_fails_closed_with_zero_store_delta() {
     }
 }
 
-// Historical Wave4A reverse-request writer flow. Canonical provider requests
-// are authored by the source NodeDaemon through Message/Delivery; this direct
-// TeamMessageProjection append must not remain executable in tests.
-#[cfg(any())]
 #[test]
-fn mcp_resolves_provider_request_messages_and_keeps_legacy_ledger_empty() {
+fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retry() {
     let home = TempHome::new("mcp-provider-interaction-message");
     let project_id = init_project(&home, "mcp-provider-interaction");
     let project_root = home.base().join("mcp-provider-interaction");
     let team_id = seed_agent_team(&home, &project_root, "provider-interaction");
-    let created = run_firm(
+    let worker_id = seed_member_in_active_space_with_provider(
+        &home,
+        &project_root,
+        "provider-interaction-worker",
+        "implementer",
+        "codex",
+    );
+    let added = run_firm(
         &home,
         &project_root,
         &[
-            "team-run",
-            "create",
-            "--agent-team-id",
+            "team",
+            "add-member",
+            "--id",
             &team_id,
-            "--objective",
-            "Exercise MCP provider response bridge",
             "--member",
-            "mcp-host-provider-interaction:implementer:codex#Wait for MCP answer",
+            &worker_id,
         ],
     );
     assert!(
-        created.status.success(),
-        "create TeamRun: {}",
-        String::from_utf8_lossy(&created.stderr)
+        added.status.success(),
+        "add canonical worker: {}",
+        String::from_utf8_lossy(&added.stderr)
     );
-    let run_id = String::from_utf8_lossy(&created.stdout).trim().to_string();
-    let store = HarnessStore::new(home.spaces_dir().join("mcp-space-provider-interaction"));
-    let initial = store
-        .member_runs()
-        .expect("member runs")
-        .into_iter()
-        .rev()
-        .find(|member| member.team_run_id == run_id)
-        .expect("created member");
-    let mut member = initial.clone();
-    member.status = MemberRunStatus::Running;
-    member.native_session = Some(NativeSessionRef {
-        provider: member.provider.clone(),
-        execution_mode: "codex_app_server".into(),
-        native_session_id: "mcp-native-session".into(),
-        native_locator_kind: "codex_thread".into(),
-        provider_version: None,
-        adapter_contract_version: "test".into(),
-        availability: NativeSessionAvailability::Available,
-        supports_resume: true,
-        last_verified_at: None,
-        parent_native_session_id: None,
-    });
-    store
-        .compare_and_append_member_run(&initial, &member)
-        .expect("seed native member");
-    let request_body = ProviderInteractionRequestBody {
-        interaction_type: ProviderInteractionType::Question,
-        prompt: "Choose one".into(),
-        options: vec![ProviderInteractionMessageOption {
-            id: "choice-a".into(),
-            label: "Choice A".into(),
-            intent: Some("answer".into()),
-        }],
-        provider: member.provider.clone(),
-        provider_request_id: "mcp-reverse-1".into(),
-        method: "item/tool/requestUserInput".into(),
-        session: "mcp-native-session".into(),
-        member: member.id.clone(),
-        generation: member.runtime_generation,
-    };
-    let created_at = "unix-ms:mcp-provider-request".to_string();
-    let request = TeamMessageProjection {
-        id: "tmsg-mcp-provider-request".into(),
-        team_run_id: run_id.clone(),
-        work_id: None,
-        source_plan_ref: None,
-        sender: Some(TeamActorRef {
-            kind: TeamActorKind::ProviderRuntimeProjection,
-            id: member.id.clone(),
-            display_name: None,
-            authn_source: Some("provider_reverse_request_test".into()),
-        }),
-        sender_runtime_id: member.id.clone(),
-        recipients: vec![TeamRecipientRef {
-            kind: TeamRecipientKind::Host,
-            id: "host".into(),
-        }],
-        recipient_runtime_ids: vec!["host".into()],
-        kind: ProviderDispatchIntent::ProviderInteractionRequest,
-        body: request_body.to_canonical_json().expect("canonical request"),
-        correlation_id: request_body.correlation_id(),
-        causation_id: None,
-        response_intent: Some(ProviderResponseIntent::ResponseRequired),
-        evidence_refs: Vec::new(),
-        deliveries: vec![ProviderDispatchAttempt {
-            member_id: "host".into(),
-            policy: TeamDeliveryPolicy::ManualAck,
-            status: TeamDeliveryStatus::Delivered,
-            attempt: 1,
-            claim_id: None,
-            claimed_by_supervisor_id: None,
-            claimed_generation: None,
-            claimed_unix_ms: None,
-            claim_expires_unix_ms: None,
-            provider_receipt_id: Some("mcp-reverse-request-receipt".into()),
-            failure_reason: None,
-            updated_at: created_at.clone(),
-        }],
-        created_at,
-    };
-    store
-        .append_team_message_checked(&request)
-        .expect("append provider request");
+    let fake_bin = fake_provider::install_codex_team_shim(&home.base().join("fakebin-mcp-answer"));
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let daemon = run_firm_with_env(
+        &home,
+        &project_root,
+        &["daemon", "start"],
+        &[("PATH", path.as_str()), ("FAKE_CODEX_ASK", "1")],
+    );
+    assert!(
+        daemon.status.success(),
+        "start NodeDaemon: {}",
+        String::from_utf8_lossy(&daemon.stderr)
+    );
 
-    let mut mcp = McpClient::spawn(&home, &project_id, &[]);
+    let host_id = "mcp-host-provider-interaction";
+    let mut mcp = McpClient::spawn(
+        &home,
+        &project_id,
+        &[
+            ("PATH", path.as_str()),
+            ("FAKE_CODEX_ASK", "1"),
+            ("AGENTFIRM_MCP_ACTOR_KIND", "agent_member"),
+            ("AGENTFIRM_MCP_ACTOR_ID", host_id),
+        ],
+    );
     let _ = mcp.request(
         "initialize",
         serde_json::json!({
@@ -698,15 +654,134 @@ fn mcp_resolves_provider_request_messages_and_keeps_legacy_ledger_empty() {
             "clientInfo": {"name": "provider-bridge-test", "version": "0"}
         }),
     );
+    let created = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_create",
+            "arguments": {
+                "objective": "Exercise canonical MCP provider response bridge",
+                "agent_team_id": team_id,
+                "members": [{
+                    "name": "mcp-question-worker",
+                    "role": "implementer",
+                    "provider": "codex",
+                    "execution_mode": "codex_app_server",
+                    "agent_member_id": worker_id,
+                    "initial_work": "Ask one deterministic provider question"
+                }]
+            }
+        }),
+    ));
+    let run_id = created["team_run_id"]
+        .as_str()
+        .expect("team run id")
+        .to_string();
+    let started = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_start",
+            "arguments": {"team_run_id": run_id, "idle_timeout_s": 5}
+        }),
+    ));
+    assert_eq!(started["team_run"]["status"], "running");
+
+    let store = HarnessStore::new(home.spaces_dir().join("mcp-space-provider-interaction"));
+    let execution_space_id = "mcp-space-provider-interaction";
+    let mut request_id = None;
+    for _ in 0..100 {
+        request_id = store
+            .fabric_messages(execution_space_id)
+            .expect("canonical Message fabric")
+            .into_iter()
+            .find(|message| {
+                serde_json::to_value(message).expect("message JSON")["kind"].as_str()
+                    == Some("provider_interaction_request")
+            })
+            .map(|message| message.id);
+        if request_id.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let request_id = request_id.unwrap_or_else(|| {
+        let status = mcp.request(
+            "tools/call",
+            serde_json::json!({
+                "name": "team_run_status",
+                "arguments": {"team_run_id": run_id}
+            }),
+        );
+        panic!(
+            "NodeDaemon did not author the provider request Message; status={status}; messages={:?}; actions={:?}",
+            store.fabric_messages(execution_space_id),
+            store.member_actions()
+        )
+    });
+
+    let mut impostor = McpClient::spawn(
+        &home,
+        &project_id,
+        &[
+            ("AGENTFIRM_MCP_ACTOR_KIND", "service"),
+            ("AGENTFIRM_MCP_ACTOR_ID", "not-the-team-host"),
+        ],
+    );
+    let unauthorized = impostor.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_answer_message",
+            "arguments": {
+                "team_run_id": run_id,
+                "message_id": request_id,
+                "option_id": "implementation::0"
+            }
+        }),
+    );
+    assert!(call_error_text(&unauthorized).contains("UNAUTHORIZED_ACTOR"));
+
+    let spoof = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_answer_message",
+            "arguments": {
+                "team_run_id": run_id,
+                "message_id": request_id,
+                "option_id": "implementation::0",
+                "resolved_by": "host"
+            }
+        }),
+    );
+    assert!(call_error_text(&spoof).contains("resolved_by"));
+
+    let invalid = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_answer_message",
+            "arguments": {
+                "team_run_id": run_id,
+                "message_id": request_id,
+                "option_id": "not-exposed"
+            }
+        }),
+    );
+    assert!(call_error_text(&invalid).contains("does not expose option_id"));
+    assert!(store
+        .fabric_messages(execution_space_id)
+        .expect("messages after rejected answers")
+        .iter()
+        .all(
+            |message| serde_json::to_value(message).expect("message JSON")["kind"]
+                != "provider_interaction_response"
+        ));
+
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
             "name": "team_run_answer_message",
             "arguments": {
                 "team_run_id": run_id,
-                "message_id": request.id,
-                "option_id": "choice-a",
-                "resolved_by": "host"
+                "message_id": request_id,
+                "option_id": "implementation::0"
             }
         }),
     );
@@ -715,11 +790,43 @@ fn mcp_resolves_provider_request_messages_and_keeps_legacy_ledger_empty() {
         payload["kind"].as_str(),
         Some("provider_interaction_response")
     );
-    let messages = store.team_messages().expect("team messages");
-    assert!(messages.iter().any(|message| {
-        message.kind == ProviderDispatchIntent::ProviderInteractionResponse
-            && message.causation_id.as_deref() == Some("tmsg-mcp-provider-request")
-    }));
+    let retry = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_answer_message",
+            "arguments": {
+                "team_run_id": run_id,
+                "message_id": request_id,
+                "option_id": "implementation::0"
+            }
+        }),
+    ));
+    assert_eq!(retry["id"], payload["id"]);
+    let responses = store
+        .fabric_messages(execution_space_id)
+        .expect("canonical messages")
+        .into_iter()
+        .filter(|message| {
+            serde_json::to_value(message).expect("message JSON")["kind"]
+                == "provider_interaction_response"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        responses.len(),
+        1,
+        "exact retry must not duplicate response"
+    );
+    assert_eq!(
+        responses[0].causation_id.as_deref(),
+        Some(request_id.as_str())
+    );
+    assert!(
+        store
+            .team_messages()
+            .expect("legacy message projection")
+            .is_empty(),
+        "canonical provider question/answer must not revive the retired TeamMessage writer"
+    );
 }
 
 /// Seed one historical Wave row directly, bypassing the retired `wave_create`

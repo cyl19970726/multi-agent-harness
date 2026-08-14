@@ -76,12 +76,17 @@ not a prose waiver:
 | `claude_member_uses_native_session_without_provider_activity_mirror` | `agent_sdk_member_binds_one_native_session_and_turn_completion_is_idle` |
 | `claude_failure_keeps_native_session_and_provider_error_without_mirroring_stream` | `agent_sdk_member_records_provider_errors_instead_of_successful_rounds`; `a_silent_provider_turn_is_a_provider_error_and_stays_reconstructable` |
 | `team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning` | provider-neutral start/lease coverage in `team_run_daemon`; Codex and Kimi lifecycle tests in `team_run_api`; transient-reasoning assertions remain in each adapter test rather than one mixed fixture |
-| `kimi_question_waits_for_lead_resolution_and_resumes_same_turn` | provider-neutral response/ACK contract in `provider_answer_response_first_retry_recovers_without_duplicate_or_early_ack`; live reverse-question journey in `codex_app_server_question_routes_to_lead_and_resumes_same_turn`; Kimi waiting cancellation tests cover its ACP callback boundary |
+| `kimi_question_waits_for_lead_resolution_and_resumes_same_turn` | provider-neutral response/ACK contract in `provider_answer_response_first_retry_recovers_without_duplicate_or_early_ack`; live reverse-question journey in `codex_app_server_question_routes_to_lead_and_resumes_same_turn`; MCP transport identity, spoof rejection, exact-option validation, and retry idempotency in `mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retry`; Kimi waiting cancellation tests cover its ACP callback boundary |
 | `kimi_full_access_tool_permissions_acknowledge_without_pending_interactions` | `kimi_full_access_safe_approvals_converge_to_one_bounded_receipt`; `kimi_safe_approval_rejects_closed_retired_generation_and_session_drift` |
 | `kimi_reject_only_tool_permission_fails_closed_to_policy` | `kimi_permission_matching_uses_exact_intent_not_option_id_substrings` |
 | `kimi_unknown_permission_request_fails_closed_to_human` | `kimi_permission_matching_uses_exact_intent_not_option_id_substrings`; `scripted_unknown_reverse_method_publishes_no_receipt` |
 | `blocked_provider_outcome_leaves_member_idle_and_supervisor_can_reattach` | `kimi_provider_error_after_receipt_requires_recovery_without_replay`; `kimi_incomplete_stop_reason_requires_recovery_without_replay`; `team_run_start_delegates_to_node_daemon_and_is_idempotent` |
 
-The submission gate runs `team_run_api`, `team_run_daemon`, `mcp_stdio`, and
-the adapter unit/integration suites. Reintroducing a disabled copy of the old
-file is not a replacement.
+The submission gate runs `team_run_api`, `team_run_daemon`, `mcp_stdio`,
+`claude_agent_sdk_member`, and the adapter unit/integration suites. The three
+Claude replacements named above use the deterministic fake runner, require no
+provider credentials, and run in the default test graph (no `ignore` or
+always-false `cfg`). The MCP replacement obtains its request from a real fake
+Codex provider turn through the NodeDaemon; it does not seed a request through
+a retired writer. Reintroducing a disabled copy of the old file is not a
+replacement.
