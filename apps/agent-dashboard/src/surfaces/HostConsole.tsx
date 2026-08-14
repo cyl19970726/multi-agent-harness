@@ -18,7 +18,7 @@ export function HostConsole({apiUrl,space,project,company,teamId,teamRunId,selec
   const [loading,setLoading] = useState(true);
   const [refresh,setRefresh] = useState(0);
   const [replyTo,setReplyTo] = useState<MessageSummary|null>(null);
-  useEffect(() => { let live=true; setLoading(true); fetchRoleView<HostConsoleData>(apiUrl,`/v1/views/host-console/${encodeURIComponent(teamId)}`,{space,project,company}).then((value) => { if(live){setView(value);setError(null);} }).catch((reason) => {if(live)setError(String(reason));}).finally(() => {if(live)setLoading(false);}); return () => {live=false;}; },[apiUrl,space,project,company,teamId,refreshKey,refresh]);
+  useEffect(() => { let live=true; fetchRoleView<HostConsoleData>(apiUrl,`/v1/views/host-console/${encodeURIComponent(teamId)}`,{space,project,company}).then((value) => { if(live){setView(value);setError(null);} }).catch((reason) => {if(live)setError(String(reason));}).finally(() => {if(live)setLoading(false);}); return () => {live=false;}; },[apiUrl,space,project,company,teamId,refreshKey,refresh]);
   const retry = () => setRefresh((value) => value+1);
   if (!view) return <div className="min-h-64"><ViewState loading={loading} error={error} identityLabel={`Host tools · ${teamId}`} onRetry={retry}>{null}</ViewState></div>;
 

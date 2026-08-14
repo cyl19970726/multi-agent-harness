@@ -245,6 +245,9 @@ export function App() {
   // validates every transition, but overlapping POST responses have no safe
   // client-side ordering unless the product exposes an explicit operation id.
   const mutationInFlightRef = useRef(false);
+  // True once any authoritative snapshot has committed. Background resyncs after
+  // that point revalidate silently instead of re-dirtying proven-live domains.
+  const snapshotCommittedRef = useRef(false);
   // A full snapshot and an SSE frame can cross in flight. Keep the tiny frame
   // journal outside React state so every fetch/action response can replay its
   // in-flight deltas before it replaces the read model.
@@ -269,6 +272,7 @@ export function App() {
     (request: SnapshotRequestToken, next: DashboardSnapshot): boolean => {
       const merged = snapshotFrames.current.resolveResponse(request, next);
       if (!merged) return false;
+      snapshotCommittedRef.current = true;
       setSnapshot(merged);
       return true;
     },
@@ -333,8 +337,13 @@ export function App() {
     affectedDomains: readonly FreshnessDomain[] = freshnessDomains,
   ): void => {
     resyncDirtyRef.current = true;
-    setFreshnessState("stale");
-    setDomainFreshness((current) => updateFreshness(current, affectedDomains, "stale"));
+    if (!snapshotCommittedRef.current) {
+      // Only the initial load (or a scope reset, which clears the committed
+      // marker) may re-dirty domains. A background resync revalidates against
+      // the last committed snapshot; its commit refreshes freshness anyway.
+      setFreshnessState("stale");
+      setDomainFreshness((current) => updateFreshness(current, affectedDomains, "stale"));
+    }
 
     const drain = () => {
       if (resyncInFlightRef.current || !resyncDirtyRef.current) return;
@@ -488,6 +497,7 @@ export function App() {
       resyncRetryTimerRef.current = null;
     }
     resyncRetryAttemptRef.current = 0;
+    snapshotCommittedRef.current = false;
     setSnapshot(emptySnapshot);
     if (source === liveSource) requestAuthoritativeResync();
   }, [requestAuthoritativeResync, selection.surface, selection.teamId, source]);
@@ -736,6 +746,7 @@ export function App() {
 
       const request = beginMutationSnapshotRequest();
       setIsLoading(true);
+      snapshotCommittedRef.current = false;
       setSnapshot(emptySnapshot);
       void (async () => {
         try {
@@ -775,6 +786,7 @@ export function App() {
       moveStreamBoundary(streamSelectionKey(selectedSpaceId, selectedProjectId, companyId));
       setSelectedCompanyId(companyId);
       setIsLoading(true);
+      snapshotCommittedRef.current = false;
       setSnapshot(emptySnapshot);
       // The selected Company is browser-tab scope. Changing it must never call
       // /v1/companies/switch, which mutates the CLI/server default for every tab.
@@ -796,6 +808,7 @@ export function App() {
       const request = beginMutationSnapshotRequest();
       setSelectedSpaceId(spaceId);
       setIsLoading(true);
+      snapshotCommittedRef.current = false;
       setSnapshot(emptySnapshot);
       if (source !== liveSource) {
         finishMutationSnapshotRequest(request);
@@ -870,6 +883,7 @@ export function App() {
       // before the stream hook's mode effect runs. Drop previews immediately so
       // offline auto-retry cannot overlay old thinking onto a fresh snapshot.
       snapshotFrames.current.clearLiveMemberActivity();
+      snapshotCommittedRef.current = false;
       setSnapshot(emptySnapshot);
       setWorkflowDefs([]);
     } finally {

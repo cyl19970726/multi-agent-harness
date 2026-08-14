@@ -39,7 +39,7 @@ export function TeamWorkspace({apiUrl,space,project,company,teamId,teamRunId,ref
   useLayoutEffect(() => {
     if(tab === "activity") workspaceScrollRef.current?.scrollTo({top:0,behavior:"auto"});
   },[tab,teamId]);
-  useEffect(() => { let live=true; setLoading(true); fetchRoleView<TeamWorkspaceData>(apiUrl,`/v1/views/team-workspace/${encodeURIComponent(teamId)}`,{space,project,company}).then((value) => { if(live){ setView(value); setError(null); } }).catch((reason) => { if(live) setError(String(reason)); }).finally(() => { if(live) setLoading(false); }); return () => { live=false; }; },[apiUrl,space,project,company,teamId,refreshKey,refetch]);
+  useEffect(() => { let live=true; fetchRoleView<TeamWorkspaceData>(apiUrl,`/v1/views/team-workspace/${encodeURIComponent(teamId)}`,{space,project,company}).then((value) => { if(live){ setView(value); setError(null); } }).catch((reason) => { if(live) setError(String(reason)); }).finally(() => { if(live) setLoading(false); }); return () => { live=false; }; },[apiUrl,space,project,company,teamId,refreshKey,refetch]);
   if (!view) return <div className="h-full flex-1 overflow-y-auto"><ViewState loading={loading} error={error} identityLabel={`Agent Team · ${teamId}`} onRetry={retry}>{null}</ViewState></div>;
 
   const team = view.data.team;

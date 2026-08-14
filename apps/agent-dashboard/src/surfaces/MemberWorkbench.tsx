@@ -47,7 +47,6 @@ export function MemberWorkbench({
   const retry = () => setRefresh((value) => value + 1);
   useEffect(() => {
     let live = true;
-    setLoading(true);
     fetchRoleView<MemberWorkbenchData>(
       apiUrl,
       `/v1/views/member-workbench/${encodeURIComponent(memberRunId)}`,

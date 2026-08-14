@@ -32,6 +32,9 @@ export function freshnessDomainsForInvalidation(
 ): readonly FreshnessDomain[] {
   if (!invalidation) return freshnessDomains;
   const ledger = invalidation.ledger.toLowerCase();
+  // A Team Supervisor heartbeat only rewrites its ambient lease file. That
+  // churn proves liveness; it never dirties a product projection domain.
+  if (ledger.split("/").pop() === "team_supervisor_leases.jsonl") return [];
   if (invalidation.scope === "execution_space") {
     return ledger.includes("work")
       ? ["works", "runtime"]
