@@ -12032,10 +12032,12 @@ fn add_team_run_member(
         )));
     }
     let member_run = build_member_run_for_team(project_context, team_run_id, member)?;
+    let execution_space_id = team_run_execution_space_id(store, &current)?;
     let mut next = current.clone();
     next.member_run_ids.push(member_run.id.clone());
     next.updated_at = now_string();
     store_conflict_as_usage(store.admit_member_run(&current, &next, &member_run))?;
+    materialize_canonical_member_run(store, &execution_space_id, &member_run)?;
     append_team_run_event(
         store,
         team_run_id,
@@ -12969,15 +12971,9 @@ fn canonical_team_messages_for_run(
 fn team_run_execution_space_id(store: &HarnessStore, run: &AgentTeamRun) -> CliResult<String> {
     let mut member_scopes = BTreeSet::new();
     for member_run_id in &run.member_run_ids {
-        let scope = store
-            .trust_member_run_scope(member_run_id)?
-            .ok_or_else(|| {
-                CliError::Usage(format!(
-                    "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} member {} has no canonical Execution Space",
-                    run.id, member_run_id
-                ))
-            })?;
-        member_scopes.insert(scope);
+        if let Some(scope) = store.trust_member_run_scope(member_run_id)? {
+            member_scopes.insert(scope);
+        }
     }
     if member_scopes.len() > 1 {
         return Err(CliError::Usage(format!(
@@ -17441,28 +17437,7 @@ fn prepare_provider_effect_kind(
         RuntimeEffectCertainty,
     };
 
-    let mut matches = Vec::new();
-    for execution_space_id in ledger.store.canonical_execution_space_ids()? {
-        for session in ledger
-            .store
-            .fabric_agent_sessions(&execution_space_id)?
-            .into_iter()
-            .filter(|session| {
-                session.agent_identity_id == member.agent_member_id
-                    && session.lifecycle != AgentSessionStatus::Closed
-            })
-        {
-            matches.push((execution_space_id.clone(), session));
-        }
-    }
-    if matches.len() != 1 {
-        return Err(CliError::Usage(format!(
-            "AGENT_SESSION_AMBIGUOUS: provider effect for {} requires one current session, found {}",
-            member.agent_member_id,
-            matches.len()
-        )));
-    }
-    let (execution_space_id, session) = matches.pop().unwrap();
+    let (execution_space_id, session) = provider_session_for_member(ledger, member)?;
     let lifecycle_is_eligible = match command_kind {
         harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider
         | harness_core::agentfirm_api::RuntimeCommandKind::CancelProviderTurn => {
@@ -17657,30 +17632,9 @@ fn prepare_provider_process_effect(
     member: &ProviderRuntimeProjection,
 ) -> CliResult<ProviderEffectAdmission> {
     use harness_core::agentfirm_api::{
-        ActorKind, ActorRef, AgentSessionStatus, ControlCommandEnvelope, RuntimeCommandKind,
+        ActorKind, ActorRef, ControlCommandEnvelope, RuntimeCommandKind,
     };
-    let mut matches = Vec::new();
-    for execution_space_id in ledger.store.canonical_execution_space_ids()? {
-        for session in ledger
-            .store
-            .fabric_agent_sessions(&execution_space_id)?
-            .into_iter()
-            .filter(|session| {
-                session.agent_identity_id == member.agent_member_id
-                    && session.lifecycle != AgentSessionStatus::Closed
-            })
-        {
-            matches.push((execution_space_id.clone(), session));
-        }
-    }
-    if matches.len() != 1 {
-        return Err(CliError::Usage(format!(
-            "AGENT_SESSION_AMBIGUOUS: provider process for {} requires one current session, found {}",
-            member.agent_member_id,
-            matches.len()
-        )));
-    }
-    let (execution_space_id, session) = matches.pop().unwrap();
+    let (execution_space_id, session) = provider_session_for_member(ledger, member)?;
     let lease = ledger
         .store
         .latest_node_daemon_lease(&session.node_id)?
@@ -17818,28 +17772,7 @@ fn transition_provider_session_for_member(
     desired: harness_core::agentfirm_api::AgentSessionStatus,
 ) -> CliResult<()> {
     use harness_core::agentfirm_api::AgentSessionStatus;
-    let mut matches = Vec::new();
-    for space_id in ledger.store.canonical_execution_space_ids()? {
-        for session in ledger
-            .store
-            .fabric_agent_sessions(&space_id)?
-            .into_iter()
-            .filter(|session| {
-                session.agent_identity_id == member.agent_member_id
-                    && session.lifecycle != AgentSessionStatus::Closed
-            })
-        {
-            matches.push((space_id.clone(), session));
-        }
-    }
-    if matches.len() != 1 {
-        return Err(CliError::Usage(format!(
-            "AGENT_SESSION_AMBIGUOUS: {} requires exactly one current session, found {}",
-            member.agent_member_id,
-            matches.len()
-        )));
-    }
-    let (space_id, mut session) = matches.pop().unwrap();
+    let (space_id, mut session) = provider_session_for_member(ledger, member)?;
     let daemon = ledger
         .store
         .latest_node_daemon_lease(&session.node_id)?
@@ -17932,33 +17865,125 @@ fn transition_provider_session_for_member(
     Ok(())
 }
 
+/// Resolve the only provider session authorized for this exact MemberRun.
+/// Agent identities are organization-wide and may legitimately have sessions
+/// in other Execution Spaces; they are never sufficient routing authority.
+fn provider_session_for_member(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+) -> CliResult<(String, harness_core::agentfirm_api::AgentSession)> {
+    use harness_core::agentfirm_api::AgentSessionStatus;
+
+    let run = latest_team_run(&ledger.store, &ledger.run_id)?;
+    if member.team_run_id != run.id || !run.member_run_ids.contains(&member.id) {
+        return Err(CliError::Usage(format!(
+            "MEMBER_RUN_SCOPE_MISMATCH: member {} does not belong to TeamRun {}",
+            member.id, run.id
+        )));
+    }
+    let execution_space_id = team_run_execution_space_id(&ledger.store, &run)?;
+    let member_scope = ledger
+        .store
+        .trust_member_run_scope(&member.id)?
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "MEMBER_RUN_SCOPE_MISMATCH: member {} has no canonical Execution Space",
+                member.id
+            ))
+        })?;
+    if member_scope != execution_space_id {
+        return Err(CliError::Usage(format!(
+            "MEMBER_RUN_SCOPE_MISMATCH: member {} belongs to Execution Space {}, not TeamRun space {}",
+            member.id, member_scope, execution_space_id
+        )));
+    }
+    let canonical_members = ledger
+        .store
+        .trust_member_runs(&execution_space_id)?
+        .into_iter()
+        .filter(|candidate| candidate.id == member.id)
+        .collect::<Vec<_>>();
+    let canonical_member = match canonical_members.as_slice() {
+        [canonical_member] => canonical_member,
+        rows => {
+            return Err(CliError::Usage(format!(
+                "MEMBER_RUN_SCOPE_MISMATCH: member {} has {} canonical projections in Execution Space {}",
+                member.id,
+                rows.len(),
+                execution_space_id
+            )))
+        }
+    };
+    if canonical_member.team_run_id != run.id
+        || canonical_member.agent_member_id != member.agent_member_id
+        || canonical_member.runtime_generation != member.runtime_generation
+    {
+        return Err(CliError::Usage(format!(
+            "MEMBER_RUN_SCOPE_MISMATCH: canonical member {} does not match TeamRun, identity, or generation",
+            member.id
+        )));
+    }
+    let sessions = ledger
+        .store
+        .fabric_agent_sessions(&execution_space_id)?
+        .into_iter()
+        .filter(|session| {
+            session.agent_identity_id == member.agent_member_id
+                && session.lifecycle != AgentSessionStatus::Closed
+        })
+        .collect::<Vec<_>>();
+    let session = match sessions.as_slice() {
+        [session] => (*session).clone(),
+        rows => {
+            return Err(CliError::Usage(format!(
+                "AGENT_SESSION_AMBIGUOUS: member {} requires one current session in Execution Space {}, found {}",
+                member.id,
+                execution_space_id,
+                rows.len()
+            )))
+        }
+    };
+    if session.execution_space_id != execution_space_id
+        || session.provider_kind != member.provider
+        || session.runtime_generation != member.runtime_generation
+    {
+        return Err(CliError::Usage(format!(
+            "AGENT_SESSION_GENERATION_FENCED: member {} expects {} generation {}, but scoped session {} is {} generation {}",
+            member.id,
+            member.provider,
+            member.runtime_generation,
+            session.id,
+            session.provider_kind,
+            session.runtime_generation
+        )));
+    }
+    Ok((execution_space_id, session))
+}
+
 fn require_provider_session_authority(
     ledger: &TeamRunLedger,
     agent_identity_id: &str,
     require_active: bool,
 ) -> CliResult<harness_core::agentfirm_api::AgentSession> {
     use harness_core::agentfirm_api::AgentSessionStatus;
-    let mut matches = Vec::new();
-    for execution_space_id in ledger.store.canonical_execution_space_ids()? {
-        for session in ledger
-            .store
-            .fabric_agent_sessions(&execution_space_id)?
-            .into_iter()
-            .filter(|session| {
-                session.agent_identity_id == agent_identity_id
-                    && session.lifecycle != AgentSessionStatus::Closed
-            })
-        {
-            matches.push(session);
+    let members = latest_member_runs_in_append_order(&ledger.store)?
+        .into_iter()
+        .filter(|member| {
+            member.team_run_id == ledger.run_id && member.agent_member_id == agent_identity_id
+        })
+        .collect::<Vec<_>>();
+    let member = match members.as_slice() {
+        [member] => member,
+        rows => {
+            return Err(CliError::Usage(format!(
+                "MEMBER_RUN_SCOPE_MISMATCH: TeamRun {} has {} members for AgentIdentity {}",
+                ledger.run_id,
+                rows.len(),
+                agent_identity_id
+            )))
         }
-    }
-    if matches.len() != 1 {
-        return Err(CliError::Usage(format!(
-            "AGENT_SESSION_AMBIGUOUS: provider authority for {agent_identity_id} requires one current session, found {}",
-            matches.len()
-        )));
-    }
-    let session = matches.pop().unwrap();
+    };
+    let (_, session) = provider_session_for_member(ledger, member)?;
     if require_active && session.lifecycle != AgentSessionStatus::Active {
         return Err(CliError::Usage(format!(
             "AGENT_SESSION_NOT_ACTIVE: provider authority requires Active session {}, found {:?}",
@@ -17988,19 +18013,13 @@ fn require_member_provider_session_authority(
     member: &ProviderRuntimeProjection,
     require_active: bool,
 ) -> CliResult<harness_core::agentfirm_api::AgentSession> {
-    let session =
-        require_provider_session_authority(ledger, &member.agent_member_id, require_active)?;
-    if session.provider_kind != member.provider
-        || session.runtime_generation != member.runtime_generation
+    let (_, session) = provider_session_for_member(ledger, member)?;
+    if require_active
+        && session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Active
     {
         return Err(CliError::Usage(format!(
-            "AGENT_SESSION_GENERATION_FENCED: member {} expects {} generation {}, but current session {} is {} generation {}",
-            member.id,
-            member.provider,
-            member.runtime_generation,
-            session.id,
-            session.provider_kind,
-            session.runtime_generation
+            "AGENT_SESSION_NOT_ACTIVE: provider authority requires Active session {}, found {:?}",
+            session.id, session.lifecycle
         )));
     }
     Ok(session)
@@ -38908,7 +38927,6 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     // Message + per-recipient MessageDelivery plane. Retired
     // team_messages/provider_dispatch ledgers remain export-only history and
     // are never folded into a current Dashboard snapshot.
-    let mut team_messages = Vec::new();
     let mut trust_scopes = BTreeSet::new();
     for member_run in &member_runs {
         if let Some(scope) = store.trust_member_run_scope(&member_run.id)? {
@@ -38931,131 +38949,10 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         let deliveries = store.fabric_message_deliveries(&execution_space_id)?;
         canonical_messages.extend(space_messages.iter().cloned());
         canonical_message_deliveries.extend(deliveries.iter().cloned());
-        for message in space_messages {
-            let message_deliveries = deliveries
-                .iter()
-                .filter(|delivery| delivery.message_id == message.id)
-                .map(|delivery| ProviderDispatchAttempt {
-                    member_id: member_runs
-                        .iter()
-                        .find(|member| {
-                            member.agent_member_id == delivery.recipient_identity_id
-                                && message.team_run_id.as_deref()
-                                    == Some(member.team_run_id.as_str())
-                        })
-                        .map(|member| member.id.clone())
-                        .unwrap_or_else(|| delivery.recipient_identity_id.clone()),
-                    policy: TeamDeliveryPolicy::Queue,
-                    status: match delivery.status {
-                        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Queued
-                        | harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Routed => {
-                            TeamDeliveryStatus::Queued
-                        }
-                        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Claimed => {
-                            TeamDeliveryStatus::Claimed
-                        }
-                        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::ProviderReceived => {
-                            TeamDeliveryStatus::Delivered
-                        }
-                        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Acknowledged => {
-                            TeamDeliveryStatus::Acknowledged
-                        }
-                        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Failed
-                        | harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Invalidated => {
-                            TeamDeliveryStatus::Failed
-                        }
-                        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Expired => {
-                            TeamDeliveryStatus::Expired
-                        }
-                    },
-                    attempt: delivery.attempt,
-                    claim_id: delivery.claim_id.clone(),
-                    claimed_by_supervisor_id: None,
-                    claimed_generation: delivery.claimed_node_daemon_generation,
-                    claimed_unix_ms: None,
-                    claim_expires_unix_ms: None,
-                    provider_receipt_id: delivery.provider_receipt_id.clone(),
-                    failure_reason: delivery.failure_detail.clone(),
-                    updated_at: delivery.updated_at.clone(),
-                })
-                .collect::<Vec<_>>();
-            let recipient_runtime_ids = message_deliveries
-                .iter()
-                .map(|delivery| delivery.member_id.clone())
-                .collect::<Vec<_>>();
-            team_messages.push(TeamMessageProjection {
-                id: message.id.clone(),
-                team_run_id: message.team_run_id.clone().unwrap_or_default(),
-                work_id: message.work_id.clone(),
-                source_plan_ref: None,
-                sender: Some(TeamActorRef {
-                    kind: match message.sender_actor_ref.kind {
-                        harness_core::agentfirm_api::ActorKind::AgentMember => {
-                            TeamActorKind::AgentMember
-                        }
-                        harness_core::agentfirm_api::ActorKind::Service => TeamActorKind::Service,
-                        harness_core::agentfirm_api::ActorKind::Human
-                        | harness_core::agentfirm_api::ActorKind::External => {
-                            TeamActorKind::Operator
-                        }
-                    },
-                    id: message.sender_actor_ref.id.clone(),
-                    display_name: None,
-                    authn_source: Some("canonical_trust_kernel".into()),
-                }),
-                sender_runtime_id: message
-                    .sender_agent_id
-                    .as_ref()
-                    .and_then(|identity_id| {
-                        member_runs
-                            .iter()
-                            .find(|member| {
-                                member.agent_member_id == *identity_id
-                                    && message.team_run_id.as_deref()
-                                        == Some(member.team_run_id.as_str())
-                            })
-                            .map(|member| member.id.clone())
-                    })
-                    .unwrap_or_else(|| message.sender_actor_ref.id.clone()),
-                recipients: recipient_runtime_ids
-                    .iter()
-                    .map(|id| TeamRecipientRef {
-                        kind: TeamRecipientKind::ProviderRuntimeProjection,
-                        id: id.clone(),
-                    })
-                    .collect(),
-                recipient_runtime_ids,
-                kind: match message.kind {
-                    harness_core::agentfirm_api::MessageKind::Message
-                    | harness_core::agentfirm_api::MessageKind::Reply => {
-                        ProviderDispatchIntent::Message
-                    }
-                    harness_core::agentfirm_api::MessageKind::RequestDecision => {
-                        ProviderDispatchIntent::Control
-                    }
-                    harness_core::agentfirm_api::MessageKind::ProviderInteractionRequest => {
-                        ProviderDispatchIntent::ProviderInteractionRequest
-                    }
-                    harness_core::agentfirm_api::MessageKind::ProviderInteractionResponse => {
-                        ProviderDispatchIntent::ProviderInteractionResponse
-                    }
-                },
-                body: message.body,
-                correlation_id: message.correlation_id,
-                causation_id: message.causation_id,
-                response_intent: Some(match message.response_intent {
-                    harness_core::agentfirm_api::ResponseIntent::Informational => {
-                        ProviderResponseIntent::Informational
-                    }
-                    harness_core::agentfirm_api::ResponseIntent::ResponseRequired => {
-                        ProviderResponseIntent::ResponseRequired
-                    }
-                }),
-                evidence_refs: message.evidence_refs,
-                deliveries: message_deliveries,
-                created_at: message.created_at,
-            });
-        }
+    }
+    let mut team_messages = Vec::new();
+    for run in &team_runs {
+        team_messages.extend(canonical_team_messages_for_run(store, &run.id)?);
     }
     team_messages.sort_by(|left, right| {
         left.created_at
@@ -51035,11 +50932,99 @@ package:com.tencent.mm
                 .collect::<Vec<_>>(),
             vec!["canonical-member-reply"]
         );
+        let dashboard = dashboard_snapshot(&store).expect("exact-space Dashboard snapshot");
+        assert_eq!(
+            dashboard["team_messages"]
+                .as_array()
+                .expect("current Team message projection")
+                .iter()
+                .filter(|message| {
+                    message["team_run_id"].as_str() == Some(created.team_run.id.as_str())
+                })
+                .map(|message| message["id"].as_str().expect("message id"))
+                .collect::<Vec<_>>(),
+            vec!["canonical-host-request", "canonical-member-reply"],
+            "Dashboard current messages must ignore a foreign-space run-id collision"
+        );
         assert_eq!(
             std::fs::read(&legacy_path).expect("legacy bytes after"),
             legacy_before,
             "current lineage/status/detail must neither read nor write the Legacy archive"
         );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn provider_authority_never_borrows_a_sole_foreign_space_session() {
+        use harness_core::agentfirm_api::{AgentSessionStatus, RuntimeCommandKind};
+
+        let (store, root) = temp_store("provider-session-exact-space");
+        let created = create_two_member_team_run(&store);
+        let lease = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "provider-session-exact-space",
+                std::process::id(),
+                "test://provider-session-exact-space",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire canonical test Supervisor");
+        let foreign_space = "foreign-sole-provider-session-space";
+        ensure_foreign_test_message_fabric(&store, &created, &lease, foreign_space);
+        let member = &created.member_runs[0];
+        let before = store
+            .fabric_agent_sessions(foreign_space)
+            .expect("foreign sessions")
+            .into_iter()
+            .find(|session| session.agent_identity_id == member.agent_member_id)
+            .expect("sole foreign provider session");
+        assert_ne!(before.lifecycle, AgentSessionStatus::Closed);
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+
+        for error in [
+            require_member_provider_session_authority(&ledger, member, false)
+                .expect_err("authority cannot borrow the foreign session"),
+            transition_provider_session_for_member(&ledger, member, AgentSessionStatus::Active)
+                .expect_err("transition cannot mutate the foreign session"),
+            prepare_provider_process_effect(&ledger, member)
+                .expect_err("process effect cannot target the foreign session"),
+            prepare_provider_effect_kind(
+                &ledger,
+                member,
+                "foreign-session-input",
+                "must remain local",
+                RuntimeCommandKind::DispatchProvider,
+                "provider.dispatch",
+            )
+            .expect_err("provider effect cannot target the foreign session"),
+        ] {
+            assert!(
+                error.to_string().contains("found 0"),
+                "exact local-space absence must fail closed: {error}"
+            );
+        }
+        let after = store
+            .fabric_agent_sessions(foreign_space)
+            .expect("foreign sessions after rejection")
+            .into_iter()
+            .find(|session| session.id == before.id)
+            .expect("foreign provider session remains");
+        assert_eq!(after, before);
+        assert!(store
+            .runtime_commands(&lease.execution_space_id)
+            .expect("local RuntimeCommands")
+            .is_empty());
+        assert!(store
+            .runtime_commands(foreign_space)
+            .expect("foreign RuntimeCommands")
+            .is_empty());
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 

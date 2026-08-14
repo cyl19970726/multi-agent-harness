@@ -525,6 +525,36 @@ fn directory_snapshot(root: &std::path::Path) -> std::collections::BTreeMap<Stri
     rows
 }
 
+/// Simulate a hostile recovery/import artifact: the physical Store contains a
+/// second Execution Space with a Message carrying the same TeamRun id. Current
+/// MCP projections must resolve the TeamRun's frozen canonical scope first and
+/// must never fold this foreign row merely because the logical id collides.
+fn inject_foreign_space_copy_of_message(
+    store_root: &std::path::Path,
+    source_execution_space_id: &str,
+    foreign_execution_space_id: &str,
+    message_id: &str,
+) {
+    let ledger = store_root.join("agentfirm_trust_operations.jsonl");
+    let source = std::fs::read_to_string(&ledger).expect("read canonical operation ledger");
+    let mut envelope = source
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|row| {
+            row["execution_space_id"] == source_execution_space_id
+                && row["operation"]["event"]["aggregate_kind"] == "message"
+                && row["operation"]["event"]["aggregate_id"] == message_id
+        })
+        .expect("source Message operation");
+    envelope["execution_space_id"] = serde_json::json!(foreign_execution_space_id);
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&ledger)
+        .expect("open canonical operation ledger for hostile fixture");
+    writeln!(file, "{envelope}").expect("append hostile foreign-space fixture");
+    file.flush().expect("flush hostile foreign-space fixture");
+}
+
 #[test]
 fn remote_fabric_mcp_surface_is_read_only_and_server_resolves_local_node() {
     let home = TempHome::new("mcp-remote-fabric-read");
@@ -757,6 +787,21 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
             store.member_actions()
         )
     });
+    let foreign_execution_space_id = "mcp-space-foreign-same-run-id";
+    inject_foreign_space_copy_of_message(
+        &home.spaces_dir().join("mcp-space-provider-interaction"),
+        execution_space_id,
+        foreign_execution_space_id,
+        &request_id,
+    );
+    assert_eq!(
+        store
+            .fabric_messages(foreign_execution_space_id)
+            .expect("foreign canonical Message fixture")
+            .len(),
+        1,
+        "hostile fixture must create one colliding foreign-space Message"
+    );
 
     let status_before_answer = call_payload(&mcp.request(
         "tools/call",

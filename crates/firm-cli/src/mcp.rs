@@ -18,8 +18,9 @@ use std::collections::BTreeSet;
 use std::io::{BufRead, Write};
 
 use harness_core::{
-    TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus, TeamSupervisorLeaseStatus, Work,
-    WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition, WorkPhase, WorkPriority,
+    AgentTeamRun, NodeProjectRegistrationStatus, TeamActorKind, TeamActorRef, TeamRunEvent,
+    TeamRunStatus, TeamSupervisorLeaseStatus, Work, WorkCausationRef, WorkClaimMode,
+    WorkCommandContext, WorkCondition, WorkPhase, WorkPriority,
 };
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
@@ -1268,7 +1269,8 @@ fn tool_team_run_status(
             })
         })
         .collect();
-    let message_summary = canonical_message_summary_for_run(store, id)?;
+    let execution_space_id = mcp_team_run_execution_space_id(store, resolved, &run)?;
+    let message_summary = canonical_message_summary_for_run(store, id, &execution_space_id)?;
     let supervisor = store
         .latest_team_supervisor_lease(id)
         .map_err(|error| error.to_string())?;
@@ -1291,37 +1293,29 @@ fn tool_team_run_status(
 fn canonical_message_summary_for_run(
     store: &HarnessStore,
     team_run_id: &str,
+    execution_space_id: &str,
 ) -> Result<Value, String> {
-    let mut messages = Vec::new();
-    let mut deliveries = Vec::new();
-    for execution_space_id in store
-        .canonical_execution_space_ids()
+    let mut messages = store
+        .fabric_messages(execution_space_id)
         .map_err(|error| error.to_string())?
-    {
-        let space_messages = store
-            .fabric_messages(&execution_space_id)
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .filter(|message| message.team_run_id.as_deref() == Some(team_run_id))
-            .collect::<Vec<_>>();
-        let space_message_ids = space_messages
-            .iter()
-            .map(|message| message.id.as_str())
-            .collect::<BTreeSet<_>>();
-        deliveries.extend(
-            store
-                .fabric_message_deliveries(&execution_space_id)
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .filter(|delivery| space_message_ids.contains(delivery.message_id.as_str())),
-        );
-        messages.extend(space_messages);
-    }
+        .into_iter()
+        .filter(|message| message.team_run_id.as_deref() == Some(team_run_id))
+        .collect::<Vec<_>>();
     messages.sort_by(|left, right| {
         left.created_at
             .cmp(&right.created_at)
             .then_with(|| left.id.cmp(&right.id))
     });
+    let message_ids = messages
+        .iter()
+        .map(|message| message.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let deliveries = store
+        .fabric_message_deliveries(execution_space_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|delivery| message_ids.contains(delivery.message_id.as_str()))
+        .collect::<Vec<_>>();
     let answered_request_ids = messages
         .iter()
         .filter(|message| {
@@ -1367,6 +1361,82 @@ fn canonical_message_summary_for_run(
         "awaiting_host_response": awaiting_host_response,
         "actionable_deliveries": actionable_deliveries,
     }))
+}
+
+/// Resolve the unique canonical Execution Space of one TeamRun before any MCP
+/// Message projection reads. MemberRun materialization is the primary frozen
+/// binding. A pre-materialized run may fall back only to one exact active
+/// Node+Project registration. The selected MCP space, when present, must agree.
+fn mcp_team_run_execution_space_id(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    run: &AgentTeamRun,
+) -> Result<String, String> {
+    let canonical_spaces = store
+        .canonical_execution_space_ids()
+        .map_err(|error| error.to_string())?;
+    let mut member_scopes = BTreeSet::new();
+    for member_run_id in &run.member_run_ids {
+        let mut scopes_for_member = BTreeSet::new();
+        for execution_space_id in &canonical_spaces {
+            if store
+                .trust_member_runs(execution_space_id)
+                .map_err(|error| error.to_string())?
+                .iter()
+                .any(|member| member.id == *member_run_id)
+            {
+                scopes_for_member.insert(execution_space_id.clone());
+            }
+        }
+        if scopes_for_member.len() != 1 {
+            return Err(format!(
+                "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} member {} resolves to {} canonical Execution Spaces",
+                run.id,
+                member_run_id,
+                scopes_for_member.len()
+            ));
+        }
+        member_scopes.extend(scopes_for_member);
+    }
+    if member_scopes.len() > 1 {
+        return Err(format!(
+            "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} spans {} canonical Execution Spaces",
+            run.id,
+            member_scopes.len()
+        ));
+    }
+    let execution_space_id = if let Some(scope) = member_scopes.into_iter().next() {
+        scope
+    } else {
+        let registrations = store
+            .latest_node_project_registrations()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|registration| {
+                registration.node_id == run.execution_node_id
+                    && registration.project_binding_id == run.project_binding_id
+                    && registration.status == NodeProjectRegistrationStatus::Active
+            })
+            .map(|registration| registration.execution_space_id)
+            .collect::<BTreeSet<_>>();
+        if registrations.len() != 1 {
+            return Err(format!(
+                "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} resolves to {} active Execution Spaces",
+                run.id,
+                registrations.len()
+            ));
+        }
+        registrations.into_iter().next().expect("one registration")
+    };
+    if let Some(selected) = resolved.execution_space_context.as_ref() {
+        if selected.id != execution_space_id {
+            return Err(format!(
+                "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} belongs to {}, not selected Execution Space {}",
+                run.id, execution_space_id, selected.id
+            ));
+        }
+    }
+    Ok(execution_space_id)
 }
 
 /// `team_run_inbox` — canonical Message/MessageDelivery projection addressed

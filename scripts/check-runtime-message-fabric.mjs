@@ -262,6 +262,30 @@ for (const canonicalReader of ["fabric_messages", "fabric_message_deliveries", "
     failures.push(`MCP current status lacks canonical Message-fabric visibility: ${canonicalReader}`);
   }
 }
+const mcpSpaceEnumerationCount = [...mcp.matchAll(/canonical_execution_space_ids/g)].length;
+if (mcpSpaceEnumerationCount !== 1 || !mcp.includes("fn mcp_team_run_execution_space_id")) {
+  failures.push("MCP may enumerate physical Spaces only inside the fail-closed TeamRun authority resolver");
+}
+const summaryStart = mcp.indexOf("fn canonical_message_summary_for_run");
+const summaryEnd = mcp.indexOf("/// Resolve the unique canonical Execution Space", summaryStart);
+const summaryBody = summaryStart >= 0 && summaryEnd > summaryStart
+  ? mcp.slice(summaryStart, summaryEnd)
+  : "";
+if (!summaryBody.includes("execution_space_id: &str")
+    || summaryBody.includes("canonical_execution_space_ids")
+    || !summaryBody.includes("fabric_messages(execution_space_id)")
+    || !summaryBody.includes("fabric_message_deliveries(execution_space_id)")) {
+  failures.push("MCP TeamRun message summary is not bound to one resolved canonical Execution Space");
+}
+for (const authorityToken of [
+  "trust_member_runs(execution_space_id)",
+  "NodeProjectRegistrationStatus::Active",
+  "EXECUTION_SPACE_SCOPE_MISMATCH",
+]) {
+  if (!mcp.includes(authorityToken)) {
+    failures.push(`MCP TeamRun Execution Space resolver is missing: ${authorityToken}`);
+  }
+}
 for (const routeToken of [
   'path_only == "/v1/messages"',
   'path_only.ends_with("/messages")',

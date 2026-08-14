@@ -5339,7 +5339,10 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
             .into_iter()
             .flatten()
             .any(|delivery| {
-                delivery["member_id"].as_str() == Some("agent-runtime-host")
+                // Current TeamRun surfaces use the stable runtime recipient
+                // alias `host`; the canonical AgentIdentity remains visible
+                // separately as `agent-runtime-host` in raw fabric rows.
+                delivery["member_id"].as_str() == Some("host")
                     && delivery["status"].as_str() == Some("acknowledged")
             });
         let response_delivered = snapshot["team_messages"]
