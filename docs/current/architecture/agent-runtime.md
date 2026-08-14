@@ -41,7 +41,7 @@ The objects are intentionally independent:
 | `AgentSession` | one provider session on one Node and exact NodeDaemon generation | Team identity, Work acceptance |
 | `TeamMembership` | one AgentIdentity's active participation in one flat Team | provider lifecycle |
 | `WorkExecutionBinding` | one exact Work revision bound to one membership and AgentSession generation | authored conversation |
-| `Message` | immutable source-authored conversation | Work ownership or runtime control |
+| `Message` | immutable identity-authored, source-NodeDaemon-attested conversation | Work ownership or runtime control |
 | `MessageSubscription` | authorized recipient policy and delivery mode | a second Message or browser-chosen recipient truth |
 | `CanonicalMessageDelivery` | per-recipient queue, claim, provider receipt and ACK/cursor state | provider transcript |
 | `RuntimeCommand` | crash-recoverable prepare/settle journal for provider/process effects | conversation or Work state |
@@ -178,7 +178,7 @@ Codex, Claude, Kimi, and Pi expose separate, closed capability tuples:
   threads remain in native provider storage unless explicitly promoted as a
   result/evidence reference.
 
-Provider adapters consume only canonical claimed MessageDelivery or
+Provider adapters consume only canonical claimed `CanonicalMessageDelivery` or
 WorkDelivery plus a NodeDaemon-built `ProviderInvocation`. The retired
 `ProviderDispatchEnvelope` and the ledgers from the development batch
 historically named “Wave 4A” have no current
@@ -207,7 +207,8 @@ result/receipt may assert it.
 
 A routed message carries either its complete canonical immutable Message
 envelope or an authenticated content-addressed reference. The target verifies
-and persists that exact Message before creating the existing MessageDelivery.
+and persists that exact Message before creating the existing per-recipient
+`CanonicalMessageDelivery`.
 A routed RuntimeCommand carries the complete canonical command envelope; the
 target resolves it through the existing NodeDaemon service and derives the
 terminal effect from the canonical RuntimeCommand record. Fabric never becomes
@@ -223,7 +224,7 @@ operator procedure.
 
 Server-built RoleViews project current canonical state. Browsers refetch after
 SSE invalidation; they do not fold raw ledgers or invent lifecycle truth.
-Current inboxes use canonical MessageDelivery and SubscriptionCursor. Current
+Current inboxes use `CanonicalMessageDelivery` and `SubscriptionCursor`. Current
 runtime state uses AgentSession and RuntimeCommand. Historical TeamRun,
 MemberRun, native-session locator, and legacy export rows are labeled history
 and cannot enable actions.

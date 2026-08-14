@@ -12,7 +12,7 @@ Agent executes:
 Execution Space                    Project Binding
 Mission / Mission Log              provider cwd
 Agent Team / TeamRun / MemberRun   AGENTS.md / CLAUDE.md / config
-TeamMessage / correlated reply    project-local Skills
+Message / correlated reply        project-local Skills
 WorkflowRun / WorkflowStep         Git / worktree / permission boundary
 ```
 
@@ -29,9 +29,10 @@ Finance, and governance. Execution does not require a Company.
 5. Provider cwd is never a Company Store or Execution Space directory.
 6. Provider-native sessions remain the sole transcript/tool/turn truth and are
    referenced rather than copied.
-7. The latest Team Supervisor generation and typed mailbox route records live
-   in the Execution Space; Project Binding changes never transfer live control
-   ownership or message provenance.
+7. The latest Team Supervisor generation, MessageSubscription policies and
+   per-recipient CanonicalMessageDelivery records live in the Execution Space;
+   Project Binding changes never transfer live control ownership or Message
+   provenance.
 
 ## Physical layout
 
@@ -49,7 +50,8 @@ Finance, and governance. Execution does not require a Company.
 │       ├── works.jsonl
 │       ├── work_events.jsonl
 │       ├── work_deliveries.jsonl
-│       ├── team_messages.jsonl
+│       ├── agentfirm_trust_operations.jsonl  # current Message fabric projections
+│       ├── team_messages.jsonl                # Legacy read/export only
 │       ├── team_supervisor_leases.jsonl
 │       ├── workflow_runs.jsonl
 │       └── workflow_steps.jsonl
@@ -169,7 +171,7 @@ HARNESS_BIN
 
 `HARNESS_PROJECT_ID` is the stable binding id. `HARNESS_PROJECT` is an
 executable selector, normally the canonical project root.
-Conversation correlation belongs to an actual TeamMessage envelope; it is not
+Conversation correlation belongs to an actual immutable Message envelope; it is not
 a process-wide responsibility variable.
 
 ## Selection precedence

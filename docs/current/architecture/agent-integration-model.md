@@ -68,7 +68,8 @@ Supervisor starts no adapter for it, its non-empty provider label is
 informational rather than adapter registration, deliveries stay queued until
 the session polls its inbox, and Close only records closed Harness coordination
 with no external runtime effect. A closed external binding cannot send or
-receive TeamMessages or acknowledge previously queued mail. Reopen keeps the
+receive current Messages or acknowledge previously queued
+`CanonicalMessageDelivery` rows. Reopen keeps the
 same MemberRun and thaws that mailbox, but Harness still cannot restart or
 prove history continuity for the user-owned external conversation.
 Because such a member is explicitly declared non-driven, its mail is accepted
@@ -300,7 +301,7 @@ probe / ingest** as the canonical names; they map onto the runtime interface):
 | Verb | Runtime interface | Responsibility |
 | --- | --- | --- |
 | **start** | `create_runtime(member, workspace, permissions)` | Launch the platform for this member (process or session handle). |
-| **deliver** | `deliver(message, context)` + `MessageDelivery` | Build the launch spec from the claimed `Message` and run one turn. |
+| **deliver** | `deliver(message, context)` + `CanonicalMessageDelivery` | Build the launch spec from the claimed current `Message` and run one turn. |
 | **probe** | `health(runtime)` | Report runtime health signals (below). |
 | **read/resume** | native-session adapter | Resolve, project, and resume provider-owned session state without copying it. |
 
@@ -317,7 +318,7 @@ and promotes only explicit coordination boundaries:
 ```text
 provider event
   -> NativeActivityProjection   (not persisted)
-  -> correlated TeamMessage     (when a question/reply crosses systems)
+  -> correlated Message         (when a question/reply crosses systems)
   -> outcome / artifact ref     (only on explicit promotion)
 ```
 
@@ -376,9 +377,11 @@ support, native-child observation, and transient-thinking policy. The separate
 `codex_exec` and `claude_cli` profiles remain useful to Dynamic Workflow and
 legacy one-shot records; neither is a selectable Agent Team mode.
 
-Provider questions that require an answer are correlated Message rows rather
-than hidden adapter callbacks. The reply retains the exact provider option id
-and resumes the same native session. Permission is not a message workflow: the
+Provider questions that require an answer are correlated request/response
+Message kinds rather than hidden adapter callbacks or a separate interaction
+ledger. The reply retains the exact provider option id and resumes the same
+native session through its claimed `CanonicalMessageDelivery`. Permission is
+not a message workflow: the
 AgentSession freezes one effective ceiling before provider start, and the
 adapter fails closed if the provider requests authority outside that ceiling.
 Ordinary provider tool lifecycle remains in the native session.

@@ -64,8 +64,9 @@ treated as Work cancellation.
 
 ## Message and delivery
 
-Wave 6 does not introduce `TeamMessage v2` or a second delivery ledger. The
-source NodeDaemon authors the existing immutable Wave 4C `Message` once with an
+The cross-machine collaboration batch does not introduce a second Message or
+delivery ledger. The source NodeDaemon authors the existing immutable current
+`Message` once with an
 optional `CollaborationScope`. The route carries canonical Message bytes (or a
 content-addressed immutable object reference). The target NodeDaemon verifies
 the source identity, schema, fingerprint and body digest, persists a remote
@@ -78,8 +79,9 @@ target Host decision, current placement and non-revoked inbound policy. The
 source Store checks that proof again under its Message write lock. The Control
 Plane re-resolves the same central records before accepting the route, and the
 target Store checks the frozen Work/Team/placement tuple before replica or
-Delivery persistence. Nonexistent, pending, rejected, cancelled, stale or
-caller-widened authority has zero Message, route, Delivery or provider effect.
+`CanonicalMessageDelivery` persistence. Nonexistent, pending, rejected, cancelled, stale or
+caller-widened authority has zero Message, route,
+`CanonicalMessageDelivery`, or provider effect.
 
 Control Plane route receipts are transport evidence only. Company and Team
 surfaces may show `CrossNodeDeliveryProjection`, but that projection cannot be

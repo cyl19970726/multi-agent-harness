@@ -161,7 +161,9 @@ uniform mailbox promise:
 | Kimi `kimi_acp` | `next_round_batched` | Mail is claimed and rendered together at the next round boundary. |
 
 This field describes delivery timing only. Provider-native transcripts remain
-the sole turn/execution record and are never copied into TeamMessage storage.
+the sole turn/execution record and are never copied into current Message or
+`CanonicalMessageDelivery` storage. Legacy TeamMessage storage is read/export
+only and is not a fallback mailbox.
 
 Self-activation is allowed only when observable. If a Member activates native
 continuation through natural language or a provider command, the Adapter must
@@ -270,7 +272,7 @@ The Member:
 2. may use native planning, continuation and subagents within its permission
    and Workspace boundary;
 3. records block/submission through Work operations and communicates questions,
-   explanation and peer coordination through Work-linked `TeamMessage`;
+   explanation and peer coordination through Work-linked `Message` rows;
 4. does not claim that a native Goal or final response equals Host acceptance;
 5. reports when native continuation or permissions prevent safe coordination.
 

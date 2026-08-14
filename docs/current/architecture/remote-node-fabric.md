@@ -51,7 +51,8 @@ application. The only application certainty values are `none`, `not_applied`,
 A message route carries the complete immutable canonical Message envelope or
 an authenticated content-addressed `message_object_ref`. The target verifies
 the body digest, Company, Team and identity scope, then persists the Message in
-the existing trust Store before creating MessageDelivery.
+the existing trust Store before creating a per-recipient
+`CanonicalMessageDelivery`.
 
 A runtime route carries the complete immutable ControlCommandEnvelope. The
 target verifies its fingerprint, Node/Session/generation scope and dispatches

@@ -49,10 +49,10 @@ POST /v1/missions/{id}/log
 POST /v1/teams
 POST /v1/team-runs
 POST /v1/team-runs/{id}/start
-POST /v1/team-runs/{id}/messages
-POST /v1/work-delegations
-POST /v1/team-runs/{id}/messages/{message_id}/ack
-POST /v1/team-runs/{id}/messages/{message_id}/reconcile-delivery
+POST /v1/agentfirm/team-runs/{id}/messages/send
+POST /v1/agentfirm/team-runs/{id}/messages/reply
+POST /v1/agentfirm/team-runs/{id}/messages/request-decision
+POST /v1/agentfirm/nodes/{node_id}/message-deliveries/{delivery_id}/reconcile
 POST /v1/team-runs/{id}/members/{member_run_id}/steer
 POST /v1/team-runs/{id}/members/{member_run_id}/interrupt
 POST /v1/team-runs/{id}/members/{member_run_id}/close
@@ -115,10 +115,12 @@ The current execution surfaces show:
 - Agent Teams: one flat Node-placed Team per Mission with long-lived runs, including
   ADR-0051-predecessor historical Wave rows only on Legacy/history surfaces;
 - Team War Room: member presence, four-phase Work projection, unified activity,
-  typed messages and delivery lineage, Agent Conversation, current Supervisor
-  summary, and server-authorized actions. Recipient ACK action, pending
-  interactions/Close requests, Steer/Interrupt safe-point state and complete
-  reconnect controls remain explicit unshipped RoleView gaps;
+  identity-first Messages, per-recipient CanonicalMessageDelivery lineage,
+  Agent Conversation, current Supervisor
+  summary, and server-authorized actions. Correlated provider-question response,
+  pending Close-request projection, Steer/Interrupt safe-point state and
+  complete reconnect controls remain explicit unshipped RoleView gaps; there is
+  no PendingInteraction object or Legacy ACK fallback;
 - MemberRuns: run-scoped member detail;
 - Workflows: WorkflowRun/WorkflowStep, result, artifacts, and diagnostics;
 - the raw snapshot, read-only, behind the Debug boundary.

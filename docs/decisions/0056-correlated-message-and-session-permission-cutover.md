@@ -49,7 +49,7 @@ even though every AgentSession already has an effective permission ceiling.
   `CanonicalMessageDelivery`. Status exposes current request/reply and
   unresolved-response counts, never the historical manual-ACK projection.
 - Provider-native session records remain transcript/tool/turn truth.
-- `MessageDelivery` and provider receipts remain transport evidence.
+- `CanonicalMessageDelivery` and provider receipts remain transport evidence.
 - Answer authority comes from the transport-authenticated AgentMember and must
   match the Team's active Host membership and current AgentSession. Request
   bodies cannot select `resolved_by`. The correlated response is written before

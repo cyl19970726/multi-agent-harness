@@ -29,9 +29,10 @@ memory, not a lifecycle, executor container, gate, or synchronization barrier.
 An AgentTeamRun and its MemberRuns/native sessions continue across Mission Log
 entries. ADR 0050 defines Work as member
 responsibility and removes Assignment-message ownership. `WorkOperation`
-atomically preserves the resulting Work, its `WorkEvent`, and delivery deltas;
-`WorkDelivery` wakes or updates a Member runtime, and
-`TeamMessage` is authored conversation only. Dynamic Workflow owns its workflow steps; Host execution may use
+atomically preserves the resulting Work, its `WorkEvent`, and `WorkDelivery`
+deltas. Identity-first `Message` is authored conversation only;
+`MessageSubscription` selects authorized sources and each recipient has an
+independent `CanonicalMessageDelivery`. Dynamic Workflow owns its workflow steps; Host execution may use
 provider-native subagents as an implementation detail, with optional hooks for
 honest observation. The target contract allows thinking only as sanitized
 transient live state: it must not be persisted, replayed, treated as evidence,
@@ -97,9 +98,19 @@ ledgers or code are deleted.
 
 For Agent Team execution, Harness owns the coordination records: `AgentTeam`,
 Mission relation, `AgentTeamRun`, `MemberRun` plus its native-session binding,
-`Work`, `WorkEvent`, `WorkDelivery`, correlated `TeamMessage`,
-explicit outcome and artifact/check references, and control acknowledgements.
-Work owner and state prove responsibility; TeamMessage is authored conversation.
+`Work`, `WorkEvent`, `WorkDelivery`, identity-first `Message`,
+`MessageSubscription`, per-recipient `CanonicalMessageDelivery`, explicit
+outcome and artifact/check references, and control acknowledgements. Work owner
+and state prove responsibility; Message is authored conversation. The source
+NodeDaemon freezes author identity and source authority; display names and
+caller-selected fields never define authorship. Subscription policy determines
+authorized routing, while the target NodeDaemon owns each recipient's delivery
+state. `WorkDelivery`, `CanonicalMessageDelivery`, and `RuntimeCommand` are
+separate planes: no Message assigns Work or authorizes a provider effect, and
+no delivery receipt is semantic acceptance. `TeamMessage`,
+`TeamMessageProjection`, `team_messages.jsonl`, and their ACK/manual-ACK
+writers are retained only for explicitly named Legacy read/export. No current
+writer or acceptance path may depend on them.
 There is no Assignment Message compatibility path; stores using the retired
 Company task model must be reset. Those rows are disposable and are never
 migrated or dual-read into Unified Work.
@@ -111,10 +122,11 @@ streams into Harness ledgers
 
 Each MemberRun snapshots its concrete `ProviderIntegrationProfile`; platform
 capability, execution-mode capability, adapter coverage, and product permission
-are separate claims. Provider-native questions that pause a turn are correlated
-Messages with correlated replies. AgentSession permissions are frozen before
-provider start; there is no second permission lifecycle. Ordinary Host/Member
-planning remains correlated TeamMessage conversation. A provider
+are separate claims. Provider-native questions that pause a turn are
+`provider_interaction_request` Messages; answers are correlated
+`provider_interaction_response` Messages. AgentSession permissions are frozen
+before provider start; there is no second permission lifecycle. Ordinary
+Host/Member planning remains correlated Message conversation. A provider
 `completed` status is not by itself proof of semantic success, answer, or
 approval.
 

@@ -23,7 +23,9 @@ Mission → one flat AgentTeam → TeamRuns → MemberRuns → Work → Result
 6. One machine NodeDaemon drives every admitted local TeamRun. Public surfaces
    fail explicitly when it is unavailable; there is no per-run fallback.
 7. Provider-native sessions own transcript and tool truth. Firm owns identity,
-   assignment, messages, lifecycle, evidence refs, and acceptance.
+   Work assignment, identity-first Message plus per-recipient
+   CanonicalMessageDelivery, lifecycle, evidence refs, and acceptance. Work,
+   Message delivery, and RuntimeCommand remain independent planes.
 8. Company Work is an aggregate/filter view over the same Team Work kernel,
    not a second lifecycle model.
 

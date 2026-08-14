@@ -75,7 +75,8 @@ answer the current decision.
 
 1. `AGENTS.md`
 2. `docs/current/architecture/architecture-map.md`
-3. ADR 0026 and the selected executor contract;
+3. ADR 0051, ADR 0056 when Message is in scope, and the selected executor
+   contract; ADR 0026 is historical Wave evidence only;
 4. the specific page, provider or runtime reference being changed.
 
 ### Module-design pack
@@ -258,6 +259,15 @@ The governance gate must prevent broken links, missing registered authorities,
 stale review dates and retired product vocabulary in active authority. Explicit
 compatibility, migration and historical contexts may mention retired terms, but
 must label them as such.
+
+For the Message fabric, current execution documentation uses identity-first
+`Message`, `MessageSubscription` and one `CanonicalMessageDelivery` per
+recipient. `TeamMessage`, `TeamMessageProjection`, `team_messages.jsonl`,
+`manual_ack` and legacy ACK commands may appear only inside an explicitly
+labelled historical/read-export boundary. A current page must never teach them
+as a writer, inbox source, provider-dispatch fallback or acceptance signal.
+Work/WorkDelivery and RuntimeCommand remain independent planes and must not be
+described as Message kinds.
 
 ## Definition of healthy documentation
 

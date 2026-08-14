@@ -47,7 +47,7 @@ flowchart TD
   WorkflowRun[WorkflowRun]
   HostExec[Host execution]
   Message[Message]
-  TeamMessage[TeamMessage]
+  Delivery[CanonicalMessageDelivery]
   Member[AgentMember or MemberRun]
   Provider[NativeSessionRef / provider-owned execution]
   Event[Durable event stream]
@@ -67,17 +67,15 @@ flowchart TD
   MissionLog -. judgment explains .-> TeamRun
   MissionLog -. judgment explains .-> WorkflowRun
   MissionLog -. judgment explains .-> HostExec
-  TeamRun --> TeamMessage
   TeamRun --> Member
   WorkflowRun --> Event
   HostExec --> Event
-  Message --> Member
-  TeamMessage --> Member
+  Message --> Delivery
+  Delivery --> Member
   Member --> Provider
   Provider --> Event
   Event --> Evidence
   Message --> Evidence
-  TeamMessage --> Evidence
   Evidence --> Judgment
   Judgment --> Outcome
   Mission --> Outcome
@@ -140,7 +138,7 @@ Work assignment/claim -> WorkOperation(WorkEvent + resulting Work + deliveries)
   -> WorkDelivery
   -> MemberRun + Workspace + NativeSessionRef
   -> Work block / submission / review / acceptance
-  -> linked correlated TeamMessage/reply where needed
+  -> linked correlated Message/reply where needed
   -> explicit outcome + artifacts/check refs
 ```
 
@@ -190,7 +188,7 @@ owned by a Mission Log entry or one historical Wave.
 | `Work` | TeamRun-scoped responsibility, owner, readiness, state, criteria and result. | Assignment, claim, block, submission and acceptance are Work operations governed by ADR 0050. |
 | `WorkOperation` | Crash-atomic Store replay row containing one WorkEvent, its complete resulting Work, delivery creates/updates, and target-caused WorkDelegation revisions. | It prevents Work, delivery, and cross-Team roll-up projections from becoming independently visible; Hosts still act on Work, not WorkOperation. |
 | `WorkDelivery` | Reliable delivery of one Work version to a Member runtime. | It reuses delivery machinery but is not authored conversation or Work ownership. |
-| `Message` | Immutable source-NodeDaemon-authored conversation envelope, addressed through canonical subscriptions. | It cannot carry Work ownership or runtime-control authority. |
+| `Message` | Immutable identity-authored, source-NodeDaemon-attested conversation envelope addressed through canonical subscriptions. | It cannot carry Work ownership or runtime-control authority. |
 | `MessageSubscription` / `SubscriptionCursor` | Recipient policy and exact delivery/ACK progress. | The browser and Control Plane cannot fabricate recipient state. |
 | `ExecutionNode` / `NodeDaemonLease` | Stable machine identity and its one active daemon generation. | One NodeDaemon owns all local Teams and registered Project Bindings. |
 | `TeamSupervisorLease` | Latest-wins cross-process authority for one active TeamRun generation. | Parent-fenced by NodeDaemon generation; owns this run's transports, claims, reconnect, and real controls. |
@@ -222,16 +220,25 @@ Relationship rules:
 - every message carries typed sender and recipient provenance; UI or MCP callers
   cannot impersonate a Member unless they are explicitly bound to that
   MemberRun;
-- the current Supervisor atomically claims delivery only after its provider
-  transport is healthy and records the native receipt. TeamMessage ACK is a
-  separate idempotent intake state; WorkDelivery has no ACK state and a Work
+- the current Supervisor atomically claims `CanonicalMessageDelivery` only
+  after its provider transport is healthy and records the native receipt.
+  Recipient acknowledgement/cursor progress is a separate idempotent delivery
+  fact; WorkDelivery has no ACK state and a Work
   claim/start records responsibility acknowledgement;
-- `Work`, `TeamMessage`, explicit outcomes, and Harness control facts may reference
+- `Work`, `Message`, explicit outcomes, and Harness control facts may reference
   artifacts or `Evidence`; the
   Host Mission closeout needs an explicit outcome but does not require
   Proposal/Review/Decision objects;
 - residual task-named runtime fields are removal debt, not the product model or
   a supported ownership path.
+
+`TeamMessage`, `TeamMessageProjection`, embedded delivery rows,
+`team_messages.jsonl`, and manual/legacy ACK APIs are pre-cutover compatibility
+records. They may be read or exported only through explicitly Legacy surfaces;
+they are never current authoring, delivery, inbox, interaction, or acceptance
+authority. Provider questions and answers use correlated current `Message`
+kinds and the same per-recipient `CanonicalMessageDelivery` path as ordinary
+conversation.
 
 ## Generic Object Model
 

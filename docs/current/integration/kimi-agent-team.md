@@ -17,10 +17,10 @@ Kimi ACP may expose native plan updates. They remain a Member-internal aid, not
 a Harness Plan lifecycle:
 
 ```text
-Host TeamMessage(message): "Return a Markdown plan first; do not execute"
+Host Message(message): "Return a Markdown plan first; do not execute"
   -> Member may use Kimi native planning in its session
-  -> Member TeamMessage(message): Markdown plan
-  -> Host TeamMessage(message): revise or execute
+  -> Member Message(reply): Markdown plan
+  -> Host Message(reply): revise or execute
 ```
 
 Kimi does not currently have a reviewed native continuation controller in this
@@ -104,8 +104,8 @@ surface. Harness adopts it in layers:
 | --- | --- |
 | `session/resume` | implemented and preferred for exact-session reattachment |
 | `session/set_config_option` | implemented for model, thinking effort, and mode receipts |
-| `session/update` / `session/request_permission` | transient activity only; only exact `allow_once` / `allow_always` intents on the current frozen full-access AgentSession receive a bounded synchronous ACK; provider questions use correlated Messages and every narrower or ambiguous request fails closed |
-| image and embedded resource prompt blocks | supported upstream; add only through a typed, bounded Member input contract rather than embedding arbitrary blobs in `TeamMessage` |
+| `session/update` / `session/request_permission` | transient activity only; only exact `allow_once` / `allow_always` intents on the current frozen full-access AgentSession receive a bounded synchronous provider-control receipt; provider questions use correlated `provider_interaction_request` / `provider_interaction_response` Messages and every narrower or ambiguous request fails closed |
+| image and embedded resource prompt blocks | supported upstream; add only through a typed, bounded Member input contract rather than embedding arbitrary blobs in `Message` |
 | `session/list` | supported upstream; useful next for recovery diagnostics, never for guessing which session to resume |
 | ACP MCP forwarding | supported upstream; pass only explicitly approved MCP descriptors and never copy credentials into Harness state |
 | native Goals and custom/background/nested agents | usable inside the Kimi Member; remain provider-native execution details until separately reviewed control/observation contracts exist |
@@ -125,7 +125,8 @@ Reopen starts a higher adapter generation and resumes the recorded ACP session.
 Kimi ACP does not currently expose a reviewed Harness mid-turn steer operation.
 Its ordinary-message boundary is `next_round_batched`:
 
-- `team-run send` first proves only durable `TeamMessage` acceptance; it does
+- authenticated AgentFirm Message authoring first proves only durable canonical
+  `Message` acceptance; the retired `team-run send` CLI is not a fallback and it does
   not prove that the active Kimi prompt absorbed it;
 - messages arriving during `session/prompt` remain queued and must be delivered
   exactly once, in order, by a later prompt on the same compatible session;
@@ -139,7 +140,8 @@ Its ordinary-message boundary is `next_round_batched`:
 
 [Issue #274](https://github.com/cyl19970726/multi-agent-harness/issues/274)
 is the live dogfood trail for this contract. CLI and Dashboard label durable
-acceptance separately from provider receipt. The Supervisor pumps queued mail
+Message acceptance separately from per-recipient provider receipt. The target
+NodeDaemon under the current Supervisor pumps queued CanonicalMessageDelivery rows
 after the terminal prompt boundary; two corrections are rendered in order in
 one next-round envelope and receive one native prompt receipt. Submission is
 fenced while a newer WorkDelivery or linked response-required Message remains

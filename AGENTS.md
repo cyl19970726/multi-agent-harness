@@ -54,7 +54,7 @@ AgentTeam -> immutable node_id -> one machine-scoped NodeDaemon
 AgentIdentity -> AgentSession -> provider-native session/thread
 AgentTeam -> TeamMembership -> AgentIdentity
 Work -> WorkExecutionBinding -> exact AgentSession generation
-Message -> Subscription -> per-recipient MessageDelivery
+identity-first Message -> MessageSubscription -> per-recipient CanonicalMessageDelivery
 NodeDaemon -> durable RuntimeCommand -> provider effect
 ```
 
@@ -95,13 +95,19 @@ doc carries the contract behind each rule.
    [docs/current/integration/native-session-storage.md](docs/current/integration/native-session-storage.md)).
 2. **Harness owns only coordination records.** For Agent Team execution:
    `AgentTeam`, Mission relation, `AgentTeamRun`, `MemberRun` plus its
-   native-session binding, correlated `TeamMessage`, explicit
-   outcome and artifact/check references, and control acknowledgements.
+   native-session binding, identity-first `Message`, `MessageSubscription`,
+   per-recipient `CanonicalMessageDelivery`, explicit outcome and
+   artifact/check references, and control acknowledgements.
    Agent Team responsibility is proven by the latest `Work` rebuilt from
    ordered `WorkOperation` rows, each preserving its append-only `WorkEvent`
-   and delivery deltas; `TeamMessage` is authored conversation only
-   and may link a `work_id`. There is no Assignment Message compatibility
-   path. For `dynamic_workflow`, WorkflowRun/WorkflowStep and its
+   and `WorkDelivery` deltas. A `Message` is authored conversation only and may
+   link a `work_id`; correlated provider requests and responses are Message
+   kinds, not a second interaction object. `Work`, Message delivery, and
+   `RuntimeCommand` are independent planes and cannot authorize or mutate one
+   another. `TeamMessage`, `TeamMessageProjection`, `team_messages.jsonl`, and
+   their ACK/manual-ACK writers are Legacy read/export evidence only. There is
+   no Assignment Message compatibility path. For `dynamic_workflow`,
+   WorkflowRun/WorkflowStep and its
    result/artifacts are the execution truth; for `host`, record the observable
    outcome and artifacts without inventing controlled child objects.
 3. **Mission is the native coordination object for new work.** Its append-only
@@ -259,10 +265,11 @@ Proposal/Decision/outcome evaluation is not a universal product chain.
 Each MemberRun snapshots its concrete `ProviderIntegrationProfile`; platform
 capability, execution-mode capability, adapter coverage, and product permission
 are separate claims. Provider-native questions that actually pause a turn are
-correlated Messages and their answers are correlated replies. Permissions are
+`provider_interaction_request` Messages and their answers are correlated
+`provider_interaction_response` Messages. Permissions are
 frozen on AgentSession start: in-ceiling operations proceed directly and
 out-of-ceiling operations fail closed without a second permission object.
-Ordinary Host/Member planning remains correlated TeamMessage conversation. A provider
+Ordinary Host/Member planning remains correlated identity-first Message conversation. A provider
 `completed` status is not by itself proof of semantic success, answer, or
 approval.
 

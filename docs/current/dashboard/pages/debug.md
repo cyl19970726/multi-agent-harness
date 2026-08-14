@@ -28,7 +28,8 @@ Canonical objects:
 - DashboardSnapshot;
 - raw Missions, Mission Log entries, AgentTeamRuns, MemberRuns,
   TeamSupervisorLeases, and ADR-0051-predecessor Waves in Legacy/history only,
-  typed messages, canonical delivery records, actions, sessions,
+  identity-first Messages, MessageSubscriptions, per-recipient
+  CanonicalMessageDeliveries, actions, sessions,
   documents, actors, TeamWorks, Approvals, finance records, and evidence;
 - source labels;
 - live/offline load state.

@@ -7,9 +7,14 @@ shape and validation.
 
 ```text
 Mission 1 ── 1 AgentTeam ── * AgentTeamRun ── * MemberRun
-                    │                 │
-                    │                 └── * Work / Message / Evidence
+                    │                 │          └── WorkExecutionBinding
+                    │                 └── * Work / Evidence
                     └── 1 ExecutionNode
+
+AgentIdentity ── * AgentSession
+      └── authors Message ── * CanonicalMessageDelivery ──> AgentSession
+
+NodeDaemon ── * RuntimeCommand ──> provider effect
 
 WorkDelegation: source Team/Work ──> target Team/Work
 ```
@@ -50,6 +55,9 @@ Space; a registration from one Store cannot name another Space.
 | Who executes a lane? | `MemberRun` plus current `Work` ownership |
 | How does work cross Teams? | `WorkDelegation` and events |
 | Who may drive a Run? | current parent-fenced `TeamSupervisorLease` |
+| Who authored conversation? | identity-first `Message`, attested by the source NodeDaemon generation |
+| What proves one recipient's delivery state? | `CanonicalMessageDelivery` bound to that recipient identity and exact AgentSession generation |
+| What authorizes a provider/process effect? | `RuntimeCommand`; never Message, CanonicalMessageDelivery, Work, TeamRun, or MemberRun |
 | What proves execution? | Work result, checks, artifacts, provider-native refs |
 
 The provider-native store owns transcript truth. Harness persists only the

@@ -103,7 +103,7 @@ coordination boundary:
 | provider requests more permission | fail closed against the frozen AgentSession ceiling |
 | operator steers/interrupts/resumes | control request + provider acknowledgement |
 | member submits owned Work for review | `WorkSubmitted` with result/evidence refs |
-| member explains or coordinates with another actor | Work-linked `TeamMessage` |
+| member explains or coordinates with another actor | Work-linked canonical `Message` |
 | member/Host declares an outcome | explicit outcome summary + refs |
 | file/check/result supports acceptance | artifact/check reference, optionally hash |
 | Host judges, replans, recovers, or closes out | append-only Mission Log entry with outcome and refs |

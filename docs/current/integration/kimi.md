@@ -225,15 +225,17 @@ version.
   are not converted into provider-derived MemberAction rows.
 - `session/request_permission` is implemented as a reverse-RPC bridge. For a
   trusted full-access Member, an ordinary tool request with an exact provider
-  intent of `allow_always` or `allow_once` is acknowledged immediately without
+  intent of `allow_always` or `allow_once` receives an immediate provider-control receipt without
   creating a question Message. Harness writes one bounded
   `provider_control` acknowledgement without command or prompt content; it
   does not mark the Member waiting or manufacture a permission workflow.
-- `AskUserQuestion` and Plan Review route to Lead as correlated Messages and
-  resume with the exact selected ACP `optionId`. Tool requests outside the
+- `AskUserQuestion` and Plan Review route to Lead as correlated
+  `provider_interaction_request` Messages and resume only after the exact
+  causation-linked `provider_interaction_response` with selected ACP `optionId`.
+  Tool requests outside the
   frozen AgentSession ceiling fail closed. Company-level legal, financial, permission,
   and organization effects remain subject to their native Human Approval
-  contract and are never converted into ordinary full-access tool ACKs.
+  contract and are never converted into ordinary full-access tool receipts.
 - Cancellation is execution-mode **and reviewed-version specific**. The
   reviewed Kimi ACP 0.31.0 path sends `session/cancel` as a JSON-RPC
   notification, waits for terminal `stopReason=cancelled`, and only then
@@ -248,11 +250,12 @@ version.
   ordinary Message is queued for the next provider round. An attempted Steer
   fails rather than being silently converted. Close records `stopped`; Reopen
   returns the same MemberRun to a new active runtime generation.
-- The current durable Team Supervisor generation atomically claims one queued
-  delivery before `session/prompt`, but only after proving the ACP transport is
-  live; failed preflight leaves mail queued and reconnects the recorded
-  session. `delivered` is recorded only after ACP returns its native
-  request/session receipt. An uncertain post-crash claim requires explicit
+- The target NodeDaemon under the current durable Team Supervisor generation
+  atomically claims one queued CanonicalMessageDelivery before
+  `session/prompt`, resolves and freezes its exact recipient AgentSession, and
+  first proves the ACP transport is live. Failed preflight leaves mail queued
+  and reconnects the recorded session. `provider_received` is recorded only
+  after ACP returns its native request/session receipt. An uncertain post-crash claim requires explicit
   reconciliation and is never blindly replayed. A delivered trigger without a
   Work submission resumes the same native session with a recovery prompt that
   asks the Member to inspect its native state, workspace, and latest Work

@@ -41,10 +41,11 @@ parts; they do not fork the core model.
   generation and owns its live provider transports. Other CLI/MCP/Dashboard
   processes route mail and real controls to that owner over its loopback
   locator; the owner fences the generation again.
-- Team mail uses typed Host, Member, stable Agent, Operator, and Service actors.
-  An unbound MCP client may author as Host/Operator/Service but cannot claim to
-  be a Member or stable Agent by supplying an id.
-- Every create/start/status/cancel/ACK result includes an exact TeamRun URL on
+- Message authoring binds the authenticated Actor plus exact AgentIdentity and
+  AgentSession when applicable. Request bodies never select Host, Member,
+  Operator or Service identity. An unbound MCP client cannot author Message;
+  MCP currently exposes provider-answer routing only with its transport actor.
+- Every create/start/status/cancel result includes an exact TeamRun URL on
   the UI origin (`127.0.0.1:5173`), with `api=.` so API and SSE requests use the
   UI's same-origin `/v1` proxy. When project identity is available it includes
   `project=<project-binding-id>`.
@@ -136,9 +137,9 @@ path as an execution root is a routing defect.
 5. Follow `team_run_status` or `team_run_events(after_seq=...)`. The browser
    receives durable Harness coordination plus transient/on-demand activity
    projected from provider-native sessions through SSE/API. Its compatibility
-   `unacked_messages` field counts only actionable deliveries: at least one
-   `manual_ack` delivery in `delivered` status. Queued, injected, failed,
-   expired, and acknowledged deliveries do not increase it.
+   `unacked_messages` field is computed from canonical per-recipient deliveries
+   addressed to the Host: actionable provider-received rows that have not yet
+   been acknowledged. It never reads the Legacy TeamMessage ACK policy.
 6. When a provider genuinely pauses for input, inspect its correlated request
    Message and call `team_run_answer_message` with the exact Message and option
    ids from an authenticated Host transport. The response Message is published
@@ -154,10 +155,15 @@ path as an execution root is a routing defect.
    Use `team_run_close_member` when the Host is releasing the current Member
    runtime while preserving its identity/history. Use
    `team_run_reopen_member` to resume that same MemberRun/native session, and
-   deactivate only for a permanent coordination end. Other messages use
-   `team_run_send_message` and preserve the native session.
-8. Acknowledge consumed conversation with `team_message_acknowledge`; review
-   submitted Works through the Work acceptance commands.
+   deactivate only for a permanent coordination end. Ordinary Message
+   authoring uses the authenticated AgentFirm role-action routes
+   `/v1/agentfirm/team-runs/{id}/messages/{send|reply|request-decision}` and
+   preserves the native session. MCP currently advertises no generic send tool;
+   do not fall back to the retired `team_run_send_message` compatibility name.
+8. Acknowledge only the exact consumed CanonicalMessageDelivery through an
+   authenticated recipient action when that surface exposes it; review
+   submitted Works through the separate Work acceptance commands. Legacy
+   TeamMessage ACK commands are retired.
 9. Check Work results, artifacts, and checks; append the Host's actual judgment
    (`accepted | revise | blocked`) and cited evidence to the Mission Log. Active
    MemberRuns may carry forward; a Mission Log append never completes them
@@ -165,8 +171,9 @@ path as an execution root is a routing defect.
 
 ## Message Receipt Boundary
 
-`TeamMessage` persistence, provider delivery, recipient acknowledgement,
-semantic response, and Host acceptance are different facts:
+Immutable Message persistence, each recipient's CanonicalMessageDelivery,
+provider receipt, recipient acknowledgement, semantic response, and Host
+acceptance are different facts:
 
 ```text
 queued
@@ -206,11 +213,11 @@ This boundary is intentionally provider-neutral:
 
 ```text
 Member native session
-  -> explicit TeamMessage(to=host)
-  -> Harness Host Inbox (delivered + manual_ack)
+  -> explicit Message(to=<host-agent-identity>)
+  -> Harness Host Inbox (one CanonicalMessageDelivery)
   -> exact native Host binding
   -> bounded Plugin context or one-shot Codex Stop continuation
-  -> Host reads Inbox and ACKs transport
+  -> Host reads Inbox; the authenticated consumer records exact-recipient acknowledgement
   -> Host sends a causation-linked answer/review/acceptance
 ```
 
@@ -219,13 +226,15 @@ compatibility-named `orchestrate-mission-waves` Host contract and
 `collaborate-as-agent-team-member` Member contract; app-server versus Agent SDK
 differences remain Adapter capabilities, not different team semantics.
 
-Stable external Agent mail uses `agent route-inbox` and an
-canonical `MessageDelivery` to bind one TeamMessage recipient to one active MemberRun and
-TeamMessage. This is an explicit transport relation, not evidence that the
-AgentMember is the durable identity; MemberRun is one execution attempt, and Company membership is only an AgentMember ActorRef projection.
+Stable external Agent mail uses `agent route-inbox` and a
+`CanonicalMessageDelivery` to bind one immutable Message and recipient
+AgentIdentity to the exact current AgentSession generation at claim time. This
+is explicit transport state, not a second Agent identity: AgentMember is
+durable, MemberRun is one participation, AgentSession owns the provider binding,
+and Company membership is only an AgentMember ActorRef projection.
 
-An ACK means “the recipient consumed this envelope,” not “the recipient agrees”
-and not “the Host accepts the work.” A reviewer must inspect the submitted Work,
+Recipient acknowledgement means “the recipient consumed this envelope,” not
+“the recipient agrees” and not “the Host accepts the work.” A reviewer must inspect the submitted Work,
 its evidence, and the relevant native session before the Host claims cross-lane review.
 Member-to-Member replies retain Host visibility and use `work_id`,
 `correlation_id`, and `causation_id` where relevant; direct communication never
@@ -275,7 +284,7 @@ reconstruct the result from native state:
 - actual MemberRuns have owned or claimed Works, WorkEvents, and WorkDelivery;
 - start returns without blocking the Host conversation;
 - the exact URL opens the correct Workspace and selected TeamRun;
-- Work submissions/Host acceptance and conversational ACKs appear in their
+- Work submissions/Host acceptance and per-recipient Message acknowledgements appear in their
   respective event streams;
 - provider questions preserve route, reply actor, exact option id, and
   distinct transport/semantic status;

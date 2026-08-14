@@ -18,6 +18,11 @@ canonical_for: first native Codex + Kimi AgentTeamRun acceptance and interrupted
 > its Assignment/Handoff records are not the current responsibility or
 > acceptance contract. The 2026-07-22 acceptance below replaces
 > its storage claim with native-session reads and no mirrored provider history.
+> Every `TeamMessage`, `team_messages.jsonl`, delivery-policy ACK and mailbox
+> count below is likewise a fact about the pre-ADR-0056 compatibility model.
+> Current Message authoring, inbox and delivery use identity-first `Message`,
+> subscriptions and one `CanonicalMessageDelivery` per recipient; none of the
+> legacy rows below is current write or fallback authority.
 
 ## 2026-07-30 consecutive persistent-Team release acceptance
 

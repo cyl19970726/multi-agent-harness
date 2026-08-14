@@ -27,7 +27,8 @@ Verify:
 
 The source Host proposes from an exact local Work revision. The target Host
 accepts the central relationship; only the target Node creates native Work.
-Messages reuse the canonical Message/Delivery fabric. The target publishes
+Messages reuse the canonical identity-first Message/CanonicalMessageDelivery
+fabric. The target publishes
 server-resolved Reports, Findings or Failure analyses and explicitly grants
 completed artifacts. The source Host imports evidence and independently
 accepts or revises source Work.
@@ -78,7 +79,8 @@ central collaboration ledger, Control Plane and both Node Fabric journals,
 both canonical trust ledgers, secret-free provider transcripts and imported
 artifact bytes. `scripts/acceptance-cross-machine-collaboration.mjs`
 independently derives the current Delegation/Work, Node and Gateway
-generations, immutable Message replica, per-recipient Delivery, terminal
+generations, immutable Message replica, per-recipient
+CanonicalMessageDelivery, terminal
 receipt, canonical `ArtifactImport`, provider `AgentSession` + `RuntimeCommand`
 + terminal acknowledgement/transcript digests, raw transaction selectors and
 cleanup command results. Self-reported success booleans and caller-authored

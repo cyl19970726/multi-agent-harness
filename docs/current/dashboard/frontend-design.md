@@ -107,7 +107,7 @@ copied into Mission/Log IA.
 | --- | --- |
 | [Mission Detail and Log](pages/mission-detail-log.md) | One Mission's durable context, Mission-owned Team, append-only Host judgments, decisions, and closeout. |
 | [Agent Team War Room](pages/team-run-war-room.md) | One required Mission-owned AgentTeamRun: shared Works ownership/status, Work-linked conversation, member presence, unified activity, artifacts, and Mission Log context. |
-| [MemberRun Focus](pages/member-run-focus.md) | One run-scoped Agent Team member: owned/eligible Works, WorkDelivery, native activity/evidence, runtime, and direct Team messages. |
+| [MemberRun Focus](pages/member-run-focus.md) | One run-scoped Agent Team member: owned/eligible Works, WorkDelivery, native activity/evidence, runtime, and direct canonical Messages. |
 | [AgentMember Focus](pages/agent-member-focus.md) | One canonical AgentMember: organization projection, responsibilities, TeamWorks, documents, availability, and execution trust. |
 | [Debug](pages/debug.md) | Raw snapshot, import/export, and low-level object views outside the primary work surface. |
 

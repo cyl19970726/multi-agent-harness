@@ -48,7 +48,8 @@ Required projections:
 - Works: compact Mission-owned Team summaries for active, blocked, review, and
   carry-over state; detailed scheduling remains in Team Workbench;
 - Messages: authored conversation linked to Work when relevant; and
-- correlated question Messages and evidence that require Host or Human judgment.
+- unresolved `provider_interaction_request` or `request_decision` Messages and
+  evidence that require Host or Human judgment.
 
 ADR-0051-predecessor Wave rows may remain readable only in a clearly labeled
 Legacy/history surface for export and audit. No current authoring control may
@@ -87,7 +88,8 @@ explanatory; Work records remain ownership and state truth.
 Compose flexible compact modules:
 
 1. **MissionBrief** — durable context excerpt, status, source, and closeout.
-2. **NeedsYou** — unresolved question Messages, blockers, or review requests.
+2. **NeedsYou** — unresolved provider-interaction/decision-request Messages,
+   blockers, or review requests.
 3. **MissionTeam** — the Mission's one immutable flat AgentTeam, member state,
    latest run, and open Team action. Render complete TeamRun history without
    inventing a mutable or one-to-many Mission/Team relation.

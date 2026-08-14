@@ -472,7 +472,7 @@ Host acceptance.
 
 This is a **team coordination skill**, not a Company OS operator skill. It
 operates on execution-plane objects (Mission, AgentTeam, AgentTeamRun, Work,
-TeamMessage) rather than company-plane objects (Document, TeamWork,
+Message, CanonicalMessageDelivery) rather than company-plane objects (Document, TeamWork,
 Organization, Finance). Do not use it to operate Docs, manage Organization
 membership, approve spending, or create governed Company OS records.
 
@@ -494,8 +494,9 @@ or requested changes for each reviewed Work.
 
 ### Completion rule
 
-The skill is complete only when the Mission Log, Works board, TeamMessages, and
-WorkDelivery facts are reconstructable from durable store state. A conversation
+The skill is complete only when the Mission Log, Works board, current Messages,
+per-recipient CanonicalMessageDeliveries, and WorkDelivery facts are
+reconstructable from durable store state. A conversation
 handoff or visual page alone is not a completed Host cycle. No Work is `done`
 without explicit Host acceptance.
 
@@ -509,7 +510,8 @@ Inbox; coordinates with the Host or peers; uses provider-native subagents; or
 survives review and runtime restart.
 
 This is a **team coordination skill**, not a Company OS operator skill. It
-operates on execution-plane objects (Works board, TeamMessage, native session)
+operates on execution-plane objects (Works board, Message,
+CanonicalMessageDelivery, native session)
 rather than company-plane objects (Document, TeamWork, Organization, Finance).
 A Member may create follow-up Work but does not create Company OS TeamWorks,
 manage Organization membership, or approve spending.

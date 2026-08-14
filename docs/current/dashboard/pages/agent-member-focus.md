@@ -32,9 +32,9 @@ the Host selects a Member, the server returns the `host_member_public` scope:
 public authored Messages, responsibility, Work state, evidence, and exact
 authorized coordination-control targets, but no Member Thinking, tool output,
 provider observation, runtime command, AgentSession id/generation, native event,
-or workspace binding. Authored TeamMessages remain separate coordination
-records and are visible through their canonical sender, recipients, Work link,
-and public delivery state.
+or workspace binding. Authored Messages remain separate coordination records
+and are visible through their authenticated sender AgentIdentity/Session,
+recipients, optional Work link and per-recipient public delivery state.
 
 ## Read model
 
@@ -60,9 +60,10 @@ MemberRun actions close, reopen, or retire one coordination participation; they
 must never be labeled as stopping, resuming, or interrupting an AgentSession.
 Provider turn/session control uses durable RuntimeCommand authority and is not
 currently exposed by the Agent Workspace RoleAction adapter. Work actions
-operate on exact Work revisions. Messaging creates one immutable TeamMessage
-and separate MessageDelivery rows. Every write uses the canonical trust service
-and returns its operation/event identity.
+operate on exact Work revisions. Messaging creates one immutable identity-first
+Message and one `CanonicalMessageDelivery` per authorized recipient identity.
+Every write uses the canonical trust service and returns its operation/event
+identity. The page never reads or writes the Legacy TeamMessage projection.
 
 ## Empty and failure states
 

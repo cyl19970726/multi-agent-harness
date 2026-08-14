@@ -94,7 +94,7 @@ Work assignment/claim -> WorkOperation(WorkEvent + resulting Work + deliveries)
   -> WorkDelivery
   -> MemberRun + Workspace + NativeSessionRef
   -> Work block / submission / review / acceptance
-  -> linked correlated TeamMessage/reply where conversation or pause exists
+  -> linked correlated Message/reply where conversation or pause exists
   -> explicit outcomes and artifact/check refs
 ```
 
@@ -102,7 +102,9 @@ Work owner and state explain who owns what. Messages may link Work for
 discussion but do not assign, submit, or accept it.
 
 Ordinary Host/member/peer collaboration and provider questions stay in
-correlated `TeamMessage` rows. Session permissions are frozen before provider
+correlated identity-first `Message` rows. Each authorized recipient receives a
+separate `CanonicalMessageDelivery`; provider requests and responses are
+Message kinds rather than another interaction ledger. Session permissions are frozen before provider
 start; in-ceiling work proceeds directly and out-of-ceiling work fails closed. The Host
 observes Work state, while minimal blockers make dependent Work ready; there is
 no general conditional-delivery graph.
@@ -145,7 +147,7 @@ infrastructure contracts where possible.
 | Artifact references and explicit outcome summaries | all executor kinds |
 | Harness coordination stream + ephemeral native activity projection | Agent Team and Host-observable execution; Workflow keeps its own run/step truth |
 | Artifact references, outcome summaries, and Host Mission judgments | all execution kinds |
-| Durable Supervisor lease, typed actor routing, delivery claim/receipt/ACK | persistent Agent Team members only |
+| Durable Supervisor lease, typed actor routing, canonical per-recipient delivery claim/receipt/ACK | persistent Agent Team members only |
 
 Shared infrastructure does not collapse distinct product objects into one.
 Agent Team, Dynamic Workflow, and Host work stay distinct even when one Mission
@@ -216,7 +218,10 @@ provider exec paths remain Dynamic Workflow-only. Dynamic Workflow and Host
 retain their executor-specific truth;
 the UI must show an honest unavailable state where routed controls are not yet
 implemented. Residual names from the superseded stack are tracked as code
-removal debt, not compatibility commitments.
+removal debt, not compatibility commitments. In particular, `TeamMessage`,
+`TeamMessageProjection`, `team_messages.jsonl`, and their embedded/manual ACK
+paths are Legacy read/export only; current clients author `Message` and act on
+`CanonicalMessageDelivery`.
 
 ## Surface Responsibility
 

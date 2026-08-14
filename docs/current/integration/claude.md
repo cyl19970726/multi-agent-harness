@@ -53,7 +53,7 @@ per MemberRun and exchanges NDJSON control frames over stdio.
 
 ```text
 Harness Host process
-  ├─ durable Mission / Mission Log / TeamMessage / MemberRun
+  ├─ durable Mission / Mission Log / Message / MemberRun
   ├─ durable Team Supervisor lease + delivery claims
   ├─ process-local SDK control handles owned by that generation
   └─ Claude member runner
@@ -96,13 +96,15 @@ Public controls:
 
 ```text
 team_run_add_member
-team_run_send_message
 team_run_status / team_run_inbox / team_run_events
 team_run_interrupt_member
 team_run_close_member
 team_run_reopen_member
 team_run_create(resume_native_session_id=...)
 ```
+
+Ordinary Message authoring is an authenticated AgentFirm RoleAction from the
+current server-built RoleView; it is not an MCP compatibility command.
 
 `Interrupt` calls `query.interrupt()`. The runner retires the current query,
 then resumes the same session for subsequent mailbox input. It does not mean
@@ -132,7 +134,8 @@ receiver or later lease generation from resurrecting the Member.
 ## Messages and interactions
 
 Responsibility uses Work assignment/claim, WorkEvent and WorkDelivery. Ordinary
-conversation uses `TeamMessage` for Host/Member follow-up and peer coordination.
+conversation uses identity-first `Message` plus per-recipient
+`CanonicalMessageDelivery` for Host/Member follow-up and peer coordination.
 Blocking, submission, request changes and acceptance are Work operations; a
 linked Message may explain them.
 
@@ -144,13 +147,12 @@ submission commands, so correctness does not depend on a provider-specific
 Claude Skill fork. When the Star Harness Skill is also installed, it must match
 that canonical contract rather than redefine mailbox semantics.
 
-The envelope supplies `HARNESS_BIN`, the exact Harness executable selected by
-the Host. A Claude Member sends Host mail explicitly with `"$HARNESS_BIN"
-team-run send
---to host`. Harness stores it immediately in the Host Inbox as delivered mail
-requiring manual ACK. This does not interrupt the Host's current turn; the Host
-reads it at the next safe boundary, ACKs transport separately, and sends a
-causation-linked semantic response when needed.
+The envelope supplies the authenticated AgentFirm Message authoring surface. A
+Claude Member sends Host mail through that source-bound RoleAction; the retired
+`team-run send` CLI cannot select a sender and is not a fallback. Harness stores
+the immutable Message and one canonical delivery for the Host identity. This
+does not interrupt the Host's current turn; the Host reads it at the next safe
+boundary and sends a causation-linked semantic response when needed.
 
 This repository does not claim that a Claude Code/Desktop Host session owned by
 another process can be background-woken. A future Claude Host adapter must own
@@ -172,7 +174,7 @@ fabricated for it. The SDK's `result.subtype` stays `"success"` on such turns
 produces `member_closed` rather than a transport error.
 
 Claude does not expose the same content-steer primitive as Codex app-server in
-this adapter. Send ordinary content as a queued TeamMessage. SDK permission or
+this adapter. Send ordinary content as a queued Message. SDK permission or
 model mutation is a provider control, not a substitute for team conversation.
 
 ## Native Continuation

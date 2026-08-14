@@ -102,16 +102,18 @@ Its lease is the parent authority for every local Team Supervisor lease.
 Dashboard/MCP controls route through the Node daemon's loopback locator; that
 owner fences the operation against both daemon and Team generations immediately
 before using a physical handle. Before a Supervisor claims queued mail it
-verifies that the selected provider transport is live. Delivery then records an
-atomic claim, a native provider receipt, and recipient ACK separately. Transport
+verifies that the selected provider transport is live. The per-recipient
+`CanonicalMessageDelivery` then records an atomic claim, a native provider
+receipt, and recipient ACK separately. Transport
 failure before claim leaves mail queued and reconnects the recorded native
 session first.
 
-Team mail uses typed Human, AgentMember, External, and Service actor
-references. External Agent-addressed mail reaches a participating Member only
-through an explicit idempotent delivery. This lets Organization and Agent Team
-share Inbox UI while keeping AgentMember identity and MemberRun lifecycle
-separate. Unbound Dashboard/MCP/API clients cannot
+Current Team mail is an identity-first immutable `Message`: the server freezes
+the authenticated sender AgentIdentity and resolves explicit AgentIdentity or
+Team subscription recipients. Each participating recipient is reached only
+through its own idempotent `CanonicalMessageDelivery`. This lets Organization
+and Agent Team share Inbox UI while keeping AgentMember identity and MemberRun
+lifecycle separate. Unbound Dashboard/MCP/API clients cannot
 impersonate a Member.
 
 Explicit Close is durably latched before process-local teardown. A racing lease
@@ -242,7 +244,8 @@ Mission, TeamWork, Approval, or organization membership.
 3. A selected executor cannot overwrite accountable ownership, approval
    authority, or document provenance held by the TeamWork.
 4. Agent Team responsibility is proved by Work owner/version and WorkEvents;
-   TeamMessage correlation explains conversation only.
+   current identity-first Message correlation explains conversation only, and
+   per-recipient `CanonicalMessageDelivery` proves delivery state.
 5. A TeamRun/MemberRun never becomes an organization Agent Membership or OrgUnit by inference.
 6. Provider-native subagents stay implementation detail unless explicitly
    materialized through a truthful observation or promotion contract.

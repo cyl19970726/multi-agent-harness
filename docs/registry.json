@@ -68,6 +68,7 @@
         "docs/current/architecture/concept-model.md",
         "docs/decisions/0026-mission-wave-architecture.md",
         "docs/decisions/0051-single-intent-spine.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md"
       ],
@@ -86,6 +87,10 @@
         {
           "kind": "decision",
           "ref": "docs/decisions/0051-single-intent-spine.md"
+        },
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
         },
         {
           "kind": "decision",
@@ -121,6 +126,7 @@
         "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
         "docs/decisions/0051-single-intent-spine.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
         "skills/dogfood-company-os/SKILL.md"
       ],
       "machineConsumers": [
@@ -147,6 +153,10 @@
         {
           "kind": "decision",
           "ref": "docs/decisions/0051-single-intent-spine.md"
+        },
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
         }
       ]
     },
@@ -241,6 +251,7 @@
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0026-mission-wave-architecture.md",
         "docs/decisions/0051-single-intent-spine.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
         "docs/current/product/mvp.md",
         "docs/current/architecture/design-basis.md",
         "docs/current/architecture/concept-model.md",
@@ -274,6 +285,10 @@
         },
         {
           "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
+        },
+        {
+          "kind": "decision",
           "ref": "docs/decisions/README.md"
         }
       ]
@@ -293,6 +308,7 @@
         "docs/current/architecture/architecture-map.md",
         "docs/decisions/0026-mission-wave-architecture.md",
         "docs/decisions/0051-single-intent-spine.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
         "docs/current/architecture/design-basis.md",
         "docs/current/architecture/concept-model.md",
         "docs/current/architecture/architecture.md",
@@ -321,6 +337,10 @@
         {
           "kind": "decision",
           "ref": "docs/decisions/0051-single-intent-spine.md"
+        },
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
         },
         {
           "kind": "test",
@@ -379,7 +399,8 @@
         "docs/decisions/0026-mission-wave-architecture.md",
         "docs/decisions/0051-single-intent-spine.md",
         "docs/current/product/agent-team-works.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
+        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -397,6 +418,10 @@
         {
           "kind": "decision",
           "ref": "docs/decisions/0051-single-intent-spine.md"
+        },
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
         }
       ]
     },
@@ -425,6 +450,7 @@
         "docs/current/integration/codex-message-delivery.md",
         "docs/decisions/0026-mission-wave-architecture.md",
         "docs/decisions/0051-single-intent-spine.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
         "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
       ],
@@ -444,6 +470,10 @@
         {
           "kind": "decision",
           "ref": "docs/decisions/0051-single-intent-spine.md"
+        },
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
         }
       ]
     },
@@ -467,7 +497,8 @@
         "docs/current/architecture/concept-model.md",
         "docs/decisions/0025-agent-team-run-control-plane.md",
         "docs/decisions/0026-mission-wave-architecture.md",
-        "docs/decisions/0051-single-intent-spine.md"
+        "docs/decisions/0051-single-intent-spine.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -492,6 +523,10 @@
         {
           "kind": "decision",
           "ref": "docs/decisions/0051-single-intent-spine.md"
+        },
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
         }
       ]
     },
@@ -516,6 +551,7 @@
         "docs/current/architecture/schemas.md",
         "docs/current/company-os/governance.md",
         "docs/decisions/0051-single-intent-spine.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
@@ -536,6 +572,10 @@
         {
           "kind": "decision",
           "ref": "docs/decisions/0051-single-intent-spine.md"
+        },
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
         }
       ]
     },
@@ -562,6 +602,7 @@
         "docs/current/integration/kimi.md",
         "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
         "crates/firm-cli/src/sse.rs"
       ],
       "machineConsumers": [
@@ -577,6 +618,10 @@
       "authorityClass": "implementation_reference",
       "implementationState": "partial",
       "truthRefs": [
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
+        },
         {
           "kind": "api",
           "ref": "crates/firm-cli/src/sse.rs"
@@ -598,6 +643,7 @@
         "docs/current/architecture/architecture-map.md",
         "docs/decisions/0026-mission-wave-architecture.md",
         "docs/decisions/0051-single-intent-spine.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
         "docs/current/product/prd.md",
         "docs/current/architecture/concept-model.md",
         "docs/current/architecture/data-model.md",
@@ -624,6 +670,10 @@
         {
           "kind": "decision",
           "ref": "docs/decisions/0051-single-intent-spine.md"
+        },
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
         },
         {
           "kind": "ui",
@@ -908,7 +958,8 @@
         "crates/firm-cli/src/main.rs",
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
         "docs/current/product/agent-team-works.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
+        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -920,7 +971,7 @@
         "npx pnpm@9.15.4 check",
         "harness governance check"
       ],
-      "reorgTrigger": "Codex delivery queue, provider gateway, MessageDelivery schema, app-server protocol, or Dashboard projection behavior changes.",
+      "reorgTrigger": "Codex delivery queue, provider gateway, CanonicalMessageDelivery schema, app-server protocol, or Dashboard projection behavior changes.",
       "authorityClass": "implementation_reference",
       "implementationState": "partial",
       "truthRefs": [
@@ -931,6 +982,10 @@
         {
           "kind": "decision",
           "ref": "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md"
+        },
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
         }
       ]
     },
@@ -1021,7 +1076,8 @@
       "dependsOn": [
         "schemas/README.md",
         "crates/firm-core/src/lib.rs",
-        "docs/decisions/0032-provider-native-session-is-execution-truth.md"
+        "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1036,6 +1092,10 @@
       "authorityClass": "implementation_reference",
       "implementationState": "implemented",
       "truthRefs": [
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
+        },
         {
           "kind": "schema",
           "ref": "schemas/README.md"
@@ -1629,6 +1689,7 @@
         "docs/current/architecture/member-continuation-model.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
         "crates/firm-cli/src/kimi_acp.rs",
         "crates/firm-cli/src/main.rs"
       ],
@@ -1647,6 +1708,10 @@
       "implementationState": "partial",
       "truthRefs": [
         {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
+        },
+        {
           "kind": "api",
           "ref": "crates/firm-cli/src/kimi_acp.rs"
         },
@@ -1663,7 +1728,7 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "Pi RPC persistent Agent Team mode",
-        "Pi next-round Work and TeamMessage delivery receipts",
+        "Pi next-round Work and canonical Message delivery receipts",
         "Pi native-session resume and persisted-thinking rejection",
         "Pi provider capability and control boundaries"
       ],
@@ -1675,6 +1740,7 @@
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
         "crates/firm-cli/src/pi_rpc.rs",
         "crates/firm-cli/src/main.rs"
       ],
@@ -1694,6 +1760,10 @@
       "authorityClass": "implementation_reference",
       "implementationState": "partial",
       "truthRefs": [
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
+        },
         {
           "kind": "api",
           "ref": "crates/firm-cli/src/pi_rpc.rs"
@@ -2069,6 +2139,7 @@
         "docs/decisions/0025-agent-team-run-control-plane.md",
         "docs/decisions/0026-mission-wave-architecture.md",
         "docs/decisions/0051-single-intent-spine.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
         "docs/decisions/0042-company-store-execution-space-project-binding.md",
         "docs/current/company-os/work-items-and-approvals.md"
@@ -2093,6 +2164,10 @@
         {
           "kind": "decision",
           "ref": "docs/decisions/0051-single-intent-spine.md"
+        },
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
         },
         {
           "kind": "decision",
@@ -2320,7 +2395,8 @@
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
         "docs/current/product/agent-team-works.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
+        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2334,6 +2410,10 @@
       "authorityClass": "design_intent",
       "implementationState": "partial",
       "truthRefs": [
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
+        },
         {
           "kind": "decision",
           "ref": "docs/decisions/0025-agent-team-run-control-plane.md"
@@ -2584,9 +2664,10 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
+        "identity-first Message and per-recipient CanonicalMessageDelivery authority",
         "correlated provider question and reply Messages",
         "AgentSession-start permission ceiling",
-        "provider interaction object clean cutover"
+        "retirement of the provider interaction object and Legacy TeamMessage/ACK clean cutover"
       ],
       "dependsOn": [
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
@@ -2601,7 +2682,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Provider question routing, AgentSession permission mapping, or Message answer semantics change.",
+      "reorgTrigger": "Message authorship, subscription/delivery authority, provider question routing, AgentSession permission mapping, or Message answer semantics change.",
       "authorityClass": "canonical_contract",
       "implementationState": "verified",
       "truthRefs": [
@@ -2807,6 +2888,7 @@
       "dependsOn": [
         "docs/current/company-os/execution-foundation.md",
         "docs/current/integration/README.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
         "crates/firm-cli/src/mcp.rs"
       ],
       "machineConsumers": [
@@ -2821,6 +2903,10 @@
       "authorityClass": "implementation_reference",
       "implementationState": "implemented",
       "truthRefs": [
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
+        },
         {
           "kind": "api",
           "ref": "crates/firm-cli/src/mcp.rs"
@@ -2927,6 +3013,7 @@
         "docs/decisions/0034-host-plan-waves-and-mission-teams.md",
         "docs/decisions/0037-agent-member-autonomy-and-collaboration.md",
         "docs/decisions/0051-single-intent-spine.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
         "docs/current/dashboard/pages/mission-detail-log.md",
         "docs/current/dashboard/pages/team-run-war-room.md"
       ],
@@ -2946,6 +3033,10 @@
         {
           "kind": "decision",
           "ref": "docs/decisions/0051-single-intent-spine.md"
+        },
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
         },
         {
           "kind": "test",
@@ -3204,13 +3295,14 @@
       "lifecycle": "stable",
       "canonicalFor": [
         "Agent Team Work, shared Kanban, assignment and atomic claim",
-        "WorkEvent, WorkDelivery and authored TeamMessage boundary",
+        "WorkEvent/WorkDelivery and identity-first Message/CanonicalMessageDelivery boundary",
         "flat cross-Team WorkDelegation and Mission-Team one-to-one relationship"
       ],
       "dependsOn": [
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
         "docs/decisions/0044-durable-team-supervision-and-typed-mail.md",
         "docs/decisions/0049-member-coordination-and-runtime-lifecycle.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
         "docs/current/product/mission-wave-host-plan.md"
       ],
       "machineConsumers": [
@@ -3228,6 +3320,10 @@
       "authorityClass": "canonical_contract",
       "implementationState": "design_only",
       "truthRefs": [
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
+        },
         {
           "kind": "decision",
           "ref": "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
@@ -3292,7 +3388,8 @@
         "docs/decisions/0037-agent-member-autonomy-and-collaboration.md",
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
         "docs/decisions/0041-provider-neutral-member-continuation.md",
-        "docs/decisions/0044-durable-team-supervision-and-typed-mail.md"
+        "docs/decisions/0044-durable-team-supervision-and-typed-mail.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3309,6 +3406,10 @@
       "authorityClass": "canonical_contract",
       "implementationState": "implemented",
       "truthRefs": [
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
+        },
         {
           "kind": "decision",
           "ref": "docs/decisions/0044-durable-team-supervision-and-typed-mail.md"
@@ -4232,7 +4333,8 @@
       "dependsOn": [
         "docs/current/architecture/remote-node-fabric.md",
         "docs/current/architecture/data-model.md",
-        "docs/current/architecture/agent-runtime.md"
+        "docs/current/architecture/agent-runtime.md",
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
       ],
       "machineConsumers": [
         "check-collaboration-foundation",
@@ -4246,6 +4348,10 @@
       "authorityClass": "canonical_contract",
       "implementationState": "implemented",
       "truthRefs": [
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
+        },
         {
           "kind": "api",
           "ref": "crates/firm-store/src/collaboration.rs"

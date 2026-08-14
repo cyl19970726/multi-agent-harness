@@ -123,8 +123,10 @@ mail to that owner. A Mission Log entry or TeamRun completion does not close a M
 ./target/debug/firm team create \
   --mission-id <mission-id> --name builders --description "Persistent builders" \
   --host-agent-id builder-codex --node-id <node-uuid> --member builder-codex
-Use `team-run send`, `inbox`, `host-inbox`, `status`, and `events` for durable
-coordination. Ordinary Message queues for the next safe provider cycle; Steer
+Use authenticated AgentFirm Message role actions together with `inbox`,
+`host-inbox`, `status`, and `events` for durable coordination. The retired
+`team-run send` writer cannot select an authenticated sender and must not be
+used. Ordinary Message queues for the next safe provider cycle; Steer
 is a distinct real same-turn control where supported. `close-member` releases
 the native runtime while retaining the MemberRun/session; `reopen-member`
 starts a new adapter generation on the same native session; `deactivate-member`

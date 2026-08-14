@@ -337,7 +337,7 @@ if (!runtimeDoc.includes("Team `close-member` closes only that")) {
 for (const token of [
   "AgentIdentity -> AgentSession",
   "Work -> WorkExecutionBinding",
-  "Message -> Subscription",
+  "Message -> MessageSubscription",
   "NodeDaemon -> durable RuntimeCommand",
 ]) {
   if (!rootRules.includes(token)) failures.push(`AGENTS.md runtime model drifted: ${token}`);

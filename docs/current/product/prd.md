@@ -145,8 +145,15 @@ execution = Agent Team | Dynamic Workflow | Host work
 - one machine NodeDaemon generation owns all local TeamRuns; each live Team
   Supervisor generation is parent-fenced by it and owns that run's provider
   transports, delivery claims, reconnect, and real controls;
-- typed Host/Member/Agent/Operator mail preserves provenance; claim, provider
-  receipt, recipient ACK, semantic reply, and acceptance remain distinct;
+- identity-first Message preserves source-authenticated Host/Member/Agent/
+  Operator authorship; MessageSubscription selects authorized sources and
+  CanonicalMessageDelivery owns each recipient's delivery state;
+- Work claim, provider receipt, CanonicalMessageDelivery acknowledgement,
+  semantic reply, and acceptance remain distinct. Work/WorkDelivery,
+  Message/CanonicalMessageDelivery, and RuntimeCommand are independent planes;
+- correlated provider questions and answers are
+  `provider_interaction_request` / `provider_interaction_response` Message
+  kinds, not a separate interaction object;
 - `DynamicWorkflow` runs a provider-neutral process for the bounded outcome.
 - provider sessions, plugins, MCP, and child work remain execution evidence.
 
@@ -169,8 +176,8 @@ record. Results return through the TeamWork relation.
 6. Finance provides typed, permissioned records linked to business origin.
 7. Governance handles new business domains, document growth, organization
    change, and missing capability.
-8. Execution pages retain Mission and Mission Log, Team, MemberRun, Supervisor, typed
-   Inbox/Outbox, Workflow, and provider observability as professional
+8. Execution pages retain Mission and Mission Log, Team, MemberRun, Supervisor,
+   typed Message Inbox/Outbox with per-recipient delivery, Workflow, and provider observability as professional
    drill-ins.
 
 ## Near-term acceptance scenario

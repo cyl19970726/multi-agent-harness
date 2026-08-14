@@ -28,13 +28,13 @@ New Pi MemberRuns use `pi --mode rpc`. Harness does not fall back from
 One live Pi MemberRun owns one child process and one native Pi session file:
 
 ```text
-MemberRun + active Work or queued TeamMessage
+MemberRun + active Work or queued Message
   -> pi --mode rpc --thinking off --session-dir <managed directory>
   -> get_state
   -> set_auto_compaction(false)
   -> prompt
   -> agent_settled
-  -> next Work or TeamMessage starts another prompt on the same process
+  -> next Work or Message starts another prompt on the same process
   -> explicit Host Close terminates the process but retains the session file
 ```
 
@@ -69,8 +69,9 @@ ordinary_message_boundary: NextRound
 
 Every completed round gets a provider receipt of the form
 `pi:<native-session-path>:round-<n>`. The WorkDelivery active for that prompt
-is completed exactly once. TeamMessages accepted into that prompt receive the
-same round receipt. A later Host follow-up creates a new round and never
+is completed exactly once. Each Message accepted into that prompt records the
+same round receipt on its exact CanonicalMessageDelivery as
+`provider_received`. A later Host follow-up creates a new round and never
 rewrites the already-completed WorkDelivery receipt.
 
 An agent message must include an explicit result report. Provider completion
@@ -151,7 +152,7 @@ Deterministic acceptance covers:
 - RPC launch arguments, including enforced `--thinking off`;
 - Work completion followed by a queued Host follow-up on the same runtime;
 - two distinct round receipts without WorkDelivery conflict or disconnect;
-- TeamMessage delivery proof on the second round;
+- canonical Message delivery proof on the second round;
 - native-session binding and profile truth;
 - rejection of sessions containing persisted thinking.
 

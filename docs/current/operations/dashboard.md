@@ -35,7 +35,7 @@ their runs; Mission Detail shows only its owning Team.
 | Which execution is active? | Mission-owned TeamRuns, Workflows, and Host work with honest native status; Log entries do not own them. |
 | Who owns Agent Team work? | Work owner, status, readiness, WorkDelivery receipt, submission, and review state. |
 | Which service owns the live Team? | Machine NodeDaemon generation plus its parent-fenced Team Supervisor generation, heartbeat, loopback locator, reconnect state, and control availability. |
-| Who sent this message? | Typed Host, Member, stable Agent, Operator, or Service identity; UI never infers authorship from display text. |
+| Who sent this message? | Authenticated sender Actor plus exact AgentIdentity/AgentSession where applicable; UI never infers authorship from display text or Team role. |
 | What is each member doing? | Provider/model, lifecycle, current explicit action, pressure, heartbeat, and blockers. |
 | What did a Dynamic Workflow produce? | Workflow steps, artifact manifests, typed result/verdict, and patch state. |
 | What did the Host do directly? | Observable actions, artifacts, and outcome without invented child ownership. |
@@ -98,13 +98,13 @@ The target ownership chain is:
 Mission -> one AgentTeam -> AgentTeamRun(agent_team_id, execution_node_id, project_binding_id)
   -> Work -> owner + WorkEvents + WorkDelivery
   -> MemberRun + native session execution
-  -> optional Work-linked TeamMessages
+  -> optional Work-linked canonical Messages
   -> artifacts + outcome
 MissionLogEntry -. Host judgment / optional origin metadata .-> Work or outcome
 ```
 
 Assignment and claim are Work operations. WorkDelivery records the exact Work
-id/version consumed by the provider round. TeamMessage correlation remains
+id/version consumed by the provider round. Message correlation remains
 conversation lineage and may link a Work, but never proves ownership or current
 status. The UI renders WorkEvent, delivery, native execution, discussion,
 submission, and acceptance as separate facts.
@@ -119,8 +119,8 @@ submission, and acceptance as separate facts.
 | Work delivery | WorkEvent id, target MemberRun, claim, provider receipt/failure, invalidation, retry, and reconciliation; Work claim/start is the semantic responsibility acknowledgement |
 | Member state | lifecycle, provider/model, latest explicit action, heartbeat, queue pressure |
 | Supervisor | current lease generation, owner/heartbeat, routed-control health, reconnect/close latch |
-| Delivery | typed sender/recipients, claim, provider receipt, per-recipient ACK, retry/reconciliation |
-| AgentMember mail | canonical TeamMessage plus MessageDelivery to the exact MemberRun generation |
+| Delivery | authenticated Message sender, authorized recipients, claim, provider receipt, per-recipient acknowledgement, retry/reconciliation |
+| AgentMember mail | immutable Message plus one CanonicalMessageDelivery per recipient AgentIdentity, frozen to the exact AgentSession generation on claim |
 | Workflow | WorkflowRun/Step, artifacts, result/verdict, patch state |
 | Host path | observable artifact/outcome without fake controlled children |
 | Mission Log decision | Host outcome, actor/time, note, artifacts, and next-plan/recovery context |
@@ -149,7 +149,7 @@ display-only and cannot be used to reconstruct an attempt.
 | Orphan execution | Member execution has no active Work or explicit Host-only exception. |
 | Ambiguous Work owner | active Work has conflicting or stale ownership versions. |
 | Ready work stranded | ready unassigned Work exists while eligible Members remain idle. |
-| Failed/unacknowledged delivery | Required delivery is failed or beyond ACK threshold. |
+| Failed/unacknowledged delivery | Required per-recipient delivery is failed or beyond its acknowledgement threshold. |
 | Delivery uncertain | A claim exists without a provider receipt and requires explicit reconciliation. |
 | Supervisor unavailable | No current owner can prove provider transport or execute live controls. |
 | Stale Supervisor generation | A client attempted delivery/control through a superseded lease. |

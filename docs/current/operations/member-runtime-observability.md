@@ -8,7 +8,8 @@ commands, file activity, native children, and resume state.
 
 ```text
 Harness coordination truth
-  Work / WorkEvent / WorkDelivery / typed mail / Supervisor / transport receipt
+  Work / WorkEvent / WorkDelivery / identity-first Message / CanonicalMessageDelivery
+  MessageSubscription / Supervisor / transport receipt
   correlated question/reply / stable Agent route / control acknowledgement
   explicit outcome / artifact / check / Host Mission Log decision
                      +
@@ -35,7 +36,7 @@ live state and is never replayed or evidence.
 | Did a Member pull ready Work itself? | atomic `claimed` WorkEvent plus successful bound-runtime command result; no loopback delivery |
 | Did the Member accept responsibility? | Work `claimed` or `started` event, not WorkDelivery state |
 | Who owns live control? | latest active `TeamSupervisorLease` generation and owner heartbeat |
-| Who sent the input? | typed TeamMessage actor; bound Member context for Member authorship |
+| Who sent the input? | immutable Message sender Actor plus bound AgentIdentity/AgentSession; never a caller-supplied display identity |
 | Is a delivery attempt active? | latest queued/claim/provider-receipt/failure projection |
 | Is the runtime executable? | provider-process health, endpoint, protocol, and delivery probes |
 | What is the agent doing? | on-demand provider-native activity projection |
@@ -52,8 +53,9 @@ Durable Harness data:
 
 - runtime identity and health;
 - current Team Supervisor generation, owner locator/heartbeat, reconnect state,
-  typed Team actors, delivery claims/provider receipts/failures, and
-  canonical `MessageDelivery`;
+  authenticated Message sender AgentIdentity/Session, subscriptions, delivery
+  claims/provider receipts/failures, and
+  canonical per-recipient `CanonicalMessageDelivery`;
 - TeamRun `execution_root`, optional member `provider_cwd_hint`, and the launch-time
   `provider_environment_observation` containing actual cwd, Git HEAD/branch, and only the
   instruction/skill directory paths Harness discovered relative to that cwd;
@@ -138,12 +140,14 @@ provider-native session.
 
 ## Interaction routing
 
-Provider questions are correlated Messages and Lead answers are correlated
-replies. The AgentSession permission ceiling is frozen before provider start;
+Provider questions are `provider_interaction_request` Messages and Lead answers
+are causation-linked `provider_interaction_response` Messages. The AgentSession
+permission ceiling is frozen before provider start;
 in-ceiling actions proceed directly and out-of-ceiling actions fail closed.
 Protected external effects still require their Company-level approval policy.
 The adapter resumes or continues the same native session when supported and
-records only the interaction decision and control acknowledgement in Harness.
+records only the correlated Message decision and provider-control receipt in
+Harness. It never creates a PendingInteraction ledger.
 
 ## Dashboard behavior
 

@@ -23,7 +23,7 @@ Host layout language. Session is the default continuous conversation/event
 canvas; Messages and Work are adjacent lenses rather than peer dashboard
 pages. Native provider activity is server-read only after exact identity
 authorization and is compact by default. Authored provider responses and
-TeamMessages remain prominent; display-safe tool/runtime events disclose
+canonical Messages remain prominent; display-safe tool/runtime events disclose
 details on demand. It is not a copied provider transcript or a duplicate Team
 Kanban. The Agent header opens an in-context profile drawer for durable
 identity, configuration, skills/tools/permissions, runtime, workspace and
@@ -42,7 +42,8 @@ Conversation slice currently ships TeamWorkspace messages and delivery
 lineage, all Works exactly bound to the selected MemberRun, current member
 runtime/session summary, read-on-demand native activity, and HostConsole
 allowed actions. Correlated provider-question replies, pending Close-request
-projection, recipient ACK action, Steer/Interrupt safe-point state and the full
+projection, recipient delivery-acknowledgement action, Steer/Interrupt
+safe-point state and the full
 runtime/reconnect matrix remain server-projection gaps; the UI does not infer
 them.
 
@@ -55,13 +56,16 @@ Full-contract required data:
 - current `TeamSupervisorLease` generation and control/reconnect state;
 - current/queued/eligible `Work`, WorkEvent history, WorkDelivery receipts,
   criteria, ownership, blockers, child Works, results and evidence;
-- `TeamMessage` with optional Work relation and conversational correlation;
-- typed message actors, delivery claim, provider receipt, recipient ACK, and
-  canonical MessageDelivery state;
+- immutable identity-first `Message` with optional Work relation and
+  conversational correlation;
+- authenticated sender AgentIdentity/Session, authorized recipients, delivery
+  claim, provider receipt, recipient acknowledgement, and per-recipient
+  `CanonicalMessageDelivery` state;
 - Harness-owned control/lifecycle facts, observed `DelegationRun`, artifacts,
   outcomes, and evidence/check references;
-- correlated provider-question Messages attributable to this MemberRun, with
-  exact provider options and Lead routing;
+- correlated `provider_interaction_request` Messages attributable to this
+  MemberRun, with exact provider options and Lead routing, plus the exact
+  causation-linked `provider_interaction_response` when answered;
 - `NativeSessionRef`, native session availability/resume capability,
   runtime summary, provider/model, worktree, owned paths, permissions,
   budget/availability signals;
@@ -71,7 +75,8 @@ Full-contract required data:
   sanitized `member_activity` preview only when live data exists.
 
 The latest Work projection is the sole run-scoped responsibility proof; a
-Message or provider self-description does not replace it.
+Message or provider self-description does not replace it. Runtime effects use
+RuntimeCommand, never a Message kind.
 
 `AgentMember` is the stable organization-agent identity.
 `MemberRun` is one participation of that identity in one TeamRun. Company
@@ -215,8 +220,10 @@ reordering is not a requirement.
 - Open the Team or Mission Log context without losing navigation context.
 - Open an artifact, check, or provider session summary.
 - Acknowledge a waiting/blocker signal where the message protocol permits it.
-- Resolve a provider question, tool approval, or plan review when the current
-  actor is allowed; same-turn resume is available only when the snapshotted
+- Resolve a provider question through the provider-interaction Message pair
+  when the current actor is allowed. Tool permission is governed by the frozen
+  AgentSession policy, not a question ledger; same-turn resume is available
+  only when the snapshotted
   execution-mode profile supports it.
 
 Do not offer fake lifecycle control. Interrupt appears only when the provider

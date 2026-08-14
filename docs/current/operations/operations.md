@@ -63,8 +63,10 @@ Mission Log HTTP and CLI contracts, Agent Team create/start,
 shared Works/WorkDelivery, Work-linked conversation, Mission closeout, Host-facing MCP transport, the
 Dashboard read model and operator controls, plus deterministic persistent
 Codex app-server, Claude Agent SDK, and Kimi ACP Team Member adapters. It also
-gates durable Supervisor generations, typed actor mail, atomic delivery
-claim/provider receipt/ACK, cross-process control routing, reconnect, and
+gates durable Supervisor generations, authenticated identity-first Message
+authoring, atomic per-recipient delivery
+claim/provider receipt/per-recipient acknowledgement, cross-process control
+routing, reconnect, and
 explicit Close. Bounded Codex/Claude/Kimi exec paths belong to Dynamic
 Workflow and are never Agent Team fallbacks.
 
@@ -75,7 +77,7 @@ scenario is rerun before the matrix expands. Finding a bug is evidence, not
 Mission closeout.
 
 When a live Member appears stuck, inspect MemberRun/Supervisor health, Inbox
-delivery and unresolved correlated question Messages first, then use bounded provider-native session
+delivery and unresolved `provider_interaction_request` Messages first, then use bounded provider-native session
 forensics through its `NativeSessionRef`. Compare tool/process evidence with the
 Member narrative; never read an entire large JSONL into the Host context or
 copy the transcript into Harness. The output is a diagnosis and next control
@@ -157,8 +159,8 @@ starts:
    native session, retaining the old one as history;
 6. reconcile queued/claimed mail, permissions, model controls, cwd/Skill
    roots, and the single writable-Workspace driver; and
-7. probe lane by lane: fresh correlated delivery, same-session answer, Host
-   ACK.
+7. probe lane by lane: fresh correlated delivery, same-session answer, and
+   exact-recipient acknowledgement where the consumer exposes it.
 
 The dogfood execution roster is deliberate: Kimi `kimi_acp` with the reviewed
 K3 model alias at `max` thinking effort is primary (verify the MemberRun
@@ -241,13 +243,13 @@ The local API also exposes safe control-plane actions used by the Agent
 Dashboard:
 
 ```text
-POST /v1/messages
+POST /v1/agentfirm/team-runs/{id}/messages/send
+POST /v1/agentfirm/team-runs/{id}/messages/reply
+POST /v1/agentfirm/team-runs/{id}/messages/request-decision
 POST /v1/team-runs
 POST /v1/team-runs/{id}/start
 POST /v1/team-runs/{id}/members
-POST /v1/team-runs/{id}/messages
-POST /v1/team-runs/{id}/messages/{message-id}/ack
-POST /v1/team-runs/{id}/messages/{message-id}/reconcile-delivery
+POST /v1/agentfirm/nodes/{node-id}/message-deliveries/{delivery-id}/reconcile
 POST /v1/team-runs/{id}/members/{member-run-id}/steer
 POST /v1/team-runs/{id}/members/{member-run-id}/interrupt
 POST /v1/team-runs/{id}/members/{member-run-id}/close

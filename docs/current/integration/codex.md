@@ -99,17 +99,19 @@ Codex does not poll Harness storage. Harness owns the Member mailbox and the
 app-server adapter accepts eligible envelopes:
 
 ```text
-WorkDelivery or TeamMessage(to=<member>, delivery=queued)
-  -> current Supervisor atomically claims latest eligible row
+WorkDelivery (Work plane) or CanonicalMessageDelivery (Message plane)
+  -> target NodeDaemon under current Supervisor authority claims its row
+  -> exact recipient AgentSession id/generation is frozen
   -> turn/start on the bound thread
   -> provider turn id records native acceptance
   -> provider-native turn/session remains execution truth
-  -> durable delivery/control acknowledgement in Harness
+  -> provider_received / recipient acknowledgement in Harness
 ```
 
 Ordinary Host/peer messages queued while a turn is busy wait for the next
-eligible round. They do not interrupt the current turn. `delivered` means the
-adapter recorded a native provider receipt for that envelope; semantic
+eligible round. They do not interrupt the current turn. `provider_received`
+means the adapter recorded a native provider receipt for that exact delivery;
+semantic
 understanding requires an explicit Work transition or conversational reply.
 
 When a turn completes, the Member returns to `idle` and the adapter
@@ -194,8 +196,9 @@ permit.
 
 ## Correlated Provider Questions
 
-User questions that pause the provider become correlated Message records with
-exact provider option ids; the Lead's correlated reply routes back to the same
+User questions that pause the provider become correlated
+`provider_interaction_request` Messages with exact provider option ids; the
+Lead's causation-linked `provider_interaction_response` routes back to the same
 live app-server request. The AgentSession freezes one permission ceiling before
 start. Codex runs with `approvalPolicy=never`; an unexpected permission callback
 fails closed instead of opening a second approval workflow.
@@ -211,7 +214,8 @@ calls, commands, file events, native subagents, and resume. Harness stores:
 - MemberRun identity and selected `ProviderIntegrationProfile`;
 - Work/WorkEvent/WorkDelivery and ordinary Work-linked conversation;
 - `NativeSessionRef` locator, version and availability;
-- correlated provider questions/replies and real control acknowledgements;
+- correlated `provider_interaction_request`/`provider_interaction_response`
+  Messages and real RuntimeCommand receipts;
 - submitted Work result, explicit Host acceptance and outcome, plus artifact
   and check references when the Work's completion criteria require them.
 

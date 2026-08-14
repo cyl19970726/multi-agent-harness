@@ -50,8 +50,8 @@ open_questions:
 
 The current product direction is Mission context -> append-only Mission Log ->
 one flat AgentTeam, owned by ADR 0051 and ADR 0034, while
-durable Team control and typed mail are owned by
-ADR 0044. The
+durable Team control is owned by ADR 0044 and the current identity-first
+Message/CanonicalMessageDelivery cutover by ADR 0056. The
 implemented primary pages are Mission Detail and Log and Agent Team War Room. Historical
 Vision/Goal/Task Work-board and Goal Workbench specs are archived; they do not
 define the new information architecture.

@@ -22,7 +22,8 @@ define whether the product works.
 ## Promise
 
 Star Harness should be able to develop and inspect itself through the same
-Mission and Mission Log, Agent Team, mailbox, native-session and lifecycle paths
+Mission and Mission Log, Agent Team, identity-first Message inbox,
+native-session and lifecycle paths
 it offers to users. Dogfood therefore uses real persistent Provider members and normal
 Host controls. Deterministic fixtures are the baseline, not a substitute for a
 live Provider claim.
@@ -103,8 +104,10 @@ At minimum, a mixed-Team run exercises:
 - Host-assigned Work and one eligible Member atomic self-claim;
 - Member → Host Work-linked question or blocker and explicit Work submission;
 - Member → Peer coordination and a peer reply;
-- delivery while the recipient is idle and while it is working;
-- delivery after a runtime exit followed by provider-native resume;
+- per-recipient CanonicalMessageDelivery while the recipient is idle and while
+  it is working;
+- CanonicalMessageDelivery after a runtime exit followed by provider-native
+  resume;
 - one observed tool-authorization path proving the trusted-development member
   does not stall on an ordinary permission prompt;
 - one real supported Steer or queued-next-round result;
@@ -118,9 +121,12 @@ not need to wait for unrelated work before appending the next judgment.
 ### 3. Preserve the right evidence
 
 Harness owns Mission and Mission Log, TeamRun, MemberRun/native-session binding,
-WorkOperation/Work/WorkEvent, WorkDelivery, correlated TeamMessage,
-ACK, outcome and
-artifact/check references.
+WorkOperation/Work/WorkEvent, WorkDelivery, identity-first Message,
+MessageSubscription, per-recipient CanonicalMessageDelivery, outcome and
+artifact/check references. The target NodeDaemon advances the exact canonical
+delivery through its fenced states; there is no current manual-ACK writer.
+`TeamMessage`, `TeamMessageProjection`, `team_messages.jsonl`, and their
+ACK/manual-ACK paths are Legacy read/export evidence only.
 The Provider-native session remains the sole truth for chat, tools, commands,
 files, turns, native subagents and Provider continuation.
 
@@ -149,13 +155,14 @@ Delivery and terminal state must be supported by the active provider cycle:
   window that can execute the same writable Work twice. Stale frames from an
   interrupted turn must not strand the next MemberRun as `running`.
 - Claude uses the Agent SDK delivery receipt.
-- Kimi ACP has no separate prompt-start ACK, so the first update, provider
-  request, or terminal response for that prompt is the earliest honest
-  delivery receipt. It must be published before a tool in that turn attempts
-  Member-to-Host or peer communication. On transport loss, a claimed delivery
-  with no receipt follows fenced claim recovery; a provider-received delivery
-  resumes the same native session without replaying the delivery. The canary
-  must distinguish and verify both cases.
+- Kimi ACP has no separate prompt-start receipt, so the first update, provider
+  request, or terminal response for that prompt is the earliest honest runtime
+  receipt. It must be published before a tool in that turn attempts
+  Member-to-Host or peer communication. On transport loss, a claimed
+  WorkDelivery or CanonicalMessageDelivery with no provider receipt follows
+  its own fenced recovery path; provider-received delivery resumes the same
+  native session without replay. The canary must distinguish and verify both
+  cases without merging the Work, Message, and RuntimeCommand planes.
 
 A Provider receipt proves only that one Work version reached the runtime. It
 does not start, block, submit, accept, cancel, or complete the Work. Those
@@ -187,8 +194,10 @@ Lower-risk independent lanes may continue.
 Do not infer health from a quiet Dashboard card. Inspect in this order:
 
 1. MemberRun status, Supervisor generation/lease and process health;
-2. queued/claimed/delivered/acknowledged Inbox state;
-3. unresolved provider question Message and the exact answer requested;
+2. the recipient's queued/routed/claimed/provider-received/acknowledged
+   CanonicalMessageDelivery state;
+3. unresolved `provider_interaction_request` Message and the exact correlated
+   `provider_interaction_response` requested;
 4. bounded provider-native session evidence using `NativeSessionRef`;
 5. the last provider turn/tool terminal event and whether the latest Work was
    explicitly submitted.
@@ -235,8 +244,14 @@ A dogfood Mission may close only when:
 
 - all required deterministic gates pass from the accepted commit;
 - each claimed live Provider path resolves to its native session;
-- required Host, peer, mailbox and lifecycle scenarios are reconstructable from
+- required Host, peer, Message inbox and lifecycle scenarios are reconstructable from
   CLI and Dashboard;
+- every current conversation resolves to its source-authenticated Message,
+  applicable MessageSubscription, and one CanonicalMessageDelivery per
+  recipient; provider-pausing questions resolve to correlated
+  provider-interaction request/response Message kinds;
+- no current scenario writes or advances Legacy TeamMessage/ACK state, and no
+  Message or Message delivery mutates Work or authorizes a RuntimeCommand;
 - provider receipt is recorded at native turn acceptance, survives a
   Supervisor crash without duplicate execution, and failed claims surface as
   recoverable delivery pressure;
@@ -266,7 +281,7 @@ Agent Membership / AgentMember identity
 
 Verify that the Organization page shows durable role, reporting, permissions
 and responsibility, while the Member page shows current Work, runtime,
-mailbox, controls and native evidence. A Agent Membership may execute repeatedly
+Message inbox, controls and native evidence. A Agent Membership may execute repeatedly
 through new MemberRuns; closing one runtime must not delete the Organization
 identity.
 
@@ -292,8 +307,9 @@ The run proved Host assignment, atomic team self-claim with zero pre-claim
 acceptance, terminal-Work TeamRun completion, Wave advance, and Mission close.
 A rolling Supervisor restart reached generation 6 while preserving both
 MemberRuns and both provider-native Session ids. That historical run still
-used the now-retired interaction ledger; current runs use correlated Messages
-and frozen AgentSession permissions instead.
+used the now-retired interaction ledger and Legacy TeamMessage/ACK path;
+current runs use correlated identity-first Message kinds, per-recipient
+CanonicalMessageDelivery, and frozen AgentSession permissions instead.
 
 A bounded native-session audit found that generations 1-4 had repeatedly sent
 continuation prompts after a Work entered review. Generation 5 reproduced zero

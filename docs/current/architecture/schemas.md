@@ -14,7 +14,10 @@ outputs, adapters, and the Agent Dashboard.
 | `MemberRun` | One role/provider execution instance inside a TeamRun |
 | `Work` / `WorkOperation` / `WorkEvent` / `WorkDelivery` | TeamRun-scoped responsibility projection, crash-atomic replay row, append-only semantic transition, and versioned runtime delivery |
 | `WorkDelegation` / `WorkDelegationEvent` | Cross-Team responsibility handoff with CAS, idempotency, cycle prevention, and source rollup |
-| `TeamMessage` | Typed sender/recipients, optional `work_id`, correlation/causation, response intent, claim/provider-receipt/ACK delivery state; conversation only. A legacy origin-Wave field may remain on historical rows. |
+| `Message` | Immutable identity-first conversation envelope with typed author, correlation/causation, optional Work relation, and closed semantic kind. Provider requests and responses are Message kinds. |
+| `MessageSubscription` / `SubscriptionCursor` | Authorized recipient policy and recipient progress without copying or mutating Message content. |
+| `CanonicalMessageDelivery` | One recipient's queue, claim, exact AgentSession generation, provider receipt, and acknowledgement/cursor state. |
+| `TeamMessage` / `TeamMessageProjection` | Legacy pre-cutover conversation projection with embedded delivery/manual ACK state; read/export only through explicitly Legacy surfaces. |
 | `ExecutionNode` / `NodeProjectRegistration` / `NodeDaemonLease` | Machine identity, available Project Bindings, and the one daemon generation that owns all local TeamRuns |
 | `TeamSupervisorLease` | Latest-wins TeamRun control owner parent-fenced by NodeDaemon generation |
 | `MemberAction` | Transitional action schema; target scope is Harness-owned coordination/control facts, never mirrored provider activity |
@@ -22,10 +25,12 @@ outputs, adapters, and the Agent Dashboard.
 | `TeamRunEvent` | Ordered sanitized event projection for one TeamRun |
 
 Dynamic Workflow and Host execution retain their distinct execution-specific
-objects. Existing Goal/Task/Message/Evidence/Proposal/Decision schemas are
-historical compatibility or optional governance contracts. They are not the
+objects. Existing Goal/Task schemas and retired TeamMessage projections are
+historical compatibility contracts; Evidence/Proposal/Decision remain optional
+governance contracts. They are not the
 active Mission/Mission Log or Agent Team coordination model, and new Agent Team work
-must not depend on Goal, Task Graph, Plan Gate, or generic `Message`.
+must not depend on Goal, Task Graph, Plan Gate, or a TeamMessage compatibility
+path.
 
 `Skill`, `ToolAdapter`, and `Dashboard` can start as configuration or views.
 
@@ -43,7 +48,10 @@ must not depend on Goal, Task Graph, Plan Gate, or generic `Message`.
 | `AgentTeam` | Rust + JSON schema | yes |
 | `AgentMember` | Rust + JSON schema | yes |
 | `Task` | historical compatibility schema; retired for new coordination | no for new work |
-| `Message` | Agent Membership/runtime compatibility message; Agent Team uses `TeamMessage` | no for Agent Team |
+| `Message` | Rust + JSON schema + canonical Store/API projection; identity-first current conversation authority | yes |
+| `MessageSubscription` / `SubscriptionCursor` | Rust + JSON schemas + canonical Store/API projection | yes |
+| `CanonicalMessageDelivery` | Rust + JSON schema + canonical Store/API projection | yes |
+| `TeamMessage` / `TeamMessageProjection` | historical JSONL/schema reads and export only; current writes and ACK routes retired | legacy only |
 | `MemberRun` | Rust + JSON schema | yes |
 | `MemberRunEvent` | Rust + JSON schema | yes |
 | `ProviderChildThread` | Rust + JSON schema | yes |
@@ -73,7 +81,11 @@ schema contracts are checked with valid and invalid fixtures.
 | Work event | [work-event.schema.json](../../../schemas/work-event.schema.json) |
 | Work delivery | [work-delivery.schema.json](../../../schemas/work-delivery.schema.json) |
 | Provider-native session locator | [native-session-ref.schema.json](../../../schemas/native-session-ref.schema.json) |
-| Team message | [team-message.schema.json](../../../schemas/team-message.schema.json) |
+| Message | [message.schema.json](../../../schemas/message.schema.json) |
+| Message subscription | [message-subscription.schema.json](../../../schemas/message-subscription.schema.json) |
+| Subscription cursor | [subscription-cursor.schema.json](../../../schemas/subscription-cursor.schema.json) |
+| Canonical message delivery | [canonical-message-delivery.schema.json](../../../schemas/canonical-message-delivery.schema.json) |
+| Legacy Team message projection | [team-message.schema.json](../../../schemas/team-message.schema.json) |
 | Member execution trust error | [trust-error.schema.json](../../../schemas/trust-error.schema.json) |
 | Team Supervisor lease | [team-supervisor-lease.schema.json](../../../schemas/team-supervisor-lease.schema.json) |
 | Member action | [member-action.schema.json](../../../schemas/member-action.schema.json) |
