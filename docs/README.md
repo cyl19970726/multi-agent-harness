@@ -47,7 +47,7 @@ When `mental/` contradicts any other doc, `mental/` wins.
 | Understand the product architecture | [Agent Firm Mental Model](mental/agent-firm-mental-model.md) — canonical |
 | Understand the AI Company OS | [Company OS product system map](current/company-os/product-system-map.md) |
 | Change Company OS product behavior | [Company OS contracts](current/company-os/README.md) |
-| Change Agent Team orchestration | [Host-plan contract](current/product/mission-wave-host-plan.md), [Agent Team Works](current/product/agent-team-works.md), [Member continuation](current/architecture/member-continuation-model.md), [ADR 0034](decisions/0034-host-plan-waves-and-mission-teams.md), [ADR 0044](decisions/0044-durable-team-supervision-and-typed-mail.md), [ADR 0050](decisions/0050-agent-team-work-board-and-message-boundary.md), and [Architecture map](current/architecture/architecture-map.md) |
+| Change Agent Team orchestration | [Mission and Mission Log Host-plan contract](current/product/mission-wave-host-plan.md), [Agent Team Works](current/product/agent-team-works.md), [Member continuation](current/architecture/member-continuation-model.md), historical [ADR 0034](decisions/0034-host-plan-waves-and-mission-teams.md), [ADR 0044](decisions/0044-durable-team-supervision-and-typed-mail.md), [ADR 0050](decisions/0050-agent-team-work-board-and-message-boundary.md), and [Architecture map](current/architecture/architecture-map.md) |
 | Change cross-machine Team collaboration | [Cross-machine collaboration architecture](current/architecture/cross-machine-team-collaboration.md), [operations](current/operations/cross-machine-collaboration.md), and [Remote Node Fabric](current/architecture/remote-node-fabric.md) |
 | Implement or operate the repository | [Getting started](current/operations/getting-started.md), [Operations](current/operations/operations.md), [Schemas](current/architecture/schemas.md) |
 | Change repository agent operating rules | Root [AGENTS.md](../AGENTS.md) and [Agent operating rules detail](current/product/agent-operating-rules.md) |
@@ -90,9 +90,9 @@ integrating project repository, not in the generic core docs.
 | Skill | Use |
 | --- | --- |
 | [agentfirm-development-loop](../.agents/skills/agentfirm-development-loop/SKILL.md) | The repository's only default development loop: Brain -> one Task -> Dev -> exact-revision Review; rejected work returns to the same Task. |
-| [orchestrate-mission-waves](../skills/orchestrate-mission-waves/SKILL.md) | Thin Host guidance for durable Mission context, versioned Wave memos, shared Works, Mission-linked long-lived Teams, and advance/re-plan. CLI remains the authority. |
+| [orchestrate-mission-waves](../skills/orchestrate-mission-waves/SKILL.md) | Compatibility-named Host guidance for durable Mission context, append-only Mission Log judgment, shared Works, Mission-linked long-lived Teams, and re-plan/closeout. It never creates or advances a Wave; CLI remains the authority. |
 | [collaborate-as-agent-team-member](../skills/collaborate-as-agent-team-member/SKILL.md) | Provider-neutral member guidance for Work claim/start/block/submit, Work-linked conversation, native subagents, evidence, and Host acceptance. |
-| [star-workflow](../skills/star-workflow/SKILL.md) | Optional Dynamic Workflow authoring capability; not a Mission/Wave planning authority. |
+| [star-workflow](../skills/star-workflow/SKILL.md) | Optional Dynamic Workflow authoring capability; not Mission or Mission Log planning authority. |
 | [bootstrap-project-workflow](../skills/bootstrap-project-workflow/SKILL.md) | Current doc-sync compatibility methodology. It is no longer a mandatory Lead skill or default install. |
 | [design-notion-information-architecture](../.agents/skills/design-notion-information-architecture/SKILL.md) | Audit, redesign, migrate, and review governed Notion systems with explicit authority, reader journeys, semantic relations, cutover, and rollback. |
 

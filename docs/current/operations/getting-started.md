@@ -2,7 +2,7 @@
 
 Choose the execution surface first:
 
-- install **Star Harness** for Mission/Wave and persistent Agent Teams;
+- install **Star Harness** for Mission, Mission Log, and persistent Agent Teams;
 - install **star-workflow** for bounded, one-shot Dynamic Workflow; and
 - start one Harness service plus the Workbench for shared state and controls.
 
@@ -47,7 +47,7 @@ npx skills add cyl19970726/multi-agent-harness --skill star-workflow --agent cod
 npx skills add cyl19970726/multi-agent-harness --skill star-workflow --agent claude
 ```
 
-**C. Unified Mission/Wave + Agent Team plugin for Codex and Claude Code.**
+**C. Unified Mission + Agent Team plugin for Codex and Claude Code.**
 
 ```bash
 codex plugin marketplace add cyl19970726/multi-agent-harness
@@ -58,7 +58,8 @@ claude plugin install star-harness@multi-agent-harness --scope user
 ```
 
 Start a new task/session, then verify that `star-harness` is enabled and that
-the `orchestrate-mission-waves` and `collaborate-as-agent-team-member` skills
+the `orchestrate-mission-waves` compatibility-named skill and
+`collaborate-as-agent-team-member` skill
 are visible. The bundled MCP entry runs `firm mcp`, so the `firm` binary
 must be on `PATH`.
 
@@ -78,7 +79,7 @@ cargo build -p firm-cli
 ./target/debug/firm project list
 ```
 
-An **Execution Space** owns Mission/Wave, Agent Team, Workflow, and coordination
+An **Execution Space** owns Mission/Mission Log, Agent Team, Workflow, and coordination
 state. A **Project Binding** independently selects provider cwd, project
 instructions, Skills, Git/worktree, and permission boundaries. Select them
 explicitly with `--space` / `HARNESS_SPACE` and
@@ -107,7 +108,7 @@ Host deliberately targets another Project Binding.
 For a live TeamRun, the service that starts it acquires the durable Supervisor
 generation and keeps Member provider connections alive across idle periods.
 Other Dashboard/MCP/CLI processes route Steer, Interrupt, Close, and queued
-mail to that owner. A Wave or TeamRun completing does not close a Member.
+mail to that owner. A Mission Log entry or TeamRun completion does not close a Member.
 
 ## 4. Create a Mission and persistent Agent Team
 

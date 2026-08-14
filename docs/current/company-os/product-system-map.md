@@ -18,7 +18,7 @@ primary product systems are **Docs** and **Organization**. Work and Finance are
 first-class operating systems connected to them. AgentOS is the programmable
 operating layer that lets durable AgentMembers use skills, MCP tools, plugins,
 connectors, custom pages, and execution substrates without turning those tools
-into company authority. Mission/Wave, Agent Team, Dynamic Workflow, Host
+into company authority. Mission/Mission Log, Agent Team, Dynamic Workflow, Host
 execution, providers, plugins, and MCP are the shared execution foundation
 rather than a second company model.
 
@@ -35,7 +35,7 @@ flowchart LR
   W["Work<br/>commitments, responsibility and outcomes"]
   O["Organization<br/>humans · flat AgentTeams · AgentMembers"]
   F["Finance<br/>monetary state and evidence"]
-  E["Execution Space<br/>Mission/Wave · Agent Team · Workflow · Host"]
+  E["Execution Space<br/>Mission/Mission Log · Agent Team · Workflow · Host"]
   P["Project Bindings<br/>repos · worktrees · delivery refs"]
   G["Plugins / Gateways<br/>actions · connectors · view extensions"]
 
@@ -97,8 +97,9 @@ The trademark scenario is the first acceptance slice:
 5. The selected executor performs the work and returns observable evidence.
 6. Work records review and completion; Docs receives the accepted filing result.
 
-Approval and Wave gate are different decisions. A completed or accepted Wave
-cannot authorize legal filing, payment, permission, or organization mutation.
+Approval and Mission closeout are different decisions. A closed Mission or a
+Host Mission Log judgment cannot authorize legal filing, payment, permission,
+or organization mutation.
 
 ## Native object boundaries
 
@@ -170,7 +171,7 @@ after the GitHub path proves the contract.
 | Finance/Approval | native records, separation of Commitment and Payment, and governed action slices exist | actor-bound product sessions and broader operator controls |
 | Agent roles | current governance-role records and decision contracts exist | role-neutral AgentMembers organized by flat Teams instead of a fixed governance hierarchy |
 | AgentOS self-hosting | AgentOS Lead, canonical AgentMember/TeamWork and real execution evidence exist | Flat Team-to-Team WorkDelegation dogfood over one Work kernel and machine NodeDaemon |
-| Execution foundation | Mission/Wave, Agent Team, Dynamic Workflow, Host, providers and Dashboard contracts exist | continue improving honest observation and adapter coverage without replacing company objects |
+| Execution foundation | Mission/Mission Log, Agent Team, Dynamic Workflow, Host, providers and Dashboard contracts exist; Wave authoring is retired historical compatibility | continue improving honest observation and adapter coverage without replacing company objects |
 | AgentOS plugins/gateways | generic external gateway and plugin contract exists; social readiness is a read-only bootstrap probe; local repo source sync exists | GitHub connector plugin first, then WeCom/social/ecommerce/logistics plugins with connector sync and view extensions |
 
 “Implemented” never follows from a generated image. The visual inventory

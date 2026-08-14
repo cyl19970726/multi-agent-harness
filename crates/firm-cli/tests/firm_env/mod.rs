@@ -748,7 +748,11 @@ impl ServeHandle {
                             .and_then(serde_json::Value::as_str)
                             .map(str::to_string),
                         workspace_policy: "managed-worktree".into(),
-                        permission_ceiling: PermissionCeiling::WorkspaceWrite,
+                        permission_ceiling: if provider == "kimi" {
+                            PermissionCeiling::FullAccess
+                        } else {
+                            PermissionCeiling::WorkspaceWrite
+                        },
                         organization_status: AgentMemberOrganizationStatus::Active,
                         version: 1,
                         created_by: creator.clone(),
@@ -1036,7 +1040,7 @@ pub fn create_canonical_agent_member(
             "provider_profile_ref": provider,
             "model_preference": null,
             "workspace_policy": "managed-worktree",
-            "permission_ceiling": "workspace_write",
+            "permission_ceiling": if provider == "kimi" { "full_access" } else { "workspace_write" },
             "organization_status": "active",
             "version": 1,
             "created_by": { "kind": "service", "id": "integration-test" },

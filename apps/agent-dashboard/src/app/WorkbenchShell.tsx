@@ -71,7 +71,7 @@ interface WorkbenchShellProps {
   /** Known projects for the header picker (goal-multi-project P6); empty for a
    * single-store / pre-multi-project backend, which hides the picker. */
   projects: Project[];
-  /** Independent Mission/Wave/Team/Workflow coordination namespaces. */
+  /** Independent Mission/Team/Workflow coordination namespaces. */
   spaces: ExecutionSpace[];
   /** Known Company Stores for the header picker; empty in raw-store mode. */
   companies: Company[];
@@ -498,7 +498,7 @@ function ProjectPicker({
       <TooltipContent className="max-w-[36rem] space-y-1">
         <p><span className="text-muted-foreground">Provider cwd boundary:</span> <span className="font-mono">{selected.project_root}</span></p>
         <p><span className="text-muted-foreground">Skill discovery boundary:</span> <span className="font-mono">{selected.skill_discovery_boundary ?? selected.project_root}</span></p>
-        <p>Project Binding does not own Mission, Wave, Team, or Workflow storage.</p>
+        <p>Project Binding does not own Mission, AgentTeam, or Workflow storage.</p>
       </TooltipContent>
     </Tooltip>
   );
@@ -539,7 +539,7 @@ function SpacePicker({
         </label>
       </TooltipTrigger>
       <TooltipContent className="max-w-[36rem] space-y-1">
-        <p><span className="text-muted-foreground">Execution coordination:</span> Mission / Wave / Agent Team / Workflow</p>
+        <p><span className="text-muted-foreground">Execution coordination:</span> Mission / Mission Log / AgentTeam / Workflow</p>
         <p><span className="text-muted-foreground">Store:</span> <span className="font-mono">{selected.store_root}</span></p>
         <p><span className="text-muted-foreground">Default binding:</span> <span className="font-mono">{selected.default_project_binding_id ?? "none"}</span></p>
       </TooltipContent>
@@ -684,18 +684,13 @@ function AppRail({
     (team) => team.id === selectedRun?.agent_team_id,
   );
   const missionId = selection.missionId ?? selectedTeam?.mission_id;
-  const waveId = selection.waveId ?? (model.snapshot.waves ?? []).find(
-    (candidate) => (candidate.executor_run_ids ?? []).includes(selectedRun?.id ?? ""),
-  )?.id;
   const mission = (model.snapshot.missions ?? []).find((item) => item.id === missionId);
-  const wave = (model.snapshot.waves ?? []).find((item) => item.id === waveId);
-  const contextRun = selectedRun ?? (model.snapshot.team_runs ?? []).find(
-    (run) =>
-      (wave?.executor_run_ids ?? []).includes(run.id)
-      && (model.snapshot.teams ?? []).some(
-        (team) => team.id === run.agent_team_id && team.mission_id === missionId,
-      ),
-  );
+  const missionTeamIds = new Set((model.snapshot.teams ?? [])
+    .filter((team) => team.mission_id === missionId)
+    .map((team) => team.id));
+  const contextRun = selectedRun ?? [...(model.snapshot.team_runs ?? [])]
+    .filter((run) => missionTeamIds.has(run.agent_team_id))
+    .sort((left, right) => (right.created_at ?? "").localeCompare(left.created_at ?? ""))[0];
   const contextMembers = (model.snapshot.member_runs ?? []).filter(
     (member) => member.team_run_id === contextRun?.id,
   );
@@ -794,21 +789,12 @@ function AppRail({
                     depth={0}
                     icon={<Target className="size-3.5" />}
                     label={`Mission: ${mission.title}`}
-                    active={selection.surface === "missions" && selection.missionId === mission.id && !selection.waveId}
-                    onClick={() => onSelectionChange({ surface: "missions", missionId: mission.id, waveId: undefined, teamId: undefined, memberRunId: undefined })}
+                    active={selection.surface === "missions" && selection.missionId === mission.id}
+                    onClick={() => onSelectionChange({ surface: "missions", missionId: mission.id, teamId: undefined, memberRunId: undefined })}
                   />
-                  {wave && (
-                    <ContextTreeButton
-                      depth={1}
-                      icon={<Workflow className="size-3.5" />}
-                      label={`Wave ${wave.index} · ${wave.title}`}
-                      active={selection.surface === "missions" && selection.waveId === wave.id}
-                      onClick={() => onSelectionChange({ surface: "missions", missionId: mission.id, waveId: wave.id, teamId: undefined, memberRunId: undefined })}
-                    />
-                  )}
                   {contextRun && (
                     <ContextTreeButton
-                      depth={2}
+                      depth={1}
                       icon={<Users className="size-3.5" />}
                       label="Agent Team"
                       active={selection.surface === "team" && selection.teamId === contextRun.id && !selection.memberRunId}
@@ -818,7 +804,7 @@ function AppRail({
                   {contextMembers.map((member) => (
                     <ContextTreeButton
                       key={member.id}
-                      depth={3}
+                      depth={2}
                       icon={<StatusDot tone={member.status === "blocked" || member.status === "failed" ? "bad" : member.status === "running" ? "running" : member.status === "completed" ? "good" : "idle"} />}
                       label={member.name ?? member.id}
                       active={selection.memberRunId === member.id}
@@ -828,7 +814,7 @@ function AppRail({
                 </div>
               ) : (
                 <p className="px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground">
-                  Open a Mission to keep its Wave, Team, and Members in reach.
+                  Open a Mission to keep its Team, runs, and Members in reach.
                 </p>
               )}
             </section>
@@ -878,13 +864,13 @@ function AppRail({
               <button
                 type="button"
                 aria-label={`Active Mission: ${mission.title}`}
-                onClick={() => onSelectionChange({ surface: "missions", missionId: mission.id, waveId: waveId ?? undefined })}
+                onClick={() => onSelectionChange({ surface: "missions", missionId: mission.id })}
                 className="mb-2 grid size-10 place-items-center rounded-lg border border-primary/20 bg-primary/5 text-primary"
               >
                 <Target className="size-[18px]" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="right">{wave ? `Wave ${wave.index} · ${wave.title}` : mission.title}</TooltipContent>
+            <TooltipContent side="right">{mission.title}</TooltipContent>
           </Tooltip>
         )}
       </aside>
@@ -1033,7 +1019,6 @@ function SurfaceSwitch({
         <MissionsSurface
           {...shared}
           missionId={selection.missionId}
-          waveId={selection.waveId}
         />
       );
     case "workflows":

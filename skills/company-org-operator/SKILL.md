@@ -66,8 +66,8 @@ Organization does not own:
 - Work lifecycle or milestone status.
 - Docs content and module structure.
 - Finance commitments or payments.
-- Mission/Wave, AgentTeamRun, MemberRun, provider-native sessions, or workflow
-  steps.
+- Mission, Mission Log, AgentTeamRun, MemberRun, provider-native sessions, or
+  workflow steps. Historical Wave rows are Legacy read-only evidence only.
 
 An AgentMember is the single durable company agent identity. Company
 membership stores only its canonical `ActorRef(kind=agent_member)` plus

@@ -1,16 +1,16 @@
 //! End-to-end acceptance for the Mission control plane, including the
-//! ADR 0051 Mission Log cutover: Mission absorbs Wave as an append-only
-//! judgment log, Wave write commands (`create`/`update`/`advance`/`gate`)
-//! retire on every surface (CLI, HTTP, MCP), and `wave list`/`show`/`history`
-//! remain historical reads only.
+//! ADR 0051 Mission Log cutover: Mission is the sole current intent spine,
+//! while Legacy Wave write commands (`create`/`update`/`advance`/`gate`)
+//! retire on every surface and `legacy wave list`/`show`/`history` remain
+//! historical reads only.
 //!
 //! This deliberately exercises the public CLI and HTTP surfaces rather than
 //! constructing core objects directly: Mission Log revisions, TeamRun retry
 //! lineage, and snapshot projections must agree across the surfaces a Host
 //! uses. Historical Wave rows are seeded directly via `seed_historical_wave`
 //! (the only way a Wave can exist post-cutover) rather than through the
-//! retired `wave create`, so tests can still prove reads and Wave-id
-//! citation/validation keep working against pre-cutover data.
+//! retired `wave create`, so tests can still prove historical reads without
+//! making Legacy Wave part of current TeamRun or Message identity.
 
 use std::time::{Duration, Instant};
 
@@ -100,9 +100,7 @@ fn force_team_run_reviewing(home: &TempHome, project_id: &str, run_id: &str, mis
 
 /// Seed one historical Wave row directly, bypassing the retired `wave
 /// create` write path (ADR 0051), so tests can prove reads,
-/// `source_plan_ref` navigation, and existing cross-Mission/executor-kind
-/// validation still resolve a pre-cutover Wave row without exercising a
-/// live write. Every field with `#[serde(default)]` is omitted;
+/// without exercising a live write. Every field with `#[serde(default)]` is omitted;
 /// `executor_kind`/`created_at`/`updated_at` have no default and are set
 /// explicitly.
 fn seed_historical_wave(
@@ -139,7 +137,7 @@ fn seed_historical_wave(
 }
 
 #[test]
-fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
+fn mission_log_keeps_one_mission_team_and_member_sessions_alive() {
     let home = TempHome::new("host-plan-mission-team");
     let project_id = init_project(&home, "host-plan");
 
@@ -391,17 +389,6 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         ],
     );
     assert_eq!(judgment_2["revision"].as_u64(), Some(2));
-    // wave-plan-2 is seeded as a historical row (not created -- `wave create`
-    // is retired) purely so the source_plan_ref navigation check below has a
-    // real pre-cutover Wave id to cite.
-    seed_historical_wave(
-        &home,
-        &project_id,
-        "wave-plan-2",
-        "mission-host-plan",
-        2,
-        "host",
-    );
     let replan = run_json(
         &home,
         &project_id,
@@ -443,13 +430,11 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "agent-repair:repair specialist:codex",
             "--initial-work",
             "Repair any issue found by the review lane",
-            "--origin-wave-id",
-            "wave-plan-2",
         ],
     );
     assert!(joined["work"]["context_markdown"]
         .as_str()
-        .is_some_and(|context| context.contains("wave-plan-2")));
+        .is_some_and(|context| !context.contains("wave-plan")));
     assert_eq!(
         joined["team_run"]["member_run_ids"]
             .as_array()
@@ -652,7 +637,7 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "--json",
         ],
     );
-    assert_eq!(closed_mission["wave_ids"], serde_json::json!([]));
+    assert!(closed_mission.get("wave_ids").is_none());
     let team = run_json(
         &home,
         &project_id,
@@ -731,10 +716,9 @@ fn mission_close_no_longer_gates_on_wave_and_wave_writes_are_retired_everywhere(
         Some("dashboard-host")
     );
     assert!(body["result"]["completed_at"].is_string());
-    assert_eq!(
-        body["result"]["wave_ids"],
-        serde_json::json!([]),
-        "no Wave was ever created for this Mission -- wave create is retired"
+    assert!(
+        body["result"].get("wave_ids").is_none(),
+        "current Mission output must not advertise Legacy Wave identity"
     );
 
     // Identical closeout is idempotent; a conflicting actor/outcome is
@@ -853,19 +837,19 @@ fn mission_close_no_longer_gates_on_wave_and_wave_writes_are_retired_everywhere(
     let waves = run_json(
         &home,
         &project_id,
-        &["wave", "list", "--mission-id", "mission-host"],
+        &["legacy", "wave", "list", "--mission-id", "mission-host"],
     );
     assert_eq!(waves.as_array().map(Vec::len), Some(1));
     let shown = run_json(
         &home,
         &project_id,
-        &["wave", "show", "--id", "wave-host-historical"],
+        &["legacy", "wave", "show", "--id", "wave-host-historical"],
     );
     assert_eq!(shown["id"].as_str(), Some("wave-host-historical"));
     let history = run_json(
         &home,
         &project_id,
-        &["wave", "history", "--id", "wave-host-historical"],
+        &["legacy", "wave", "history", "--id", "wave-host-historical"],
     );
     assert_eq!(history.as_array().map(Vec::len), Some(1));
 }
@@ -1005,7 +989,7 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
     let (_, snapshot) = serve.get_json("/v1/snapshot");
     assert_eq!(snapshot["missions"].as_array().map(Vec::len), Some(1));
     assert_eq!(
-        snapshot["waves"].as_array().map(Vec::len),
+        snapshot["legacy_waves"].as_array().map(Vec::len),
         Some(0),
         "wave create is retired: nothing populates this ledger for a new Mission"
     );
@@ -1015,8 +999,8 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
         Some("judgment")
     );
 
-    // CLI list returns native Mission rows; wave_ids stays empty -- there is
-    // no live write path left to populate it.
+    // CLI list returns native Mission rows without advertising the empty
+    // Legacy `wave_ids` compatibility field.
     let missions = run_json(&home, &project_id, &["mission", "list"]);
     let native = missions
         .as_array()
@@ -1024,14 +1008,12 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
         .iter()
         .find(|mission| mission["id"].as_str() == Some("mission-alpha"))
         .expect("native mission");
-    assert_eq!(native["wave_ids"], serde_json::json!([]));
+    assert!(native.get("wave_ids").is_none());
 
     // Historical Wave rows remain readable (ADR 0051): seeded directly
     // (never through `wave create`, which is retired), they still project
-    // through `wave list`/the snapshot in index order, and the existing
-    // cross-Mission / executor-kind validation on TeamRun creation still
-    // runs against them -- only the *write* path retired, not reads or the
-    // validation logic that resolves a Wave id.
+    // through the explicit Legacy read surface in index order. Current
+    // TeamRun creation does not resolve or bind these rows.
     seed_historical_wave(
         &home,
         &project_id,
@@ -1051,7 +1033,7 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
     let waves = run_json(
         &home,
         &project_id,
-        &["wave", "list", "--mission-id", "mission-alpha"],
+        &["legacy", "wave", "list", "--mission-id", "mission-alpha"],
     );
     assert_eq!(
         waves
@@ -1064,8 +1046,8 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
         "wave list still orders historical rows by index"
     );
 
-    // Reject a TeamRun that tries to bind a historical Wave from another
-    // Mission. The request must be atomic: no run is recorded.
+    // Reject any TeamRun request that tries to bind a Legacy Wave. The
+    // request must be atomic: no run is recorded.
     let (status, body) = serve.post_json(
         "/v1/missions",
         &serde_json::json!({"id": "mission-beta", "title": "Other", "objective": "isolation"}),
@@ -1093,9 +1075,8 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
     assert_eq!(status, 200);
     assert_eq!(snapshot["team_runs"].as_array().map(Vec::len), Some(0));
 
-    // A non-AgentTeam historical Wave cannot be used as an AgentTeamRun
-    // executor target -- the boundary check is unaffected by whether the row
-    // is fresh or historical.
+    // The rejection is independent of historical executor metadata: no
+    // Legacy Wave can become the current TeamRun executor target.
     seed_historical_wave(&home, &project_id, "wave-host", "mission-alpha", 3, "host");
     let (status, body) = serve.post_json(
         "/v1/team-runs",

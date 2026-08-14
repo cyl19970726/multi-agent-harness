@@ -328,12 +328,10 @@ export interface TeamRunMemberSpec {
 export function createTeamRun(params: {
   objective: string;
   budgetLimitUsd?: number;
-  /** Retry lineage: an earlier attempt of this same native Wave. */
+  /** Retry lineage: an earlier attempt of this same AgentTeam objective. */
   previousRunId?: string;
-  /** Stable AgentTeam definition; primary Mission-scoped runs omit waveId. */
-  agentTeamId?: string;
-  missionId?: string;
-  waveId?: string;
+  /** Stable AgentTeam definition; its Mission identity is inherited server-side. */
+  agentTeamId: string;
   /** Optional TeamRun workspace; defaults to the selected registered project_root. */
   executionRoot?: string;
   members: TeamRunMemberSpec[];
@@ -376,15 +374,7 @@ export function createTeamRun(params: {
   if (params.previousRunId) {
     body.previous_run_id = params.previousRunId;
   }
-  if (params.agentTeamId) {
-    body.agent_team_id = params.agentTeamId;
-  }
-  if (params.missionId) {
-    body.mission_id = params.missionId;
-  }
-  if (params.waveId) {
-    body.wave_id = params.waveId;
-  }
+  body.agent_team_id = params.agentTeamId;
   if (params.executionRoot) {
     body.execution_root = params.executionRoot;
   }
@@ -404,7 +394,7 @@ export function createMission(params: {
   return { method: "POST", path: "/v1/missions", body };
 }
 
-/** Explicitly complete a Mission after every ordered Wave is accepted. */
+/** Explicitly complete a Mission with its durable outcome. */
 export function closeMission(params: {
   missionId: string;
   outcome: string;
@@ -467,7 +457,6 @@ export function sendTeamMessage(
     correlationId?: string;
     /** The direct message that caused this reply. */
     causationId?: string;
-    originWaveId?: string;
   },
 ): ActionDescriptor {
   const body: Record<string, unknown> = {
@@ -492,9 +481,6 @@ export function sendTeamMessage(
   }
   if (params.causationId) {
     body.causation_id = params.causationId;
-  }
-  if (params.originWaveId) {
-    body.source_plan_ref = params.originWaveId;
   }
   return {
     method: "POST",
@@ -579,13 +565,16 @@ export function acknowledgeTeamMessage(
 export function answerProviderMessage(
   teamRunId: string,
   messageId: string,
-  optionId: string,
-  resolvedBy: "host" | "lead" | "operator" | "human" | "policy" = "host",
+  optionId?: string,
+  responseText?: string,
 ): ActionDescriptor {
+  const body: Record<string, unknown> = {};
+  if (optionId) body.option_id = optionId;
+  if (responseText) body.response_text = responseText;
   return {
     method: "POST",
     path: `/v1/team-runs/${encodeId(teamRunId)}/messages/${encodeId(messageId)}/answer`,
-    body: { option_id: optionId, resolved_by: resolvedBy },
+    body,
   };
 }
 
@@ -670,9 +659,9 @@ export function startTeamRun(teamRunId: string): ActionDescriptor {
 }
 
 /**
- * Drive an attempt lifecycle (POST /v1/team-runs/{id}/transition). The native
- * Wave gate is separate: it accepts, revises, or blocks a completed attempt.
- * The backend only allows `reviewing → completed` (attempt completion) and
+ * Drive an attempt lifecycle (POST /v1/team-runs/{id}/transition). Mission
+ * judgment is recorded separately in the append-only Mission Log. The backend
+ * only allows `reviewing → completed` (attempt completion) and
  * `planning|waiting|reviewing → cancelled`; running cancellation is rejected
  * until provider execution has a cooperative interruption path.
  */

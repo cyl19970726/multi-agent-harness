@@ -1,6 +1,6 @@
 {
   "id": "workbench-layout-v2-native-v1",
-  "description": "Deterministic Mission context, Host-plan Waves, Mission-linked long-lived Agent Team, crash-atomic Work history, and member pressure state for visual-contract capture.",
+  "description": "Deterministic current Mission + Mission Log context, Mission-linked long-lived AgentTeam, crash-atomic Work history, member pressure, and explicitly historical ADR 0051 Wave rows for read-only compatibility capture.",
   "capture_now": "2026-07-23T10:15:00Z",
   "mission_id": "mission-workbench-v2",
   "wave_id": "wave-team-console",
@@ -9,9 +9,9 @@
   "member_run_id": "member-wave2-research",
   "routes": {
     "agent-teams-home": "/?surface=team",
-    "mission-wave-canvas": "/?surface=missions&mission=mission-workbench-v2&wave=wave-team-console",
-    "team-war-room": "/?surface=team&team=teamrun-mission-current&mission=mission-workbench-v2&wave=wave-team-console",
-    "member-run-focus": "/?surface=team&team=teamrun-mission-current&memberRun=member-wave2-research&mission=mission-workbench-v2&wave=wave-team-console"
+    "mission-wave-canvas": "/?surface=missions&mission=mission-workbench-v2",
+    "team-war-room": "/?surface=team&team=teamrun-mission-current&mission=mission-workbench-v2",
+    "member-run-focus": "/?surface=team&team=teamrun-mission-current&memberRun=member-wave2-research&mission=mission-workbench-v2"
   },
   "ledgers": [
     "missions.jsonl",

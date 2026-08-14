@@ -6,9 +6,9 @@
 # after the run journals patch rows; no action means the patch remains pending.
 #
 # This is a standalone Dynamic Workflow: apply_patch()/reject_patch() resolve the
-# durable WorkflowPatch created by the `implement` step. An outer Mission/Wave
-# may attach this WorkflowRun, its artifacts, and final result after completion;
-# that attachment does not change the workflow's patch semantics.
+# durable WorkflowPatch created by the `implement` step. An outer Mission may
+# cite this WorkflowRun, its artifacts, and final result in a Mission Log entry
+# after completion; that citation does not change the workflow's patch semantics.
 #
 # Run:
 #   harness workflow run-script ./patch-review-apply.star \

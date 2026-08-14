@@ -4,7 +4,8 @@
 
 Repository development uses the canonical
 [Notion Spec -> Issue -> Codex -> PR flow](workflow-git-pr.md). One Primary
-Session owns a Wave end to end in a clean isolated worktree. Ordinary work uses
+Session owns a development Wave (repository delivery batch, not the retired
+runtime `Wave` structure) end to end in a clean isolated worktree. Ordinary work uses
 final-SHA self-review rather than a mandatory second reviewer; a narrow Host
 Gate is required only when the Development Record says so. Harness Member
 dogfood remains suspended for repository repair, while product TeamWork Gate
@@ -51,13 +52,14 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-The executable Mission/Wave + Agent Team acceptance gate is:
+The executable Mission + Mission Log + Agent Team acceptance gate is:
 
 ```bash
 npx pnpm@9.15.4 acceptance:mission-wave
 ```
 
-It covers native Mission/Wave HTTP and CLI contracts, Agent Team create/start,
+The command name is retained for compatibility. It covers native Mission and
+Mission Log HTTP and CLI contracts, Agent Team create/start,
 shared Works/WorkDelivery, Work-linked conversation, Mission closeout, Host-facing MCP transport, the
 Dashboard read model and operator controls, plus deterministic persistent
 Codex app-server, Claude Agent SDK, and Kimi ACP Team Member adapters. It also
@@ -68,7 +70,7 @@ Workflow and are never Agent Team fallbacks.
 
 Real self-hosting follows the canonical
 [Agent Team Dogfood Loop](../product/agent-team-dogfood-loop.md). A failed live
-scenario becomes a Host-triaged Repair Wave or tracked issue, then the original
+scenario becomes a Host-triaged repair batch or tracked issue, then the original
 scenario is rerun before the matrix expands. Finding a bug is evidence, not
 Mission closeout.
 
@@ -89,7 +91,7 @@ cargo test -p firm-cli --test team_run_api \
 ```
 
 There is currently no packaged live-provider command. When a claim depends on
-a real provider, record the exact Mission, selected Host-plan Wave revision,
+a real provider, record the exact Mission and relevant Mission Log entry,
 Team/Node/Project-fenced TeamRun, MemberRuns, provider-native session ids, Work
 ids/versions, WorkDelivery, linked conversation, submissions/Host
 acceptance, artifacts, and
@@ -214,7 +216,7 @@ firm space switch <execution-space-id>
 firm project switch <project-binding-id>
 ```
 
-`--space` / `HARNESS_SPACE` selects Mission/Wave, Agent Team, Workflow, and
+`--space` / `HARNESS_SPACE` selects Mission/Mission Log, Agent Team, Workflow, and
 coordination storage. `--project` / `HARNESS_PROJECT` independently selects
 provider cwd, project instructions, Skills, Git/worktree, and permission
 boundaries. `--store` / `HARNESS_ROOT` remains a deprecation-warned

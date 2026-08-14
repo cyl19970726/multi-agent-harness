@@ -96,7 +96,6 @@ async function main() {
 
   check(
     mission?.status === "running"
-      && mission.wave_ids.length === 0
       && mission.context.includes("# Ship the AgentFirm Host integration")
       && linkedTeam?.mission_id === mission.id,
     "Mission has durable Markdown context and is owned by one flat AgentTeam",
@@ -110,7 +109,7 @@ async function main() {
       && priorWave.gate_status === "accepted"
       && priorWave.accepted_run_id === null
       && priorWave.context.includes("Host judgment"),
-    "Wave 1 records an explicit Host advance without an accepted executor attempt",
+    "Legacy Wave 1 remains readable as pre-cutover history",
   );
   check(
     currentWave?.status === "running"
@@ -118,7 +117,7 @@ async function main() {
       && currentWave.executor_run_ids.length === 0
       && currentWave.revision === 2
       && currentWave.context.includes("| Member | Role | Responsibility | Deliverable |"),
-    "Wave 2 is a versioned Host-plan memo with a Markdown responsibility table",
+    "Legacy Wave 2 remains readable as a pre-cutover Host-plan memo",
   );
   check(
     currentRun?.status === "running"
@@ -132,7 +131,7 @@ async function main() {
     shellSource.includes("Provider cwd boundary:")
       && shellSource.includes("Skill discovery boundary:")
       && shellSource.includes("Execution coordination:")
-      && shellSource.includes("Project Binding does not own Mission, Wave, Team, or Workflow storage.")
+      && shellSource.includes("Project Binding does not own Mission, AgentTeam, or Workflow storage.")
       && shellSource.includes("selected.project_root")
       && shellSource.includes("selected.store_root"),
     "TopBar keeps Project Binding boundaries independent from Execution Space storage",
@@ -240,9 +239,9 @@ async function main() {
       && agentTeamsHomeSource.includes("Flat Mission-owned teams")
       && agentTeamsHomeSource.includes("Execution Nodes")
       && agentTeamsHomeSource.includes("daemon generation")
-      && agentTeamsHomeSource.includes("Legacy Wave")
+      && !agentTeamsHomeSource.includes("Legacy Wave")
       && !agentTeamsHomeSource.includes(`run.${duplicateWaveField}`),
-    "Agent Team home exposes flat Mission-owned runs, NodeDaemon status, and labelled historical Waves",
+    "Agent Team home exposes flat Mission-owned runs and NodeDaemon status without mixing in Legacy Wave history",
   );
   check(
     agentTeamsHomeSource.includes("Host Agent ·")
@@ -250,7 +249,7 @@ async function main() {
       && warRoomSource.includes("Host coordination only")
       && warRoomSource.includes("Host Agent identity")
       && missionSource.includes("host_agent_id")
-      && missionSource.includes("not counted as a MemberRun unless explicitly added"),
+      && missionSource.includes("host {team.host_agent_id}"),
     "Agent Team surfaces identify the Host Agent without inventing a MemberRun",
   );
   check(
@@ -264,31 +263,26 @@ async function main() {
     "Browser capture keeps API/SSE same-origin, covers Agent Team Works by default, and rejects horizontal clipping at 390px and 320px",
   );
   check(
-    missionSource.includes("flex flex-col items-stretch")
-      && missionSource.includes("flex w-full flex-wrap items-center")
-      && missionSource.includes('data-mission-scroll-owner="true"')
+    missionSource.includes('data-mission-scroll-owner="true"')
       && missionSource.includes("overflow-y-auto"),
-    "Mission detail owns a reachable vertical scroll region and keeps separate mobile header rows",
+    "Mission detail owns a reachable vertical scroll region",
   );
   check(
     avatarSource.includes("portraitFor") && avatarSource.includes("rounded-full")
       && portraitsSource.includes("defaultPortraits")
-      && missionSource.includes("Open member ${member.name")
-      && missionSource.includes("memberRunId: member.id")
-      && captureSource.includes('action: "mission-content-reachability"')
-      && captureSource.includes('action: "mission-member-deep-link"')
-      && captureSource.includes('action: "member-return-context"'),
-    "Execution identities use project portraits and Mission member chips deep-link to Member Focus",
+      && missionSource.includes('surface: "team", teamId: run.id, missionId: mission.id')
+      && captureSource.includes('action: "mission-content-reachability"'),
+    "Execution identities use project portraits and Mission run rows deep-link to the Team surface",
   );
   check(
     warRoomSource.includes('terminal ? "Unresolved history" : "QA approval required"'),
     "Terminal Team attempts distinguish unresolved history from active operator pressure",
   );
   check(
-    missionSource.includes("WaveJourneyCompact")
-      && missionSource.includes("LiveTrace")
-      && missionSource.includes("DecisionAnchor"),
-    "Mission V3 renders one continuous Wave journey with live and decision anchors",
+    missionSource.includes("Mission Log")
+      && missionSource.includes("data-legacy-wave-history")
+      && missionSource.includes("do not control Mission status, closeout, TeamRun creation, or navigation"),
+    "Mission detail renders current Mission Log truth and isolates Legacy Wave history",
   );
   check(
     warRoomSource.includes("TeamConversationStream")

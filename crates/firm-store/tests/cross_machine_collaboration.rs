@@ -420,7 +420,7 @@ fn seed_team(
             context: String::new(),
             desired_outcome: None,
             status: MissionStatus::Running,
-            wave_ids: Vec::new(),
+            legacy_wave_ids: Vec::new(),
             outcome_summary: None,
             completed_by: None,
             created_at: "unix-ms:1".into(),

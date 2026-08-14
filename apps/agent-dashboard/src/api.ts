@@ -18,7 +18,6 @@ import type {
   TeamSupervisorLease,
   TeamRun,
   TeamRunEvent,
-  Wave,
   WorkflowDef,
   WorkflowRun,
   WorkflowStep,
@@ -310,7 +309,7 @@ export async function fetchNativeWorkflowStepActivity(
 
 /**
  * Enumerate Project Bindings. These entries define execution/source boundaries
- * and do not own Mission/Wave/Team/Workflow storage.
+ * and do not own Mission/Team/Workflow storage.
  */
 export async function fetchProjects(
   baseUrl: string,
@@ -488,7 +487,6 @@ export type SseFrame =
   // latest-wins by id so a replayed frame self-heals.
   | { kind: "team_run_event"; event: TeamRunEvent }
   | { kind: "mission"; mission: Mission }
-  | { kind: "wave"; wave: Wave }
   | { kind: "agent_team_run"; run: TeamRun }
   | { kind: "member_run"; member: MemberRun }
   | { kind: "team_message"; message: TeamMessageProjection }
@@ -605,10 +603,6 @@ export function openEventStream(
     const data = parse<Mission>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "mission", mission: data });
   });
-  source.addEventListener("wave", (event) => {
-    const data = parse<Wave>(event as MessageEvent);
-    if (data) handlers.onFrame({ kind: "wave", wave: data });
-  });
   source.addEventListener("agent_team_run", (event) => {
     const data = parse<TeamRun>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "agent_team_run", run: data });
@@ -659,7 +653,6 @@ export function applyFrame(snapshot: DashboardSnapshot, frame: SseFrame): Dashbo
     case "workflow_step":
     case "team_run_event":
     case "mission":
-    case "wave":
     case "agent_team_run":
     case "member_run":
     case "team_message":

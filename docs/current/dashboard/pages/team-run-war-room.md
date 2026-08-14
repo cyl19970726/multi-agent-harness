@@ -37,8 +37,8 @@ Required data:
   placement, and editable member identities;
 - `AgentTeamRun`, required `agent_team_id`, `execution_node_id`, and
   `project_binding_id`, plus status, previous same-Team run, host/runtime facts,
-  and outcome; Mission is derived through `AgentTeam.mission_id` and Wave is
-  never a TeamRun ownership field;
+  and outcome; Mission is derived through `AgentTeam.mission_id`; Mission Log
+  entries never own a TeamRun;
 - `MemberRun` identity, role, provider/model, status, capability profile,
   worktree, and native-session binding;
 - current `TeamSupervisorLease` generation, heartbeat, owner locator,
@@ -83,7 +83,7 @@ The implementation deliberately reuses the mature visual primitives that are
 still valid under the current model: canonical member avatars, capacity rows,
 the shared Works board and Work sheet, conversation/activity rows, composer,
 authorized action panels, and the exact-self Member home. It does not restore
-Wave-as-executor/gate UI, Assignment Message or legacy ACK paths, browser-side
+Wave authoring/executor/gate UI, Assignment Message or legacy ACK paths, browser-side
 authority joins/writers, provider transcript mirrors, parent/child Team
 topology, or any second Team/Message/Delivery/Work model.
 

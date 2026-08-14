@@ -3,18 +3,18 @@
 Schemas define object contracts shared by Rust types, API responses, CLI
 outputs, adapters, and the Agent Dashboard.
 
-## Native Mission/Wave Objects
+## Native Mission Objects
 
 | Object | Purpose |
 | --- | --- |
-| `Mission` | Durable intent/context, one owning AgentTeam, ordered Waves, and closeout |
-| `Wave` | One lightweight versioned Host plan/judgment and advance outcome |
+| `Mission` | Durable intent/context, one owning AgentTeam, and closeout |
+| `MissionLogEntry` | One append-only Host judgment, replan, recovery, or closeout-evidence record inside a Mission; not a lifecycle object |
 | `AgentTeam` | One Mission's flat Team with required Host Agent and immutable Node placement |
 | `AgentTeamRun` | One Team execution with required Team, Node, and Project Binding identity |
 | `MemberRun` | One role/provider execution instance inside a TeamRun |
 | `Work` / `WorkOperation` / `WorkEvent` / `WorkDelivery` | TeamRun-scoped responsibility projection, crash-atomic replay row, append-only semantic transition, and versioned runtime delivery |
 | `WorkDelegation` / `WorkDelegationEvent` | Cross-Team responsibility handoff with CAS, idempotency, cycle prevention, and source rollup |
-| `TeamMessage` | Typed sender/recipients, optional `work_id`, correlation/causation, optional origin Wave, response intent, claim/provider-receipt/ACK delivery state; conversation only |
+| `TeamMessage` | Typed sender/recipients, optional `work_id`, correlation/causation, response intent, claim/provider-receipt/ACK delivery state; conversation only. A legacy origin-Wave field may remain on historical rows. |
 | `ExecutionNode` / `NodeProjectRegistration` / `NodeDaemonLease` | Machine identity, available Project Bindings, and the one daemon generation that owns all local TeamRuns |
 | `TeamSupervisorLease` | Latest-wins TeamRun control owner parent-fenced by NodeDaemon generation |
 | `MemberAction` | Transitional action schema; target scope is Harness-owned coordination/control facts, never mirrored provider activity |
@@ -24,7 +24,7 @@ outputs, adapters, and the Agent Dashboard.
 Dynamic Workflow and Host execution retain their distinct execution-specific
 objects. Existing Goal/Task/Message/Evidence/Proposal/Decision schemas are
 historical compatibility or optional governance contracts. They are not the
-active Mission/Wave or Agent Team coordination model, and new Agent Team work
+active Mission/Mission Log or Agent Team coordination model, and new Agent Team work
 must not depend on Goal, Task Graph, Plan Gate, or generic `Message`.
 
 `Skill`, `ToolAdapter`, and `Dashboard` can start as configuration or views.
@@ -34,7 +34,8 @@ must not depend on Goal, Task Graph, Plan Gate, or generic `Message`.
 | Concept | Current maturity | Gateable now |
 | --- | --- | --- |
 | `Mission` | Rust + JSON schema + JSONL store + CLI/API/MCP/read model | yes |
-| `Wave` | Rust + JSON schema + JSONL revisions + Host update/advance | yes |
+| `MissionLogEntry` | Rust + append-only `mission_log.jsonl` store + CLI/API/MCP/read model | yes |
+| `Wave` | Rust + JSON schema + historical JSONL reads/export only; create/update/advance/gate retired by ADR 0051 | legacy only |
 | `AgentTeamRun` family | Rust + JSON schemas + store + CLI/API/MCP/read model | yes |
 | `Work` / `WorkEvent` / `WorkDelivery` | Rust + JSON schemas + WorkOperation JSONL store + CLI/API/MCP/read model | yes |
 | `TeamSupervisorLease` | Rust + JSON schema + JSONL latest-wins store + cross-process routing | yes |
@@ -65,7 +66,7 @@ schema contracts are checked with valid and invalid fixtures.
 | Schema | File |
 | --- | --- |
 | Mission | [mission.schema.json](../../../schemas/mission.schema.json) |
-| Wave | [wave.schema.json](../../../schemas/wave.schema.json) |
+| Historical Wave (ADR 0051 pre-cutover rows only) | [wave.schema.json](../../../schemas/wave.schema.json) |
 | Agent Team run | [agent-team-run.schema.json](../../../schemas/agent-team-run.schema.json) |
 | Member run | [member-run.schema.json](../../../schemas/member-run.schema.json) |
 | Work | [work.schema.json](../../../schemas/work.schema.json) |

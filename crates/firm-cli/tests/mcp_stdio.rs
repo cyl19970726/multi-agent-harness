@@ -331,6 +331,83 @@ impl Drop for McpClient {
         let _ = self.child.wait();
     }
 }
+
+#[test]
+fn mcp_current_surface_is_mission_only_and_rejects_legacy_wave_tools() {
+    let home = TempHome::new("mcp-mission-only-surface");
+    let project_id = init_project(&home, "mcp-mission-only-project");
+    let mut mcp = McpClient::spawn(&home, &project_id, &[]);
+    let _ = mcp.request(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "mission-only-surface-test", "version": "0"}
+        }),
+    );
+
+    let listed = mcp.request("tools/list", serde_json::json!({}));
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    let names = tools
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for current in [
+        "mission_create",
+        "mission_update_context",
+        "mission_close",
+        "mission_list",
+        "team_run_create",
+    ] {
+        assert!(
+            names.contains(current),
+            "missing current MCP tool {current}"
+        );
+    }
+    assert!(
+        names.iter().all(|name| !name.starts_with("wave_")),
+        "Legacy Wave tools must not be advertised: {names:?}"
+    );
+
+    let team_run_create = tools
+        .iter()
+        .find(|tool| tool["name"] == "team_run_create")
+        .expect("team_run_create definition");
+    let schema = &team_run_create["inputSchema"];
+    assert!(schema["properties"].get("mission_id").is_none());
+    assert!(schema["properties"].get("wave_id").is_none());
+    assert!(schema["required"]
+        .as_array()
+        .expect("required array")
+        .iter()
+        .any(|field| field == "agent_team_id"));
+
+    let before = directory_snapshot(&home.spaces_dir());
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "wave_create",
+            "arguments": {
+                "id": "must-not-exist",
+                "mission_id": "must-not-exist",
+                "title": "must not write",
+                "objective": "must not write"
+            }
+        }),
+    );
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("unknown tool")),
+        "removed Legacy Wave tool must fail as unknown: {response}"
+    );
+    assert_eq!(
+        directory_snapshot(&home.spaces_dir()),
+        before,
+        "removed Legacy Wave MCP tool must have a byte-zero store delta"
+    );
+}
+
 fn call_payload(response: &serde_json::Value) -> serde_json::Value {
     let result = &response["result"];
     assert_eq!(
@@ -726,8 +803,8 @@ fn mcp_stdio_agent_team_tools() {
     );
     mcp.notify("notifications/initialized");
 
-    // 2. tools/list preserves the original five TeamRun tools and adds the
-    // native Mission/Wave authoring surface.
+    // 2. tools/list exposes the current Mission surface. Legacy Wave tools
+    // are absent rather than advertised as tempting tombstones.
     let response = mcp.request("tools/list", serde_json::json!({}));
     let tools = response["result"]["tools"].as_array().expect("tools array");
     let names: Vec<&str> = tools
@@ -744,11 +821,6 @@ fn mcp_stdio_agent_team_tools() {
             "mission_update_context",
             "mission_close",
             "mission_list",
-            "wave_create",
-            "wave_update",
-            "wave_advance",
-            "wave_list",
-            "wave_gate",
             "team_run_create",
             "team_run_work_list",
             "team_run_work_show",
@@ -914,11 +986,7 @@ fn mcp_stdio_agent_team_tools() {
     assert!(start_descriptor.contains("provider-native sessions"));
 
     // 3. Native Mission creation through MCP (the same helper as CLI and
-    // HTTP) supplies the outer identity for the TeamRun. Wave creation is
-    // retired (ADR 0051): the MCP tool now answers isError:true instead of
-    // authoring a row; a historical Wave is seeded directly (never through
-    // `wave_create`) purely so the source_plan_ref navigation check below has
-    // a real pre-cutover Wave id to cite.
+    // HTTP) supplies the outer identity for the TeamRun.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -936,29 +1004,8 @@ fn mcp_stdio_agent_team_tools() {
         "main",
         &[&worker_agent_id, &repair_agent_id],
     );
-    let response = mcp.request(
-        "tools/call",
-        serde_json::json!({
-            "name": "wave_create",
-            "arguments": {
-                "id": "wave-mcp",
-                "mission_id": "mission-mcp",
-                "index": 2,
-                "title": "Team wave",
-                "objective": "Run members",
-                "executor_kind": "agent_team"
-            }
-        }),
-    );
-    let wave_create_error = call_error_text(&response);
-    assert!(
-        wave_create_error.contains("retired") && wave_create_error.contains("mission log append"),
-        "wave_create error: {wave_create_error}"
-    );
-    seed_historical_wave(&home, &project_id, "wave-mcp", "mission-mcp", 2);
-
     // 4. team_run_create with two members → run id + member run ids. Mission
-    // and navigation Wave are derived through the required flat AgentTeam.
+    // is derived through the required flat AgentTeam.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -987,7 +1034,7 @@ fn mcp_stdio_agent_team_tools() {
     );
     assert!(team_run_id.starts_with("team-run-"), "id: {team_run_id}");
     assert_eq!(payload["mission_id"].as_str(), Some("mission-mcp"));
-    assert!(payload["wave_id"].is_null());
+    assert!(payload.get("wave_id").is_none());
     assert_eq!(
         payload["execution_root"].as_str(),
         Some(project_root.to_str().expect("project root"))
@@ -1043,15 +1090,13 @@ fn mcp_stdio_agent_team_tools() {
         )
     );
 
-    // 5. The thin MCP adapter can extend the same run and records the
-    // origin Wave only as Host-plan provenance.
+    // 5. The thin MCP adapter can extend the same Mission-scoped run.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
             "name": "team_run_add_member",
             "arguments": {
                 "team_run_id": team_run_id,
-                "source_plan_ref": "wave-mcp",
                 "initial_work": "repair the interaction path",
                 "member": {
                     "agent_member_id": repair_agent_id,
@@ -1580,9 +1625,8 @@ fn mcp_stdio_agent_team_tools() {
         "stop NodeDaemon failed: {stopped:?}"
     );
 
-    // Mission closeout is a separate Host decision; it no longer requires
-    // any Wave gate (ADR 0051) -- close succeeds directly on its own
-    // outcome, and wave_create/wave_gate both answer isError:true.
+    // Mission closeout is a separate Host decision and no Legacy Wave tool is
+    // part of the MCP capability surface.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -1591,30 +1635,6 @@ fn mcp_stdio_agent_team_tools() {
         }),
     );
     call_payload(&response);
-    let response = mcp.request(
-        "tools/call",
-        serde_json::json!({
-            "name": "wave_create",
-            "arguments": {
-                "id": "wave-close",
-                "mission_id": "mission-close",
-                "title": "Host closeout slice",
-                "objective": "Produce a direct outcome",
-                "executor_kind": "host"
-            }
-        }),
-    );
-    let wave_create_error = call_error_text(&response);
-    assert!(wave_create_error.contains("retired"), "{wave_create_error}");
-    let response = mcp.request(
-        "tools/call",
-        serde_json::json!({
-            "name": "wave_gate",
-            "arguments": {"wave_id": "wave-close", "status": "accepted", "outcome": "host slice done"}
-        }),
-    );
-    let wave_gate_error = call_error_text(&response);
-    assert!(wave_gate_error.contains("retired"), "{wave_gate_error}");
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -1629,7 +1649,7 @@ fn mcp_stdio_agent_team_tools() {
         closed["outcome_summary"].as_str(),
         Some("all intent satisfied")
     );
-    assert_eq!(closed["wave_ids"], serde_json::json!([]));
+    assert!(closed.get("wave_ids").is_none());
 
     // 14. Unknown method → JSON-RPC -32601; unknown tool → -32602; a failing
     //    tool call → isError:true with the reason as text.

@@ -5,10 +5,10 @@ import { cn } from "@/lib/utils";
 import { StatusDot, type StatusTone } from "@/components/workbench/atoms";
 
 /**
- * The right-side context area shared by Focus, Team, and Wave pages.
+ * The right-side context area shared by Focus, Team, and Mission pages.
  *
  * It deliberately accepts composition through children rather than a fixed
- * data model: a MemberRun needs Wave + Team + runtime context, while a
+ * data model: a MemberRun needs Mission + Team + runtime context, while a
  * AgentMembership needs availability + capabilities. Callers decide that
  * composition without teaching this primitive either object's semantics.
  */
@@ -52,7 +52,7 @@ export function ContextRail({
 }
 
 /** A rail module with optional disclosure. Modules are intentionally small,
- * so a page can compose Wave / Team / Member / Runtime context in priority
+ * so a page can compose Mission / Team / Member / Runtime context in priority
  * order instead of forcing another tab bar. */
 export function ContextModule({
   title,

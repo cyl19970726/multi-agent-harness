@@ -1,9 +1,21 @@
 # Schemas
 
+## Current Mission coordination model
+
 | Object | Schema |
 | --- | --- |
 | Mission | [mission.schema.json](mission.schema.json) |
-| Wave | [wave.schema.json](wave.schema.json) |
+| Mission log entry | Implemented append-only store record (`MissionLogEntry`); no standalone JSON Schema is currently required by schema generation or fixture validation |
+
+Mission is the only current lifecycle object in this pair. Host judgment,
+replanning, recovery, and closeout evidence are appended as immutable
+`MissionLogEntry` records. Do not create a second lifecycle object or infer a
+write contract from a historical compatibility schema.
+
+## Current schema registry
+
+| Object | Schema |
+| --- | --- |
 | Agent team | [agent-team.schema.json](agent-team.schema.json) |
 | Durable Agent member identity | [agent-member.schema.json](agent-member.schema.json) |
 | Agent team run | [agent-team-run.schema.json](agent-team-run.schema.json) |
@@ -42,6 +54,17 @@
 | Doc descriptor | [doc-descriptor.schema.json](doc-descriptor.schema.json) |
 | Local AgentFirm RoleViews | [role-views/agentfirm.role_views.v1](role-views/agentfirm.role_views.v1) |
 | Role action manifest | [role-views/role-action-manifest.v1.json](role-views/role-action-manifest.v1.json) |
+
+## Legacy historical compatibility
+
+| Object | Schema | Authority |
+| --- | --- | --- |
+| Wave | [wave.schema.json](wave.schema.json) | ADR 0051 and earlier historical rows only; read/export compatibility, never a new write, lifecycle transition, or gate |
+
+The Wave schema and fixtures remain validated so old rows can be read and
+exported without data loss. Their presence does not make Wave part of the
+current AgentFirm model. Likewise, `Mission.wave_ids` is deprecated and
+read-only: current Mission writers omit it and use Mission Log entries.
 
 Schemas in this directory are generic. Project-specific artifacts should live
 in an adapter package or example directory.

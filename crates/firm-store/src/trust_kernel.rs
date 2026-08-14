@@ -7351,7 +7351,7 @@ mod tests {
                         context: String::new(),
                         desired_outcome: None,
                         status: firm_core::MissionStatus::Running,
-                        wave_ids: Vec::new(),
+                        legacy_wave_ids: Vec::new(),
                         outcome_summary: None,
                         completed_by: None,
                         created_at: "t1".into(),

@@ -10,16 +10,15 @@
 //! - `initialize` → protocolVersion / capabilities / serverInfo handshake.
 //! - `notifications/initialized` (and any other notification) → no response.
 //! - `ping` → `{}`.
-//! - `tools/list` → Mission/Wave authoring plus Agent Team tools.
+//! - `tools/list` → Mission / Mission Log authoring plus Agent Team tools.
 //! - `tools/call` → `{content:[{type:"text",text:<result JSON>}], isError}`.
 //! - unknown method → JSON-RPC -32601. stdin EOF exits.
 
 use std::io::{BufRead, Write};
 
 use harness_core::{
-    TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus, TeamSupervisorLeaseStatus,
-    WaveStatus, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition,
-    WorkPhase, WorkPriority,
+    TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus, TeamSupervisorLeaseStatus, Work,
+    WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition, WorkPhase, WorkPriority,
 };
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
@@ -32,10 +31,9 @@ use crate::{
     interrupt_team_member_value, latest_member_runs_in_append_order,
     latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
     mutate_team_work_value, now_string, reconcile_team_work_delivery_value, rename_team_run_member,
-    reopen_team_member_value, reopened_member_requires_supervisor_start, retired_wave_write_error,
-    revise_mission_context, serde_snake_label, steer_team_member_value,
-    team_member_specs_from_definition, team_run_board_summary_text, team_run_inbox,
-    team_run_mission_id, team_run_wave_index, transition_team_run,
+    reopen_team_member_value, reopened_member_requires_supervisor_start, revise_mission_context,
+    serde_snake_label, steer_team_member_value, team_member_specs_from_definition,
+    team_run_board_summary_text, team_run_inbox, team_run_mission_id, transition_team_run,
     visible_member_actions_in_append_order, work_operation_cursors, ResolvedStore, TeamMemberSpec,
 };
 
@@ -54,27 +52,10 @@ fn team_dashboard_url(store: &HarnessStore, resolved: &ResolvedStore, team_run_i
     let mission_id = run
         .as_ref()
         .and_then(|run| team_run_mission_id(store, run).ok());
-    let current_wave_id = mission_id.as_deref().and_then(|mission_id| {
-        let mut waves = store.latest_waves().ok()?;
-        waves.retain(|wave| wave.mission_id == mission_id);
-        waves.sort_by_key(|wave| wave.index);
-        waves
-            .iter()
-            .find(|wave| {
-                matches!(
-                    wave.status,
-                    WaveStatus::Running | WaveStatus::Waiting | WaveStatus::Blocked
-                )
-            })
-            .or_else(|| waves.iter().find(|wave| wave.status == WaveStatus::Planned))
-            .or_else(|| waves.last())
-            .map(|wave| wave.id.clone())
-    });
-    let context = match (mission_id.as_deref(), current_wave_id.as_deref()) {
-        (Some(mission_id), Some(wave_id)) => format!("&mission={mission_id}&wave={wave_id}"),
-        (Some(mission_id), None) => format!("&mission={mission_id}"),
-        _ => String::new(),
-    };
+    let context = mission_id
+        .as_deref()
+        .map(|mission_id| format!("&mission={mission_id}"))
+        .unwrap_or_default();
     let mut selectors = String::new();
     if let Some(space) = resolved.execution_space_context.as_ref() {
         selectors.push_str("&space=");
@@ -172,11 +153,6 @@ pub(crate) fn call_tool(
         "mission_update_context" => tool_mission_update_context(store, &arguments),
         "mission_close" => tool_mission_close(store, &arguments),
         "mission_list" => tool_mission_list(store),
-        "wave_create" => tool_wave_create(store, &arguments),
-        "wave_update" => tool_wave_update(store, &arguments),
-        "wave_advance" => tool_wave_advance(store, &arguments),
-        "wave_list" => tool_wave_list(store, &arguments),
-        "wave_gate" => tool_wave_gate(store, &arguments),
         "team_run_create" => tool_team_run_create(store, resolved, &arguments),
         "team_run_add_member" => tool_team_run_add_member(store, resolved, &arguments),
         "team_run_work_list" => tool_team_run_work_list(store, &arguments),
@@ -910,10 +886,35 @@ fn tool_team_run_reopen_member(
 }
 
 fn tool_team_run_answer_message(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    reject_unknown_arguments(
+        arguments,
+        "team_run_answer_message",
+        &["team_run_id", "message_id", "option_id", "response_text"],
+    )?;
     let team_run_id = required_str(arguments, "team_run_id")?;
     let message_id = required_str(arguments, "message_id")?;
-    answer_provider_message_value(store, team_run_id, message_id, arguments)
-        .map_err(|error| error.to_string())
+    let actor_kind_raw = std::env::var("AGENTFIRM_MCP_ACTOR_KIND")
+        .map_err(|_| "MCP transport is missing AGENTFIRM_MCP_ACTOR_KIND".to_string())?;
+    let actor_id = std::env::var("AGENTFIRM_MCP_ACTOR_ID")
+        .map_err(|_| "MCP transport is missing AGENTFIRM_MCP_ACTOR_ID".to_string())?;
+    let actor_kind = agentfirm_api::parse_actor_kind(&actor_kind_raw)
+        .ok_or_else(|| "AGENTFIRM_MCP_ACTOR_KIND is invalid".to_string())?;
+    let body = serde_json::json!({
+        "option_id": arguments.get("option_id").cloned().unwrap_or(Value::Null),
+        "response_text": arguments.get("response_text").cloned().unwrap_or(Value::Null),
+    });
+    answer_provider_message_value(
+        store,
+        team_run_id,
+        message_id,
+        &body,
+        &harness_core::agentfirm_api::ActorRef {
+            kind: actor_kind,
+            id: actor_id,
+        },
+        "mcp_transport",
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn tool_team_run_start(
@@ -1016,46 +1017,15 @@ fn tool_mission_list(store: &HarnessStore) -> Result<Value, String> {
         .map_err(|error| error.to_string())?))
 }
 
-/// Wave write tools retired by the ADR 0051 Mission Log cutover — see
-/// `crate::retired_wave_write_error`, the single source of truth this
-/// mirrors across CLI, HTTP, and MCP so no surface keeps a live Wave-write
-/// path. `wave_list` (below) stays: historical Wave rows remain readable.
-fn tool_wave_create(_store: &HarnessStore, _arguments: &Value) -> Result<Value, String> {
-    Err(retired_wave_write_error("create").to_string())
-}
-
-fn tool_wave_list(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    let mission_id = optional_str(arguments, "mission_id")?;
-    Ok(json!(store
-        .latest_waves()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .filter(|wave| mission_id.as_deref().is_none_or(|id| wave.mission_id == id))
-        .collect::<Vec<_>>()))
-}
-
-fn tool_wave_update(_store: &HarnessStore, _arguments: &Value) -> Result<Value, String> {
-    Err(retired_wave_write_error("update").to_string())
-}
-
-fn tool_wave_advance(_store: &HarnessStore, _arguments: &Value) -> Result<Value, String> {
-    Err(retired_wave_write_error("advance").to_string())
-}
-
-fn tool_wave_gate(_store: &HarnessStore, _arguments: &Value) -> Result<Value, String> {
-    Err(retired_wave_write_error("gate").to_string())
-}
-
 /// `team_run_create` — journal a new run, idle members, and explicit initial Works.
 fn tool_team_run_create(
     store: &HarnessStore,
     resolved: &ResolvedStore,
     arguments: &Value,
 ) -> Result<Value, String> {
-    if arguments.get("wave_index").is_some() {
+    if arguments.get("wave_index").is_some() || arguments.get("wave_id").is_some() {
         return Err(
-            "wave_index was retired; supply wave_id and derive order from the native Wave"
-                .to_string(),
+            "wave_id and wave_index are Legacy-only and cannot create a current TeamRun; supply agent_team_id and derive Mission through AgentTeam".to_string(),
         );
     }
     let objective = required_str(arguments, "objective")?;
@@ -1140,7 +1110,6 @@ fn tool_team_run_create(
         "team_run_id": created.team_run.id,
         "member_run_ids": created.team_run.member_run_ids,
         "mission_id": team_run_mission_id(store, &created.team_run).map_err(|error| error.to_string())?,
-        "wave_id": null,
         "execution_root": created.team_run.execution_root,
         "member_runs": created.member_runs,
         "works": created.works,
@@ -1203,7 +1172,6 @@ fn tool_team_run_add_member(
         team_run_id,
         &member,
         initial_work.as_deref(),
-        optional_str(arguments, "source_plan_ref")?,
     )
     .map_err(|error| error.to_string())?;
     Ok(json!({
@@ -1268,12 +1236,10 @@ fn tool_team_run_list(store: &HarnessStore, arguments: &Value) -> Result<Value, 
     Ok(Value::Array(
         runs.iter()
             .map(|run| {
-                let wave_index = team_run_wave_index(store, run).ok().flatten();
                 json!({
                     "id": run.id,
                     "objective": run.objective,
                     "status": run.status,
-                    "wave_index": wave_index,
                     "member_count": run.member_run_ids.len(),
                     "project_binding_id": run.project_binding_id,
                     "created_at": run.created_at,
@@ -1294,7 +1260,6 @@ fn tool_team_run_status(
 ) -> Result<Value, String> {
     let id = required_str(arguments, "team_run_id")?;
     let run = latest_team_run(store, id).map_err(|error| error.to_string())?;
-    let wave_index = team_run_wave_index(store, &run).map_err(|error| error.to_string())?;
     let member_runs: Vec<_> = latest_member_runs_in_append_order(store)
         .map_err(|error| error.to_string())?
         .into_iter()
@@ -1331,7 +1296,6 @@ fn tool_team_run_status(
     });
     Ok(json!({
         "team_run": run,
-        "wave_index": wave_index,
         "members": members,
         "unacked_messages": unacked_messages,
         "supervisor": {
@@ -1404,7 +1368,7 @@ fn tool_team_run_events(store: &HarnessStore, arguments: &Value) -> Result<Value
     Ok(json!(events))
 }
 
-/// Mission/Wave authoring plus Agent Team tools. Descriptions ARE the interface
+/// Mission / Mission Log authoring plus Agent Team tools. Descriptions ARE the interface
 /// contract — the host model reads them to decide how to call each tool.
 fn tool_definitions() -> Value {
     json!([
@@ -1476,7 +1440,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "mission_close",
-            "description": "Complete a Mission with an explicit outcome. Completed Missions are immutable; linked Team lifecycle is unchanged. Wave gate acceptance is no longer required (ADR 0051) — record a closeout_evidence Mission Log entry beforehand by convention.",
+            "description": "Complete a Mission with an explicit outcome. Completed Missions are immutable; linked Team lifecycle is unchanged. Legacy history never gates a new Mission; record a closeout_evidence Mission Log entry beforehand by convention.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1491,75 +1455,6 @@ fn tool_definitions() -> Value {
             "name": "mission_list",
             "description": "List latest native Mission rows.",
             "inputSchema": {"type": "object", "properties": {}}
-        },
-        {
-            "name": "wave_create",
-            "description": "Retired by the ADR 0051 Mission Log cutover; always returns an error. Use `mission_log_append`-equivalent CLI (`harness mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <markdown>`) instead.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string"},
-                    "mission_id": {"type": "string"},
-                    "index": {"type": "integer", "minimum": 1, "description": "Optional explicit order; next order is selected when omitted."},
-                    "title": {"type": "string"},
-                    "objective": {"type": "string"},
-                    "executor_kind": {"type": "string", "enum": ["agent_team", "dynamic_workflow", "host"]},
-                    "exit_criteria": {"type": "string"},
-                    "plan_note": {"type": "string"}
-                    ,"context": {"type": "string", "description": "Host operational memo in Markdown."}
-                    ,"updated_by": {"type": "string", "description": "Defaults to host."}
-                },
-                "required": ["mission_id", "title", "objective"]
-            }
-        },
-        {
-            "name": "wave_update",
-            "description": "Retired by the ADR 0051 Mission Log cutover; always returns an error. Use `harness mission log append` instead.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "wave_id": {"type": "string"},
-                    "context": {"type": "string", "minLength": 1},
-                    "updated_by": {"type": "string", "description": "Defaults to host."}
-                },
-                "required": ["wave_id", "context"]
-            }
-        },
-        {
-            "name": "wave_advance",
-            "description": "Retired by the ADR 0051 Mission Log cutover; always returns an error. Use `harness mission log append` instead.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "wave_id": {"type": "string"},
-                    "outcome": {"type": "string", "minLength": 1},
-                    "advanced_by": {"type": "string", "description": "Defaults to host."},
-                    "artifact_refs": {"type": "array", "items": {"type": "string"}}
-                },
-                "required": ["wave_id", "outcome"]
-            }
-        },
-        {
-            "name": "wave_list",
-            "description": "List latest native Wave rows, optionally limited to one Mission.",
-            "inputSchema": {"type": "object", "properties": {"mission_id": {"type": "string"}}}
-        },
-        {
-            "name": "wave_gate",
-            "description": "Retired by the ADR 0051 Mission Log cutover; always returns an error. An append-only Mission Log has no gate — use `harness mission log append` instead.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "wave_id": {"type": "string"},
-                    "status": {"type": "string", "enum": ["accepted", "revise", "blocked"]},
-                    "run_id": {"type": "string", "description": "Required when status is accepted."},
-                    "accepted_by": {"type": "string", "description": "Defaults to host."},
-                    "note": {"type": "string"},
-                    "outcome": {"type": "string", "description": "Required when status is accepted."},
-                    "artifact_refs": {"type": "array", "items": {"type": "string"}}
-                },
-                "required": ["wave_id", "status"]
-            }
         },
         {
             "name": "team_run_create",
@@ -1714,13 +1609,12 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_add_member",
-            "description": "Add one idle member to an active planning/running/waiting TeamRun and optionally create a first Work. source_plan_ref is Host-plan provenance only.",
+            "description": "Add one idle member to an active planning/running/waiting TeamRun and optionally create a first Work.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "team_run_id": {"type": "string"},
                     "initial_work": {"type": "string", "minLength": 1},
-                    "source_plan_ref": {"type": "string", "description": "Optional Host-plan provenance only."},
                     "member": {
                         "type": "object",
                         "properties": {
@@ -1803,7 +1697,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_list",
-            "description": "List team runs in the store (latest projection, append order). One Execution Space store holds every tenant bound to it, so pass project_binding_id to see only one project's runs and status to drop finished ones. wave_index is derived by joining wave_id to the native Wave and is null when unresolved.",
+            "description": "List team runs in the store (latest projection, append order). One Execution Space store holds every tenant bound to it, so pass project_binding_id to see only one project's runs and status to drop finished ones. Mission is derived through AgentTeam; Legacy Wave rows never participate.",
             "inputSchema": {"type": "object", "properties": {
                 "project_binding_id": {"type": "string", "description": "Return only runs bound to this project."},
                 "status": {"type": "string", "description": "Return only runs in this status, for example running."}
@@ -1874,7 +1768,6 @@ fn tool_definitions() -> Value {
                     "work_id": {"type": "string", "description": "Optional Work discussed by this message. It must belong to the same TeamRun."},
                     "correlation_id": {"type": "string", "description": "Optional existing conversation correlation to reuse."},
                     "causation_id": {"type": "string", "description": "Optional earlier TeamMessageProjection id in this team run. When paired with correlation_id, it must carry that same correlation."}
-                    ,"source_plan_ref": {"type": "string", "description": "Optional Host-plan provenance only; never a lifecycle boundary."}
                     ,"response_intent": {"type": "string", "enum": ["informational", "response_required"], "description": "Explicit response intent (ADR 0046 §4). Omit for the kind+sender default: handoff/control always require a response round; ordinary message mail from the coordination plane (host/operator/service) requires one too, while peer member-to-member message mail stays informational and never starts a provider round on its own."}
                 },
                 "required": ["team_run_id", "sender_runtime_id", "recipient_runtime_ids", "kind", "body"]
@@ -1900,17 +1793,16 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_answer_message",
-            "description": "Answer a provider-originated correlated Message. The response is another strict correlated Message, atomically ACKs the request, and enters the provider only through an Inject delivery. Questions/reviews require host|lead, unknown requests operator|human, and tool/reject-only requests policy.",
+            "description": "Answer a provider-originated correlated question or plan-review Message as the authenticated AgentTeam Host. The exact response Message is durably published before the request delivery is ACKed, so an exact retry can recover a crash between those writes without duplicating the answer.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "team_run_id": {"type": "string"},
                     "message_id": {"type": "string"},
                     "option_id": {"type": "string", "description": "Exact option id exposed by the provider message."},
-                    "response_text": {"type": "string", "description": "Free-form response when the provider contract supports it."},
-                    "resolved_by": {"type": "string", "enum": ["host", "lead", "operator", "human", "policy"]}
+                    "response_text": {"type": "string", "description": "Free-form response only when the provider request exposes no exact options."}
                 },
-                "required": ["team_run_id", "message_id", "resolved_by"]
+                "required": ["team_run_id", "message_id"]
             }
         },
         {

@@ -15,8 +15,9 @@ becoming a second transcript database.
 
 This contract defines the adapter seam between:
 
-- Harness coordination truth (`Mission`, `Wave`, `AgentTeamRun`, `MemberRun`,
-  assignments, interactions, outcomes, artifact/check refs, gates); and
+- Harness coordination truth (`Mission`, append-only `MissionLogEntry`,
+  `AgentTeamRun`, `MemberRun`, Work, messages, interactions, outcomes, and
+  artifact/check refs); and
 - provider-native execution truth (chat, tools, commands, file events, turns,
   native children, and resume data).
 
@@ -105,7 +106,7 @@ coordination boundary:
 | member explains or coordinates with another actor | Work-linked `TeamMessage` |
 | member/Host declares an outcome | explicit outcome summary + refs |
 | file/check/result supports acceptance | artifact/check reference, optionally hash |
-| Host judges the current plan | Wave decision/update with outcome and refs |
+| Host judges, replans, recovers, or closes out | append-only Mission Log entry with outcome and refs |
 
 The same text may exist in both systems only when a Human/Lead deliberately
 promotes it into a coordination object. Automatic copying is prohibited.
@@ -114,7 +115,7 @@ promotes it into a coordination object. Automatic copying is prohibited.
 
 ```text
 GET Harness Team/Member projection
-  -> Mission/Wave/TeamRun/MemberRun/Work/WorkDelivery/messages/interactions/outcome/gate
+  -> Mission/MissionLogEntry/TeamRun/MemberRun/Work/WorkDelivery/messages/interactions/outcome
 
 GET authenticated AgentWorkspace for exact AgentIdentity
   -> provider adapter probe

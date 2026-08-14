@@ -133,7 +133,7 @@ Ordinary messages never interrupt a busy turn. A real `Steer` is a separate
 control request and uses `turn/steer` only when the snapshotted mode supports
 it. `Interrupt` uses `turn/interrupt` and waits for acknowledgement. `Close`
 ends the app-server runtime; it is not a message and is not implied by turn,
-TeamRun, Wave or Mission completion.
+Mission Log append, TeamRun completion, or Mission completion.
 
 ## Envelope
 
@@ -141,7 +141,7 @@ Each delivered turn includes the smallest stable coordination envelope:
 
 ```text
 project_id
-mission_id (derived from AgentTeam) / source_plan_ref? (navigation only)
+mission_id (derived from AgentTeam)
 agent_team_id / execution_node_id
 team_run_id
 member_run_id

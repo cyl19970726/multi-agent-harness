@@ -1,8 +1,8 @@
 # Agent Workbench
 
 The Agent Workbench is the operator UI for Star Harness. Its job is to make
-Mission/Wave Host planning, each Mission's flat AgentTeam, shared Works, execution state,
-artifacts, advance decisions, and capability gaps inspectable
+Mission planning and append-only Log, each Mission's flat AgentTeam, shared
+Works, execution state, artifacts, Host decisions, and capability gaps inspectable
 without raw JSON or duplicated provider transcripts.
 
 `Agent Workbench` is the product name. `Agent Dashboard` remains a compatibility
@@ -12,34 +12,34 @@ module/path name in `apps/agent-dashboard`, snapshots, and commands.
 
 ```text
 Mission
-  -> ordered Host-plan Wave
+  -> append-only Mission Log (Host judgment / replan / recovery / closeout)
   -> one flat AgentTeam -> Team/Node/Project-fenced TeamRun
       -> shared Works -> Member execution
   -> Dynamic Workflow | Host work
   -> observable actions/messages/artifacts/outcome
-  -> explicit Host Wave advance
-  -> next Wave or Mission closeout
+  -> explicit Host judgment
+  -> plan adjustment, recovery, or Mission closeout
 ```
 
 The Workbench must not require or introduce a dependency graph for Mission,
-Wave, or Agent Team. Retired coordination pages are not part of active
+Mission Log, or Agent Team. Retired coordination pages are not part of active
 navigation or authoring. Agent Teams navigation lists Mission-owned Teams and
-their runs; Mission Canvas shows only its owning Team.
+their runs; Mission Detail shows only its owning Team.
 
 ## Key Questions
 
 | Question | Workbench answer |
 | --- | --- |
 | What durable outcome are we pursuing? | Mission header with Markdown context, status, owning Team, and closeout summary. |
-| What should happen next? | Ordered Wave list with full Host context, revision, carry-over, outcome, and next action. |
-| Which execution is active? | Mission-owned TeamRuns, Workflows, and Host work with honest native status; Wave does not own them. |
+| What should happen next? | Latest Mission Log judgment with context, cited Work, outcome, and next action. |
+| Which execution is active? | Mission-owned TeamRuns, Workflows, and Host work with honest native status; Log entries do not own them. |
 | Who owns Agent Team work? | Work owner, status, readiness, WorkDelivery receipt, submission, and review state. |
 | Which service owns the live Team? | Machine NodeDaemon generation plus its parent-fenced Team Supervisor generation, heartbeat, loopback locator, reconnect state, and control availability. |
 | Who sent this message? | Typed Host, Member, stable Agent, Operator, or Service identity; UI never infers authorship from display text. |
 | What is each member doing? | Provider/model, lifecycle, current explicit action, pressure, heartbeat, and blockers. |
 | What did a Dynamic Workflow produce? | Workflow steps, artifact manifests, typed result/verdict, and patch state. |
 | What did the Host do directly? | Observable actions, artifacts, and outcome without invented child ownership. |
-| What needs the user? | Authorization, blocker, failed delivery, budget, retry, and Host Wave-decision alerts. |
+| What needs the user? | Authorization, blocker, failed delivery, budget, retry, and Host-decision alerts. |
 | Can I trust the view? | Capability gaps are explicit; unsupported joins are never fabricated. |
 
 ## Information Architecture
@@ -48,22 +48,22 @@ their runs; Mission Canvas shows only its owning Team.
 flowchart TD
   Missions[Mission list]
   Mission[Mission detail]
-  Waves[Ordered Wave timeline]
+  Log[Mission Log]
   Team[Agent Team war room]
   Works[Works Kanban and list]
   Workflow[Dynamic Workflow run]
   Host[Host execution summary]
   Member[Member detail]
   Artifacts[Artifacts and outcomes]
-  Decision[Host judgment and Wave advance]
+  Decision[Host judgment / replan / recovery / closeout]
   Warnings[Approvals and warnings]
 
   Missions --> Mission
-  Mission --> Waves
+  Mission --> Log
   Mission --> Team
-  Waves -. context .-> Team
-  Waves -. context .-> Workflow
-  Waves -. context .-> Host
+  Log -. context .-> Team
+  Log -. context .-> Workflow
+  Log -. context .-> Host
   Team --> Member
   Team --> Works
   Works --> Member
@@ -71,7 +71,7 @@ flowchart TD
   Workflow --> Artifacts
   Host --> Artifacts
   Artifacts --> Decision
-  Decision --> Waves
+  Decision --> Log
   Team --> Warnings
   Workflow --> Warnings
 ```
@@ -81,14 +81,14 @@ flowchart TD
 | View | Purpose | Safe actions |
 | --- | --- | --- |
 | Mission list | Find active, blocked, completed, and proposed Missions. | create/open Mission |
-| Mission detail | Read durable context, its one Team, ordered Host-plan Waves, and outcome. | create Team, append Mission Log, close |
-| Wave timeline | Compare Host plan revisions, carry-over, evidence, and advance outcomes. | update/advance Wave, open linked execution |
-| Agent Team | Operate one Mission-owned, single-Node TeamRun that may span Host-plan Waves. | create/assign/claim/review Works, delegate, message, inspect runtime, add/close/resume members |
+| Mission detail | Read durable context, its one Team, append-only Mission Log, and outcome. | append Mission Log, close |
+| Mission Log | Read Host judgments, replans, recovery, cited evidence, and closeout in order. | append judgment/replan/recovery/closeout entry, open linked execution |
+| Agent Team | Operate one Mission-owned, single-Node TeamRun across Mission plan changes. | create/assign/claim/review Works, delegate, message, inspect runtime, add/close/resume members |
 | Works | Inspect assigned, unassigned, ready, active, blocked, review, done, and child Work without reading chat. | create, assign, claim, start, block, submit, request changes, accept, release, cancel, delegate |
 | Member detail | Inspect one MemberRun lane, My Works, ready pool, mailbox, native-session locator, and actions. | claim/start/submit Work, message, inspect, interrupt/close/resume when supported |
 | Dynamic Workflow | Inspect one WorkflowRun and its steps/artifacts/patches. | apply/reject patch, cite result from Host plan |
 | Host execution | Show direct Host outcome and optional observed delegation. | attach artifact/outcome |
-| Warnings/approvals | Surface unsafe or incomplete state. | approve/reject, retry, clarify, revise Wave |
+| Warnings/approvals | Surface unsafe or incomplete state. | approve/reject, retry, clarify, record Mission judgment |
 
 ## Agent Team Proof
 
@@ -100,7 +100,7 @@ Mission -> one AgentTeam -> AgentTeamRun(agent_team_id, execution_node_id, proje
   -> MemberRun + native session execution
   -> optional Work-linked TeamMessages
   -> artifacts + outcome
-Wave -. Host plan / optional origin metadata .-> Work or outcome
+MissionLogEntry -. Host judgment / optional origin metadata .-> Work or outcome
 ```
 
 Assignment and claim are Work operations. WorkDelivery records the exact Work
@@ -113,7 +113,7 @@ submission, and acceptance as separate facts.
 
 | Workbench need | Required contract |
 | --- | --- |
-| Mission/Wave | ids, Mission status/context, ordered Wave index, Markdown context, revision, Host outcome/advance |
+| Mission/Log | Mission id/status/context plus ordered append-only Log entries with kind, Markdown body, actor/time, citations, and closeout |
 | Executions | frozen TeamRun/WorkflowRun ids, status, lineage, outcomes, and explicit Mission/context relations |
 | Team Works | Work id/version, owner, status, readiness, claim policy, blockers, parent/child, results, artifacts, and checks |
 | Work delivery | WorkEvent id, target MemberRun, claim, provider receipt/failure, invalidation, retry, and reconciliation; Work claim/start is the semantic responsibility acknowledgement |
@@ -123,7 +123,7 @@ submission, and acceptance as separate facts.
 | AgentMember mail | canonical TeamMessage plus MessageDelivery to the exact MemberRun generation |
 | Workflow | WorkflowRun/Step, artifacts, result/verdict, patch state |
 | Host path | observable artifact/outcome without fake controlled children |
-| Wave decision | Host outcome, actor/time, note, artifacts, and next-plan context |
+| Mission Log decision | Host outcome, actor/time, note, artifacts, and next-plan/recovery context |
 
 Fields that affect acceptance, authorization, or ownership belong in schemas
 and runtime contracts, not frontend-only state.
@@ -158,7 +158,7 @@ display-only and cannot be used to reconstruct an attempt.
 | Stale member | No recent explicit action/heartbeat for an active member. |
 | Path/permission conflict | Member action exceeds owned paths or permission ceiling. |
 | Missing outcome/artifact | Attempt claims completion without the gate's required result. |
-| Ambiguous accepted attempt | A Wave has retries but no single accepted run. |
+| Ambiguous accepted attempt | A Mission cites retries but no single accepted run. |
 | Durable thinking | A new runtime write persists thinking after the migration gate is enabled. |
 | Capability unavailable | Provider, hook, delegation observation, or control action is unsupported. |
 
@@ -182,13 +182,13 @@ exists yet.
 
 Workbench acceptance requires fixtures plus at least one live Mission showing:
 
-1. ordered Waves without a legacy dependency graph;
+1. Mission context plus append-only Mission Log without a legacy dependency graph;
 2. the Mission's flat AgentTeam and a Team/Node/Project-fenced TeamRun with
    assigned, unassigned, claimed, delivered, reviewed, and child Work data;
 3. at least one independent WorkflowRun/Host-work projection or an explicit
    unsupported-state fixture;
-4. preserved terminal run history without making a Wave own the run;
-5. artifacts/outcome and an explicit Host Wave decision;
+4. preserved terminal run history without making a Log entry own the run;
+5. artifacts/outcome and an explicit Host Mission Log decision;
 6. authorization and failed-delivery alerts;
 7. honest correlation and provider capability degradation;
 8. no new thinking in durable snapshots after the transient migration;
@@ -200,8 +200,8 @@ Workbench acceptance requires fixtures plus at least one live Mission showing:
 
 ## Invariants
 
-1. Mission/Wave is the primary product navigation.
-2. A Wave never requires a legacy dependency graph.
+1. Mission is the primary product navigation; Mission Log is its judgment history.
+2. A Mission Log entry is append-only and never owns lifecycle or execution.
 3. Executor-specific semantics remain visible rather than collapsed.
 4. Agent Team ownership starts with an atomic Work assignment or claim and its
    WorkEvent, never a Message or an unversioned display-only assignee field.

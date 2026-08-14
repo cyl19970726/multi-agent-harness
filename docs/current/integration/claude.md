@@ -53,7 +53,7 @@ per MemberRun and exchanges NDJSON control frames over stdio.
 
 ```text
 Harness Host process
-  ├─ durable Mission / Wave / TeamMessage / MemberRun
+  ├─ durable Mission / Mission Log / TeamMessage / MemberRun
   ├─ durable Team Supervisor lease + delivery claims
   ├─ process-local SDK control handles owned by that generation
   └─ Claude member runner
@@ -255,8 +255,9 @@ Harness-owned transcript or lifecycle.
 
 ## Account capacity and runtime context
 
-A reviewed adapter version does not mean the account can execute. Wave 2 proved
-the gap: local auth metadata reported logged-in while the SDK returned
+A reviewed adapter version does not mean the account can execute. The
+pre-ADR-0051 development batch named **Wave 2** proved the gap: local auth
+metadata reported logged-in while the SDK returned
 `403 Request not allowed`, because the Harness process had no `HTTP(S)_PROXY`
 and this host's direct egress is blocked; the identical request succeeded
 through the proxy (`apps/claude-member-runner/FINDINGS.md` §F).
@@ -322,6 +323,10 @@ cargo test -p firm-cli --test claude_agent_sdk_member
 cargo test -p firm-cli
 npx pnpm@9.15.4 acceptance:mission-wave
 ```
+
+`acceptance:mission-wave` is a compatibility script basename. Its current
+contract covers Mission, append-only Mission Log, and Legacy Wave read-only
+behavior; it does not make Wave a current runtime object.
 
 Minimum live canary:
 

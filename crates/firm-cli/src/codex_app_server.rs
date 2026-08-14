@@ -25,9 +25,6 @@ use crate::{kill_worker_tree, CliError, CliResult};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const READER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
-const DEVELOPMENT_SANDBOX: &str = "danger-full-access";
-const DEVELOPMENT_APPROVAL_POLICY: &str = "never";
-
 /// Reviewed app-server RPCs used by the capacity preflight. Both are reads;
 /// neither opens, resumes, or names a thread.
 pub(crate) const ACCOUNT_READ_METHOD: &str = "account/read";
@@ -154,11 +151,11 @@ pub(crate) struct CodexAppServerSpawnOptions<'a> {
     pub(crate) member_name: &'a str,
     pub(crate) collaboration_env: &'a [(String, String)],
     pub(crate) plan_mode: bool,
-    /// NodeDaemon-owned AgentSessions pass the frozen AgentIdentity ceiling
-    /// here. Team-runtime callers may omit both to retain their separately
-    /// governed development policy.
-    pub(crate) sandbox: Option<&'a str>,
-    pub(crate) approval_policy: Option<&'a str>,
+    /// Exact provider-native enforcement derived from the frozen
+    /// AgentSession. These are required: the transport must never invent a
+    /// broader development fallback when its caller forgets the mapping.
+    pub(crate) sandbox: &'a str,
+    pub(crate) approval_policy: &'a str,
 }
 
 impl CodexAppServerClient {
@@ -167,9 +164,6 @@ impl CodexAppServerClient {
         // capacity preflight deliberately stops after this call.
         let mut client = Self::connect(cwd, options.collaboration_env)?;
         client.collaboration_mode = if options.plan_mode { "plan" } else { "default" };
-        // Temporary development policy: interactive Agent Team members receive
-        // the same full execution permission as batch Codex members. Owned paths
-        // remain a coordination/acceptance boundary, not a provider sandbox.
         let method = if options.resume_thread_id.is_some() {
             "thread/resume"
         } else {
@@ -181,10 +175,8 @@ impl CodexAppServerClient {
             options.reasoning_effort,
             options.service_tier,
             options.resume_thread_id,
-            options.sandbox.unwrap_or(DEVELOPMENT_SANDBOX),
-            options
-                .approval_policy
-                .unwrap_or(DEVELOPMENT_APPROVAL_POLICY),
+            options.sandbox,
+            options.approval_policy,
         );
         let response = client.request_blocking(method, params, HANDSHAKE_TIMEOUT)?;
         client.thread_id = response
@@ -857,18 +849,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_thread_uses_temporary_full_access_policy() {
+    fn new_thread_uses_the_explicit_frozen_permission_mapping() {
         let params = thread_open_params(
             Path::new("/tmp/project"),
             Some("gpt-test"),
             Some("max"),
             Some("priority"),
             None,
-            DEVELOPMENT_SANDBOX,
-            DEVELOPMENT_APPROVAL_POLICY,
+            "workspace-write",
+            "never",
         );
 
-        assert_eq!(params["sandbox"], "danger-full-access");
+        assert_eq!(params["sandbox"], "workspace-write");
         assert_eq!(params["approvalPolicy"], "never");
         assert_eq!(params["ephemeral"], false);
         assert_eq!(params["config"]["model_reasoning_effort"], "max");
@@ -877,18 +869,18 @@ mod tests {
     }
 
     #[test]
-    fn resumed_thread_keeps_temporary_full_access_policy() {
+    fn resumed_thread_keeps_the_explicit_frozen_permission_mapping() {
         let params = thread_open_params(
             Path::new("/tmp/project"),
             Some("gpt-test"),
             Some("high"),
             Some("default"),
             Some("thread-123"),
-            DEVELOPMENT_SANDBOX,
-            DEVELOPMENT_APPROVAL_POLICY,
+            "read-only",
+            "never",
         );
 
-        assert_eq!(params["sandbox"], "danger-full-access");
+        assert_eq!(params["sandbox"], "read-only");
         assert_eq!(params["approvalPolicy"], "never");
         assert_eq!(params["threadId"], "thread-123");
         assert!(params.get("ephemeral").is_none());

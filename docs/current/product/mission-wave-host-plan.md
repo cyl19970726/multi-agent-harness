@@ -1,7 +1,7 @@
-# Mission, Host Plan Waves, And Agent Teams
+# Mission, Mission Log, And Agent Teams
 
 ```text
-status: canonical; Works cutover in progress; Wave retired for Host judgment (ADR 0051)
+status: canonical; filename retained for compatibility; Wave retired for Host judgment (ADR 0051)
 owner_role: product
 architecture: ADR 0034 + ADR 0037 + ADR 0050 + ADR 0051
 ```
@@ -62,7 +62,7 @@ passes; the interaction lane may carry into a later entry.
 
 ```bash
 firm mission log append --mission-id <id> --kind judgment \
-  --body "$(cat wave-1-judgment.md)"
+  --body "$(cat mission-judgment-1.md)"
 ```
 
 When the build lane completes but review is still running, the Host appends

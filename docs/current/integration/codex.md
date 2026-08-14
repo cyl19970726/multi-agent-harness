@@ -67,8 +67,8 @@ Close are different:
 - **Interrupt** requests `turn/interrupt`, waits for provider acknowledgement,
   and leaves the Member/native thread available for later mail.
 - **Close** ends the app-server process, freezes coordination, and retains the
-  same MemberRun/native thread for explicit Reopen. Wave advance, TeamRun
-  completion, or an empty mailbox never substitutes for Close.
+  same MemberRun/native thread for explicit Reopen. A Mission Log append,
+  TeamRun completion, or an empty mailbox never substitutes for Close.
 - **Reopen/Resume** increments the MemberRun runtime generation and uses the
   recorded native thread id with the provider's real
   `thread/resume` operation. Harness never reconstructs a session by replaying
@@ -113,8 +113,9 @@ adapter recorded a native provider receipt for that envelope; semantic
 understanding requires an explicit Work transition or conversational reply.
 
 When a turn completes, the Member returns to `idle` and the adapter
-keeps polling. Later mail starts one new turn on the same thread. Wave,
-TeamRun, and Mission completion do not stop that loop; only explicit Close does.
+keeps polling. Later mail starts one new turn on the same thread. Mission Log
+append, TeamRun completion, and Mission completion do not stop that loop; only
+explicit Close does.
 
 The complete message-selection and delivery contract is in
 [Codex Message Delivery](codex-message-delivery.md).

@@ -22,8 +22,8 @@ define whether the product works.
 ## Promise
 
 Star Harness should be able to develop and inspect itself through the same
-Mission/Wave, Agent Team, mailbox, native-session and lifecycle paths it offers
-to users. Dogfood therefore uses real persistent Provider members and normal
+Mission and Mission Log, Agent Team, mailbox, native-session and lifecycle paths
+it offers to users. Dogfood therefore uses real persistent Provider members and normal
 Host controls. Deterministic fixtures are the baseline, not a substitute for a
 live Provider claim.
 
@@ -34,7 +34,7 @@ known baseline
   -> real scenario
   -> native + Harness evidence
   -> Host triage
-  -> Repair Wave or tracked issue
+  -> repair judgment + tracked Work/issue
   -> rerun the original scenario
   -> regression matrix
   -> explicit closeout
@@ -46,7 +46,8 @@ external blocker with an owner and a reproducible resume condition.
 
 ## Run Charter
 
-Before starting members, the Host writes one Mission and the current Wave with:
+Before starting members, the Host writes one Mission and appends the current
+Host judgment to its Mission Log with:
 
 - the user-visible scenario and why it matters;
 - the Provider versions and exact Team execution modes under test;
@@ -57,9 +58,9 @@ Before starting members, the Host writes one Mission and the current Wave with:
 - the deterministic baseline and live evidence expected;
 - stop conditions, protected actions and rollback points.
 
-The Agent Team is linked to the Mission, not embedded in a Wave. Members keep
-their MemberRun, Work ownership, workspace and provider-native session
-when unfinished work carries into the next Wave.
+The Agent Team is linked to the Mission, not embedded in a planning tranche.
+Members keep their MemberRun, Work ownership, workspace and provider-native
+session when unfinished work carries across Mission Log entries.
 
 The trusted-development dogfood profile gives all three Provider members full
 execution access so ordinary tool authorization cannot silently stall an
@@ -82,6 +83,8 @@ npx pnpm@9.15.4 check:star-harness-plugin
 firm governance check
 ```
 
+The `acceptance:mission-wave` name is retained for compatibility; the current
+contract under test is Mission and Mission Log plus Legacy Wave read-only behavior.
 `review_required` is not rewritten as `current`. The Host either reviews that
 Provider in a dedicated lane or limits claims to exploratory evidence.
 
@@ -110,11 +113,11 @@ At minimum, a mixed-Team run exercises:
 - CLI and Dashboard reconstruction of the same coordination state.
 
 The Host may add a Repair Member or reviewer after observing a problem. It does
-not need to wait for unrelated work before advancing the Wave.
+not need to wait for unrelated work before appending the next judgment.
 
 ### 3. Preserve the right evidence
 
-Harness owns Mission, Wave, TeamRun, MemberRun/native-session binding,
+Harness owns Mission and Mission Log, TeamRun, MemberRun/native-session binding,
 WorkOperation/Work/WorkEvent, WorkDelivery, correlated TeamMessage,
 ACK, outcome and
 artifact/check references.
@@ -169,7 +172,7 @@ The Host classifies each finding:
 
 | Class | Host action |
 | --- | --- |
-| Product defect | Open a Repair Wave, assign an owner and preserve the failed attempt. |
+| Product defect | Append a repair judgment, open/assign tracked Work or an issue, and preserve the failed attempt. |
 | Provider/adapter drift | Keep `review_required`, isolate the Provider lane and run its review protocol. |
 | UX defect | Record the broken user journey and expected interaction; repair and recapture Actual evidence. |
 | Test or fixture defect | Fix the oracle before using it as acceptance evidence. |
@@ -199,16 +202,16 @@ context, use a Harness transcript mirror, or persist the Provider transcript.
 Record only the bounded diagnosis, native locator and Host action.
 
 Forensics is diagnosis, not the repair itself. After classification, the Host
-answers, steers, interrupts, resumes, reassigns or opens a Repair Wave through
-normal controls.
+answers, steers, interrupts, resumes, reassigns, or appends a repair judgment
+and opens tracked Work/issue through normal controls.
 
 ### 5. Repair without erasing the failure
 
-Create a new Wave when the Host changes plan, responsibility, risk or decision
-boundary. Use a new attempt or Repair Member/worktree for the fix; preserve the
-failed MemberRun and native session. A repair is accepted only after focused
-tests pass and the original user journey succeeds without a manual store edit
-or hidden fallback.
+Append a Mission Log entry before acting when the Host changes plan,
+responsibility, risk, or decision boundary. Use new tracked Work and, when
+useful, a Repair Member/worktree for the fix; preserve the failed MemberRun and
+native session. A repair is accepted only after focused tests pass and the
+original user journey succeeds without a manual store edit or hidden fallback.
 
 ### 6. Expand pressure gradually
 
@@ -241,8 +244,8 @@ A dogfood Mission may close only when:
 - no P0/P1 defect remains open;
 - remaining lower-risk defects have an issue, owner, severity, reproduction and
   retest condition;
-- the Host records explicit Wave outcomes, carry-over decisions and Mission
-  closeout;
+- the Host records explicit Mission Log outcomes, carry-over decisions and
+  Mission closeout;
 - the installed Harness/Plugin copy matches the accepted repository source.
 
 For a release baseline, run the critical live matrix twice from fresh member
@@ -267,7 +270,11 @@ mailbox, controls and native evidence. A Agent Membership may execute repeatedly
 through new MemberRuns; closing one runtime must not delete the Organization
 identity.
 
-## Agent Team Works v1 acceptance record (2026-08-03)
+## Historical Agent Team Works v1 acceptance record (2026-08-03)
+
+The following section is historical evidence from before ADR 0051. Its Wave
+identifier and Wave-advance claim describe what that run actually used; they
+are not current operating guidance.
 
 The bootstrap implementation was exercised by the product it introduces, not
 only by fixtures:
@@ -302,10 +309,11 @@ are idle and require either delegation or an explicit Lead-local justification.
 
 ## Closeout
 
-The final Wave summarizes:
+The final Mission Log `closeout_evidence` entry summarizes:
 
 - which scenarios passed and which Provider versions/modes were proven;
-- defects found, repair Waves, rerun results and remaining tracked risks;
+- defects found, repair judgments/Work/issues, rerun results and remaining
+  tracked risks;
 - evidence ids and native-session locators;
 - Plugin/Harness version installed for the run;
 - the next pressure scenario or why the Mission can close.

@@ -19,7 +19,7 @@ execution:
 
 ```text
 Mission
-  -> ordered Host-plan Wave
+  -> append-only Mission Log (Host judgment/replan/recovery/closeout)
   -> one flat AgentTeam -> AgentTeamRun
   -> MemberRun
        -> active Work + WorkDelivery
@@ -34,7 +34,7 @@ These layers answer different questions:
 | Layer | Question | Authority |
 | --- | --- | --- |
 | Mission | Why does the long-running work exist? | Harness |
-| Wave | What is the Host's current plan and judgment? | Harness |
+| Mission Log entry | What did the Host judge, replan, recover, or close out? | Harness |
 | Work | What result does this Member own and what is its state? | Harness `Work` + `WorkEvent` |
 | MemberRun | Which durable team participant owns the lane? | Harness |
 | Mailbox | What coordination has been sent, delivered and acknowledged? | Harness |
@@ -266,7 +266,7 @@ The Host:
 
 The Member:
 
-1. owns the Work across provider cycles and Host-plan Waves;
+1. owns the Work across provider cycles and Host replans recorded in the Mission Log;
 2. may use native planning, continuation and subagents within its permission
    and Workspace boundary;
 3. records block/submission through Work operations and communicates questions,

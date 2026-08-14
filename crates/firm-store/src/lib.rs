@@ -9,23 +9,23 @@ use firm_core::{
     content_hash_hex16, provider_interaction_response_id, AgentTeam, AgentTeamRun, Decision,
     DelegationRun, Evidence, ExecutionNode, ExecutionNodeStatus, Gap, GitHubLink, HostAttention,
     HostAttentionInbox, HostAttentionKind, HostAttentionStatus, HostBindingLease,
-    HostBindingLeaseOwnerKind, HostBindingLeaseStatus, MemberAction, MessageTerminalSource,
-    Mission, MissionLogEntry, MissionStatus, NodeDaemonLease, NodeDaemonLeaseStatus,
-    NodeProjectRegistration, NodeProjectRegistrationStatus, Proposal, ProviderChildThread,
-    ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
-    ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
-    ProviderCompatibilityStatus, ProviderDispatchIntent, ProviderExecutionStatus,
-    ProviderIntegrationProfile, ProviderInteractionRequestBody, ProviderInteractionResponseBody,
-    ProviderLaunchProfile, ProviderProcess, ProviderRuntimeProjection, ProviderWorkDispatch,
-    ProviderWorkDispatchStatus, ProviderWorkDispatchUpdate, RegistryDeliveryAttempt,
-    RegistryDeliveryStatus, RegistryMessage, Review, TeamActorKind, TeamDeliveryPolicy,
-    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection,
-    TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision,
-    Wave, WaveGateStatus, WaveStatus, Work, WorkClaimMode, WorkCommandContext, WorkCondition,
-    WorkConditionRecord, WorkDelegation, WorkDelegationEvent, WorkDelegationRevision,
-    WorkDelegationState, WorkDelegationTransition, WorkEvent, WorkEventKind, WorkEvidence,
-    WorkOperation, WorkOperationalDecision, WorkPhase, WorkRef, WorkReport, WorkResolution,
-    WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
+    HostBindingLeaseOwnerKind, HostBindingLeaseStatus, LegacyWave, LegacyWaveGateStatus,
+    LegacyWaveStatus, MemberAction, MessageTerminalSource, Mission, MissionLogEntry, MissionStatus,
+    NodeDaemonLease, NodeDaemonLeaseStatus, NodeProjectRegistration, NodeProjectRegistrationStatus,
+    Proposal, ProviderChildThread, ProviderCompatibilityAdmission,
+    ProviderCompatibilityAdmissionLifecycle, ProviderCompatibilityBlockBoundary,
+    ProviderCompatibilityBlockCause, ProviderCompatibilityStatus, ProviderDispatchIntent,
+    ProviderExecutionStatus, ProviderIntegrationProfile, ProviderInteractionRequestBody,
+    ProviderInteractionResponseBody, ProviderLaunchProfile, ProviderProcess,
+    ProviderRuntimeProjection, ProviderWorkDispatch, ProviderWorkDispatchStatus,
+    ProviderWorkDispatchUpdate, RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage,
+    Review, TeamActorKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
+    TeamMemberCloseStatus, TeamMessageProjection, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
+    TeamSupervisorLeaseStatus, Validate, Vision, Work, WorkClaimMode, WorkCommandContext,
+    WorkCondition, WorkConditionRecord, WorkDelegation, WorkDelegationEvent,
+    WorkDelegationRevision, WorkDelegationState, WorkDelegationTransition, WorkEvent,
+    WorkEventKind, WorkEvidence, WorkOperation, WorkOperationalDecision, WorkPhase, WorkRef,
+    WorkReport, WorkResolution, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
@@ -466,6 +466,9 @@ impl HarnessStore {
         })
     }
 
+    /// Raw append retained for verified migration/import and append-only
+    /// history reconstruction. Current Mission creation must use
+    /// [`Self::insert_mission`], which rejects Legacy Wave membership.
     pub fn append_mission(&self, value: &Mission) -> StoreResult<()> {
         self.append_jsonl("missions.jsonl", value)
     }
@@ -492,10 +495,10 @@ impl HarnessStore {
         }
         if next.id != current.id
             || next.created_at != current.created_at
-            || next.wave_ids != current.wave_ids
+            || next.legacy_wave_ids != current.legacy_wave_ids
         {
             return Err(StoreError::Conflict(
-                "mission revision must preserve identity, creation time, and Wave membership"
+                "mission revision must preserve identity, creation time, and Legacy Wave membership"
                     .to_string(),
             ));
         }
@@ -522,6 +525,12 @@ impl HarnessStore {
     pub fn insert_mission(&self, value: &Mission) -> StoreResult<()> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        if !value.legacy_wave_ids.is_empty() {
+            return Err(StoreError::Conflict(
+                "NEW_MISSION_CANNOT_REFERENCE_LEGACY_WAVE: create the Mission with an empty legacy_wave_ids compatibility field"
+                    .to_string(),
+            ));
+        }
         let missions = latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
             mission.id.clone()
         });
@@ -534,19 +543,23 @@ impl HarnessStore {
         self.append_jsonl_unlocked("missions.jsonl", value)
     }
 
-    pub fn append_wave(&self, value: &Wave) -> StoreResult<()> {
+    /// Test-only seed helper for ADR 0051 pre-cutover rows. Production has no
+    /// Legacy Wave writer; historical rows are read-only compatibility data.
+    #[cfg(test)]
+    fn append_legacy_wave_for_test(&self, value: &LegacyWave) -> StoreResult<()> {
         self.append_jsonl("waves.jsonl", value)
     }
 
-    /// Atomically allocate/validate one Wave index, append the Wave, and update
-    /// its Mission's ordered membership. This prevents concurrent creates from
-    /// duplicating an index or losing one `wave_ids` update.
-    pub fn insert_wave_and_update_mission(
+    /// Test-only reconstruction of the pre-ADR 0051 writer. It exists solely
+    /// to prove historical concurrency and overflow behavior; no production
+    /// code can create or attach another Legacy Wave row.
+    #[cfg(test)]
+    fn insert_legacy_wave_and_update_mission_for_test(
         &self,
-        mut wave: Wave,
+        mut wave: LegacyWave,
         requested_index: Option<u32>,
         mission_updated_at: &str,
-    ) -> StoreResult<Wave> {
+    ) -> StoreResult<LegacyWave> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let mut missions = latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
@@ -560,11 +573,11 @@ impl HarnessStore {
             MissionStatus::Completed | MissionStatus::Cancelled
         ) {
             return Err(StoreError::Conflict(format!(
-                "mission {} is {:?} and cannot accept another Wave",
+                "mission {} is {:?} and cannot accept another Legacy Wave",
                 mission.id, mission.status
             )));
         }
-        let waves = latest_by_id(self.read_jsonl::<Wave>("waves.jsonl")?, |row| {
+        let waves = latest_by_id(self.read_jsonl::<LegacyWave>("waves.jsonl")?, |row| {
             row.id.clone()
         })
         .into_values()
@@ -613,7 +626,7 @@ impl HarnessStore {
             .collect::<Vec<_>>();
         ordered.push((wave.index, wave.id.clone()));
         ordered.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
-        mission.wave_ids = ordered.into_iter().map(|(_, id)| id).collect();
+        mission.legacy_wave_ids = ordered.into_iter().map(|(_, id)| id).collect();
         mission.updated_at = mission_updated_at.to_string();
 
         self.append_jsonl_unlocked("waves.jsonl", &wave)?;
@@ -623,10 +636,10 @@ impl HarnessStore {
 
     /// Append one [`MissionLogEntry`] under the store lock, atomically
     /// allocating its monotonic `revision` the same way
-    /// `insert_wave_and_update_mission` allocates a Wave index: read the
+    /// the retired Legacy Wave writer allocated an index: read the
     /// current max for this `mission_id`, then `+ 1` (starting at 1). This
     /// is the Mission Log's ONLY write operation (ADR 0051) — there is no
-    /// update or delete, so unlike Wave there is no compare-and-append
+    /// update or delete, so unlike Legacy Wave there is no compare-and-append
     /// variant to race against.
     pub fn append_mission_log_entry(
         &self,
@@ -678,19 +691,18 @@ impl HarnessStore {
     }
 
     /// Atomically close one Mission. Prior to ADR 0051 this required every
-    /// ordered Wave to have an accepted, completed gate; Wave write commands
+    /// ordered Legacy Wave to have an accepted, completed gate; Legacy Wave write commands
     /// (including the gate) are now retired, so a native post-cutover
-    /// Mission always has empty `wave_ids` and closes on its own outcome —
+    /// Mission always has empty `legacy_wave_ids` and closes on its own outcome —
     /// the Host records `kind = closeout_evidence` in the Mission Log
     /// beforehand by convention, not as a store-enforced precondition (ADR
     /// 0051 "Mission closeout evidence becomes a ... Log entry instead of a
-    /// separate Wave-outcome convention"). A legacy Mission that already
-    /// accumulated `wave_ids` before the cutover keeps the original
-    /// Wave-gate requirement so its in-flight contract does not change
-    /// underneath it; no NEW Mission can reach that branch since Wave create
-    /// no longer populates membership. The Wave set is still checked under
-    /// the same store lock as the Mission CAS so a concurrent Wave create
-    /// (of a legacy, still-populated Mission) cannot race closeout.
+    /// separate Legacy-Wave-outcome convention"). A legacy Mission that already
+    /// accumulated `legacy_wave_ids` before the cutover keeps the original
+    /// Legacy-Wave-gate requirement so its in-flight contract does not change
+    /// underneath it; no NEW Mission can reach that branch because
+    /// `insert_mission` rejects Legacy Wave membership. The historical set is
+    /// still checked under the same store lock as the Mission CAS.
     pub fn compare_and_close_mission(&self, expected: &Mission, next: &Mission) -> StoreResult<()> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
@@ -705,39 +717,40 @@ impl HarnessStore {
                 expected.id
             )));
         }
-        if !current.wave_ids.is_empty() {
-            let waves = latest_by_id(self.read_jsonl::<Wave>("waves.jsonl")?, |wave| {
+        if !current.legacy_wave_ids.is_empty() {
+            let waves = latest_by_id(self.read_jsonl::<LegacyWave>("waves.jsonl")?, |wave| {
                 wave.id.clone()
             });
-            let mut actual_wave_ids = waves
+            let mut actual_legacy_wave_ids = waves
                 .values()
                 .filter(|wave| wave.mission_id == current.id)
                 .map(|wave| (wave.index, wave.id.clone()))
                 .collect::<Vec<_>>();
-            actual_wave_ids.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
-            let actual_wave_ids = actual_wave_ids
+            actual_legacy_wave_ids
+                .sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+            let actual_legacy_wave_ids = actual_legacy_wave_ids
                 .into_iter()
                 .map(|(_, id)| id)
                 .collect::<Vec<_>>();
-            if actual_wave_ids != current.wave_ids {
+            if actual_legacy_wave_ids != current.legacy_wave_ids {
                 return Err(StoreError::Conflict(format!(
-                    "mission {} Wave membership changed or is inconsistent; retry closeout",
+                    "mission {} Legacy Wave membership changed or is inconsistent; retry closeout",
                     current.id
                 )));
             }
-            for wave_id in &current.wave_ids {
+            for wave_id in &current.legacy_wave_ids {
                 let wave = waves.get(wave_id).ok_or_else(|| {
                     StoreError::Conflict(format!(
-                        "mission {} references missing Wave {wave_id}",
+                        "mission {} references missing Legacy Wave {wave_id}",
                         current.id
                     ))
                 })?;
                 if wave.mission_id != current.id
-                    || wave.status != WaveStatus::Completed
-                    || wave.gate_status != WaveGateStatus::Accepted
+                    || wave.status != LegacyWaveStatus::Completed
+                    || wave.gate_status != LegacyWaveGateStatus::Accepted
                 {
                     return Err(StoreError::Conflict(format!(
-                        "mission {} cannot close: Wave {} is status {:?} with gate {:?}",
+                        "mission {} cannot close: Legacy Wave {} is status {:?} with gate {:?}",
                         current.id, wave.id, wave.status, wave.gate_status
                     )));
                 }
@@ -1876,13 +1889,17 @@ impl HarnessStore {
         self.append_jsonl_unlocked("team_runs.jsonl", value)
     }
 
-    /// Compare-and-append one Wave row. Used only for historical Wave reads and
-    /// legacy maintenance; TeamRun lifecycle no longer writes Wave/Mission.
-    /// concurrent attempt registration or gate cannot be silently overwritten.
-    pub fn compare_and_append_wave(&self, expected: &Wave, next: &Wave) -> StoreResult<()> {
+    /// Test-only reconstruction of the pre-ADR 0051 compare-and-append path.
+    /// Production exposes historical reads but no Legacy Wave maintenance writer.
+    #[cfg(test)]
+    fn compare_and_append_legacy_wave_for_test(
+        &self,
+        expected: &LegacyWave,
+        next: &LegacyWave,
+    ) -> StoreResult<()> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        let current = latest_by_id(self.read_jsonl::<Wave>("waves.jsonl")?, |wave| {
+        let current = latest_by_id(self.read_jsonl::<LegacyWave>("waves.jsonl")?, |wave| {
             wave.id.clone()
         })
         .remove(&expected.id)
@@ -1904,15 +1921,15 @@ impl HarnessStore {
             MissionStatus::Completed | MissionStatus::Cancelled
         ) {
             return Err(StoreError::Conflict(format!(
-                "mission {} is {:?} and its Waves are immutable",
+                "mission {} is {:?} and its Legacy Waves are immutable",
                 mission.id, mission.status
             )));
         }
         mission.status = match next.gate_status {
-            WaveGateStatus::Blocked => MissionStatus::Blocked,
-            WaveGateStatus::Accepted | WaveGateStatus::Revise | WaveGateStatus::Pending => {
-                MissionStatus::Running
-            }
+            LegacyWaveGateStatus::Blocked => MissionStatus::Blocked,
+            LegacyWaveGateStatus::Accepted
+            | LegacyWaveGateStatus::Revise
+            | LegacyWaveGateStatus::Pending => MissionStatus::Running,
         };
         mission.updated_at = next.updated_at.clone();
         self.append_jsonl_unlocked("waves.jsonl", next)?;
@@ -7182,16 +7199,16 @@ impl HarnessStore {
             .collect())
     }
 
-    /// Raw append-only Wave ledger rows, in append order.
-    pub fn waves(&self) -> StoreResult<Vec<Wave>> {
+    /// Raw append-only Legacy Wave ledger rows, in append order.
+    pub fn legacy_waves(&self) -> StoreResult<Vec<LegacyWave>> {
         self.read_jsonl("waves.jsonl")
     }
 
-    /// Latest-row-wins Wave projection, ordered by Mission then Wave index for
-    /// deterministic product reads. The id is a final tie-breaker for corrupt
-    /// legacy rows; native authoring rejects duplicate Mission/index pairs.
-    pub fn latest_waves(&self) -> StoreResult<Vec<Wave>> {
-        let mut waves = latest_by_id(self.waves()?, |wave| wave.id.clone())
+    /// Latest-row-wins Legacy Wave projection, ordered by Mission then legacy
+    /// index for deterministic historical reads. The id is a final tie-breaker
+    /// for corrupt rows.
+    pub fn latest_legacy_waves(&self) -> StoreResult<Vec<LegacyWave>> {
+        let mut waves = latest_by_id(self.legacy_waves()?, |wave| wave.id.clone())
             .into_values()
             .collect::<Vec<_>>();
         waves.sort_by(|left, right| {
@@ -7205,13 +7222,13 @@ impl HarnessStore {
 
     /// Raw append-only Mission Log rows across every Mission, in append
     /// order. Prefer [`Self::mission_log_entries`] when scoping to one
-    /// Mission; this is here for parity with `waves()`/`missions()`.
+    /// Mission; this is here for parity with `legacy_waves()`/`missions()`.
     pub fn mission_log(&self) -> StoreResult<Vec<MissionLogEntry>> {
         self.read_jsonl("mission_log.jsonl")
     }
 
     /// Every [`MissionLogEntry`] for one Mission, ordered by `revision`
-    /// ascending. There is no latest-wins collapse: unlike Wave/Mission the
+    /// ascending. There is no latest-wins collapse: unlike Legacy Wave/Mission the
     /// Log has no mutable identity, every row is a permanent entry.
     pub fn mission_log_entries(&self, mission_id: &str) -> StoreResult<Vec<MissionLogEntry>> {
         let mut entries = self
@@ -8768,15 +8785,15 @@ mod tests {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use firm_core::{
-        DelegationMode, DelegationStatus, HostAttentionKind, MemberActionStatus,
-        MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot, Mission, MissionLogEntry,
-        MissionLogEntryKind, MissionStatus, OrdinaryMessageBoundary,
-        ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockSource,
-        ProviderDispatchAttempt, ProviderDispatchIntent, ProviderEventFidelity,
-        ProviderFeatureMode, ProviderInteractionMode, ProviderResponseIntent,
-        RegistryMessageIntent, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
-        TeamDeliveryStatus, TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind,
-        WaveGateStatus, WaveStatus, WorkPriority,
+        DelegationMode, DelegationStatus, HostAttentionKind, LegacyWave, LegacyWaveExecutorKind,
+        LegacyWaveGateStatus, LegacyWaveStatus, MemberActionStatus, MemberExecutionDriver,
+        MemberRunStatus, MemberWorkspaceSnapshot, Mission, MissionLogEntry, MissionLogEntryKind,
+        MissionStatus, OrdinaryMessageBoundary, ProviderCompatibilityBlockBoundary,
+        ProviderCompatibilityBlockSource, ProviderDispatchAttempt, ProviderDispatchIntent,
+        ProviderEventFidelity, ProviderFeatureMode, ProviderInteractionMode,
+        ProviderResponseIntent, RegistryMessageIntent, SenderKind, TeamActorKind, TeamActorRef,
+        TeamDeliveryPolicy, TeamDeliveryStatus, TeamRunEventSourceKind, TeamRunStatus,
+        WorkPriority,
     };
 
     use super::*;
@@ -9849,7 +9866,7 @@ mod tests {
                 context: String::new(),
                 desired_outcome: None,
                 status: MissionStatus::Planned,
-                wave_ids: Vec::new(),
+                legacy_wave_ids: Vec::new(),
                 outcome_summary: None,
                 completed_by: None,
                 created_at: "unix-ms:1".into(),
@@ -9880,7 +9897,7 @@ mod tests {
     }
 
     #[test]
-    fn mission_and_wave_ledgers_keep_history_and_project_latest_rows() {
+    fn mission_and_legacy_wave_ledgers_keep_history_and_project_latest_rows() {
         let root = std::env::temp_dir().join(format!(
             "firm-store-mission-wave-test-{}",
             SystemTime::now()
@@ -9891,12 +9908,12 @@ mod tests {
         let store = HarnessStore::new(&root);
         let mission = Mission {
             id: "mission-1".into(),
-            title: "Ship Mission/Wave".into(),
+            title: "Import a Mission with Legacy Wave history".into(),
             objective: "Add the migration foundation".into(),
             context: String::new(),
             desired_outcome: Some("A compatible, durable contract".into()),
             status: MissionStatus::Planned,
-            wave_ids: vec!["wave-1".into()],
+            legacy_wave_ids: vec!["wave-1".into()],
             outcome_summary: None,
             completed_by: None,
             created_at: "unix-ms:1".into(),
@@ -9911,7 +9928,7 @@ mod tests {
             .append_mission(&updated_mission)
             .expect("append updated mission");
 
-        let wave = Wave {
+        let wave = LegacyWave {
             id: "wave-1".into(),
             mission_id: "mission-1".into(),
             index: 1,
@@ -9921,14 +9938,14 @@ mod tests {
             revision: 1,
             updated_by: Some("host".into()),
             exit_criteria: Some("Schema and store rows validate".into()),
-            status: WaveStatus::Running,
-            executor_kind: WaveExecutorKind::AgentTeam,
+            status: LegacyWaveStatus::Running,
+            executor_kind: LegacyWaveExecutorKind::AgentTeam,
             executor_run_ids: vec!["team-run-1".into()],
             accepted_run_id: None,
             plan_note: None,
             outcome_summary: None,
             artifact_refs: vec!["schemas/mission.schema.json".into()],
-            gate_status: WaveGateStatus::Pending,
+            gate_status: LegacyWaveGateStatus::Pending,
             gate_note: None,
             accepted_by: None,
             accepted_at: None,
@@ -9936,37 +9953,75 @@ mod tests {
             updated_at: "unix-ms:1".into(),
         };
         let mut accepted_wave = wave.clone();
-        accepted_wave.status = WaveStatus::Completed;
+        accepted_wave.status = LegacyWaveStatus::Completed;
         accepted_wave.accepted_run_id = Some("team-run-1".into());
-        accepted_wave.gate_status = WaveGateStatus::Accepted;
+        accepted_wave.gate_status = LegacyWaveGateStatus::Accepted;
         accepted_wave.accepted_by = Some("host".into());
         accepted_wave.accepted_at = Some("unix-ms:2".into());
         accepted_wave.updated_at = "unix-ms:2".into();
-        store.append_wave(&wave).expect("append wave");
         store
-            .append_wave(&accepted_wave)
-            .expect("append accepted wave");
+            .append_legacy_wave_for_test(&wave)
+            .expect("append legacy wave");
+        store
+            .append_legacy_wave_for_test(&accepted_wave)
+            .expect("append accepted legacy wave");
 
         assert_eq!(store.missions().expect("raw missions").len(), 2);
-        assert_eq!(store.waves().expect("raw waves").len(), 2);
+        assert_eq!(store.legacy_waves().expect("raw waves").len(), 2);
         assert_eq!(
             store.latest_missions().expect("latest missions"),
             vec![updated_mission]
         );
         assert_eq!(
-            store.latest_waves().expect("latest waves"),
+            store.latest_legacy_waves().expect("latest waves"),
             vec![accepted_wave]
         );
 
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
-    /// ADR 0051 changed `compare_and_close_mission` to skip the Wave-gate
-    /// check entirely for a Mission whose `wave_ids` is empty (the only
-    /// shape a NEW Mission can have now, since Wave create is retired). This
+    #[test]
+    fn current_mission_insert_rejects_legacy_wave_membership() {
+        let root = std::env::temp_dir().join(format!(
+            "firm-store-current-mission-no-legacy-wave-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_millis()
+        ));
+        let store = HarnessStore::new(&root);
+        let error = store
+            .insert_mission(&Mission {
+                id: "mission-new".into(),
+                title: "Current Mission".into(),
+                objective: "Use Mission Log rather than Legacy Wave".into(),
+                context: String::new(),
+                desired_outcome: None,
+                status: MissionStatus::Planned,
+                legacy_wave_ids: vec!["wave-forged".into()],
+                outcome_summary: None,
+                completed_by: None,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+                completed_at: None,
+            })
+            .expect_err("new Mission must not attach Legacy Wave history");
+        assert!(
+            error
+                .to_string()
+                .contains("NEW_MISSION_CANNOT_REFERENCE_LEGACY_WAVE"),
+            "error: {error}"
+        );
+        assert!(store.missions().expect("missions").is_empty());
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    /// ADR 0051 changed `compare_and_close_mission` to skip the Legacy-Wave gate
+    /// check entirely for a Mission whose `legacy_wave_ids` is empty (the only
+    /// shape a NEW Mission can have now, since Legacy Wave create is retired). This
     /// proves the OTHER branch is untouched: a Mission that already
-    /// accumulated `wave_ids` before the cutover still requires every one
-    /// of them to be an accepted, completed Wave -- its in-flight contract
+    /// accumulated `legacy_wave_ids` before the cutover still requires every one
+    /// of them to be an accepted, completed Legacy Wave -- its in-flight contract
     /// does not silently change underneath it.
     #[test]
     fn mission_close_with_legacy_wave_ids_still_requires_accepted_gate() {
@@ -9981,11 +10036,11 @@ mod tests {
         let mission = Mission {
             id: "mission-legacy".into(),
             title: "Pre-cutover Mission".into(),
-            objective: "Already has Wave membership from before ADR 0051".into(),
+            objective: "Already has Legacy Wave membership from before ADR 0051".into(),
             context: String::new(),
             desired_outcome: None,
             status: MissionStatus::Running,
-            wave_ids: vec!["wave-legacy".into()],
+            legacy_wave_ids: vec!["wave-legacy".into()],
             outcome_summary: None,
             completed_by: None,
             created_at: "unix-ms:1".into(),
@@ -9993,7 +10048,7 @@ mod tests {
             completed_at: None,
         };
         store.append_mission(&mission).expect("append mission");
-        let pending_wave = Wave {
+        let pending_wave = LegacyWave {
             id: "wave-legacy".into(),
             mission_id: "mission-legacy".into(),
             index: 1,
@@ -10003,21 +10058,23 @@ mod tests {
             revision: 1,
             updated_by: Some("host".into()),
             exit_criteria: None,
-            status: WaveStatus::Running,
-            executor_kind: WaveExecutorKind::Host,
+            status: LegacyWaveStatus::Running,
+            executor_kind: LegacyWaveExecutorKind::Host,
             executor_run_ids: Vec::new(),
             accepted_run_id: None,
             plan_note: None,
             outcome_summary: None,
             artifact_refs: Vec::new(),
-            gate_status: WaveGateStatus::Pending,
+            gate_status: LegacyWaveGateStatus::Pending,
             gate_note: None,
             accepted_by: None,
             accepted_at: None,
             created_at: "unix-ms:1".into(),
             updated_at: "unix-ms:1".into(),
         };
-        store.append_wave(&pending_wave).expect("append wave");
+        store
+            .append_legacy_wave_for_test(&pending_wave)
+            .expect("append legacy wave");
 
         let mut closed = mission.clone();
         closed.status = MissionStatus::Completed;
@@ -10029,21 +10086,21 @@ mod tests {
             .compare_and_close_mission(&mission, &closed)
             .expect_err("a pending legacy Wave must still block closeout");
         assert!(
-            error.to_string().contains("cannot close: Wave"),
+            error.to_string().contains("cannot close: Legacy Wave"),
             "error: {error}"
         );
 
         let mut accepted_wave = pending_wave.clone();
-        accepted_wave.status = WaveStatus::Completed;
-        accepted_wave.gate_status = WaveGateStatus::Accepted;
+        accepted_wave.status = LegacyWaveStatus::Completed;
+        accepted_wave.gate_status = LegacyWaveGateStatus::Accepted;
         accepted_wave.accepted_by = Some("host".into());
         accepted_wave.accepted_at = Some("unix-ms:2".into());
         accepted_wave.updated_at = "unix-ms:2".into();
         store
-            .compare_and_append_wave(&pending_wave, &accepted_wave)
+            .compare_and_append_legacy_wave_for_test(&pending_wave, &accepted_wave)
             .expect("accept the legacy wave");
 
-        // compare_and_append_wave folds the gate outcome into Mission.phase
+        // The test-only Legacy Wave CAS folds the gate outcome into Mission.phase
         // as a side effect (line ~754 above), so the CAS baseline for close
         // must be the freshly stored row, not the pre-gate local `mission`.
         let after_gate = store
@@ -10076,7 +10133,7 @@ mod tests {
     }
 
     #[test]
-    fn native_wave_attempt_and_event_updates_are_concurrency_safe() {
+    fn legacy_wave_import_and_event_updates_are_concurrency_safe() {
         let root = std::env::temp_dir().join(format!(
             "firm-store-native-concurrency-test-{}",
             SystemTime::now()
@@ -10093,7 +10150,7 @@ mod tests {
                 context: String::new(),
                 desired_outcome: None,
                 status: MissionStatus::Planned,
-                wave_ids: Vec::new(),
+                legacy_wave_ids: Vec::new(),
                 outcome_summary: None,
                 completed_by: None,
                 created_at: "unix-ms:1".into(),
@@ -10108,8 +10165,8 @@ mod tests {
             let barrier = Arc::clone(&wave_barrier);
             std::thread::spawn(move || {
                 barrier.wait();
-                store.insert_wave_and_update_mission(
-                    Wave {
+                store.insert_legacy_wave_and_update_mission_for_test(
+                    LegacyWave {
                         id: id.into(),
                         mission_id: "mission-concurrent".into(),
                         index: 0,
@@ -10119,14 +10176,14 @@ mod tests {
                         revision: 1,
                         updated_by: Some("host".into()),
                         exit_criteria: None,
-                        status: WaveStatus::Planned,
-                        executor_kind: WaveExecutorKind::AgentTeam,
+                        status: LegacyWaveStatus::Planned,
+                        executor_kind: LegacyWaveExecutorKind::AgentTeam,
                         executor_run_ids: Vec::new(),
                         accepted_run_id: None,
                         plan_note: None,
                         outcome_summary: None,
                         artifact_refs: Vec::new(),
-                        gate_status: WaveGateStatus::Pending,
+                        gate_status: LegacyWaveGateStatus::Pending,
                         gate_note: None,
                         accepted_by: None,
                         accepted_at: None,
@@ -10141,14 +10198,14 @@ mod tests {
         for handle in wave_handles {
             handle.join().expect("wave thread").expect("insert wave");
         }
-        let waves = store.latest_waves().expect("latest waves");
+        let waves = store.latest_legacy_waves().expect("latest waves");
         assert_eq!(
             waves.iter().map(|wave| wave.index).collect::<Vec<_>>(),
             vec![1, 2]
         );
         let mission = store.latest_missions().expect("latest missions").remove(0);
         assert_eq!(
-            mission.wave_ids,
+            mission.legacy_wave_ids,
             vec![waves[0].id.clone(), waves[1].id.clone()]
         );
 
@@ -10157,12 +10214,16 @@ mod tests {
         max_index_wave.index = u32::MAX;
         max_index_wave.executor_run_ids.clear();
         store
-            .insert_wave_and_update_mission(max_index_wave.clone(), Some(u32::MAX), "unix-ms:2")
+            .insert_legacy_wave_and_update_mission_for_test(
+                max_index_wave.clone(),
+                Some(u32::MAX),
+                "unix-ms:2",
+            )
             .expect("insert maximum explicit wave index");
         let mut overflow_wave = max_index_wave;
         overflow_wave.id = "wave-overflow".into();
         let error = store
-            .insert_wave_and_update_mission(overflow_wave, None, "unix-ms:2")
+            .insert_legacy_wave_and_update_mission_for_test(overflow_wave, None, "unix-ms:2")
             .expect_err("implicit wave index must not overflow");
         assert!(
             error.to_string().contains("index space is exhausted"),
@@ -10219,7 +10280,7 @@ mod tests {
             context: String::new(),
             desired_outcome: None,
             status: MissionStatus::Planned,
-            wave_ids: Vec::new(),
+            legacy_wave_ids: Vec::new(),
             outcome_summary: None,
             completed_by: None,
             created_at: "unix-ms:1".into(),
@@ -10486,7 +10547,7 @@ mod tests {
                         context: String::new(),
                         desired_outcome: None,
                         status: MissionStatus::Running,
-                        wave_ids: Vec::new(),
+                        legacy_wave_ids: Vec::new(),
                         outcome_summary: None,
                         completed_by: None,
                         created_at: "2026-05-26T00:00:00Z".into(),
@@ -10533,7 +10594,7 @@ mod tests {
             context: String::new(),
             desired_outcome: None,
             status: MissionStatus::Running,
-            wave_ids: Vec::new(),
+            legacy_wave_ids: Vec::new(),
             outcome_summary: None,
             completed_by: None,
             created_at: "2026-05-26T00:00:00Z".into(),
@@ -13617,7 +13678,7 @@ mod tests {
                     context: String::new(),
                     desired_outcome: None,
                     status: MissionStatus::Running,
-                    wave_ids: Vec::new(),
+                    legacy_wave_ids: Vec::new(),
                     outcome_summary: None,
                     completed_by: None,
                     created_at: "unix-ms:1".into(),

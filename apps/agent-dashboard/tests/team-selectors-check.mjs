@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Native Mission/Wave Agent Team selector checks. This imports the real
+// Native Mission/AgentTeam selector checks. This imports the real
 // TypeScript implementation rather than duplicating its ordering semantics.
 
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -56,13 +56,14 @@ async function loadTypes() {
 function fixture() {
   return {
     missions: [{ id: "mission-1", title: "Build console", objective: "ship" }],
-    waves: [
+    legacy_waves: [
       { id: "wave-2", mission_id: "mission-1", index: 2, title: "Second", objective: "second", executor_kind: "agent_team" },
       { id: "wave-1", mission_id: "mission-1", index: 1, title: "First", objective: "first", executor_kind: "agent_team", executor_run_ids: ["run-2", "run-1"] },
     ],
+    teams: [{ id: "team-1", mission_id: "mission-1", host_agent_id: "host", node_id: "node-1" }],
     team_runs: [
-      { id: "run-1", mission_id: "mission-1", wave_id: "wave-1", member_run_ids: ["member-1"], created_at: "2026-07-19T00:00:02Z" },
-      { id: "run-2", mission_id: "mission-1", wave_id: "wave-1", member_run_ids: ["member-2"], created_at: "2026-07-19T00:00:01Z" },
+      { id: "run-1", agent_team_id: "team-1", member_run_ids: ["member-1"], created_at: "2026-07-19T00:00:02Z" },
+      { id: "run-2", agent_team_id: "team-1", member_run_ids: ["member-2"], created_at: "2026-07-19T00:00:01Z" },
     ],
     member_runs: [
       { id: "member-1", team_run_id: "run-1", agent_member_id: "agent-a", name: "Worker", coordination_status: "active", status: "waiting" },
@@ -104,18 +105,13 @@ async function main() {
   const selectors = await loadSelectors();
   const snapshot = fixture();
 
-  const waves = selectors.selectOrderedWaves(snapshot, "mission-1");
-  if (waves.map((wave) => wave.id).join(",") === "wave-1,wave-2") {
-    ok("Mission waves use their explicit ordered index");
+  const runContext = selectors.selectTeamRunContext(snapshot, "run-1");
+  if (runContext?.mission?.id === "mission-1"
+      && runContext.attempts.map((run) => run.id).join(",") === "run-1"
+      && !Object.hasOwn(runContext, "wave")) {
+    ok("TeamRun context resolves Mission through AgentTeam and never consumes Legacy Wave history");
   } else {
-    bad(`Mission wave order was ${waves.map((wave) => wave.id).join(",")}`);
-  }
-
-  const attempts = selectors.selectWaveAttempts(snapshot, "wave-1");
-  if (attempts.map((run) => run.id).join(",") === "run-2,run-1") {
-    ok("Wave attempts honor explicit executor_run_ids order over creation time");
-  } else {
-    bad(`Wave attempt order was ${attempts.map((run) => run.id).join(",")}`);
+    bad("TeamRun context did not preserve the current Mission/AgentTeam boundary");
   }
 
   const member = selectors.selectMemberRunContext(snapshot, "member-1");

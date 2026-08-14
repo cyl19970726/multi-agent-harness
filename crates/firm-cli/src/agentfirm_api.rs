@@ -35,7 +35,9 @@ pub fn is_http_mutation_path(path: &str) -> bool {
         || path.starts_with("/v1/gate-requirements/")
         || path.starts_with("/v1/gate-waivers/")
         || (path.starts_with("/v1/team-runs/")
-            && (path.ends_with("/member-runs") || path.ends_with("/messages")))
+            && (path.ends_with("/member-runs")
+                || path.ends_with("/messages")
+                || provider_answer_route(path).is_some()))
         || (path.starts_with("/v1/teams/")
             && [
                 "/reports",
@@ -47,6 +49,19 @@ pub fn is_http_mutation_path(path: &str) -> bool {
             ]
             .iter()
             .any(|suffix| path.ends_with(suffix)))
+}
+
+pub fn provider_answer_route(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("/v1/team-runs/")?;
+    let parts = rest.split('/').collect::<Vec<_>>();
+    match parts.as_slice() {
+        [team_run_id, "messages", message_id, "answer"]
+            if !team_run_id.is_empty() && !message_id.is_empty() =>
+        {
+            Some((team_run_id, message_id))
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -847,6 +862,24 @@ mod tests {
             updated_at: "unix-ms:2".into(),
         };
         assert!(authorize(&store, "space", &member, &self_control).is_err());
+    }
+
+    #[test]
+    fn provider_answer_route_is_an_exact_authenticated_mutation_path() {
+        assert_eq!(
+            provider_answer_route("/v1/team-runs/run-1/messages/message-1/answer"),
+            Some(("run-1", "message-1"))
+        );
+        assert!(is_http_mutation_path(
+            "/v1/team-runs/run-1/messages/message-1/answer"
+        ));
+        for path in [
+            "/v1/team-runs/run-1/messages/message-1/answer/extra",
+            "/v1/team-runs//messages/message-1/answer",
+            "/v1/team-runs/run-1/messages//answer",
+        ] {
+            assert_eq!(provider_answer_route(path), None, "{path}");
+        }
     }
 
     #[test]

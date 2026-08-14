@@ -48,7 +48,7 @@ them.
 
 Full-contract required data:
 
-- optional `Mission`, selected/current Wave context, and Host judgment/advance
+- optional `Mission`, Mission Log context, and Host judgment/replan/closeout
   projection;
 - parent `AgentTeamRun` and retry lineage;
 - the selected `MemberRun`;
@@ -85,7 +85,7 @@ historical event.
 
 The projection must distinguish source and durability. WorkEvents,
 correlated Message replies, explicit outcome, control acknowledgement, and
-Host Wave decisions are durable Harness records. Native chat/tool/command/file/turn
+Host Mission Log decisions are durable Harness records. Native chat/tool/command/file/turn
 activity is read from the provider session and is rebuildable, non-evidence UI
 state. Harness does not silently fall back to a mirrored history.
 
@@ -212,7 +212,7 @@ reordering is not a requirement.
 - Render the selected typed author explicitly. Operator-authored messages remain
   Operator messages; only the bound provider session can author as this Member.
 - Open the Work card, WorkEvent history and linked messages.
-- Open the Team or selected Host-plan Wave without losing navigation context.
+- Open the Team or Mission Log context without losing navigation context.
 - Open an artifact, check, or provider session summary.
 - Acknowledge a waiting/blocker signal where the message protocol permits it.
 - Resolve a provider question, tool approval, or plan review when the current
@@ -223,7 +223,7 @@ Do not offer fake lifecycle control. Interrupt appears only when the provider
 exposes cooperative turn interruption. Close is a separate Host-owned action:
 it sends the selected adapter's real close/cancel protocol and must not be
 presented as ordinary turn completion. Completion of the MemberRun is an
-execution fact, not an implicit Wave advance.
+execution fact, not an implicit Mission closeout or Log judgment.
 
 Current implementation boundary: the authenticated RoleAction adapter projects
 MemberRun close/reopen/retire/resume and exact Work/Message actions. It does not
@@ -279,7 +279,7 @@ baseline. The Works contract adds new desktop/tablet/mobile cases in which:
 - baseline, approval-pending expected candidate, implementation capture, and labeled comparison
   all use the registered fixture, route, and `1440x1000` viewport;
 - first viewport visibly contains the Member header, a continuous mixed
-  activity/chat stream, Work context, a Wave module, Team module, and
+  activity/chat stream, Work context, a Mission Log module, Team module, and
   sticky composer;
 - a live preview, when fixture-provided, is visibly labelled `not saved`; it
   must not appear in stored activity after a refresh fixture;
@@ -306,5 +306,5 @@ checks pass without mutating the expected image.
 - Provider-native subagents remain inside this member's responsibility and
   permission ceiling; they are not independent acceptance.
 - TeamRun completion only says that one run ended. The Host separately records
-  `accepted | revise | blocked` judgment or advances the plan; a Wave does not
-  own or implicitly stop the MemberRun.
+  `accepted | revise | blocked` judgment in the Mission Log; neither Mission
+  nor a Log entry implicitly stops the MemberRun.

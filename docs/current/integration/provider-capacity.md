@@ -11,7 +11,9 @@ provider's own adapter document keeps implementing its execution mode.
 
 ## Why This Exists
 
-Live Wave 2 evidence proved adapter compatibility is not runtime availability:
+Historical pre-ADR-0051 development-batch evidence from **Wave 2** proved
+adapter compatibility is not runtime availability. “Wave 2” is the recorded
+batch name, not a current runtime Wave object:
 
 - Kimi returned a quota `403` while its adapter was reviewed and current.
 - Claude's local auth metadata reported logged-in while the standalone SDK
@@ -136,8 +138,9 @@ missing-proxy diagnosis is preserved, and the start is **not** gated. The
 recorded rejection is kept in `detail` — it is real evidence, just not a
 verdict.
 
-This is the Wave 2 scenario exactly: no proxy, blocked direct egress, provider
-answers `403`, and the identical request succeeds once the proxy is exported.
+This is that historical Wave 2 scenario exactly: no proxy, blocked direct
+egress, provider answers `403`, and the identical request succeeds once the
+proxy is exported.
 Calling that account `unauthorized` would gate a healthy account behind a
 missing environment variable — the misdiagnosis this TeamWork exists to
 prevent. It would also contradict the live canary, which returns `unknown` for

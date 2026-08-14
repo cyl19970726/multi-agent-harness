@@ -5,9 +5,9 @@
 # reject_patch() call is made for the pending case; the operator decides later.
 #
 # This is a standalone Dynamic Workflow: omitting apply_patch()/reject_patch()
-# leaves the durable WorkflowPatch pending for an operator. An outer
-# Mission/Wave may attach this WorkflowRun, its artifacts, and final result
-# after completion without changing that pending-patch decision.
+# leaves the durable WorkflowPatch pending for an operator. An outer Mission
+# may cite this WorkflowRun, its artifacts, and final result in a Mission Log
+# entry after completion without changing that pending-patch decision.
 #
 # Run:
 #   harness workflow run-script ./pending-manual-review.star \

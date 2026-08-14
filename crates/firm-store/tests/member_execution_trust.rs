@@ -174,7 +174,7 @@ fn seed_team(store: &HarnessStore, label: &str, member_ids: &[&str]) -> AgentTea
             context: String::new(),
             desired_outcome: None,
             status: MissionStatus::Planned,
-            wave_ids: Vec::new(),
+            legacy_wave_ids: Vec::new(),
             outcome_summary: None,
             completed_by: None,
             created_at: "t1".into(),

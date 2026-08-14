@@ -104,7 +104,7 @@ surface. Harness adopts it in layers:
 | --- | --- |
 | `session/resume` | implemented and preferred for exact-session reattachment |
 | `session/set_config_option` | implemented for model, thinking effort, and mode receipts |
-| `session/update` / `session/request_permission` | transient activity only; safe in-ceiling tool requests receive a bounded synchronous ACK, provider questions use correlated Messages, and anything outside the frozen session ceiling fails closed |
+| `session/update` / `session/request_permission` | transient activity only; only exact `allow_once` / `allow_always` intents on the current frozen full-access AgentSession receive a bounded synchronous ACK; provider questions use correlated Messages and every narrower or ambiguous request fails closed |
 | image and embedded resource prompt blocks | supported upstream; add only through a typed, bounded Member input contract rather than embedding arbitrary blobs in `TeamMessage` |
 | `session/list` | supported upstream; useful next for recovery diagnostics, never for guessing which session to resume |
 | ACP MCP forwarding | supported upstream; pass only explicitly approved MCP descriptors and never copy credentials into Harness state |

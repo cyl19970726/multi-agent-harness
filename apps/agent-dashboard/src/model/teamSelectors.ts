@@ -9,7 +9,6 @@ import type {
   ProviderDispatchAttempt,
   TeamRun,
   TeamRunEvent,
-  Wave,
   Work,
   WorkDelivery,
   WorkEvent,
@@ -31,7 +30,7 @@ function workLifecycleLabel(work: Work): string {
 
 /**
  * Read-model selectors for Mission-owned flat Agent Teams, TeamRuns,
- * versioned Host-plan Waves, and provider-native MemberRun bindings.
+ * append-only Mission judgment, and provider-native MemberRun bindings.
  *
  * These selectors intentionally do not project a MemberRun into a standing
  * AgentMember. A MemberRun is one participation in one TeamRun attempt, and
@@ -112,8 +111,7 @@ export type StableTeamActivity =
 export interface TeamRunContext {
   run: TeamRun;
   mission?: Mission;
-  wave?: Wave;
-  /** Direct-Wave compatibility attempts, or this Mission-scoped run alone. */
+  /** This exact Mission-scoped TeamRun. Retry lineage is explicit on the run. */
   attempts: TeamRun[];
   members: MemberRun[];
   memberById: Map<string, MemberRun>;
@@ -206,36 +204,6 @@ export function selectMission(snapshot: DashboardSnapshot, missionId?: string): 
   return (snapshot.missions ?? []).find((mission) => mission.id === missionId);
 }
 
-/** Ordered Waves are versioned Host plan and judgment records for a Mission. */
-export function selectOrderedWaves(snapshot: DashboardSnapshot, missionId?: string): Wave[] {
-  if (!missionId) return [];
-  return [...(snapshot.waves ?? [])]
-    .filter((wave) => wave.mission_id === missionId)
-    .sort((left, right) => left.index - right.index || stableIdCompare(left.id, right.id));
-}
-
-/** Resolve Wave attempts through the Wave's explicit run references. */
-export function selectWaveAttempts(snapshot: DashboardSnapshot, wave: Wave | string | undefined): TeamRun[] {
-  const resolvedWave = typeof wave === "string" ? (snapshot.waves ?? []).find((item) => item.id === wave) : wave;
-  if (!resolvedWave) return [];
-  const explicitOrder = new Map((resolvedWave.executor_run_ids ?? []).map((id, index) => [id, index]));
-  return [...(snapshot.team_runs ?? [])]
-    .filter((run) => explicitOrder.has(run.id))
-    .sort((left, right) => {
-      const leftExplicit = explicitOrder.get(left.id);
-      const rightExplicit = explicitOrder.get(right.id);
-      if (leftExplicit != null || rightExplicit != null) {
-        if (leftExplicit == null) return 1;
-        if (rightExplicit == null) return -1;
-        if (leftExplicit !== rightExplicit) return leftExplicit - rightExplicit;
-      }
-      return (
-        parseTeamTimestamp(left.created_at) - parseTeamTimestamp(right.created_at) ||
-        stableIdCompare(left.id, right.id)
-      );
-    });
-}
-
 /** Resolve the parent attempt without relying on an optional member_run_ids index. */
 export function selectTeamRunForMemberRun(
   snapshot: DashboardSnapshot,
@@ -262,10 +230,7 @@ export function selectTeamRunContext(
   if (!run) return undefined;
 
   const team = (snapshot.teams ?? []).find((item) => item.id === run.agent_team_id);
-  const wave = (snapshot.waves ?? []).find((item) =>
-    (item.executor_run_ids ?? []).includes(run.id),
-  );
-  const mission = selectMission(snapshot, team?.mission_id ?? wave?.mission_id);
+  const mission = selectMission(snapshot, team?.mission_id);
   const members = (snapshot.member_runs ?? []).filter(
     (member) => member.team_run_id === run.id || (run.member_run_ids ?? []).includes(member.id),
   );
@@ -284,8 +249,7 @@ export function selectTeamRunContext(
   return {
     run,
     mission,
-    wave,
-    attempts: wave ? selectWaveAttempts(snapshot, wave) : [run],
+    attempts: [run],
     members,
     memberById,
     messages,

@@ -56,7 +56,7 @@ const snapshot = {
   generated_at: "2026-07-29T00:00:00Z",
   teams: await jsonl("teams"),
   missions: await jsonl("missions"),
-  waves: await jsonl("waves"),
+  legacy_waves: await jsonl("waves"),
   team_runs: await jsonl("team_runs"),
   member_runs: await jsonl("member_runs"),
   team_messages: await jsonl("team_messages"),

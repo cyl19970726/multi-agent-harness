@@ -10,7 +10,7 @@ commands, file activity, native children, and resume state.
 Harness coordination truth
   Work / WorkEvent / WorkDelivery / typed mail / Supervisor / transport receipt
   correlated question/reply / stable Agent route / control acknowledgement
-  explicit outcome / artifact / check / Host Wave decision
+  explicit outcome / artifact / check / Host Mission Log decision
                      +
 NativeSessionRef
   provider / execution_mode / native_session_id / locator
@@ -41,7 +41,7 @@ live state and is never replayed or evidence.
 | What is the agent doing? | on-demand provider-native activity projection |
 | Is input required? | unresolved correlated question `Message` |
 | Can execution resume? | `NativeSessionRef.supports_resume` plus availability/version checks |
-| What supports the Host decision? | explicit outcome, artifact/check references, and Host Wave update/advance |
+| What supports the Host decision? | explicit outcome, artifact/check references, and append-only Mission Log entry |
 
 Process-alive is not execution-ready. A green runtime requires positive protocol
 and delivery probes; unknown or stale layers render amber.
@@ -62,7 +62,7 @@ Durable Harness data:
 - Work blocker, submission, requested changes, Host acceptance, and
   Host/Lead/Policy conversation or interaction;
 - steer/interrupt/close/resume request and acknowledgement;
-- explicit outcome summaries, artifacts, checks, and Host Wave decisions.
+- explicit outcome summaries, artifacts, checks, and Host Mission Log decisions.
 
 Ephemeral provider projection:
 

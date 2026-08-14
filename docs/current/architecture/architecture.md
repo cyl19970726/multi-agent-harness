@@ -7,12 +7,12 @@ environment connected through an adapter.
 
 ```text
 Star Harness
-  Mission intent / Host-plan Waves / team relations
+  Mission intent / append-only Mission Log / team relations
   Agent Team control plane / durable Team Supervisor / typed mail
   Dynamic Workflow runtime
   Host-facing plugins, MCP tools, skills, CLI
   Provider-neutral execution substrate
-  Artifact refs / outcomes / explicit Host advance
+  Artifact refs / outcomes / explicit Host judgment and Mission closeout
   Agent Dashboard
 
 Project Adapter
@@ -32,7 +32,7 @@ The canonical diagrams for the current product direction live in
 see:
 
 - the product capability stack;
-- the Mission -> Host-plan Wave and Mission -> one AgentTeam relations;
+- the Mission -> append-only Mission Log and Mission -> one AgentTeam relations;
 - the shared runtime and dashboard infrastructure;
 - what is implemented, planned, or transitional.
 
@@ -43,27 +43,30 @@ This file is the compact narrative that explains the same boundary in prose.
 The product direction is:
 
 ```text
-Mission -> ordered Host-plan Wave
+Mission -> append-only Mission Log
 Mission -> one flat AgentTeam -> AgentTeamRun -> MemberRun
 ```
 
 - A `Mission` is the durable objective and outcome container.
-- A `Wave` is a lightweight, versioned Markdown record of the Host's current
-  plan, changed facts, judgment, and advance outcome.
+- A `MissionLogEntry` is a small append-only Markdown record of the Host's
+  judgment, replan, recovery, or closeout evidence inside the Mission.
 - Agent Team, Dynamic Workflow, and Host work keep distinct runtime truth. A
-  Wave may explain their use but does not own their lifecycle.
+  Mission Log entry may explain their use but does not own their lifecycle.
 
-A Wave is intentionally small. It does not own or require a task graph,
-executor attempt, synchronization barrier, or provider session.
+A Mission Log entry is intentionally small. It is not a lifecycle object and
+does not own or require a task graph, executor attempt, synchronization
+barrier, or provider session.
 Dependencies, branches, worktrees, or workflow fan-out may still exist inside
 current implementations, but they are internal execution mechanics, not the
 product concept a future operator should start from.
 
 ## Active Coordination Contract
 
-Mission/Wave is the only active plan vocabulary. Native ledgers, schemas,
-authoring, Mission-Team linkage, Wave history/advance, and Mission closeout are
-implemented. ADR 0050 accepts Agent Team Works as the replacement for
+Mission plus its Mission Log is the active coordination vocabulary. Native
+ledgers, schemas, authoring, Mission-Team linkage, Mission Log append/read, and
+Mission closeout are implemented. Wave create/update/advance/gate is retired;
+its rows and types are ADR 0051 pre-cutover history for read/export only. ADR
+0050 accepts Agent Team Works as the replacement for
 Assignment-message ownership; its schemas/runtime/UI cutover is in progress and
 must land without a compatibility ownership path. The superseded stack is removed from active reads,
 commands, and UI under [ADR 0028](../../decisions/0028-retire-goal-phase-task-graph.md).
@@ -75,8 +78,8 @@ closeout model.
 ### `agent_team`
 
 Use Agent Team when the Mission needs living collaborators with persistent
-session state, explicit Work ownership, review, and role ownership across
-one or more Waves.
+session state, explicit Work ownership, review, and role ownership across the
+Mission lifetime.
 
 Each `MemberRun` may own one active end-to-end Work and use provider-native
 subagents for bounded internal work. The subagents return to that member and do
@@ -141,16 +144,16 @@ infrastructure contracts where possible.
 | Permission and budget ceiling | all executor kinds |
 | Artifact references and explicit outcome summaries | all executor kinds |
 | Harness coordination stream + ephemeral native activity projection | Agent Team and Host-observable execution; Workflow keeps its own run/step truth |
-| Artifact references, outcome summaries, and Host Wave decisions | all execution kinds |
+| Artifact references, outcome summaries, and Host Mission judgments | all execution kinds |
 | Durable Supervisor lease, typed actor routing, delivery claim/receipt/ACK | persistent Agent Team members only |
 
 Shared infrastructure does not collapse distinct product objects into one.
-Agent Team, Dynamic Workflow, and Host work stay distinct even when one Wave
-context refers to several of them.
+Agent Team, Dynamic Workflow, and Host work stay distinct even when one Mission
+Log entry refers to several of them.
 
 The repository currently applies a stricter Evidence -> Proposal -> Review ->
 Decision -> outcome evaluation chain while self-hosting changes. That is repository
-governance during migration, not a mandatory product contract for every Wave.
+governance during migration, not a mandatory product contract for every Mission.
 
 ## Thinking Policy
 
@@ -183,7 +186,7 @@ The near-term product stack is:
 
 ```text
 Host plugin
-  -> Mission/Wave orchestration
+  -> Mission/Mission Log orchestration
   -> executor selection
   -> shared runtime + artifacts + dashboard
 ```
@@ -204,9 +207,10 @@ Team runs as standing organizations.
 
 ## Current Implementation Boundary
 
-Native Mission/Wave authoring, Agent Team joins and attempts, explicit gates,
+Native Mission and Mission Log authoring, Agent Team joins and attempts,
 Mission closeout, CLI/API/MCP calls, and the Mission-first Dashboard are
-implemented. Persistent Codex app-server, Claude Agent SDK, and Kimi ACP
+implemented. Wave authoring and gates are retired historical compatibility
+surfaces. Persistent Codex app-server, Claude Agent SDK, and Kimi ACP
 members share the same durable Supervisor and typed mailbox contract; bounded
 provider exec paths remain Dynamic Workflow-only. Dynamic Workflow and Host
 retain their executor-specific truth;

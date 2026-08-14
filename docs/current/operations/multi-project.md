@@ -10,7 +10,7 @@ Agent executes:
 
 ```text
 Execution Space                    Project Binding
-Mission / Wave                     provider cwd
+Mission / Mission Log              provider cwd
 Agent Team / TeamRun / MemberRun   AGENTS.md / CLAUDE.md / config
 TeamMessage / correlated reply    project-local Skills
 WorkflowRun / WorkflowStep         Git / worktree / permission boundary
@@ -23,7 +23,7 @@ Finance, and governance. Execution does not require a Company.
 
 1. `--space` selects coordination storage.
 2. `--project` selects provider execution context.
-3. Selecting a Project Binding never moves or switches Mission/Wave, Agent
+3. Selecting a Project Binding never moves or switches Mission/Mission Log, Agent
    Team, or Workflow rows.
 4. Selecting an Execution Space never changes Company truth.
 5. Provider cwd is never a Company Store or Execution Space directory.
@@ -42,7 +42,7 @@ Finance, and governance. Execution does not require a Company.
 │   └── <space-id>/
 │       ├── metadata.json
 │       ├── missions.jsonl
-│       ├── waves.jsonl
+│       ├── waves.jsonl            # ADR-0051-predecessor Legacy read/export only
 │       ├── teams.jsonl
 │       ├── team_runs.jsonl
 │       ├── member_runs.jsonl

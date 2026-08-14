@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Mission/Wave console live-read consistency check.
+// Compatibility filename; current Mission console live-read consistency check.
 //
 // Proves the real SnapshotFrameBuffer used by App.tsx does not lose an SSE
 // delta when a full snapshot/action response resolves later. This is purposely
@@ -42,6 +42,22 @@ async function loadApi() {
   }
 }
 
+async function loadActions() {
+  const { default: ts } = await import("typescript");
+  const directory = await mkdtemp(join(tmpdir(), "mission-current-actions-"));
+  try {
+    const source = await readFile(join(here, "..", "src", "api", "actions.ts"), "utf8");
+    const js = ts.transpileModule(source, {
+      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const output = join(directory, "actions.mjs");
+    await writeFile(output, js, "utf8");
+    return await import(pathToFileURL(output).href);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 function memberAction(id) {
   return {
     id,
@@ -54,13 +70,58 @@ function memberAction(id) {
 }
 
 async function main() {
-  console.log("== Mission/Wave live snapshot merge checks ==");
+  console.log("== Current Mission live snapshot merge checks (compatibility filename) ==");
   const {
     ProjectionInvalidationTracker,
     SnapshotFrameBuffer,
     matchesStreamProject,
     streamSelectionKey,
   } = await loadApi();
+  const actions = await loadActions();
+  const [missionSource, selectionSource] = await Promise.all([
+    readFile(join(here, "..", "src", "surfaces", "Missions.tsx"), "utf8"),
+    readFile(join(here, "..", "src", "app", "selection.ts"), "utf8"),
+  ]);
+
+  const createRun = actions.createTeamRun({
+    objective: "current Mission runtime",
+    agentTeamId: "team-1",
+    members: [],
+  });
+  if (createRun.body.agent_team_id === "team-1"
+      && !Object.hasOwn(createRun.body, "mission_id")
+      && !Object.hasOwn(createRun.body, "wave_id")) {
+    ok("TeamRun creation binds only agent_team_id; Mission is inherited from the Team");
+  } else {
+    bad("TeamRun creation still emitted retired Mission/Wave request fields");
+  }
+
+  const answer = actions.answerProviderMessage("run-1", "message-1", "allow_once");
+  if (answer.body.option_id === "allow_once"
+      && !Object.hasOwn(answer.body, "resolved_by")
+      && !Object.hasOwn(answer.body, "source_plan_ref")) {
+    ok("Provider answer sends only response content and leaves Host identity to transport authentication");
+  } else {
+    bad("Provider answer still emitted caller-selected identity or retired plan context");
+  }
+
+  if (missionSource.includes("snapshot.legacy_waves")
+      && missionSource.includes("data-legacy-wave-history")
+      && !missionSource.includes("readyToClose")
+      && !missionSource.includes("selectedWave")
+      && !missionSource.includes("waveId:")) {
+    ok("Mission detail isolates Legacy Wave rows and never uses them for current actions or closeout");
+  } else {
+    bad("Mission detail still lets Legacy Wave state affect the current surface");
+  }
+
+  if (selectionSource.includes('params.delete("wave")')
+      && !selectionSource.includes("waveId?:")
+      && !selectionSource.includes('params.get("wave")')) {
+    ok("retired Wave deep links are discarded rather than restored into current navigation");
+  } else {
+    bad("current navigation still restores a Wave selection");
+  }
 
   // Raw ledger rows are never browser truth. A crossing SSE member_action is
   // ignored; App schedules a fresh authoritative GET instead of replaying it.

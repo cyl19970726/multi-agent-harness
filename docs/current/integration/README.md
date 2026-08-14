@@ -22,10 +22,10 @@ Member Continuation Model.
 Star Harness must support Codex first — with Claude Code and Kimi now
 registered as further exec-stream providers — while leaving room for others
 such as OpenClaw, cloud-hosted agents, or a Permission Agent. Provider
-integrations are successful only when they preserve Mission intent,
-Mission intent, its one flat Node-placed Team, and each execution
-capability's honest native records. Provider integrations must not reintroduce the retired
-Goal/GoalPhase planning stack.
+integrations are successful only when they preserve Mission intent, its
+append-only Mission Log, its one flat Node-placed Team, and each execution
+capability's honest native records. Provider integrations must not reintroduce
+the retired Wave or Goal/GoalPhase planning stacks.
 
 ## Integration Boundary
 
@@ -185,7 +185,8 @@ README until they need their own file.
 14. Team mail has typed actor provenance. Delivery claim, provider receipt,
     recipient ACK, semantic response, and Host acceptance are distinct facts.
 15. Explicit Close is latched and ends one runtime generation. Idle, Work
-    submission, Wave/Team/Mission completion, and service restart never imply Close;
+    submission, Mission Log append, TeamRun completion, Mission completion, and
+    service restart never imply Close;
     explicit Reopen alone may resume the same MemberRun/native session, while
     Retire is permanent.
 

@@ -44,11 +44,11 @@ effects return to the originating records. See
 [docs/current/product/prd.md](docs/current/product/prd.md) and
 [docs/current/company-os/README.md](docs/current/company-os/README.md).
 
-Mission/Wave, Agent Team, Dynamic Workflow, Host execution, providers, plugins,
+Mission, Agent Team, Dynamic Workflow, Host execution, providers, plugins,
 and MCP are the shared execution foundation. Their native relations are:
 
 ```text
-Mission -> ordered Host-plan Wave
+Mission -> append-only Mission Log entries
 Mission <-> exactly one flat AgentTeam
 AgentTeam -> immutable node_id -> one machine-scoped NodeDaemon
 AgentIdentity -> AgentSession -> provider-native session/thread
@@ -58,13 +58,15 @@ Message -> Subscription -> per-recipient MessageDelivery
 NodeDaemon -> durable RuntimeCommand -> provider effect
 ```
 
-`Mission` is durable intent; `Wave` is a lightweight, versioned Markdown record
-of the Host's current plan and judgment — not an executor container or
-synchronization barrier. An AgentTeamRun may span multiple Waves while its
-MemberRuns and native sessions continue. Every Team belongs to exactly one Mission,
-one Mission owns exactly one Team, and a Team never spans machines.
-No two AgentTeams may reference the same Mission. `NodeDaemonLease` is machine-scoped authority for all local Teams across registered Execution Spaces;
-each machine has one machine-scoped NodeDaemon and the lease is never scoped to one Execution Space.
+`Mission` is durable intent. Its append-only Mission Log records Host judgment,
+re-planning, recovery, and closeout evidence without becoming a lifecycle,
+executor container, gate, or synchronization barrier. An AgentTeamRun and its
+MemberRuns/native sessions continue across Mission Log entries.
+Every Team belongs to exactly one Mission; one Mission owns exactly one Team,
+and a Team never spans machines. No two AgentTeams may reference the same Mission.
+`NodeDaemonLease` is machine-scoped authority for all local Teams across
+registered Execution Spaces; each machine has one machine-scoped NodeDaemon and
+the lease is never scoped to one Execution Space.
 `TeamRun` and `MemberRun` remain coordination/history projections; they never
 own a provider process or authorize a provider effect. Every provider effect is
 prepared and settled through a durable `RuntimeCommand` bound to the exact
@@ -102,12 +104,16 @@ doc carries the contract behind each rule.
    path. For `dynamic_workflow`, WorkflowRun/WorkflowStep and its
    result/artifacts are the execution truth; for `host`, record the observable
    outcome and artifacts without inventing controlled child objects.
-3. **Mission and Wave are the only native coordination objects** for new work.
+3. **Mission is the native coordination object for new work.** Its append-only
+   Mission Log is part of the Mission record, not a second lifecycle object.
+   `Wave`, `WaveStatus`, `WaveGateStatus`, `Mission.wave_ids`, and `waves.jsonl`
+   are pre-ADR-0051 Legacy read/export compatibility only. Never create, update,
+   advance, or gate a Wave on a current path.
    The superseded coordination stack is being removed under ADR 0028: do not
    load it into normal planning context, create new records, use its commands,
    or add new dependencies. Historical stores must be exported and verified
    before their old ledgers or code are deleted.
-4. **Company/Execution/Project separation.** Execution Spaces own Mission/Wave,
+4. **Company/Execution/Project separation.** Execution Spaces own Mission,
    Agent Team, and Workflow coordination; Project Bindings identify the
    repository where providers execute and discover instructions, Skills,
    plugins, and MCP configuration. Selecting `--project` never switches the
@@ -134,7 +140,8 @@ doc carries the contract behind each rule.
 7. **Member lifecycle and control honesty.** New Agent Team members use only
    their persistent bidirectional mode: `codex_app_server`, `kimi_acp`, or
    `claude_agent_sdk`. Interrupt stops one current turn; Close ends the member
-   runtime; Wave or TeamRun completion never implies Close. Cross-process
+   runtime; Mission closeout, a Mission Log entry, or TeamRun completion never
+   implies Close. Cross-process
    control routes through the durable Team Supervisor lease, revalidated
    immediately before every drive; uncertain claimed deliveries require
    explicit reconciliation, never blind replay. Replacing a runtime drains or
@@ -207,9 +214,10 @@ doc carries the contract behind each rule.
   plugin`. The Agent Dashboard is the operator view for harness state; product
   dashboards for adapted projects remain separate.
 - Local gates and commands: [docs/current/operations/operations.md](docs/current/operations/operations.md).
-  `acceptance:mission-wave` proves the deterministic Mission/Wave, Agent Team,
-  MCP, Kimi ACP adapter, and Dashboard contracts; a real-provider claim still
-  requires a separately recorded native live run.
+  `acceptance:mission-wave` is a retained compatibility command name. It proves
+  the deterministic current Mission/Mission Log, Agent Team, MCP, Kimi ACP
+  adapter, and Dashboard contracts plus Legacy Wave read-only behavior; a
+  real-provider claim still requires a separately recorded native live run.
 
 ## Routing
 
@@ -232,19 +240,20 @@ doc carries the contract behind each rule.
 - Documentation governance:
   [docs/current/documentation-governance.md](docs/current/documentation-governance.md)
 - ADRs: [docs/decisions/README.md](docs/decisions/README.md) — especially 0026
-  (Mission/Wave), 0027 (Company OS primary model), 0028 (retired coordination
-  stack), 0032 (provider-native session truth), 0033 (member workspace), 0041
+  (historical Mission/Wave foundation), 0027 (Company OS primary model), 0028
+  (retired coordination stack), 0032 (provider-native session truth), 0033 (member workspace), 0041
   (member continuation), 0042 (Execution Spaces and Project Bindings)
 
 ## Proportional Acceptance
 
-Every non-trivial native Wave advances in four small stages: **Context**
-(Mission intent, Wave plan, permissions, risk, Works, and decision
+Every non-trivial native Mission slice advances in four small stages: **Context**
+(Mission intent, current Host judgment, permissions, risk, Works, and decision
 boundary are clear), **Execution** (the selected Host, Team, or Workflow owns
 its internal plan and emits honest native records), **Outcome** (explicit Work
 submissions, checks, artifacts, blockers, and review results are recorded), and
-**Advance** (the Host records the outcome and next judgment; unrelated active
-Works may carry forward unchanged). Review depth is proportional to risk;
+**Advance** (the Host appends the outcome and next judgment to the Mission Log;
+unrelated active Works may carry forward unchanged). Review depth is
+proportional to risk;
 Proposal/Decision/outcome evaluation is not a universal product chain.
 
 Each MemberRun snapshots its concrete `ProviderIntegrationProfile`; platform
@@ -278,7 +287,8 @@ inspects, interrupts, closes, reopens, and retires members. Interrupt stops one
 current turn. Close releases the managed runtime and freezes the mailbox while
 retaining the same MemberRun and provider-native session; Reopen increments its
 runtime generation and resumes that exact session. Deactivate/Retire is the
-permanent coordination end. Wave or TeamRun completion never implies Close.
+permanent coordination end. Mission closeout, a Mission Log entry, or TeamRun
+completion never implies Close.
 Physical live control handles remain process-local to the Harness
 service that started them. A durable Team Supervisor lease is the cross-process
 control authority and contains a loopback service locator. Dashboard, CLI, and
@@ -309,26 +319,26 @@ or member that invoked them. Optional hooks may record honest attribution, but
 the harness must not claim lifecycle control it does not have.
 
 Do not claim that Mission-scoped Agent Team work was accepted unless the store
-shows the native Mission, its linked `AgentTeam`, the relevant Host-plan Wave,
+shows the native Mission, its linked `AgentTeam`, the relevant Mission Log
+judgment entries,
 Mission-scoped `AgentTeamRun` records, role-specific MemberRuns with owned or
 claimed Works, versioned WorkEvents and delivery facts, Work-linked messages
 where conversation occurred, explicit submitted results and Host acceptance,
-and an explicit
-Host Wave advance decision — with execution claims resolvable to the
-provider-native session.
+and an explicit Host closeout/advance judgment — with execution claims
+resolvable to the provider-native session.
 
 Company-level acceptance is separate: a Work must preserve source/result
 provenance and responsibility, sensitive actions must satisfy their Approval
 policy, and durable effects must update their related document and typed
-records. An accepted Wave alone does not approve a payment, legal submission,
-permission change, or organization change.
+records. A Mission Log judgment alone does not approve a payment, legal
+submission, permission change, or organization change.
 
-A native Mission/Wave slice is done only when the store can explain why the
-work existed, how the Host's Wave context and judgment changed, which
+A native Mission slice is done only when the store can explain why the
+work existed, how the Host's Mission Log judgment changed, which
 teams/runs and Works were used, which WorkEvents allocated, blocked, submitted,
 or accepted responsibility, which Messages explained coordination, and which
 outcomes/checks/artifacts and provider-native sessions support
-acceptance, why the Host advanced each Wave and closed the Mission, and what
-should be reused, improved, split, or followed up next. If a future agent
+acceptance, why the Host appended each material judgment and closed the Mission,
+and what should be reused, improved, split, or followed up next. If a future agent
 cannot reconstruct the answer from repository files and native harness state,
 the work is not fully accepted.

@@ -61,8 +61,9 @@ In practice:
   changes remain Organization-owned objects.
 - `Commitment`, `Payment`, invoice, refund, and monetary metrics remain
   Finance-owned objects.
-- `Mission`, `Wave`, provider runs, workflow runs, and Agent Team runs remain
-  execution truth.
+- `Mission`, append-only `MissionLogEntry`, provider runs, workflow runs, and
+  Agent Team runs remain execution truth. Historical Wave rows are Legacy
+  read-only evidence, never current Docs-owned state.
 
 Never infer approval, payment, settlement, organization authority, or executor
 lifecycle from a document update.

@@ -298,7 +298,7 @@ owning execution space, mutate native TeamWork, or manage Milestone refs.
 Native Work owns identity, revision, lifecycle, reports, gates, evidence, and
 operational decisions. Company Work owns no executable row or assignment
 ledger. The skill does not own Docs structure, Organization membership,
-Finance state, or Mission/Wave execution lifecycle.
+Finance state, or Mission/Mission Log execution coordination.
 
 ### Required input
 
@@ -457,14 +457,18 @@ cannot self-accept its own authority.
 
 ## `orchestrate-mission-waves`
 
+The skill basename is retained for compatibility. “Waves” in that installed
+name does not reinstate a product `Wave` object; current behavior uses Mission
+plus append-only Mission Log entries.
+
 ### Job
 
 Use this skill when a Host Agent must create, resume, or re-plan a long-running
-Mission, coordinate one or more persistent Agent Teams through shared Works,
-preserve provider-native sessions across re-plans, review submitted Work, or
-close the Mission. Use for Mission context, Mission Log judgment, Works
-allocation, Team composition, blocker handling, carry-over, and explicit Host
-acceptance.
+Mission, coordinate the Mission's one persistent flat AgentTeam through shared
+Works, preserve provider-native sessions across re-plans, review submitted
+Work, or close the Mission. Use for Mission context, Mission Log judgment,
+Works allocation, Team composition, blocker handling, carry-over, and explicit
+Host acceptance.
 
 This is a **team coordination skill**, not a Company OS operator skill. It
 operates on execution-plane objects (Mission, AgentTeam, AgentTeamRun, Work,

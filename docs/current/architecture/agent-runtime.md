@@ -180,7 +180,8 @@ Codex, Claude, Kimi, and Pi expose separate, closed capability tuples:
 
 Provider adapters consume only canonical claimed MessageDelivery or
 WorkDelivery plus a NodeDaemon-built `ProviderInvocation`. The retired
-`ProviderDispatchEnvelope` and Wave4A Team message ledgers have no current
+`ProviderDispatchEnvelope` and the ledgers from the development batch
+historically named “Wave 4A” have no current
 writer, reader, fallback, migration, SSE, RoleView, Dashboard, CLI, HTTP, MCP,
 or adapter authority. A narrowly enumerated historical export may remain
 read-only and is excluded from current projections and migration.
@@ -251,7 +252,8 @@ Release requires:
 - full Rust, formatting, clippy, repository governance, docs/plugin mirror,
   and fresh clean-archive gates.
 
-Wave 5 must consume these server-built projections and disabled reasons; it may
-not reconstruct runtime state in the client. Wave 6 dogfood must prove the
+The development batch historically named “Wave 5” must consume these
+server-built projections and disabled reasons; it may not reconstruct runtime
+state in the client. The Wave 6 development-batch dogfood must prove the
 multi-provider Message/Work/RuntimeCommand journeys and recovery contracts on
 real Company work before widening permissions or topology.

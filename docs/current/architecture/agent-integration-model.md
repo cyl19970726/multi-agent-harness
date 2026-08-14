@@ -8,8 +8,9 @@ It sits above the provider runtime implementation reference in
 [execution-foundation.md](../company-os/execution-foundation.md), and above the concrete
 provider implementations in [integration/codex.md](../integration/codex.md),
 [integration/claude.md](../integration/claude.md), and
-[integration/kimi.md](../integration/kimi.md). It does not redefine Mission/Wave,
-executor-native records, TeamWorks, Approvals, or organization authority.
+[integration/kimi.md](../integration/kimi.md). It does not redefine
+Mission/Mission Log, executor-native records, TeamWorks, Approvals, or
+organization authority.
 Continuous Member execution follows the separate
 [Member Continuation Model](member-continuation-model.md).
 
@@ -120,10 +121,10 @@ prompt artifact, not inline chat text**. The contract:
   full system prompt per delivery from this stack:
 
 ```text
-harness base system prompt          (Mission/Wave, honest execution records, decisions)
+harness base system prompt          (Mission/Mission Log, honest execution records, decisions)
   -> repository / adapter rules      (project constraints, commands, safety)
   -> role-specific prompt            (prompt_ref → this member's responsibility)
-  -> execution context               (Mission, current Host-plan Wave, run and Works)
+  -> execution context               (Mission, recent Mission Log judgment, run and Works)
   -> optional company context        (TeamWork, source Document, Actors, approval policy)
   -> delivery envelope               (current Work version or Host/peer conversation)
   -> permission and evidence policy   (allowed tools, approval, report format)
@@ -159,7 +160,7 @@ contract for resolving and injecting skills:
   injects via the system prompt. Either way the rule is the same: the harness
   chooses skills, the platform consumes them.
 - **Kinds.** Two skill kinds are recognized: a **generic harness capability**
-  (how to use Mission/Wave and the selected executor honestly) and a
+  (how to use Mission/Mission Log and the selected executor honestly) and a
   **project/adapter skill** (how to use a project's CLI, Dashboard, acceptance
   evidence, and safety boundaries). Skills are optional tools, never product
   authority.
@@ -399,7 +400,7 @@ coordination. Generalized:
 
 | Generic harness owns | Adapter / platform owns |
 | --- | --- |
-| Mission/Wave joins, Agent Team Works/messages, role routing | domain tool descriptors |
+| Mission/Mission Log joins, Agent Team Works/messages, role routing | domain tool descriptors |
 | evidence references, review gates, decisions | project dashboard, artifacts |
 | member identity, prompt/skill refs, permissions | domain logic, live execution, secrets |
 | the neutral launch spec and event reduction | platform-native CLI/SDK call shape |
@@ -544,7 +545,7 @@ abstraction remains additive future work under ADR 0017.
 
 ## Non-Goals
 
-- Do not redefine Mission/Wave, executor-native records, TeamWork, Approval or
+- Do not redefine Mission/Mission Log, executor-native records, TeamWork, Approval or
   organization authority here; those stay in their owning contracts.
 - Do not let one platform's wire vocabulary become the neutral spec.
 - Do not treat provider-native subagents as durable members unless promoted.

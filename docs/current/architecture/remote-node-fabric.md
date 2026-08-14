@@ -1,6 +1,8 @@
 # Remote Node Fabric
 
-Status: current canonical architecture contract for Wave 5.
+Status: current canonical architecture contract delivered in the development
+batch historically named “Wave 5”. In this document, Wave 5/4C labels identify
+development batches, not a current product `Wave` object.
 
 ## Purpose and boundary
 

@@ -155,7 +155,7 @@ Queue discipline（来自 harness，不由 provider 定义）：
 
 ## Permission Model
 
-Kimi interactive CLI exposes standalone permission flags:
+Kimi interactive CLI exposes standalone mode flags:
 
 ```text
 --plan
@@ -163,20 +163,8 @@ Kimi interactive CLI exposes standalone permission flags:
 -y / --yolo
 ```
 
-The adapter keeps a `map_permission` implementation for trait conformance and for the ACP
-session driver below — what was previously "possible future interactive/ACP invocation" is now
-the v0 selected path for Agent Team member runs (see
-[../decisions/0025-agent-team-run-control-plane.md](../../decisions/0025-agent-team-run-control-plane.md)):
-
-```text
-ReadOnly        -> --plan
-WorkspaceWrite  -> --auto
-FullAccess      -> --yolo
-```
-
-Source: `crates/firm-cli/src/main.rs:14779-14790`.
-
-But the real `kimi -p` headless delivery path does **not** use them. Kimi v0.18 rejects permission
+These are execution modes, not a native sandbox contract. The real `kimi -p`
+headless delivery path does **not** use them. Kimi v0.18 rejects permission
 flags combined with `--prompt` / `-p`, so `spawn_kimi_ephemeral` and `run_kimi_exec_delivery_real`
 pass no permission flag. This means kimi has **no read-only mode at all**: a leaf the workflow
 declares read-only can still edit the live tree (observed in dogfooding — a read-only kimi leaf
@@ -190,6 +178,14 @@ a throwaway git worktree anyway, so any writes land in a discardable checkout in
 repo (`provider_enforces_read_only` / `step_needs_isolation`,
 `crates/firm-cli/src/main.rs`). On a non-git project there is no worktree to isolate into, so the
 leaf degrades to the shared cwd with a printed warning that its writes are not contained.
+
+The persistent Agent Team `kimi_acp` path is stricter: because ACP likewise
+exposes no provable read-only or workspace-only sandbox, `map_permission`
+rejects `ReadOnly` and `WorkspaceWrite` at Session admission. Only a frozen
+`FullAccess` AgentSession may start. Permission callbacks can then select only
+an exact provider intent of `allow_once` or `allow_always`; option ids and
+labels never grant permission. This is the current trusted-development policy,
+not a claim that Kimi can enforce a narrower ceiling.
 
 Source: `crates/firm-cli/src/main.rs:14471-14478`,
 `crates/firm-cli/src/main.rs:14607-14612`.
@@ -229,8 +225,8 @@ version.
   are not converted into provider-derived MemberAction rows.
 - `session/request_permission` is implemented as a reverse-RPC bridge. For a
   trusted full-access Member, an ordinary tool request with an exact provider
-  intent of `allow_always` or `allow_once` is acknowledged immediately before
-  any interaction record is created. Harness writes one bounded
+  intent of `allow_always` or `allow_once` is acknowledged immediately without
+  creating a question Message. Harness writes one bounded
   `provider_control` acknowledgement without command or prompt content; it
   does not mark the Member waiting or manufacture a permission workflow.
 - `AskUserQuestion` and Plan Review route to Lead as correlated Messages and

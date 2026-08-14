@@ -18,20 +18,22 @@ evidence, metrics, and financial effects return to related business records.
 Document / Business Module
   -> Work / Approval
      -> Human or Standing Agent responsibility
-     -> Mission/Wave | Agent Team | Dynamic Workflow | direct work
+     -> Mission + Mission Log | Agent Team | Dynamic Workflow | direct work
   -> Result / Evidence / Metric / FinancialRecord
   -> Document and organization evolution
 ```
 
-Mission/Wave, Agent Team, Dynamic Workflow, Host execution, provider runtimes,
+Mission, Mission Log, Agent Team, Dynamic Workflow, Host execution, provider runtimes,
 plugins, and MCP are the execution foundation. They remain important, but they
 are not the top-level product information architecture.
 
 ## Current implementation status
 
 The provider-neutral execution foundation is substantially implemented.
-Mission is durable intent, ordered Waves preserve the Host's evolving plan and
-judgment, and independent Agent Teams can remain active across multiple Waves.
+Mission is durable intent. Its append-only Mission Log preserves the Host's
+material judgment, re-plan, recovery, and closeout record without becoming a
+second lifecycle, Gate, executor, or task graph. Independent Agent Teams remain
+linked to the Mission while members and provider-native sessions continue.
 Every live TeamRun has one durable Supervisor generation that owns provider
 connections, delivery claims, and real controls. Members keep their
 provider-native sessions while idle; typed Host, Member, Agent, and Operator
@@ -65,7 +67,7 @@ Shared operating views:
 
 Execution tools:
 
-- Missions and ordered Host-plan Waves;
+- Missions and their append-only Host judgment Logs;
 - independent Agent Teams, Mission-scoped TeamRuns, and MemberRuns;
 - durable Team Supervisors, typed mailboxes, delivery receipts, and native
   session lifecycle;
@@ -75,7 +77,7 @@ Execution tools:
 ## Repository development
 
 Development intent and implementation Specs are canonical in Notion. Each
-delivery Wave is claimed by one Primary Codex Session and lands through one
+delivery batch is claimed by one Primary Codex Session and lands through one
 clean worktree, branch, umbrella Issue, and final PR:
 
 ```text
@@ -119,9 +121,9 @@ and [getting started](docs/current/operations/getting-started.md).
 - [Module design](docs/current/company-os/module-design.md)
 - [Governance](docs/current/company-os/governance.md)
 - [Execution foundation](docs/current/company-os/execution-foundation.md)
-- [Mission/Wave Host-plan product contract](docs/current/product/mission-wave-host-plan.md)
+- [Mission and Mission Log Host-plan product contract](docs/current/product/mission-wave-host-plan.md)
 - [Durable Team supervision and typed mail](docs/decisions/0044-durable-team-supervision-and-typed-mail.md)
-- [Host-plan Wave and Mission Team decision](docs/decisions/0034-host-plan-waves-and-mission-teams.md)
+- [Historical Host-plan Wave and Mission Team decision](docs/decisions/0034-host-plan-waves-and-mission-teams.md)
 - [Product requirements](docs/current/product/prd.md)
 - [Architecture map](docs/current/architecture/architecture-map.md)
 - [Provider integrations](docs/current/integration/README.md)
@@ -137,7 +139,7 @@ and [getting started](docs/current/operations/getting-started.md).
 | `schemas/` | Stable wire schemas for implemented objects. |
 | `crates/` | Rust store, core, CLI, execution, and provider infrastructure. |
 | `apps/agent-dashboard/` | React/Vite Company OS and execution workbench frontend. |
-| `skills/` | Optional capabilities, including Dynamic Workflow authoring and thin Mission/Wave Host orchestration. |
+| `skills/` | Optional capabilities, including Dynamic Workflow authoring and thin Mission + Mission Log Host orchestration. |
 | `examples/adapters/` | Domain adapters; business-specific logic stays outside the generic core. |
 
 ## Core boundary

@@ -57,5 +57,8 @@ native session locator and coordination evidence it needs; any activity shown
 in the Dashboard is an ephemeral read projection from that provider-owned
 source, never a second transcript ledger.
 
-Wave rows are historical read-only compatibility data. They are not part of
-new Team, Run, Work, scheduling, or acceptance contracts.
+`Wave`, `WaveStatus`, `WaveGateStatus`, `Mission.wave_ids`, and `waves.jsonl`
+are ADR 0051 pre-cutover historical read/export compatibility data. They are
+not part of new Mission, Team, Run, Work, scheduling, or acceptance contracts.
+All new Host judgment, replan, recovery, and closeout evidence is appended as
+`MissionLogEntry` rows inside the owning Mission.

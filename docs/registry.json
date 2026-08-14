@@ -56,7 +56,7 @@
       "canonicalFor": [
         "agent operating rules",
         "Company OS self-hosting and documentation-governance boundary",
-        "native Mission/Wave self-hosting workflow",
+        "native Mission and append-only Mission Log self-hosting workflow",
         "executor-specific staged acceptance"
       ],
       "dependsOn": [
@@ -67,6 +67,7 @@
         "docs/current/architecture/architecture.md",
         "docs/current/architecture/concept-model.md",
         "docs/decisions/0026-mission-wave-architecture.md",
+        "docs/decisions/0051-single-intent-spine.md",
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md"
       ],
@@ -78,13 +79,13 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "The Company OS product boundary, Mission/Wave execution foundation, native self-hosting workflow, executor proof contract, or staged acceptance requirements change.",
+      "reorgTrigger": "The Company OS product boundary, Mission/Mission Log execution foundation, native self-hosting workflow, executor proof contract, or staged acceptance requirements change.",
       "authorityClass": "entry",
       "implementationState": "partial",
       "truthRefs": [
         {
           "kind": "decision",
-          "ref": "docs/decisions/0026-mission-wave-architecture.md"
+          "ref": "docs/decisions/0051-single-intent-spine.md"
         },
         {
           "kind": "decision",
@@ -119,6 +120,7 @@
         "docs/decisions/0042-company-store-execution-space-project-binding.md",
         "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+        "docs/decisions/0051-single-intent-spine.md",
         "skills/dogfood-company-os/SKILL.md"
       ],
       "machineConsumers": [
@@ -141,6 +143,10 @@
         {
           "kind": "decision",
           "ref": "docs/decisions/0042-company-store-execution-space-project-binding.md"
+        },
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0051-single-intent-spine.md"
         }
       ]
     },
@@ -234,6 +240,7 @@
         "docs/current/company-os/execution-foundation.md",
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0026-mission-wave-architecture.md",
+        "docs/decisions/0051-single-intent-spine.md",
         "docs/current/product/mvp.md",
         "docs/current/architecture/design-basis.md",
         "docs/current/architecture/concept-model.md",
@@ -263,7 +270,7 @@
         },
         {
           "kind": "decision",
-          "ref": "docs/decisions/0026-mission-wave-architecture.md"
+          "ref": "docs/decisions/0051-single-intent-spine.md"
         },
         {
           "kind": "decision",
@@ -277,7 +284,7 @@
       "status": "stable",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Mission/Wave MVP slice",
+        "Mission and append-only Mission Log MVP slice",
         "executor acceptance gates",
         "retired coordination exclusion acceptance"
       ],
@@ -285,6 +292,7 @@
         "docs/current/product/prd.md",
         "docs/current/architecture/architecture-map.md",
         "docs/decisions/0026-mission-wave-architecture.md",
+        "docs/decisions/0051-single-intent-spine.md",
         "docs/current/architecture/design-basis.md",
         "docs/current/architecture/concept-model.md",
         "docs/current/architecture/architecture.md",
@@ -306,13 +314,13 @@
         "npx pnpm@9.15.4 check",
         "cargo test"
       ],
-      "reorgTrigger": "Mission/Wave MVP scope, executor acceptance, retirement policy, or build order changes.",
+      "reorgTrigger": "Mission/Mission Log MVP scope, executor acceptance, Legacy Wave retirement policy, or build order changes.",
       "authorityClass": "canonical_contract",
       "implementationState": "verified",
       "truthRefs": [
         {
           "kind": "decision",
-          "ref": "docs/decisions/0026-mission-wave-architecture.md"
+          "ref": "docs/decisions/0051-single-intent-spine.md"
         },
         {
           "kind": "test",
@@ -356,7 +364,7 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "core object relationships",
-        "Mission/Wave semantics and retired-coordination boundary",
+        "Mission/Mission Log semantics and Legacy Wave boundary",
         "executor kinds and Agent Team Work/Message boundary",
         "optional governance object model (Review, Gap, Evaluation, LearningNote, Vision)",
         "closeout gate and open-enum vocabularies",
@@ -369,6 +377,7 @@
         "docs/current/architecture/architecture-map.md",
         "docs/current/architecture/schemas.md",
         "docs/decisions/0026-mission-wave-architecture.md",
+        "docs/decisions/0051-single-intent-spine.md",
         "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
       ],
@@ -387,7 +396,7 @@
       "truthRefs": [
         {
           "kind": "decision",
-          "ref": "docs/decisions/0026-mission-wave-architecture.md"
+          "ref": "docs/decisions/0051-single-intent-spine.md"
         }
       ]
     },
@@ -397,7 +406,7 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "Mission/Wave product hierarchy",
+        "Mission/Mission Log product hierarchy and Legacy Wave boundary",
         "executor kinds and shared infrastructure",
         "retired coordination boundary"
       ],
@@ -415,6 +424,7 @@
         "docs/current/integration/codex.md",
         "docs/current/integration/codex-message-delivery.md",
         "docs/decisions/0026-mission-wave-architecture.md",
+        "docs/decisions/0051-single-intent-spine.md",
         "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
       ],
@@ -433,7 +443,7 @@
       "truthRefs": [
         {
           "kind": "decision",
-          "ref": "docs/decisions/0026-mission-wave-architecture.md"
+          "ref": "docs/decisions/0051-single-intent-spine.md"
         }
       ]
     },
@@ -456,7 +466,8 @@
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/current/architecture/concept-model.md",
         "docs/decisions/0025-agent-team-run-control-plane.md",
-        "docs/decisions/0026-mission-wave-architecture.md"
+        "docs/decisions/0026-mission-wave-architecture.md",
+        "docs/decisions/0051-single-intent-spine.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -480,7 +491,7 @@
         },
         {
           "kind": "decision",
-          "ref": "docs/decisions/0026-mission-wave-architecture.md"
+          "ref": "docs/decisions/0051-single-intent-spine.md"
         }
       ]
     },
@@ -494,7 +505,7 @@
         "source-of-truth rules",
         "provider-native execution versus Harness coordination truth",
         "projection semantics",
-        "Mission/Wave Host-plan, Mission-Team relation, and independent runtime edges",
+        "Mission/Mission Log judgment, Mission-Team relation, and independent runtime edges",
         "optional governance object edges",
         "retired-field removal boundary"
       ],
@@ -504,6 +515,7 @@
         "docs/current/architecture/architecture.md",
         "docs/current/architecture/schemas.md",
         "docs/current/company-os/governance.md",
+        "docs/decisions/0051-single-intent-spine.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
@@ -517,10 +529,15 @@
         "npx pnpm@9.15.4 check",
         "cargo test"
       ],
-      "reorgTrigger": "Mission/Wave Host-plan relationships, Mission-Team/runtime edges, optional governance edges, projections, source-of-truth rules, or schema responsibilities change.",
+      "reorgTrigger": "Mission/Mission Log relationships, Mission-Team/runtime edges, optional governance edges, projections, source-of-truth rules, or schema responsibilities change.",
       "authorityClass": "canonical_contract",
       "implementationState": "partial",
-      "truthRefs": []
+      "truthRefs": [
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0051-single-intent-spine.md"
+        }
+      ]
     },
     {
       "path": "docs/current/architecture/agent-runtime.md",
@@ -572,7 +589,7 @@
       "status": "stable",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Mission/Wave Workbench information architecture",
+        "Mission/Mission Log Workbench information architecture",
         "executor control-plane views",
         "Agent Team ownership visibility",
         "retired-surface exclusion boundary"
@@ -580,6 +597,7 @@
       "dependsOn": [
         "docs/current/architecture/architecture-map.md",
         "docs/decisions/0026-mission-wave-architecture.md",
+        "docs/decisions/0051-single-intent-spine.md",
         "docs/current/product/prd.md",
         "docs/current/architecture/concept-model.md",
         "docs/current/architecture/data-model.md",
@@ -599,13 +617,13 @@
         "npx pnpm@9.15.4 check",
         "harness governance check"
       ],
-      "reorgTrigger": "Mission/Wave navigation, executor views, read models, safe actions, or retired-surface boundaries change.",
+      "reorgTrigger": "Mission/Mission Log navigation, executor views, read models, safe actions, or retired-surface boundaries change.",
       "authorityClass": "implementation_reference",
       "implementationState": "partial",
       "truthRefs": [
         {
           "kind": "decision",
-          "ref": "docs/decisions/0026-mission-wave-architecture.md"
+          "ref": "docs/decisions/0051-single-intent-spine.md"
         },
         {
           "kind": "ui",
@@ -620,7 +638,7 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "Agent Workbench frontend design index",
-        "Mission/Wave frontend implementation boundary",
+        "Mission/Mission Log frontend implementation boundary",
         "Workbench page-spec map",
         "Workbench page-local layout contract map",
         "Workbench implementation-readiness summary"
@@ -628,6 +646,7 @@
       "dependsOn": [
         "docs/current/architecture/architecture-map.md",
         "docs/decisions/0026-mission-wave-architecture.md",
+        "docs/decisions/0051-single-intent-spine.md",
         "docs/current/product/prd.md",
         "docs/current/architecture/concept-model.md",
         "docs/current/operations/dashboard.md",
@@ -648,7 +667,7 @@
       "truthRefs": [
         {
           "kind": "decision",
-          "ref": "docs/decisions/0026-mission-wave-architecture.md"
+          "ref": "docs/decisions/0051-single-intent-spine.md"
         }
       ]
     },
@@ -779,7 +798,7 @@
         "npx pnpm@9.15.4 check",
         "harness governance check"
       ],
-      "reorgTrigger": "Host-plan coordination, execution concurrency, worktree, WorkflowPatch, PR, review, or Wave-decision workflow changes.",
+      "reorgTrigger": "Host-plan coordination, execution concurrency, worktree, WorkflowPatch, PR, review, or development-batch integration workflow changes.",
       "authorityClass": "implementation_reference",
       "implementationState": "partial",
       "truthRefs": [
@@ -1067,6 +1086,7 @@
       "dependsOn": [
         "docs/current/architecture/architecture-map.md",
         "docs/decisions/0026-mission-wave-architecture.md",
+        "docs/decisions/0051-single-intent-spine.md",
         "docs/current/dashboard/frontend-design.md"
       ],
       "machineConsumers": [
@@ -1077,13 +1097,13 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Mission/Wave page list, compatibility page status, page-spec template, or page-spec boundary changes.",
+      "reorgTrigger": "Mission/Mission Log page list, Legacy Wave page status, page-spec template, or page-spec boundary changes.",
       "authorityClass": "entry",
       "implementationState": "partial",
       "truthRefs": [
         {
           "kind": "decision",
-          "ref": "docs/decisions/0026-mission-wave-architecture.md"
+          "ref": "docs/decisions/0051-single-intent-spine.md"
         }
       ]
     },
@@ -1368,10 +1388,10 @@
     {
       "path": "docs/decisions/0026-mission-wave-architecture.md",
       "ownerRole": "architecture",
-      "status": "stable",
+      "status": "deprecated",
       "lifecycle": "stable",
       "canonicalFor": [
-        "Mission/Wave architecture decision",
+        "historical Mission/Wave architecture decision superseded by ADR 0051",
         "historical Mission -> Wave -> executor hierarchy superseded by ADR 0034",
         "executor kinds (agent_team, dynamic_workflow, host)",
         "shared runtime contracts and transient-thinking policy",
@@ -1391,8 +1411,8 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "The retained Mission/Wave vocabulary, historical executor fields, shared runtime contracts, transient-thinking policy, or compatibility migration plan change.",
-      "authorityClass": "canonical_contract",
+      "reorgTrigger": "Historical Mission/Wave interpretation, retained runtime rationale, or Legacy compatibility policy changes.",
+      "authorityClass": "historical_evidence",
       "implementationState": "partial",
       "truthRefs": [
         {
@@ -2043,11 +2063,12 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "Company OS execution foundation",
-        "Mission/Wave, Agent Team, Workflow, Host, provider, plugin, and MCP boundary"
+        "Mission/Mission Log, Agent Team, Workflow, Host, provider, plugin, and MCP boundary"
       ],
       "dependsOn": [
         "docs/decisions/0025-agent-team-run-control-plane.md",
         "docs/decisions/0026-mission-wave-architecture.md",
+        "docs/decisions/0051-single-intent-spine.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
         "docs/decisions/0042-company-store-execution-space-project-binding.md",
         "docs/current/company-os/work-items-and-approvals.md"
@@ -2071,7 +2092,7 @@
         },
         {
           "kind": "decision",
-          "ref": "docs/decisions/0026-mission-wave-architecture.md"
+          "ref": "docs/decisions/0051-single-intent-spine.md"
         },
         {
           "kind": "decision",
@@ -2246,17 +2267,18 @@
       ]
     },
     {
-      "path": "docs/current/dashboard/pages/mission-wave-canvas.md",
+      "path": "docs/current/dashboard/pages/mission-detail-log.md",
       "ownerRole": "product-design",
       "status": "stable",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Mission and Wave execution canvas",
-        "ordered Wave and gate UI contract"
+        "Mission detail and append-only Mission Log projection",
+        "Host judgment, replan, recovery, and closeout UI contract"
       ],
       "dependsOn": [
         "docs/current/company-os/execution-foundation.md",
         "docs/decisions/0026-mission-wave-architecture.md",
+        "docs/decisions/0051-single-intent-spine.md",
         "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
       ],
@@ -2266,15 +2288,20 @@
       ],
       "reviewAfter": "2026-09-30",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
+        "npx pnpm@9.15.4 check",
+        "npx pnpm@9.15.4 check:dashboard:quick"
       ],
-      "reorgTrigger": "Mission/Wave execution semantics, gate rendering, source-context return path, or responsive page contract changes.",
+      "reorgTrigger": "Mission/Mission Log semantics, historical Wave projection, source-context return path, or responsive page contract changes.",
       "authorityClass": "design_intent",
-      "implementationState": "design_only",
+      "implementationState": "implemented",
       "truthRefs": [
         {
           "kind": "decision",
-          "ref": "docs/decisions/0026-mission-wave-architecture.md"
+          "ref": "docs/decisions/0051-single-intent-spine.md"
+        },
+        {
+          "kind": "ui",
+          "ref": "apps/agent-dashboard/src/surfaces/Missions.tsx"
         }
       ]
     },
@@ -2803,19 +2830,16 @@
     {
       "path": "docs/decisions/0034-host-plan-waves-and-mission-teams.md",
       "ownerRole": "architecture",
-      "status": "stable",
+      "status": "deprecated",
       "lifecycle": "stable",
       "canonicalFor": [
-        "Mission durable context and Mission-AgentTeam relation",
-        "versioned Host-plan Wave semantics",
-        "Mission-scoped AgentTeamRun and cross-Wave member lifecycle",
-        "CLI-primary and optional thin MCP integration boundary"
+        "historical Mission-AgentTeam and Host-plan Wave decision",
+        "retained Mission-scoped AgentTeamRun and member lifecycle rationale",
+        "historical CLI-primary and optional thin MCP integration boundary"
       ],
       "dependsOn": [
         "docs/decisions/0025-agent-team-run-control-plane.md",
-        "docs/decisions/0026-mission-wave-architecture.md",
-        "docs/current/product/mission-wave-host-plan.md",
-        "docs/current/architecture/architecture.md"
+        "docs/decisions/0026-mission-wave-architecture.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2829,8 +2853,8 @@
         "npx pnpm@9.15.4 acceptance:mission-wave",
         "npx pnpm@9.15.4 check:star-harness-plugin"
       ],
-      "reorgTrigger": "Mission context, Host-plan Wave semantics, Mission-Team cardinality, TeamRun lifecycle, or the CLI/MCP authority boundary changes.",
-      "authorityClass": "canonical_contract",
+      "reorgTrigger": "Historical Host-plan Wave interpretation, retained Mission-Team cardinality, TeamRun lifecycle, or the CLI/MCP boundary changes.",
+      "authorityClass": "historical_evidence",
       "implementationState": "verified",
       "truthRefs": [
         {
@@ -2840,6 +2864,49 @@
         {
           "kind": "schema",
           "ref": "schemas/wave.schema.json"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/firm-cli/tests/mission_wave_api.rs"
+        }
+      ]
+    },
+    {
+      "path": "docs/decisions/0051-single-intent-spine.md",
+      "ownerRole": "architecture",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "current Mission and append-only Mission Log authority",
+        "retirement of Wave authoring, gates, and current planning semantics",
+        "Legacy Wave read-only compatibility boundary"
+      ],
+      "dependsOn": [
+        "docs/decisions/0026-mission-wave-architecture.md",
+        "docs/decisions/0034-host-plan-waves-and-mission-teams.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance",
+        "acceptance:mission-wave"
+      ],
+      "reviewAfter": "2026-09-30",
+      "lastVerifiedWith": [
+        "cargo test -p firm-cli --test mission_wave_api -- --test-threads=1",
+        "npx pnpm@9.15.4 check:docs-governance",
+        "npx pnpm@9.15.4 acceptance:mission-wave"
+      ],
+      "reorgTrigger": "Mission or Mission Log semantics, Wave retirement, or Legacy Wave read-only compatibility changes.",
+      "authorityClass": "canonical_contract",
+      "implementationState": "verified",
+      "truthRefs": [
+        {
+          "kind": "store",
+          "ref": "crates/firm-store/src/lib.rs"
+        },
+        {
+          "kind": "api",
+          "ref": "crates/firm-cli/src/main.rs"
         },
         {
           "kind": "test",
@@ -2860,7 +2927,7 @@
         "docs/decisions/0034-host-plan-waves-and-mission-teams.md",
         "docs/decisions/0037-agent-member-autonomy-and-collaboration.md",
         "docs/decisions/0051-single-intent-spine.md",
-        "docs/current/dashboard/pages/mission-wave-canvas.md",
+        "docs/current/dashboard/pages/mission-detail-log.md",
         "docs/current/dashboard/pages/team-run-war-room.md"
       ],
       "machineConsumers": [
@@ -2872,13 +2939,13 @@
         "npx pnpm@9.15.4 check",
         "npx pnpm@9.15.4 acceptance:mission-wave"
       ],
-      "reorgTrigger": "Host orchestration journey, Wave context shape, Team membership evolution, or Dashboard relation UX changes.",
+      "reorgTrigger": "Host orchestration journey, Mission Log entry shape, Team membership evolution, or Dashboard relation UX changes.",
       "authorityClass": "canonical_contract",
       "implementationState": "verified",
       "truthRefs": [
         {
           "kind": "decision",
-          "ref": "docs/decisions/0034-host-plan-waves-and-mission-teams.md"
+          "ref": "docs/decisions/0051-single-intent-spine.md"
         },
         {
           "kind": "test",

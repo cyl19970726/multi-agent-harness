@@ -10,7 +10,7 @@ import type {
 
 /**
  * Dashboard read model after the superseded coordination-stack retirement.
- * Native Mission/Wave and Agent Team selectors read directly from `snapshot`;
+ * Native Mission and Agent Team selectors read directly from `snapshot`;
  * this projection only keeps shared lookup state needed by execution surfaces.
  */
 export interface WorkbenchModel {

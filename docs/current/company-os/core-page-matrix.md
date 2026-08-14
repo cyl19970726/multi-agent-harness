@@ -77,7 +77,7 @@ MemberRun, and provider session remain distinct lifecycles.
 
 ## Retained execution drill-ins
 
-Mission/Wave Canvas, Agent Team War Room, MemberRun Focus, WorkflowRun Focus,
+Mission/Mission Log Canvas, Agent Team War Room, MemberRun Focus, WorkflowRun Focus,
 Providers, and Plugins remain execution or platform pages. They are not part of
 the twelve Company OS expected designs because their separate Workbench visual
 contract already exists. Their Company OS adaptation is a compact source panel
