@@ -219,6 +219,20 @@ if (realEvidencePath) {
         }
 
         const collaborationRows = readJsonLines(material.central_collaboration_ledger.absolute);
+        const provenanceClaim = evidence.raw_export_provenance_claim;
+        if (
+          provenanceClaim?.scope !== "slice_recomputable" ||
+          provenanceClaim?.source_store_digest_verification !==
+            "recorded_at_export_not_recomputed_from_committed_slice" ||
+          provenanceClaim?.selector_digest_verification !==
+            "recorded_selector_identity_not_an_inclusion_proof" ||
+          typeof provenanceClaim?.limitation !== "string" ||
+          !provenanceClaim.limitation.includes("not proof")
+        ) {
+          throw new Error(
+            "evidence must state that source_store_digest and selector_digest are provenance metadata, not independently recomputed inclusion proof",
+          );
+        }
         for (const [name, descriptor] of Object.entries(evidence.files)) {
           if (name.includes("ledger") || name.includes("journal")) {
             if (
