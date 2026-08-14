@@ -8,11 +8,11 @@ use firm_core::agentfirm_api::{
     GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberRun, MemberRuntimeStatus,
     MemberWorkspaceBinding, Message, MessageRecipientKind, MessageSubscription,
     MessageSubscriptionKind, MessageSubscriptionStatus, MutationContext, NativeSessionRef,
-    ProviderInvocation, ProviderReceipt, RuntimeCommandKind, RuntimeCommandRecord, RuntimeCommandStatus,
-    RuntimeEffectCertainty, RuntimeRecoveryResolution, SubscriptionCursor, TeamMembership,
-    TeamMembershipRole, TeamMembershipStatus, TrustError, TrustErrorCode, WorkDelivery,
-    WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus, WorkFinding,
-    WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
+    ProviderInvocation, ProviderReceipt, RuntimeCommandKind, RuntimeCommandRecord,
+    RuntimeCommandStatus, RuntimeEffectCertainty, RuntimeRecoveryResolution, SubscriptionCursor,
+    TeamMembership, TeamMembershipRole, TeamMembershipStatus, TrustError, TrustErrorCode,
+    WorkDelivery, WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
+    WorkFinding, WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
     WorkspaceOwnership, WorkspaceSafetyProof,
 };
 use firm_core::collaboration::CollaborationMessageAuthority;
@@ -7657,10 +7657,7 @@ mod tests {
             .expect("first settle binds the native Session");
         assert!(!bound.replayed);
         assert_eq!(bound.projection.version, 2);
-        assert_eq!(
-            bound.projection.native_session_ref.as_ref(),
-            Some(&native)
-        );
+        assert_eq!(bound.projection.native_session_ref.as_ref(), Some(&native));
         assert_eq!(bound.projection.lifecycle, AgentSessionStatus::Idle);
         assert_eq!(bound.projection.runtime_generation, 1);
 
@@ -7743,7 +7740,12 @@ mod tests {
 
         let stale_generation = store
             .bind_member_run_native_session(
-                &context("host", "member_run.native.bind", "bind-run-stale-generation", 1),
+                &context(
+                    "host",
+                    "member_run.native.bind",
+                    "bind-run-stale-generation",
+                    1,
+                ),
                 "member-run-bind-native",
                 2,
                 native.clone(),
@@ -7758,7 +7760,12 @@ mod tests {
         );
         let stale_version = store
             .bind_member_run_native_session(
-                &context("host", "member_run.native.bind", "bind-run-stale-version", 0),
+                &context(
+                    "host",
+                    "member_run.native.bind",
+                    "bind-run-stale-version",
+                    0,
+                ),
                 "member-run-bind-native",
                 1,
                 native.clone(),

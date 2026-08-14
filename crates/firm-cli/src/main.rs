@@ -11435,7 +11435,10 @@ fn materialize_canonical_member_run(
     execution_space_id: &str,
     runtime: &ProviderRuntimeProjection,
 ) -> CliResult<()> {
-    let native_session = runtime.native_session.as_ref().map(agentfirm_native_session_ref);
+    let native_session = runtime
+        .native_session
+        .as_ref()
+        .map(agentfirm_native_session_ref);
     let run = harness_core::agentfirm_api::MemberRun {
         id: runtime.id.clone(),
         agent_member_id: runtime.agent_member_id.clone(),
@@ -19689,7 +19692,8 @@ impl TeamRunLedger {
                 .filter(|session| {
                     session.agent_identity_id == next.agent_member_id
                         && session.runtime_generation == next.runtime_generation
-                        && session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
+                        && session.lifecycle
+                            != harness_core::agentfirm_api::AgentSessionStatus::Closed
                 })
                 .collect::<Vec<_>>();
             let [session] = sessions.as_slice() else {
@@ -51844,7 +51848,10 @@ package:com.tencent.mm
             Arc::new(AtomicBool::new(true)),
         );
         let expected = created.member_runs[0].clone();
-        assert!(expected.native_session.is_none(), "fresh-start precondition");
+        assert!(
+            expected.native_session.is_none(),
+            "fresh-start precondition"
+        );
         let mut settled = expected.clone();
         settled.native_session = Some(capacity_test_session());
         settled.status = MemberRunStatus::Idle;

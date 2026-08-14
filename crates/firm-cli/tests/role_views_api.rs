@@ -1889,10 +1889,9 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
             .rev()
             .any(|member| {
                 member.id == member_run_id
-                    && member
-                        .native_session
-                        .as_ref()
-                        .is_some_and(|session| session.native_session_id == settled_native_session_id)
+                    && member.native_session.as_ref().is_some_and(|session| {
+                        session.native_session_id == settled_native_session_id
+                    })
             });
         if settled {
             break;

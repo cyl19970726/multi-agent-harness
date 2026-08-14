@@ -428,7 +428,8 @@ fn assert_trust_native_binding_synced(
 
 /// Read one store JSONL file with latest-wins-per-id projection, in append
 /// order (mirrors the harness's own projections).
-fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::Value> {    let path = home.spaces_dir().join(project_id).join(file);
+fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::Value> {
+    let path = home.spaces_dir().join(project_id).join(file);
     let text =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let mut ids: Vec<String> = Vec::new();
