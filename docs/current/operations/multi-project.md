@@ -12,7 +12,7 @@ Agent executes:
 Execution Space                    Project Binding
 Mission / Wave                     provider cwd
 Agent Team / TeamRun / MemberRun   AGENTS.md / CLAUDE.md / config
-TeamMessage / PendingInteraction   project-local Skills
+TeamMessage / correlated reply    project-local Skills
 WorkflowRun / WorkflowStep         Git / worktree / permission boundary
 ```
 
@@ -284,7 +284,7 @@ The deterministic suite uses isolated HOME directories and fake providers:
 ```bash
 pnpm test:multi-project
 cargo test -p firm-cli --test execution_space_cli
-cargo test -p firm-cli --test team_run_start
+cargo test -p firm-cli --test team_run_api --test team_run_daemon
 cargo test -p firm-cli --test workflow_cwd
 pnpm check:dashboard
 ```

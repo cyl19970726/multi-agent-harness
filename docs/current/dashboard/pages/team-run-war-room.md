@@ -19,7 +19,7 @@ answers, which native sessions can be resumed, and what evidence has arrived.
 
 The issue #444 slice restores Works, Activity, Members, Agent Conversation and
 the independent Host Console. It does not claim the complete future runtime or
-large-Team contract: authenticated PendingInteraction resolution, pending
+large-Team contract: correlated provider-question answers, pending
 Close-request projection, Steer/Interrupt safe-point actions, full
 MessageDelivery ACK control, and cursor-backed 1,000-Work/100-Member
 virtualization remain deferred until server-built RoleViews/actions exist. The
@@ -47,8 +47,7 @@ Required data:
   owner/readiness/claim/review/parent-child state and `WorkDelivery`
   claim/provider receipt/failure/invalidation;
 - typed Message sender and recipients, optional Work relation, conversational
-  correlation, projected controls, artifacts, and checks; pending interactions
-  remain a declared server-projection gap in the issue #444 slice;
+  correlation, projected controls, artifacts, and checks;
 - canonical `MessageDelivery` when AgentMember mail was addressed to a
   participating MemberRun;
 - provider-native activity read on demand, clearly labeled by source and
@@ -290,8 +289,8 @@ changes, accepted, released, or cancelled Work.
   authenticated HostConsole projection exists; Close availability must not be
   inferred from member runtime state in the meantime.
 - Inspect projected WorkDelivery and authored Message delivery lineage.
-  PendingInteraction answer and MessageDelivery ACK/reconciliation remain
-  explicit follow-up server-action gaps.
+- Answer provider-question Messages through the correlated Message route;
+  MessageDelivery ACK/reconciliation remain explicit server actions.
 - Answer Lead Inbox items with inherited correlation and causation. The
   Dashboard may author Host/operator messages; it never impersonates a member.
 - Open Mission/Log context, optional historical Wave, Member Focus, artifact, or native-session
@@ -365,7 +364,7 @@ issue #444 slice verify:
 The shipped state matrix covers initial loading, last-good stale data, useful
 empty, mutation-disabled stale projection, unavailable native activity and a
 completed TeamRun with a still-live runtime. Partial-source failure, pending
-interaction, pending Close request, active-turn Steer/Interrupt,
+provider question, pending Close request, active-turn Steer/Interrupt,
 delivery-reconciliation and Supervisor-generation recovery remain dependent on
 the deferred server projections above.
 

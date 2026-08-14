@@ -63,7 +63,7 @@ Work assignment/claim -> WorkOperation(WorkEvent + resulting Work + deliveries)
   -> WorkDelivery
   -> MemberRun + provider-native session
   -> Work block / submission / review / acceptance
-  -> linked TeamMessage / PendingInteraction when needed
+  -> linked correlated Message/reply when needed
   -> explicit outcome and artifact/check references
 ```
 
@@ -191,8 +191,8 @@ company knowledge base.
 
 ADR 0025 and ADR 0026 are partially superseded by ADR 0034.
 
-- **ADR 0025 — Agent Team Run Control Plane:** MemberRun, TeamMessage,
-  PendingInteraction, and provider-native session boundaries remain valid.
+- **ADR 0025 — Agent Team Run Control Plane:** MemberRun, correlated Message,
+  and provider-native session boundaries remain valid.
   Wave-scoped attempt ownership and v0 lifecycle/delivery details are
   superseded.
 - **ADR 0026 — Mission/Wave Product Architecture:** Mission/Wave names and

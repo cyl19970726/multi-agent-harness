@@ -1003,33 +1003,6 @@ export interface MemberAction {
   completed_at?: string | null;
 }
 
-export interface PendingInteractionOption {
-  id: string;
-  label: string;
-  intent?: string | null;
-}
-
-export interface PendingInteraction {
-  id: string;
-  team_run_id: string;
-  member_run_id: string;
-  provider: string;
-  provider_request_id: string;
-  method: string;
-  kind: "question" | "tool_approval" | "plan_review" | "unknown" | string;
-  route: "lead" | "human" | "policy" | string;
-  status: "pending" | "answered" | "approved" | "denied" | "dismissed" | "unsupported" | "cancelled" | string;
-  title: string;
-  prompt: string;
-  options: PendingInteractionOption[];
-  tool_call_id?: string | null;
-  response_option_id?: string | null;
-  response_text?: string | null;
-  created_at: string;
-  resolved_at?: string | null;
-  resolved_by?: string | null;
-}
-
 /**
  * A delegation spawned from a member run. `mode === "provider_native"` means the
  * provider spawned it on its own and the harness only CAPTURED it; every other
@@ -1141,7 +1114,6 @@ export interface DashboardSnapshot {
   team_supervisor_leases?: TeamSupervisorLease[];
   team_member_close_requests?: TeamMemberCloseRequest[];
   member_actions?: MemberAction[];
-  pending_interactions?: PendingInteraction[];
   delegation_runs?: DelegationRun[];
   team_run_events?: TeamRunEvent[];
 }

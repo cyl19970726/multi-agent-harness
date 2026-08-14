@@ -43,7 +43,7 @@ Required projections:
 - Works: compact Mission-owned Team summaries for active, blocked, review and
   carry-over state; detailed scheduling remains in Team Workbench;
 - messages: authored conversation linked to Work when relevant;
-- pending interactions and evidence that require Host or Human judgment.
+- correlated question Messages and evidence that require Host or Human judgment.
 
 Legacy direct-Wave-executor rows remain readable with a visible compatibility
 label. They are not the default authoring path.
@@ -92,7 +92,7 @@ This table is explanatory. Work records remain ownership and state truth.
 Compose flexible compact modules:
 
 1. **MissionBrief** — durable context excerpt, status, source, and closeout.
-2. **NeedsYou** — real PendingInteractions, blockers, or approval requests.
+2. **NeedsYou** — unresolved question Messages, blockers, or review requests.
 3. **MissionTeam** — the Mission's one immutable flat AgentTeam, member state,
    latest run, and open Team action. Render its complete TeamRun history without
    inventing a mutable or one-to-many Mission/Team relation. This is

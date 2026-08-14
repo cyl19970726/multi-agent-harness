@@ -35,8 +35,8 @@ to delegate cycle ownership.
 Raw ACP plan, thought, and tool streams remain provider-native. Only ordinary
 Host/Member coordination is persisted.
 
-A provider-owned pause that actually blocks the session is a
-`PendingInteraction`; ACP `completed` is not semantic Host acceptance. See
+A provider-owned question that actually blocks the session is a correlated
+Message; ACP `completed` is not semantic Host acceptance. See
 [ADR 0039](../../decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md)
 and the Member Continuation Model.
 
@@ -104,7 +104,7 @@ surface. Harness adopts it in layers:
 | --- | --- |
 | `session/resume` | implemented and preferred for exact-session reattachment |
 | `session/set_config_option` | implemented for model, thinking effort, and mode receipts |
-| `session/update` / `session/request_permission` | implemented for transient activity; trusted full-access safe-allow tool requests receive a bounded synchronous ACK, while questions, reviews, reject-only, and unknown requests use durable `PendingInteraction` routing |
+| `session/update` / `session/request_permission` | transient activity only; safe in-ceiling tool requests receive a bounded synchronous ACK, provider questions use correlated Messages, and anything outside the frozen session ceiling fails closed |
 | image and embedded resource prompt blocks | supported upstream; add only through a typed, bounded Member input contract rather than embedding arbitrary blobs in `TeamMessage` |
 | `session/list` | supported upstream; useful next for recovery diagnostics, never for guessing which session to resume |
 | ACP MCP forwarding | supported upstream; pass only explicitly approved MCP descriptors and never copy credentials into Harness state |

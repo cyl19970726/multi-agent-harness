@@ -200,10 +200,6 @@ export function MemberWorkbench({
                         label="Gate requirements"
                         value={view.data.gate_requirements.length}
                       />
-                      <CompactFact
-                        label="Pending interactions"
-                        value={view.data.pending_provider_interactions.length}
-                      />
                     </dl>
                   </section>
                   <section className="border-y border-border py-4">

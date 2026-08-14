@@ -42,8 +42,8 @@ Human-readable intents such as `PLAN:`, `QUESTION:`, `BLOCKER:`, `REVIEW:` and
 message kinds are removed rather than retained as compatibility after the
 ADR 0050 migration.
 
-Provider-native questions and approvals that pause the current turn are
-`PendingInteraction`, not ordinary TeamMessage delivery.
+Provider-native questions that pause the current turn are correlated Messages.
+Permission is frozen at AgentSession start and never becomes a mail workflow.
 
 ## Direction And Initial State
 
@@ -124,7 +124,7 @@ receipt.
 | --- | --- |
 | live and idle | deliver next eligible message as a new turn |
 | current turn running | retain queued until the next eligible round |
-| waiting on PendingInteraction | resolve the interaction through its authority route |
+| waiting on a provider question Message | answer with an exact correlated reply |
 | interrupted but runtime open | allow later ordinary turn |
 | explicitly closed | reject normal delivery |
 | native session unavailable/incompatible | show blocker; do not fabricate resume |

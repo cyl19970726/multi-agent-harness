@@ -113,7 +113,7 @@ Provider
   reducer_mapping:
   tool_manifest_and_special_semantics:
   reverse_rpc_methods:
-  pending_interaction_routing:
+  correlated_provider_question_routing:
   provider_vs_semantic_completion:
   cancel_interrupt_resume_close:
   queue_policy_constraints:
@@ -165,8 +165,8 @@ README until they need their own file.
 6. Host-provider support and Team Member-provider support are separate
    capabilities and must never be inferred from each other.
 7. Each MemberRun snapshots a mode-specific `ProviderIntegrationProfile`.
-8. Provider questions, approvals, and plan reviews become durable
-   `PendingInteraction` rows. Thinking never does.
+8. Provider questions and answers become durable correlated Messages. Session
+   permission is frozen before start and never becomes a second object.
 9. Unknown reverse-RPC methods fail closed and surface as adapter gaps; they
    must not be translated into successful tool completion.
 10. A provider adapter must document native-store discovery, availability,
@@ -189,9 +189,9 @@ README until they need their own file.
     explicit Reopen alone may resume the same MemberRun/native session, while
     Retire is permanent.
 
-The Host reads and resolves pending interactions with the
-`team_run_resolve_interaction` MCP tool (or the equivalent CLI/API route),
-passing the provider's exact option id. Authority is enforced by route: Lead
+The Host answers provider question Messages with the
+`team_run_answer_message` MCP tool (or the equivalent CLI/API route), passing
+the provider's exact option id. Authority is enforced by route: Lead
 accepts `host|lead`, Human accepts `operator|human`, and Policy accepts only
 `policy`. Dashboard controls therefore cannot turn a policy decision into an
 ungoverned operator click.

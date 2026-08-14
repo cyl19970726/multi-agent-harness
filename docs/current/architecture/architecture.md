@@ -91,15 +91,16 @@ Work assignment/claim -> WorkOperation(WorkEvent + resulting Work + deliveries)
   -> WorkDelivery
   -> MemberRun + Workspace + NativeSessionRef
   -> Work block / submission / review / acceptance
-  -> linked TeamMessage / PendingInteraction where conversation or pause exists
+  -> linked correlated TeamMessage/reply where conversation or pause exists
   -> explicit outcomes and artifact/check refs
 ```
 
 Work owner and state explain who owns what. Messages may link Work for
 discussion but do not assign, submit, or accept it.
 
-Ordinary Host/member/peer collaboration stays in `TeamMessage`.
-Provider-pausing questions and approvals use `PendingInteraction`. The Host
+Ordinary Host/member/peer collaboration and provider questions stay in
+correlated `TeamMessage` rows. Session permissions are frozen before provider
+start; in-ceiling work proceeds directly and out-of-ceiling work fails closed. The Host
 observes Work state, while minimal blockers make dependent Work ready; there is
 no general conditional-delivery graph.
 

@@ -115,12 +115,12 @@ async function main() {
     messageCausedWork.body.caused_by_message_id === "message/c",
     "Work creation API can preserve an explicit source-message relation",
   );
-  const resolve = actions.resolvePendingInteraction("run/a", "interaction/b", "q0_opt_0", "lead");
+  const resolve = actions.answerProviderMessage("run/a", "message/b", "q0_opt_0", "lead");
   check(
-    resolve.path === "/v1/team-runs/run%2Fa/interactions/interaction%2Fb/resolve"
+    resolve.path === "/v1/team-runs/run%2Fa/messages/message%2Fb/answer"
       && resolve.body.option_id === "q0_opt_0"
       && resolve.body.resolved_by === "lead",
-    "Provider interaction resolution preserves the exact option and actor",
+    "Provider Message answer preserves the exact option and actor",
   );
   const steer = actions.steerTeamMember("run/a", "member/b", "focus on the gate");
   check(
@@ -267,11 +267,9 @@ async function main() {
     "TeamRun start has an explicit pending state",
   );
   check(
-    teamSource.includes("pendingInteractions")
-      && teamSource.includes("resolvePendingInteraction(")
-      && teamSource.includes('interaction.route === "human" ? "operator" : "host"')
-      && teamSource.includes("Awaiting governed policy decision"),
-    "Team Activity renders provider questions and approvals as actionable pressure",
+    !teamSource.includes("pending" + "Interactions")
+      && !teamSource.includes("resolve" + "Pending" + "Interaction("),
+    "Team Activity has no second provider-question authority",
   );
   check(
     missionSource.includes("readyToClose")

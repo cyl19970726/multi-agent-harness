@@ -158,7 +158,7 @@ the live Agent SDK streaming connection before it reports idle push delivery.
 Without that connection, it uses the same exact native binding and
 safe-boundary pull contract as [ADR 0040](../../decisions/0040-native-host-inbox-delivery.md).
 
-Provider-paused questions and approvals use `PendingInteraction`. A provider
+Provider-paused questions and answers use correlated Messages. A provider
 `completed` status alone is not proof that an answer, approval, Work
 submission, or Host acceptance occurred.
 

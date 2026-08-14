@@ -11,8 +11,8 @@ use firm_core::{
     HostAttentionInbox, HostAttentionKind, HostAttentionStatus, HostBindingLease,
     HostBindingLeaseOwnerKind, HostBindingLeaseStatus, MemberAction, MessageTerminalSource,
     Mission, MissionLogEntry, MissionStatus, NodeDaemonLease, NodeDaemonLeaseStatus,
-    NodeProjectRegistration, NodeProjectRegistrationStatus, PendingInteraction, Proposal,
-    ProviderChildThread, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
+    NodeProjectRegistration, NodeProjectRegistrationStatus, Proposal, ProviderChildThread,
+    ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
     ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
     ProviderCompatibilityStatus, ProviderDispatchIntent, ProviderExecutionStatus,
     ProviderIntegrationProfile, ProviderInteractionRequestBody, ProviderInteractionResponseBody,
@@ -6998,10 +6998,6 @@ impl HarnessStore {
         Ok(true)
     }
 
-    pub fn append_pending_interaction(&self, value: &PendingInteraction) -> StoreResult<()> {
-        self.append_jsonl("pending_interactions.jsonl", value)
-    }
-
     pub fn append_delegation_run(&self, value: &DelegationRun) -> StoreResult<()> {
         self.append_jsonl("delegation_runs.jsonl", value)
     }
@@ -8194,10 +8190,6 @@ impl HarnessStore {
 
     pub fn member_actions(&self) -> StoreResult<Vec<MemberAction>> {
         self.read_jsonl("member_actions.jsonl")
-    }
-
-    pub fn pending_interactions(&self) -> StoreResult<Vec<PendingInteraction>> {
-        self.read_jsonl("pending_interactions.jsonl")
     }
 
     pub fn delegation_runs(&self) -> StoreResult<Vec<DelegationRun>> {

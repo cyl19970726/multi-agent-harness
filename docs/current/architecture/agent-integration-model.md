@@ -316,8 +316,8 @@ and promotes only explicit coordination boundaries:
 ```text
 provider event
   -> NativeActivityProjection   (not persisted)
-  -> PendingInteraction         (only when authority/routing crosses systems)
-  -> explicit TeamMessage / outcome / artifact ref (only on promotion)
+  -> correlated TeamMessage     (when a question/reply crosses systems)
+  -> outcome / artifact ref     (only on explicit promotion)
 ```
 
 Rule: browser code never reads private native files directly. The provider
@@ -375,11 +375,12 @@ support, native-child observation, and transient-thinking policy. The separate
 `codex_exec` and `claude_cli` profiles remain useful to Dynamic Workflow and
 legacy one-shot records; neither is a selectable Agent Team mode.
 
-Provider requests that require an answer are `PendingInteraction` rows rather
-than hidden adapter callbacks. Questions, tool approvals, and plan reviews keep
-the exact provider option ids and route to Lead, Policy, or Human. The
-PendingInteraction/control acknowledgement records provider and semantic
-resolution; ordinary provider tool lifecycle remains in the native session.
+Provider questions that require an answer are correlated Message rows rather
+than hidden adapter callbacks. The reply retains the exact provider option id
+and resumes the same native session. Permission is not a message workflow: the
+AgentSession freezes one effective ceiling before provider start, and the
+adapter fails closed if the provider requests authority outside that ceiling.
+Ordinary provider tool lifecycle remains in the native session.
 
 See [ADR 0030](../../decisions/0030-provider-interaction-contract.md) and
 [ADR 0032](../../decisions/0032-provider-native-session-is-execution-truth.md). New provider

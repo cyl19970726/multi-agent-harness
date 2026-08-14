@@ -574,17 +574,17 @@ export function acknowledgeTeamMessage(
   };
 }
 
-/** Resolve a provider-originated question, approval, or plan review and resume
- * the same provider turn when its execution mode supports that contract. */
-export function resolvePendingInteraction(
+/** Answer a provider-originated correlated Message and resume the same provider
+ * turn when its execution mode supports that contract. */
+export function answerProviderMessage(
   teamRunId: string,
-  interactionId: string,
+  messageId: string,
   optionId: string,
   resolvedBy: "host" | "lead" | "operator" | "human" | "policy" = "host",
 ): ActionDescriptor {
   return {
     method: "POST",
-    path: `/v1/team-runs/${encodeId(teamRunId)}/interactions/${encodeId(interactionId)}/resolve`,
+    path: `/v1/team-runs/${encodeId(teamRunId)}/messages/${encodeId(messageId)}/answer`,
     body: { option_id: optionId, resolved_by: resolvedBy },
   };
 }

@@ -68,7 +68,7 @@ const baseline = {
   workflow_runs: [], workflow_steps: [], workflow_patches: [],
   workflow_artifact_manifests: [], team_supervisor_leases: [],
   team_member_close_requests: [],
-  pending_interactions: [], company_os: {},
+  company_os: {},
 };
 
 const missionId = baseline.missions[0]?.id;

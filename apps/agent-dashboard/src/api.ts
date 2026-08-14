@@ -12,7 +12,6 @@ import type {
   Message,
   Mission,
   NativeActivityProjection,
-  PendingInteraction,
   Project,
   TeamMessageProjection,
   TeamMemberCloseRequest,
@@ -496,7 +495,6 @@ export type SseFrame =
   | { kind: "team_supervisor_lease"; lease: TeamSupervisorLease }
   | { kind: "team_member_close_request"; request: TeamMemberCloseRequest }
   | { kind: "member_action"; action: MemberAction }
-  | { kind: "pending_interaction"; interaction: PendingInteraction }
   | { kind: "member_activity"; activity: LiveMemberActivity };
 
 export type ProjectionScope = "execution_space" | "company";
@@ -635,10 +633,6 @@ export function openEventStream(
     const data = parse<MemberAction>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "member_action", action: data });
   });
-  source.addEventListener("pending_interaction", (event) => {
-    const data = parse<PendingInteraction>(event as MessageEvent);
-    if (data) handlers.onFrame({ kind: "pending_interaction", interaction: data });
-  });
   source.addEventListener("member_activity", (event) => {
     const data = parse<LiveMemberActivity>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "member_activity", activity: data });
@@ -672,7 +666,6 @@ export function applyFrame(snapshot: DashboardSnapshot, frame: SseFrame): Dashbo
     case "team_supervisor_lease":
     case "team_member_close_request":
     case "member_action":
-    case "pending_interaction":
       return snapshot;
     case "member_activity": {
       const current = snapshot.live_member_activity ?? {};

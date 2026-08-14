@@ -187,7 +187,8 @@ the Lead Inbox immediately but does not interrupt the Host's current reasoning.
 Peer informational mail does not create a provider cycle by itself; select
 response-required intent only when an answer or action is genuinely required.
 
-Provider-pausing questions and approvals are `PendingInteraction`, not ordinary
+Provider-pausing questions and answers are correlated Messages. Permissions are
+frozen at AgentSession start and never become a second workflow. This is not ordinary
 mail. A tool status of `completed` is not the semantic answer.
 
 ## Block Work Honestly

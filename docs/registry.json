@@ -2525,9 +2525,7 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "execution-mode ProviderIntegrationProfile contract",
-        "PendingInteraction routing and semantic resolution",
-        "provider lifecycle versus semantic outcome boundary"
+        "historical provider interaction object contract"
       ],
       "dependsOn": [
         "docs/decisions/0025-agent-team-run-control-plane.md",
@@ -2544,12 +2542,45 @@
         "npx pnpm@9.15.4 check"
       ],
       "reorgTrigger": "Provider interaction routing, semantic outcome, authorization, or execution-mode profile semantics change.",
+      "authorityClass": "historical_evidence",
+      "implementationState": "partial",
+      "truthRefs": [
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
+        }
+      ]
+    },
+    {
+      "path": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
+      "ownerRole": "architecture",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "correlated provider question and reply Messages",
+        "AgentSession-start permission ceiling",
+        "provider interaction object clean cutover"
+      ],
+      "dependsOn": [
+        "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+        "docs/current/architecture/agent-integration-model.md",
+        "docs/current/integration/native-session-storage.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-11-14",
+      "lastVerifiedWith": [
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "Provider question routing, AgentSession permission mapping, or Message answer semantics change.",
       "authorityClass": "canonical_contract",
       "implementationState": "verified",
       "truthRefs": [
         {
-          "kind": "schema",
-          "ref": "schemas/pending-interaction.schema.json"
+          "kind": "api",
+          "ref": "crates/firm-cli/src/main.rs"
         },
         {
           "kind": "test",
@@ -2670,7 +2701,7 @@
       "reviewAfter": "2026-08-22",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check",
-        "cargo test -p firm-cli --test team_run_api --test team_run_start --test mcp_stdio"
+        "cargo test -p firm-cli --test team_run_api --test team_run_daemon --test mcp_stdio"
       ],
       "reorgTrigger": "Agent Team execution-root precedence, worktree identity validation, provider cwd selection, or workspace snapshot privacy fields change.",
       "authorityClass": "canonical_contract",
@@ -2690,7 +2721,7 @@
         },
         {
           "kind": "test",
-          "ref": "crates/firm-cli/tests/team_run_start.rs"
+          "ref": "crates/firm-cli/tests/team_run_daemon.rs"
         }
       ]
     },
@@ -3178,42 +3209,6 @@
       ]
     },
     {
-      "path": "docs/current/product/agent-team-foundation-closure-plan.md",
-      "ownerRole": "execution-foundation",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "implementation sequence for durable Team supervision and typed messaging",
-        "multi-client Agent Team and Organization runtime acceptance boundary"
-      ],
-      "dependsOn": [
-        "docs/decisions/0044-durable-team-supervision-and-typed-mail.md",
-        "docs/decisions/0041-provider-neutral-member-continuation.md",
-        "docs/current/architecture/member-continuation-model.md",
-        "docs/current/architecture/agent-runtime.md",
-        "docs/current/product/agent-team-works.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance",
-        "acceptance:mission-wave"
-      ],
-      "reviewAfter": "2026-08-29",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:docs-governance"
-      ],
-      "reorgTrigger": "Supervisor lease, typed actor, direct Agent Inbox, Provider control, multi-client, or Organization runtime acceptance changes.",
-      "authorityClass": "implementation_reference",
-      "implementationState": "design_only",
-      "truthRefs": [
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0044-durable-team-supervision-and-typed-mail.md"
-        }
-      ]
-    },
-    {
       "path": "docs/current/product/agent-team-dogfood-loop.md",
       "ownerRole": "execution-foundation",
       "status": "stable",
@@ -3253,7 +3248,7 @@
         },
         {
           "kind": "test",
-          "ref": "crates/firm-cli/tests/team_run_start.rs"
+          "ref": "crates/firm-cli/tests/team_run_api.rs"
         }
       ]
     },
@@ -3272,8 +3267,7 @@
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
         "docs/decisions/0040-native-host-inbox-delivery.md",
-        "docs/decisions/0041-provider-neutral-member-continuation.md",
-        "docs/current/product/agent-team-foundation-closure-plan.md"
+        "docs/decisions/0041-provider-neutral-member-continuation.md"
       ],
       "machineConsumers": [
         "check-doc-links",

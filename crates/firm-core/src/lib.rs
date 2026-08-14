@@ -3246,74 +3246,6 @@ pub enum ProviderEventFidelity {
     Structured,
 }
 
-/// A provider-originated request that pauses or blocks a ProviderRuntimeProjection until an
-/// authorized actor responds. It is product state; unlike thinking it is
-/// durable, replayable, and visible to the Host/Dashboard.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PendingInteraction {
-    pub id: String,
-    pub team_run_id: String,
-    pub member_run_id: String,
-    pub provider: String,
-    pub provider_request_id: String,
-    pub method: String,
-    pub kind: PendingInteractionKind,
-    pub route: PendingInteractionRoute,
-    pub status: PendingInteractionStatus,
-    pub title: String,
-    pub prompt: String,
-    #[serde(default)]
-    pub options: Vec<PendingInteractionOption>,
-    #[serde(default)]
-    pub tool_call_id: Option<String>,
-    #[serde(default)]
-    pub response_option_id: Option<String>,
-    #[serde(default)]
-    pub response_text: Option<String>,
-    pub created_at: String,
-    #[serde(default)]
-    pub resolved_at: Option<String>,
-    #[serde(default)]
-    pub resolved_by: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PendingInteractionOption {
-    pub id: String,
-    pub label: String,
-    #[serde(default)]
-    pub intent: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PendingInteractionKind {
-    Question,
-    ToolApproval,
-    PlanReview,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PendingInteractionRoute {
-    Lead,
-    Human,
-    Policy,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PendingInteractionStatus {
-    Pending,
-    Answered,
-    Approved,
-    Denied,
-    Dismissed,
-    Unsupported,
-    Cancelled,
-}
-
 /// Kind of a routed [`TeamMessageProjection`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -3321,18 +3253,19 @@ pub enum ProviderDispatchIntent {
     Message,
     /// A real runtime control record, not ordinary chat.
     Control,
-    /// A provider-native turn is paused and has emitted a strictly typed,
-    /// canonical JSON request for Host/Operator input. This is an additive
-    /// message bridge; historical [`PendingInteraction`] rows remain valid.
+    /// A provider-native turn emitted a strictly typed, correlated question.
+    /// The durable product fact is this authored message; waiting remains a
+    /// runtime projection rather than a second interaction lifecycle.
     ProviderInteractionRequest,
     /// The correlated answer to one [`ProviderDispatchIntent::ProviderInteractionRequest`].
     /// Its `causation_id` must point directly at the request message.
     ProviderInteractionResponse,
 }
 
-/// Closed semantic type carried inside a provider-interaction message body.
-/// Request/response phase is represented by [`ProviderDispatchIntent`], never by this
-/// field. `Unknown` is an explicit fail-safe route, not an open string escape.
+/// Closed provider callback classification. Only `Question` and `PlanReview`
+/// are valid in durable correlated Message bodies. Permission callbacks are
+/// classified here only so adapters can acknowledge an in-ceiling option or
+/// fail closed without creating a second permission workflow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderInteractionType {
@@ -3343,9 +3276,7 @@ pub enum ProviderInteractionType {
     Unknown,
 }
 
-/// One provider-native answer option. This is deliberately separate from the
-/// historical [`PendingInteractionOption`] so old ledger rows remain readable
-/// while new bridge bodies reject unknown fields.
+/// One provider-native answer option carried by a correlated Message body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderInteractionMessageOption {
@@ -3427,12 +3358,14 @@ impl ProviderInteractionRequestBody {
         }
         if !matches!(
             self.interaction_type,
-            ProviderInteractionType::Question | ProviderInteractionType::Unknown
-        ) && self.options.is_empty()
-        {
+            ProviderInteractionType::Question | ProviderInteractionType::PlanReview
+        ) {
             return Err(
-                "provider approval/review interactions require at least one option".to_string(),
+                "only provider questions and plan reviews may become durable Messages".to_string(),
             );
+        }
+        if self.interaction_type == ProviderInteractionType::PlanReview && self.options.is_empty() {
+            return Err("provider plan review requires at least one option".to_string());
         }
         Ok(())
     }
@@ -3488,15 +3421,8 @@ impl ProviderInteractionResponseBody {
                 )
             }
         }
-        if self.text.is_some()
-            && !matches!(
-                self.interaction_type,
-                ProviderInteractionType::Question | ProviderInteractionType::Unknown
-            )
-        {
-            return Err(
-                "only question or unknown provider interactions accept free text".to_string(),
-            );
+        if self.text.is_some() && self.interaction_type != ProviderInteractionType::Question {
+            return Err("only provider questions accept free text".to_string());
         }
         Ok(())
     }

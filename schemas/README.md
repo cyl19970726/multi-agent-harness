@@ -32,7 +32,6 @@
 | Agent Team Work operational decision | [work-operational-decision.schema.json](work-operational-decision.schema.json) |
 | Team Supervisor lease | [team-supervisor-lease.schema.json](team-supervisor-lease.schema.json) |
 | Member action | [member-action.schema.json](member-action.schema.json) |
-| Pending provider interaction | [pending-interaction.schema.json](pending-interaction.schema.json) |
 | Delegation run | [delegation-run.schema.json](delegation-run.schema.json) |
 | Team run event | [team-run-event.schema.json](team-run-event.schema.json) |
 | Provider child thread | [provider-child-thread.schema.json](provider-child-thread.schema.json) |

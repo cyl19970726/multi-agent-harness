@@ -5,7 +5,6 @@ import type {
   MemberAction,
   MemberRun,
   Mission,
-  PendingInteraction,
   TeamMessageProjection,
   ProviderDispatchAttempt,
   TeamRun,
@@ -53,7 +52,6 @@ export interface TeamRunNeedsYou {
   unfinishedWorks: Work[];
   blockedWorks: Work[];
   reviewWorks: Work[];
-  pendingInteractions: PendingInteraction[];
   /** Delivery failures that prevent an assigned Work from reaching its owner. */
   workDeliveryPressure: WorkDelivery[];
   /** @deprecated Ordinary message delivery is conversation state, not operator work. */
@@ -121,7 +119,6 @@ export interface TeamRunContext {
   memberById: Map<string, MemberRun>;
   messages: TeamMessageProjection[];
   actions: MemberAction[];
-  interactions: PendingInteraction[];
   delegations: DelegationRun[];
   events: TeamRunEvent[];
   works: Work[];
@@ -275,7 +272,6 @@ export function selectTeamRunContext(
   const memberById = new Map(members.map((member) => [member.id, member]));
   const messages = (snapshot.team_messages ?? []).filter((message) => message.team_run_id === run.id);
   const actions = (snapshot.member_actions ?? []).filter((action) => action.team_run_id === run.id);
-  const interactions = (snapshot.pending_interactions ?? []).filter((interaction) => interaction.team_run_id === run.id);
   const delegations = (snapshot.delegation_runs ?? []).filter((delegation) => delegation.team_run_id === run.id);
   const events = (snapshot.team_run_events ?? []).filter((event) => event.team_run_id === run.id);
   const works = (snapshot.works ?? []).filter((work) => work.team_run_id === run.id);
@@ -294,7 +290,6 @@ export function selectTeamRunContext(
     memberById,
     messages,
     actions,
-    interactions,
     delegations,
     events,
     works,
@@ -304,7 +299,6 @@ export function selectTeamRunContext(
     needsYou: selectTeamRunNeedsYou(
       members,
       messages,
-      interactions,
       run.status,
       works,
       workDeliveries,
@@ -384,7 +378,6 @@ export function selectMemberRunContext(
 export function selectTeamRunNeedsYou(
   members: MemberRun[],
   messages: TeamMessageProjection[],
-  interactions: PendingInteraction[] = [],
   runStatus?: string | null,
   works: Work[] = [],
   workDeliveries: WorkDelivery[] = [],
@@ -411,12 +404,9 @@ export function selectTeamRunNeedsYou(
   const blockedMembers = members.filter(
     (member) => blockedMemberIds.has(member.id) || member.status === "blocked",
   );
-  // Terminal attempts are historical for conversation/interaction pressure,
-  // but never erase contradictory Work truth. A failed delivery remains
+  // Terminal attempts are historical for conversation pressure, but never
+  // erase contradictory Work truth. A failed delivery remains
   // pressure there only while its Work is still unfinished.
-  const pendingInteractions = terminalRun
-    ? []
-    : interactions.filter((interaction) => interaction.status === "pending");
   const unfinishedWorkIds = new Set(unfinishedWorks.map((work) => work.id));
   const workDeliveryPressure = workDeliveries.filter((delivery) =>
     delivery.status === "failed"
@@ -430,11 +420,9 @@ export function selectTeamRunNeedsYou(
     unfinishedWorks,
     blockedWorks,
     reviewWorks,
-    pendingInteractions,
     workDeliveryPressure,
     unacknowledgedDeliveries,
     total: (terminalRun ? unfinishedWorks.length : blockedWorks.length + reviewWorks.length)
-      + pendingInteractions.length
       + workDeliveryPressure.length,
   };
 }

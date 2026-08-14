@@ -115,7 +115,7 @@ not need to wait for unrelated work before advancing the Wave.
 ### 3. Preserve the right evidence
 
 Harness owns Mission, Wave, TeamRun, MemberRun/native-session binding,
-WorkOperation/Work/WorkEvent, WorkDelivery, TeamMessage, PendingInteraction,
+WorkOperation/Work/WorkEvent, WorkDelivery, correlated TeamMessage,
 ACK, outcome and
 artifact/check references.
 The Provider-native session remains the sole truth for chat, tools, commands,
@@ -185,7 +185,7 @@ Do not infer health from a quiet Dashboard card. Inspect in this order:
 
 1. MemberRun status, Supervisor generation/lease and process health;
 2. queued/claimed/delivered/acknowledged Inbox state;
-3. unresolved PendingInteraction and the exact permission/answer requested;
+3. unresolved provider question Message and the exact answer requested;
 4. bounded provider-native session evidence using `NativeSessionRef`;
 5. the last provider turn/tool terminal event and whether the latest Work was
    explicitly submitted.
@@ -284,9 +284,9 @@ The run proved Host assignment, atomic team self-claim with zero pre-claim
 `WorkDelivery`, block/resume, request-changes/resubmit, explicit Host
 acceptance, terminal-Work TeamRun completion, Wave advance, and Mission close.
 A rolling Supervisor restart reached generation 6 while preserving both
-MemberRuns and both provider-native Session ids. The PendingInteraction ledger
-remained at 122 rows during the final generation rather than accumulating new
-full-access permission prompts.
+MemberRuns and both provider-native Session ids. That historical run still
+used the now-retired interaction ledger; current runs use correlated Messages
+and frozen AgentSession permissions instead.
 
 A bounded native-session audit found that generations 1-4 had repeatedly sent
 continuation prompts after a Work entered review. Generation 5 reproduced zero

@@ -9,7 +9,7 @@ commands, file activity, native children, and resume state.
 ```text
 Harness coordination truth
   Work / WorkEvent / WorkDelivery / typed mail / Supervisor / transport receipt
-  pending interaction / stable Agent route / control acknowledgement
+  correlated question/reply / stable Agent route / control acknowledgement
   explicit outcome / artifact / check / Host Wave decision
                      +
 NativeSessionRef
@@ -39,7 +39,7 @@ live state and is never replayed or evidence.
 | Is a delivery attempt active? | latest queued/claim/provider-receipt/failure projection |
 | Is the runtime executable? | provider-process health, endpoint, protocol, and delivery probes |
 | What is the agent doing? | on-demand provider-native activity projection |
-| Is input or approval required? | Harness `PendingInteraction` |
+| Is input required? | unresolved correlated question `Message` |
 | Can execution resume? | `NativeSessionRef.supports_resume` plus availability/version checks |
 | What supports the Host decision? | explicit outcome, artifact/check references, and Host Wave update/advance |
 
@@ -138,9 +138,10 @@ provider-native session.
 
 ## Interaction routing
 
-Provider questions and permission requests cross a governance boundary and are
-promoted to `PendingInteraction`. Lead may answer clarification questions;
-Policy or a human authority resolves permission/destructive-action requests.
+Provider questions are correlated Messages and Lead answers are correlated
+replies. The AgentSession permission ceiling is frozen before provider start;
+in-ceiling actions proceed directly and out-of-ceiling actions fail closed.
+Protected external effects still require their Company-level approval policy.
 The adapter resumes or continues the same native session when supported and
 records only the interaction decision and control acknowledgement in Harness.
 

@@ -10,9 +10,8 @@ use std::time::Duration;
 
 use crossbeam::channel::{bounded, Receiver, Sender};
 use harness_core::{
-    AgentTeamRun, MemberAction, Mission, PendingInteraction, ProviderRuntimeProjection,
-    RegistryMessage, TeamMemberCloseRequest, TeamRunEvent, TeamSupervisorLease, Wave, WorkflowRun,
-    WorkflowStep,
+    AgentTeamRun, MemberAction, Mission, ProviderRuntimeProjection, RegistryMessage,
+    TeamMemberCloseRequest, TeamRunEvent, TeamSupervisorLease, Wave, WorkflowRun, WorkflowStep,
 };
 
 /// An event frame sent to SSE clients. Durable frames are reconstructed by tailing
@@ -50,8 +49,6 @@ pub enum SseEventFrame {
     /// operator-visible execution trace for an Agent Team attempt, so they are
     /// tail-replayed and merged latest-wins like the other run records.
     MemberAction(MemberAction),
-    /// A provider request awaiting or carrying an operator/policy response.
-    PendingInteraction(PendingInteraction),
     /// A durable source used by the Dashboard projection changed outside the
     /// serve process. The frame deliberately carries no business row: clients
     /// must refresh the scoped authoritative snapshot instead of treating this
@@ -435,7 +432,6 @@ const WATCHED_FILES: &[&str] = &[
     "team_supervisor_leases.jsonl",
     "team_member_close_requests.jsonl",
     "member_actions.jsonl",
-    "pending_interactions.jsonl",
 ];
 
 /// Ledgers represented in the full Dashboard snapshot but not safely merged as
@@ -818,21 +814,6 @@ fn poll_project(
         "member_actions.jsonl",
         consumed_offsets,
         member_action_frames,
-        manager,
-    );
-
-    check_and_broadcast_appends(
-        project_id,
-        store_root,
-        "pending_interactions.jsonl",
-        consumed_offsets,
-        |line| {
-            serde_json::from_str::<PendingInteraction>(line)
-                .ok()
-                .map(SseEventFrame::PendingInteraction)
-                .into_iter()
-                .collect()
-        },
         manager,
     );
 

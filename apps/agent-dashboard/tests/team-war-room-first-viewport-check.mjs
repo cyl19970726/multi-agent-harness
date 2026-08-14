@@ -72,7 +72,7 @@ const snapshot = {
   workflow_runs: [], workflow_steps: [], workflow_patches: [],
   workflow_artifact_manifests: [], team_supervisor_leases: [],
   team_member_close_requests: [],
-  pending_interactions: [], company_os: {},
+  company_os: {},
 };
 const teamRunId = snapshot.team_runs.find((run) => run.member_run_ids?.length)?.id;
 if (!teamRunId) throw new Error("fixture does not contain a current TeamRun with members");

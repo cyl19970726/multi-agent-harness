@@ -30,13 +30,11 @@ import {
 export function TeamCoordinationPressure({
   members,
   messages,
-  pendingInteractions,
   onOpenActivity,
   className,
 }: {
   members: MemberRun[];
   messages: TeamMessageProjection[];
-  pendingInteractions: number;
   onOpenActivity: () => void;
   className?: string;
 }) {
@@ -54,7 +52,6 @@ export function TeamCoordinationPressure({
     >
       <span className="inline-flex items-center gap-2 text-[11px] font-semibold text-foreground"><Inbox className="size-3.5 text-primary" /> <span className="hidden sm:inline">Coordination pressure</span><span className="sm:hidden">Pressure</span></span>
       <span className={cn("text-[10px]", unread ? "text-status-warn" : "text-muted-foreground")}>{unread} unread<span className="hidden sm:inline"> for Lead</span></span>
-      <span className={cn("text-[10px]", pendingInteractions ? "text-status-warn" : "text-muted-foreground")}>{pendingInteractions} pending<span className="hidden sm:inline"> interaction{pendingInteractions === 1 ? "" : "s"}</span></span>
       <span className={cn("text-[10px]", blocked ? "text-status-bad" : "text-muted-foreground")}>{blocked} blocked<span className="hidden sm:inline"> member{blocked === 1 ? "" : "s"}</span></span>
       <span className="ml-auto inline-flex items-center gap-1 text-[10px] font-medium text-primary"><span className="hidden sm:inline">Open Activity</span><ArrowRight className="size-3" /></span>
     </button>
@@ -202,7 +199,7 @@ export function LeadInbox({
     <section aria-label="Lead Inbox" className="py-2">
       <p className="mb-2 text-[10px] text-muted-foreground">Every Member message addressed to the Host, preserving its conversation thread and delivery state.</p>
       {messages.length === 0 ? (
-        <p className="rounded-lg border border-dashed border-border px-3 py-3 text-[11px] text-muted-foreground">Inbox is clear. Provider pauses remain in PendingInteraction, not this coordination queue.</p>
+        <p className="rounded-lg border border-dashed border-border px-3 py-3 text-[11px] text-muted-foreground">Inbox is clear. Provider questions appear here as correlated Messages.</p>
       ) : (
         <div className="divide-y divide-border/60 overflow-hidden rounded-lg border border-border/70 bg-card">
           {messages.slice(0, 8).map((message) => {

@@ -52,10 +52,9 @@ parts; they do not fork the core model.
   permission. Codex app-server threads launch with `danger-full-access` and
   approval policy `never`. A trusted Kimi ACP tool request that advertises an
   exact `allow_always` or `allow_once` option is acknowledged synchronously and
-  creates only one bounded `provider_control` audit row—never a false
-  PendingInteraction or waiting state. Questions, plan reviews, unknown
-  requests, and tool requests without a safe allow option still pause and
-  route to Lead, Policy, or Human. Provider transcripts and thinking do not
+  creates only one bounded `provider_control` audit row—never a second
+  permission workflow. Questions route as correlated Messages; tool requests
+  outside the frozen AgentSession ceiling fail closed. Provider transcripts and thinking do not
   enter Harness state.
 - Thinking is allowed only as sanitized transient live state. It is never
   persisted, replayed, forwarded to peers, or accepted as evidence.
@@ -138,10 +137,9 @@ path as an execution root is a routing defect.
    `unacked_messages` field counts only actionable deliveries: at least one
    `manual_ack` delivery in `delivered` status. Queued, injected, failed,
    expired, and acknowledged deliveries do not increase it.
-6. When a provider genuinely pauses for input, inspect its
-   `PendingInteraction` and call `team_run_resolve_interaction` with the exact
-   option id and authorized actor. Trusted full-access Kimi tool permissions
-   with a provider-advertised safe allow option are already acknowledged and
+6. When a provider genuinely pauses for input, inspect its correlated request
+   Message and call `team_run_answer_message` with the exact Message and option
+   ids. Trusted full-access Kimi tool operations with a provider-advertised safe allow option are already acknowledged and
    do not appear in this queue. Do not treat provider `completed` as proof of
    semantic approval or answer.
 7. For a running `codex_app_server` member, use `team_run_steer_member` to
@@ -272,7 +270,7 @@ reconstruct the result from native state:
 - the exact URL opens the correct Workspace and selected TeamRun;
 - Work submissions/Host acceptance and conversational ACKs appear in their
   respective event streams;
-- provider interactions preserve route, resolution actor, exact option id, and
+- provider questions preserve route, reply actor, exact option id, and
   distinct transport/semantic status;
 - outcome, useful artifacts/checks, and explicit Host Wave advance explain the
   plan decision;

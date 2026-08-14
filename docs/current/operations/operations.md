@@ -73,7 +73,7 @@ scenario is rerun before the matrix expands. Finding a bug is evidence, not
 Mission closeout.
 
 When a live Member appears stuck, inspect MemberRun/Supervisor health, Inbox
-delivery and PendingInteraction first, then use bounded provider-native session
+delivery and unresolved correlated question Messages first, then use bounded provider-native session
 forensics through its `NativeSessionRef`. Compare tool/process evidence with the
 Member narrative; never read an entire large JSONL into the Host context or
 copy the transcript into Harness. The output is a diagnosis and next control
@@ -82,7 +82,7 @@ action, not a replacement execution history.
 Use focused Rust tests while iterating on one slice:
 
 ```bash
-cargo test -p firm-cli --test mcp_stdio --test team_run_start -- --test-threads=1
+cargo test -p firm-cli --test mcp_stdio --test team_run_api --test team_run_daemon -- --test-threads=1
 cargo test -p firm-cli --test team_run_api \
   persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_completion \
   -- --test-threads=1

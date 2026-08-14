@@ -191,7 +191,6 @@ async function main() {
   const completedNeedsYou = selectors.selectTeamRunNeedsYou(
     snapshot.member_runs.filter((item) => item.team_run_id === "run-1"),
     snapshot.team_messages.filter((item) => item.team_run_id === "run-1"),
-    [],
     "completed",
     snapshot.works.filter((item) => item.team_run_id === "run-1"),
     snapshot.work_deliveries.filter((item) => item.team_run_id === "run-1"),

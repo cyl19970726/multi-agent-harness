@@ -191,10 +191,6 @@ rules live in [Documentation Governance](../documentation-governance.md).
 - Wanchengwanling completion roadmap:
   storage-backed unfinished-goal map for CLI/API, skills, custom pages, GitHub
   source sync, SQL read/search, real launch data, and replication templates.
-- [Agent Team foundation closure plan](../product/agent-team-foundation-closure-plan.md):
-  staged implementation and acceptance boundary for the durable Supervisor,
-  typed mailbox, multi-client controls, and Organization runtime substrate.
-
 Historical implementation plans and completion audits are available through Git
 history and the native Mission/Wave records that executed them. They are not
 maintained as a second documentation layer.

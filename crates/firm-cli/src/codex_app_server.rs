@@ -1,7 +1,7 @@
 //! Minimal Codex app-server V2 client for interactive Agent Team Members.
 //!
 //! The client intentionally owns only transport and provider lifecycle. Product
-//! routing, durable PendingInteraction records, MemberAction reduction, and
+//! routing, correlated Message questions, MemberAction reduction, and
 //! authority remain in the TeamRun orchestrator.
 
 use std::collections::HashMap;

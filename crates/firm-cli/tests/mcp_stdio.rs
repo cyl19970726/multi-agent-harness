@@ -624,10 +624,10 @@ fn mcp_resolves_provider_request_messages_and_keeps_legacy_ledger_empty() {
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
-            "name": "team_run_resolve_interaction",
+            "name": "team_run_answer_message",
             "arguments": {
                 "team_run_id": run_id,
-                "interaction_id": request.id,
+                "message_id": request.id,
                 "option_id": "choice-a",
                 "resolved_by": "host"
             }
@@ -638,10 +638,6 @@ fn mcp_resolves_provider_request_messages_and_keeps_legacy_ledger_empty() {
         payload["kind"].as_str(),
         Some("provider_interaction_response")
     );
-    assert!(store
-        .pending_interactions()
-        .expect("legacy pending interactions")
-        .is_empty());
     let messages = store.team_messages().expect("team messages");
     assert!(messages.iter().any(|message| {
         message.kind == ProviderDispatchIntent::ProviderInteractionResponse
@@ -782,7 +778,7 @@ fn mcp_stdio_agent_team_tools() {
             "team_run_inbox",
             "team_run_send_message",
             "team_run_reconcile_delivery",
-            "team_run_resolve_interaction",
+            "team_run_answer_message",
             "team_run_steer_member",
             "team_run_interrupt_member",
             "team_run_close_member",
@@ -1131,10 +1127,6 @@ fn mcp_stdio_agent_team_tools() {
         );
         assert!(member.get("latest_action").is_some(), "latest_action key");
     }
-    assert_eq!(
-        payload["pending_interactions"].as_array().map(Vec::len),
-        Some(0)
-    );
     assert_eq!(payload["unacked_messages"].as_u64(), Some(0));
     assert_eq!(
         payload["dashboard_url"].as_str(),

@@ -134,7 +134,7 @@ Work assignment/claim -> WorkOperation(WorkEvent + resulting Work + deliveries)
   -> WorkDelivery
   -> MemberRun + Workspace + NativeSessionRef
   -> Work block / submission / review / acceptance
-  -> linked TeamMessage / PendingInteraction where needed
+  -> linked correlated TeamMessage/reply where needed
   -> explicit outcome + artifacts/check refs
 ```
 

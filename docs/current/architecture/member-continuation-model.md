@@ -145,7 +145,7 @@ Harness remains the communication authority in both driver modes:
 | Member busy | Queue ordinary messages; never silently interrupt. |
 | Provider continuation active | Inject only through a verified safe provider operation or cycle boundary; otherwise leave mail queued. |
 | Host chooses Steer | Use the selected mode's real current-activity injection and terminal acknowledgement. |
-| Provider asks for authority | Create `PendingInteraction`; do not infer approval from tool completion. |
+| Provider asks a question | Create a correlated Message and wait for its correlated reply. |
 | Native continuation satisfies its condition | Record/project the provider fact, then await explicit Work submission/Host acceptance as required. |
 | Host explicitly closes Member | Latch Close before teardown, release the managed runtime, and freeze delivery without deleting the MemberRun or native-session binding. |
 | Host explicitly reopens Member | Increment `runtime_generation`; a managed adapter resumes the exact recorded native session and frozen mail becomes actionable. |
@@ -260,7 +260,7 @@ The Host:
 2. selects one execution driver from reviewed capabilities;
 3. gives writable members disjoint worktrees or explicit shared-file
    coordination;
-4. observes Works, WorkDelivery, Inbox, PendingInteraction and native continuation;
+4. observes Works, WorkDelivery, Inbox, correlated questions and native continuation;
 5. uses explicit Steer, Interrupt, driver change and Close operations;
 6. accepts submitted Work separately from provider completion.
 
@@ -284,7 +284,7 @@ Execution driver
 Continuation state and condition
 Workspace execution lease
 Permission posture
-Pending interactions
+Correlated provider questions
 Queued/delivered team mail
 Native session availability
 Current native activity

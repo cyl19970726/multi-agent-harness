@@ -41,7 +41,7 @@ The following is the full target contract. The issue #444 authenticated Agent
 Conversation slice currently ships TeamWorkspace messages and delivery
 lineage, all Works exactly bound to the selected MemberRun, current member
 runtime/session summary, read-on-demand native activity, and HostConsole
-allowed actions. PendingInteraction resolution, pending Close-request
+allowed actions. Correlated provider-question replies, pending Close-request
 projection, recipient ACK action, Steer/Interrupt safe-point state and the full
 runtime/reconnect matrix remain server-projection gaps; the UI does not infer
 them.
@@ -60,8 +60,8 @@ Full-contract required data:
   canonical MessageDelivery state;
 - Harness-owned control/lifecycle facts, observed `DelegationRun`, artifacts,
   outcomes, and evidence/check references;
-- `PendingInteraction` records attributable to this MemberRun, with exact
-  provider options and Lead/Policy/Human routing;
+- correlated provider-question Messages attributable to this MemberRun, with
+  exact provider options and Lead routing;
 - `NativeSessionRef`, native session availability/resume capability,
   runtime summary, provider/model, worktree, owned paths, permissions,
   budget/availability signals;
@@ -84,7 +84,7 @@ evidence. On refresh or expiry it disappears rather than becoming a blank
 historical event.
 
 The projection must distinguish source and durability. WorkEvents,
-PendingInteraction resolution, explicit outcome, control acknowledgement, and
+correlated Message replies, explicit outcome, control acknowledgement, and
 Host Wave decisions are durable Harness records. Native chat/tool/command/file/turn
 activity is read from the provider session and is rebuildable, non-evidence UI
 state. Harness does not silently fall back to a mirrored history.

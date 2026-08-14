@@ -232,12 +232,10 @@ version.
   intent of `allow_always` or `allow_once` is acknowledged immediately before
   any interaction record is created. Harness writes one bounded
   `provider_control` acknowledgement without command or prompt content; it
-  does not mark the Member waiting or manufacture a created/resolved
-  PendingInteraction pair.
-- `AskUserQuestion` and Plan Review route to Lead. Reject-only tool requests
-  route to Policy, and unknown requests route to Human; these create durable
-  `PendingInteraction` records and resume with the exact selected ACP
-  `optionId` after authorization. Company-level legal, financial, permission,
+  does not mark the Member waiting or manufacture a permission workflow.
+- `AskUserQuestion` and Plan Review route to Lead as correlated Messages and
+  resume with the exact selected ACP `optionId`. Tool requests outside the
+  frozen AgentSession ceiling fail closed. Company-level legal, financial, permission,
   and organization effects remain subject to their native Human Approval
   contract and are never converted into ordinary full-access tool ACKs.
 - Cancellation is execution-mode **and reviewed-version specific**. The

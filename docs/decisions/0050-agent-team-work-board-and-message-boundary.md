@@ -7,6 +7,10 @@ canonical_for: Work as the Agent Team scheduling primitive, no Assignment
   Message ownership, shared Kanban, claim authority, and Mission boundary
 ```
 
+ADR 0056 supersedes this ADR's PendingInteraction boundary. A provider question
+and its answer are correlated Messages; permissions are frozen on AgentSession
+start and never become a second lifecycle.
+
 ## Context
 
 Agent Team currently proves ownership with

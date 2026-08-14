@@ -2,7 +2,7 @@
 
 ```text
 status: accepted historical substrate; current semantics amended by ADRs 0032,
-  0034, 0044, and 0050
+  0034, 0044, 0050, and 0056
 owner_role: architecture
 canonical_for: origin of the AgentTeamRun/MemberRun control-plane boundary;
   current responsibility, lifecycle, and delivery rules live in the amending ADRs
@@ -15,6 +15,9 @@ Wave-owned run and Assignment-message proof chains are no longer product
 contracts and are deliberately not reproduced here. Git history preserves the
 v0 proposal; the governed failure reconstruction is in
 Agent Team Shared Task List research.
+
+ADR 0056 removes the historical PendingInteraction object and permission
+approval lifecycle. Those terms below are retained only as historical evidence.
 
 Read the current contracts instead:
 

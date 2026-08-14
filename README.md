@@ -120,7 +120,6 @@ and [getting started](docs/current/operations/getting-started.md).
 - [Governance](docs/current/company-os/governance.md)
 - [Execution foundation](docs/current/company-os/execution-foundation.md)
 - [Mission/Wave Host-plan product contract](docs/current/product/mission-wave-host-plan.md)
-- [Agent Team control foundation](docs/current/product/agent-team-foundation-closure-plan.md)
 - [Durable Team supervision and typed mail](docs/decisions/0044-durable-team-supervision-and-typed-mail.md)
 - [Host-plan Wave and Mission Team decision](docs/decisions/0034-host-plan-waves-and-mission-teams.md)
 - [Product requirements](docs/current/product/prd.md)

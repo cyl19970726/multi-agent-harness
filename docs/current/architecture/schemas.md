@@ -76,7 +76,6 @@ schema contracts are checked with valid and invalid fixtures.
 | Member execution trust error | [trust-error.schema.json](../../../schemas/trust-error.schema.json) |
 | Team Supervisor lease | [team-supervisor-lease.schema.json](../../../schemas/team-supervisor-lease.schema.json) |
 | Member action | [member-action.schema.json](../../../schemas/member-action.schema.json) |
-| Pending provider interaction | [pending-interaction.schema.json](../../../schemas/pending-interaction.schema.json) |
 | Delegation run | [delegation-run.schema.json](../../../schemas/delegation-run.schema.json) |
 | Team run event | [team-run-event.schema.json](../../../schemas/team-run-event.schema.json) |
 | Agent team | [agent-team.schema.json](../../../schemas/agent-team.schema.json) |

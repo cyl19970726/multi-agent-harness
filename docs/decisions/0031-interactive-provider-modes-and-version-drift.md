@@ -10,6 +10,11 @@ ADR [0032](0032-provider-native-session-is-execution-truth.md) additionally
 requires every interactive mode to use its provider-native session store for
 history and resume rather than a Harness transcript mirror.
 
+ADR [0056](0056-correlated-message-and-session-permission-cutover.md)
+supersedes this ADR's PendingInteraction routing and per-request permission
+workflow. Current provider questions use correlated Messages; AgentSession
+permissions are frozen before launch and out-of-ceiling callbacks fail closed.
+
 ## Context
 
 An Agent Team Member is not only a one-shot executor. Operators and the Lead

@@ -92,7 +92,7 @@ ledgers or code are deleted.
 
 For Agent Team execution, Harness owns the coordination records: `AgentTeam`,
 Mission relation, `AgentTeamRun`, `MemberRun` plus its native-session binding,
-`Work`, `WorkEvent`, `WorkDelivery`, `TeamMessage`, `PendingInteraction`,
+`Work`, `WorkEvent`, `WorkDelivery`, correlated `TeamMessage`,
 explicit outcome and artifact/check references, and control acknowledgements.
 Work owner and state prove responsibility; TeamMessage is authored conversation.
 There is no Assignment Message compatibility path; stores using the retired
@@ -106,9 +106,10 @@ streams into Harness ledgers
 
 Each MemberRun snapshots its concrete `ProviderIntegrationProfile`; platform
 capability, execution-mode capability, adapter coverage, and product permission
-are separate claims. Provider-native questions, approvals, or plan reviews that
-actually pause a turn must be routed as PendingInteraction records. Ordinary
-Host/Member planning remains correlated TeamMessage conversation. A provider
+are separate claims. Provider-native questions that pause a turn are correlated
+Messages with correlated replies. AgentSession permissions are frozen before
+provider start; there is no second permission lifecycle. Ordinary Host/Member
+planning remains correlated TeamMessage conversation. A provider
 `completed` status is not by itself proof of semantic success, answer, or
 approval.
 
@@ -389,7 +390,7 @@ companion.
 | Native Product And Execution Objects — object inventory | Here §Native Product And Execution Objects | concept-model.md |
 | Native Product And Execution Objects — Mission/Wave only, ADR 0028 retirement | Root invariant 3; here §Native Product And Execution Objects | — |
 | Agent Team execution records, Work responsibility/delivery proof, native-session boundary | Root invariants 1–2; here §Native Product And Execution Objects and §Acceptance Evidence | ADR 0032; the exact phrases `provider's native`, `streams into Harness ledgers`, and `Resume must use the provider-native session id` must stay in root AGENTS.md — `scripts/check-native-session-boundary.mjs` greps for them |
-| MemberRun ProviderIntegrationProfile, PendingInteraction, `completed` ≠ success | Root invariants 1–2; here §Native Product And Execution Objects | — |
+| MemberRun ProviderIntegrationProfile, correlated questions, `completed` ≠ success | Root invariants 1–2; here §Native Product And Execution Objects | — |
 | Trusted-development Team policy and worktree norms | Root invariant 6; here §Native Product And Execution Objects | — |
 | Member modes, interrupt/close, Team Supervisor lease, reconciliation | Root invariant 7; here §Agent Team Member Lifecycle And Control | — |
 | No Plan Mode / Plan Gate | Root invariant 9; here §Agent Team Member Lifecycle And Control | — |

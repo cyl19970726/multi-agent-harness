@@ -76,8 +76,8 @@ Work-linked communication uses `Message`:
 - request changes and acceptance result;
 - handoff with evidence refs.
 
-Interactive provider prompts are bridged through Message types. A separate
-`PendingInteraction` object is not required for this contract.
+Interactive provider questions are bridged through correlated Message types;
+there is no separate interaction lifecycle object or permission ledger.
 
 ## Mutation surface
 

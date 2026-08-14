@@ -38,7 +38,6 @@ const fixtureSnapshot = {
   workflow_runs: [], workflow_steps: [], workflow_patches: [],
   workflow_artifact_manifests: [], team_supervisor_leases: [],
   team_member_close_requests: [],
-  pending_interactions: [],
 };
 const teamRunId = fixtureSnapshot.team_runs[0]?.id;
 

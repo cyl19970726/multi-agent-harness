@@ -24,7 +24,7 @@
 //!   use its own built-in tools instead. `session/request_permission` is the
 //!   one reverse-RPC method the Team Member adapter serves: the orchestrator
 //!   persists new interactions as provider request/response TeamMessages and
-//!   the same ACP turn waits for an answer. PendingInteraction remains only a
+//!   the same ACP turn waits for an answer. Correlated Message remains only a
 //!   legacy compatibility read/resolve path. Unknown reverse-RPC methods still
 //!   fail closed with method-not-found.
 //! - Reasoning streams (`agent_thought_chunk`) are passed through to the

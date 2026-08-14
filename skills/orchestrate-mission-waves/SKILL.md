@@ -351,7 +351,7 @@ cancellation reason and create explicit follow-up responsibility.
 
 - `idle`: assign or expose ready claimable Work.
 - `working`: queue new Work without interrupting the active turn.
-- `waiting interaction`: resolve the exact PendingInteraction before driving.
+- `waiting question`: answer the exact correlated Message before driving.
 - `crashed/disconnected`: run `harness team-run recover --id <run>` to adopt/restart
   the supervisor generation, reconcile stale deliveries, resume compatible native
   sessions, and rebind incompatible Works. Never run `team-run create` during

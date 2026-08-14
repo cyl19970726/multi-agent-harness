@@ -10,6 +10,8 @@ ADR 0050 supersedes this ADR's Assignment-message ownership and Handoff-as-task
 state. Member autonomy, peer communication, native subagent boundaries, and
 Host acceptance remain active. New responsibility uses Work and WorkDelivery;
 authored TeamMessage remains conversation.
+ADR 0056 replaces the remaining PendingInteraction reference with correlated
+question/reply Messages and removes any separate permission lifecycle.
 
 ## Context
 

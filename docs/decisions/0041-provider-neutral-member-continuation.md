@@ -9,6 +9,8 @@ extends: ADR 0031 interactive provider modes; ADR 0032 native execution truth; A
 ADR 0050 replaces Assignment correlation as responsibility truth with Work
 ownership and WorkDelivery. This ADR's one-top-level-driver, native
 continuation, Workspace lease, and Host-acceptance boundaries remain active.
+ADR 0056 supersedes this ADR's PendingInteraction and per-request permission
+language; those terms below are historical only.
 
 ## Context
 

@@ -5237,7 +5237,7 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
     }
     let interaction_id = interaction_id.expect("Codex provider interaction request message");
     let (status, resolved) = serve.post_json(
-        &format!("/v1/team-runs/{run_id}/interactions/{interaction_id}/resolve"),
+        &format!("/v1/team-runs/{run_id}/messages/{interaction_id}/answer"),
         &serde_json::json!({"option_id": "implementation::0", "resolved_by": "host"}),
     );
     assert_eq!(status, 200, "body: {resolved}");
@@ -5293,10 +5293,6 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
         idle_with_delivered_response,
         "Codex did not consume the canonical interaction response and return idle; snapshot: {diagnostic_snapshot}"
     );
-    let (_, snapshot) = serve.get_json("/v1/snapshot");
-    assert!(snapshot["pending_interactions"]
-        .as_array()
-        .is_some_and(Vec::is_empty));
 }
 
 #[test]
@@ -5372,9 +5368,6 @@ fn codex_app_server_multi_question_fails_closed_without_interaction_rows() {
             }),
         "unsupported multi-question request became a TeamMessageProjection"
     );
-    assert!(snapshot["pending_interactions"]
-        .as_array()
-        .is_some_and(Vec::is_empty));
     assert!(
         snapshot["member_actions"]
             .as_array()
@@ -5389,7 +5382,7 @@ fn codex_app_server_multi_question_fails_closed_without_interaction_rows() {
 }
 
 #[test]
-fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
+fn interrupt_cancels_waiting_provider_message_before_kimi_prompt() {
     let home = TempHome::new("team-run-kimi-waiting-cancel");
     let _project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -5408,7 +5401,7 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
         "/v1/team-runs",
         &serde_json::json!({
             "objective": "Wait for Lead, then be interrupted",
-            "members": [{"name": "kimi-waiting", "role": "observer", "provider": "kimi", "model": "k2.5", "initial_work": "Exercise pending interaction cancellation"}]
+            "members": [{"name": "kimi-waiting", "role": "observer", "provider": "kimi", "model": "k2.5", "initial_work": "Exercise unanswered provider-question cancellation"}]
         }),
     );
     let run_id = created["result"]["team_run"]["id"]
@@ -5459,7 +5452,7 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
         &serde_json::json!({"reason": "cancel while waiting", "requested_by": "operator"}),
     );
     assert_eq!(status, 200, "body: {interrupted}");
-    let mut idle_with_cancelled_interaction = false;
+    let mut idle_with_cancelled_message = false;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
         let idle = snapshot["member_runs"]
@@ -5478,21 +5471,17 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
                 delivery["message_id"].as_str() == Some(waiting_request_id.as_str())
                     && delivery["status"].as_str() == Some("acknowledged")
             });
-        idle_with_cancelled_interaction = idle && cancelled;
-        if idle_with_cancelled_interaction {
+        idle_with_cancelled_message = idle && cancelled;
+        if idle_with_cancelled_message {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(
-        idle_with_cancelled_interaction,
-        "interrupt did not cancel the waiting interaction and return the Member to idle; snapshot={}",
+        idle_with_cancelled_message,
+        "interrupt did not cancel the waiting provider Message and return the Member to idle; snapshot={}",
         serve.get_json("/v1/snapshot").1
     );
-    let (_, snapshot) = serve.get_json("/v1/snapshot");
-    assert!(snapshot["pending_interactions"]
-        .as_array()
-        .is_some_and(Vec::is_empty));
 }
 
 #[test]
@@ -5634,10 +5623,6 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
             }),
         "Team close must not silently release a WorkExecutionBinding"
     );
-    assert!(snapshot["pending_interactions"]
-        .as_array()
-        .is_some_and(Vec::is_empty));
-
     let close_requests = snapshot["team_member_close_requests"]
         .as_array()
         .expect("close requests");
@@ -5662,7 +5647,6 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
         "team_member_close_requests.jsonl",
         "team_messages.jsonl",
         "member_runs.jsonl",
-        "pending_interactions.jsonl",
         "member_actions.jsonl",
         "team_run_events.jsonl",
         "canonical_operations.jsonl",

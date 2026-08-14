@@ -22,14 +22,13 @@ use harness_core::{
     MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot, MessageTerminalSource,
     Mission, MissionLogEntry, MissionLogEntryKind, MissionStatus, NativeSessionAvailability,
     NativeSessionRef, NodeDaemonLeaseStatus, NodeProjectRegistration,
-    NodeProjectRegistrationStatus, OrdinaryMessageBoundary, PendingInteraction,
-    PendingInteractionKind, PendingInteractionRoute, PendingInteractionStatus, ProjectContext,
-    ProjectKind, ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence,
-    ProviderCapacityEvidence, ProviderCapacitySnapshot, ProviderCapacityState,
-    ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
-    ProviderCompatibilityAdmissionPolicy, ProviderCompatibilityBlockBoundary,
-    ProviderCompatibilityBlockCause, ProviderCompatibilityBlockSource, ProviderCompatibilityStatus,
-    ProviderControlValue, ProviderDispatchAttempt, ProviderDispatchIntent, ProviderEventFidelity,
+    NodeProjectRegistrationStatus, OrdinaryMessageBoundary, ProjectContext, ProjectKind,
+    ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
+    ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityAdmission,
+    ProviderCompatibilityAdmissionLifecycle, ProviderCompatibilityAdmissionPolicy,
+    ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
+    ProviderCompatibilityBlockSource, ProviderCompatibilityStatus, ProviderControlValue,
+    ProviderDispatchAttempt, ProviderDispatchIntent, ProviderEventFidelity,
     ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
     ProviderIntegrationProfile, ProviderInteractionMessageOption, ProviderInteractionMode,
     ProviderInteractionRequestBody, ProviderInteractionResponseBody, ProviderInteractionType,
@@ -946,7 +945,6 @@ const EXECUTION_LEDGER_NAMES: &[&str] = &[
     "work_operations.jsonl",
     "host_attentions.jsonl",
     "team_supervisor_leases.jsonl",
-    "pending_interactions.jsonl",
     "delegation_runs.jsonl",
     "team_run_events.jsonl",
     "agentfirm_trust_operations.jsonl",
@@ -1869,7 +1867,6 @@ fn project_migration_ledger_allowed(name: &str) -> bool {
             | "gaps.jsonl"
             | "host_attentions.jsonl"
             | "team_supervisor_leases.jsonl"
-            | "pending_interactions.jsonl"
             | "delegation_runs.jsonl"
             | "team_run_events.jsonl"
             | "agentfirm_trust_operations.jsonl"
@@ -9154,7 +9151,7 @@ fn team_member_provider_profile_for_mode(
             compatibility_note: Some("Codex rollout storage is the execution history; Harness keeps only its NativeSessionRef and coordination outcome. App-server is the interactive mode.".to_string()),
             // codex exec --json is non-interactive in this adapter. A future
             // follow-up contract must first turn an end-of-round blocker into
-            // a PendingInteraction; do not claim it before that exists.
+            // a correlated question Message; do not claim it before that exists.
             interaction_mode: ProviderInteractionMode::Unsupported,
             ordinary_message_boundary: OrdinaryMessageBoundary::Unknown,
             plan_mode: ProviderFeatureMode::Unsupported,
@@ -16041,7 +16038,7 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|board-summary|work|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
+        "team-run create|list|status|board-summary|work|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|answer-message|events|wait|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -16254,9 +16251,9 @@ fn team_run_command(
                 println!("{}\t{}", run.id, serde_snake_label(&run.status));
             }
         }
-        "resolve-interaction" => {
+        "answer-message" => {
             let team_run_id = required(args, "--id")?;
-            let interaction_id = required(args, "--interaction-id")?;
+            let message_id = required(args, "--message-id")?;
             let mut body = serde_json::json!({
                 "resolved_by": value(args, "--resolved-by").unwrap_or_else(|| "host".to_string())
             });
@@ -16266,12 +16263,11 @@ fn team_run_command(
             if let Some(response_text) = value(args, "--response-text") {
                 body["response_text"] = serde_json::Value::String(response_text);
             }
-            let interaction =
-                resolve_pending_interaction_value(store, &team_run_id, &interaction_id, &body)?;
+            let response = answer_provider_message_value(store, &team_run_id, &message_id, &body)?;
             if json {
-                print_json(&interaction)?;
+                print_json(&response)?;
             } else {
-                println!("{}", interaction["id"].as_str().unwrap_or(&interaction_id));
+                println!("{}", response["id"].as_str().unwrap_or(&message_id));
             }
         }
         "list" => {
@@ -17108,13 +17104,6 @@ fn member_run_detail_json(
             action.team_run_id == member.team_run_id && action.member_run_id == member_run_id
         })
         .collect::<Vec<_>>();
-    let pending_interactions = latest_pending_interactions_in_append_order(store)?
-        .into_iter()
-        .filter(|interaction| {
-            interaction.team_run_id == member.team_run_id
-                && interaction.member_run_id == member_run_id
-        })
-        .collect::<Vec<_>>();
     let supervisor = store.latest_team_supervisor_lease(&member.team_run_id)?;
     let close_request = store.latest_team_member_close_request(member_run_id)?;
     let actionable_inbox = if member.coordination_is_active() {
@@ -17148,7 +17137,6 @@ fn member_run_detail_json(
             "outbox": outbox,
             "actionable_inbox_count": actionable_inbox,
         },
-        "pending_interactions": pending_interactions,
         "supervisor": supervisor,
         "close_request": close_request,
         "actions": actions,
@@ -18737,7 +18725,7 @@ where
                     generation,
                 )?;
                 drop(authority_guard);
-                cancel_pending_member_interactions(
+                cancel_unanswered_provider_messages(
                     store,
                     &team_run_id,
                     &member_run_id,
@@ -18806,7 +18794,7 @@ where
             generation,
         )?;
         drop(authority_guard);
-        cancel_pending_member_interactions(
+        cancel_unanswered_provider_messages(
             store,
             &team_run_id,
             &member_run_id,
@@ -20323,12 +20311,6 @@ fn refresh_member_after_provider_callbacks(
         validate_provider_callback_drift(round_start, &latest)?;
     }
     if latest.status == MemberRunStatus::Waiting {
-        let legacy_unresolved = latest_pending_interactions_in_append_order(&ledger.store)?
-            .into_iter()
-            .any(|interaction| {
-                interaction.member_run_id == latest.id
-                    && interaction.status == PendingInteractionStatus::Pending
-            });
         let messages = ledger.team_messages()?;
         let message_unresolved = messages.iter().any(|request| {
             request.kind == ProviderDispatchIntent::ProviderInteractionRequest
@@ -20341,9 +20323,9 @@ fn refresh_member_after_provider_callbacks(
                         && response.causation_id.as_deref() == Some(request.id.as_str())
                 })
         });
-        if legacy_unresolved || message_unresolved {
+        if message_unresolved {
             return Err(CliError::Usage(format!(
-                "provider round for ProviderRuntimeProjection {} cannot finalize while an interaction remains pending",
+                "provider round for ProviderRuntimeProjection {} cannot finalize while a correlated provider question remains unanswered",
                 latest.id
             )));
         }
@@ -26956,6 +26938,31 @@ fn handle_codex_provider_request(
         })
         .unwrap_or_else(|| generated_id("provider-request"));
 
+    // The AgentSession's effective permission ceiling is frozen before Codex
+    // starts and is enforced by its native sandbox with approvalPolicy=never.
+    // A later approval callback cannot widen that ceiling and does not become
+    // a second Harness permission workflow. Unexpected callbacks fail closed.
+    if matches!(
+        method,
+        "item/commandExecution/requestApproval"
+            | "item/fileChange/requestApproval"
+            | "item/permissions/requestApproval"
+    ) {
+        ledger.append_provider_control_receipt_once(
+            &member,
+            "Codex approval callback rejected",
+            "session-start permission ceiling is immutable; unexpected approval callback failed closed",
+        )?;
+        return Ok(ProviderInteractionReply {
+            result: if method == "item/permissions/requestApproval" {
+                serde_json::json!({"permissions": {}, "scope": "turn"})
+            } else {
+                serde_json::json!({"decision": "decline"})
+            },
+            claimed_response: None,
+        });
+    }
+
     let (interaction_type, title, prompt, options) = if method == "item/tool/requestUserInput" {
         let questions = params
             .get("questions")
@@ -27007,34 +27014,6 @@ fn handle_codex_provider_request(
                 .to_string(),
             options,
         )
-    } else if matches!(
-        method,
-        "item/commandExecution/requestApproval"
-            | "item/fileChange/requestApproval"
-            | "item/permissions/requestApproval"
-    ) {
-        (
-            ProviderInteractionType::ToolApproval,
-            "Codex approval".to_string(),
-            params
-                .get("reason")
-                .or_else(|| params.get("command"))
-                .and_then(|value| value.as_str())
-                .unwrap_or("Codex requested permission for an action")
-                .to_string(),
-            vec![
-                ProviderInteractionMessageOption {
-                    id: "approve_once".to_string(),
-                    label: "Approve once".to_string(),
-                    intent: Some("allow_once".to_string()),
-                },
-                ProviderInteractionMessageOption {
-                    id: "deny".to_string(),
-                    label: "Deny".to_string(),
-                    intent: Some("reject_once".to_string()),
-                },
-            ],
-        )
     } else {
         return Err(CliError::Usage(format!(
             "unsupported Codex app-server request {method}; denied fail-closed"
@@ -27053,11 +27032,7 @@ fn handle_codex_provider_request(
     if created {
         ledger.append_action(
             &member.id,
-            if interaction_type == ProviderInteractionType::Question {
-                "waiting_for_input"
-            } else {
-                "waiting_for_approval"
-            },
+            "waiting_for_input",
             MemberActionStatus::Started,
             &title,
             &prompt,
@@ -27081,7 +27056,7 @@ fn handle_codex_provider_request(
         };
     ledger.append_action(
         &member.id,
-        "interaction_resolved",
+        "provider_question_resolved",
         if resolved.is_some() {
             MemberActionStatus::Succeeded
         } else {
@@ -27089,9 +27064,9 @@ fn handle_codex_provider_request(
         },
         &title,
         if resolved.is_some() {
-            "provider interaction response received"
+            "correlated provider answer received"
         } else {
-            "provider interaction cancelled by lifecycle"
+            "provider question cancelled by lifecycle"
         },
     )?;
 
@@ -27127,41 +27102,9 @@ fn handle_codex_provider_request(
             claimed_response,
         });
     }
-    if method == "item/permissions/requestApproval" {
-        let approved = response.as_ref().is_some_and(|response| {
-            response
-                .choice
-                .as_deref()
-                .is_some_and(|choice| choice == "approve_once")
-        });
-        return Ok(ProviderInteractionReply {
-            result: serde_json::json!({
-            "permissions": if approved {
-                params.get("permissions").cloned().unwrap_or_else(|| serde_json::json!({}))
-            } else {
-                serde_json::json!({})
-            },
-            "scope": "turn"
-            }),
-            claimed_response,
-        });
-    }
-    let approved = response.as_ref().is_some_and(|response| {
-        response
-            .choice
-            .as_deref()
-            .is_some_and(|choice| choice == "approve_once")
-    });
-    Ok(ProviderInteractionReply {
-        result: serde_json::json!({
-        "decision": if approved {
-            "accept"
-        } else {
-            "decline"
-        }
-        }),
-        claimed_response,
-    })
+    Err(CliError::Usage(format!(
+        "unsupported Codex app-server response path for {method}; denied fail-closed"
+    )))
 }
 
 fn handle_kimi_provider_request(
@@ -27194,7 +27137,7 @@ fn handle_kimi_provider_request(
     let title = params
         .pointer("/toolCall/title")
         .and_then(|value| value.as_str())
-        .unwrap_or("Provider interaction")
+        .unwrap_or("Provider question")
         .to_string();
     let question =
         title == "AskUserQuestion" || options.iter().any(|option| option.id.starts_with("q0_"));
@@ -27235,15 +27178,11 @@ fn handle_kimi_provider_request(
         .ok_or_else(|| CliError::Usage(format!("member run {} not found", supplied_member.id)))?;
     validate_provider_callback_drift(supplied_member, &member)?;
 
-    // Agent Team members run with the explicit full-access launch contract.
-    // A routine tool permission prompt that exposes a safe allow option is an
-    // adapter acknowledgement, not an unresolved product interaction. Answer
-    // it directly and retain only a bounded control receipt; persisting a
-    // synthetic pending -> approved pair floods the Lead inbox and falsely
-    // implies that a Human or policy decision was required. The receipt is
-    // bounded to the first safe acknowledgement per ProviderRuntimeProjection: one durable row
-    // proves the policy became active, later per-tool prompts are answered the
-    // same way without new rows, and no tool title or command text is logged.
+    // The AgentSession permission ceiling is frozen before Kimi starts. A
+    // routine tool permission callback that exposes an allow option is an
+    // adapter acknowledgement inside that ceiling, not a second permission
+    // workflow. Answer it directly and retain only one bounded control receipt;
+    // no tool title or command text is logged.
     if interaction_type == ProviderInteractionType::ToolApproval {
         if let Some(option_id) = options
             .iter()
@@ -27267,7 +27206,7 @@ fn handle_kimi_provider_request(
             ledger.append_provider_control_receipt_once(
                 &member,
                 "Kimi full-access tool permission acknowledged",
-                "provider exposed a safe allow option; full-access adapter acknowledged it without creating a PendingInteraction",
+                "provider exposed a safe allow option; the frozen full-access session policy acknowledged it directly",
             )?;
             return Ok(ProviderInteractionReply {
                 result: serde_json::json!({
@@ -27277,11 +27216,19 @@ fn handle_kimi_provider_request(
             });
         }
     }
-    // ACP can only answer `session/request_permission` with a provider option.
-    // An unknown request with no options has no recoverable native responder;
-    // fail closed in-process instead of creating a durable request that no
-    // valid TeamMessageProjection response could ever deliver.
-    if interaction_type == ProviderInteractionType::Unknown {
+    // A permission callback without a safe allow option cannot widen the
+    // frozen AgentSession ceiling. Reject-only and unknown requests fail closed
+    // in-process; only real user questions and plan-review prompts become
+    // correlated Messages.
+    if matches!(
+        interaction_type,
+        ProviderInteractionType::RejectOnly | ProviderInteractionType::Unknown
+    ) {
+        ledger.append_provider_control_receipt_once(
+            &member,
+            "Kimi permission callback rejected",
+            "session-start permission ceiling is immutable; callback had no safe in-ceiling allow option",
+        )?;
         return Ok(ProviderInteractionReply {
             result: serde_json::json!({"outcome": {"outcome": "cancelled"}}),
             claimed_response: None,
@@ -27304,11 +27251,7 @@ fn handle_kimi_provider_request(
     if created {
         ledger.append_action(
             &member.id,
-            if interaction_type == ProviderInteractionType::Question {
-                "waiting_for_input"
-            } else {
-                "waiting_for_approval"
-            },
+            "waiting_for_input",
             MemberActionStatus::Started,
             &title,
             &prompt,
@@ -27339,7 +27282,7 @@ fn handle_kimi_provider_request(
     };
     ledger.append_action(
         &member.id,
-        "interaction_resolved",
+        "provider_question_resolved",
         if response.is_some() {
             MemberActionStatus::Succeeded
         } else {
@@ -27347,9 +27290,9 @@ fn handle_kimi_provider_request(
         },
         &title,
         if response.is_some() {
-            "provider interaction response received"
+            "correlated provider answer received"
         } else {
-            "provider interaction cancelled by lifecycle"
+            "provider question cancelled by lifecycle"
         },
     )?;
     Ok(ProviderInteractionReply {
@@ -28461,15 +28404,6 @@ fn handle_sse_stream(
                             }
                         }
                     }
-                    sse::SseEventFrame::PendingInteraction(interaction) => {
-                        if let Ok(json) = serde_json::to_value(&interaction) {
-                            if sse::write_sse_frame(&mut stream, "pending_interaction", &json)
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    }
                     sse::SseEventFrame::ProjectionInvalidated(invalidation) => {
                         if let Ok(json) = serde_json::to_value(&invalidation) {
                             if sse::write_sse_frame(&mut stream, "projection_invalidated", &json)
@@ -29391,7 +29325,16 @@ fn handle_http_connection(
         )?;
         return Ok(());
     }
+    let provider_message_answer = path_only
+        .strip_prefix("/v1/team-runs/")
+        .is_some_and(|rest| {
+            matches!(
+                rest.split('/').collect::<Vec<_>>().as_slice(),
+                [_, "messages", _, "answer"]
+            )
+        });
     let retired_message_write = method == "POST"
+        && !provider_message_answer
         && (path_only == "/v1/messages"
             || (path_only.starts_with("/v1/team-runs/")
                 && (path_only.ends_with("/messages") || path_only.contains("/messages/")))
@@ -31487,8 +31430,8 @@ fn handle_http_action(
                 "RETIRED_WRITE_AUTHORITY: run-addressed message reconciliation is closed for {team_run_id}/{message_id}"
             )));
         }
-        if let [team_run_id, "interactions", interaction_id, "resolve"] = parts.as_slice() {
-            return resolve_pending_interaction_value(store, team_run_id, interaction_id, body);
+        if let [team_run_id, "messages", message_id, "answer"] = parts.as_slice() {
+            return answer_provider_message_value(store, team_run_id, message_id, body);
         }
         if let [team_run_id, "members", member_run_id, "steer"] = parts.as_slice() {
             return steer_team_member_value(store, team_run_id, member_run_id, body);
@@ -31604,7 +31547,7 @@ fn interrupt_team_member_value(
     let reason = optional_json_string(body, "reason")?
         .unwrap_or_else(|| "operator requested interruption".to_string());
     require_member_interrupt_capability(store, team_run_id, member_run_id)?;
-    cancel_pending_member_interactions(store, team_run_id, member_run_id, &requested_by, &reason)?;
+    cancel_unanswered_provider_messages(store, team_run_id, member_run_id, &requested_by, &reason)?;
     dispatch_live_member_control(
         store,
         LiveMemberControlRequest::Interrupt {
@@ -31652,7 +31595,7 @@ fn require_member_interrupt_capability(
     Ok(())
 }
 
-fn cancel_pending_member_interactions(
+fn cancel_unanswered_provider_messages(
     store: &HarnessStore,
     team_run_id: &str,
     member_run_id: &str,
@@ -31664,8 +31607,7 @@ fn cancel_pending_member_interactions(
         .find(|member| member.id == member_run_id && member.team_run_id == team_run_id)
         .map(|member| member.agent_member_id)
         .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
-    // Canonical provider requests have no PendingInteraction row. Drive their
-    // exact Host MessageDelivery through claim -> provider receipt -> ACK
+    // Drive the exact Host MessageDelivery through claim -> provider receipt -> ACK
     // without fabricating an answer; the blocked provider callback observes
     // the ACK and returns a native cancellation. The retired TeamMessage
     // delivery ledger is never mutated here.
@@ -31688,36 +31630,7 @@ fn cancel_pending_member_interactions(
             "message",
             &request.id,
             "cancelled",
-            &format!("provider interaction cancelled by {requested_by}: {reason}"),
-        )?;
-    }
-    // Unblock reverse provider requests before waiting for a live adapter
-    // acknowledgement. Otherwise the provider thread and HTTP caller can
-    // deadlock while the adapter is paused in PendingInteraction.
-    for interaction in latest_pending_interactions_in_append_order(store)?
-        .into_iter()
-        .filter(|interaction| {
-            interaction.team_run_id == team_run_id
-                && interaction.member_run_id == member_run_id
-                && interaction.status == PendingInteractionStatus::Pending
-        })
-    {
-        let mut cancelled = interaction;
-        cancelled.status = PendingInteractionStatus::Cancelled;
-        cancelled.resolved_at = Some(now_string());
-        cancelled.resolved_by = Some(requested_by.to_string());
-        cancelled.response_text = Some(reason.to_string());
-        store.append_pending_interaction(&cancelled)?;
-        append_team_run_event(
-            store,
-            team_run_id,
-            0,
-            TeamRunEventSourceKind::Host,
-            Some(member_run_id.to_string()),
-            "pending_interaction",
-            &cancelled.id,
-            "resolved",
-            "pending provider interaction cancelled by member lifecycle control",
+            &format!("provider question cancelled by {requested_by}: {reason}"),
         )?;
     }
     Ok(())
@@ -31770,7 +31683,7 @@ fn close_team_member_value(
         member.status,
         MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
     ) {
-        cancel_pending_member_interactions(
+        cancel_unanswered_provider_messages(
             store,
             team_run_id,
             member_run_id,
@@ -31836,7 +31749,7 @@ fn close_team_member_value(
                 .into(),
         ));
     };
-    cancel_pending_member_interactions(store, team_run_id, member_run_id, &requested_by, &reason)?;
+    cancel_unanswered_provider_messages(store, team_run_id, member_run_id, &requested_by, &reason)?;
     let member = mark_member_coordination_closed(store, team_run_id, member_run_id)?;
     let mut member = member;
     let expected = member.clone();
@@ -32148,130 +32061,13 @@ pub(crate) fn reopened_member_requires_supervisor_start(
     Ok(false)
 }
 
-pub(crate) fn resolve_pending_interaction_value(
+pub(crate) fn answer_provider_message_value(
     store: &HarnessStore,
     team_run_id: &str,
-    interaction_id: &str,
+    message_id: &str,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
-    let current = latest_pending_interactions_in_append_order(store)?
-        .into_iter()
-        .find(|interaction| interaction.id == interaction_id);
-    let Some(current) = current else {
-        return resolve_provider_interaction_message_value(
-            store,
-            team_run_id,
-            interaction_id,
-            body,
-        );
-    };
-    if current.team_run_id != team_run_id {
-        return Err(CliError::Usage(format!(
-            "interaction {interaction_id} does not belong to team run {team_run_id}"
-        )));
-    }
-    if current.status != PendingInteractionStatus::Pending {
-        return Err(CliError::Usage(format!(
-            "interaction {interaction_id} is already {}",
-            serde_snake_label(&current.status)
-        )));
-    }
-    let resolved_by = required_json_string(body, "resolved_by")?;
-    let authorized = match current.route {
-        PendingInteractionRoute::Lead => matches!(resolved_by.as_str(), "host" | "lead"),
-        PendingInteractionRoute::Human => matches!(resolved_by.as_str(), "operator" | "human"),
-        PendingInteractionRoute::Policy => resolved_by == "policy",
-    };
-    if !authorized {
-        return Err(CliError::Usage(format!(
-            "interaction {} requires {} authority; resolved_by={resolved_by} is not allowed",
-            interaction_id,
-            serde_snake_label(&current.route)
-        )));
-    }
-    let option_id = json_string(body, "option_id");
-    let response_text = json_string(body, "response_text");
-    if option_id.is_none() && response_text.is_none() {
-        return Err(CliError::Usage(
-            "interaction resolution requires option_id or response_text".to_string(),
-        ));
-    }
-    let selected = option_id
-        .as_deref()
-        .map(|id| {
-            current
-                .options
-                .iter()
-                .find(|option| option.id == id)
-                .cloned()
-                .ok_or_else(|| CliError::Usage(format!("unknown interaction option: {id}")))
-        })
-        .transpose()?;
-    let status = match current.kind {
-        PendingInteractionKind::Question => {
-            if selected.as_ref().is_some_and(|option| {
-                option.intent.as_deref() == Some("reject_once") || option.id.ends_with("_skip")
-            }) {
-                PendingInteractionStatus::Dismissed
-            } else {
-                PendingInteractionStatus::Answered
-            }
-        }
-        PendingInteractionKind::ToolApproval | PendingInteractionKind::PlanReview => {
-            if selected.as_ref().is_some_and(|option| {
-                option
-                    .intent
-                    .as_deref()
-                    .is_some_and(|intent| intent.starts_with("allow"))
-                    || option.id.contains("approve")
-                    || option.id.starts_with("plan_opt_")
-            }) {
-                PendingInteractionStatus::Approved
-            } else if matches!(current.kind, PendingInteractionKind::PlanReview)
-                && selected.is_none()
-            {
-                // Fallback: when a PlanReview arrives without a matched option (e.g. the
-                // Lead used --response-text instead of --option-id plan_approve), default
-                // to Approved — ADR 0039: Harness has no Plan Gate, and a denied
-                // provider-native plan review traps the member in a plan-mode loop.
-                PendingInteractionStatus::Approved
-            } else {
-                PendingInteractionStatus::Denied
-            }
-        }
-        PendingInteractionKind::Unknown => PendingInteractionStatus::Answered,
-    };
-    let mut resolved = current;
-    resolved.status = status;
-    resolved.response_option_id = option_id;
-    resolved.response_text = response_text;
-    resolved.resolved_at = Some(now_string());
-    resolved.resolved_by = Some(resolved_by);
-    store.append_pending_interaction(&resolved)?;
-    append_team_run_event(
-        store,
-        team_run_id,
-        0,
-        TeamRunEventSourceKind::Host,
-        Some(resolved.member_run_id.clone()),
-        "pending_interaction",
-        &resolved.id,
-        "resolved",
-        &format!(
-            "{} resolved as {}",
-            resolved.title,
-            serde_snake_label(&resolved.status)
-        ),
-    )?;
-    serde_json::to_value(resolved).map_err(CliError::Json)
-}
-
-fn resolve_provider_interaction_message_value(
-    store: &HarnessStore,
-    team_run_id: &str,
-    request_id: &str,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
+    let request_id = message_id;
     let current_messages = canonical_team_messages_for_run(store, team_run_id)?;
     let request = current_messages
         .iter()
@@ -32288,17 +32084,10 @@ fn resolve_provider_interaction_message_value(
     let request_body = ProviderInteractionRequestBody::parse_canonical_json(&request.body)
         .map_err(CliError::Usage)?;
     let resolved_by = required_json_string(body, "resolved_by")?;
-    let authorized = match request_body.interaction_type {
-        ProviderInteractionType::Question | ProviderInteractionType::PlanReview => {
-            matches!(resolved_by.as_str(), "host" | "lead")
-        }
-        ProviderInteractionType::ToolApproval | ProviderInteractionType::RejectOnly => {
-            resolved_by == "policy"
-        }
-        ProviderInteractionType::Unknown => {
-            matches!(resolved_by.as_str(), "operator" | "human")
-        }
-    };
+    let authorized = matches!(
+        request_body.interaction_type,
+        ProviderInteractionType::Question | ProviderInteractionType::PlanReview
+    ) && matches!(resolved_by.as_str(), "host" | "lead");
     if !authorized {
         return Err(CliError::Usage(format!(
             "provider interaction {request_id} does not authorize resolved_by={resolved_by}"
@@ -32328,18 +32117,7 @@ fn resolve_provider_interaction_message_value(
             display_name: None,
             authn_source: Some("interaction_resolve".to_string()),
         },
-        "policy" => TeamActorRef {
-            kind: TeamActorKind::Service,
-            id: "policy".to_string(),
-            display_name: None,
-            authn_source: Some("interaction_resolve".to_string()),
-        },
-        _ => TeamActorRef {
-            kind: TeamActorKind::Operator,
-            id: resolved_by.clone(),
-            display_name: None,
-            authn_source: Some("interaction_resolve".to_string()),
-        },
+        _ => unreachable!("provider questions are answered only by Host or Lead"),
     };
     let response_id = provider_interaction_response_id(request_id).map_err(CliError::Usage)?;
     let existing_response = current_messages.into_iter().find(|message| {
@@ -39003,7 +38781,6 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     // intact for migration/audit, but never project those rows into a new
     // snapshot: thinking is not product state or evidence.
     let member_actions = visible_member_actions_in_append_order(store)?;
-    let pending_interactions = latest_pending_interactions_in_append_order(store)?;
     let delegation_runs = latest_delegation_runs_in_append_order(store)?;
     let team_run_events = recent_team_run_events_in_append_order(store, 500)?;
     let member_cards: Vec<_> = members
@@ -39105,7 +38882,6 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "team_supervisor_leases": team_supervisor_leases,
         "team_member_close_requests": team_member_close_requests,
         "member_actions": member_actions,
-        "pending_interactions": pending_interactions,
         "delegation_runs": delegation_runs,
         "team_run_events": team_run_events,
         "company_os": company_os
@@ -39231,7 +39007,6 @@ fn dashboard_team_run_snapshot(
         "team_supervisor_leases",
         "team_member_close_requests",
         "member_actions",
-        "pending_interactions",
         "delegation_runs",
         "team_run_events",
     ] {
@@ -39414,19 +39189,6 @@ fn latest_member_actions_in_append_order(store: &HarnessStore) -> CliResult<Vec<
         ids.retain(|id| id != &action.id);
         ids.push(action.id.clone());
         by_id.insert(action.id.clone(), action);
-    }
-    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
-}
-
-pub(crate) fn latest_pending_interactions_in_append_order(
-    store: &HarnessStore,
-) -> CliResult<Vec<PendingInteraction>> {
-    let mut ids = Vec::new();
-    let mut by_id = BTreeMap::new();
-    for interaction in store.pending_interactions()? {
-        ids.retain(|id| id != &interaction.id);
-        ids.push(interaction.id.clone());
-        by_id.insert(interaction.id.clone(), interaction);
     }
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
@@ -42251,7 +42013,7 @@ fn print_help() {
   mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <md>
   mission log show --mission-id <id> [--tail <n>]
   wave list|show|history (historical reads only; create|update|advance|gate retired by ADR 0051 -- use `mission log append`)
-  team-run create|list|status|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
+  team-run create|list|status|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|answer-message|events|complete|cancel
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.
@@ -46462,32 +46224,6 @@ mod tests {
                 60_000,
             )
             .expect("acquire current Supervisor lease");
-        let interaction = PendingInteraction {
-            id: "pending-close-fence".into(),
-            team_run_id: created.team_run.id.clone(),
-            member_run_id: member.id.clone(),
-            provider: "codex".into(),
-            provider_request_id: "provider-close-fence".into(),
-            method: "item/tool/requestUserInput".into(),
-            kind: PendingInteractionKind::Question,
-            route: PendingInteractionRoute::Lead,
-            status: PendingInteractionStatus::Pending,
-            title: "Pending before rejected Close".into(),
-            prompt: "Must remain pending".into(),
-            options: Vec::new(),
-            tool_call_id: None,
-            response_option_id: None,
-            response_text: None,
-            created_at: "unix-ms:close-fence".into(),
-            resolved_at: None,
-            resolved_by: None,
-        };
-        store
-            .append_pending_interaction(&interaction)
-            .expect("seed pending provider interaction");
-        let interactions_before = store
-            .pending_interactions()
-            .expect("pending interactions before rejected Close");
         let events_before = store
             .team_run_events()
             .expect("events before rejected Close");
@@ -46520,13 +46256,6 @@ mod tests {
         );
         assert_eq!(
             store
-                .pending_interactions()
-                .expect("pending interactions after rejected Close"),
-            interactions_before,
-            "authority-rejected Close cancelled a provider interaction"
-        );
-        assert_eq!(
-            store
                 .team_run_events()
                 .expect("events after rejected Close"),
             events_before,
@@ -46550,32 +46279,6 @@ mod tests {
                 60_000,
             )
             .expect("acquire first Supervisor lease");
-        let interaction = PendingInteraction {
-            id: "pending-close-toctou".into(),
-            team_run_id: created.team_run.id.clone(),
-            member_run_id: member.id.clone(),
-            provider: "codex".into(),
-            provider_request_id: "provider-close-toctou".into(),
-            method: "item/tool/requestUserInput".into(),
-            kind: PendingInteractionKind::Question,
-            route: PendingInteractionRoute::Lead,
-            status: PendingInteractionStatus::Pending,
-            title: "Pending across stale-generation Close".into(),
-            prompt: "Must remain pending".into(),
-            options: Vec::new(),
-            tool_call_id: None,
-            response_option_id: None,
-            response_text: None,
-            created_at: "unix-ms:close-toctou".into(),
-            resolved_at: None,
-            resolved_by: None,
-        };
-        store
-            .append_pending_interaction(&interaction)
-            .expect("seed pending provider interaction");
-        let interactions_before = store
-            .pending_interactions()
-            .expect("pending interactions before stale Close");
         let events_before = store.team_run_events().expect("events before stale Close");
         let (control_rx, _control_registration) = register_live_member_control(&member, 1);
         let supervisor_valid = AtomicBool::new(true);
@@ -46632,13 +46335,6 @@ mod tests {
                 .expect("close requests")
                 .is_empty(),
             "stale generation persisted Close"
-        );
-        assert_eq!(
-            store
-                .pending_interactions()
-                .expect("pending interactions after stale Close"),
-            interactions_before,
-            "stale generation cancelled a provider interaction"
         );
         assert_eq!(
             store.team_run_events().expect("events after stale Close"),
@@ -47632,10 +47328,6 @@ mod tests {
             "thread-multi-question",
         );
         let messages_before = store.team_messages().expect("team messages before").len();
-        let interactions_before = store
-            .pending_interactions()
-            .expect("pending interactions before")
-            .len();
         let actions_before = store.member_actions().expect("member actions before").len();
         let frame = serde_json::json!({
             "id": 700,
@@ -47661,14 +47353,6 @@ mod tests {
             store.team_messages().expect("team messages after").len(),
             messages_before,
             "unsupported request must not create a provider request message"
-        );
-        assert_eq!(
-            store
-                .pending_interactions()
-                .expect("pending interactions after")
-                .len(),
-            interactions_before,
-            "unsupported request must not create a legacy interaction"
         );
         assert_eq!(
             store.member_actions().expect("member actions after").len(),
@@ -47744,7 +47428,7 @@ mod tests {
         };
 
         // Many repeated safe approvals: every prompt is still answered with
-        // its safe allow option, none creates a PendingInteraction, and the
+        // its safe allow option, and the
         // durable stream converges to ONE bounded provider_control receipt.
         for id in 700..707 {
             let outcome = handle_kimi_provider_request(&ledger, &member, &safe_frame(id))
@@ -47780,13 +47464,6 @@ mod tests {
         assert!(
             !receipt.summary.contains("sensitive command") && !receipt.title.contains("Bash"),
             "no tool title or command text may be persisted: {receipt:?}"
-        );
-        assert!(
-            store
-                .pending_interactions()
-                .expect("pending interactions")
-                .is_empty(),
-            "safe approvals must never create PendingInteractions"
         );
     }
 
@@ -47861,13 +47538,6 @@ mod tests {
         assert_eq!(
             member_controls, 2,
             "the seeded unrelated row is preserved alongside the one bounded receipt: {actions:?}"
-        );
-        assert!(
-            store
-                .pending_interactions()
-                .expect("pending interactions")
-                .is_empty(),
-            "safe approvals must never create PendingInteractions"
         );
     }
 
@@ -50586,67 +50256,6 @@ package:com.tencent.mm
     }
 
     #[test]
-    fn legacy_pending_interaction_resolve_stays_on_legacy_ledger() {
-        let (store, root) = temp_store("legacy-pending-interaction-resolve");
-        let created = create_two_member_team_run(&store);
-        let member = &created.member_runs[0];
-        let legacy = PendingInteraction {
-            id: "legacy-pending-1".into(),
-            team_run_id: created.team_run.id.clone(),
-            member_run_id: member.id.clone(),
-            provider: "codex".into(),
-            provider_request_id: "legacy-provider-request-1".into(),
-            method: "item/tool/requestUserInput".into(),
-            kind: PendingInteractionKind::Question,
-            route: PendingInteractionRoute::Lead,
-            status: PendingInteractionStatus::Pending,
-            title: "Legacy question".into(),
-            prompt: "Continue the legacy operation?".into(),
-            options: vec![harness_core::PendingInteractionOption {
-                id: "continue".into(),
-                label: "Continue".into(),
-                intent: Some("answer".into()),
-            }],
-            tool_call_id: None,
-            response_option_id: None,
-            response_text: None,
-            created_at: "unix-ms:legacy-created".into(),
-            resolved_at: None,
-            resolved_by: None,
-        };
-        store
-            .append_pending_interaction(&legacy)
-            .expect("seed legacy pending interaction");
-        let messages_before = store.team_messages().expect("messages before");
-
-        let resolved = resolve_pending_interaction_value(
-            &store,
-            &created.team_run.id,
-            &legacy.id,
-            &serde_json::json!({
-                "resolved_by": "host",
-                "option_id": "continue"
-            }),
-        )
-        .expect("resolve legacy row through compatibility endpoint");
-        assert_eq!(resolved["status"].as_str(), Some("answered"));
-        assert_eq!(resolved["response_option_id"].as_str(), Some("continue"));
-        assert_eq!(
-            store.team_messages().expect("messages after"),
-            messages_before,
-            "legacy resolve must not fabricate or consume TeamMessages"
-        );
-        let latest = latest_pending_interactions_in_append_order(&store)
-            .expect("latest legacy interactions")
-            .into_iter()
-            .find(|interaction| interaction.id == legacy.id)
-            .expect("resolved legacy row");
-        assert_eq!(latest.status, PendingInteractionStatus::Answered);
-        assert_eq!(latest.resolved_by.as_deref(), Some("host"));
-        std::fs::remove_dir_all(root).expect("cleanup");
-    }
-
-    #[test]
     fn provider_interaction_cas_rebases_retries_and_fences_lifecycle() {
         let (store, root) = temp_store("provider-interaction-cas");
         let created = create_two_member_team_run(&store);
@@ -50899,12 +50508,7 @@ package:com.tencent.mm
         assert!(stale_replay
             .to_string()
             .contains("replayed with different semantics"));
-        assert!(store
-            .pending_interactions()
-            .expect("legacy pending ledger")
-            .is_empty());
-
-        let response = resolve_pending_interaction_value(
+        let response = answer_provider_message_value(
             &store,
             &created.team_run.id,
             &request.id,
@@ -50918,7 +50522,7 @@ package:com.tencent.mm
             response["kind"].as_str(),
             Some("provider_interaction_response")
         );
-        let exact_retry = resolve_pending_interaction_value(
+        let exact_retry = answer_provider_message_value(
             &store,
             &created.team_run.id,
             &request.id,
@@ -50929,7 +50533,7 @@ package:com.tencent.mm
         )
         .expect("exact response retry converges");
         assert_eq!(exact_retry["id"], response["id"]);
-        let conflict = resolve_pending_interaction_value(
+        let conflict = answer_provider_message_value(
             &store,
             &created.team_run.id,
             &request.id,

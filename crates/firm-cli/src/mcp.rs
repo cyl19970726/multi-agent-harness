@@ -17,27 +17,26 @@
 use std::io::{BufRead, Write};
 
 use harness_core::{
-    PendingInteractionStatus, TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus,
-    TeamSupervisorLeaseStatus, WaveStatus, Work, WorkCausationRef, WorkClaimMode,
-    WorkCommandContext, WorkCondition, WorkPhase, WorkPriority,
+    TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus, TeamSupervisorLeaseStatus,
+    WaveStatus, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition,
+    WorkPhase, WorkPriority,
 };
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
 use crate::{
-    add_team_run_member, agentfirm_api, close_mission, close_team_member_value, create_mission,
-    create_team_run, current_unix_ms_u64, deactivate_team_run_member,
-    delegate_team_run_to_node_daemon, format_work_brief_line, generated_id,
-    has_actionable_delivered_manual_ack, host_inbox_for_native_thread, interrupt_team_member_value,
-    latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
+    add_team_run_member, agentfirm_api, answer_provider_message_value, close_mission,
+    close_team_member_value, create_mission, create_team_run, current_unix_ms_u64,
+    deactivate_team_run_member, delegate_team_run_to_node_daemon, format_work_brief_line,
+    generated_id, has_actionable_delivered_manual_ack, host_inbox_for_native_thread,
+    interrupt_team_member_value, latest_member_runs_in_append_order,
     latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
     mutate_team_work_value, now_string, reconcile_team_work_delivery_value, rename_team_run_member,
-    reopen_team_member_value, reopened_member_requires_supervisor_start,
-    resolve_pending_interaction_value, retired_wave_write_error, revise_mission_context,
-    serde_snake_label, steer_team_member_value, team_member_specs_from_definition,
-    team_run_board_summary_text, team_run_inbox, team_run_mission_id, team_run_wave_index,
-    transition_team_run, visible_member_actions_in_append_order, work_operation_cursors,
-    ResolvedStore, TeamMemberSpec,
+    reopen_team_member_value, reopened_member_requires_supervisor_start, retired_wave_write_error,
+    revise_mission_context, serde_snake_label, steer_team_member_value,
+    team_member_specs_from_definition, team_run_board_summary_text, team_run_inbox,
+    team_run_mission_id, team_run_wave_index, transition_team_run,
+    visible_member_actions_in_append_order, work_operation_cursors, ResolvedStore, TeamMemberSpec,
 };
 
 /// MCP protocol revision this server speaks, echoed verbatim in `initialize`
@@ -213,7 +212,7 @@ pub(crate) fn call_tool(
         "team_run_inbox" => tool_team_run_inbox(store, &arguments),
         "team_run_send_message" => tool_team_run_send_message(store, &arguments),
         "team_run_reconcile_delivery" => tool_team_run_reconcile_delivery(store, &arguments),
-        "team_run_resolve_interaction" => tool_team_run_resolve_interaction(store, &arguments),
+        "team_run_answer_message" => tool_team_run_answer_message(store, &arguments),
         "team_run_steer_member" => tool_team_run_steer_member(store, &arguments),
         "team_run_interrupt_member" => tool_team_run_interrupt_member(store, &arguments),
         "team_run_close_member" => tool_team_run_close_member(store, &arguments),
@@ -910,13 +909,10 @@ fn tool_team_run_reopen_member(
     Ok(json!({"reopen": reopened}))
 }
 
-fn tool_team_run_resolve_interaction(
-    store: &HarnessStore,
-    arguments: &Value,
-) -> Result<Value, String> {
+fn tool_team_run_answer_message(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
     let team_run_id = required_str(arguments, "team_run_id")?;
-    let interaction_id = required_str(arguments, "interaction_id")?;
-    resolve_pending_interaction_value(store, team_run_id, interaction_id, arguments)
+    let message_id = required_str(arguments, "message_id")?;
+    answer_provider_message_value(store, team_run_id, message_id, arguments)
         .map_err(|error| error.to_string())
 }
 
@@ -1308,36 +1304,6 @@ fn tool_team_run_status(
         visible_member_actions_in_append_order(store).map_err(|error| error.to_string())?;
     let messages =
         latest_team_messages_in_append_order(store).map_err(|error| error.to_string())?;
-    // Only genuinely pending interactions belong in a status snapshot. A
-    // persistent run accumulates resolved approvals without bound; measured on
-    // team-run-1785417151179 the unfiltered list was 69 resolved records =
-    // 60,342 of 68,213 response chars (88% dead payload) growing monotonically
-    // with run age. History stays available behind `include_resolved`.
-    let include_resolved = arguments
-        .get("include_resolved")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let mut resolved_interactions = 0usize;
-    let pending_interactions: Vec<_> = latest_pending_interactions_in_append_order(store)
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .filter(|interaction| interaction.team_run_id == id)
-        .filter(|interaction| {
-            // `Unsupported` is terminal but ACTIONABLE: the provider could not
-            // render the prompt, so the Host must intervene. Bucketing it as
-            // "resolved" would hide the one terminal state that still needs a
-            // human/Host decision behind a name that reads as "already handled".
-            if matches!(
-                interaction.status,
-                PendingInteractionStatus::Pending | PendingInteractionStatus::Unsupported
-            ) {
-                true
-            } else {
-                resolved_interactions += 1;
-                include_resolved
-            }
-        })
-        .collect();
     let members: Vec<Value> = member_runs
         .iter()
         .map(|member| {
@@ -1367,8 +1333,6 @@ fn tool_team_run_status(
         "team_run": run,
         "wave_index": wave_index,
         "members": members,
-        "pending_interactions": pending_interactions,
-        "resolved_interactions": resolved_interactions,
         "unacked_messages": unacked_messages,
         "supervisor": {
             "lease": supervisor,
@@ -1847,12 +1811,11 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_status",
-            "description": "Show one team run: the run row, every member run with its latest MemberAction, provider PendingInteractions that are still pending (resolved history behind include_resolved; resolved_interactions always carries the count), compatibility field unacked_messages (the count of messages with at least one delivered manual_ack delivery awaiting acknowledgement), and the live dashboard URL.",
+            "description": "Show one team run: the run row, every member run with its latest MemberAction, compatibility field unacked_messages (the count of messages with at least one delivered manual_ack delivery awaiting acknowledgement), and the live dashboard URL. Provider questions are ordinary correlated Messages.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "team_run_id": {"type": "string", "description": "Run id returned by team_run_create / team_run_list."},
-                    "include_resolved": {"type": "boolean", "default": false, "description": "Include resolved PendingInteraction history; the unbounded resolved list is excluded by default."}
                 },
                 "required": ["team_run_id"]
             }
@@ -1936,18 +1899,18 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "team_run_resolve_interaction",
-            "description": "Resolve a provider-originated interaction by legacy PendingInteraction id or provider_interaction_request TeamMessageProjection id. New responses are strict correlated TeamMessages, atomically ACK the request, and enter the provider only through an Inject delivery. Questions/reviews require host|lead, unknown requests operator|human, and tool/reject-only requests policy.",
+            "name": "team_run_answer_message",
+            "description": "Answer a provider-originated correlated Message. The response is another strict correlated Message, atomically ACKs the request, and enters the provider only through an Inject delivery. Questions/reviews require host|lead, unknown requests operator|human, and tool/reject-only requests policy.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "team_run_id": {"type": "string"},
-                    "interaction_id": {"type": "string"},
-                    "option_id": {"type": "string", "description": "Exact option id exposed by the provider interaction."},
+                    "message_id": {"type": "string"},
+                    "option_id": {"type": "string", "description": "Exact option id exposed by the provider message."},
                     "response_text": {"type": "string", "description": "Free-form response when the provider contract supports it."},
                     "resolved_by": {"type": "string", "enum": ["host", "lead", "operator", "human", "policy"]}
                 },
-                "required": ["team_run_id", "interaction_id", "resolved_by"]
+                "required": ["team_run_id", "message_id", "resolved_by"]
             }
         },
         {

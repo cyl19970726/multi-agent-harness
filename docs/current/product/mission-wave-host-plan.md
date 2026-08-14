@@ -37,7 +37,7 @@ provider-native sessions and use Kimi only for targeted review.
 
 ## Success
 - Mission, Mission Log, Team and Member views remain navigable.
-- Chat, pending interaction, steer, interrupt and resume are honest.
+- Chat, correlated questions, steer, interrupt and resume are honest.
 - All acceptance checks pass from latest master.
 ```
 
@@ -191,8 +191,8 @@ session continue.
 - Steer is live only when the execution mode supports real current-turn
   injection. Unsupported/unavailable Steer fails; the caller may separately
   choose an ordinary queued Message for the next round.
-- Provider-pausing questions and approvals are `PendingInteraction`; ordinary
-  team coordination is `TeamMessage`.
+- Provider-pausing questions and answers are correlated `TeamMessage` rows.
+  Session permissions are frozen at start and are not routed as messages.
 
 ## UX Contract
 

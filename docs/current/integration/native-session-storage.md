@@ -97,8 +97,9 @@ coordination boundary:
 | Provider occurrence | Harness write |
 | --- | --- |
 | tool/command/file/chat/turn event | none; native projection only |
-| provider asks user/permission/plan question | `PendingInteraction` |
-| Lead/Human/Policy answers | interaction resolution + control acknowledgement |
+| provider asks a user question | correlated request `Message` |
+| Lead answers | correlated reply `Message` + provider receipt |
+| provider requests more permission | fail closed against the frozen AgentSession ceiling |
 | operator steers/interrupts/resumes | control request + provider acknowledgement |
 | member submits owned Work for review | `WorkSubmitted` with result/evidence refs |
 | member explains or coordinates with another actor | Work-linked `TeamMessage` |

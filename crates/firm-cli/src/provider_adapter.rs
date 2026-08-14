@@ -588,9 +588,13 @@ pub(crate) fn map_permission(
         return Err(format!("PROVIDER_CAPABILITY_UNPROVABLE: {provider}"));
     }
     let (native_sandbox, native_approval) = match (provider, requested) {
-        ("codex", PermissionCeiling::ReadOnly) => ("read-only", "on-request"),
-        ("codex", PermissionCeiling::WorkspaceWrite) => ("workspace-write", "on-request"),
-        ("codex", PermissionCeiling::FullAccess) => ("danger-full-access", "on-request"),
+        // The AgentSession freezes its effective ceiling before provider start.
+        // Codex therefore receives a native sandbox plus `never`: operations
+        // inside the sandbox proceed directly and operations outside it fail
+        // closed instead of opening a second permission lifecycle.
+        ("codex", PermissionCeiling::ReadOnly) => ("read-only", "never"),
+        ("codex", PermissionCeiling::WorkspaceWrite) => ("workspace-write", "never"),
+        ("codex", PermissionCeiling::FullAccess) => ("danger-full-access", "never"),
         ("claude", PermissionCeiling::ReadOnly) => ("plan", "default"),
         ("claude", PermissionCeiling::WorkspaceWrite) => ("acceptEdits", "default"),
         ("kimi" | "pi", PermissionCeiling::ReadOnly) => ("read-only", "default"),
@@ -666,8 +670,7 @@ mod tests {
             assert!(map_permission(provider, PermissionCeiling::FullAccess).is_err());
         }
         let codex = map_permission("codex", PermissionCeiling::FullAccess).unwrap();
-        assert_eq!(codex.native_approval, "on-request");
-        assert_ne!(codex.native_approval, "never");
+        assert_eq!(codex.native_approval, "never");
         assert!(control_plan("unknown", ProviderControlAction::CancelProviderTurn).is_err());
     }
 

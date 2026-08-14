@@ -191,12 +191,13 @@ remains a provider capability, not an active Team scheduler:
 lease. Idle persistent Members remain alive and addressable without consuming a
 permit.
 
-## Pending Interactions
+## Correlated Provider Questions
 
-Reverse requests that pause the provider—user questions, tool approvals,
-permission escalation, or other authority crossings—become
-`PendingInteraction` records with exact provider option ids. Lead, Policy, or
-Human resolution routes back to the same live app-server request.
+User questions that pause the provider become correlated Message records with
+exact provider option ids; the Lead's correlated reply routes back to the same
+live app-server request. The AgentSession freezes one permission ceiling before
+start. Codex runs with `approvalPolicy=never`; an unexpected permission callback
+fails closed instead of opening a second approval workflow.
 
 A provider `completed` tool update is not an answer, approval, or semantic
 success. Unknown reverse-RPC methods fail closed and surface as adapter gaps.
@@ -209,7 +210,7 @@ calls, commands, file events, native subagents, and resume. Harness stores:
 - MemberRun identity and selected `ProviderIntegrationProfile`;
 - Work/WorkEvent/WorkDelivery and ordinary Work-linked conversation;
 - `NativeSessionRef` locator, version and availability;
-- PendingInteraction and real control acknowledgements;
+- correlated provider questions/replies and real control acknowledgements;
 - submitted Work result, explicit Host acceptance and outcome, plus artifact
   and check references when the Work's completion criteria require them.
 
@@ -250,7 +251,7 @@ Dashboard application logic:
 create/add member
 create/assign/claim/review Work; send ordinary Work-linked conversation
 read status, inbox, outbox and member detail
-resolve PendingInteraction
+answer correlated provider Message
 steer current turn when supported
 interrupt current turn
 explicitly close member runtime
@@ -306,7 +307,7 @@ A Codex Team integration claim requires:
 2. a resolvable native Codex session;
 3. ordinary mail delivered to the same live Member across multiple turns;
 4. at least one verified lifecycle operation with terminal acknowledgement;
-5. honest PendingInteraction routing when a reverse request occurs;
+5. honest correlated Message routing when a provider question occurs;
 6. explicit Work submission/Host acceptance and useful evidence references;
 7. no copied transcript, tool stream, file stream, subagent transcript, or
    thinking in Harness storage; and
