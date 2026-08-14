@@ -240,6 +240,16 @@ for (const [command, marker] of [
   }
 }
 const mcp = readFileSync("crates/firm-cli/src/mcp.rs", "utf8");
+const memberTrustTransport = productionRust("crates/firm-cli/src/agentfirm_api.rs");
+if (memberTrustTransport.includes("CreateMemberRun")
+    || memberTrustTransport.includes('path.ends_with("/member-runs")')) {
+  failures.push("HTTP Member Trust transport still exposes standalone MemberRun creation");
+}
+if (!mcp.includes("const MCP_MEMBER_TRUST_COMMANDS")
+    || mcp.includes('"create_member_run"')
+    || !mcp.includes("MemberRun creation is available only through team_run_create or team_run_add_member")) {
+  failures.push("MCP Member Trust inventory does not fail-close standalone MemberRun creation");
+}
 for (const removedTool of [
   "team_run_send_message",
   "team_message_acknowledge",
@@ -263,11 +273,13 @@ for (const canonicalReader of ["fabric_messages", "fabric_message_deliveries", "
   }
 }
 const mcpSpaceEnumerationCount = [...mcp.matchAll(/canonical_execution_space_ids/g)].length;
-if (mcpSpaceEnumerationCount !== 1 || !mcp.includes("fn mcp_team_run_execution_space_id")) {
-  failures.push("MCP may enumerate physical Spaces only inside the fail-closed TeamRun authority resolver");
+if (mcpSpaceEnumerationCount !== 0
+    || !mcp.includes("fn mcp_team_run_execution_space_id")
+    || !mcp.includes("current_team_run_execution_space(run)")) {
+  failures.push("MCP must delegate exact TeamRun scope resolution to the locked Store authority without enumerating physical Spaces");
 }
 const summaryStart = mcp.indexOf("fn canonical_message_summary_for_run");
-const summaryEnd = mcp.indexOf("/// Resolve the unique canonical Execution Space", summaryStart);
+const summaryEnd = mcp.indexOf("fn mcp_team_run_execution_space_id", summaryStart);
 const summaryBody = summaryStart >= 0 && summaryEnd > summaryStart
   ? mcp.slice(summaryStart, summaryEnd)
   : "";
@@ -277,11 +289,7 @@ if (!summaryBody.includes("execution_space_id: &str")
     || !summaryBody.includes("fabric_message_deliveries(execution_space_id)")) {
   failures.push("MCP TeamRun message summary is not bound to one resolved canonical Execution Space");
 }
-for (const authorityToken of [
-  "trust_member_runs(execution_space_id)",
-  "NodeProjectRegistrationStatus::Active",
-  "EXECUTION_SPACE_SCOPE_MISMATCH",
-]) {
+for (const authorityToken of ["current_team_run_execution_space(run)", "EXECUTION_SPACE_SCOPE_MISMATCH"]) {
   if (!mcp.includes(authorityToken)) {
     failures.push(`MCP TeamRun Execution Space resolver is missing: ${authorityToken}`);
   }

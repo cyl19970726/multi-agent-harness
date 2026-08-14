@@ -1807,7 +1807,8 @@ impl HarnessStore {
     /// current MemberRuns. Current runtime creation must use
     /// [`Self::create_team_run_with_member_runs_from_agent_team`] so TeamRun and
     /// canonical MemberRun authority share one validation boundary.
-    pub fn create_team_run_from_agent_team(
+    #[cfg(test)]
+    pub(crate) fn legacy_create_team_run_projection_for_test(
         &self,
         value: &AgentTeamRun,
         execution_space_id: &str,
@@ -2142,56 +2143,140 @@ impl HarnessStore {
         Ok(next)
     }
 
-    fn ensure_team_run_execution_space_unlocked(
-        &self,
-        run: &AgentTeamRun,
-        execution_space_id: &str,
-    ) -> StoreResult<()> {
-        let mut member_scopes = std::collections::BTreeSet::new();
+    /// Resolve the exact Execution Space for one *current* TeamRun and reject
+    /// any partially materialized or cross-space member set. Legacy JSONL
+    /// rows remain readable for diagnostics, but they cannot authorize current
+    /// mutations or controls unless every declared member has one matching
+    /// canonical MemberRun in the same Execution Space.
+    fn current_team_run_execution_space_unlocked(&self, run: &AgentTeamRun) -> StoreResult<String> {
+        if run.member_run_ids.is_empty() {
+            let registrations = latest_by_id(
+                self.read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?,
+                node_project_registration_identity,
+            )
+            .values()
+            .filter(|registration| {
+                registration.node_id == run.execution_node_id
+                    && registration.project_binding_id == run.project_binding_id
+                    && registration.status == NodeProjectRegistrationStatus::Active
+            })
+            .map(|registration| registration.execution_space_id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+            return match registrations.len() {
+                1 => Ok(registrations
+                    .into_iter()
+                    .next()
+                    .expect("one active registration")),
+                count => Err(StoreError::Conflict(format!(
+                    "EXECUTION_SPACE_SCOPE_MISMATCH: empty TeamRun {} resolves to {count} active Execution Spaces",
+                    run.id
+                ))),
+            };
+        }
+
+        let legacy_by_id = latest_by_id(
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
+            |member| member.id.clone(),
+        );
+        let declared_ids = run
+            .member_run_ids
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut canonical_by_id = std::collections::BTreeMap::<
+            String,
+            Vec<(String, firm_core::agentfirm_api::MemberRun)>,
+        >::new();
         for scope in self.canonical_execution_space_ids()? {
-            if self
-                .trust_member_runs(&scope)?
-                .iter()
-                .any(|member| run.member_run_ids.contains(&member.id))
-            {
-                member_scopes.insert(scope);
+            for member in self.trust_member_runs(&scope)? {
+                if declared_ids.contains(&member.id) {
+                    canonical_by_id
+                        .entry(member.id.clone())
+                        .or_default()
+                        .push((scope.clone(), member));
+                }
             }
         }
-        if member_scopes.len() > 1 {
-            return Err(StoreError::Conflict(format!(
-                "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} spans {} canonical Execution Spaces",
-                run.id,
-                member_scopes.len()
-            )));
-        }
-        if let Some(scope) = member_scopes.into_iter().next() {
-            if scope != execution_space_id {
+
+        let mut resolved_scope = None::<String>;
+        for member_run_id in &run.member_run_ids {
+            let legacy = legacy_by_id.get(member_run_id).ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "MEMBER_RUN_MATERIALIZATION_INCOMPLETE: TeamRun {} declares MemberRun {} but has no latest ProviderRuntimeProjection",
+                    run.id, member_run_id
+                ))
+            })?;
+            if legacy.team_run_id != run.id {
                 return Err(StoreError::Conflict(format!(
-                    "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} belongs to Execution Space {}, not {}",
-                    run.id, scope, execution_space_id
+                    "MEMBER_RUN_MATERIALIZATION_MISMATCH: TeamRun {} declares MemberRun {} whose ProviderRuntimeProjection belongs to TeamRun {}",
+                    run.id, member_run_id, legacy.team_run_id
                 )));
             }
-            return Ok(());
+            let rows = canonical_by_id
+                .get(member_run_id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let (scope, canonical) = match rows {
+                [row] => row,
+                [] => {
+                    return Err(StoreError::Conflict(format!(
+                        "MEMBER_RUN_MATERIALIZATION_INCOMPLETE: TeamRun {} declares MemberRun {} but no canonical MemberRun exists",
+                        run.id, member_run_id
+                    )))
+                }
+                rows => {
+                    return Err(StoreError::Conflict(format!(
+                        "MEMBER_RUN_MATERIALIZATION_MISMATCH: TeamRun {} declares MemberRun {} with {} canonical Execution Space projections",
+                        run.id,
+                        member_run_id,
+                        rows.len()
+                    )))
+                }
+            };
+            if canonical.team_run_id != run.id
+                || canonical.agent_member_id != legacy.agent_member_id
+                || canonical.runtime_generation != legacy.runtime_generation
+                || canonical.role_snapshot != legacy.role
+            {
+                return Err(StoreError::Conflict(format!(
+                    "MEMBER_RUN_MATERIALIZATION_MISMATCH: TeamRun {} MemberRun {} legacy/canonical team, identity, generation, or role differs in Execution Space {}",
+                    run.id, member_run_id, scope
+                )));
+            }
+            if let Some(expected) = resolved_scope.as_deref() {
+                if expected != scope {
+                    return Err(StoreError::Conflict(format!(
+                        "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} MemberRun {} belongs to Execution Space {}, not {}",
+                        run.id, member_run_id, scope, expected
+                    )));
+                }
+            } else {
+                resolved_scope = Some(scope.clone());
+            }
         }
-        let registrations = latest_by_id(
-            self.read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?,
-            node_project_registration_identity,
-        )
-        .values()
-        .filter(|registration| {
-            registration.node_id == run.execution_node_id
-                && registration.project_binding_id == run.project_binding_id
-                && registration.status == NodeProjectRegistrationStatus::Active
+        resolved_scope.ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "MEMBER_RUN_MATERIALIZATION_INCOMPLETE: TeamRun {} has no resolvable current MemberRuns",
+                run.id
+            ))
         })
-        .map(|registration| registration.execution_space_id.clone())
-        .collect::<std::collections::BTreeSet<_>>();
-        if registrations.len() != 1 || !registrations.contains(execution_space_id) {
+    }
+
+    /// Public current-path resolver. It fences a stale caller snapshot and
+    /// validates the whole declared member set without taking the mutation
+    /// lock, so read-only status remains available while a writer is bounded
+    /// on that lock. Mutations must re-run the private resolver after acquiring
+    /// the Store lock, as the combined admission path does above.
+    pub fn current_team_run_execution_space(&self, run: &AgentTeamRun) -> StoreResult<String> {
+        self.init()?;
+        let current = self.require_team_run_unlocked(&run.id)?;
+        if current != *run {
             return Err(StoreError::Conflict(format!(
-                "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} does not resolve uniquely to Execution Space {}",
-                run.id, execution_space_id
+                "TEAM_RUN_CHANGED: TeamRun {} changed concurrently; retry scope resolution",
+                run.id
             )));
         }
-        Ok(())
+        self.current_team_run_execution_space_unlocked(&current)
     }
 
     fn validate_member_run_admission_rows_unlocked(
@@ -2304,52 +2389,6 @@ impl HarnessStore {
         Ok(())
     }
 
-    /// Materialize one ProviderRuntimeProjection already declared by the immutable first
-    /// TeamRun row. This is the compatibility path for initial team creation;
-    /// later membership changes must use [`Self::admit_member_run`].
-    pub fn materialize_initial_member_run(
-        &self,
-        value: &ProviderRuntimeProjection,
-    ) -> StoreResult<()> {
-        value
-            .validate()
-            .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        if value.provider_compatibility_block_cause.is_some() {
-            return Err(StoreError::Conflict(
-                "PROVIDER_COMPATIBILITY_BLOCK_AUTHORITY_REQUIRED: materialization cannot set a typed compatibility cause"
-                    .to_string(),
-            ));
-        }
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        if self
-            .read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?
-            .iter()
-            .any(|row| row.id == value.id)
-        {
-            return Err(StoreError::Conflict(format!(
-                "member run already exists: {}",
-                value.id
-            )));
-        }
-        let first_run = self
-            .read_jsonl::<AgentTeamRun>("team_runs.jsonl")?
-            .into_iter()
-            .find(|run| run.id == value.team_run_id)
-            .ok_or_else(|| {
-                StoreError::Conflict(format!("team run not found: {}", value.team_run_id))
-            })?;
-        if !first_run.member_run_ids.iter().any(|id| id == &value.id) {
-            return Err(StoreError::Conflict(format!(
-                "MEMBER_ADMISSION_REQUIRED: ProviderRuntimeProjection {} was not declared by initial TeamRun {}",
-                value.id, value.team_run_id
-            )));
-        }
-        let latest_run = self.require_team_run_unlocked(&value.team_run_id)?;
-        self.ensure_unique_member_identity_unlocked(&latest_run, value)?;
-        self.append_jsonl_unlocked("member_runs.jsonl", value)
-    }
-
     /// Admit one new current MemberRun through a same-lock semantic boundary.
     /// Legacy TeamRun/runtime CAS and exact-space canonical authority are both
     /// validated before the first durable append.
@@ -2396,7 +2435,14 @@ impl HarnessStore {
             )));
         }
         self.ensure_member_admission_identity_unlocked(&current, member)?;
-        self.ensure_team_run_execution_space_unlocked(&current, execution_space_id)?;
+        let current_execution_space_id =
+            self.current_team_run_execution_space_unlocked(&current)?;
+        if current_execution_space_id != execution_space_id {
+            return Err(StoreError::Conflict(format!(
+                "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} belongs to Execution Space {}, not {}",
+                current.id, current_execution_space_id, execution_space_id
+            )));
+        }
         if canonical.run.id != member.id
             || canonical.run.team_run_id != member.team_run_id
             || canonical.run.agent_member_id != member.agent_member_id
@@ -2417,54 +2463,6 @@ impl HarnessStore {
         self.append_jsonl_unlocked("member_runs.jsonl", member)?;
         self.commit_new_trust_member_runs_unlocked(std::slice::from_ref(canonical))?;
         Ok(())
-    }
-
-    /// Compatibility-only legacy projection writer. It serializes the TeamRun
-    /// revision and ProviderRuntimeProjection under one process lock but does
-    /// not materialize canonical MemberRun authority. Current callers must use
-    /// [`Self::admit_member_run_with_canonical`].
-    pub fn admit_member_run(
-        &self,
-        expected: &AgentTeamRun,
-        next: &AgentTeamRun,
-        member: &ProviderRuntimeProjection,
-    ) -> StoreResult<()> {
-        member
-            .validate()
-            .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        if member.provider_compatibility_block_cause.is_some() {
-            return Err(StoreError::Conflict(
-                "PROVIDER_COMPATIBILITY_BLOCK_AUTHORITY_REQUIRED: member admission cannot set a typed compatibility cause"
-                    .to_string(),
-            ));
-        }
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        let current = latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
-            run.id.clone()
-        })
-        .remove(&expected.id)
-        .ok_or_else(|| StoreError::Conflict(format!("team run not found: {}", expected.id)))?;
-        if current != *expected {
-            return Err(StoreError::Conflict(format!(
-                "team run {} changed concurrently; retry member admission",
-                expected.id
-            )));
-        }
-        ensure_team_run_admission_revision(&current, next, member)?;
-        if self
-            .read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?
-            .iter()
-            .any(|row| row.id == member.id)
-        {
-            return Err(StoreError::Conflict(format!(
-                "member run already exists: {}",
-                member.id
-            )));
-        }
-        self.ensure_member_admission_identity_unlocked(&current, member)?;
-        self.append_jsonl_unlocked("team_runs.jsonl", next)?;
-        self.append_jsonl_unlocked("member_runs.jsonl", member)
     }
 
     /// Insert a Work and its authoritative creation event/outbox as one
@@ -13482,8 +13480,11 @@ mod tests {
         next.member_run_ids.push(member.id.clone());
         next.updated_at = member.started_at.clone();
         store
-            .admit_member_run(&current, &next, member)
-            .expect("atomically admit replacement runtime");
+            .append_jsonl("team_runs.jsonl", &next)
+            .expect("append replacement TeamRun fixture row");
+        store
+            .append_jsonl("member_runs.jsonl", member)
+            .expect("append replacement runtime fixture row");
     }
 
     fn unassigned_test_work(run_id: &str, id: &str) -> Work {
@@ -13637,7 +13638,7 @@ mod tests {
                 completed_at: None,
             };
             store
-                .create_team_run_from_agent_team(&run, "delegation-test-space")
+                .legacy_create_team_run_projection_for_test(&run, "delegation-test-space")
                 .expect("create TeamRun");
             store
                 .append_member_run(&member)

@@ -6,8 +6,8 @@
 use harness_core::agentfirm_api::{
     ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus, DeliveryReconcileOutcome,
     FailureAnalysis, GateEvaluation, GateRequirement, GateWaiver, MemberCoordinationStatus,
-    MemberRun, MemberWorkspaceBinding, MutationContext, TeamMessage, WorkFinding,
-    WorkModuleBinding, WorkReport, WorkspaceLifecycle, WorkspaceSafetyProof,
+    MemberWorkspaceBinding, MutationContext, TeamMessage, WorkFinding, WorkModuleBinding,
+    WorkReport, WorkspaceLifecycle, WorkspaceSafetyProof,
 };
 use harness_store::{CanonicalMutationResult, HarnessStore, StoreError};
 use serde::{Deserialize, Serialize};
@@ -35,9 +35,7 @@ pub fn is_http_mutation_path(path: &str) -> bool {
         || path.starts_with("/v1/gate-requirements/")
         || path.starts_with("/v1/gate-waivers/")
         || (path.starts_with("/v1/team-runs/")
-            && (path.ends_with("/member-runs")
-                || path.ends_with("/messages")
-                || provider_answer_route(path).is_some()))
+            && (path.ends_with("/messages") || provider_answer_route(path).is_some()))
         || (path.starts_with("/v1/teams/")
             && [
                 "/reports",
@@ -81,9 +79,6 @@ pub enum TrustCommand {
     RetireAgentMember {
         member_id: String,
         updated_at: String,
-    },
-    CreateMemberRun {
-        run: MemberRun,
     },
     CloseMemberRun {
         member_run_id: String,
@@ -188,7 +183,6 @@ impl TrustCommand {
             Self::PauseAgentMember { .. } => "agent_member.pause",
             Self::ResumeAgentMember { .. } => "agent_member.resume",
             Self::RetireAgentMember { .. } => "agent_member.retire",
-            Self::CreateMemberRun { .. } => "member_run.create",
             Self::CloseMemberRun { .. } => "member_run.close",
             Self::ReopenMemberRun { .. } => "member_run.reopen",
             Self::RetireMemberRun { .. } => "member_run.retire",
@@ -226,9 +220,6 @@ impl TrustCommand {
             | (Self::ResumeAgentMember { member_id, .. }, ["v1", "agent-members", id, "resume"])
             | (Self::RetireAgentMember { member_id, .. }, ["v1", "agent-members", id, "retire"]) => {
                 member_id == id
-            }
-            (Self::CreateMemberRun { run }, ["v1", "team-runs", id, "member-runs"]) => {
-                &run.team_run_id == id
             }
             (Self::CloseMemberRun { member_run_id, .. }, ["v1", "member-runs", id, "close"])
             | (Self::ReopenMemberRun { member_run_id, .. }, ["v1", "member-runs", id, "reopen"])
@@ -643,9 +634,6 @@ pub fn execute(
             AgentMemberOrganizationStatus::Retired,
             &updated_at,
         )?),
-        TrustCommand::CreateMemberRun { run } => {
-            result(store.create_trust_member_run(&context, run)?)
-        }
         TrustCommand::CloseMemberRun {
             member_run_id,
             updated_at,

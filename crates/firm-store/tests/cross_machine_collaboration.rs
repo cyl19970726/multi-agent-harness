@@ -443,7 +443,7 @@ fn seed_team(
         })
         .unwrap();
     store
-        .create_team_run_from_agent_team(
+        .create_team_run_with_member_runs_from_agent_team(
             &AgentTeamRun {
                 id: run_id.into(),
                 agent_team_id: team_id.into(),
@@ -464,6 +464,8 @@ fn seed_team(
                 completed_at: None,
             },
             execution_space_id,
+            &[],
+            &[],
         )
         .unwrap();
 }

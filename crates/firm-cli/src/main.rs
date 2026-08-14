@@ -12982,39 +12982,7 @@ fn canonical_team_messages_for_run(
 /// Node registrations are only a fail-closed fallback for a pre-materialized
 /// run and must themselves be unambiguous.
 fn team_run_execution_space_id(store: &HarnessStore, run: &AgentTeamRun) -> CliResult<String> {
-    let mut member_scopes = BTreeSet::new();
-    for member_run_id in &run.member_run_ids {
-        if let Some(scope) = store.trust_member_run_scope(member_run_id)? {
-            member_scopes.insert(scope);
-        }
-    }
-    if member_scopes.len() > 1 {
-        return Err(CliError::Usage(format!(
-            "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} spans {} canonical Execution Spaces",
-            run.id,
-            member_scopes.len()
-        )));
-    }
-    if let Some(scope) = member_scopes.into_iter().next() {
-        return Ok(scope);
-    }
-    let registrations = store
-        .latest_node_project_registrations()?
-        .into_iter()
-        .filter(|registration| {
-            registration.node_id == run.execution_node_id
-                && registration.project_binding_id == run.project_binding_id
-                && registration.status == NodeProjectRegistrationStatus::Active
-        })
-        .map(|registration| registration.execution_space_id)
-        .collect::<BTreeSet<_>>();
-    match registrations.len() {
-        1 => Ok(registrations.into_iter().next().expect("one registration")),
-        count => Err(CliError::Usage(format!(
-            "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} resolves to {count} active Execution Spaces",
-            run.id
-        ))),
-    }
+    store_conflict_as_usage(store.current_team_run_execution_space(run))
 }
 
 fn team_run_unacknowledged_message_count(
@@ -13278,10 +13246,10 @@ pub(crate) fn team_run_mission_id(store: &HarnessStore, run: &AgentTeamRun) -> C
         })
 }
 
-fn team_run_display_json(
-    _store: &HarnessStore,
-    run: &AgentTeamRun,
-) -> CliResult<serde_json::Value> {
+fn team_run_display_json(store: &HarnessStore, run: &AgentTeamRun) -> CliResult<serde_json::Value> {
+    // A current status projection is also an authority decision: never show a
+    // partially materialized Legacy TeamRun as controllable current state.
+    team_run_execution_space_id(store, run)?;
     Ok(serde_json::to_value(run)?)
 }
 
@@ -13315,6 +13283,7 @@ pub(crate) fn transition_team_run(
     target: TeamRunStatus,
 ) -> CliResult<AgentTeamRun> {
     let current = latest_team_run(store, team_run_id)?;
+    team_run_execution_space_id(store, &current)?;
     let previous_status = current.status;
     let allowed = matches!(
         (previous_status, target),
@@ -50261,6 +50230,205 @@ package:com.tencent.mm
             .expect("canonical MemberRuns")
             .iter()
             .any(|candidate| candidate.id == member.id));
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn partial_legacy_team_run_is_diagnostic_only_until_canonical_completeness_is_restored() {
+        let (store, root) = temp_store("partial-current-team-run-fence");
+        let created = create_two_member_team_run(&store);
+        let dangling_spec = TeamMemberSpec {
+            agent_member_id: "agent-dangling-legacy".into(),
+            name: "DanglingLegacy".into(),
+            role: "legacy_only".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: vec!["crates/dangling".into()],
+            resume_native_session_id: None,
+            initial_work: None,
+        };
+        ensure_unit_test_canonical_members(
+            &store,
+            "unit-test-space",
+            &created.team_run.agent_team_id,
+            std::slice::from_ref(&dangling_spec),
+        )
+        .expect("seed exact-space durable identity, but no canonical MemberRun");
+        let dangling = build_member_run_for_team(None, &created.team_run.id, &dangling_spec)
+            .expect("build historical dangling runtime projection");
+        let current = latest_team_run(&store, &created.team_run.id).expect("current TeamRun");
+        let mut partial = current.clone();
+        partial.member_run_ids.push(dangling.id.clone());
+        partial.updated_at = "unix-ms:s6-partial".into();
+        // Reconstruct the exact historical S6 on-disk state without exposing
+        // a production Store writer capable of creating it.
+        for (ledger, value) in [
+            (
+                "team_runs.jsonl",
+                serde_json::to_value(&partial).expect("serialize partial TeamRun"),
+            ),
+            (
+                "member_runs.jsonl",
+                serde_json::to_value(&dangling).expect("serialize dangling runtime"),
+            ),
+        ] {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(store.root().join(ledger))
+                .expect("open historical fixture ledger");
+            serde_json::to_writer(&mut file, &value).expect("write historical fixture row");
+            writeln!(file).expect("terminate historical fixture row");
+            file.sync_all().expect("persist historical fixture row");
+        }
+        assert!(store
+            .member_runs()
+            .expect("raw Legacy diagnostics remain readable")
+            .iter()
+            .any(|member| member.id == dangling.id));
+        assert!(store
+            .trust_member_runs("unit-test-space")
+            .expect("canonical members")
+            .iter()
+            .all(|member| member.id != dangling.id));
+
+        let third = TeamMemberSpec {
+            agent_member_id: "agent-valid-third".into(),
+            name: "ValidThird".into(),
+            role: "reviewer".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: vec!["crates/review".into()],
+            resume_native_session_id: None,
+            initial_work: None,
+        };
+        ensure_unit_test_canonical_members(
+            &store,
+            "unit-test-space",
+            &created.team_run.agent_team_id,
+            std::slice::from_ref(&third),
+        )
+        .expect("seed valid third identity before the zero-write boundary");
+        let before = durable_store_file_bytes(&store);
+        let expect_incomplete = |error: CliError| {
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains("MEMBER_RUN_MATERIALIZATION_INCOMPLETE")
+                    && rendered.contains(&dangling.id),
+                "partial current TeamRun must name the exact missing member: {rendered}"
+            );
+        };
+
+        expect_incomplete(
+            add_team_run_member(
+                &store,
+                None,
+                &created.team_run.id,
+                &third,
+                Some("review without mutating a partial TeamRun"),
+            )
+            .expect_err("partial TeamRun cannot admit a valid third member or initial Work"),
+        );
+        let partial = latest_team_run(&store, &created.team_run.id).expect("partial TeamRun");
+        expect_incomplete(
+            team_run_display_json(&store, &partial)
+                .expect_err("current status must fail closed for partial TeamRun"),
+        );
+        expect_incomplete(
+            canonical_team_messages_for_run(&store, &partial.id)
+                .expect_err("current inbox/lineage must fail closed for partial TeamRun"),
+        );
+        expect_incomplete(
+            member_run_detail_json(&store, &created.member_runs[0].id)
+                .expect_err("current member detail must fail closed for partial TeamRun"),
+        );
+        let ledger = TeamRunLedger::without_supervisor(&store, &partial.id);
+        expect_incomplete(
+            require_member_provider_session_authority(&ledger, &created.member_runs[0], false)
+                .expect_err("provider/control authority must fail before resolving a session"),
+        );
+        expect_incomplete(
+            transition_team_run(&store, &partial.id, TeamRunStatus::Cancelled)
+                .expect_err("current lifecycle mutation must fail closed for partial TeamRun"),
+        );
+        assert_eq!(
+            durable_store_file_bytes(&store),
+            before,
+            "all rejected current projections, controls, admission, and Work creation must be byte-zero"
+        );
+
+        let canonical = canonical_member_run_admission("unit-test-space", &dangling);
+        store
+            .create_trust_member_run(&canonical.context, canonical.run)
+            .expect("explicit test-only reconstruction restores canonical completeness");
+        assert_eq!(
+            store
+                .current_team_run_execution_space(&partial)
+                .expect("fully coherent TeamRun resolves"),
+            "unit-test-space"
+        );
+        let (repaired, admitted, work) = add_team_run_member(
+            &store,
+            None,
+            &partial.id,
+            &third,
+            Some("review after explicit coherence restoration"),
+        )
+        .expect("same request succeeds only after explicit canonical reconstruction");
+        assert!(repaired.member_run_ids.contains(&admitted.id));
+        assert!(work.is_some());
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn duplicate_canonical_member_run_scope_is_never_current_authority() {
+        let (store, root) = temp_store("duplicate-canonical-member-scope");
+        let created = create_two_member_team_run(&store);
+        let member = created.member_runs[0].clone();
+        let spec = TeamMemberSpec {
+            agent_member_id: member.agent_member_id.clone(),
+            name: member.name.clone(),
+            role: member.role.clone(),
+            provider: member.provider.clone(),
+            execution_mode: Some("codex_app_server".into()),
+            model: member.model.clone(),
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: member.owned_paths.clone(),
+            resume_native_session_id: None,
+            initial_work: None,
+        };
+        ensure_unit_test_canonical_members(
+            &store,
+            "foreign-duplicate-member-space",
+            &created.team_run.agent_team_id,
+            &[spec],
+        )
+        .expect("seed the foreign AgentMember identity");
+        let duplicate = canonical_member_run_admission("foreign-duplicate-member-space", &member);
+        store
+            .create_trust_member_run(&duplicate.context, duplicate.run)
+            .expect("reconstruct duplicate cross-space canonical projection");
+
+        let error = store
+            .current_team_run_execution_space(&created.team_run)
+            .expect_err("duplicate canonical scope can never be current authority")
+            .to_string();
+        assert!(
+            error.contains("MEMBER_RUN_MATERIALIZATION_MISMATCH")
+                && error.contains(&member.id)
+                && error.contains("2 canonical Execution Space projections"),
+            "exact duplicate must be named: {error}"
+        );
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 

@@ -38,6 +38,10 @@ even though every AgentSession already has an effective permission ceiling.
    detail, inbox, or replay projections, dual-written, or mutated after this
    cutover. `team_messages.jsonl` remains available only through the explicit
    read-only Legacy archive/export path.
+7. HTTP and MCP expose no standalone `MemberRun` creation operation. A current
+   `MemberRun` is admitted only by combined TeamRun creation or add-member,
+   where the TeamRun membership, runtime projection, and canonical MemberRun
+   are validated before publication through one Store authority boundary.
 
 ## Consequences
 
@@ -66,6 +70,9 @@ even though every AgentSession already has an effective permission ceiling.
 - MCP `tools/list` excludes the retired acknowledgement/reconciliation tools,
   their direct invocation is byte-zero and unknown, and canonical status makes
   the request visible before reply and resolved after exact retry;
+- the retired HTTP and MCP standalone MemberRun-create inputs are absent from
+  advertised inventories, fail closed, and produce zero TeamRun, legacy
+  runtime-projection, and canonical-operation deltas;
 - governance rejects every production `team_messages.jsonl` mutator and every
   current lineage/status/detail/inbox/replay reader while retaining exactly one
   explicit read-only Legacy export inventory entry;

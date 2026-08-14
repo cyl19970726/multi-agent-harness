@@ -18,9 +18,9 @@ use std::collections::BTreeSet;
 use std::io::{BufRead, Write};
 
 use harness_core::{
-    AgentTeamRun, NodeProjectRegistrationStatus, TeamActorKind, TeamActorRef, TeamRunEvent,
-    TeamRunStatus, TeamSupervisorLeaseStatus, Work, WorkCausationRef, WorkClaimMode,
-    WorkCommandContext, WorkCondition, WorkPhase, WorkPriority,
+    AgentTeamRun, TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus,
+    TeamSupervisorLeaseStatus, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext,
+    WorkCondition, WorkPhase, WorkPriority,
 };
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
@@ -41,6 +41,35 @@ use crate::{
 /// MCP protocol revision this server speaks, echoed verbatim in `initialize`
 /// (the simple end of "reply with the client's version or the lower one").
 const PROTOCOL_VERSION: &str = "2024-11-05";
+
+/// Closed command inventory for the generic Member Trust MCP adapter.
+/// MemberRun creation is intentionally absent: current creation is admitted
+/// only by `team_run_create` or `team_run_add_member`, which publish the legacy
+/// runtime projection and canonical MemberRun through one Store boundary.
+const MCP_MEMBER_TRUST_COMMANDS: &[&str] = &[
+    "create_agent_member",
+    "pause_agent_member",
+    "resume_agent_member",
+    "retire_agent_member",
+    "close_member_run",
+    "reopen_member_run",
+    "retire_member_run",
+    "resume_native_session",
+    "create_work_deliveries",
+    "retry_work_delivery",
+    "reconcile_work_delivery",
+    "provision_workspace",
+    "transition_workspace",
+    "create_work_report",
+    "create_work_finding",
+    "create_failure_analysis",
+    "bind_work_module",
+    "create_gate_requirement",
+    "accept_work",
+    "evaluate_gate",
+    "waive_gate",
+    "revoke_gate_waiver",
+];
 
 /// The Vite Dashboard is the human UI. Its development proxy exposes the
 /// Harness API at the same origin, so deep links must not point at the
@@ -214,6 +243,17 @@ fn tool_agentfirm_member_trust_mutate(
         "agentfirm_member_trust_mutate",
         &["command", "idempotency_key", "expected_version"],
     )?;
+    let command_value = arguments
+        .get("command")
+        .cloned()
+        .ok_or_else(|| "argument `command` is required".to_string())?;
+    let command_name = command_value
+        .get("command")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "argument `command.command` must be a string".to_string())?;
+    if !MCP_MEMBER_TRUST_COMMANDS.contains(&command_name) {
+        return Err("unsupported or retired MCP Member Trust command".to_string());
+    }
     let execution_space_id = resolved
         .execution_space_context
         .as_ref()
@@ -239,13 +279,8 @@ fn tool_agentfirm_member_trust_mutate(
         }),
         _ => return Err("MCP authority kind and id must be configured together".to_string()),
     };
-    let command = serde_json::from_value::<agentfirm_api::TrustCommand>(
-        arguments
-            .get("command")
-            .cloned()
-            .ok_or_else(|| "argument `command` is required".to_string())?,
-    )
-    .map_err(|error| format!("invalid TrustCommand: {error}"))?;
+    let command = serde_json::from_value::<agentfirm_api::TrustCommand>(command_value)
+        .map_err(|error| format!("invalid TrustCommand: {error}"))?;
     let expected_version = arguments
         .get("expected_version")
         .and_then(Value::as_u64)
@@ -1363,71 +1398,18 @@ fn canonical_message_summary_for_run(
     }))
 }
 
-/// Resolve the unique canonical Execution Space of one TeamRun before any MCP
-/// Message projection reads. MemberRun materialization is the primary frozen
-/// binding. A pre-materialized run may fall back only to one exact active
-/// Node+Project registration. The selected MCP space, when present, must agree.
+/// Resolve the strict current Execution Space of one TeamRun before any MCP
+/// Message projection reads. The Store validates the complete declared member
+/// set under its writer lock; MCP only enforces agreement with its selected
+/// Execution Space and never performs an independent physical-space scan.
 fn mcp_team_run_execution_space_id(
     store: &HarnessStore,
     resolved: &ResolvedStore,
     run: &AgentTeamRun,
 ) -> Result<String, String> {
-    let canonical_spaces = store
-        .canonical_execution_space_ids()
+    let execution_space_id = store
+        .current_team_run_execution_space(run)
         .map_err(|error| error.to_string())?;
-    let mut member_scopes = BTreeSet::new();
-    for member_run_id in &run.member_run_ids {
-        let mut scopes_for_member = BTreeSet::new();
-        for execution_space_id in &canonical_spaces {
-            if store
-                .trust_member_runs(execution_space_id)
-                .map_err(|error| error.to_string())?
-                .iter()
-                .any(|member| member.id == *member_run_id)
-            {
-                scopes_for_member.insert(execution_space_id.clone());
-            }
-        }
-        if scopes_for_member.len() != 1 {
-            return Err(format!(
-                "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} member {} resolves to {} canonical Execution Spaces",
-                run.id,
-                member_run_id,
-                scopes_for_member.len()
-            ));
-        }
-        member_scopes.extend(scopes_for_member);
-    }
-    if member_scopes.len() > 1 {
-        return Err(format!(
-            "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} spans {} canonical Execution Spaces",
-            run.id,
-            member_scopes.len()
-        ));
-    }
-    let execution_space_id = if let Some(scope) = member_scopes.into_iter().next() {
-        scope
-    } else {
-        let registrations = store
-            .latest_node_project_registrations()
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .filter(|registration| {
-                registration.node_id == run.execution_node_id
-                    && registration.project_binding_id == run.project_binding_id
-                    && registration.status == NodeProjectRegistrationStatus::Active
-            })
-            .map(|registration| registration.execution_space_id)
-            .collect::<BTreeSet<_>>();
-        if registrations.len() != 1 {
-            return Err(format!(
-                "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} resolves to {} active Execution Spaces",
-                run.id,
-                registrations.len()
-            ));
-        }
-        registrations.into_iter().next().expect("one registration")
-    };
     if let Some(selected) = resolved.execution_space_context.as_ref() {
         if selected.id != execution_space_id {
             return Err(format!(
@@ -1492,12 +1474,19 @@ fn tool_definitions() -> Value {
     json!([
         {
             "name": "agentfirm_member_trust_mutate",
-            "description": "Execute one canonical Member Execution Trust command through the same application service used by CLI and HTTP. Actor identity comes only from the MCP process transport environment.",
+            "description": "Execute one advertised canonical Member Execution Trust lifecycle or Work command. MemberRun creation is available only through team_run_create or team_run_add_member. Actor identity comes only from the MCP process transport environment.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                    "command": {"type": "object", "description": "One tagged TrustCommand payload."},
+                    "command": {
+                        "type": "object",
+                        "description": "One tagged command from the closed MCP Member Trust inventory.",
+                        "properties": {
+                            "command": {"type": "string", "enum": MCP_MEMBER_TRUST_COMMANDS}
+                        },
+                        "required": ["command"]
+                    },
                     "idempotency_key": {"type": "string", "minLength": 1},
                     "expected_version": {"type": "integer", "minimum": 0}
                 },

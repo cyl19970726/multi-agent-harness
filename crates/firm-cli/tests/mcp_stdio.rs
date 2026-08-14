@@ -659,6 +659,109 @@ fn removed_mcp_team_run_message_writer_fails_unknown_with_zero_store_delta() {
 }
 
 #[test]
+fn retired_mcp_standalone_member_run_create_is_unadvertised_and_byte_zero() {
+    let home = TempHome::new("mcp-retired-member-run-create");
+    let project_id = init_project(&home, "mcp-retired-member-run-project");
+    let project_root = home.base().join("mcp-retired-member-run-project");
+    let execution_space_id = "mcp-space-retired-member-run-create";
+    let space = run_firm(
+        &home,
+        &project_root,
+        &[
+            "space",
+            "init",
+            "--id",
+            execution_space_id,
+            "--project-binding",
+            &project_id,
+        ],
+    );
+    assert!(space.status.success(), "space init failed: {space:?}");
+    let mut mcp = McpClient::spawn(
+        &home,
+        &project_id,
+        &[
+            ("AGENTFIRM_MCP_ACTOR_KIND", "human"),
+            ("AGENTFIRM_MCP_ACTOR_ID", "retired-create-caller"),
+        ],
+    );
+    let _ = mcp.request(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "retired-member-run-create-test", "version": "0"}
+        }),
+    );
+    let listed = mcp.request("tools/list", serde_json::json!({}));
+    let member_trust_tool = listed["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .find(|tool| tool["name"] == "agentfirm_member_trust_mutate")
+        .expect("Member Trust lifecycle tool");
+    assert!(
+        !member_trust_tool.to_string().contains("create_member_run"),
+        "standalone MemberRun create must not be advertised: {member_trust_tool}"
+    );
+
+    let store = HarnessStore::new(home.spaces_dir().join(execution_space_id));
+    let authority_counts = || {
+        (
+            store.team_runs().expect("TeamRun projections").len(),
+            store
+                .member_runs()
+                .expect("legacy runtime projections")
+                .len(),
+            store
+                .canonical_operations()
+                .expect("canonical trust operations")
+                .len(),
+        )
+    };
+    let before_counts = authority_counts();
+    let before_bytes = directory_snapshot(&home.spaces_dir());
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "agentfirm_member_trust_mutate",
+            "arguments": {
+                "command": {
+                    "command": "create_member_run",
+                    "run": {
+                        "id": "retired-standalone-member-run",
+                        "agent_member_id": "retired-standalone-member",
+                        "team_run_id": "retired-standalone-team-run",
+                        "role_snapshot": "implementer",
+                        "coordination_status": "active",
+                        "runtime_status": "idle",
+                        "runtime_generation": 1,
+                        "version": 1,
+                        "started_at": "unix-ms:1"
+                    }
+                },
+                "idempotency_key": "retired-member-run-create",
+                "expected_version": 0
+            }
+        }),
+    );
+    assert!(
+        call_error_text(&response).contains("unsupported or retired MCP Member Trust command"),
+        "retired standalone create must fail closed: {response}"
+    );
+    assert_eq!(
+        authority_counts(),
+        before_counts,
+        "retired MCP command must not create a TeamRun, legacy runtime projection, or canonical operation"
+    );
+    assert_eq!(
+        directory_snapshot(&home.spaces_dir()),
+        before_bytes,
+        "retired MCP command must produce a byte-zero Store delta"
+    );
+}
+
+#[test]
 fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retry() {
     let home = TempHome::new("mcp-provider-interaction-message");
     let project_id = init_project(&home, "mcp-provider-interaction");
@@ -788,6 +891,27 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
             store.member_actions()
         )
     });
+    let mut author_command_settled = false;
+    for _ in 0..100 {
+        author_command_settled = store
+            .runtime_commands(execution_space_id)
+            .expect("RuntimeCommand journal")
+            .into_iter()
+            .any(|command| {
+                let command = serde_json::to_value(command).expect("RuntimeCommand JSON");
+                command["command"] == "author_message"
+                    && command["status"] == "applied"
+                    && command["result"]["id"] == request_id
+            });
+        if author_command_settled {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        author_command_settled,
+        "provider request AuthorMessage RuntimeCommand must settle before hostile fixture publication"
+    );
     let foreign_execution_space_id = "mcp-space-foreign-same-run-id";
     // The NodeDaemon settles the RuntimeCommand immediately after authoring
     // the request Message. Both canonical mutations atomically replace the
@@ -813,6 +937,11 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
         1,
         "hostile fixture must create one colliding foreign-space Message"
     );
+    // The exact authoring RuntimeCommand is already terminal, so no earlier
+    // canonical replacement can now erase the fixture. Release the guard
+    // before MCP status takes the Store's strict current-TeamRun resolver lock;
+    // the foreign row remains durable until the later answer mutation.
+    drop(hostile_fixture_guard);
 
     let status_before_answer = call_payload(&mcp.request(
         "tools/call",
@@ -846,8 +975,6 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
             .is_some_and(|messages| messages.iter().any(|message| message["id"] == request_id)),
         "canonical Host inbox must expose the unanswered request: {host_inbox_before_answer}"
     );
-    drop(hostile_fixture_guard);
-
     let mut impostor = McpClient::spawn(
         &home,
         &project_id,
@@ -2392,9 +2519,8 @@ fn mcp_stdio_work_rebind_and_successor_delivery_reconcile() {
         .expect("TeamRun");
     let mut next_run = run.clone();
     next_run.member_run_ids.push(replacement.id.clone());
-    store
-        .admit_member_run(&run, &next_run, &replacement)
-        .expect("atomically admit replacement ProviderRuntimeProjection");
+    let _ = (&run, &next_run, &replacement);
+    panic!("historical projection-only MemberRun reconstruction was retired; use current combined TeamRun admission evidence");
 
     let response = mcp.request(
         "tools/call",
