@@ -66,6 +66,10 @@ export function AgentConversationWorkspace({
   const profileTriggerRef=useRef<HTMLButtonElement>(null);
   const profileCloseRef=useRef<HTMLButtonElement>(null);
   const workspaceRef=useRef<HTMLElement>(null);
+  // Path of the last committed view. Loading (and the composer lock it drives)
+  // only applies while no view exists for the current request path; background
+  // refetches revalidate silently against the committed view.
+  const committedPathRef=useRef<string|null>(null);
   const mode:WorkspaceMode=selection.agentWorkspaceMode ?? "session";
   const agentId=selection.teamConversation && selection.teamConversation !== "host" ? selection.teamConversation : undefined;
   const requestQuery=new URLSearchParams();
@@ -74,10 +78,10 @@ export function AgentConversationWorkspace({
 
   useEffect(()=>{
     let live=true;
-    setLoading(true);
+    if(committedPathRef.current!==requestPath)setLoading(true);
     setError(null);
     fetchRoleView<AgentWorkspaceData>(apiUrl,requestPath,{space,project,company})
-      .then((next)=>{if(live){setView(next);setViewRequestPath(requestPath);setError(null);setContextSelection(null);}})
+      .then((next)=>{if(live){committedPathRef.current=requestPath;setView(next);setViewRequestPath(requestPath);setError(null);setContextSelection(null);}})
       .catch((reason)=>{if(live)setError(String(reason));})
       .finally(()=>{if(live)setLoading(false);});
     return()=>{live=false;};
@@ -111,7 +115,6 @@ export function AgentConversationWorkspace({
   const selectedRunId=selected.current_member_run_ref;
   const sessionProjection=publicProjection?null:data.session_event_projection??null;
   const currentLiveActivity=selectAgentWorkspaceLiveActivity({activity:streamedLiveActivity,projectionScope:data.projection_scope,executionSpaceId:space,projectId:project,teamRunId:data.team.latest_run_id,memberRunId:selectedRunId,sessionId:sessionProjection?.agent_session_id??null,sessionGeneration:sessionProjection?.agent_session_generation??null});
-  const selectedRoster=data.roster.find(item=>item.agent_member_ref.id===selected.agent_member_ref.id);
   const currentWork=data.works.find(work=>work.work_id===(contextSelection?.kind==="work"?contextSelection.work.work_id:data.context_summary.current_work_id));
   const selectAgent=(agent:AgentWorkspaceRosterItem)=>{
     onSelectionChange({
@@ -124,7 +127,7 @@ export function AgentConversationWorkspace({
     setRosterOpen(false);
   };
   const closeWorkspace=()=>onSelectionChange({teamConversation:undefined,memberRunId:undefined,agentWorkspaceMode:undefined,agentSessionId:undefined,teamWorkId:undefined});
-  const context=<AgentContextRail view={currentView} data={data} mode={mode} selected={contextSelection} currentWork={currentWork} actions={currentView.allowed_actions}/>;
+  const context=<AgentContextRail view={currentView} data={data} mode={mode} selected={contextSelection} currentWork={currentWork} actions={currentView.allowed_actions} onOpenWork={(work)=>{if(work){setContextSelection({kind:"work",work});onSelectionChange({agentWorkspaceMode:"work",teamWorkId:work.work_id});}else{setContextSelection(null);onSelectionChange({agentWorkspaceMode:"work"});}}}/>;
 
   return <Tooltip.Provider delayDuration={350}>
     <main ref={workspaceRef} className="agent-team-surface agent-workspace h-full min-h-0 flex-1 overflow-hidden" data-testid="agent-workspace">
@@ -338,7 +341,7 @@ function WorkCanvas({data,onSelect}:{data:AgentWorkspaceData;onSelect:(work:Work
   </div></ScrollArea.Viewport></ScrollArea.Root>;
 }
 
-function AgentContextRail({view,data,mode,selected,currentWork,actions}:{view:RoleView<AgentWorkspaceData>;data:AgentWorkspaceData;mode:WorkspaceMode;selected:ContextSelection;currentWork?:WorkSummary;actions:AllowedAction[]}){
+function AgentContextRail({view,data,mode,selected,currentWork,actions,onOpenWork}:{view:RoleView<AgentWorkspaceData>;data:AgentWorkspaceData;mode:WorkspaceMode;selected:ContextSelection;currentWork?:WorkSummary;actions:AllowedAction[];onOpenWork:(work?:WorkSummary)=>void}){
   const selfPrivate=data.projection_scope!=="host_member_public";
   const isHost=data.selected_agent.is_host;
   const publicProjection=data.projection_scope==="host_member_public";
@@ -364,9 +367,9 @@ function AgentContextRail({view,data,mode,selected,currentWork,actions}:{view:Ro
   const executionDriver=[data.configuration.provider_profile_ref?humanizeToken(data.configuration.provider_profile_ref):null,data.configuration.model_preference].filter(Boolean).join(" · ");
   const otherOwnedWorks=ownedWorks.filter(work=>work.work_id!==anchoredWork?.work_id&&!attentionWorks.some(attention=>attention.work_id===work.work_id));
   const prioritizedActions=[...actionIndex].sort((left,right)=>decisionActionRank(left.kind,anchoredWork)-decisionActionRank(right.kind,anchoredWork));
-  const workSection=<WorkContext work={anchoredWork} title={isHost&&anchoredNeedsJudgment?"Current decision":"Current Work"}/>;
+  const workSection=<WorkContext work={anchoredWork} title={isHost&&anchoredNeedsJudgment?"Current decision":"Current Work"} onOpenWork={onOpenWork}/>;
   const selectionInset=(selected?.kind==="message"||selected?.kind==="event")&&<div className="aw-context-selection-inset" aria-label="Selected context">{selected.kind==="message"?<MessageContext data={data} message={selected.message}/>:<EventContext event={selected.event}/>}</div>;
-  const responsibilitySection=!isHost&&<ContextSection title="Responsibility" hint={eligibleWorks.length?`${eligibleWorks.length} eligible Work`:undefined}><ResponsibilityStrip values={responsibility}/><span className="aw-context-link">View ready work ↗</span>{latestExchange&&<div className="mt-3"><ContextMessageRow data={data} message={latestExchange}/></div>}</ContextSection>;
+  const responsibilitySection=!isHost&&<ContextSection title="Responsibility" hint={eligibleWorks.length?`${eligibleWorks.length} eligible Work`:undefined}><ResponsibilityStrip values={responsibility}/><button type="button" className="aw-context-link" onClick={()=>onOpenWork()}>View ready work ↗</button>{latestExchange&&<div className="mt-3"><ContextMessageRow data={data} message={latestExchange}/></div>}</ContextSection>;
   const needsHostSection=isHost&&attentionWorks.length>0&&<ContextSection title="Needs Host" hint={`${attentionWorks.length} ${attentionWorks.length===1?"responsibility":"responsibilities"}`}>{attentionWorks.filter(work=>work.work_id!==anchoredWork?.work_id).slice(0,2).map(work=><ContextWorkRow key={work.work_id} data={data} work={work}/>)}</ContextSection>;
   const inboxSection=isHost&&hostInbox.length>0&&<ContextSection title="Team Inbox" hint={unreadIncoming.length?`${unreadIncoming.length} unsettled`:`${hostInbox.length} recent`}>{hostInbox.map(message=><ContextMessageRow key={message.message_id} data={data} message={message}/>)}</ContextSection>;
   const assignedSection=isHost&&otherOwnedWorks.length>0&&<ContextSection title="Assigned Work" hint={`${ownedWorks.length} total`}>{otherOwnedWorks.slice(0,2).map(work=><ContextWorkRow key={work.work_id} data={data} work={work}/>)}</ContextSection>;
@@ -389,7 +392,7 @@ function AgentContextRail({view,data,mode,selected,currentWork,actions}:{view:Ro
   </div></ScrollArea.Viewport><ScrollArea.Scrollbar orientation="vertical" className="flex w-2 p-0.5"><ScrollArea.Thumb className="rounded-full bg-border"/></ScrollArea.Scrollbar></ScrollArea.Root>;
 }
 
-function WorkContext({work,title}:{work?:WorkSummary;title:string}){return <ContextSection title={title} primary>{work?<><div><ContextFact label="Work ID" value={work.work_id}/><ContextFact label="Revision" value={`rev ${work.work_revision} (latest)`}/><div className="aw-fact-row"><span>Phase</span><strong><WorkspaceState label={humanizeToken(work.phase)} tone={work.phase==="active"?"good":work.phase==="review"?"warn":"muted"}/></strong></div><div className="aw-fact-row"><span>Condition</span><strong><WorkspaceState label={humanizeToken(String(work.condition))} tone={work.condition==="blocked"?"bad":work.condition==="normal"?"muted":"warn"}/></strong></div>{work.resolution&&<ContextFact label="Resolution" value={humanizeToken(String(work.resolution))}/>}<ContextFact label="Gates" value={`${work.gate_summary.passed}/${work.gate_summary.required}`}/></div><span className="aw-context-link">Open work ↗</span></>:<p className="text-[11px] leading-5 text-muted-foreground">No current Work is projected for this Agent.</p>}</ContextSection>}
+function WorkContext({work,title,onOpenWork}:{work?:WorkSummary;title:string;onOpenWork:(work?:WorkSummary)=>void}){return <ContextSection title={title} primary>{work?<><div><ContextFact label="Work ID" value={work.work_id}/><ContextFact label="Revision" value={`rev ${work.work_revision} (latest)`}/><div className="aw-fact-row"><span>Phase</span><strong><WorkspaceState label={humanizeToken(work.phase)} tone={work.phase==="active"?"good":work.phase==="review"?"warn":"muted"}/></strong></div><div className="aw-fact-row"><span>Condition</span><strong><WorkspaceState label={humanizeToken(String(work.condition))} tone={work.condition==="blocked"?"bad":work.condition==="normal"?"muted":"warn"}/></strong></div>{work.condition==="blocked"&&work.blocker_reason&&<ContextFact label="Blocker" value={work.blocker_reason}/>}{work.resolution&&<ContextFact label="Resolution" value={humanizeToken(String(work.resolution))}/>}<ContextFact label="Gates" value={`${work.gate_summary.passed}/${work.gate_summary.required}`}/></div><button type="button" className="aw-context-link" onClick={()=>onOpenWork(work)}>Open work ↗</button></>:<p className="text-[11px] leading-5 text-muted-foreground">No current Work is projected for this Agent.</p>}</ContextSection>}
 function MessageContext({data,message}:{data:AgentWorkspaceData;message:MessageSummary}){const actor=data.roster.find(item=>item.agent_member_ref.id===message.sender.id);return <ContextSection title="Message in focus" hint={formatTime(message.created_at)}><p className="aw-context-focus-title">{actor?.display_name??message.sender.id}</p><p className="aw-context-focus-copy">{message.body}</p><div className="mt-3"><ContextFact label="Delivery" value={message.deliveries.map(item=>humanizeToken(item.status)).join(", ")||"Recorded"}/>{message.work_id&&<ContextFact label="Linked Work" value={shortId(message.work_id)}/>}</div></ContextSection>}
 function EventContext({event}:{event:ProviderObservation}){const copy=observationCopy(event);return <ContextSection title="Native observation in focus" hint={formatTime(observationTime(event))}><p className="aw-context-focus-title">{copy.title}</p><p className="aw-context-focus-copy">{copy.summary}</p><div className="mt-3"><ContextFact label="Provider" value={humanizeToken(event.provider)}/><ContextFact label="Lifecycle" value={humanizeToken(event.lifecycle_phase)}/><ContextFact label="Completeness" value={humanizeToken(event.completeness)}/></div></ContextSection>}
 
@@ -412,7 +415,6 @@ function AgentComposer({data,actions,actionsCurrent,selectedRunId,linkedWorkId,o
 function ProfileDialog({data,onClose,closeRef,openerRef}:{data:AgentWorkspaceData;onClose:()=>void;closeRef:React.RefObject<HTMLButtonElement>;openerRef:React.RefObject<HTMLButtonElement>}){
   const selected=data.selected_agent,c=data.configuration;
   const hasProviderConfiguration=Boolean(selected.provider||selected.execution_mode||c.provider_profile_ref||c.permission_ceiling||c.workspace_policy);
-  const hasRestrictions=Boolean(c.prompt_ref||c.forbidden_actions.length);
   const sessionProjection=data.projection_scope==="host_member_public"?null:data.session_event_projection??null;
   const dialogRef=useRef<HTMLElement>(null);
   const onCloseRef=useRef(onClose);
@@ -451,7 +453,6 @@ function MobileSheet({title,onClose,children}:{title:string;onClose:()=>void;chi
 function ContextSection({title,hint,primary=false,children}:{title:string;hint?:string;primary?:boolean;children:React.ReactNode}){return <WorkspaceSection title={title} hint={hint} primary={primary}>{children}</WorkspaceSection>}
 function ProfileSection({title,children}:{title:string;children:React.ReactNode}){const Icon=title==="Who"?UserRound:title==="Authority"?KeyRound:title==="Capabilities"?Wrench:title==="Runtime"?Activity:History;return <section className="aw-profile-section"><h3><Icon aria-hidden="true"/>{title}</h3><div>{children}</div></section>}
 function ContextFact({label,value,canonical}:{label:string;value:string;canonical?:string}){return <WorkspaceFact label={label} value={value} canonicalValue={canonical}/>}
-function MiniMetric({label,value}:{label:string;value:number}){return <div><p className="text-[10.5px] text-muted-foreground">{label}</p><p className="mt-1 text-[15px] font-semibold">{value}</p></div>}
 function ResponsibilityStrip({values}:{values:{open:number;active:number;review:number;closed:number}}){return <div className="aw-responsibility-strip" aria-label={`${values.open} open, ${values.active} active, ${values.review} in review, ${values.closed} closed`}>{Object.entries(values).map(([label,value])=><div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>}
 function ContextWorkRow({data,work,evidence=false}:{data:AgentWorkspaceData;work:WorkSummary;evidence?:boolean}){const owner=data.roster.find(agent=>agent.agent_member_ref.id===work.owner_actor_ref?.id);return <div className="border-t border-border/70 py-2.5 first:border-t-0"><div className="flex items-start justify-between gap-3"><p className="aw-context-work-row-title min-w-0 flex-1 break-words text-[11.5px] font-semibold leading-[1.4]">{work.title||work.work_id}</p><span className="shrink-0 text-[10.5px] text-muted-foreground">{humanizeToken(evidence?(work.latest_report_ref?"report":work.latest_finding_refs.length?"finding":work.latest_failure_ref?"failure":"evidence"):work.phase)}</span></div><p className="aw-context-work-row-meta mt-1 break-words text-[10.5px] leading-4 text-muted-foreground">{owner?.display_name??(work.owner_actor_ref?"Assigned":"Unassigned")} · gates {work.gate_summary.passed}/{work.gate_summary.required}</p></div>}
 function ContextMessageRow({data,message}:{data:AgentWorkspaceData;message:MessageSummary}){const actor=data.roster.find(item=>item.agent_member_ref.id===message.sender.id);return <div className="border-t border-border/70 py-2.5 first:border-t-0"><div className="flex items-baseline justify-between gap-3"><b className="truncate text-[11.5px]">{actor?.display_name??message.sender.id}</b><time className="shrink-0 text-[10.5px] text-muted-foreground">{formatTime(message.created_at)}</time></div><p className="mt-1 line-clamp-1 text-[10.5px] text-muted-foreground">{message.body}</p></div>}
@@ -466,7 +467,7 @@ function workVisualRank(work:WorkSummary,currentWorkId:string|null){if(work.work
 function workGroupLabel(work:WorkSummary,current:boolean,lens:string){if(lens!=="current")return humanizeToken(lens);if(current)return "Current Work";if(work.condition==="blocked")return "Blocked";if(work.phase==="review")return "Awaiting review";if(work.phase==="active")return "Active responsibility";return "Open responsibility"}
 function shortId(value:string|null|undefined){if(!value)return "Not linked";return value.length>24?`${value.slice(0,12)}…${value.slice(-7)}`:value}
 function humanizeToken(value:string){return value.split(/[_-]+/).filter(Boolean).map((part,index)=>index===0?`${part.charAt(0).toUpperCase()}${part.slice(1)}`:part).join(" ")}
-function rosterStateTone(state:string){if(/running|active/.test(state))return "text-status-running";if(/wait|pending|review/.test(state))return "text-status-warn";if(/block/.test(state))return "text-status-bad";return "text-muted-foreground";}
+function rosterStateTone(state:string){if(/running|active/.test(state))return "text-status-good";if(/wait|pending|review/.test(state))return "text-status-warn";if(/block/.test(state))return "text-status-bad";return "text-muted-foreground";}
 function timestampKey(value:string|null|undefined){if(!value)return 0;if(value.startsWith("unix-ms:")){const parsed=Number(value.slice(8));return Number.isFinite(parsed)?parsed:0;}const parsed=Date.parse(value);return Number.isFinite(parsed)?parsed:0}
 function observationTime(event:ProviderObservation){return event.occurred_at??event.observed_at}
 function observationCopy(event:ProviderObservation){
