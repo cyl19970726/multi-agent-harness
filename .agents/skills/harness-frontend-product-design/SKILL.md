@@ -10,8 +10,8 @@ description: "通用前端产品设计-实现工作流：文字合同 → agent 
 ### 1. 前端是三条流之间的翻译，禁止跳译
 
 ```
-合同流（文字·意图）  →  感知流（图·方向）  →  规格流（测量值·实现）
-   Phase 0               Phase 1               Phase 2 → 3
+合同流（文字·意图）  →  感知流（图·方向）  →  规格流（测量值·实现）  →  Owner 眼（验收）
+   Phase 0               Phase 1               Phase 2 → 3                Phase 4
 ```
 
 每两条相邻流之间必须有**显式翻译产物**：合同是意图的文字化、设计图是合同的可视化、
@@ -58,8 +58,9 @@ agent 输出里出现"looks good / 符合设计 / 视觉效果不错"而无 Owne
 
 ### 6. 规格必须可重生
 
-spec 由**脚本化测量**产出（采样/量距脚本与 spec 同存），不是手工感觉笔记。
-可重生才可校验、才不怕丢失、才能在新设计图进来时快速再版。
+spec 由**脚本化测量**产出，不是手工感觉笔记。可重生才可校验、才不怕丢失、
+才能在新设计图进来时快速再版。存放分工：**脚本实体入仓**（可运行、可复测），
+spec 文档存设计真源页，真源页放脚本的仓内链接（脚本无法"同存"于 Notion）。
 
 ## 五阶段流水线
 
@@ -93,6 +94,8 @@ Phase 4 Owner 视觉验收 ──批注→回写 spec/清单→再迭代──�
 - 选定那一刻：**冻结进设计真源（唯一 authority）+ 落选者显式标记 DEAD**
 - 两个禁止时机：① 实现已存在后"照实现补图"（合同变追认）；② 合同没变却
   反复重新生成（每次重生成都是隐性合同变更）
+- **出图方式不限**：方向选定的本质是冻结唯一真源——agent 生成、Owner 供图、
+  外部工具（Figma 等）均可；无出图能力时以 Owner 供图直接进冻结，不许卡死
 
 ### Phase 2 · 测量成规格（不许照图直接写代码）
 
@@ -127,6 +130,13 @@ Phase 4 Owner 视觉验收 ──批注→回写 spec/清单→再迭代──�
 - **PASS 只有一个来源：Owner 对截图的明确批准**。验收报告只交"清单落地证据
   + 具名残余"，不写视觉结论
 
+## 规模分档（防止"流程太重→绕行→旧病复发"）
+
+完整管线适用于标准档与新模块档；**微调档**（不新增 surface/数据元素/组件、
+不动布局合同）可免合同与 spec 全量编制——但三条铁律无豁免：渲染证据、绑定
+revision、Owner 批注。档级判据与留痕要求见 `references/acceptance-and-falsification.md` §7；
+拿不准 = 标准档。
+
 ## 交互行为基线（UX 合同通用条款）
 
 - **权威写**：写操作等权威回执，禁止乐观假成功；回执失败保留输入并明示
@@ -145,7 +155,8 @@ Phase 4 Owner 视觉验收 ──批注→回写 spec/清单→再迭代──�
 
 ## Spec 变更管理
 
-- spec 只在设计真源一处存活（如 Notion），仓内只放链接
+- 本 skill 语境下 spec 只有一件产物：Phase 2 的 `visual-spec-<版本>.md`（含元素→
+  数据映射表）；它只在设计真源一处存活（如 Notion），仓内只放链接
 - 任何修改在真源页留一行 changelog（日期/改了什么/为什么）
 - 设计图换代时：新图冻结、旧图标 DEAD、spec 重新测量再版（版本号递增）
 
@@ -155,7 +166,7 @@ Phase 4 Owner 视觉验收 ──批注→回写 spec/清单→再迭代──�
 |---|---|---|
 | 作废设计继续生效 | 设计源有多个版本并存/无唯一 authority | 冻结唯一真源，旧版标 DEAD |
 | 样式"改了没渲染" | computed style/像素采样 ≠ 预期 | 查层叠（@layer/preflight/优先级），修根因 |
-| agent 自判视觉 PASS | 报告含视觉结论无 Owner 批注 | 打回，改交落地证据清单 |
+| agent 自判视觉 PASS | 报告出现 `PASS`/`符合设计`/`视觉达标` 字样且无 Owner 批注引用 | 机械打回（无需进一步阅读），改交落地证据清单；合法结论词仅 `no-blocking-findings` / `findings(listed)` |
 | 无数据伪造 | 元素映射表有缺口却已"实现" | 删伪造，转 needs-backend 工作项 |
 | 实现分叉 | 同一组件 ≥2 个私有实现 | 合并进 registry 的 canonical 件 |
 | 验收粒度错误 | 只看 diff/测试，没看渲染 | 补像素/截图证据再下结论 |
@@ -167,17 +178,13 @@ Phase 4 Owner 视觉验收 ──批注→回写 spec/清单→再迭代──�
 - `references/measurement-toolbox.md` — **测量与渲染验证工具箱**（Phase 2/3 必用）：
   像素采样、几何测量、并排 montage、层叠/产物根因排查五步法、证据绑定约定、
   round 间差异定位。全部脚本化、可复测
-- `references/product-module-discovery.md` — **Phase 0 合同展开**：能力优先（不许
-  从"做个 dashboard"开始）、journey 映射、surface 正当性判定、coverage 标签
-  （designed/pattern/existing-accepted/excluded）、readiness 问题清单
-- `references/frontend-module-spec.md` — **合同/规格的结构化模板**：唯一 canonical
-  位置与版本管理、UI 引用不可变 hash、追溯矩阵（需求→journey→surface→引用→
-  组件→API→测试→exact-revision 证据→评审）、readiness gate；附
-  `scripts/validate_frontend_module_spec.py` 结构校验
-- `references/fidelity-and-review.md` — **Phase 3/4 验收闸**：分层 gate（几何→
-  主旅程→覆盖→视觉系统→响应式/状态→exact-revision 自审→独立评审→Owner 闸）、
-  硬不变量 vs 视觉分双轨、证据包绑定、**失效触发器**（revision/规格/参照变更即
-  作废旧评审）、评审失效模式黑名单
+- `references/contract-and-spec-templates.md` — **Phase 0/2 产出模板**：产品合同
+  （能力/journey/surface 正当性/coverage 标签/元素→数据映射/needs-backend 立项区）、
+  visual-spec 模板（信条/色板/字阶/几何/组件全状态）、组件登记表模板、
+  小工件存放位置统一约定
+- `references/acceptance-and-falsification.md` — **Phase 3/4 验收纪律**：判断权词表
+  （机械打回规则）、硬不变量 vs 视觉诊断双轨、分层闸、失效触发器、评审失效
+  黑名单、证据包清单、规模分档
 
 与本文件冲突处以本文件为准。
 

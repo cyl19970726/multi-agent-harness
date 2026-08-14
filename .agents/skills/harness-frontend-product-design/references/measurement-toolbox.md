@@ -2,6 +2,7 @@
 
 Phase 2（测量成规格）与 Phase 3（渲染验证）的可执行工具集。
 原则：**所有美术结论必须可由脚本复测**；凭肉眼缩略图下结论 = 失效模式。
+依赖：Python 3 + Pillow（`pip install pillow`）；脚本按项目需要改写到仓内。
 
 ## 1. 像素采样（PIL）——色板与"生效与否"判定
 
@@ -30,9 +31,20 @@ def edge_scan_horizontal(y, x0, x1, threshold=680):
 ## 2. 几何测量——字阶与间距
 
 ```python
-# 文本行高：在已知文本区域找暗像素行聚簇，行数与行高即字阶依据
-# 卡片 padding / 间距：沿边线法向采样，边线到首个文字像素的距离
-# 栏宽：整列扫描垂直发丝线位置（连续暗像素列）
+def text_line_heights(x0,y0,x1,y1,dark=400):
+    """在文本区域找暗像素行聚簇，返回 [(行顶,行底),...] —— 字阶/行距实测。"""
+    rows=[]
+    for y in range(y0,y1):
+        hits=sum(1 for x in range(x0,x1) if sum(im.getpixel((x,y))) < dark)
+        if hits>=2: rows.append(y)
+    clusters=[]
+    for y in rows:
+        if clusters and y-clusters[-1][1]<=1: clusters[-1][1]=y
+        else: clusters.append([y,y])
+    return [(t,b) for t,b in clusters]
+
+# 卡片 padding：边线 x_edge 到右侧首个文字像素的水平距离
+# 栏宽：扫全图找连续暗像素列（垂直发丝线），见 §1 edge 思路的列版
 ```
 
 几何结论按**设计图基准宽度等比换算**到实现视口（如 1504 基准 → 1440 实现）。
@@ -58,8 +70,9 @@ m.paste(d2,(0,0)); m.paste(a,(a.size[0]+8,0)); m.save('side-by-side.png')
 
 1. **源文件**：规则真的在文件里、无语法断裂（缺括号会让后续规则静默丢弃）
 2. **服务产物**：dev server 实际吐出的 CSS 是否含该规则
-   （vite：必须从仓根 `pnpm exec vite --config <path>/vite.config.ts` 起，
-   config 的 `root` 相对 cwd 解析，起错位置全 404——实测坑）
+   （示例（vite/pnpm 项目）：必须从仓根 `pnpm exec vite --config <path>/vite.config.ts`
+   起，config 的 `root` 相对 cwd 解析，起错位置全 404——实测坑；其他栈同理，
+   验证的是"产物里有没有"，不是"源文件里有没有"）
 3. **层叠**：`@layer` 顺序、unlayered vs layered 优先级、preflight 重置
    （实测：`@layer components` 使 Tailwind preflight 的 `margin:0;padding:0;
    border:0` 静默 nullify 整张表的对应声明，数月未被发现）
