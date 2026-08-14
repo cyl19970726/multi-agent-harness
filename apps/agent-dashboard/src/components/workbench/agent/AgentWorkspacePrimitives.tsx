@@ -81,6 +81,19 @@ export function WorkspaceCanvasIntro({
   </header>;
 }
 
+const ACTION_DETAIL:Record<string,string>={
+  send_message:"Send guidance to the next agent turn",
+  close_member_run:"Close the current runtime",
+  reopen_member_run:"Reopen a closed runtime",
+  assign_work:"Assign guidance for the next agent turn",
+  rebind_work:"Assign guidance for the next agent turn",
+  request_gate_evaluation:"Request a gate review",
+};
+
+function actionDetail(key:string) {
+  return ACTION_DETAIL[key]??key.split(/[_-]+/).filter(Boolean).map(part=>part.charAt(0).toUpperCase()+part.slice(1)).join(" ");
+}
+
 export function WorkspaceActionIndex({
   actions,
   label,
@@ -92,7 +105,7 @@ export function WorkspaceActionIndex({
     <p><SlidersHorizontal aria-hidden="true"/>Choose in composer</p>
     <ul>{actions.map(action=><li key={action.key} className="aw-action-row" data-danger={/close|retire|cancel|interrupt|stop/i.test(action.label)||undefined} data-disabled={Boolean(action.disabledReason)||undefined} title={action.disabledReason??undefined}>
       <ActionIcon kind={action.key}/>
-      <span>{action.label}</span>
+      <span className="aw-action-row__text"><span>{action.label}</span><small>{actionDetail(action.key)}</small></span>
     </li>)}</ul>
   </div>;
 }
