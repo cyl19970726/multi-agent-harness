@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use harness_core::agentfirm_api::{ActorKind, ActorRef};
-use harness_core::{AgentTeam, AgentTeamRun, NativeSessionRef, Work, WorkCondition, WorkPhase};
+use harness_core::{AgentTeam, AgentTeamRun, HostControlMode, NativeSessionRef, Work, WorkCondition, WorkPhase};
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
@@ -484,7 +484,44 @@ fn records(facts: &Facts, predicate: impl Fn(&Value) -> bool) -> Vec<Value> {
         .collect()
 }
 
-fn role_actor_ref(value: &Value) -> Value {
+/// Project an actor reference with its server-resolved display label. The
+/// browser never stitches identity lookups: a canonical AgentMember id (or a
+/// MemberRun id bound to one) carries its current durable name; anything else
+/// keeps a null label and the raw id stays the secondary display.
+fn role_actor_ref(facts: &Facts, value: &Value) -> Value {
+    match (value.get("kind"), value.get("id")) {
+        (Some(kind), Some(id)) if kind.is_string() && id.is_string() => {
+            let display_name = id.as_str().and_then(|id| {
+                let member = facts
+                    .members
+                    .iter()
+                    .find(|member| member["id"].as_str() == Some(id));
+                let member_run_owner = || {
+                    facts
+                        .member_runs
+                        .iter()
+                        .find(|run| run["id"].as_str() == Some(id))
+                        .and_then(|run| run["agent_member_id"].as_str())
+                        .and_then(|owner| {
+                            facts
+                                .members
+                                .iter()
+                                .find(|member| member["id"].as_str() == Some(owner))
+                        })
+                };
+                member
+                    .or_else(member_run_owner)
+                    .and_then(|member| member["name"].as_str())
+            });
+            json!({"kind":kind,"id":id,"display_name":display_name})
+        }
+        _ => Value::Null,
+    }
+}
+
+/// Facts-free actor projection for record summaries; the activity assembler
+/// re-resolves these through `role_actor_ref` to attach display labels.
+fn role_actor_ref_unresolved(value: &Value) -> Value {
     match (value.get("kind"), value.get("id")) {
         (Some(kind), Some(id)) if kind.is_string() && id.is_string() => {
             json!({"kind":kind,"id":id})
@@ -511,7 +548,7 @@ fn record_summary(kind: &str, value: &Value) -> Value {
     ]
     .iter()
     .find_map(|key| value.get(*key))
-    .map(role_actor_ref)
+    .map(role_actor_ref_unresolved)
     .filter(|actor| !actor.is_null());
     let source_id = value
         .get("source_work_ref")
@@ -562,7 +599,7 @@ fn team_activity(
             .as_str()
             .is_some_and(|id| team_work_ids.contains(id))
     }) {
-        rows.push(json!({"source":"work_event","id":event["id"],"work_id":event["work_id"],"actor_ref":role_actor_ref(&event["performed_by_actor"]),"status":event["kind"],"summary":display_text(event["payload"].get("summary").and_then(Value::as_str)),"created_at":event["created_at"]}));
+        rows.push(json!({"source":"work_event","id":event["id"],"work_id":event["work_id"],"actor_ref":role_actor_ref(facts,&event["performed_by_actor"]),"status":event["kind"],"summary":display_text(event["payload"].get("summary").and_then(Value::as_str)),"created_at":event["created_at"]}));
     }
     for delivery in facts.work_deliveries.iter().filter(|delivery| {
         delivery["work_id"]
@@ -576,7 +613,7 @@ fn team_activity(
         .iter()
         .filter(|message| run_id.is_some_and(|id| message["team_run_id"] == id))
     {
-        rows.push(json!({"source":"message","id":message["id"],"work_id":message["work_id"],"actor_ref":role_actor_ref(&message["sender_actor_ref"]),"status":message["kind"],"summary":display_text(message["body"].as_str()),"created_at":message["created_at"]}));
+        rows.push(json!({"source":"message","id":message["id"],"work_id":message["work_id"],"actor_ref":role_actor_ref(facts,&message["sender_actor_ref"]),"status":message["kind"],"summary":display_text(message["body"].as_str()),"created_at":message["created_at"]}));
     }
     let team_message_ids = facts
         .messages
@@ -584,12 +621,26 @@ fn team_activity(
         .filter(|message| run_id.is_some_and(|id| message["team_run_id"] == id))
         .filter_map(|message| message["id"].as_str())
         .collect::<BTreeSet<_>>();
+    // A delivery fact inherits its authored TeamMessage's Work link and
+    // recipient identity. The link is copied only when the parent Message
+    // canonically carries one; an unlinked Message stays honestly unlinked.
+    let message_work_links = facts
+        .messages
+        .iter()
+        .filter(|message| run_id.is_some_and(|id| message["team_run_id"] == id))
+        .map(|message| (message["id"].as_str().unwrap_or_default(), message["work_id"].clone()))
+        .collect::<BTreeMap<_, _>>();
     for delivery in facts.message_deliveries.iter().filter(|delivery| {
         delivery["message_id"]
             .as_str()
             .is_some_and(|id| team_message_ids.contains(id))
     }) {
-        rows.push(json!({"source":"message_delivery","id":delivery["id"],"work_id":null,"actor_ref":null,"status":delivery["status"],"summary":display_text(delivery["failure_detail"].as_str()),"created_at":delivery["updated_at"]}));
+        let work_id = delivery["message_id"]
+            .as_str()
+            .and_then(|id| message_work_links.get(id))
+            .cloned()
+            .unwrap_or(Value::Null);
+        rows.push(json!({"source":"message_delivery","id":delivery["id"],"message_id":delivery["message_id"],"work_id":work_id,"actor_ref":role_actor_ref(facts,&json!({"kind":"agent_member","id":delivery["recipient_identity_id"]})),"status":delivery["status"],"summary":display_text(delivery["failure_detail"].as_str()),"created_at":delivery["updated_at"]}));
     }
     for value in facts.side.iter().filter(|value| {
         value["work_id"]
@@ -610,14 +661,14 @@ fn team_activity(
             continue;
         };
         let summary = record_summary(source, value);
-        rows.push(json!({"source":source,"id":summary["id"],"work_id":summary["work_id"],"actor_ref":summary["actor_ref"],"status":summary["status"],"summary":display_text(summary["summary"].as_str()),"created_at":summary["created_at"]}));
+        rows.push(json!({"source":source,"id":summary["id"],"work_id":summary["work_id"],"actor_ref":role_actor_ref(facts,&summary["actor_ref"]),"status":summary["status"],"summary":display_text(summary["summary"].as_str()),"created_at":summary["created_at"]}));
     }
     for command in facts.runtime_commands.iter().filter(|command| {
         command["source_record_id"]
             .as_str()
             .is_some_and(|id| team_work_ids.contains(id) || team_message_ids.contains(id))
     }) {
-        rows.push(json!({"source":"runtime_command","id":command["id"],"work_id":command["source_record_id"].as_str().filter(|id|team_work_ids.contains(id)),"actor_ref":role_actor_ref(&command["authenticated_actor"]),"status":command["status"],"summary":display_text(command["failure_code"].as_str()),"created_at":command["updated_at"]}));
+        rows.push(json!({"source":"runtime_command","id":command["id"],"work_id":command["source_record_id"].as_str().filter(|id|team_work_ids.contains(id)),"actor_ref":role_actor_ref(facts,&command["authenticated_actor"]),"status":command["status"],"summary":display_text(command["failure_code"].as_str()),"created_at":command["updated_at"]}));
     }
     rows.sort_by(|left, right| {
         right["created_at"]
@@ -650,13 +701,48 @@ fn agent_member_summary(value: &Value) -> Value {
     })
 }
 
-fn message_summary(value: &Value, deliveries: &[Value]) -> Value {
+/// One server-computed presentation of a Message's per-recipient delivery
+/// truth. The browser renders this single field instead of stitching raw
+/// delivery rows: every canonical state maps to exactly one label and an
+/// undelivered Message is honestly "unsettled".
+fn message_delivery_state(deliveries: &[&Value]) -> &'static str {
+    fn status(delivery: &Value) -> &str {
+        delivery["status"].as_str().unwrap_or_default()
+    }
+    if deliveries.is_empty() {
+        return "unsettled";
+    }
+    if deliveries.iter().any(|delivery| {
+        matches!(status(delivery), "failed" | "expired" | "invalidated")
+    }) {
+        return "failed";
+    }
+    if deliveries
+        .iter()
+        .all(|delivery| status(delivery) == "acknowledged")
+    {
+        return "acknowledged";
+    }
+    if deliveries.iter().any(|delivery| {
+        matches!(status(delivery), "claimed" | "provider_received")
+    }) {
+        return "delivered";
+    }
+    "queued"
+}
+
+fn message_summary(facts: &Facts, value: &Value) -> Value {
     let message_id = &value["id"];
+    let deliveries = facts
+        .message_deliveries
+        .iter()
+        .filter(|delivery| delivery["message_id"] == *message_id)
+        .collect::<Vec<_>>();
     json!({
         "message_id":message_id,
         "work_id":value["work_id"],
-        "sender":role_actor_ref(&value["sender_actor_ref"]),
-        "recipients":value["recipients"].as_array().map(|recipients|recipients.iter().map(role_actor_ref).collect::<Vec<_>>()).unwrap_or_default(),
+        "sender":role_actor_ref(facts,&value["sender_actor_ref"]),
+        "recipients":value["recipients"].as_array().map(|recipients|recipients.iter().map(|recipient|role_actor_ref(facts,recipient)).collect::<Vec<_>>()).unwrap_or_default(),
         "body":value["body"],
         "kind":value["kind"],
         "correlation_id":value["correlation_id"],
@@ -664,9 +750,12 @@ fn message_summary(value: &Value, deliveries: &[Value]) -> Value {
         "response_intent":value["response_intent"],
         "reply_eligible":value["response_intent"] == "response_required",
         "created_at":value["created_at"],
-        "deliveries":deliveries.iter().filter(|delivery|delivery["message_id"]==*message_id).map(|delivery|json!({
+        "delivery_state":message_delivery_state(&deliveries),
+        "deliveries":deliveries.iter().map(|delivery|json!({
             "id":delivery["id"],
             "recipient_member_run_id":delivery["recipient_member_run_id"],
+            "recipient_identity_id":delivery["recipient_identity_id"],
+            "recipient_display_name":delivery["recipient_identity_id"].as_str().and_then(|id|facts.members.iter().find(|member|member["id"].as_str()==Some(id))).and_then(|member|member["name"].as_str()),
             "status":delivery["status"],
             "version":delivery["version"],
             "provider_receipt_id":delivery["provider_receipt_id"],
@@ -739,7 +828,7 @@ fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
             json!({
                 "id":event["id"],
                 "kind":event["kind"],
-                "actor_ref":role_actor_ref(&event["performed_by_actor"]),
+                "actor_ref":role_actor_ref(facts,&event["performed_by_actor"]),
                 "created_at":event["created_at"],
             })
         });
@@ -1546,7 +1635,7 @@ fn team_view(
         .messages
         .iter()
         .filter(|m| run_id.is_some_and(|id| m["team_run_id"] == id))
-        .map(|m| message_summary(m, &facts.message_deliveries))
+        .map(|m| message_summary(&facts, m))
         .collect::<Vec<_>>();
     let pressure_summary = json!({
         "active_turns": members.iter().filter(|member| member["runtime_state"] == "running").count(),
@@ -1961,7 +2050,7 @@ fn team_view(
                         .any(|recipient| recipient["id"] == team.host_agent_id)
                 }) || message["target_ref"]["id"] == team.id)
         })
-        .map(|message| message_summary(message, &facts.message_deliveries))
+        .map(|message| message_summary(&facts, message))
         .collect::<Vec<_>>();
     host_inbox.sort_by(|left, right| {
         right["created_at"]
@@ -2178,6 +2267,28 @@ fn read_session_event_projection(
     })
 }
 
+/// How the selected TeamRun's Host provider session is owned. A
+/// harness-managed Host has an exact NodeDaemon-owned AgentSession; an
+/// external interactive Host only lends its own provider thread for
+/// observation and must never be presented as a managed runtime; without a
+/// bound thread the Host has no provider session at all.
+fn host_session_mode(run: Option<&AgentTeamRun>) -> &'static str {
+    match run {
+        Some(run)
+            if run
+                .host_thread_id
+                .as_deref()
+                .is_some_and(|id| !id.trim().is_empty()) =>
+        {
+            match run.host_control_mode {
+                HostControlMode::Managed => "harness_managed",
+                HostControlMode::External => "external_interactive",
+            }
+        }
+        _ => "unbound",
+    }
+}
+
 fn agent_workspace_view(
     space_id: &str,
     store: &HarnessStore,
@@ -2363,6 +2474,7 @@ fn agent_workspace_view(
             "provider":run.map(|run|run.host_surface.clone()),
             "model":null,
             "native_session_health":if run.and_then(|run|run.host_thread_id.as_ref()).is_some(){"available"}else{"unknown"},
+            "host_session_mode":host_session_mode(run),
             "current_member_run_ref":null,
             "runtime_state":run.map(|run|enum_string(&run.status)),
             "runtime_generation":null,
@@ -2577,6 +2689,7 @@ fn agent_workspace_view(
         "provider":if may_read_private_session {selected_member_run.and_then(|run|run["provider"].as_str())} else {None},
         "execution_mode":if may_read_private_session {selected_member_run.and_then(|run|run["execution_mode"].as_str())} else {None},
         "runtime_status":if may_read_private_session {selected_runtime_status} else {None},
+        "host_session_mode":if selected_is_host {Some(host_session_mode(run))} else {None},
     });
     let unread_count = if projection_scope == "host_member_public" {
         public_unread_count
@@ -2771,7 +2884,7 @@ fn member_view(
         .messages
         .iter()
         .filter(|m| m["id"].as_str().is_some_and(|id| message_ids.contains(id)))
-        .map(|message| message_summary(message, &facts.message_deliveries))
+        .map(|message| message_summary(&facts, message))
         .collect::<Vec<_>>();
     let workspace = current_workspace(&facts, member_run_id).cloned();
     let mut actions = Vec::new();
@@ -3397,5 +3510,85 @@ mod tests {
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].id, "zzz-visible-after-company-first-200");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn message_delivery_state_distinguishes_every_canonical_outcome() {
+        let row = |status: &str| json!({"status": status});
+        assert_eq!(message_delivery_state(&[]), "unsettled");
+        assert_eq!(message_delivery_state(&[&row("queued")]), "queued");
+        assert_eq!(message_delivery_state(&[&row("routed")]), "queued");
+        assert_eq!(message_delivery_state(&[&row("claimed")]), "delivered");
+        assert_eq!(
+            message_delivery_state(&[&row("provider_received")]),
+            "delivered"
+        );
+        assert_eq!(message_delivery_state(&[&row("acknowledged")]), "acknowledged");
+        assert_eq!(message_delivery_state(&[&row("failed")]), "failed");
+        assert_eq!(message_delivery_state(&[&row("expired")]), "failed");
+        assert_eq!(message_delivery_state(&[&row("invalidated")]), "failed");
+        assert_eq!(
+            message_delivery_state(&[&row("acknowledged"), &row("queued")]),
+            "queued",
+            "one pending recipient keeps the Message queued"
+        );
+        assert_eq!(
+            message_delivery_state(&[&row("acknowledged"), &row("provider_received")]),
+            "delivered"
+        );
+        assert_eq!(
+            message_delivery_state(&[&row("acknowledged"), &row("failed")]),
+            "failed"
+        );
+    }
+
+    fn host_run_fixture(host_thread_id: Option<&str>, mode: HostControlMode) -> AgentTeamRun {
+        AgentTeamRun {
+            id: "run-1".into(),
+            agent_team_id: "team-1".into(),
+            execution_node_id: "node-1".into(),
+            project_binding_id: "project-1".into(),
+            previous_run_id: None,
+            host_surface: "codex".into(),
+            host_thread_id: host_thread_id.map(str::to_owned),
+            host_actor: None,
+            host_control_mode: mode,
+            objective: "test".into(),
+            execution_root: None,
+            status: harness_core::TeamRunStatus::Running,
+            member_run_ids: Vec::new(),
+            budget_limit_usd: None,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+            completed_at: None,
+        }
+    }
+
+    #[test]
+    fn host_session_mode_distinguishes_managed_external_and_unbound() {
+        assert_eq!(
+            host_session_mode(Some(&host_run_fixture(
+                Some("thread-1"),
+                HostControlMode::External
+            ))),
+            "external_interactive"
+        );
+        assert_eq!(
+            host_session_mode(Some(&host_run_fixture(
+                Some("thread-1"),
+                HostControlMode::Managed
+            ))),
+            "harness_managed"
+        );
+        assert_eq!(
+            host_session_mode(Some(&host_run_fixture(None, HostControlMode::External))),
+            "unbound"
+        );
+        assert_eq!(
+            host_session_mode(Some(&host_run_fixture(Some("  "), HostControlMode::Managed))),
+            "unbound",
+            "a blank thread id is not a binding"
+        );
+        assert_eq!(host_session_mode(None), "unbound");
     }
 }
