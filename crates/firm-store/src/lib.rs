@@ -8902,6 +8902,10 @@ mod tests {
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
+            control_topology: firm_core::ControlTopology::default(),
+            composition_fingerprint: None,
+            adapter_bridge_revision: None,
+            security_enforcement_locus: firm_core::SecurityEnforcementLocus::default(),
         }
     }
 

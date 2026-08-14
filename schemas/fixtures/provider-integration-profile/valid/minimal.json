@@ -1,0 +1,12 @@
+{
+  "provider": "codex",
+  "execution_mode": "codex_app_server",
+  "interaction_mode": "pause_and_resume",
+  "tool_event_fidelity": "structured",
+  "artifact_event_fidelity": "structured",
+  "supports_cancel": true,
+  "supports_resume": true,
+  "observes_native_subagents": false,
+  "observes_background_tasks": false,
+  "thinking_transient_only": true
+}

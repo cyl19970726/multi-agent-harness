@@ -761,6 +761,45 @@ for line in sys.stdin:
         resp = {{'id': cid, 'type': 'response', 'command': 'set_auto_compaction', 'success': True}}
     elif t == 'prompt':
         prompt_count += 1
+        if os.environ.get('FAKE_PI_WAIT_FOR_STEER') == '1' and prompt_count == 1:
+            pm = os.environ.get('FAKE_PI_PROMPT_MARKER')
+            if pm:
+                with open(pm, 'a') as f:
+                    f.write('prompt\n')
+            resp = {{'id': cid, 'type': 'response', 'command': 'prompt', 'success': True}}
+            print(json.dumps(resp), flush=True)
+            print(json.dumps({{"type": "agent_start"}}), flush=True)
+            print(json.dumps({{"type": "turn_start"}}), flush=True)
+            # Hold the cycle open until an explicit steer (or abort) arrives.
+            while True:
+                line2 = sys.stdin.readline()
+                if not line2:
+                    break
+                try:
+                    cmd2 = json.loads(line2.strip())
+                except json.JSONDecodeError:
+                    continue
+                t2 = cmd2.get('type', '')
+                if t2 == 'steer':
+                    sm = os.environ.get('FAKE_PI_STEER_MARKER')
+                    if sm:
+                        with open(sm, 'a') as f:
+                            f.write(cmd2.get('message', '') + '\n')
+                    if cmd2.get('id'):
+                        print(json.dumps({{'id': cmd2['id'], 'type': 'response',
+                            'command': 'steer', 'success': True}}), flush=True)
+                    break
+                if t2 == 'abort':
+                    break
+            for event in [
+                {{"type": "turn_end", "message": {{"role": "assistant",
+                    "content": [{{"type": "text", "text": TEXT}}],
+                    "toolResults": []}}}},
+                {{"type": "agent_end"}},
+                {{"type": "agent_settled"}},
+            ]:
+                print(json.dumps(event), flush=True)
+            continue
         if prompt_count == 1 and os.environ.get('FAKE_PI_SUBMIT_WORK') == '1':
             harness = os.environ['FIRM_BIN']
             team_run = os.environ['FIRM_TEAM_RUN_ID']
@@ -805,6 +844,14 @@ for line in sys.stdin:
         ]:
             print(json.dumps(event), flush=True)
         continue
+    elif t == 'steer':
+        sm = os.environ.get('FAKE_PI_STEER_MARKER')
+        if sm:
+            with open(sm, 'a') as f:
+                f.write(cmd.get('message', '') + '\n')
+        resp = {{'id': cid, 'type': 'response', 'command': 'steer', 'success': True}}
+    elif t == 'follow_up':
+        resp = {{'id': cid, 'type': 'response', 'command': 'follow_up', 'success': True}}
     else:
         resp = {{'id': cid, 'type': 'response', 'command': t,
                  'success': False, 'error': 'unknown command'}}

@@ -3049,6 +3049,63 @@ pub struct ProviderIntegrationProfile {
     /// Product policy, not a provider claim. Thinking may only appear through
     /// the sanitized transient live channel and is never durable or replayed.
     pub thinking_transient_only: bool,
+    /// How the adapter talks to the runtime: external wire protocol, embedded
+    /// SDK, or a native in-process bridge (AgentFirm architecture review
+    /// DOC-89 §11.1).
+    #[serde(default)]
+    pub control_topology: ControlTopology,
+    /// Fingerprint of the exact resolved composition this profile claims:
+    /// adapter contract + provider version + execution mode + permission
+    /// mapping. A RuntimeCommand bound to a different fingerprint must not
+    /// take effect against this runtime.
+    #[serde(default)]
+    pub composition_fingerprint: Option<String>,
+    /// Exact adapter bridge revision this profile was reviewed against
+    /// (contract version for external protocols; bridge commit for native
+    /// bridges).
+    #[serde(default)]
+    pub adapter_bridge_revision: Option<String>,
+    /// Where the permission ceiling is actually enforced. `none_verified`
+    /// declares that no enforcement was proven; requesting a restricted
+    /// ceiling against it must fail closed.
+    #[serde(default)]
+    pub security_enforcement_locus: SecurityEnforcementLocus,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlTopology {
+    ExternalProtocol,
+    EmbeddedSdk,
+    NativeBridge,
+    #[default]
+    Unknown,
+}
+
+/// Where a ProviderRuntimeProjection's effective permission ceiling is enforced.
+/// "Generated a mapping string" is not enforcement; the locus names the real
+/// mechanism or honestly reports that none was verified.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecurityEnforcementLocus {
+    #[serde(default)]
+    pub kind: SecurityEnforcementLocusKind,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecurityEnforcementLocusKind {
+    ProviderNativePolicy,
+    AdapterToolAllowlist,
+    /// The adapter answers the provider's permission requests (e.g. ACP
+    /// auto-allow with a one-shot durable receipt).
+    AdapterAutoApproval,
+    OsSandbox,
+    NetworkCredentialBoundary,
+    NoneVerified,
+    #[default]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -6396,6 +6453,10 @@ fn capacity_is_independent_of_adapter_compatibility_and_round_trips_json() {
         observes_native_subagents: false,
         observes_background_tasks: false,
         thinking_transient_only: true,
+        control_topology: ControlTopology::default(),
+        composition_fingerprint: None,
+        adapter_bridge_revision: None,
+        security_enforcement_locus: SecurityEnforcementLocus::default(),
     };
     let mut snapshot = capacity_snapshot(ProviderCapacityState::Unauthorized, 1_000);
     snapshot.provider = "claude".to_string();

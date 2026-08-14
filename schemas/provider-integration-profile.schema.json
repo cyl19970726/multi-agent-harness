@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/provider-integration-profile.schema.json",
+  "title": "ProviderIntegrationProfile",
+  "description": "Immutable-at-start snapshot of one provider execution path: capability, compatibility, control topology, resolved composition, and the verified permission enforcement locus. Capability claims are execution-mode and version specific; a field absent from the wire never means supported.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["provider", "execution_mode", "interaction_mode", "tool_event_fidelity", "artifact_event_fidelity", "supports_cancel", "supports_resume", "observes_native_subagents", "observes_background_tasks", "thinking_transient_only"],
+  "properties": {
+    "provider": {"type": "string", "minLength": 1},
+    "execution_mode": {"type": "string", "minLength": 1},
+    "execution_driver": {"enum": ["host_driven", "provider_driven", "user_driven"]},
+    "provider_version": {"type": ["string", "null"]},
+    "adapter_contract_version": {"type": ["string", "null"]},
+    "reviewed_provider_versions": {"type": "array", "items": {"type": "string"}},
+    "compatibility_status": {"enum": ["current", "review_required", "incompatible", "unavailable", "unknown"]},
+    "adapter_reviewed_at": {"type": ["string", "null"]},
+    "compatibility_note": {"type": ["string", "null"]},
+    "interaction_mode": {"enum": ["pause_and_resume", "end_round_and_follow_up", "unsupported"]},
+    "ordinary_message_boundary": {"enum": ["in_turn", "next_round", "next_round_batched", "unknown"]},
+    "plan_mode": {"enum": ["native", "emulated", "unsupported", "unknown"]},
+    "goal_mode": {"enum": ["native", "emulated", "unsupported", "unknown"]},
+    "tool_event_fidelity": {"enum": ["structured", "summary", "none"]},
+    "artifact_event_fidelity": {"enum": ["structured", "summary", "none"]},
+    "supports_cancel": {"type": "boolean"},
+    "supports_resume": {"type": "boolean"},
+    "observes_native_subagents": {"type": "boolean"},
+    "observes_background_tasks": {"type": "boolean"},
+    "thinking_transient_only": {"type": "boolean"},
+    "control_topology": {"enum": ["external_protocol", "embedded_sdk", "native_bridge", "unknown"]},
+    "composition_fingerprint": {"type": ["string", "null"]},
+    "adapter_bridge_revision": {"type": ["string", "null"]},
+    "security_enforcement_locus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["provider_native_policy", "adapter_tool_allowlist", "adapter_auto_approval", "os_sandbox", "network_credential_boundary", "none_verified", "unknown"]},
+        "note": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

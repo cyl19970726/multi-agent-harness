@@ -1,0 +1,29 @@
+{
+  "provider": "pi",
+  "execution_mode": "pi_rpc",
+  "execution_driver": "host_driven",
+  "provider_version": "0.84.2",
+  "adapter_contract_version": "pi-rpc-v1",
+  "reviewed_provider_versions": ["0.83.0"],
+  "compatibility_status": "review_required",
+  "adapter_reviewed_at": "2026-08-05",
+  "compatibility_note": "Pi RPC-mode persistent Agent Team member.",
+  "interaction_mode": "end_round_and_follow_up",
+  "ordinary_message_boundary": "next_round",
+  "plan_mode": "emulated",
+  "goal_mode": "emulated",
+  "tool_event_fidelity": "structured",
+  "artifact_event_fidelity": "structured",
+  "supports_cancel": true,
+  "supports_resume": true,
+  "observes_native_subagents": false,
+  "observes_background_tasks": false,
+  "thinking_transient_only": true,
+  "control_topology": "external_protocol",
+  "composition_fingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "adapter_bridge_revision": "pi-rpc-v1",
+  "security_enforcement_locus": {
+    "kind": "adapter_tool_allowlist",
+    "note": "restricted ceilings compile to --tools allowlist at spawn"
+  }
+}
