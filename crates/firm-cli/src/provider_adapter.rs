@@ -89,6 +89,18 @@ pub(crate) trait ProviderNativeControl {
     fn dispatch(&mut self, plan: &ProviderControlPlan) -> CliResult<()>;
 }
 
+/// Forwarding so boxed proxies from `TeamRuntimeAdapter::native_control`
+/// satisfy `execute_team_control`'s `impl ProviderNativeControl` parameter.
+impl ProviderNativeControl for Box<dyn ProviderNativeControl + '_> {
+    fn provider(&self) -> &'static str {
+        (**self).provider()
+    }
+
+    fn dispatch(&mut self, plan: &ProviderControlPlan) -> CliResult<()> {
+        (**self).dispatch(plan)
+    }
+}
+
 pub(crate) struct CodexNativeControl<'a> {
     pub client: &'a mut CodexAppServerClient,
     pub turn_id: &'a str,
@@ -356,14 +368,22 @@ pub(crate) fn team_loop_capabilities(provider: &str) -> Option<ProviderCapabilit
         "claude" | "kimi" | "pi" => false,
         _ => return None,
     };
+    // Honesty rule: a bool the code cannot back is an overclaim. Pi had no
+    // inspect/reconcile implementation at all (and no consumer exists), so
+    // it reports the narrower truth; its executable capability report lives
+    // in `runtime_adapter::TeamRuntimeAdapter::capability_bindings`.
+    let (inspect_state, reconcile_effect) = match provider {
+        "pi" => (false, false),
+        _ => (true, true),
+    };
     Some(ProviderCapabilities {
         create_attach_resume: true,
         queue_next_turn: true,
         safe_current_turn_injection,
         interrupt: true,
         close: true,
-        inspect_state: true,
-        reconcile_effect: true,
+        inspect_state,
+        reconcile_effect,
     })
 }
 
@@ -663,7 +683,6 @@ mod tests {
             assert!(capabilities.create_attach_resume);
             assert!(capabilities.queue_next_turn);
             assert!(capabilities.interrupt && capabilities.close);
-            assert!(capabilities.inspect_state && capabilities.reconcile_effect);
             assert!(map_permission(provider, PermissionCeiling::ReadOnly).is_ok());
             assert!(map_permission(provider, PermissionCeiling::WorkspaceWrite).is_ok());
             for action in [
@@ -674,6 +693,14 @@ mod tests {
                 assert!(plan.requires_terminal_ack);
                 assert_eq!(plan.provider, provider);
             }
+        }
+        // Pi reported inspect/reconcile without any implementation or
+        // consumer — the matrix must carry the narrower truth.
+        let pi = team_loop_capabilities("pi").expect("pi");
+        assert!(!pi.inspect_state && !pi.reconcile_effect);
+        for provider in ["codex", "claude", "kimi"] {
+            let capabilities = team_loop_capabilities(provider).expect("known provider");
+            assert!(capabilities.inspect_state && capabilities.reconcile_effect);
         }
         assert!(map_permission("unknown", PermissionCeiling::ReadOnly).is_err());
         for provider in ["claude", "pi"] {

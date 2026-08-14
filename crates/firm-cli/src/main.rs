@@ -15,20 +15,20 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
     build_launch_spec, content_hash_hex16, provider_interaction_response_id, AgentTeam,
-    AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence, ExecutionNode, ExecutionNodeStatus,
-    ExecutionSpace, GitHubLink, GitHubLinkKind, HostAttention, HostAttentionStatus,
-    HostBindingLease, HostBindingLeaseOwnerKind, HostControlMode, HostDispatchConfig, LaunchMcp,
-    LaunchPermission, LaunchSpec, LegacyWave, MemberAction, MemberActionStatus,
-    MemberCoordinationStatus, MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot,
-    MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind, MissionStatus,
-    NativeSessionAvailability, NativeSessionRef, NodeDaemonLeaseStatus, NodeProjectRegistration,
-    NodeProjectRegistrationStatus, OrdinaryMessageBoundary, ProjectContext, ProjectKind,
-    ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
-    ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityAdmission,
-    ProviderCompatibilityAdmissionLifecycle, ProviderCompatibilityAdmissionPolicy,
-    ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
-    ProviderCompatibilityBlockSource, ProviderCompatibilityStatus, ProviderControlValue,
-    ProviderDispatchAttempt, ProviderDispatchIntent, ProviderEventFidelity,
+    AgentTeamRun, AgentTeamStatus, ControlTopology, DelegationRun, Evidence, ExecutionNode,
+    ExecutionNodeStatus, ExecutionSpace, GitHubLink, GitHubLinkKind, HostAttention,
+    HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind, HostControlMode,
+    HostDispatchConfig, LaunchMcp, LaunchPermission, LaunchSpec, LegacyWave, MemberAction,
+    MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver, MemberRunStatus,
+    MemberWorkspaceSnapshot, MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind,
+    MissionStatus, NativeSessionAvailability, NativeSessionRef, NodeDaemonLeaseStatus,
+    NodeProjectRegistration, NodeProjectRegistrationStatus, OrdinaryMessageBoundary,
+    ProjectContext, ProjectKind, ProviderAccountRef, ProviderCapabilities,
+    ProviderCapacityConfidence, ProviderCapacityEvidence, ProviderCapacitySnapshot,
+    ProviderCapacityState, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
+    ProviderCompatibilityAdmissionPolicy, ProviderCompatibilityBlockBoundary,
+    ProviderCompatibilityBlockCause, ProviderCompatibilityBlockSource, ProviderCompatibilityStatus,
+    ProviderControlValue, ProviderDispatchAttempt, ProviderDispatchIntent, ProviderEventFidelity,
     ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
     ProviderIntegrationProfile, ProviderInteractionMessageOption, ProviderInteractionMode,
     ProviderInteractionRequestBody, ProviderInteractionResponseBody, ProviderInteractionType,
@@ -36,14 +36,15 @@ use harness_core::{
     ProviderProcessHealth, ProviderProcessStatus, ProviderResponseIntent,
     ProviderRuntimeContextFact, ProviderRuntimeProjection, ProviderWorkDispatch,
     ProviderWorkDispatchStatus, RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage,
-    RegistryMessageIntent, Review, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
-    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection,
-    TeamRecipientKind, TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus,
-    TeamSupervisorLease, Validate, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext,
-    WorkCondition, WorkDelegation, WorkDelegationState, WorkPhase, WorkPriority, WorkRef,
-    WorkResolution, WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus,
-    WorkflowPatch, WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep,
-    WorkflowStepStatus, WorkflowTerminalReason, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
+    RegistryMessageIntent, Review, SecurityEnforcementLocus, SecurityEnforcementLocusKind,
+    SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus,
+    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection, TeamRecipientKind,
+    TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease,
+    Validate, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition,
+    WorkDelegation, WorkDelegationState, WorkPhase, WorkPriority, WorkRef, WorkResolution,
+    WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch,
+    WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    WorkflowTerminalReason, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
     canonical_surface, CanonicalMemberRunAdmission, HarnessStore, HostAttentionClaimResult,
@@ -73,6 +74,7 @@ mod remote_fabric;
 mod resident;
 mod role_actions_api;
 mod role_views_api;
+mod runtime_adapter;
 mod sse;
 #[cfg(unix)]
 mod supervisor_daemon;
@@ -7986,6 +7988,10 @@ fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                         "team_member_profile": profile,
                         "operational_compatibility": resolution.ok(),
                         "version_probe_error": detected.err(),
+                        // Executable per-intent capability report (DOC-89):
+                        // null until the provider's binding migrates to the
+                        // provider-neutral adapter.
+                        "runtime_capability_bindings": crate::runtime_adapter::capability_bindings_for(adapter.name()),
                     })
                 })
                 .collect();
@@ -8987,6 +8993,25 @@ fn validate_team_member_identity(store: &HarnessStore, member: &TeamMemberSpec) 
     Ok(())
 }
 
+/// Resolved-composition fingerprint for a ProviderIntegrationProfile
+/// (DOC-89 §11.1): pins provider + execution mode + adapter contract/bridge
+/// revision. External-protocol adapters have no plugin tree to resolve yet;
+/// when a native bridge exists, its resolved composition joins this input.
+fn profile_composition_fingerprint(
+    provider: &str,
+    execution_mode: &str,
+    adapter_contract_version: Option<&str>,
+) -> Option<String> {
+    adapter_contract_version.map(|contract| {
+        harness_store::canonical_json_fingerprint(&serde_json::json!({
+            "fingerprint_kind": "agentfirm.runtime_composition.v1",
+            "provider": provider,
+            "execution_mode": execution_mode,
+            "adapter_contract_version": contract,
+        }))
+    })
+}
+
 fn team_member_provider_profile_for_mode(
     provider: &str,
     requested_mode: Option<&str>,
@@ -9023,6 +9048,13 @@ fn team_member_provider_profile_for_mode(
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
+            control_topology: ControlTopology::Unknown,
+            composition_fingerprint: None,
+            adapter_bridge_revision: None,
+            security_enforcement_locus: SecurityEnforcementLocus {
+                kind: SecurityEnforcementLocusKind::NoneVerified,
+                note: Some("user-driven external session; Harness enforces nothing".to_string()),
+            },
         };
     }
     // Agent Team Claude members are persistent Agent SDK sessions. `claude -p`
@@ -9056,6 +9088,21 @@ fn team_member_provider_profile_for_mode(
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
+            control_topology: ControlTopology::EmbeddedSdk,
+            composition_fingerprint: profile_composition_fingerprint(
+                "claude",
+                "claude_agent_sdk",
+                Some("claude-agent-sdk-v1"),
+            ),
+            adapter_bridge_revision: Some("claude-agent-sdk-v1".to_string()),
+            security_enforcement_locus: SecurityEnforcementLocus {
+                kind: SecurityEnforcementLocusKind::ProviderNativePolicy,
+                note: Some(
+                    "SDK permissionMode plus runner allowedTools (bypassPermissions under \
+                     trusted-development)"
+                        .to_string(),
+                ),
+            },
         };
     }
     // Agent Team Codex members are interactive by definition. `codex exec`
@@ -9088,6 +9135,17 @@ fn team_member_provider_profile_for_mode(
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
+            control_topology: ControlTopology::ExternalProtocol,
+            composition_fingerprint: profile_composition_fingerprint(
+                "codex",
+                "codex_app_server",
+                Some("codex-app-server-v1"),
+            ),
+            adapter_bridge_revision: Some("codex-app-server-v1".to_string()),
+            security_enforcement_locus: SecurityEnforcementLocus {
+                kind: SecurityEnforcementLocusKind::ProviderNativePolicy,
+                note: Some("app-server thread params sandbox / approvalPolicy".to_string()),
+            },
         };
     }
     // Agent Team Pi members use RPC mode (`pi --mode rpc`), a persistent
@@ -9123,6 +9181,21 @@ fn team_member_provider_profile_for_mode(
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
+            control_topology: ControlTopology::ExternalProtocol,
+            composition_fingerprint: profile_composition_fingerprint(
+                "pi",
+                "pi_rpc",
+                Some("pi-rpc-v1"),
+            ),
+            adapter_bridge_revision: Some("pi-rpc-v1".to_string()),
+            security_enforcement_locus: SecurityEnforcementLocus {
+                kind: SecurityEnforcementLocusKind::AdapterToolAllowlist,
+                note: Some(
+                    "restricted ceilings compile to a --tools allowlist at spawn; \
+                     full access records none_verified at prepare"
+                        .to_string(),
+                ),
+            },
         };
     }
     match provider {
@@ -9159,6 +9232,20 @@ fn team_member_provider_profile_for_mode(
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
+            control_topology: ControlTopology::ExternalProtocol,
+            composition_fingerprint: profile_composition_fingerprint(
+                "kimi",
+                "kimi_acp",
+                Some("kimi-acp-v1"),
+            ),
+            adapter_bridge_revision: Some("kimi-acp-v1".to_string()),
+            security_enforcement_locus: SecurityEnforcementLocus {
+                kind: SecurityEnforcementLocusKind::AdapterAutoApproval,
+                note: Some(
+                    "ACP session/request_permission auto-allow with a one-shot durable receipt"
+                        .to_string(),
+                ),
+            },
         },
         "codex" => ProviderIntegrationProfile {
             provider: provider.to_string(),
@@ -9184,6 +9271,20 @@ fn team_member_provider_profile_for_mode(
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
+            control_topology: ControlTopology::ExternalProtocol,
+            composition_fingerprint: profile_composition_fingerprint(
+                "codex",
+                "codex_exec",
+                Some("codex-exec-v1"),
+            ),
+            adapter_bridge_revision: Some("codex-exec-v1".to_string()),
+            security_enforcement_locus: SecurityEnforcementLocus {
+                kind: SecurityEnforcementLocusKind::ProviderNativePolicy,
+                note: Some(
+                    "--sandbox and --ask-for-approval CLI flags on the workflow launch path"
+                        .to_string(),
+                ),
+            },
         },
         "claude" => ProviderIntegrationProfile {
             provider: provider.to_string(),
@@ -9209,6 +9310,19 @@ fn team_member_provider_profile_for_mode(
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
+            control_topology: ControlTopology::ExternalProtocol,
+            composition_fingerprint: profile_composition_fingerprint(
+                "claude",
+                "claude_cli",
+                Some("claude-cli-native-v1"),
+            ),
+            adapter_bridge_revision: Some("claude-cli-native-v1".to_string()),
+            security_enforcement_locus: SecurityEnforcementLocus {
+                kind: SecurityEnforcementLocusKind::ProviderNativePolicy,
+                note: Some(
+                    "--permission-mode and --allowedTools on the workflow launch path".to_string(),
+                ),
+            },
         },
         _ => ProviderIntegrationProfile {
             provider: provider.to_string(),
@@ -9231,6 +9345,13 @@ fn team_member_provider_profile_for_mode(
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
+            control_topology: ControlTopology::Unknown,
+            composition_fingerprint: None,
+            adapter_bridge_revision: None,
+            security_enforcement_locus: SecurityEnforcementLocus {
+                kind: SecurityEnforcementLocusKind::Unknown,
+                note: None,
+            },
         },
     }
 }
@@ -18558,8 +18679,17 @@ fn register_live_member_control(
                 execution_mode: profile
                     .map(|profile| profile.execution_mode.clone())
                     .unwrap_or_else(|| "unknown".to_string()),
-                supports_steer: profile
-                    .is_some_and(|profile| profile.execution_mode == "codex_app_server"),
+                // Steer requires a real current-cycle injection channel:
+                // codex app-server `turn/steer`, or pi RPC `steer` compiled at
+                // the cycle control boundary (proven by
+                // tests/pi_team_member.rs steer conformance). Everything else
+                // keeps failing closed here.
+                supports_steer: profile.is_some_and(|profile| {
+                    matches!(
+                        profile.execution_mode.as_str(),
+                        "codex_app_server" | "pi_rpc"
+                    )
+                }),
                 supports_interrupt: profile.is_some_and(|profile| profile.supports_cancel),
                 supports_close: true,
                 sender,
@@ -25816,13 +25946,12 @@ fn run_pi_team_member(
     member: &ProviderRuntimeProjection,
     context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
+    use crate::runtime_adapter::TeamRuntimeAdapter as _;
+
     ledger.require_supervisor_lease()?;
     let project_id = context.project_id.as_deref();
     let project_selector = context.project_selector.as_deref();
     let cwd = &context.cwd;
-    let idle_timeout = context.idle_timeout;
-    let live_sink = context.live_sink.clone();
-    let turn_leases = &context.turn_leases;
 
     let mut member_row = member.clone();
     if let Some(profile) = member_row.provider_profile.as_mut() {
@@ -25892,6 +26021,24 @@ fn run_pi_team_member(
             );
     }
 
+    // Permission ceiling → compiled tool allowlist. The ceiling comes from
+    // the canonical AgentMember trust record; the allowlist is actually
+    // passed to the spawned process (a mapped-but-unlaunched string is not
+    // enforcement). Full access intentionally compiles to no flag and the
+    // profile records `none_verified` instead of pretending otherwise.
+    let ceiling = ledger
+        .store
+        .all_trust_agent_members()?
+        .into_iter()
+        .find(|candidate| candidate.id == member_row.agent_member_id)
+        .map(|record| record.permission_ceiling)
+        .unwrap_or(harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite);
+    let tools = crate::runtime_adapter::pi_tools_allowlist_for_ceiling(ceiling);
+    if let Some(profile) = member_row.provider_profile.as_mut() {
+        profile.security_enforcement_locus =
+            crate::runtime_adapter::pi_security_enforcement_locus(ceiling);
+    }
+
     let pi_bin = resolve_pi_bin();
 
     // Fence immediately before pi process start/resume.
@@ -25912,9 +26059,10 @@ fn run_pi_team_member(
             session_dir: &session_dir,
             member_name: &member.name,
             collaboration_env: &collaboration_env,
+            tools,
         },
     );
-    let mut pi_client = match pi_client_result {
+    let pi_client = match pi_client_result {
         Ok(client) => {
             settle_provider_effect(
                 ledger,
@@ -25930,452 +26078,30 @@ fn run_pi_team_member(
             return Err(error);
         }
     };
+    let mut adapter = pi_rpc::PiTeamRuntime::new(pi_client);
 
     member_row.native_session = Some(native_session_ref(
         &member_row,
-        pi_client.session_file(),
-        "pi_session",
+        adapter.native_session_locator(),
+        adapter.native_locator_kind(),
     ));
 
     let (live_control, registration) = register_live_member_control(&member_row, 16);
-    let mut live_control_registration = Some(registration);
 
     member_row.status = MemberRunStatus::Idle;
     member_row.last_event_at = Some(now_string());
     ledger.save_member_run(&expected, &member_row)?;
 
-    let mut round = 0u32;
-    let mut prompt_text;
-    let mut accepted_messages = Vec::new();
-    let mut active_work: Option<ClaimedWork> = None;
-    // Pi joined the persistent Team surface after the shared supervisor wake
-    // policy landed. Keep it on the same predicate/backoff contract as Codex
-    // and Kimi instead of retaining the superseded fixed-poll call shape.
-    let wake_policy = supervisor_wake::WakePolicy::default();
-    let mut wake_backoff = supervisor_wake::WakeBackoff::new();
-    let mut zero_output_streak = member_row.zero_output_streak;
-    let mut last_consumed_work_version = member_row.last_consumed_work_version;
-
-    match wait_for_idle_member_wake(
+    // The generic provider-neutral loop owns wake → claim → cycle → settle.
+    crate::runtime_adapter::run_team_member_with_adapter(
         ledger,
+        objective,
         &mut member_row,
+        context,
+        &mut adapter,
         &live_control,
-        || {
-            require_provider_session_authority(ledger, &member.agent_member_id, false)?;
-            pi_client.ensure_transport_alive()
-        },
-        zero_output_streak,
-        last_consumed_work_version,
-        &wake_policy,
-        &mut wake_backoff,
-    )? {
-        IdleMemberWake::Work(claimed) => {
-            wake_backoff.reset();
-            last_consumed_work_version = Some(claimed.work.version);
-            let work_envelope = member_work_collaboration_envelope(
-                ledger,
-                context.execution_space_id.as_deref(),
-                project_id,
-                project_selector,
-                &member_row,
-                Some(&claimed.work),
-            )?;
-            prompt_text =
-                work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope);
-            active_work = Some(*claimed);
-        }
-        IdleMemberWake::ActiveWorkContinuation(work) => {
-            last_consumed_work_version = Some(work.version);
-            let work_envelope = member_work_collaboration_envelope(
-                ledger,
-                context.execution_space_id.as_deref(),
-                project_id,
-                project_selector,
-                &member_row,
-                Some(&work),
-            )?;
-            prompt_text =
-                active_work_continuation_prompt(objective, &member_row, &work, &work_envelope);
-            active_work = None;
-        }
-        IdleMemberWake::Messages(messages) => {
-            prompt_text = String::from(
-                "TEAM MESSAGES arrived. They are conversation, not Work ownership. \
-                 Address the question or coordination request, and use the Works \
-                 board for any durable responsibility.\n\n",
-            );
-            for message in &messages {
-                prompt_text.push_str(&format!(
-                    "--- {} ({}, correlation_id={}) ---\n{}\n\n",
-                    message.sender_runtime_id,
-                    team_message_kind_label(&message.kind),
-                    message.correlation_id,
-                    message.body
-                ));
-            }
-            accepted_messages = messages;
-        }
-        IdleMemberWake::Closed => {
-            return Ok(MemberOutcome::new(
-                &member_row,
-                MemberRunStatus::Stopped,
-                "Pi member runtime closed by Host".to_string(),
-            ));
-        }
-        IdleMemberWake::TestRetired => {
-            return Ok(MemberOutcome::new(
-                &member_row,
-                MemberRunStatus::Idle,
-                "Pi member test runtime retired while idle".to_string(),
-            ));
-        }
-        IdleMemberWake::Degraded(reason) => {
-            return Ok(MemberOutcome::new(
-                &member_row,
-                MemberRunStatus::Blocked,
-                format!("Pi member degraded: {reason}"),
-            ));
-        }
-    }
-
-    loop {
-        round += 1;
-        let prompt = prompt_text.clone();
-        let source_record_id = active_work
-            .as_ref()
-            .map(|claimed| claimed.delivery.id.as_str())
-            .or_else(|| accepted_messages.last().map(|message| message.id.as_str()))
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("continuation:{}:{round}", member_row.id));
-        let source_record_id = format!("{source_record_id}:turn:{round}");
-        let effect = prepare_provider_effect(ledger, &member_row, &source_record_id, &prompt)?;
-        let mut pending_control_effect: Option<
-            Box<crate::provider_adapter::PendingProviderControl>,
-        > = None;
-        let mut control_prepare_error: Option<String> = None;
-
-        let turn_result = {
-            let _turn_lease = turn_leases.acquire();
-            let _live_turn_guard = LiveProviderTurnGuard::new(
-                live_sink.clone(),
-                ledger.run_id.clone(),
-                member.id.clone(),
-            );
-            pi_client.prompt(
-                &prompt,
-                idle_timeout,
-                |event| {
-                    if let Some((kind, preview)) = pi_rpc::PiRpcClient::project_live(event) {
-                        if let Some(sink) = &live_sink {
-                            emit_live_provider_activity(sink, ledger, member, kind, preview);
-                        }
-                    }
-                },
-                || {
-                    while let Ok(command) = live_control.try_recv() {
-                        match command {
-                            MemberControlCommand::Close { reason, .. } => {
-                                let mut close = false;
-                                let mut interrupt = false;
-                                let mut adapter = crate::provider_adapter::PiNativeControl {
-                                    close: &mut close,
-                                    interrupt: &mut interrupt,
-                                };
-                                match crate::provider_adapter::execute_team_control(
-                                    ledger,
-                                    &member_row,
-                                    &format!("pi-close:{}:{round}", member.id),
-                                    &reason,
-                                    true,
-                                    &mut adapter,
-                                ) {
-                                    Ok(
-                                        crate::provider_adapter::ProviderControlDispatch::Pending(
-                                            pending,
-                                        ),
-                                    ) => pending_control_effect = Some(pending),
-                                    Ok(
-                                        crate::provider_adapter::ProviderControlDispatch::Replayed,
-                                    ) => {}
-                                    Err(error) => control_prepare_error = Some(error.to_string()),
-                                }
-                                return (close, interrupt);
-                            }
-                            MemberControlCommand::Interrupt { reason, .. } => {
-                                let mut close = false;
-                                let mut interrupt = false;
-                                let mut adapter = crate::provider_adapter::PiNativeControl {
-                                    close: &mut close,
-                                    interrupt: &mut interrupt,
-                                };
-                                match crate::provider_adapter::execute_team_control(
-                                    ledger,
-                                    &member_row,
-                                    &format!("pi-interrupt:{}:{round}", member.id),
-                                    &reason,
-                                    false,
-                                    &mut adapter,
-                                ) {
-                                    Ok(
-                                        crate::provider_adapter::ProviderControlDispatch::Pending(
-                                            pending,
-                                        ),
-                                    ) => pending_control_effect = Some(pending),
-                                    Ok(
-                                        crate::provider_adapter::ProviderControlDispatch::Replayed,
-                                    ) => {}
-                                    Err(error) => control_prepare_error = Some(error.to_string()),
-                                }
-                                return (close, interrupt);
-                            }
-                            _ => {}
-                        }
-                    }
-                    (false, false)
-                },
-            )
-        };
-        let turn = match turn_result {
-            Ok(turn) => {
-                settle_provider_effect(
-                    ledger,
-                    &effect,
-                    true,
-                    Some(serde_json::json!({
-                        "provider": "pi",
-                        "round": round,
-                        "session_file": pi_client.session_file(),
-                    })),
-                    None,
-                )?;
-                turn
-            }
-            Err(error) => {
-                crate::provider_adapter::settle_optional_team_control_without_terminal_ack(
-                    ledger,
-                    &mut pending_control_effect,
-                )?;
-                settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
-                return Err(error);
-            }
-        };
-        if let Some(error) = control_prepare_error {
-            crate::provider_adapter::settle_optional_team_control_without_terminal_ack(
-                ledger,
-                &mut pending_control_effect,
-            )?;
-            return Err(CliError::Usage(error));
-        }
-        if let Some(pending) = pending_control_effect.take() {
-            crate::provider_adapter::settle_team_control(
-                ledger,
-                &pending,
-                turn.interrupted.then_some("interrupted"),
-            )?;
-        }
-
-        require_provider_session_authority(ledger, &member.agent_member_id, true)?;
-        // Update native session ref with current session file.
-        let expected = member_row.clone();
-        member_row.native_session = Some(native_session_ref(
-            &member_row,
-            pi_client.session_file(),
-            "pi_session",
-        ));
-        ledger.save_member_run(&expected, &member_row)?;
-
-        let receipt = format!("pi:{}:round-{round}", pi_client.session_file());
-        if let Some(claimed) = active_work.as_ref() {
-            ledger.complete_work_delivery(claimed, &receipt)?;
-        }
-        drop(active_work.take());
-        for message in &accepted_messages {
-            mark_message_delivered(ledger, message, &member.id, &member.name, &receipt)?;
-        }
-        accepted_messages.clear();
-
-        if turn.interrupted {
-            let expected = member_row.clone();
-            let interruption_summary = if turn.close_requested_by_harness {
-                "The Host explicitly closed the Pi member runtime."
-            } else {
-                "The operator or Lead interrupted the active Pi turn."
-            };
-            if turn.close_requested_by_harness {
-                transition_provider_session_for_member(
-                    ledger,
-                    &member_row,
-                    harness_core::agentfirm_api::AgentSessionStatus::Idle,
-                )?;
-                member_row.coordination_status = MemberCoordinationStatus::Closed;
-            }
-            member_row.status = if turn.close_requested_by_harness {
-                MemberRunStatus::Stopped
-            } else {
-                MemberRunStatus::Idle
-            };
-            member_row.finished_at = turn.close_requested_by_harness.then(now_string);
-            member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(&expected, &member_row)?;
-            ledger.append_action(
-                &member.id,
-                if turn.close_requested_by_harness {
-                    "closed"
-                } else {
-                    "interrupted"
-                },
-                MemberActionStatus::Cancelled,
-                if turn.close_requested_by_harness {
-                    "member runtime closed"
-                } else {
-                    "provider turn interrupted"
-                },
-                interruption_summary,
-            )?;
-            if turn.close_requested_by_harness {
-                drop(live_control_registration.take());
-                return Ok(MemberOutcome::new(
-                    &member_row,
-                    MemberRunStatus::Stopped,
-                    "Pi member runtime closed by Host".to_string(),
-                ));
-            }
-        } else {
-            let final_text = turn.final_text;
-            let is_zero_output = final_text.trim().is_empty() && turn.tool_call_count == 0;
-            if is_zero_output {
-                zero_output_streak += 1;
-            } else {
-                zero_output_streak = 0;
-            }
-            let action_status = if is_zero_output {
-                MemberActionStatus::Failed
-            } else {
-                let result = parse_round_result(&final_text);
-                if result == MemberRoundResult::Done {
-                    MemberActionStatus::Succeeded
-                } else {
-                    MemberActionStatus::Failed
-                }
-            };
-            let round_summary =
-                provider_turn_coordination_summary("Pi", round, !final_text.trim().is_empty());
-            let action = ledger.append_action(
-                &member.id,
-                "turn_completed",
-                action_status,
-                &format!("Pi provider round {round} completed"),
-                &round_summary,
-            )?;
-            ledger.fold_event(
-                TeamRunEventSourceKind::Member,
-                Some(member.id.clone()),
-                "action",
-                &action.id,
-                "created",
-                &format!("{} completed provider round {round}", member.name),
-            )?;
-
-            let expected = member_row.clone();
-            member_row.zero_output_streak = zero_output_streak;
-            member_row.last_consumed_work_version = last_consumed_work_version;
-            member_row.status = MemberRunStatus::Idle;
-            member_row.finished_at = None;
-            member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(&expected, &member_row)?;
-            ledger.fold_event(
-                TeamRunEventSourceKind::Member,
-                Some(member.id.clone()),
-                "member_run",
-                &member.id,
-                "updated",
-                &format!("member {} idle after round {round}", member.name),
-            )?;
-        }
-
-        match wait_for_idle_member_wake(
-            ledger,
-            &mut member_row,
-            &live_control,
-            || {
-                require_provider_session_authority(ledger, &member.agent_member_id, false)?;
-                pi_client.ensure_transport_alive()
-            },
-            zero_output_streak,
-            last_consumed_work_version,
-            &wake_policy,
-            &mut wake_backoff,
-        )? {
-            IdleMemberWake::Work(claimed) => {
-                wake_backoff.reset();
-                last_consumed_work_version = Some(claimed.work.version);
-                let work_envelope = member_work_collaboration_envelope(
-                    ledger,
-                    context.execution_space_id.as_deref(),
-                    project_id,
-                    project_selector,
-                    &member_row,
-                    Some(&claimed.work),
-                )?;
-                prompt_text =
-                    work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope);
-                active_work = Some(*claimed);
-            }
-            IdleMemberWake::ActiveWorkContinuation(work) => {
-                last_consumed_work_version = Some(work.version);
-                let work_envelope = member_work_collaboration_envelope(
-                    ledger,
-                    context.execution_space_id.as_deref(),
-                    project_id,
-                    project_selector,
-                    &member_row,
-                    Some(&work),
-                )?;
-                prompt_text =
-                    active_work_continuation_prompt(objective, &member_row, &work, &work_envelope);
-                active_work = None;
-            }
-            IdleMemberWake::Messages(messages) => {
-                prompt_text = String::from(
-                    "TEAM MESSAGES arrived. They are conversation, not Work ownership. \
-                     Address the question or coordination request, and use the Works \
-                     board for any durable responsibility.\n\n",
-                );
-                for message in &messages {
-                    prompt_text.push_str(&format!(
-                        "--- {} ({}, correlation_id={}) ---\n{}\n\n",
-                        message.sender_runtime_id,
-                        team_message_kind_label(&message.kind),
-                        message.correlation_id,
-                        message.body
-                    ));
-                }
-                accepted_messages = messages;
-                active_work = None;
-            }
-            IdleMemberWake::Closed => {
-                return Ok(MemberOutcome::new(
-                    &member_row,
-                    MemberRunStatus::Stopped,
-                    "Pi member runtime closed by Host".to_string(),
-                ));
-            }
-            IdleMemberWake::TestRetired => {
-                return Ok(MemberOutcome::new(
-                    &member_row,
-                    MemberRunStatus::Idle,
-                    "Pi member test runtime retired while idle".to_string(),
-                ));
-            }
-            IdleMemberWake::Degraded(reason) => {
-                return Ok(MemberOutcome::new(
-                    &member_row,
-                    MemberRunStatus::Blocked,
-                    format!("Pi member degraded: {reason}"),
-                ));
-            }
-        }
-    }
+        Some(registration),
+    )
 }
 
 /// Journal a member failure on any error path (best-effort: we are already on
@@ -56406,6 +56132,10 @@ mod tests_team_run_recover {
                     observes_native_subagents: false,
                     observes_background_tasks: false,
                     thinking_transient_only: true,
+                    control_topology: ControlTopology::default(),
+                    composition_fingerprint: None,
+                    adapter_bridge_revision: None,
+                    security_enforcement_locus: SecurityEnforcementLocus::default(),
                 })
             } else {
                 None
