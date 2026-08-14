@@ -1,0 +1,1 @@
+{"id":"cancel-1","delegation_id":"delegation-1","requested_by":{"kind":"agent_member","id":"host-a"},"reason":"priorities changed","state":"pending","revision":1,"created_at":"now","updated_at":"now"}

@@ -19,15 +19,14 @@
     "agentWorkspaceData":{
       "type":"object",
       "additionalProperties":false,
-      "required":["projection_scope","team","selected_agent","roster","sessions","selected_session_id","session_activity","messages","works","configuration","context_summary"],
+      "required":["projection_scope","team","selected_agent","roster","messages","works","configuration","context_summary"],
       "properties":{
         "projection_scope":{"enum":["member_self_private","host_self_private","host_member_public"]},
         "team":{"$ref":"#/$defs/team"},
         "selected_agent":{"$ref":"#/$defs/selectedAgent"},
         "roster":{"type":"array","items":{"$ref":"#/$defs/rosterAgent"}},
-        "sessions":{"type":"array","items":{"$ref":"#/$defs/session"}},
-        "selected_session_id":{"type":["string","null"]},
-        "session_activity":{"$ref":"#/$defs/nativeActivity"},
+        "session_event_projection":{"$ref":"https://agentfirm.local/schemas/provider-events/session-event-projection.schema.json"},
+        "live_provider_activity":{"anyOf":[{"$ref":"https://agentfirm.local/schemas/provider-events/live-provider-activity.schema.json"},{"type":"null"}]},
         "messages":{"type":"array","items":{"$ref":"common.schema.json#/$defs/messageSummary"}},
         "works":{"type":"array","items":{"$ref":"common.schema.json#/$defs/workSummary"}},
         "configuration":{"$ref":"#/$defs/configuration"},
@@ -37,13 +36,13 @@
     "memberSelfPrivateData":{
       "allOf":[
         {"$ref":"#/$defs/agentWorkspaceData"},
-        {"type":"object","properties":{"projection_scope":{"const":"member_self_private"}}}
+        {"type":"object","required":["session_event_projection","live_provider_activity"],"properties":{"projection_scope":{"const":"member_self_private"},"session_event_projection":{"$ref":"https://agentfirm.local/schemas/provider-events/session-event-projection.schema.json"},"live_provider_activity":{"anyOf":[{"$ref":"https://agentfirm.local/schemas/provider-events/live-provider-activity.schema.json"},{"type":"null"}]}}}
       ]
     },
     "hostSelfPrivateData":{
       "allOf":[
         {"$ref":"#/$defs/agentWorkspaceData"},
-        {"type":"object","properties":{"projection_scope":{"const":"host_self_private"}}}
+        {"type":"object","required":["session_event_projection","live_provider_activity"],"properties":{"projection_scope":{"const":"host_self_private"},"session_event_projection":{"$ref":"https://agentfirm.local/schemas/provider-events/session-event-projection.schema.json"},"live_provider_activity":{"type":"null"}}}
       ]
     },
     "hostMemberPublicData":{
@@ -54,9 +53,8 @@
           "properties":{
             "projection_scope":{"const":"host_member_public"},
             "selected_agent":{"$ref":"#/$defs/publicSelectedAgent"},
-            "sessions":{"type":"array","maxItems":0},
-            "selected_session_id":{"type":"null"},
-            "session_activity":{"$ref":"#/$defs/publicNativeActivity"},
+            "session_event_projection":false,
+            "live_provider_activity":false,
             "configuration":{"$ref":"#/$defs/publicConfiguration"}
           }
         }
@@ -94,41 +92,6 @@
       "type":"object","additionalProperties":false,
       "required":["agent_member_ref","display_name","role","organization_status","coordination_status","capacity","active_work_count","queued_work_count","review_work_count","blocked_work_count","is_host"],
       "properties":{"agent_member_ref":{"$ref":"common.schema.json#/$defs/targetRef"},"display_name":{"type":"string"},"role":{"type":"string"},"organization_status":{"type":"string"},"coordination_status":{"type":["string","null"]},"capacity":{"type":"string"},"runtime_state":{"type":["string","null"]},"active_work_count":{"type":"integer"},"queued_work_count":{"type":"integer"},"review_work_count":{"type":"integer"},"blocked_work_count":{"type":"integer"},"is_host":{"type":"boolean"}}
-    },
-    "session":{
-      "type":"object","additionalProperties":false,
-      "required":["session_id","member_run_id","team_run_id","provider","execution_mode","coordination_status","runtime_status","runtime_generation","started_at","last_active_at","ended_at"],
-      "properties":{
-        "session_id":{"type":["string","null"]},"member_run_id":{"type":["string","null"]},"team_run_id":{"type":"string"},"provider":{"type":["string","null"]},"execution_mode":{"type":["string","null"]},
-        "coordination_status":{"type":"string"},"runtime_status":{"type":"string"},"runtime_generation":{"type":["integer","null"],"minimum":0},"started_at":{"type":"string"},"last_active_at":{"type":["string","null"]},"ended_at":{"type":["string","null"]}
-      }
-    },
-    "nativeActivityItem":{
-      "type":"object","additionalProperties":false,
-      "required":["event_id","kind","status","title","occurred_at"],
-      "properties":{"event_id":{"type":"string"},"kind":{"type":"string"},"status":{"type":"string"},"title":{"type":"string"},"summary":{"type":"string"},"occurred_at":{"type":["string","null"]}}
-    },
-    "nativeActivity":{
-      "type":"object","additionalProperties":false,
-      "required":["native_session_id","provider","execution_mode","availability","items","truncated","disabled_reason"],
-      "properties":{"native_session_id":{"type":["string","null"]},"provider":{"type":["string","null"]},"execution_mode":{"type":["string","null"]},"availability":{"type":"string"},"items":{"type":"array","maxItems":300,"items":{"$ref":"#/$defs/nativeActivityItem"}},"truncated":{"type":"boolean"},"disabled_reason":{"type":["string","null"]}}
-    },
-    "publicNativeActivity":{
-      "allOf":[
-        {"$ref":"#/$defs/nativeActivity"},
-        {
-          "type":"object",
-          "properties":{
-            "native_session_id":{"type":"null"},
-            "provider":{"type":"null"},
-            "execution_mode":{"type":"null"},
-            "availability":{"const":"unavailable"},
-            "items":{"type":"array","maxItems":0},
-            "truncated":{"const":false},
-            "disabled_reason":{"type":"string","minLength":1}
-          }
-        }
-      ]
     },
     "configuration":{
       "type":"object","additionalProperties":false,

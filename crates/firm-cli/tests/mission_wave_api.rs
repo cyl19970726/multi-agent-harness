@@ -1665,8 +1665,8 @@ fn http_console_delegates_native_team_run_to_node_daemon() {
         "thinking leaked into snapshot"
     );
 
-    // The external provider ingress applies the same lifecycle boundary and
-    // refuses previews once the attempt is terminal.
+    // The legacy unscoped provider ingress is retired for every payload. Live
+    // activity now enters only through the exact-AgentSession daemon bridge.
     let (status, body) = serve.post_json(
         &format!("/v1/live/member-activity?project={project_id}"),
         &serde_json::json!({
@@ -1675,7 +1675,8 @@ fn http_console_delegates_native_team_run_to_node_daemon() {
             "preview": "too late",
         }),
     );
-    assert_eq!(status, 400, "body: {body}");
+    assert_eq!(status, 410, "body: {body}");
+    assert_eq!(body["error"].as_str(), Some("retired_live_member_activity"));
     let stopped = run_firm(
         &home,
         home.base(),

@@ -16,7 +16,7 @@ use harness_core::{
 };
 
 /// An event frame sent to SSE clients. Durable frames are reconstructed by tailing
-/// project-scoped JSONL ledgers; `MemberActivity` is deliberately different: it
+/// project-scoped JSONL ledgers; `LiveProviderActivity` is deliberately different: it
 /// is a direct-only, volatile display signal and is never replayed from a ledger.
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
@@ -61,7 +61,7 @@ pub enum SseEventFrame {
     /// never written to JSONL, included in snapshots, or replayed to a later
     /// subscriber. Callers must not place provider thinking or other durable
     /// claims here.
-    MemberActivity(serde_json::Value),
+    LiveProviderActivity(serde_json::Value),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -79,6 +79,13 @@ pub struct ProjectionInvalidation {
 #[derive(Clone)]
 struct SseClient {
     company_scope_id: Option<String>,
+    /// Exact authenticated AgentIdentity eligible to receive its own private
+    /// process-memory provider overlay. Team Host authority is intentionally
+    /// not represented here and cannot widen this identity.
+    private_agent_identity_id: Option<String>,
+    /// Project Binding is independent from the Execution Space channel key.
+    /// A private overlay must match both axes before delivery.
+    private_project_binding_id: Option<String>,
     sender: Sender<SseEventFrame>,
 }
 
@@ -121,6 +128,16 @@ impl SseManager {
         execution_space_id: &str,
         company_scope_id: Option<&str>,
     ) -> Receiver<SseEventFrame> {
+        self.subscribe_scoped_private(execution_space_id, company_scope_id, None, None)
+    }
+
+    pub fn subscribe_scoped_private(
+        &self,
+        execution_space_id: &str,
+        company_scope_id: Option<&str>,
+        private_agent_identity_id: Option<&str>,
+        private_project_binding_id: Option<&str>,
+    ) -> Receiver<SseEventFrame> {
         let (tx, rx) = bounded(100); // Buffered channel
         let mut clients = self.clients.lock().unwrap();
         clients
@@ -128,6 +145,8 @@ impl SseManager {
             .or_default()
             .push(SseClient {
                 company_scope_id: company_scope_id.map(str::to_string),
+                private_agent_identity_id: private_agent_identity_id.map(str::to_string),
+                private_project_binding_id: private_project_binding_id.map(str::to_string),
                 sender: tx,
             });
         rx
@@ -203,8 +222,26 @@ impl SseManager {
     /// subscribers of one project. Unlike the durable frame variants, this
     /// deliberately has no watched file: reconnecting clients do not receive a
     /// replay and the activity is not part of any persisted product contract.
-    pub fn broadcast_member_activity(&self, project_id: &str, activity: serde_json::Value) {
-        self.broadcast(project_id, SseEventFrame::MemberActivity(activity));
+    pub fn broadcast_live_provider_activity(
+        &self,
+        execution_space_id: &str,
+        project_binding_id: &str,
+        owner_agent_identity_id: &str,
+        activity: serde_json::Value,
+    ) {
+        let frame = SseEventFrame::LiveProviderActivity(activity);
+        let mut clients = self.clients.lock().unwrap();
+        if let Some(subscribers) = clients.get_mut(execution_space_id) {
+            subscribers.retain(|client| {
+                if client.private_agent_identity_id.as_deref() == Some(owner_agent_identity_id)
+                    && client.private_project_binding_id.as_deref() == Some(project_binding_id)
+                {
+                    client.sender.try_send(frame.clone()).is_ok()
+                } else {
+                    true
+                }
+            });
+        }
     }
 
     /// Return number of currently connected clients for a project (for debugging).
@@ -664,7 +701,7 @@ fn emit_invalidation(
 /// Keep the incremental SSE read model aligned with the snapshot projection:
 /// legacy/manual reasoning actions are not product-visible durable state, even
 /// if an old ledger row still contains them. Provider thinking belongs only in
-/// the direct-only `MemberActivity` stream.
+/// the direct-only `LiveProviderActivity` stream.
 fn member_action_frames(line: &str) -> Vec<SseEventFrame> {
     serde_json::from_str::<MemberAction>(line)
         .ok()
@@ -1929,34 +1966,79 @@ mod tests {
         std::fs::remove_dir_all(&root).expect("cleanup");
     }
 
-    /// Transient member activity is sent only to currently connected clients of
-    /// its project. It must not be attached to WATCHED_FILES, because doing so
-    /// would make it persisted/replayable rather than an honest live display.
+    /// Transient provider activity is sent only to the current exact owner in
+    /// its project. A same-project Host, sibling, anonymous subscriber, later
+    /// owner subscriber, and other project all receive no replay or payload.
     #[test]
-    fn member_activity_is_direct_only_and_project_isolated() {
+    fn live_provider_activity_is_direct_only_and_project_isolated() {
         let manager = SseManager::new();
-        let rx_a = manager.subscribe("proj-a");
-        let rx_b = manager.subscribe("proj-b");
+        let owner = manager.subscribe_scoped_private(
+            "space-a",
+            None,
+            Some("agent-owner"),
+            Some("project-a"),
+        );
+        let host = manager.subscribe_scoped_private(
+            "space-a",
+            None,
+            Some("agent-host"),
+            Some("project-a"),
+        );
+        let other_binding = manager.subscribe_scoped_private(
+            "space-a",
+            None,
+            Some("agent-owner"),
+            Some("project-b"),
+        );
+        let anonymous = manager.subscribe("space-a");
+        let other_project = manager.subscribe_scoped_private(
+            "space-b",
+            None,
+            Some("agent-owner"),
+            Some("project-a"),
+        );
         let activity = serde_json::json!({
             "member_run_id": "mrun-a",
             "status": "working",
             "summary": "Reading the current implementation"
         });
 
-        manager.broadcast_member_activity("proj-a", activity.clone());
-        let late_subscriber = manager.subscribe("proj-a");
+        manager.broadcast_live_provider_activity(
+            "space-a",
+            "project-a",
+            "agent-owner",
+            activity.clone(),
+        );
+        let late_owner = manager.subscribe_scoped_private(
+            "space-a",
+            None,
+            Some("agent-owner"),
+            Some("project-a"),
+        );
 
-        match rx_a.try_recv() {
-            Ok(SseEventFrame::MemberActivity(value)) => assert_eq!(value, activity),
-            other => panic!("project A should receive its transient activity, got {other:?}"),
+        match owner.try_recv() {
+            Ok(SseEventFrame::LiveProviderActivity(value)) => assert_eq!(value, activity),
+            other => panic!("exact owner should receive transient activity, got {other:?}"),
         }
         assert!(
-            rx_b.try_recv().is_err(),
-            "project B must not see project A transient activity"
+            host.try_recv().is_err(),
+            "Host must not see Member-private live activity"
         );
         assert!(
-            late_subscriber.try_recv().is_err(),
-            "a later subscriber must not receive replayed member activity"
+            anonymous.try_recv().is_err(),
+            "anonymous stream must not see private activity"
+        );
+        assert!(
+            other_binding.try_recv().is_err(),
+            "another Project Binding in the same Execution Space must not see activity"
+        );
+        assert!(
+            other_project.try_recv().is_err(),
+            "another project must not see activity"
+        );
+        assert!(
+            late_owner.try_recv().is_err(),
+            "a later owner subscriber receives no replay"
         );
         assert!(
             !WATCHED_FILES

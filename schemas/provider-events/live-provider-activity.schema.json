@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.local/schemas/provider-events/live-provider-activity.schema.json",
+  "title": "LiveProviderActivity",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "durability", "replayable", "execution_space_id", "project_id", "team_run_id", "member_run_id", "agent_session_id", "agent_session_generation", "runtime_snapshot_locator", "expires_unix_ms", "items"],
+  "properties": {
+    "schema_version": {"const": "agentfirm.live_provider_activity.v1"},
+    "durability": {"const": "volatile_process_memory"},
+    "replayable": {"const": false},
+    "execution_space_id": {"type": "string", "minLength": 1},
+    "project_id": {"type": "string", "minLength": 1},
+    "team_run_id": {"type": "string", "minLength": 1},
+    "member_run_id": {"type": "string", "minLength": 1},
+    "agent_session_id": {"type": "string", "minLength": 1},
+    "agent_session_generation": {"type": "integer", "minimum": 1},
+    "runtime_snapshot_locator": {"type": "string", "pattern": "^runtime-snapshot-[0-9]+$", "description": "Opaque process-local locator; never stable history or replay identity."},
+    "expires_unix_ms": {"type": "integer", "minimum": 1},
+    "items": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runtime_event_locator", "kind", "provider", "display_summary", "emitted_unix_ms", "expires_unix_ms"],
+        "properties": {
+          "runtime_event_locator": {"type": "string", "pattern": "^runtime-event-[0-9]+$", "description": "Opaque process-local locator; never stable history or replay identity."},
+          "kind": {"enum": ["thinking", "response_streaming", "tool_started", "tool_completed", "tool_failed", "interaction_waiting"]},
+          "provider": {"enum": ["codex", "claude", "kimi", "pi"]},
+          "display_summary": {"type": "string", "minLength": 1, "maxLength": 240},
+          "emitted_unix_ms": {"type": "integer", "minimum": 1},
+          "expires_unix_ms": {"type": "integer", "minimum": 1}
+        }
+      }
+    }
+  }
+}

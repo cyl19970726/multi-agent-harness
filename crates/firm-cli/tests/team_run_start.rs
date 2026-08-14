@@ -641,8 +641,9 @@ fn team_run_start_leaves_kimi_members_idle_until_host_close() {
         "the adapter must not turn provider completion into a Handoff: {messages:?}"
     );
 
-    // Harness keeps only the explicit round outcome. Provider progress, tool
-    // activity, command details, and reasoning remain in Kimi's native session.
+    // Harness keeps only the coordination fact that a round ended. Provider
+    // response, progress, tool activity, command details, and reasoning remain
+    // in Kimi's native session.
     let actions = store_rows(&home, &project_id, "member_actions.jsonl");
     for member_id in &member_ids {
         let of_member: Vec<&str> = actions
@@ -790,7 +791,7 @@ fn kimi_can_send_work_linked_progress_after_first_acp_acceptance() {
 }
 
 #[test]
-fn kimi_concatenated_acp_report_persists_only_the_terminal_contract() {
+fn kimi_concatenated_acp_report_remains_provider_native() {
     let home = TempHome::new("team-run-kimi-concatenated-report");
     let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -845,13 +846,10 @@ fn kimi_concatenated_acp_report_persists_only_the_terminal_contract() {
             })
             .expect("explicit member outcome");
         let body = completed["summary"].as_str().expect("outcome summary");
+        assert!(body.contains("transcript remains provider-native"));
         assert!(
-            body.contains("fake member finished round"),
-            "the durable outcome must use the terminal report: {body:?}"
-        );
-        assert!(
-            !body.contains("ordinary narration"),
-            "interim ACP narration must remain provider-native: {body:?}"
+            !body.contains("ordinary narration") && !body.contains("fake member finished round"),
+            "all provider-authored response text must remain provider-native: {body:?}"
         );
     }
 }
@@ -1802,19 +1800,20 @@ fn blocked_provider_outcome_leaves_member_idle_and_supervisor_can_reattach() {
         "members stay idle after reporting blocked: {members:?}"
     );
 
-    // A provider-authored `RESULT blocked` is a failed provider turn summary,
-    // not an implicit Work transition. The member must call `work block`
+    // A provider-authored `RESULT blocked` is a failed provider turn fact, not
+    // an implicit Work transition. The member must call `work block`
     // explicitly for the shared board to enter Blocked.
     let actions = store_rows(&home, &project_id, "member_actions.jsonl");
     assert!(
         actions.iter().any(|action| {
             action["action_type"].as_str() == Some("turn_completed")
                 && action["status"].as_str() == Some("failed")
-                && action["summary"]
-                    .as_str()
-                    .is_some_and(|summary| summary.contains("fake member finished round"))
+                && action["summary"].as_str().is_some_and(|summary| {
+                    summary.contains("transcript remains provider-native")
+                        && !summary.contains("fake member finished round")
+                })
         }),
-        "blocked report remains an explicit failed provider turn: {actions:?}"
+        "blocked report remains provider-native while the failed turn fact is durable: {actions:?}"
     );
 
     let runs = store_rows(&home, &project_id, "team_runs.jsonl");

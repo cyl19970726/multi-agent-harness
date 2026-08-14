@@ -18,9 +18,12 @@ harness_store = { package = "firm-store", path = "../firm-store" }
 harness_fabric = { package = "firm-fabric", path = "../firm-fabric" }
 harness_workflow = { package = "firm-workflow", path = "../firm-workflow" }
 harness_governance = { package = "firm-governance", path = "../firm-governance" }
+harness_provider_events = { package = "firm-provider-events", path = "../firm-provider-events" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+hmac.workspace = true
+sha2.workspace = true
 crossbeam = "0.8"
 notify = "6.1"
 

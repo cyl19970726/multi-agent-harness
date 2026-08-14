@@ -4160,6 +4160,77 @@
       ]
     },
     {
+      "path": "docs/current/architecture/cross-machine-team-collaboration.md",
+      "ownerRole": "architecture",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "cross-machine flat Team collaboration authority",
+        "WorkDelegation, Message, publication and artifact ownership boundaries"
+      ],
+      "dependsOn": [
+        "docs/current/architecture/remote-node-fabric.md",
+        "docs/current/architecture/data-model.md",
+        "docs/current/architecture/agent-runtime.md"
+      ],
+      "machineConsumers": [
+        "check-collaboration-foundation",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-11-13",
+      "lastVerifiedWith": [
+        "pnpm check:collaboration-foundation"
+      ],
+      "reorgTrigger": "Collaboration authority, routed business registry, Team placement or Message/Delivery ownership changes.",
+      "authorityClass": "canonical_contract",
+      "implementationState": "implemented",
+      "truthRefs": [
+        {
+          "kind": "api",
+          "ref": "crates/firm-store/src/collaboration.rs"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/firm-store/tests/cross_machine_collaboration.rs"
+        }
+      ]
+    },
+    {
+      "path": "docs/current/operations/cross-machine-collaboration.md",
+      "ownerRole": "operator",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "cross-machine collaboration operation and recovery procedure",
+        "real two-Mac collaboration acceptance boundary"
+      ],
+      "dependsOn": [
+        "docs/current/architecture/cross-machine-team-collaboration.md",
+        "docs/current/operations/remote-fabric-operations.md"
+      ],
+      "machineConsumers": [
+        "check-collaboration-foundation",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-11-13",
+      "lastVerifiedWith": [
+        "pnpm acceptance:cross-machine-collaboration"
+      ],
+      "reorgTrigger": "Two-Mac topology, collaboration recovery or evidence requirements change.",
+      "authorityClass": "implementation_reference",
+      "implementationState": "implemented",
+      "truthRefs": [
+        {
+          "kind": "api",
+          "ref": "crates/firm-cli/src/fabric_runtime.rs"
+        },
+        {
+          "kind": "test",
+          "ref": "scripts/acceptance-cross-machine-collaboration.mjs"
+        }
+      ]
+    },
+    {
       "path": "docs/decisions/0055-remote-node-fabric.md",
       "ownerRole": "architecture",
       "status": "stable",

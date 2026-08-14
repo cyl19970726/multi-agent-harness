@@ -1038,10 +1038,12 @@ function SurfaceSwitch({
         <WorkflowsList {...shared} />
       );
     case "team":
-      return selection.teamId ? (
-        <TeamWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} teamId={selection.teamId} refreshKey={model.snapshot.generated_at} selection={selection} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} agentWorkspaceActionsEnabled={actionsEnabled} onSelectionChange={onSelectionChange} />
+      return selection.teamConversation && (selection.teamId||selection.memberRunId) ? (
+        <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} routeIdentity={selection.teamId??selection.memberRunId!} selection={selection} refreshKey={model.snapshot.generated_at} onAction={onRoleAction} actionsEnabled={actionsEnabled} onSelectionChange={onSelectionChange}/>
+      ) : selection.teamId ? (
+        <TeamWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} teamId={selection.teamId} refreshKey={model.snapshot.generated_at} selection={selection} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} agentWorkspaceActionsEnabled={actionsEnabled} onSelectionChange={onSelectionChange} />
       ) : selection.memberRunId ? (
-        <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} routeIdentity={selection.memberRunId} selection={selection} refreshKey={model.snapshot.generated_at} onAction={onRoleAction} actionsEnabled={actionsEnabled} onSelectionChange={onSelectionChange}/>
+        <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} routeIdentity={selection.memberRunId} selection={selection} refreshKey={model.snapshot.generated_at} onAction={onRoleAction} actionsEnabled={actionsEnabled} onSelectionChange={onSelectionChange}/>
       ) : (
         <AgentTeamsHome {...shared} />
       );
@@ -1064,6 +1066,7 @@ function SurfaceSwitch({
       );
   }
 }
+
 
 const offRailLabels: Partial<Record<SurfaceId, string>> = {
   team: "Agent Team",

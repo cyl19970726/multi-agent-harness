@@ -69,6 +69,43 @@ fn actor(id: &str, roles: &[&str]) -> AuthenticatedActor {
     }
 }
 
+#[test]
+fn node_local_journal_verifies_committed_wire_digest_across_defaulted_field_upgrade() {
+    let root = TestRoot::new("node-local-wire-digest-upgrade");
+    let store = NodeLocalFabricStore::open(root.path(), COMPANY, "node-a")
+        .expect("create node-local store");
+    let session = FabricSessionFence {
+        company_id: COMPANY.into(),
+        node_id: "node-a".into(),
+        node_daemon_id: "node-daemon:node-a".into(),
+        node_daemon_generation: 1,
+        gateway_generation: 1,
+        control_plane_generation: 1,
+    };
+    store.bind_gateway_session(&session).expect("write frame");
+    drop(store);
+
+    let journal = root.path().join("node-fabric-transactions.jsonl");
+    let mut frame: serde_json::Value =
+        serde_json::from_str(std::fs::read_to_string(&journal).unwrap().trim()).unwrap();
+    frame["state"]
+        .as_object_mut()
+        .unwrap()
+        .remove("ordering_tombstones");
+    let mut core = frame.clone();
+    core.as_object_mut().unwrap().remove("frame_digest");
+    frame["frame_digest"] = json!(json_digest(&core).unwrap());
+    std::fs::write(
+        &journal,
+        format!("{}\n", serde_json::to_string(&frame).unwrap()),
+    )
+    .unwrap();
+
+    let reopened = NodeLocalFabricStore::open(root.path(), COMPANY, "node-a")
+        .expect("valid historical wire digest must survive a defaulted-field upgrade");
+    assert_eq!(reopened.snapshot().unwrap().active_session, Some(session));
+}
+
 fn hello(node: &str, instance: &str, cert: &str, fingerprint: &str) -> NodeHello {
     NodeHello {
         company_id: COMPANY.into(),
@@ -345,6 +382,56 @@ fn operation_registry_requires_closed_kind_schema_and_body_scope() {
         wrong_scope
             .closed_body()
             .expect_err("body scope cannot override route scope")
+            .code,
+        FabricErrorCode::InvalidPayload
+    );
+
+    let mut collaboration = operation(3, 2);
+    let collaboration_payload = json!({"delegation_id": "delegation-1"});
+    let collaboration_payload_digest = format!(
+        "sha256:{}",
+        json_digest(&collaboration_payload).expect("collaboration payload digest")
+    );
+    collaboration.kind = COLLABORATION_BUSINESS_OPERATION_KIND.into();
+    collaboration.body_schema = COLLABORATION_BUSINESS_OPERATION_SCHEMA.into();
+    collaboration.expected_target_revision = Some(7);
+    collaboration.authorization_context = BTreeMap::from([
+        ("target_team_id".into(), "team-b".into()),
+        ("target_team_revision".into(), "9".into()),
+        ("placement_generation".into(), "1".into()),
+        (
+            "required_capability".into(),
+            "collaboration.delegation_decide".into(),
+        ),
+        ("business_actor_kind".into(), "agent_member".into()),
+        ("business_actor_id".into(), "host-b".into()),
+    ]);
+    collaboration.body = json!({
+        "business_kind": "delegation_decide",
+        "required_capability": "collaboration.delegation_decide",
+        "business_actor_kind": "agent_member",
+        "business_actor_id": "host-b",
+        "target_team_id": "team-b",
+        "target_team_revision": 9,
+        "placement_generation": 1,
+        "expected_revision": 7,
+        "payload_digest": collaboration_payload_digest,
+        "payload": collaboration_payload,
+    });
+    collaboration.body_digest = json_digest(&collaboration.body).expect("body digest");
+    assert!(matches!(
+        collaboration
+            .closed_body()
+            .expect("closed collaboration operation"),
+        ClosedOperationBody::CollaborationBusiness(_)
+    ));
+    let mut widened = collaboration;
+    widened.body["required_capability"] = json!("collaboration.artifact_grant");
+    widened.body_digest = json_digest(&widened.body).expect("widened body digest");
+    assert_eq!(
+        widened
+            .closed_body()
+            .expect_err("business kind cannot widen its capability")
             .code,
         FabricErrorCode::InvalidPayload
     );
@@ -1692,10 +1779,78 @@ fn artifact_digest_scope_encryption_and_one_use_capability_fail_closed() {
             100,
         )
         .expect("initiate artifact");
+    let scoped = control
+        .bind_collaboration_artifact_scope(
+            &writer,
+            lease.control_plane_generation,
+            &manifest.id,
+            manifest.revision,
+            "team-b",
+            "work-b",
+            BTreeSet::from(["reader".into()]),
+            100,
+        )
+        .expect("server binds exact collaboration Team/Work/readers before upload");
+    assert_eq!(scoped.source_team_id.as_deref(), Some("team-b"));
+    assert_eq!(scoped.source_work_id.as_deref(), Some("work-b"));
+    assert_eq!(
+        control.artifact_manifest(&manifest.id).unwrap(),
+        Some(scoped.clone())
+    );
+    let before_rebind = store.snapshot().unwrap();
+    assert!(control
+        .bind_collaboration_artifact_scope(
+            &writer,
+            lease.control_plane_generation,
+            &manifest.id,
+            scoped.revision,
+            "team-c",
+            "work-c",
+            BTreeSet::from(["attacker".into()]),
+            100,
+        )
+        .is_err());
+    assert_eq!(store.snapshot().unwrap(), before_rebind);
     let completed = control
         .complete_artifact(lease.control_plane_generation, &upload, bytes, 101)
         .expect("complete artifact");
     assert_eq!(completed.id, manifest.id);
+    let retained = control
+        .schedule_collaboration_artifact_retention(
+            &writer,
+            lease.control_plane_generation,
+            &manifest.id,
+            completed.revision,
+            1_000_000,
+            102,
+        )
+        .expect("safe collaboration retention anchor schedules future expiry");
+    assert_eq!(retained.expires_at_unix_ms, Some(1_000_000));
+    let delegated = control
+        .issue_delegated_download_capability(
+            &writer,
+            lease.control_plane_generation,
+            &manifest.id,
+            "reader",
+            "node-b",
+            102,
+        )
+        .expect("exact artifact initiator grants one-use download to frozen reader and Node");
+    assert_eq!(delegated.issued_to, "reader");
+    assert_eq!(delegated.node_id, "node-b");
+    let before_hostile_grant = store.snapshot().unwrap();
+    let hostile_grantor = actor("other-writer", &["artifact_write"]);
+    assert!(control
+        .issue_delegated_download_capability(
+            &hostile_grantor,
+            lease.control_plane_generation,
+            &manifest.id,
+            "reader",
+            "node-b",
+            102,
+        )
+        .is_err());
+    assert_eq!(store.snapshot().unwrap(), before_hostile_grant);
     let replay = control
         .complete_artifact(lease.control_plane_generation, &upload, bytes, 102)
         .expect_err("upload capability is one-use");
@@ -3762,6 +3917,67 @@ fn expired_ordering_tombstone_survives_replay_and_successor_before_valid_next() 
     assert_eq!(state.persisted_ordering_sequences[&second.ordering_key], 2);
     assert!(!state.inboxes.contains_key(&first.id));
     assert!(!state.results.contains_key(&first.id));
+}
+
+#[test]
+fn successor_control_plane_routes_immutable_prior_generation_operation() {
+    let target_root = TestRoot::new("successor-control-plane-target-persist");
+    let target_local =
+        NodeLocalFabricStore::open(target_root.path(), COMPANY, "node-b").expect("target store");
+    let successor = fabric_session("node-b", 7, 4);
+    target_local
+        .bind_gateway_session(&successor)
+        .expect("bind successor Control Plane session");
+
+    let mut accepted_by_predecessor = operation(2, 3);
+    accepted_by_predecessor.id = "operation-accepted-by-predecessor-control".into();
+    accepted_by_predecessor.idempotency_key = "predecessor-control".into();
+    let successor_attempt = RouteAttempt {
+        id: "attempt-successor-control".into(),
+        company_id: COMPANY.into(),
+        operation_id: accepted_by_predecessor.id.clone(),
+        attempt_no: 2,
+        target_node_id: "node-b".into(),
+        target_gateway_generation: successor.gateway_generation,
+        control_plane_generation: successor.control_plane_generation,
+        route_seq: 1,
+        ordering_seq: 1,
+        state: RouteAttemptState::Queued,
+        error_code: None,
+        effect: EffectCertainty::None,
+        started_at_unix_ms: 100,
+        ended_at_unix_ms: None,
+        schema_version: FABRIC_SCHEMA_VERSION.into(),
+    };
+
+    let (persisted, replayed) = target_local
+        .persist_inbox(
+            &successor,
+            &accepted_by_predecessor,
+            &successor_attempt,
+            101,
+        )
+        .expect("current successor attempt routes immutable predecessor operation");
+    assert!(!replayed);
+    assert_eq!(persisted.control_plane_generation, 4);
+    assert_eq!(persisted.gateway_generation, 7);
+
+    let mut stale_attempt = successor_attempt.clone();
+    stale_attempt.id = "attempt-stale-control".into();
+    stale_attempt.operation_id = "operation-stale-control".into();
+    stale_attempt.control_plane_generation = 3;
+    let mut stale_operation = accepted_by_predecessor.clone();
+    stale_operation.id = stale_attempt.operation_id.clone();
+    stale_operation.idempotency_key = "stale-control".into();
+    let before = target_local.snapshot().expect("before stale attempt");
+    let error = target_local
+        .persist_inbox(&successor, &stale_operation, &stale_attempt, 102)
+        .expect_err("stale route attempt remains fenced");
+    assert_eq!(error.code, FabricErrorCode::NodeStaleGeneration);
+    assert_eq!(
+        target_local.snapshot().expect("after stale attempt"),
+        before
+    );
 }
 
 #[test]

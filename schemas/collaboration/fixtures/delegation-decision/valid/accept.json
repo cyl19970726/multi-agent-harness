@@ -1,0 +1,1 @@
+{"id":"decision-1","delegation_id":"delegation-1","expected_delegation_revision":1,"decision":"accept","decided_by_target_host":{"kind":"agent_member","id":"host-b"},"reason":"capacity available","created_at":"2026-08-11T00:00:01Z"}

@@ -1,0 +1,3198 @@
+use firm_core::agentfirm_api::{
+    ActorKind, ActorRef, CanonicalMessageDelivery, CanonicalMessageDeliveryStatus, Message,
+    MessageAddressKind, MessageKind, MessageRecipientKind, MessageRecipientRef, ResponseIntent,
+};
+use firm_core::collaboration::{
+    ArtifactImport, CancellationDecisionKind, CancellationRequestState,
+    CollaborationRetentionAnchor, DelegationCancellationDecision, DelegationCancellationRequest,
+    DelegationDecision, DelegationDecisionKind, DelegationInboundMode, DelegationInboundPolicy,
+    DelegationState, DelegationTerminalOutcome, FabricEffectCertainty, FabricError,
+    FabricErrorCode, ImmutableMessageTransferPayload, RemoteFactKind, RemoteFactPublication,
+    RemoteFactSnapshot, RemoteMessageReplica, RemoteMessageTransferState, RemoteWorkRef,
+    RoutedBusinessKind, RoutedBusinessOperation, RoutedBusinessReceipt, SourceWorkAttestation,
+    TargetPlacementRef, WorkOperationalDecisionRef,
+};
+use firm_core::{
+    AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, Mission,
+    MissionStatus, NodeProjectRegistration, NodeProjectRegistrationStatus, TeamActorKind,
+    TeamActorRef, TeamRunStatus, WorkCommandContext,
+};
+use firm_fabric::{
+    json_digest, ActorKind as FabricActorKind, ArtifactCapability, ArtifactCapabilityPurpose,
+    ArtifactClassification, AuthenticatedActor, EffectCertainty,
+    FabricErrorCode as TransportFabricErrorCode, ReceiptKind, RemoteArtifactManifest, RouteReceipt,
+    COLLABORATION_BUSINESS_OPERATION_KIND,
+};
+use firm_store::{
+    apply_collaboration_target_operation, canonical_json_fingerprint,
+    collaboration_receipt_from_fabric, persist_verified_remote_message_replica,
+    project_cross_node_deliveries, queue_remote_message_transfer,
+    route_collaboration_business_operation, validate_message_collaboration_scope,
+    CollaborationApplicationService, CollaborationDelegationFilter, CollaborationFabricPort,
+    CollaborationFabricRouteContext, CollaborationFabricSource, CollaborationMutationContext,
+    CollaborationRouteClient, HarnessStore, ProposeDelegationRequest,
+    RemoteFabricCollaborationPort, RemoteMessageReplicaExpectation, RemoteMessageReplicaPort,
+    ResolvedCollaborationAuthority,
+};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Barrier, Mutex};
+
+static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
+const TARGET_NODE_UUID: &str = "22222222-2222-4222-8222-222222222222";
+const SOURCE_NODE_UUID: &str = "11111111-1111-4111-8111-111111111111";
+
+struct TestStore {
+    root: PathBuf,
+    store: HarnessStore,
+}
+
+#[test]
+fn source_artifact_import_is_digest_bound_durable_and_exactly_replayed() {
+    let test = TestStore::new("artifact-import");
+    active_delegation(&test.store);
+    let bytes = b"source-owned-import";
+    let digest = firm_fabric::sha256_hex(bytes);
+    let import = ArtifactImport {
+        id: "artifact-import:artifact-1".into(),
+        company_id: "company-1".into(),
+        delegation_id: "delegation-1".into(),
+        artifact_id: "artifact-1".into(),
+        artifact_digest: digest.clone(),
+        size_bytes: bytes.len() as u64,
+        source_node_id: "node-a".into(),
+        source_node_daemon_id: "daemon-a".into(),
+        source_node_daemon_generation: 9,
+        source_team_id: "team-a".into(),
+        source_host_ref: actor(ActorKind::AgentMember, "host-a"),
+        source_work_ref: source_attestation().source_work_ref,
+        operation_id: "artifact-grant-route-1".into(),
+        imported_at_unix_ms: 500,
+        revision: 1,
+    };
+    let ctx = context(
+        actor(ActorKind::Service, "daemon-a"),
+        "artifact_import.persist",
+        "artifact-grant-route-1",
+        0,
+    );
+    let committed = test
+        .store
+        .persist_collaboration_artifact_import(&ctx, &import, bytes)
+        .expect("verified bytes become canonical source import");
+    assert!(!committed.replayed);
+    assert_eq!(
+        test.store
+            .read_collaboration_artifact_import_bytes("company-1", "artifact-1")
+            .unwrap(),
+        bytes,
+    );
+    let rows = test.store.collaboration_operations().unwrap().len();
+    let replay = test
+        .store
+        .persist_collaboration_artifact_import(&ctx, &import, bytes)
+        .expect("exact replay does not download or import twice");
+    assert!(replay.replayed);
+    assert_eq!(test.store.collaboration_operations().unwrap().len(), rows);
+
+    let mut tampered = import;
+    tampered.artifact_digest = firm_fabric::sha256_hex(b"different");
+    assert!(test
+        .store
+        .persist_collaboration_artifact_import(&ctx, &tampered, bytes)
+        .is_err());
+    assert_eq!(test.store.collaboration_operations().unwrap().len(), rows);
+}
+
+#[test]
+fn source_artifact_import_uses_frozen_authority_without_copying_central_delegation() {
+    let source = TestStore::new("artifact-import-frozen-authority");
+    active_delegation(&source.store);
+    let mut delegation = source
+        .store
+        .collaboration_delegation("company-1", "delegation-1")
+        .unwrap()
+        .unwrap();
+    let attestation = source_attestation();
+    delegation.source_work_attestation_id = attestation.id.clone();
+    delegation.source_work_ref = attestation.source_work_ref.clone();
+    delegation.source_owner_ref = attestation.source_owner_ref.clone();
+    let isolated_source = TestStore::new("artifact-import-frozen-authority-empty");
+
+    let bytes = b"source-owned-import-with-frozen-authority";
+    let import = ArtifactImport {
+        id: "artifact-import:artifact-frozen".into(),
+        company_id: "company-1".into(),
+        delegation_id: delegation.id.clone(),
+        artifact_id: "artifact-frozen".into(),
+        artifact_digest: firm_fabric::sha256_hex(bytes),
+        size_bytes: bytes.len() as u64,
+        source_node_id: delegation.source_node_id.clone(),
+        source_node_daemon_id: "daemon-a".into(),
+        source_node_daemon_generation: 9,
+        source_team_id: delegation.source_team_id.clone(),
+        source_host_ref: attestation.source_host_ref.clone(),
+        source_work_ref: delegation.source_work_ref.clone(),
+        operation_id: "artifact-grant-frozen".into(),
+        imported_at_unix_ms: 600,
+        revision: 1,
+    };
+    let ctx = context(
+        actor(ActorKind::Service, "daemon-a"),
+        "artifact_import.persist",
+        "artifact-grant-frozen",
+        0,
+    );
+    let before = isolated_source.store.collaboration_operations().unwrap();
+    isolated_source
+        .store
+        .persist_collaboration_artifact_import_with_frozen_authority(
+            &ctx,
+            &import,
+            bytes,
+            &delegation,
+            &attestation,
+        )
+        .expect("source persists bytes from frozen central authority");
+    assert!(isolated_source
+        .store
+        .collaboration_delegation("company-1", &delegation.id)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        isolated_source
+            .store
+            .read_collaboration_artifact_import_bytes("company-1", "artifact-frozen")
+            .unwrap(),
+        bytes
+    );
+
+    let rows = isolated_source
+        .store
+        .collaboration_operations()
+        .unwrap()
+        .len();
+    let mut hostile = delegation;
+    hostile.source_node_id = "node-hostile".into();
+    assert!(isolated_source
+        .store
+        .persist_collaboration_artifact_import_with_frozen_authority(
+            &ctx,
+            &import,
+            bytes,
+            &hostile,
+            &attestation,
+        )
+        .is_err());
+    assert_eq!(
+        isolated_source
+            .store
+            .collaboration_operations()
+            .unwrap()
+            .len(),
+        rows
+    );
+    assert_eq!(before.len() + 1, rows);
+}
+
+#[test]
+fn control_plane_folds_exact_artifact_import_without_copying_source_bytes() {
+    let central = TestStore::new("central-artifact-import");
+    active_delegation(&central.store);
+    let bytes = b"source-only-bytes";
+    let import = ArtifactImport {
+        id: "artifact-import:artifact-2".into(),
+        company_id: "company-1".into(),
+        delegation_id: "delegation-1".into(),
+        artifact_id: "artifact-2".into(),
+        artifact_digest: firm_fabric::sha256_hex(bytes),
+        size_bytes: bytes.len() as u64,
+        source_node_id: "node-a".into(),
+        source_node_daemon_id: "daemon-a".into(),
+        source_node_daemon_generation: 9,
+        source_team_id: "team-a".into(),
+        source_host_ref: actor(ActorKind::AgentMember, "host-a"),
+        source_work_ref: source_attestation().source_work_ref,
+        operation_id: "artifact-route-2".into(),
+        imported_at_unix_ms: 501,
+        revision: 1,
+    };
+    let cp = actor(ActorKind::Service, "control-plane:1");
+    let folded = central
+        .store
+        .record_collaboration_artifact_import(
+            &context(cp.clone(), "artifact_import.fold", "fold-artifact-2", 0),
+            &import,
+            "artifact-route-2",
+            &cp,
+        )
+        .unwrap();
+    assert_eq!(folded.projection, import);
+    assert!(
+        central
+            .store
+            .read_collaboration_artifact_import_bytes("company-1", "artifact-2")
+            .is_err(),
+        "central projection must not become artifact byte authority"
+    );
+    let rows = central.store.collaboration_operations().unwrap().len();
+    let mut hostile = folded.projection;
+    hostile.source_node_daemon_generation += 1;
+    assert!(central
+        .store
+        .record_collaboration_artifact_import(
+            &context(cp.clone(), "artifact_import.fold", "fold-artifact-2", 0),
+            &hostile,
+            "artifact-route-2",
+            &cp,
+        )
+        .is_err());
+    assert_eq!(
+        central.store.collaboration_operations().unwrap().len(),
+        rows
+    );
+}
+
+impl TestStore {
+    fn new(label: &str) -> Self {
+        let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "agentfirm-wave6-{label}-{}-{id}",
+            std::process::id()
+        ));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init collaboration test store");
+        Self { root, store }
+    }
+}
+
+impl Drop for TestStore {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn actor(kind: ActorKind, id: &str) -> ActorRef {
+    ActorRef {
+        kind,
+        id: id.into(),
+    }
+}
+
+fn placement(observed_node: u64) -> TargetPlacementRef {
+    TargetPlacementRef {
+        team_id: "team-b".into(),
+        team_revision: 7,
+        node_id: if observed_node == 14 {
+            "node-c".into()
+        } else {
+            "node-b".into()
+        },
+        placement_generation: 1,
+    }
+}
+
+fn work_ref(node: &str, team: &str, work: &str, revision: u64) -> RemoteWorkRef {
+    RemoteWorkRef {
+        schema_version: "agentfirm.remote-work-ref.v1".into(),
+        execution_space_id: format!("space-{node}"),
+        node_id: node.into(),
+        team_id: team.into(),
+        team_revision: if team == "team-a" { 5 } else { 7 },
+        placement_generation: 1,
+        work_id: work.into(),
+        work_revision: revision,
+        work_event_id: format!("event-{work}-{revision}"),
+        digest: format!("sha256:{:064x}", revision),
+    }
+}
+
+fn authority() -> ResolvedCollaborationAuthority {
+    ResolvedCollaborationAuthority {
+        source_host: actor(ActorKind::AgentMember, "host-a"),
+        source_work_owner: actor(ActorKind::AgentMember, "member-a"),
+        target_host: actor(ActorKind::AgentMember, "host-b"),
+        target_placement: placement(13),
+        source_work_application_service: actor(ActorKind::Service, "source-work-service-a"),
+        source_gateway_generation: 8,
+    }
+}
+
+fn policy() -> DelegationInboundPolicy {
+    DelegationInboundPolicy {
+        id: "policy-a-b".into(),
+        company_id: "company-1".into(),
+        target_team_id: "team-b".into(),
+        source_team_id: "team-a".into(),
+        mode: DelegationInboundMode::HostApprovalRequired,
+        allowed_outcome_classes: vec!["implementation".into()],
+        max_active_delegations: 4,
+        created_by_target_host: actor(ActorKind::AgentMember, "host-b"),
+        revision: 1,
+        created_at: "2026-08-11T00:00:00Z".into(),
+        revoked_at: None,
+    }
+}
+
+fn install_policy(store: &HarnessStore) {
+    let policy = policy();
+    let host = actor(ActorKind::AgentMember, "host-b");
+    store
+        .put_collaboration_inbound_policy(
+            &context(host.clone(), "delegation.policy.put", "policy-put-1", 0),
+            &policy,
+            &host,
+        )
+        .expect("target Host canonical inbound policy");
+    let attestation = source_attestation();
+    let service = attestation.work_application_service_ref.clone();
+    store
+        .put_source_work_attestation(
+            &context(
+                service.clone(),
+                "source_work.attest",
+                "source-work-attestation-1",
+                0,
+            ),
+            &attestation,
+            &service,
+            8,
+        )
+        .expect("source WorkApplicationService canonical attestation");
+}
+
+fn seed_target_team(store: &HarnessStore) {
+    seed_team(
+        store,
+        TARGET_NODE_UUID,
+        "Node B",
+        "space-node-b",
+        "project-b",
+        "mission-b",
+        "team-b",
+        "Team B",
+        "host-b",
+        "run-b",
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn seed_team(
+    store: &HarnessStore,
+    node_id: &str,
+    node_name: &str,
+    execution_space_id: &str,
+    project_binding_id: &str,
+    mission_id: &str,
+    team_id: &str,
+    team_name: &str,
+    host_id: &str,
+    run_id: &str,
+) {
+    store
+        .insert_execution_node(&ExecutionNode {
+            id: node_id.into(),
+            display_name: node_name.into(),
+            status: ExecutionNodeStatus::Active,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        })
+        .unwrap();
+    store
+        .register_node_project(
+            &NodeProjectRegistration {
+                node_id: node_id.into(),
+                execution_space_id: execution_space_id.into(),
+                project_binding_id: project_binding_id.into(),
+                status: NodeProjectRegistrationStatus::Active,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            },
+            execution_space_id,
+        )
+        .unwrap();
+    store
+        .insert_mission(&Mission {
+            id: mission_id.into(),
+            title: format!("{team_name} Mission"),
+            objective: "Execute delegated Work".into(),
+            context: String::new(),
+            desired_outcome: None,
+            status: MissionStatus::Running,
+            wave_ids: Vec::new(),
+            outcome_summary: None,
+            completed_by: None,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+            completed_at: None,
+        })
+        .unwrap();
+    store
+        .insert_agent_team_with_unique_mission(&AgentTeam {
+            id: team_id.into(),
+            name: team_name.into(),
+            description: "Target Team".into(),
+            mission_id: mission_id.into(),
+            host_agent_id: host_id.into(),
+            node_id: node_id.into(),
+            status: AgentTeamStatus::Active,
+            member_ids: Vec::new(),
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        })
+        .unwrap();
+    store
+        .create_team_run_from_agent_team(
+            &AgentTeamRun {
+                id: run_id.into(),
+                agent_team_id: team_id.into(),
+                execution_node_id: node_id.into(),
+                project_binding_id: project_binding_id.into(),
+                previous_run_id: None,
+                host_surface: "test".into(),
+                host_thread_id: None,
+                host_actor: None,
+                host_control_mode: Default::default(),
+                objective: "Execute delegated Work".into(),
+                execution_root: None,
+                status: TeamRunStatus::Running,
+                member_run_ids: Vec::new(),
+                budget_limit_usd: None,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+                completed_at: None,
+            },
+            execution_space_id,
+        )
+        .unwrap();
+}
+
+fn context(
+    actor: ActorRef,
+    command: &str,
+    key: &str,
+    expected: u64,
+) -> CollaborationMutationContext {
+    CollaborationMutationContext {
+        company_id: "company-1".into(),
+        authenticated_actor: actor,
+        command_name: command.into(),
+        idempotency_key: key.into(),
+        expected_revision: expected,
+        occurred_at: format!("2026-08-11T00:00:{expected:02}Z"),
+    }
+}
+
+fn proposal() -> ProposeDelegationRequest {
+    ProposeDelegationRequest {
+        delegation_id: "delegation-1".into(),
+        source_work_attestation_id: "source-work-attestation-1".into(),
+        target_placement: placement(13),
+        requested_outcome: "Implement the remote component".into(),
+        outcome_class: "implementation".into(),
+        acceptance_contract: "checks and evidence are required".into(),
+        operation_id: "route-propose-1".into(),
+    }
+}
+
+fn source_attestation() -> SourceWorkAttestation {
+    let mut attestation = SourceWorkAttestation {
+        id: "source-work-attestation-1".into(),
+        company_id: "company-1".into(),
+        source_work_ref: work_ref("node-a", "team-a", "work-a", 9),
+        source_owner_ref: actor(ActorKind::AgentMember, "member-a"),
+        source_host_ref: actor(ActorKind::AgentMember, "host-a"),
+        work_application_service_ref: actor(ActorKind::Service, "source-work-service-a"),
+        source_gateway_generation: 8,
+        attestation_digest: String::new(),
+        issued_at: "2026-08-11T00:00:00Z".into(),
+    };
+    attestation.attestation_digest = canonical_json_fingerprint(&serde_json::json!({
+        "id": attestation.id,
+        "company_id": attestation.company_id,
+        "source_work_ref": attestation.source_work_ref,
+        "source_owner_ref": attestation.source_owner_ref,
+        "source_host_ref": attestation.source_host_ref,
+        "work_application_service_ref": attestation.work_application_service_ref,
+        "source_gateway_generation": attestation.source_gateway_generation,
+        "issued_at": attestation.issued_at,
+    }));
+    attestation
+}
+
+#[derive(Default)]
+struct FaithfulFabric {
+    effects: Mutex<BTreeMap<String, (String, RoutedBusinessReceipt)>>,
+}
+
+impl FaithfulFabric {
+    fn effect_count(&self) -> usize {
+        self.effects.lock().unwrap().len()
+    }
+}
+
+impl CollaborationFabricPort for FaithfulFabric {
+    fn dispatch(
+        &self,
+        operation: &RoutedBusinessOperation,
+    ) -> Result<RoutedBusinessReceipt, FabricError> {
+        let mut effects = self.effects.lock().unwrap();
+        if let Some((fingerprint, receipt)) = effects.get(&operation.id) {
+            if fingerprint != &operation.payload_digest {
+                return Err(FabricError {
+                    code: FabricErrorCode::IdempotencyConflict,
+                    message: "operation id was reused with a different payload".into(),
+                    retryable: false,
+                    effect_certainty: FabricEffectCertainty::None,
+                    resource_kind: "routed_operation".into(),
+                    resource_id: operation.id.clone(),
+                    current_revision: Some(operation.expected_revision),
+                });
+            }
+            return Ok(receipt.clone());
+        }
+        let target = work_ref("node-b", "team-b", "work-b", 1);
+        let result = serde_json::json!({"target_work_ref": target});
+        let receipt = RoutedBusinessReceipt {
+            operation_id: operation.id.clone(),
+            kind: operation.kind,
+            target_node_id: operation.target_placement.node_id.clone(),
+            target_placement_generation: operation.target_placement.placement_generation,
+            effect_certainty: FabricEffectCertainty::Applied,
+            result_digest: canonical_json_fingerprint(&result),
+            result,
+            applied_at: "2026-08-11T00:00:02Z".into(),
+        };
+        effects.insert(
+            operation.id.clone(),
+            (operation.payload_digest.clone(), receipt.clone()),
+        );
+        Ok(receipt)
+    }
+}
+
+struct UnknownFabric;
+
+impl CollaborationFabricPort for UnknownFabric {
+    fn dispatch(
+        &self,
+        operation: &RoutedBusinessOperation,
+    ) -> Result<RoutedBusinessReceipt, FabricError> {
+        Err(FabricError {
+            code: FabricErrorCode::RecoveryRequired,
+            message: "transport lost after dispatch".into(),
+            retryable: false,
+            effect_certainty: FabricEffectCertainty::Unknown,
+            resource_kind: "routed_operation".into(),
+            resource_id: operation.id.clone(),
+            current_revision: Some(operation.expected_revision),
+        })
+    }
+}
+
+#[derive(Default)]
+struct TerminalRouteClient {
+    effects: Mutex<BTreeMap<String, RouteReceipt>>,
+}
+
+impl CollaborationRouteClient for TerminalRouteClient {
+    fn route_and_reconcile(
+        &self,
+        operation: firm_fabric::RoutedOperation,
+    ) -> Result<RouteReceipt, firm_fabric::FabricError> {
+        let mut effects = self.effects.lock().unwrap();
+        if let Some(receipt) = effects.get(&operation.id) {
+            return Ok(receipt.clone());
+        }
+        let result = serde_json::json!({
+            "target_work_ref": work_ref("node-b", "team-b", "work-b", 1),
+        });
+        let receipt = RouteReceipt {
+            id: format!("receipt:{}", operation.id),
+            company_id: operation.company_id.clone(),
+            operation_id: operation.id.clone(),
+            target_node_id: operation.target_node_id,
+            target_gateway_generation: 9,
+            control_plane_generation: operation.control_plane_generation,
+            route_seq: 1,
+            kind: ReceiptKind::OperationApplied,
+            application_effect: Some(EffectCertainty::Applied),
+            result_schema: Some("agentfirm.collaboration.target_work.v1".into()),
+            result_digest: Some(json_digest(&result).unwrap()),
+            result: Some(result),
+            error: None,
+            created_at_unix_ms: 200,
+            schema_version: "agentfirm.remote_fabric.v1".into(),
+        };
+        effects.insert(operation.id, receipt.clone());
+        Ok(receipt)
+    }
+}
+
+fn active_delegation(store: &HarnessStore) -> RemoteWorkRef {
+    install_policy(store);
+    let auth = authority();
+    let request = proposal();
+    let proposed = store
+        .propose_collaboration_delegation(
+            &context(
+                auth.source_host.clone(),
+                "delegation.propose",
+                "propose-1",
+                0,
+            ),
+            &request,
+            &auth,
+            &policy(),
+        )
+        .expect("propose");
+    assert_eq!(
+        proposed.projection.state,
+        DelegationState::AwaitingTargetDecision
+    );
+
+    let decision = DelegationDecision {
+        id: "decision-accept-1".into(),
+        delegation_id: request.delegation_id.clone(),
+        expected_delegation_revision: 1,
+        decision: DelegationDecisionKind::Accept,
+        decided_by_target_host: auth.target_host.clone(),
+        reason: "capacity available".into(),
+        created_at: "2026-08-11T00:00:01Z".into(),
+    };
+    let accepted = store
+        .decide_collaboration_delegation(
+            &context(auth.target_host.clone(), "delegation.decide", "accept-1", 1),
+            &request.delegation_id,
+            &decision,
+            &auth,
+            &placement(13),
+        )
+        .expect("target Host accept");
+    assert_eq!(
+        accepted.projection.state,
+        DelegationState::ProvisioningTargetWork
+    );
+
+    let route = store
+        .target_work_create_operation("company-1", &request.delegation_id, "2026-08-11T00:00:02Z")
+        .expect("build target Work routed operation");
+    assert_eq!(route.ordering_key, "delegation:delegation-1");
+
+    let target = work_ref("node-b", "team-b", "work-b", 1);
+    let control_plane = actor(ActorKind::Service, "fabric-control-plane");
+    let active = store
+        .apply_target_work_created(
+            &context(
+                control_plane.clone(),
+                "target_work.applied",
+                "target-applied-1",
+                2,
+            ),
+            &request.delegation_id,
+            &target,
+            &placement(13),
+            &route.id,
+            &control_plane,
+        )
+        .expect("fold applied target Work result");
+    assert_eq!(active.projection.state, DelegationState::Active);
+    assert_eq!(
+        active.projection.source_work_ref,
+        source_attestation().source_work_ref
+    );
+    assert_eq!(active.projection.target_work_ref.as_ref(), Some(&target));
+    target
+}
+
+#[test]
+fn faithful_fabric_replays_exact_effect_and_unknown_never_folds_business_truth() {
+    let test = TestStore::new("faithful-fabric");
+    install_policy(&test.store);
+    let auth = authority();
+    test.store
+        .propose_collaboration_delegation(
+            &context(
+                auth.source_host.clone(),
+                "delegation.propose",
+                "fabric-propose",
+                0,
+            ),
+            &proposal(),
+            &auth,
+            &policy(),
+        )
+        .expect("fabric proposal");
+    let decision = DelegationDecision {
+        id: "fabric-accept".into(),
+        delegation_id: "delegation-1".into(),
+        expected_delegation_revision: 1,
+        decision: DelegationDecisionKind::Accept,
+        decided_by_target_host: auth.target_host.clone(),
+        reason: "accepted".into(),
+        created_at: "2026-08-11T00:00:01Z".into(),
+    };
+    test.store
+        .decide_collaboration_delegation(
+            &context(
+                auth.target_host.clone(),
+                "delegation.decide",
+                "fabric-accept",
+                1,
+            ),
+            "delegation-1",
+            &decision,
+            &auth,
+            &placement(13),
+        )
+        .expect("fabric accepted");
+
+    let route = test
+        .store
+        .target_work_create_operation("company-1", "delegation-1", "2026-08-11T00:00:02Z")
+        .unwrap();
+    assert_eq!(route.authenticated_actor, auth.target_host);
+    let route_client = TerminalRouteClient::default();
+    let remote_port = RemoteFabricCollaborationPort::new(
+        &route_client,
+        CollaborationFabricRouteContext {
+            authenticated_actor: AuthenticatedActor {
+                company_id: "company-1".into(),
+                actor_id: "node-a".into(),
+                actor_kind: FabricActorKind::Service,
+                role_bindings: BTreeSet::from(["fabric_submit".into()]),
+                session_id: "session-host-b".into(),
+                issued_at_unix_ms: 1,
+                expires_at_unix_ms: 10_000,
+            },
+            resolved_business_actor: actor(ActorKind::AgentMember, "host-b"),
+            source: CollaborationFabricSource::ControlPlane,
+            control_plane_generation: 3,
+            target_execution_space_id: Some("space-node-b".into()),
+            created_at_unix_ms: 100,
+            expires_at_unix_ms: 5_000,
+        },
+        "2026-08-11T00:00:03Z",
+    );
+    let remote_first = remote_port
+        .dispatch(&route)
+        .expect("real Wave5 route adapter");
+    let remote_replay = remote_port.dispatch(&route).expect("exact route replay");
+    assert_eq!(remote_first, remote_replay);
+    assert_eq!(route_client.effects.lock().unwrap().len(), 1);
+    let fabric = FaithfulFabric::default();
+    let first_receipt = fabric.dispatch(&route).unwrap();
+    let replay_receipt = fabric.dispatch(&route).unwrap();
+    assert_eq!(first_receipt, replay_receipt);
+    assert_eq!(fabric.effect_count(), 1);
+
+    let control_plane = actor(ActorKind::Service, "fabric-control-plane");
+    let before_hostile_fold = test.store.collaboration_operations().unwrap();
+    assert!(test
+        .store
+        .apply_target_work_created(
+            &context(
+                actor(ActorKind::Service, "forged-service"),
+                "target_work.applied",
+                "forged-fold-1",
+                2,
+            ),
+            "delegation-1",
+            &work_ref("node-b", "team-b", "work-b", 1),
+            &placement(13),
+            &route.id,
+            &control_plane,
+        )
+        .is_err());
+    assert_eq!(
+        test.store.collaboration_operations().unwrap(),
+        before_hostile_fold
+    );
+    let service = CollaborationApplicationService::new(&test.store, &fabric, &control_plane);
+    let applied = service
+        .provision_target_work(
+            &context(
+                actor(ActorKind::Service, "fabric-control-plane"),
+                "target_work.applied",
+                "fabric-fold-1",
+                2,
+            ),
+            "delegation-1",
+            &placement(13),
+        )
+        .expect("fold faithful applied receipt");
+    assert_eq!(applied.projection.state, DelegationState::Active);
+    assert_eq!(fabric.effect_count(), 1);
+
+    let second = TestStore::new("unknown-fabric");
+    install_policy(&second.store);
+    second
+        .store
+        .propose_collaboration_delegation(
+            &context(
+                auth.source_host.clone(),
+                "delegation.propose",
+                "unknown-propose",
+                0,
+            ),
+            &proposal(),
+            &auth,
+            &policy(),
+        )
+        .unwrap();
+    second
+        .store
+        .decide_collaboration_delegation(
+            &context(
+                auth.target_host.clone(),
+                "delegation.decide",
+                "unknown-accept",
+                1,
+            ),
+            "delegation-1",
+            &decision,
+            &auth,
+            &placement(13),
+        )
+        .unwrap();
+    let before = second.store.collaboration_operations().unwrap();
+    let unknown_fabric = UnknownFabric;
+    let unknown =
+        CollaborationApplicationService::new(&second.store, &unknown_fabric, &control_plane);
+    assert!(unknown
+        .provision_target_work(
+            &context(
+                actor(ActorKind::Service, "fabric-control-plane"),
+                "target_work.applied",
+                "unknown-fold-1",
+                2,
+            ),
+            "delegation-1",
+            &placement(13),
+        )
+        .is_err());
+    assert_eq!(second.store.collaboration_operations().unwrap(), before);
+    assert_eq!(
+        second.store.collaboration_delegations("company-1").unwrap()[0].state,
+        DelegationState::ProvisioningTargetWork
+    );
+}
+
+#[test]
+fn delegation_relationship_is_idempotent_placement_fenced_and_source_independent() {
+    let test = TestStore::new("delegation");
+    install_policy(&test.store);
+    let auth = authority();
+    let request = proposal();
+    let propose_context = context(
+        auth.source_host.clone(),
+        "delegation.propose",
+        "propose-1",
+        0,
+    );
+
+    let first = test
+        .store
+        .propose_collaboration_delegation(&propose_context, &request, &auth, &policy())
+        .expect("first proposal");
+    let replay = test
+        .store
+        .propose_collaboration_delegation(&propose_context, &request, &auth, &policy())
+        .expect("exact proposal replay");
+    assert!(!first.replayed);
+    assert!(replay.replayed);
+    assert_eq!(test.store.collaboration_operations().unwrap().len(), 3);
+
+    let hostile_context = context(
+        actor(ActorKind::AgentMember, "sibling-member"),
+        "delegation.decide",
+        "hostile-decide",
+        1,
+    );
+    let decision = DelegationDecision {
+        id: "decision-1".into(),
+        delegation_id: request.delegation_id.clone(),
+        expected_delegation_revision: 1,
+        decision: DelegationDecisionKind::Accept,
+        decided_by_target_host: actor(ActorKind::AgentMember, "sibling-member"),
+        reason: "spoof".into(),
+        created_at: "2026-08-11T00:00:01Z".into(),
+    };
+    let before = test.store.collaboration_operations().unwrap();
+    assert!(test
+        .store
+        .decide_collaboration_delegation(
+            &hostile_context,
+            &request.delegation_id,
+            &decision,
+            &auth,
+            &placement(13),
+        )
+        .is_err());
+    assert_eq!(test.store.collaboration_operations().unwrap(), before);
+
+    let proper_decision = DelegationDecision {
+        decided_by_target_host: auth.target_host.clone(),
+        ..decision
+    };
+    let stale_before = test.store.collaboration_operations().unwrap();
+    assert!(test
+        .store
+        .decide_collaboration_delegation(
+            &context(
+                auth.target_host.clone(),
+                "delegation.decide",
+                "stale-placement",
+                1
+            ),
+            &request.delegation_id,
+            &proper_decision,
+            &auth,
+            &placement(14),
+        )
+        .is_err());
+    assert_eq!(test.store.collaboration_operations().unwrap(), stale_before);
+}
+
+#[test]
+fn concurrent_exact_propose_replay_commits_one_relationship() {
+    let test = TestStore::new("concurrent-propose");
+    install_policy(&test.store);
+    let store = Arc::new(test.store.clone());
+    let barrier = Arc::new(Barrier::new(8));
+    let mut threads = Vec::new();
+    for _ in 0..8 {
+        let store = Arc::clone(&store);
+        let barrier = Arc::clone(&barrier);
+        threads.push(std::thread::spawn(move || {
+            let auth = authority();
+            barrier.wait();
+            store.propose_collaboration_delegation(
+                &context(
+                    auth.source_host.clone(),
+                    "delegation.propose",
+                    "concurrent-propose-1",
+                    0,
+                ),
+                &proposal(),
+                &auth,
+                &policy(),
+            )
+        }));
+    }
+    let results = threads
+        .into_iter()
+        .map(|thread| {
+            thread
+                .join()
+                .expect("proposal thread")
+                .expect("exact replay")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(results.iter().filter(|result| !result.replayed).count(), 1);
+    assert_eq!(results.iter().filter(|result| result.replayed).count(), 7);
+    assert_eq!(
+        store
+            .collaboration_operations()
+            .unwrap()
+            .iter()
+            .filter(|operation| operation.aggregate_kind == "work_delegation_v1")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn accept_cancel_before_accept_race_has_one_linearized_winner() {
+    let test = TestStore::new("accept-cancel-race");
+    install_policy(&test.store);
+    let auth = authority();
+    test.store
+        .propose_collaboration_delegation(
+            &context(
+                auth.source_host.clone(),
+                "delegation.propose",
+                "race-propose",
+                0,
+            ),
+            &proposal(),
+            &auth,
+            &policy(),
+        )
+        .expect("race proposal");
+    let before = test.store.collaboration_operations().unwrap().len();
+    let store = Arc::new(test.store.clone());
+    let barrier = Arc::new(Barrier::new(2));
+    let accept_store = Arc::clone(&store);
+    let accept_barrier = Arc::clone(&barrier);
+    let accept = std::thread::spawn(move || {
+        let auth = authority();
+        let decision = DelegationDecision {
+            id: "race-accept".into(),
+            delegation_id: "delegation-1".into(),
+            expected_delegation_revision: 1,
+            decision: DelegationDecisionKind::Accept,
+            decided_by_target_host: auth.target_host.clone(),
+            reason: "accept".into(),
+            created_at: "2026-08-11T00:00:01Z".into(),
+        };
+        accept_barrier.wait();
+        accept_store.decide_collaboration_delegation(
+            &context(
+                auth.target_host.clone(),
+                "delegation.decide",
+                "race-accept",
+                1,
+            ),
+            "delegation-1",
+            &decision,
+            &auth,
+            &placement(13),
+        )
+    });
+    let cancel_store = Arc::clone(&store);
+    let cancel_barrier = Arc::clone(&barrier);
+    let cancel = std::thread::spawn(move || {
+        let auth = authority();
+        cancel_barrier.wait();
+        cancel_store.cancel_delegation_before_accept(
+            &context(
+                auth.source_host.clone(),
+                "delegation.cancel_before_accept",
+                "race-cancel",
+                1,
+            ),
+            "delegation-1",
+            "withdraw before acceptance",
+            &auth,
+        )
+    });
+    let accepted = accept.join().expect("accept thread");
+    let cancelled = cancel.join().expect("cancel thread");
+    assert_ne!(accepted.is_ok(), cancelled.is_ok());
+    assert_eq!(store.collaboration_operations().unwrap().len(), before + 1);
+    let current = store
+        .collaboration_delegations("company-1")
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert!(matches!(
+        current.state,
+        DelegationState::ProvisioningTargetWork | DelegationState::Terminal
+    ));
+}
+
+#[test]
+fn torn_tail_is_ignored_and_exact_replay_repairs_atomic_ledger() {
+    let test = TestStore::new("torn-tail");
+    install_policy(&test.store);
+    let auth = authority();
+    let ctx = context(
+        auth.source_host.clone(),
+        "delegation.propose",
+        "torn-propose",
+        0,
+    );
+    test.store
+        .propose_collaboration_delegation(&ctx, &proposal(), &auth, &policy())
+        .expect("durable proposal");
+    let ledger = test.root.join("agentfirm_collaboration_operations.jsonl");
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&ledger)
+        .unwrap();
+    file.write_all(b"{\"torn\":").unwrap();
+    file.sync_all().unwrap();
+
+    let replay = test
+        .store
+        .propose_collaboration_delegation(&ctx, &proposal(), &auth, &policy())
+        .expect("complete durable rows survive torn tail");
+    assert!(replay.replayed);
+    assert_eq!(
+        test.store
+            .collaboration_delegations("company-1")
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn delegation_list_cursor_freezes_snapshot_and_filters_exact_scope() {
+    let test = TestStore::new("cursor");
+    install_policy(&test.store);
+    let auth = authority();
+    for ordinal in 1..=3 {
+        let mut request = proposal();
+        request.delegation_id = format!("delegation-{ordinal}");
+        request.operation_id = format!("route-propose-{ordinal}");
+        test.store
+            .propose_collaboration_delegation(
+                &context(
+                    auth.source_host.clone(),
+                    "delegation.propose",
+                    &format!("cursor-propose-{ordinal}"),
+                    0,
+                ),
+                &request,
+                &auth,
+                &policy(),
+            )
+            .expect("cursor proposal");
+    }
+    let filter = CollaborationDelegationFilter {
+        source_team_id: Some("team-a".into()),
+        target_team_id: Some("team-b".into()),
+        node_id: Some("node-b".into()),
+        state: Some(DelegationState::AwaitingTargetDecision),
+    };
+    let first = test
+        .store
+        .list_collaboration_delegations("company-1", &filter, None, 2)
+        .expect("first frozen page");
+    assert_eq!(first.items.len(), 2);
+    let cursor = first.next_cursor.expect("third item remains");
+
+    let mut fourth = proposal();
+    fourth.delegation_id = "delegation-4".into();
+    fourth.operation_id = "route-propose-4".into();
+    test.store
+        .propose_collaboration_delegation(
+            &context(
+                auth.source_host.clone(),
+                "delegation.propose",
+                "cursor-propose-4",
+                0,
+            ),
+            &fourth,
+            &auth,
+            &policy(),
+        )
+        .expect("fourth proposal after first page");
+
+    let second = test
+        .store
+        .list_collaboration_delegations("company-1", &filter, Some(cursor), 2)
+        .expect("second page from frozen sequence");
+    assert_eq!(second.items.len(), 1);
+    assert!(second.next_cursor.is_none());
+    assert_eq!(second.as_of_store_sequence, first.as_of_store_sequence);
+
+    let fresh = test
+        .store
+        .list_collaboration_delegations("company-1", &filter, None, 10)
+        .expect("fresh view includes later proposal");
+    assert_eq!(fresh.items.len(), 4);
+    assert!(fresh.as_of_store_sequence > first.as_of_store_sequence);
+}
+
+#[test]
+fn actor_scoped_cursor_skips_hidden_rows_and_rejects_scope_reuse() {
+    let test = TestStore::new("scoped-cursor");
+    install_policy(&test.store);
+    let auth = authority();
+    for ordinal in 1..=4 {
+        let mut request = proposal();
+        request.delegation_id = format!("delegation-{ordinal}");
+        request.operation_id = format!("route-propose-{ordinal}");
+        test.store
+            .propose_collaboration_delegation(
+                &context(
+                    auth.source_host.clone(),
+                    "delegation.propose",
+                    &format!("scope-{ordinal}"),
+                    0,
+                ),
+                &request,
+                &auth,
+                &policy(),
+            )
+            .unwrap();
+    }
+    let filter = CollaborationDelegationFilter::default();
+    let first = test
+        .store
+        .list_collaboration_delegations_for_actor(
+            "company-1",
+            &auth.source_work_owner,
+            &filter,
+            None,
+            2,
+        )
+        .unwrap();
+    assert_eq!(first.items.len(), 2);
+    let cursor = first.next_cursor.clone().expect("bounded next cursor");
+
+    let second = test
+        .store
+        .list_collaboration_delegations_for_actor(
+            "company-1",
+            &auth.source_work_owner,
+            &filter,
+            Some(cursor.clone()),
+            10,
+        )
+        .unwrap();
+    assert_eq!(second.items.len(), 2);
+    assert_eq!(first.items.len() + second.items.len(), 4);
+
+    assert!(test
+        .store
+        .list_collaboration_delegations_for_actor(
+            "company-1",
+            &actor(ActorKind::AgentMember, "hostile"),
+            &filter,
+            Some(cursor.clone()),
+            2,
+        )
+        .is_err());
+    assert!(test
+        .store
+        .list_collaboration_delegations_for_actor(
+            "other-company",
+            &auth.source_work_owner,
+            &filter,
+            Some(cursor),
+            2,
+        )
+        .is_err());
+}
+
+#[test]
+fn actor_scoped_cursor_bounds_hidden_scans_and_freezes_visible_snapshot() {
+    let test = TestStore::new("scoped-cursor-hidden-pages");
+    let mut open_policy = policy();
+    open_policy.max_active_delegations = 300;
+    let target_host = actor(ActorKind::AgentMember, "host-b");
+    test.store
+        .put_collaboration_inbound_policy(
+            &context(
+                target_host.clone(),
+                "delegation.policy.put",
+                "policy-hidden-pages",
+                0,
+            ),
+            &open_policy,
+            &target_host,
+        )
+        .unwrap();
+
+    let visible_actor = actor(ActorKind::AgentMember, "visible-owner");
+    for ordinal in 0..=205 {
+        let mut attestation = source_attestation();
+        attestation.id = format!("source-attestation-hidden-{ordinal}");
+        attestation.source_owner_ref = if ordinal >= 203 {
+            visible_actor.clone()
+        } else {
+            actor(ActorKind::AgentMember, &format!("hidden-owner-{ordinal}"))
+        };
+        attestation.source_work_ref.work_id = format!("work-hidden-{ordinal}");
+        attestation.source_work_ref.work_event_id = format!("event-hidden-{ordinal}");
+        attestation.attestation_digest = canonical_json_fingerprint(&serde_json::json!({
+            "id": attestation.id,
+            "company_id": attestation.company_id,
+            "source_work_ref": attestation.source_work_ref,
+            "source_owner_ref": attestation.source_owner_ref,
+            "source_host_ref": attestation.source_host_ref,
+            "work_application_service_ref": attestation.work_application_service_ref,
+            "source_gateway_generation": attestation.source_gateway_generation,
+            "issued_at": attestation.issued_at,
+        }));
+        let service = attestation.work_application_service_ref.clone();
+        test.store
+            .put_source_work_attestation(
+                &context(
+                    service.clone(),
+                    "source_work.attest",
+                    &format!("attest-hidden-{ordinal}"),
+                    0,
+                ),
+                &attestation,
+                &service,
+                8,
+            )
+            .unwrap();
+        let mut resolved = authority();
+        resolved.source_work_owner = attestation.source_owner_ref.clone();
+        let mut request = proposal();
+        request.delegation_id = format!("delegation-hidden-{ordinal}");
+        request.source_work_attestation_id = attestation.id;
+        request.operation_id = format!("route-hidden-{ordinal}");
+        test.store
+            .propose_collaboration_delegation(
+                &context(
+                    resolved.source_host.clone(),
+                    "delegation.propose",
+                    &format!("propose-hidden-{ordinal}"),
+                    0,
+                ),
+                &request,
+                &resolved,
+                &open_policy,
+            )
+            .unwrap();
+    }
+
+    let filter = CollaborationDelegationFilter::default();
+    let first = test
+        .store
+        .list_collaboration_delegations_for_actor("company-1", &visible_actor, &filter, None, 2)
+        .unwrap();
+    assert!(first.items.is_empty(), "hidden-only raw page stays empty");
+    let frozen_sequence = first.as_of_store_sequence;
+    let mut cursor = first.next_cursor;
+
+    let mut late_attestation = source_attestation();
+    late_attestation.id = "source-attestation-late-visible".into();
+    late_attestation.source_owner_ref = visible_actor.clone();
+    late_attestation.source_work_ref.work_id = "work-late-visible".into();
+    late_attestation.source_work_ref.work_event_id = "event-late-visible".into();
+    late_attestation.attestation_digest = canonical_json_fingerprint(&serde_json::json!({
+        "id": late_attestation.id,
+        "company_id": late_attestation.company_id,
+        "source_work_ref": late_attestation.source_work_ref,
+        "source_owner_ref": late_attestation.source_owner_ref,
+        "source_host_ref": late_attestation.source_host_ref,
+        "work_application_service_ref": late_attestation.work_application_service_ref,
+        "source_gateway_generation": late_attestation.source_gateway_generation,
+        "issued_at": late_attestation.issued_at,
+    }));
+    let late_service = late_attestation.work_application_service_ref.clone();
+    test.store
+        .put_source_work_attestation(
+            &context(
+                late_service.clone(),
+                "source_work.attest",
+                "attest-late-visible",
+                0,
+            ),
+            &late_attestation,
+            &late_service,
+            8,
+        )
+        .unwrap();
+    let mut late_authority = authority();
+    late_authority.source_work_owner = visible_actor.clone();
+    let mut late_request = proposal();
+    late_request.delegation_id = "delegation-late-visible".into();
+    late_request.source_work_attestation_id = late_attestation.id;
+    late_request.operation_id = "route-late-visible".into();
+    test.store
+        .propose_collaboration_delegation(
+            &context(
+                late_authority.source_host.clone(),
+                "delegation.propose",
+                "propose-late-visible",
+                0,
+            ),
+            &late_request,
+            &late_authority,
+            &open_policy,
+        )
+        .unwrap();
+
+    let mut visible = Vec::new();
+    let mut empty_pages = 1usize;
+    while let Some(current) = cursor {
+        let page = test
+            .store
+            .list_collaboration_delegations_for_actor(
+                "company-1",
+                &visible_actor,
+                &filter,
+                Some(current),
+                2,
+            )
+            .unwrap();
+        assert_eq!(page.as_of_store_sequence, frozen_sequence);
+        if page.items.is_empty() {
+            empty_pages += 1;
+        }
+        visible.extend(page.items);
+        cursor = page.next_cursor;
+    }
+    assert!(
+        empty_pages > 1,
+        "opaque cursor advances across hidden-only pages"
+    );
+    assert_eq!(visible.len(), 3);
+    assert_eq!(
+        visible
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect::<BTreeSet<_>>()
+            .len(),
+        3
+    );
+
+    // The visible mutation after page one is excluded from that frozen
+    // traversal but appears in a fresh snapshot.
+    let fresh = test
+        .store
+        .list_collaboration_delegations_for_actor("company-1", &visible_actor, &filter, None, 500)
+        .unwrap();
+    assert_eq!(fresh.items.len(), 4);
+    assert!(fresh.as_of_store_sequence > frozen_sequence);
+}
+
+#[test]
+#[allow(clippy::result_large_err)]
+fn collaboration_authority_fence_holds_writer_lock_through_route_commit() {
+    let test = TestStore::new("authority-fence");
+    install_policy(&test.store);
+    let first = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let root = test.root.clone();
+    let first_worker = first.clone();
+    let release_worker = release.clone();
+    let worker = std::thread::spawn(move || {
+        let store = HarnessStore::new(root);
+        store
+            .with_collaboration_authority_fence(
+                |locked| {
+                    assert!(locked
+                        .collaboration_inbound_policy("company-1", "policy-a-b")
+                        .unwrap()
+                        .unwrap()
+                        .revoked_at
+                        .is_none());
+                    first_worker.wait();
+                    release_worker.wait();
+                    Ok(())
+                },
+                || Ok::<_, firm_fabric::FabricError>("fabric-commit"),
+            )
+            .unwrap()
+    });
+    first.wait();
+    let writer_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer_finished_thread = writer_finished.clone();
+    let writer_root = test.root.clone();
+    let writer = std::thread::spawn(move || {
+        let store = HarnessStore::new(writer_root);
+        let mut revoked = policy();
+        revoked.revision = 2;
+        revoked.revoked_at = Some("unix-ms:99".into());
+        store
+            .put_collaboration_inbound_policy(
+                &context(
+                    actor(ActorKind::AgentMember, "host-b"),
+                    "delegation.policy.put",
+                    "policy-revoke",
+                    1,
+                ),
+                &revoked,
+                &actor(ActorKind::AgentMember, "host-b"),
+            )
+            .unwrap();
+        writer_finished_thread.store(true, Ordering::SeqCst);
+    });
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    assert!(
+        !writer_finished.load(Ordering::SeqCst),
+        "authority writer must not cross the admission→Fabric commit fence"
+    );
+    release.wait();
+    assert_eq!(worker.join().unwrap(), "fabric-commit");
+    writer.join().unwrap();
+    assert!(writer_finished.load(Ordering::SeqCst));
+}
+
+#[test]
+fn active_cancellation_is_only_a_source_request_and_target_host_decision() {
+    let test = TestStore::new("cancel");
+    let _target = active_delegation(&test.store);
+    let auth = authority();
+    let request = DelegationCancellationRequest {
+        id: "cancel-request-1".into(),
+        delegation_id: "delegation-1".into(),
+        expected_delegation_revision: 3,
+        requested_by: auth.source_host.clone(),
+        reason: "source priorities changed".into(),
+        state: CancellationRequestState::Pending,
+        target_host_decision_ref: None,
+        revision: 1,
+        created_at: "2026-08-11T00:00:03Z".into(),
+        updated_at: "2026-08-11T00:00:03Z".into(),
+    };
+    let before = test.store.collaboration_operations().unwrap();
+    let mut hostile = request.clone();
+    hostile.requested_by = actor(ActorKind::AgentMember, "member-a");
+    assert!(test
+        .store
+        .request_delegation_cancellation(
+            &context(
+                hostile.requested_by.clone(),
+                "delegation.cancel.request",
+                "cancel-hostile",
+                3,
+            ),
+            &hostile,
+            &auth,
+        )
+        .is_err());
+    assert_eq!(test.store.collaboration_operations().unwrap(), before);
+
+    let request_context = context(
+        auth.source_host.clone(),
+        "delegation.cancel.request",
+        "cancel-1",
+        3,
+    );
+    let requested = test
+        .store
+        .request_delegation_cancellation(&request_context, &request, &auth)
+        .expect("source Host cancellation request");
+    assert_eq!(
+        requested.projection.state,
+        DelegationState::CancellationRequested
+    );
+    assert_eq!(requested.projection.terminal_outcome, None);
+    let replay = test
+        .store
+        .request_delegation_cancellation(&request_context, &request, &auth)
+        .expect("exact cancellation request replay");
+    assert!(replay.replayed);
+    assert_eq!(replay.operation, requested.operation);
+    let route = test
+        .store
+        .delegation_cancel_request_operation(
+            &context(
+                auth.source_host.clone(),
+                "delegation.cancel.route",
+                "cancel-route-1",
+                4,
+            ),
+            &request,
+        )
+        .expect("central pending cancellation builds target route");
+    assert_eq!(route.kind, RoutedBusinessKind::DelegationCancelRequest);
+    assert_eq!(route.expected_revision, 3);
+
+    let decision = DelegationCancellationDecision {
+        id: "cancel-decision-1".into(),
+        cancellation_request_id: request.id.clone(),
+        expected_request_revision: 1,
+        decision: CancellationDecisionKind::Accept,
+        decided_by_target_host: auth.target_host.clone(),
+        native_work_event_ref: "work-event-b-cancelled".into(),
+        reason: "target Work quiesced".into(),
+        created_at: "2026-08-11T00:00:04Z".into(),
+    };
+    let cancelled = test
+        .store
+        .decide_delegation_cancellation(
+            &context(
+                auth.target_host.clone(),
+                "delegation.cancel.decide",
+                "cancel-decision-1",
+                4,
+            ),
+            "delegation-1",
+            &request.id,
+            &decision,
+            &auth,
+            &placement(13),
+        )
+        .expect("target Host cancellation decision");
+    assert_eq!(cancelled.projection.state, DelegationState::Terminal);
+    assert_eq!(
+        cancelled.projection.terminal_outcome,
+        Some(DelegationTerminalOutcome::Cancelled)
+    );
+    assert_eq!(cancelled.projection.source_work_ref.work_revision, 9);
+    let request_projection = test
+        .store
+        .collaboration_cancellation_requests("company-1", "delegation-1")
+        .unwrap()
+        .pop()
+        .expect("cancellation request projection");
+    assert_eq!(request_projection.state, CancellationRequestState::Accepted);
+    assert_eq!(request_projection.revision, 2);
+    assert_eq!(
+        request_projection.target_host_decision_ref.as_deref(),
+        Some("cancel-decision-1")
+    );
+}
+
+#[test]
+fn remote_fact_is_redacted_digest_bound_and_target_scoped() {
+    let test = TestStore::new("publication");
+    let target = active_delegation(&test.store);
+    let mut native_target = target.clone();
+    native_target.work_revision += 1;
+    native_target.work_event_id = "event-b-2".into();
+    native_target.digest = format!("sha256:{:064x}", 2);
+    let fact = serde_json::json!({
+        "submitted_work_revision": 1,
+        "outcome": "implemented",
+        "checks": ["check:unit"],
+        "evidence": ["artifact:diff"],
+        "target_host_decision": "accepted"
+    });
+    let digest = canonical_json_fingerprint(&fact);
+    let publication = RemoteFactPublication {
+        id: "publication-1".into(),
+        company_id: "company-1".into(),
+        delegation_id: "delegation-1".into(),
+        origin_node_id: "node-b".into(),
+        origin_team_id: "team-b".into(),
+        fact_work_ref: target.clone(),
+        native_fact_work_ref: native_target,
+        delegation_source_work_ref: source_attestation().source_work_ref,
+        fact_kind: RemoteFactKind::Report,
+        fact_id: "report-b-1".into(),
+        fact_revision: 1,
+        fact_digest: digest.clone(),
+        summary: "target result is ready for source integration".into(),
+        classification: "team-visible".into(),
+        snapshot: RemoteFactSnapshot {
+            publication_id: "publication-1".into(),
+            fact_schema: "agentfirm.work-report.v1".into(),
+            canonical_redacted_fact: fact,
+            canonical_digest: digest,
+        },
+        artifact_refs: vec!["artifact:diff".into()],
+        evidence_refs: vec!["check:unit".into()],
+        operational_decision_ref: None,
+        created_by: actor(ActorKind::AgentMember, "member-b"),
+        created_at: "2026-08-11T00:00:05Z".into(),
+        retain_until: "2026-09-10T00:00:05Z".into(),
+    };
+    let publish_context = context(
+        publication.created_by.clone(),
+        "remote_fact.publish",
+        "publish-1",
+        0,
+    );
+    let mut forged = publication.clone();
+    forged.fact_digest = format!("sha256:{:064x}", 999);
+    let before = test.store.collaboration_operations().unwrap();
+    assert!(test
+        .store
+        .publish_remote_fact(
+            &publish_context,
+            &forged,
+            std::slice::from_ref(&publication.created_by),
+            &placement(13),
+        )
+        .is_err());
+    assert_eq!(test.store.collaboration_operations().unwrap(), before);
+
+    let mut wrong_target_work = publication.clone();
+    wrong_target_work.id = "publication-wrong-target-work".into();
+    wrong_target_work.fact_work_ref.work_id = "work-b-sibling".into();
+    wrong_target_work.snapshot.publication_id = wrong_target_work.id.clone();
+    let before = test.store.collaboration_operations().unwrap();
+    assert!(test
+        .store
+        .publish_remote_fact(
+            &context(
+                wrong_target_work.created_by.clone(),
+                "remote_fact.publish",
+                "publish-wrong-target-work",
+                0,
+            ),
+            &wrong_target_work,
+            std::slice::from_ref(&wrong_target_work.created_by),
+            &placement(13),
+        )
+        .is_err());
+    assert_eq!(
+        test.store.collaboration_operations().unwrap(),
+        before,
+        "a fact for a sibling target Work must not append any collaboration operation"
+    );
+
+    let published = test
+        .store
+        .publish_remote_fact(
+            &publish_context,
+            &publication,
+            std::slice::from_ref(&publication.created_by),
+            &placement(13),
+        )
+        .expect("publish exact redacted snapshot");
+    assert!(!published.replayed);
+    let replay = test
+        .store
+        .publish_remote_fact(
+            &publish_context,
+            &publication,
+            std::slice::from_ref(&publication.created_by),
+            &placement(13),
+        )
+        .expect("publication replay");
+    assert!(replay.replayed);
+
+    let operational_decision = WorkOperationalDecisionRef {
+        decision_id: "work-decision-b-1".into(),
+        work_ref: publication.native_fact_work_ref.clone(),
+        decision_revision: 1,
+        digest: format!("sha256:{:064x}", 77),
+    };
+    let available = test
+        .store
+        .mark_delegation_result_available(
+            &context(
+                authority().target_host.clone(),
+                "delegation.result_available",
+                "result-available-1",
+                3,
+            ),
+            "delegation-1",
+            &publication.id,
+            &operational_decision,
+            &authority(),
+            &placement(13),
+        )
+        .expect("target Host exposes accepted target result");
+    assert_eq!(available.projection.state, DelegationState::ResultAvailable);
+    assert_eq!(available.projection.source_work_ref.work_revision, 9);
+    let operations_after_available = test.store.collaboration_operations().unwrap();
+    let available_replay = test
+        .store
+        .mark_delegation_result_available(
+            &context(
+                authority().target_host.clone(),
+                "delegation.result_available",
+                "result-available-1",
+                3,
+            ),
+            "delegation-1",
+            &publication.id,
+            &operational_decision,
+            &authority(),
+            &placement(13),
+        )
+        .expect("exact result-available replay");
+    assert!(available_replay.replayed);
+    assert_eq!(
+        test.store.collaboration_operations().unwrap(),
+        operations_after_available,
+        "exact receipt replay must not append a second Delegation transition"
+    );
+
+    let integrated_source = work_ref("node-a", "team-a", "work-a", 10);
+    let completed = test
+        .store
+        .complete_delegation_after_source_integration(
+            &context(
+                authority().source_host.clone(),
+                "delegation.complete_after_source_integration",
+                "source-integrated-1",
+                4,
+            ),
+            "delegation-1",
+            &integrated_source,
+            "source-work-event-accepted-10",
+            &authority(),
+        )
+        .expect("source Host independently integrates and closes relationship");
+    assert_eq!(completed.projection.state, DelegationState::Terminal);
+    assert_eq!(
+        completed.projection.terminal_outcome,
+        Some(DelegationTerminalOutcome::Completed)
+    );
+    // The relationship stores integration evidence but never rewrites source
+    // Work authority into its own projection.
+    assert_eq!(completed.projection.source_work_ref.work_revision, 9);
+}
+
+#[test]
+fn complete_artifact_grant_is_delegation_scoped_and_targets_exact_source_host_node() {
+    let central = TestStore::new("artifact-grant-central");
+    install_policy(&central.store);
+    let auth = authority();
+    let mut attestation = source_attestation();
+    attestation.id = "artifact-source-attestation".into();
+    attestation.source_work_ref.node_id = SOURCE_NODE_UUID.into();
+    attestation.source_work_ref.execution_space_id = "space-node-a".into();
+    attestation.source_work_ref.team_revision = 1;
+    attestation.attestation_digest = canonical_json_fingerprint(&serde_json::json!({
+        "id": attestation.id,
+        "company_id": attestation.company_id,
+        "source_work_ref": attestation.source_work_ref,
+        "source_owner_ref": attestation.source_owner_ref,
+        "source_host_ref": attestation.source_host_ref,
+        "work_application_service_ref": attestation.work_application_service_ref,
+        "source_gateway_generation": attestation.source_gateway_generation,
+        "issued_at": attestation.issued_at,
+    }));
+    central
+        .store
+        .put_source_work_attestation(
+            &context(
+                attestation.work_application_service_ref.clone(),
+                "source_work.attest",
+                "artifact-source-attest",
+                0,
+            ),
+            &attestation,
+            &attestation.work_application_service_ref,
+            8,
+        )
+        .unwrap();
+    let mut artifact_proposal = proposal();
+    artifact_proposal.delegation_id = "artifact-delegation".into();
+    artifact_proposal.source_work_attestation_id = attestation.id.clone();
+    central
+        .store
+        .propose_collaboration_delegation(
+            &context(
+                auth.source_host.clone(),
+                "delegation.propose",
+                "artifact-propose",
+                0,
+            ),
+            &artifact_proposal,
+            &auth,
+            &policy(),
+        )
+        .unwrap();
+    central
+        .store
+        .decide_collaboration_delegation(
+            &context(
+                auth.target_host.clone(),
+                "delegation.decide",
+                "artifact-accept",
+                1,
+            ),
+            &artifact_proposal.delegation_id,
+            &DelegationDecision {
+                id: "artifact-accept".into(),
+                delegation_id: artifact_proposal.delegation_id.clone(),
+                expected_delegation_revision: 1,
+                decision: DelegationDecisionKind::Accept,
+                decided_by_target_host: auth.target_host.clone(),
+                reason: "accept artifact-producing Work".into(),
+                created_at: "unix-ms:1".into(),
+            },
+            &auth,
+            &placement(13),
+        )
+        .unwrap();
+    let control_plane = actor(ActorKind::Service, "fabric-control-plane");
+    central
+        .store
+        .apply_target_work_created(
+            &context(
+                control_plane.clone(),
+                "target_work.applied",
+                "artifact-target-work",
+                2,
+            ),
+            &artifact_proposal.delegation_id,
+            &work_ref("node-b", "team-b", "work-b", 1),
+            &placement(13),
+            "route-artifact-target-work",
+            &control_plane,
+        )
+        .unwrap();
+    let source = TestStore::new("artifact-grant-source");
+    seed_team(
+        &source.store,
+        SOURCE_NODE_UUID,
+        "Node A",
+        "space-node-a",
+        "project-a",
+        "mission-a",
+        "team-a",
+        "Team A",
+        "host-a",
+        "run-a",
+    );
+    let manifest = RemoteArtifactManifest {
+        id: "artifact-delegation-1".into(),
+        company_id: "company-1".into(),
+        source_node_id: "node-b".into(),
+        source_team_id: Some("team-b".into()),
+        source_work_id: Some("work-b".into()),
+        operation_id: Some("publication-1".into()),
+        media_type: "text/plain".into(),
+        size_bytes: 8,
+        sha256: "a".repeat(64),
+        classification: ArtifactClassification::CompanyInternal,
+        initiator: "host-b".into(),
+        authorized_readers: BTreeSet::from(["host-a".into()]),
+        created_by: "host-b".into(),
+        created_at_unix_ms: 100,
+        expires_at_unix_ms: None,
+        completed_at_unix_ms: Some(101),
+        deleted_at_unix_ms: None,
+        revision: 3,
+        schema_version: "agentfirm.remote-fabric.v1".into(),
+    };
+    let capability = ArtifactCapability {
+        token: "signed-token".into(),
+        company_id: "company-1".into(),
+        node_id: SOURCE_NODE_UUID.into(),
+        artifact_id: manifest.id.clone(),
+        artifact_digest: manifest.sha256.clone(),
+        purpose: ArtifactCapabilityPurpose::Download,
+        issued_to: "host-a".into(),
+        issued_at_unix_ms: 102,
+        expires_at_unix_ms: 10_000,
+        one_use: true,
+    };
+    let business = central
+        .store
+        .artifact_grant_operation(
+            &context(
+                actor(ActorKind::AgentMember, "host-b"),
+                "artifact_grant",
+                "artifact-grant-1",
+                3,
+            ),
+            &artifact_proposal.delegation_id,
+            &manifest,
+            &capability,
+        )
+        .expect("target Host grants exact completed artifact to source Host");
+    let route = route_collaboration_business_operation(
+        &business,
+        &CollaborationFabricRouteContext {
+            authenticated_actor: AuthenticatedActor {
+                company_id: "company-1".into(),
+                actor_id: "control-plane:3".into(),
+                actor_kind: FabricActorKind::Service,
+                role_bindings: BTreeSet::from(["company_control_plane".into()]),
+                session_id: "control-plane:3".into(),
+                issued_at_unix_ms: 102,
+                expires_at_unix_ms: 10_000,
+            },
+            resolved_business_actor: actor(ActorKind::AgentMember, "host-b"),
+            source: CollaborationFabricSource::ControlPlane,
+            control_plane_generation: 3,
+            target_execution_space_id: Some("space-node-a".into()),
+            created_at_unix_ms: 102,
+            expires_at_unix_ms: 5_000,
+        },
+    )
+    .expect("artifact grant uses Wave5 route");
+    let validated = apply_collaboration_target_operation(&source.store, &route, "unix-ms:103")
+        .expect("source Node validates exact source Team Host capability");
+    assert_eq!(
+        validated.0,
+        "agentfirm.collaboration.artifact_grant_validated.v1"
+    );
+
+    let before = source.store.collaboration_operations().unwrap();
+    let mut hostile = route;
+    hostile.body["payload"]["read_capability"]["issued_to"] = serde_json::json!("member-a");
+    hostile.body_digest = json_digest(&hostile.body).unwrap();
+    assert!(apply_collaboration_target_operation(&source.store, &hostile, "unix-ms:104").is_err());
+    assert_eq!(source.store.collaboration_operations().unwrap(), before);
+
+    let mut hostile_snapshot = hostile;
+    hostile_snapshot.body["payload"]["read_capability"]["issued_to"] = serde_json::json!("host-a");
+    hostile_snapshot.body["payload"]["delegation"]["source_node_id"] =
+        serde_json::json!("node-hostile");
+    hostile_snapshot.body_digest = json_digest(&hostile_snapshot.body).unwrap();
+    assert!(
+        apply_collaboration_target_operation(&source.store, &hostile_snapshot, "unix-ms:105")
+            .is_err()
+    );
+    assert_eq!(source.store.collaboration_operations().unwrap(), before);
+}
+
+fn canonical_delivery(
+    id: &str,
+    recipient: &str,
+    status: CanonicalMessageDeliveryStatus,
+) -> CanonicalMessageDelivery {
+    CanonicalMessageDelivery {
+        id: id.into(),
+        message_id: "message-1".into(),
+        subscription_id: format!("subscription-{recipient}"),
+        recipient_identity_id: recipient.into(),
+        target_node_id: "node-b".into(),
+        recipient_session_id: Some(format!("session-{recipient}")),
+        recipient_session_generation: Some(4),
+        status,
+        attempt: 1,
+        claim_id: None,
+        claimed_node_daemon_generation: None,
+        provider_receipt_id: None,
+        failure_code: None,
+        failure_detail: None,
+        version: 1,
+        created_at: "2026-08-11T00:00:00Z".into(),
+        updated_at: "2026-08-11T00:00:00Z".into(),
+    }
+}
+
+fn message_fingerprint(message: &Message) -> String {
+    canonical_json_fingerprint(&serde_json::json!({
+        "sender_actor_ref": message.sender_actor_ref,
+        "sender_agent_id": message.sender_agent_id,
+        "sender_session_id": message.sender_session_id,
+        "address_kind": message.address_kind,
+        "target_ref": message.target_ref,
+        "recipients": message.recipients,
+        "team_id": message.team_id,
+        "team_run_id": message.team_run_id,
+        "work_id": message.work_id,
+        "collaboration_scope": message.collaboration_scope,
+        "kind": message.kind,
+        "body": message.body,
+        "body_digest": message.body_digest,
+        "correlation_id": message.correlation_id,
+        "causation_id": message.causation_id,
+        "response_intent": message.response_intent,
+        "evidence_refs": message.evidence_refs,
+        "schema_version": message.schema_version,
+        "idempotency_key": message.idempotency_key,
+    }))
+}
+
+fn persisted_replica(message: &Message) -> firm_core::collaboration::RemoteMessageReplica {
+    firm_core::collaboration::RemoteMessageReplica {
+        source_execution_space_id: message.source_execution_space_id.clone(),
+        message_id: message.id.clone(),
+        schema_version: message.schema_version,
+        content_fingerprint: message.content_fingerprint.clone(),
+        body_digest: message.body_digest.clone(),
+        canonical_message_bytes: serde_json::to_vec(message).unwrap(),
+        persisted_at: "2026-08-11T00:00:01Z".into(),
+    }
+}
+
+#[test]
+fn message_projection_preserves_per_recipient_partial_delivery_truth() {
+    let recipients = vec![
+        MessageRecipientRef {
+            kind: MessageRecipientKind::AgentIdentity,
+            id: "member-b1".into(),
+        },
+        MessageRecipientRef {
+            kind: MessageRecipientKind::AgentIdentity,
+            id: "member-b2".into(),
+        },
+    ];
+    let mut message = Message {
+        id: "message-1".into(),
+        source_execution_space_id: "space-node-a".into(),
+        source_node_id: "node-a".into(),
+        source_node_daemon_id: "daemon-a".into(),
+        source_authority_generation: 8,
+        sender_actor_ref: actor(ActorKind::AgentMember, "host-a"),
+        sender_agent_id: Some("host-a".into()),
+        sender_session_id: Some("session-host-a".into()),
+        address_kind: MessageAddressKind::DirectAgent,
+        target_ref: recipients[0].clone(),
+        recipients,
+        team_id: Some("team-a".into()),
+        team_run_id: None,
+        work_id: Some("work-a".into()),
+        collaboration_scope: Some(firm_core::collaboration::CollaborationScope {
+            source_team_id: "team-a".into(),
+            target_team_id: "team-b".into(),
+            delegation_id: Some("delegation-1".into()),
+            expected_delegation_revision: Some(3),
+            source_work_ref: Some(work_ref("node-a", "team-a", "work-a", 9)),
+            target_work_ref: Some(work_ref("node-b", "team-b", "work-b", 1)),
+        }),
+        kind: MessageKind::Message,
+        body: "Please review the delegated result".into(),
+        body_digest: canonical_json_fingerprint(&serde_json::json!({
+            "body": "Please review the delegated result"
+        })),
+        correlation_id: "correlation-1".into(),
+        causation_id: None,
+        response_intent: ResponseIntent::ResponseRequired,
+        evidence_refs: Vec::new(),
+        content_fingerprint: String::new(),
+        schema_version: 1,
+        idempotency_key: "message-1".into(),
+        created_at: "2026-08-11T00:00:00Z".into(),
+    };
+    message.content_fingerprint = message_fingerprint(&message);
+    validate_message_collaboration_scope(&message).expect("exact source/target scope");
+    let mut forged_scope = message.clone();
+    forged_scope
+        .collaboration_scope
+        .as_mut()
+        .unwrap()
+        .target_team_id = "team-a".into();
+    assert!(validate_message_collaboration_scope(&forged_scope).is_err());
+    let replica = persisted_replica(&message);
+    let deliveries = vec![
+        canonical_delivery(
+            "delivery-1",
+            "member-b1",
+            CanonicalMessageDeliveryStatus::ProviderReceived,
+        ),
+        canonical_delivery(
+            "delivery-2",
+            "member-b2",
+            CanonicalMessageDeliveryStatus::Queued,
+        ),
+    ];
+    let projections = project_cross_node_deliveries(
+        &message,
+        &replica,
+        &deliveries,
+        "route-1",
+        Some(9),
+        44,
+        "2026-08-11T00:00:01Z",
+    )
+    .expect("project independent recipient states");
+    assert_eq!(projections.len(), 2);
+    assert_eq!(
+        projections[0].state,
+        CanonicalMessageDeliveryStatus::ProviderReceived
+    );
+    assert_eq!(projections[1].state, CanonicalMessageDeliveryStatus::Queued);
+
+    let mut duplicate = deliveries.clone();
+    duplicate[1].recipient_identity_id = "member-b1".into();
+    assert!(project_cross_node_deliveries(
+        &message,
+        &replica,
+        &duplicate,
+        "route-1",
+        Some(9),
+        44,
+        "2026-08-11T00:00:01Z",
+    )
+    .is_err());
+
+    let team_recipient = MessageRecipientRef {
+        kind: MessageRecipientKind::Team,
+        id: "team-b".into(),
+    };
+    let team_message = Message {
+        target_ref: team_recipient.clone(),
+        recipients: vec![team_recipient],
+        ..message.clone()
+    };
+    let team_replica = persisted_replica(&team_message);
+    assert_eq!(
+        project_cross_node_deliveries(
+            &team_message,
+            &team_replica,
+            &deliveries,
+            "route-team-1",
+            Some(9),
+            45,
+            "2026-08-11T00:00:02Z",
+        )
+        .expect("target Node subscription expansion remains per-recipient")
+        .len(),
+        2
+    );
+
+    let mut mixed_nodes = deliveries;
+    mixed_nodes[1].target_node_id = "node-c".into();
+    assert!(project_cross_node_deliveries(
+        &team_message,
+        &team_replica,
+        &mixed_nodes,
+        "route-team-1",
+        Some(9),
+        45,
+        "2026-08-11T00:00:02Z",
+    )
+    .is_err());
+}
+
+#[derive(Default)]
+struct FaithfulReplicaStore {
+    objects: Mutex<BTreeMap<String, Vec<u8>>>,
+    replicas: Mutex<BTreeMap<(String, String), RemoteMessageReplica>>,
+}
+
+impl RemoteMessageReplicaPort for FaithfulReplicaStore {
+    fn fetch_message_object(&self, message_object_ref: &str) -> Result<Vec<u8>, FabricError> {
+        self.objects
+            .lock()
+            .unwrap()
+            .get(message_object_ref)
+            .cloned()
+            .ok_or_else(|| FabricError {
+                code: FabricErrorCode::MessageReplicaMismatch,
+                message: "message object unavailable".into(),
+                retryable: false,
+                effect_certainty: FabricEffectCertainty::None,
+                resource_kind: "message_object_ref".into(),
+                resource_id: message_object_ref.into(),
+                current_revision: None,
+            })
+    }
+
+    fn persist_remote_replica(
+        &self,
+        replica: &RemoteMessageReplica,
+    ) -> Result<RemoteMessageReplica, FabricError> {
+        let key = (
+            replica.source_execution_space_id.clone(),
+            replica.message_id.clone(),
+        );
+        let mut replicas = self.replicas.lock().unwrap();
+        if let Some(current) = replicas.get(&key) {
+            if current.content_fingerprint == replica.content_fingerprint
+                && current.body_digest == replica.body_digest
+                && current.canonical_message_bytes == replica.canonical_message_bytes
+            {
+                return Ok(current.clone());
+            }
+            return Err(FabricError {
+                code: FabricErrorCode::MessageReplicaMismatch,
+                message: "same remote Message identity was reused with different bytes".into(),
+                retryable: false,
+                effect_certainty: FabricEffectCertainty::None,
+                resource_kind: "remote_message_replica".into(),
+                resource_id: replica.message_id.clone(),
+                current_revision: None,
+            });
+        }
+        replicas.insert(key, replica.clone());
+        Ok(replica.clone())
+    }
+}
+
+#[test]
+fn immutable_message_transfer_persists_exact_replica_before_delivery_and_replays() {
+    let recipients = vec![MessageRecipientRef {
+        kind: MessageRecipientKind::AgentIdentity,
+        id: "member-b1".into(),
+    }];
+    let mut message = Message {
+        id: "remote-message-1".into(),
+        source_execution_space_id: "space-node-a".into(),
+        source_node_id: "node-a".into(),
+        source_node_daemon_id: "daemon-a".into(),
+        source_authority_generation: 8,
+        sender_actor_ref: actor(ActorKind::AgentMember, "host-a"),
+        sender_agent_id: Some("host-a".into()),
+        sender_session_id: Some("session-host-a".into()),
+        address_kind: MessageAddressKind::DirectAgent,
+        target_ref: recipients[0].clone(),
+        recipients,
+        team_id: Some("team-a".into()),
+        team_run_id: None,
+        work_id: Some("work-a".into()),
+        collaboration_scope: Some(firm_core::collaboration::CollaborationScope {
+            source_team_id: "team-a".into(),
+            target_team_id: "team-b".into(),
+            delegation_id: Some("delegation-1".into()),
+            expected_delegation_revision: Some(3),
+            source_work_ref: Some(work_ref("node-a", "team-a", "work-a", 9)),
+            target_work_ref: Some(work_ref("node-b", "team-b", "work-b", 1)),
+        }),
+        kind: MessageKind::Message,
+        body: "immutable remote body".into(),
+        body_digest: format!(
+            "sha256:{}",
+            firm_fabric::sha256_hex(b"immutable remote body")
+        ),
+        correlation_id: "remote-correlation-1".into(),
+        causation_id: None,
+        response_intent: ResponseIntent::ResponseRequired,
+        evidence_refs: Vec::new(),
+        content_fingerprint: String::new(),
+        schema_version: 1,
+        idempotency_key: "remote-message-1".into(),
+        created_at: "2026-08-11T00:00:00Z".into(),
+    };
+    message.content_fingerprint = message_fingerprint(&message);
+    let bytes = serde_json::to_vec(&message).unwrap();
+    let port = FaithfulReplicaStore::default();
+    let inline = ImmutableMessageTransferPayload::CanonicalBytes {
+        canonical_message_bytes: bytes.clone(),
+    };
+    let queued = queue_remote_message_transfer(
+        &message,
+        &placement(13),
+        inline.clone(),
+        "2026-08-11T00:00:00Z",
+    )
+    .expect("source Node queues the already-authored Message while Control Plane is offline");
+    assert_eq!(
+        queued.state,
+        RemoteMessageTransferState::QueuedForControlPlane
+    );
+    assert_eq!(queued.message_id, message.id);
+    let expectation = |persisted_at: &str| RemoteMessageReplicaExpectation {
+        source_execution_space_id: message.source_execution_space_id.clone(),
+        message_id: message.id.clone(),
+        schema_version: message.schema_version,
+        content_fingerprint: message.content_fingerprint.clone(),
+        body_digest: message.body_digest.clone(),
+        persisted_at: persisted_at.into(),
+    };
+    let first = persist_verified_remote_message_replica(
+        &port,
+        &inline,
+        &expectation("2026-08-11T00:00:01Z"),
+    )
+    .expect("target persists exact inline remote replica");
+    let replay = persist_verified_remote_message_replica(
+        &port,
+        &inline,
+        &expectation("2026-08-11T00:00:02Z"),
+    )
+    .expect("same Message bytes replay the original target replica");
+    assert_eq!(first, replay);
+    assert_eq!(port.replicas.lock().unwrap().len(), 1);
+
+    let object_ref = "message-object:remote-message-1";
+    let object_digest =
+        canonical_json_fingerprint(&serde_json::from_slice::<serde_json::Value>(&bytes).unwrap());
+    port.objects
+        .lock()
+        .unwrap()
+        .insert(object_ref.into(), bytes.clone());
+    let referenced = ImmutableMessageTransferPayload::MessageObjectRef {
+        message_object_ref: object_ref.into(),
+        authenticated_content_digest: object_digest,
+    };
+    assert!(persist_verified_remote_message_replica(
+        &port,
+        &referenced,
+        &expectation("2026-08-11T00:00:03Z"),
+    )
+    .is_ok());
+
+    let before = port.replicas.lock().unwrap().clone();
+    let mut forged = message.clone();
+    forged.body = "forged body".into();
+    let forged_payload = ImmutableMessageTransferPayload::CanonicalBytes {
+        canonical_message_bytes: serde_json::to_vec(&forged).unwrap(),
+    };
+    assert!(persist_verified_remote_message_replica(
+        &port,
+        &forged_payload,
+        &expectation("2026-08-11T00:00:04Z"),
+    )
+    .is_err());
+    assert_eq!(*port.replicas.lock().unwrap(), before);
+
+    let deliveries = vec![CanonicalMessageDelivery {
+        message_id: message.id.clone(),
+        ..canonical_delivery(
+            "remote-delivery-1",
+            "member-b1",
+            CanonicalMessageDeliveryStatus::Queued,
+        )
+    }];
+    assert_eq!(
+        project_cross_node_deliveries(
+            &message,
+            &first,
+            &deliveries,
+            "route-remote-1",
+            Some(9),
+            45,
+            "2026-08-11T00:00:05Z",
+        )
+        .expect("delivery projection is derived only after replica persistence")
+        .len(),
+        1
+    );
+}
+
+#[test]
+fn source_work_attestation_and_placement_v1_fail_closed() {
+    let test = TestStore::new("attestation");
+    install_policy(&test.store);
+    let auth = authority();
+    let before = test.store.collaboration_operations().unwrap();
+
+    let mut caller_authored = source_attestation();
+    caller_authored.id = "caller-authored-attestation".into();
+    caller_authored.work_application_service_ref = auth.source_host.clone();
+    assert!(test
+        .store
+        .put_source_work_attestation(
+            &context(
+                auth.source_host.clone(),
+                "source_work.attest",
+                "caller-authored-attestation",
+                0,
+            ),
+            &caller_authored,
+            &auth.source_work_application_service,
+            auth.source_gateway_generation,
+        )
+        .is_err());
+    assert_eq!(test.store.collaboration_operations().unwrap(), before);
+
+    let mut stale_authority = auth.clone();
+    stale_authority.source_gateway_generation = 9;
+    assert!(test
+        .store
+        .propose_collaboration_delegation(
+            &context(
+                auth.source_host.clone(),
+                "delegation.propose",
+                "stale-attestation-propose",
+                0,
+            ),
+            &proposal(),
+            &stale_authority,
+            &policy(),
+        )
+        .is_err());
+    assert_eq!(test.store.collaboration_operations().unwrap(), before);
+
+    let mut non_v1 = proposal();
+    non_v1.target_placement.placement_generation = 2;
+    assert!(test
+        .store
+        .propose_collaboration_delegation(
+            &context(
+                auth.source_host.clone(),
+                "delegation.propose",
+                "non-v1-placement",
+                0,
+            ),
+            &non_v1,
+            &auth,
+            &policy(),
+        )
+        .is_err());
+    assert_eq!(test.store.collaboration_operations().unwrap(), before);
+
+    let mut revoked_policy = policy();
+    revoked_policy.revision = 2;
+    revoked_policy.revoked_at = Some("2026-08-11T00:00:03Z".into());
+    test.store
+        .put_collaboration_inbound_policy(
+            &context(
+                auth.target_host.clone(),
+                "delegation.policy.put",
+                "policy-revoke-1",
+                1,
+            ),
+            &revoked_policy,
+            &auth.target_host,
+        )
+        .expect("target Host may revoke the exact inbound policy revision");
+    let after_revoke = test.store.collaboration_operations().unwrap();
+    assert!(test
+        .store
+        .propose_collaboration_delegation(
+            &context(
+                auth.source_host.clone(),
+                "delegation.propose",
+                "revoked-policy-propose",
+                0,
+            ),
+            &proposal(),
+            &auth,
+            &revoked_policy,
+        )
+        .is_err());
+    assert_eq!(test.store.collaboration_operations().unwrap(), after_revoke);
+
+    assert_eq!(
+        CollaborationRetentionAnchor {
+            terminal_transport_at_unix_ms: Some(100),
+            terminal_delegation_at_unix_ms: Some(300),
+            source_import_completed_at_unix_ms: Some(200),
+        }
+        .safe_retention_start_unix_ms(),
+        Some(300)
+    );
+    assert_eq!(
+        CollaborationRetentionAnchor {
+            terminal_transport_at_unix_ms: Some(100),
+            terminal_delegation_at_unix_ms: Some(300),
+            source_import_completed_at_unix_ms: None,
+        }
+        .retain_until_unix_ms(30 * 24 * 60 * 60 * 1_000),
+        None
+    );
+}
+
+#[test]
+fn all_frozen_business_kinds_use_the_wave5_route_and_terminal_receipt_contract() {
+    let kinds = [
+        RoutedBusinessKind::DelegationPropose,
+        RoutedBusinessKind::DelegationDecide,
+        RoutedBusinessKind::TargetWorkCreate,
+        RoutedBusinessKind::DelegationCancelRequest,
+        RoutedBusinessKind::DelegationCancelDecide,
+        RoutedBusinessKind::TeamMessageDeliver,
+        RoutedBusinessKind::RemoteFactPublish,
+        RoutedBusinessKind::ArtifactGrant,
+    ];
+    let context = CollaborationFabricRouteContext {
+        authenticated_actor: AuthenticatedActor {
+            company_id: "company-1".into(),
+            actor_id: "node-a".into(),
+            actor_kind: FabricActorKind::Service,
+            role_bindings: BTreeSet::from(["fabric_submit".into()]),
+            session_id: "session-host-a".into(),
+            issued_at_unix_ms: 1,
+            expires_at_unix_ms: 10_000,
+        },
+        resolved_business_actor: actor(ActorKind::AgentMember, "host-a"),
+        source: CollaborationFabricSource::Node {
+            source_execution_space_id: "space-node-a".into(),
+            source_gateway_generation: 8,
+            source_node_daemon_id: "daemon-a".into(),
+            source_node_daemon_generation: 4,
+        },
+        control_plane_generation: 3,
+        target_execution_space_id: Some("space-node-b".into()),
+        created_at_unix_ms: 100,
+        expires_at_unix_ms: 5_000,
+    };
+
+    for kind in kinds {
+        let payload = serde_json::json!({"kind": kind.wire_name(), "delegation_id": "d-1"});
+        let operation = RoutedBusinessOperation {
+            id: format!("route-{}", kind.wire_name()),
+            protocol_version: "agentfirm.fabric.v1".into(),
+            company_id: "company-1".into(),
+            kind,
+            authenticated_actor: actor(ActorKind::AgentMember, "host-a"),
+            source_node_id: "node-a".into(),
+            target_placement: placement(13),
+            expected_revision: 7,
+            idempotency_key: format!("idem-{}", kind.wire_name()),
+            payload_digest: canonical_json_fingerprint(&payload),
+            payload,
+            required_capability: kind.required_capability(),
+            ordering_key: "delegation:d-1".into(),
+            created_at: "2026-08-13T00:00:00Z".into(),
+        };
+        let mut route_context = context.clone();
+        if matches!(
+            kind,
+            RoutedBusinessKind::DelegationDecide
+                | RoutedBusinessKind::TargetWorkCreate
+                | RoutedBusinessKind::DelegationCancelRequest
+                | RoutedBusinessKind::DelegationCancelDecide
+                | RoutedBusinessKind::ArtifactGrant
+        ) {
+            route_context.source = CollaborationFabricSource::ControlPlane;
+            route_context.authenticated_actor.actor_id = "control-plane-1".into();
+        }
+        let routed = route_collaboration_business_operation(&operation, &route_context)
+            .expect("frozen collaboration kind must use the Wave5 envelope");
+        assert_eq!(routed.kind, COLLABORATION_BUSINESS_OPERATION_KIND);
+        routed.closed_body().expect("closed transport registry");
+
+        let result = serde_json::json!({"operation": operation.id, "applied": true});
+        let receipt = RouteReceipt {
+            id: format!("receipt:{}", operation.id),
+            company_id: operation.company_id.clone(),
+            operation_id: operation.id.clone(),
+            target_node_id: operation.target_placement.node_id.clone(),
+            target_gateway_generation: 9,
+            control_plane_generation: 3,
+            route_seq: 11,
+            kind: ReceiptKind::OperationApplied,
+            application_effect: Some(EffectCertainty::Applied),
+            result_schema: Some("agentfirm.collaboration.result.v1".into()),
+            result_digest: Some(json_digest(&result).unwrap()),
+            result: Some(result.clone()),
+            error: None,
+            created_at_unix_ms: 150,
+            schema_version: "agentfirm.remote_fabric.v1".into(),
+        };
+        let business =
+            collaboration_receipt_from_fabric(&operation, &receipt, "2026-08-13T00:00:01Z")
+                .expect("only terminal applied is business success");
+        assert_eq!(business.result, result);
+
+        let mut accepted_only = receipt.clone();
+        accepted_only.kind = ReceiptKind::ControlPlaneAccepted;
+        accepted_only.application_effect = None;
+        assert!(collaboration_receipt_from_fabric(
+            &operation,
+            &accepted_only,
+            "2026-08-13T00:00:01Z"
+        )
+        .is_err());
+
+        let mut unknown = receipt;
+        unknown.kind = ReceiptKind::RecoveryRequired;
+        unknown.application_effect = Some(EffectCertainty::Unknown);
+        let error = collaboration_receipt_from_fabric(&operation, &unknown, "2026-08-13T00:00:01Z")
+            .unwrap_err();
+        assert_eq!(error.code, FabricErrorCode::RecoveryRequired);
+        assert_eq!(error.effect_certainty, FabricEffectCertainty::Unknown);
+    }
+}
+
+#[test]
+fn target_work_create_applies_once_through_native_work_authority() {
+    let target = TestStore::new("target-work-application");
+    seed_target_team(&target.store);
+    let target_placement = TargetPlacementRef {
+        team_id: "team-b".into(),
+        team_revision: 1,
+        node_id: TARGET_NODE_UUID.into(),
+        placement_generation: 1,
+    };
+    let payload = serde_json::json!({
+        "delegation_id": "delegation-native-1",
+        "requested_outcome": "Implement the target component",
+        "acceptance_contract": "checks and evidence are required",
+        "source_work_ref": work_ref("node-a", "team-a", "work-a", 9),
+        "target_placement": target_placement,
+    });
+    let business = RoutedBusinessOperation {
+        id: "route-target-native-1".into(),
+        protocol_version: "agentfirm.fabric.v1".into(),
+        company_id: "company-1".into(),
+        kind: RoutedBusinessKind::TargetWorkCreate,
+        authenticated_actor: actor(ActorKind::AgentMember, "host-b"),
+        source_node_id: "node-a".into(),
+        target_placement: target_placement.clone(),
+        expected_revision: 2,
+        idempotency_key: "target-native-1".into(),
+        payload_digest: canonical_json_fingerprint(&payload),
+        payload,
+        required_capability: "collaboration.target_work_create".into(),
+        ordering_key: "delegation:delegation-native-1".into(),
+        created_at: "2026-08-13T00:00:00Z".into(),
+    };
+    let route = route_collaboration_business_operation(
+        &business,
+        &CollaborationFabricRouteContext {
+            authenticated_actor: AuthenticatedActor {
+                company_id: "company-1".into(),
+                actor_id: "node-a".into(),
+                actor_kind: FabricActorKind::Service,
+                role_bindings: BTreeSet::from(["fabric_submit".into()]),
+                session_id: "daemon-a:1".into(),
+                issued_at_unix_ms: 1,
+                expires_at_unix_ms: 10_000,
+            },
+            resolved_business_actor: actor(ActorKind::AgentMember, "host-b"),
+            source: CollaborationFabricSource::ControlPlane,
+            control_plane_generation: 3,
+            target_execution_space_id: Some("space-node-b".into()),
+            created_at_unix_ms: 100,
+            expires_at_unix_ms: 5_000,
+        },
+    )
+    .unwrap();
+    let first = apply_collaboration_target_operation(&target.store, &route, "unix-ms:200")
+        .expect("native target Work creation");
+    let replay = apply_collaboration_target_operation(&target.store, &route, "unix-ms:201")
+        .expect("native target Work exact replay");
+    assert_eq!(first.1, replay.1);
+    let works = target.store.latest_works().unwrap();
+    assert_eq!(works.len(), 1);
+    assert_eq!(works[0].id, "remote-work:delegation-native-1");
+    assert_eq!(works[0].team_id.as_deref(), Some("team-b"));
+
+    for (label, status) in [
+        ("closed", AgentTeamStatus::Closed),
+        ("archived", AgentTeamStatus::Archived),
+    ] {
+        let unavailable = TestStore::new(&format!("target-work-{label}"));
+        seed_target_team(&unavailable.store);
+        let mut team = unavailable
+            .store
+            .teams()
+            .unwrap()
+            .into_iter()
+            .rev()
+            .find(|team| team.id == "team-b")
+            .unwrap();
+        team.status = status;
+        team.updated_at = format!("unix-ms:{label}");
+        unavailable.store.append_team(&team).unwrap();
+        let before_works = unavailable.store.latest_works().unwrap();
+        let before_events = unavailable.store.work_events().unwrap();
+        let error = apply_collaboration_target_operation(&unavailable.store, &route, "unix-ms:201")
+            .expect_err("terminal target Team must reject remote Work creation");
+        assert_eq!(error.code, TransportFabricErrorCode::NodeStaleGeneration);
+        assert_eq!(unavailable.store.latest_works().unwrap(), before_works);
+        assert_eq!(unavailable.store.work_events().unwrap(), before_events);
+    }
+
+    let before = target.store.latest_works().unwrap();
+    let mut stale = route;
+    stale.body["target_team_revision"] = serde_json::json!(2);
+    stale.body_digest = json_digest(&stale.body).unwrap();
+    assert!(apply_collaboration_target_operation(&target.store, &stale, "unix-ms:202").is_err());
+    assert_eq!(target.store.latest_works().unwrap(), before);
+
+    let source = TestStore::new("remote-fact-source-cache");
+    seed_team(
+        &source.store,
+        SOURCE_NODE_UUID,
+        "Node A",
+        "space-node-a",
+        "project-a",
+        "mission-a",
+        "team-a",
+        "Team A",
+        "host-a",
+        "run-a",
+    );
+    let mut target_work_ref: RemoteWorkRef =
+        serde_json::from_value(first.1["target_work_ref"].clone()).unwrap();
+    let relationship_target_work_ref = target_work_ref.clone();
+
+    let cancellation_request = DelegationCancellationRequest {
+        id: "cancel-native-1".into(),
+        delegation_id: "delegation-native-1".into(),
+        expected_delegation_revision: 3,
+        requested_by: actor(ActorKind::AgentMember, "host-a"),
+        reason: "source Work no longer needs this outcome".into(),
+        state: CancellationRequestState::Pending,
+        target_host_decision_ref: None,
+        revision: 1,
+        created_at: "unix-ms:202".into(),
+        updated_at: "unix-ms:202".into(),
+    };
+    let cancellation_payload = serde_json::json!({
+        "request": cancellation_request,
+        "target_placement": target_placement,
+        "target_work_ref": target_work_ref,
+    });
+    let cancellation_business = RoutedBusinessOperation {
+        id: "route-cancel-native-1".into(),
+        protocol_version: "agentfirm.fabric.v1".into(),
+        company_id: "company-1".into(),
+        kind: RoutedBusinessKind::DelegationCancelRequest,
+        authenticated_actor: actor(ActorKind::AgentMember, "host-a"),
+        source_node_id: SOURCE_NODE_UUID.into(),
+        target_placement: target_placement.clone(),
+        expected_revision: 3,
+        idempotency_key: "cancel-native-1".into(),
+        payload_digest: canonical_json_fingerprint(&cancellation_payload),
+        payload: cancellation_payload,
+        required_capability: RoutedBusinessKind::DelegationCancelRequest.required_capability(),
+        ordering_key: "delegation:delegation-native-1".into(),
+        created_at: "unix-ms:202".into(),
+    };
+    let cancellation_route = route_collaboration_business_operation(
+        &cancellation_business,
+        &CollaborationFabricRouteContext {
+            authenticated_actor: AuthenticatedActor {
+                company_id: "company-1".into(),
+                actor_id: "control-plane:3".into(),
+                actor_kind: FabricActorKind::Service,
+                role_bindings: BTreeSet::from(["company_control_plane".into()]),
+                session_id: "control-plane:3".into(),
+                issued_at_unix_ms: 202,
+                expires_at_unix_ms: 10_000,
+            },
+            resolved_business_actor: actor(ActorKind::AgentMember, "host-a"),
+            source: CollaborationFabricSource::ControlPlane,
+            control_plane_generation: 3,
+            target_execution_space_id: Some("space-node-b".into()),
+            created_at_unix_ms: 202,
+            expires_at_unix_ms: 5_000,
+        },
+    )
+    .expect("central cancellation request uses Wave5 route");
+    let observed =
+        apply_collaboration_target_operation(&target.store, &cancellation_route, "unix-ms:203")
+            .expect("target observes exact active Work cancellation request");
+    assert_eq!(
+        observed.0,
+        "agentfirm.collaboration.cancellation_request_observed.v1"
+    );
+
+    let before_cancel = target.store.latest_works().unwrap();
+    let premature_decision = DelegationCancellationDecision {
+        id: "cancel-decision-native-1".into(),
+        cancellation_request_id: "cancel-native-1".into(),
+        expected_request_revision: 1,
+        decision: CancellationDecisionKind::Accept,
+        decided_by_target_host: actor(ActorKind::AgentMember, "host-b"),
+        native_work_event_ref: target_work_ref.work_event_id.clone(),
+        reason: "pretend the Work was cancelled".into(),
+        created_at: "unix-ms:204".into(),
+    };
+    let decision_payload = |decision: &DelegationCancellationDecision| {
+        serde_json::json!({
+            "delegation_id": "delegation-native-1",
+            "request_id": "cancel-native-1",
+            "decision": decision,
+            "target_placement": target_placement,
+            "target_work_ref": target_work_ref,
+        })
+    };
+    let route_decision = |decision: &DelegationCancellationDecision| {
+        let payload = decision_payload(decision);
+        let business = RoutedBusinessOperation {
+            id: format!("route:{}", decision.id),
+            protocol_version: "agentfirm.fabric.v1".into(),
+            company_id: "company-1".into(),
+            kind: RoutedBusinessKind::DelegationCancelDecide,
+            authenticated_actor: decision.decided_by_target_host.clone(),
+            source_node_id: SOURCE_NODE_UUID.into(),
+            target_placement: target_placement.clone(),
+            expected_revision: 4,
+            idempotency_key: decision.id.clone(),
+            payload_digest: canonical_json_fingerprint(&payload),
+            payload,
+            required_capability: RoutedBusinessKind::DelegationCancelDecide.required_capability(),
+            ordering_key: "delegation:delegation-native-1".into(),
+            created_at: decision.created_at.clone(),
+        };
+        route_collaboration_business_operation(
+            &business,
+            &CollaborationFabricRouteContext {
+                authenticated_actor: AuthenticatedActor {
+                    company_id: "company-1".into(),
+                    actor_id: "control-plane:3".into(),
+                    actor_kind: FabricActorKind::Service,
+                    role_bindings: BTreeSet::from(["company_control_plane".into()]),
+                    session_id: "control-plane:3".into(),
+                    issued_at_unix_ms: 204,
+                    expires_at_unix_ms: 10_000,
+                },
+                resolved_business_actor: actor(ActorKind::AgentMember, "host-b"),
+                source: CollaborationFabricSource::ControlPlane,
+                control_plane_generation: 3,
+                target_execution_space_id: Some("space-node-b".into()),
+                created_at_unix_ms: 204,
+                expires_at_unix_ms: 5_000,
+            },
+        )
+        .unwrap()
+    };
+    assert!(apply_collaboration_target_operation(
+        &target.store,
+        &route_decision(&premature_decision),
+        "unix-ms:204",
+    )
+    .is_err());
+    assert_eq!(target.store.latest_works().unwrap(), before_cancel);
+
+    let native_cancel_event = "native-work-cancelled:delegation-native-1";
+    let current_work = target
+        .store
+        .latest_works()
+        .unwrap()
+        .into_iter()
+        .find(|work| work.id == target_work_ref.work_id)
+        .unwrap();
+    target
+        .store
+        .cancel_work(
+            &current_work.id,
+            current_work.version,
+            "target Host accepted source cancellation request",
+            WorkCommandContext {
+                event_id: native_cancel_event.into(),
+                performed_by_actor: TeamActorRef {
+                    kind: TeamActorKind::Host,
+                    id: "host-b".into(),
+                    display_name: None,
+                    authn_source: Some("remote_fabric_verified_source_node".into()),
+                },
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: "native-cancel-1".into(),
+                created_at: "unix-ms:205".into(),
+                duplicate_ok: false,
+            },
+        )
+        .expect("target Host cancels native Work through Work authority");
+    let accepted_decision = DelegationCancellationDecision {
+        native_work_event_ref: native_cancel_event.into(),
+        reason: "native Work is quiesced and cancelled".into(),
+        ..premature_decision
+    };
+    let validated = apply_collaboration_target_operation(
+        &target.store,
+        &route_decision(&accepted_decision),
+        "unix-ms:206",
+    )
+    .expect("target validates exact native cancellation event");
+    assert_eq!(
+        validated.0,
+        "agentfirm.collaboration.cancellation_decision_validated.v1"
+    );
+    let cancelled_work = target
+        .store
+        .latest_works()
+        .unwrap()
+        .into_iter()
+        .find(|work| work.id == target_work_ref.work_id)
+        .unwrap();
+    target_work_ref.work_revision = cancelled_work.version;
+    target_work_ref.work_event_id = native_cancel_event.into();
+    target_work_ref.digest =
+        canonical_json_fingerprint(&serde_json::to_value(&cancelled_work).unwrap());
+
+    let source_work = RemoteWorkRef {
+        schema_version: "agentfirm.remote-work-ref.v1".into(),
+        execution_space_id: "space-node-a".into(),
+        node_id: SOURCE_NODE_UUID.into(),
+        team_id: "team-a".into(),
+        team_revision: 1,
+        placement_generation: 1,
+        work_id: "work-a".into(),
+        work_revision: 9,
+        work_event_id: "event-work-a-9".into(),
+        digest: format!("sha256:{:064x}", 9),
+    };
+    let fact = serde_json::json!({
+        "submitted_work_revision": target_work_ref.work_revision,
+        "outcome": "implemented",
+        "checks": ["check:unit"],
+    });
+    let fact_digest = canonical_json_fingerprint(&fact);
+    let publication = RemoteFactPublication {
+        id: "publication-routed-1".into(),
+        company_id: "company-1".into(),
+        delegation_id: "delegation-native-1".into(),
+        origin_node_id: TARGET_NODE_UUID.into(),
+        origin_team_id: "team-b".into(),
+        fact_work_ref: relationship_target_work_ref,
+        native_fact_work_ref: target_work_ref,
+        delegation_source_work_ref: source_work,
+        fact_kind: RemoteFactKind::Report,
+        fact_id: "report-routed-1".into(),
+        fact_revision: 1,
+        fact_digest: fact_digest.clone(),
+        summary: "target result".into(),
+        classification: "team-visible".into(),
+        snapshot: RemoteFactSnapshot {
+            publication_id: "publication-routed-1".into(),
+            fact_schema: "agentfirm.work-report.v1".into(),
+            canonical_redacted_fact: fact,
+            canonical_digest: fact_digest,
+        },
+        artifact_refs: Vec::new(),
+        evidence_refs: vec!["check:unit".into()],
+        operational_decision_ref: None,
+        created_by: actor(ActorKind::AgentMember, "host-b"),
+        created_at: "unix-ms:203".into(),
+        retain_until: "unix-ms:999999".into(),
+    };
+    let source_placement = TargetPlacementRef {
+        team_id: "team-a".into(),
+        team_revision: 1,
+        node_id: SOURCE_NODE_UUID.into(),
+        placement_generation: 1,
+    };
+    let publication_business = target
+        .store
+        .remote_fact_publish_operation(
+            &CollaborationMutationContext {
+                company_id: "company-1".into(),
+                authenticated_actor: publication.created_by.clone(),
+                command_name: "remote_fact_publish".into(),
+                idempotency_key: "publish-routed-1".into(),
+                expected_revision: 3,
+                occurred_at: "unix-ms:203".into(),
+            },
+            &publication,
+            &source_placement,
+            TARGET_NODE_UUID,
+        )
+        .expect("target WorkApplicationService builds routed publication");
+    let publication_route = route_collaboration_business_operation(
+        &publication_business,
+        &CollaborationFabricRouteContext {
+            authenticated_actor: AuthenticatedActor {
+                company_id: "company-1".into(),
+                actor_id: TARGET_NODE_UUID.into(),
+                actor_kind: FabricActorKind::Service,
+                role_bindings: BTreeSet::from(["fabric_submit".into()]),
+                session_id: "daemon-b:1".into(),
+                issued_at_unix_ms: 203,
+                expires_at_unix_ms: 10_000,
+            },
+            resolved_business_actor: publication.created_by.clone(),
+            source: CollaborationFabricSource::Node {
+                source_execution_space_id: "space-node-b".into(),
+                source_gateway_generation: 9,
+                source_node_daemon_id: "daemon-b".into(),
+                source_node_daemon_generation: 1,
+            },
+            control_plane_generation: 3,
+            target_execution_space_id: Some("space-node-a".into()),
+            created_at_unix_ms: 203,
+            expires_at_unix_ms: 5_000,
+        },
+    )
+    .expect("publication uses Wave5 route");
+    let cached =
+        apply_collaboration_target_operation(&source.store, &publication_route, "unix-ms:204")
+            .expect("source Node persists read-only publication cache");
+    assert_eq!(cached.0, "agentfirm.collaboration.remote_fact_cached.v1");
+    let replay =
+        apply_collaboration_target_operation(&source.store, &publication_route, "unix-ms:205")
+            .expect("publication cache exact replay");
+    assert_eq!(cached.1["publication_id"], replay.1["publication_id"]);
+}
+
+#[test]
+fn delegation_proposal_routes_source_attestation_and_target_resolves_host() {
+    let source = TestStore::new("proposal-source");
+    let target = TestStore::new("proposal-target");
+    install_policy(&source.store);
+    seed_target_team(&target.store);
+    let target_placement = TargetPlacementRef {
+        team_id: "team-b".into(),
+        team_revision: 1,
+        node_id: TARGET_NODE_UUID.into(),
+        placement_generation: 1,
+    };
+    let request = ProposeDelegationRequest {
+        delegation_id: "delegation-routed-1".into(),
+        source_work_attestation_id: "source-work-attestation-1".into(),
+        target_placement: target_placement.clone(),
+        requested_outcome: "Implement target component".into(),
+        outcome_class: "implementation".into(),
+        acceptance_contract: "checks and evidence".into(),
+        operation_id: "route-proposal-1".into(),
+    };
+    let business = source
+        .store
+        .delegation_propose_operation(
+            &context(
+                actor(ActorKind::AgentMember, "host-a"),
+                "delegation_propose",
+                "proposal-route-1",
+                0,
+            ),
+            &request,
+            "policy-a-b",
+        )
+        .expect("source Node builds attested proposal");
+    let route = route_collaboration_business_operation(
+        &business,
+        &CollaborationFabricRouteContext {
+            authenticated_actor: AuthenticatedActor {
+                company_id: "company-1".into(),
+                actor_id: "node-a".into(),
+                actor_kind: FabricActorKind::Service,
+                role_bindings: BTreeSet::from(["fabric_submit".into()]),
+                session_id: "daemon-a:8".into(),
+                issued_at_unix_ms: 1,
+                expires_at_unix_ms: 10_000,
+            },
+            resolved_business_actor: actor(ActorKind::AgentMember, "host-a"),
+            source: CollaborationFabricSource::Node {
+                source_execution_space_id: "space-node-a".into(),
+                source_gateway_generation: 8,
+                source_node_daemon_id: "daemon-a".into(),
+                source_node_daemon_generation: 4,
+            },
+            control_plane_generation: 3,
+            target_execution_space_id: Some("space-node-b".into()),
+            created_at_unix_ms: 100,
+            expires_at_unix_ms: 5_000,
+        },
+    )
+    .expect("Wave5 route");
+    let applied = apply_collaboration_target_operation(&target.store, &route, "unix-ms:200")
+        .expect("target validates current Team placement and Host");
+    assert_eq!(
+        applied.0,
+        "agentfirm.collaboration.delegation_proposal_validated.v1"
+    );
+    assert_eq!(applied.1["target_host_ref"]["id"], "host-b");
+    assert!(target.store.latest_works().unwrap().is_empty());
+
+    let before = target.store.collaboration_operations().unwrap();
+    let mut stale = route;
+    stale.body["target_team_revision"] = serde_json::json!(2);
+    stale.body_digest = json_digest(&stale.body).unwrap();
+    assert!(apply_collaboration_target_operation(&target.store, &stale, "unix-ms:201").is_err());
+    assert_eq!(target.store.collaboration_operations().unwrap(), before);
+}
+
+#[test]
+fn target_host_decision_routes_under_control_plane_and_validates_local_team() {
+    let central = TestStore::new("decision-central");
+    let target = TestStore::new("decision-target");
+    install_policy(&central.store);
+    seed_target_team(&target.store);
+    let target_placement = TargetPlacementRef {
+        team_id: "team-b".into(),
+        team_revision: 1,
+        node_id: TARGET_NODE_UUID.into(),
+        placement_generation: 1,
+    };
+    let mut auth = authority();
+    auth.target_placement = target_placement.clone();
+    let mut request = proposal();
+    request.target_placement = target_placement.clone();
+    central
+        .store
+        .propose_collaboration_delegation(
+            &context(
+                auth.source_host.clone(),
+                "delegation.propose",
+                "decision-propose-1",
+                0,
+            ),
+            &request,
+            &auth,
+            &policy(),
+        )
+        .expect("central proposal");
+    let decision = DelegationDecision {
+        id: "decision-route-1".into(),
+        delegation_id: request.delegation_id.clone(),
+        expected_delegation_revision: 1,
+        decision: DelegationDecisionKind::Accept,
+        decided_by_target_host: auth.target_host.clone(),
+        reason: "capacity available".into(),
+        created_at: "2026-08-13T00:00:00Z".into(),
+    };
+    let business = central
+        .store
+        .delegation_decide_operation(
+            &context(
+                auth.target_host.clone(),
+                "delegation_decide",
+                "decision-route-1",
+                1,
+            ),
+            &request.delegation_id,
+            &decision,
+        )
+        .expect("Control Plane builds exact target Host decision");
+    let route = route_collaboration_business_operation(
+        &business,
+        &CollaborationFabricRouteContext {
+            authenticated_actor: AuthenticatedActor {
+                company_id: "company-1".into(),
+                actor_id: "control-plane:3".into(),
+                actor_kind: FabricActorKind::Service,
+                role_bindings: BTreeSet::from(["company_control_plane".into()]),
+                session_id: "control-plane:3".into(),
+                issued_at_unix_ms: 100,
+                expires_at_unix_ms: 10_000,
+            },
+            resolved_business_actor: auth.target_host,
+            source: CollaborationFabricSource::ControlPlane,
+            control_plane_generation: 3,
+            target_execution_space_id: Some("space-node-b".into()),
+            created_at_unix_ms: 100,
+            expires_at_unix_ms: 5_000,
+        },
+    )
+    .expect("decision uses accepted Control Plane route authority");
+    let applied = apply_collaboration_target_operation(&target.store, &route, "unix-ms:200")
+        .expect("current target Host decision validates");
+    assert_eq!(
+        applied.0,
+        "agentfirm.collaboration.delegation_decision_validated.v1"
+    );
+    assert_eq!(applied.1["decision"]["id"], "decision-route-1");
+    assert!(target.store.latest_works().unwrap().is_empty());
+
+    let before = target.store.latest_works().unwrap();
+    let mut hostile = route;
+    hostile.body["business_actor_id"] = serde_json::json!("member-b");
+    hostile.body_digest = json_digest(&hostile.body).unwrap();
+    assert!(apply_collaboration_target_operation(&target.store, &hostile, "unix-ms:201").is_err());
+    assert_eq!(target.store.latest_works().unwrap(), before);
+}

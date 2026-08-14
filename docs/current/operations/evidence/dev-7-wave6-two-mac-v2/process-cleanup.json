@@ -1,0 +1,14 @@
+{
+  "checked_at": "2026-08-13T12:12:00+08:00",
+  "source": {
+    "scoped_processes_remaining": 0,
+    "patterns": ["wave6-control-plane", "wave6-node-a-gateway", "wave5-node-a serve", "firm daemon serve"]
+  },
+  "target": {
+    "scoped_processes_remaining": 0,
+    "daemon_stop_generation": 22,
+    "patterns": ["agentfirm-wave6-working", "wave5-node-b serve", "firm daemon serve"]
+  },
+  "identity_contract": "pinned DEV-6 Mac B SSH identity; no host-key modification",
+  "secret_material_recorded": false
+}

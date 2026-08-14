@@ -94,8 +94,8 @@ Kimi 执行时产生 flat NDJSON transport frames，Harness 在内存归约并�
 
 - `NativeSessionRef`，provider 为 `kimi`；
 - 可选 resumable session id（来自 `session.resume_hint`）；
-- `Evidence`（source_type = `kimi_delivery_session`）；
-- `DeliveryOutcome.summary`（来自 assistant content）；
+- 当前调用可消费的内存态 assistant response；
+- 仅描述 delivery 成功/失败的 `DeliveryOutcome.summary`，不含 assistant content；
 - no native usage/model/cost/structured frame in `-p` mode，走 degraded fallback
   (`crates/firm-cli/src/main.rs:14658-14763`)。
 
@@ -114,10 +114,10 @@ Kimi 产生的事件通过以下源进来：
 2. **Native session binding** — Harness 只记录 provider/mode/session id、
    adapter/provider version、availability 与 resume capability。
 
-3. **Evidence ingest** — Kimi delivery session output:
-   - source_type = `kimi_delivery_session`
-   - source_ref = `native-session:kimi:{resolved_session_id}`
-   - summary = Kimi stream-json delivery summary
+3. **No automatic Evidence ingest** — native Session id is provider provenance on
+   the Delivery/AgentSession binding, not Harness Evidence. Provider output cannot
+   fabricate Evidence or an authored report Message; those require explicit
+   canonical collaboration writes.
 
 Source: `crates/firm-cli/src/main.rs:14687-14733`.
 

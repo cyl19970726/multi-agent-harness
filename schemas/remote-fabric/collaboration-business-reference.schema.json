@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.local/schemas/remote-fabric/collaboration-business-reference.schema.json",
+  "title": "CollaborationBusinessReference",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "business_kind", "required_capability", "business_actor_kind", "business_actor_id",
+    "target_team_id", "target_team_revision",
+    "placement_generation", "expected_revision", "payload_digest", "payload"
+  ],
+  "properties": {
+    "business_kind": {
+      "enum": [
+        "delegation_propose", "delegation_decide", "target_work_create",
+        "delegation_cancel_request", "delegation_cancel_decide", "team_message_deliver",
+        "remote_fact_publish", "artifact_grant"
+      ]
+    },
+    "required_capability": {
+      "enum": [
+        "collaboration.delegation_propose", "collaboration.delegation_decide",
+        "collaboration.target_work_create", "collaboration.delegation_cancel_request",
+        "collaboration.delegation_cancel_decide", "collaboration.team_message_deliver",
+        "collaboration.remote_fact_publish", "collaboration.artifact_grant"
+      ]
+    },
+    "business_actor_kind": { "enum": ["human", "agent_member", "service"] },
+    "business_actor_id": { "type": "string", "minLength": 1 },
+    "target_team_id": { "type": "string", "minLength": 1 },
+    "target_team_revision": { "type": "integer", "minimum": 1 },
+    "placement_generation": { "const": 1 },
+    "expected_revision": { "type": "integer", "minimum": 0 },
+    "payload_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "payload": {}
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "business_kind": { "const": "delegation_propose" } } },
+      "then": { "properties": { "required_capability": { "const": "collaboration.delegation_propose" } } }
+    },
+    {
+      "if": { "properties": { "business_kind": { "const": "delegation_decide" } } },
+      "then": { "properties": { "required_capability": { "const": "collaboration.delegation_decide" } } }
+    },
+    {
+      "if": { "properties": { "business_kind": { "const": "target_work_create" } } },
+      "then": { "properties": { "required_capability": { "const": "collaboration.target_work_create" } } }
+    },
+    {
+      "if": { "properties": { "business_kind": { "const": "delegation_cancel_request" } } },
+      "then": { "properties": { "required_capability": { "const": "collaboration.delegation_cancel_request" } } }
+    },
+    {
+      "if": { "properties": { "business_kind": { "const": "delegation_cancel_decide" } } },
+      "then": { "properties": { "required_capability": { "const": "collaboration.delegation_cancel_decide" } } }
+    },
+    {
+      "if": { "properties": { "business_kind": { "const": "team_message_deliver" } } },
+      "then": { "properties": { "required_capability": { "const": "collaboration.team_message_deliver" } } }
+    },
+    {
+      "if": { "properties": { "business_kind": { "const": "remote_fact_publish" } } },
+      "then": { "properties": { "required_capability": { "const": "collaboration.remote_fact_publish" } } }
+    },
+    {
+      "if": { "properties": { "business_kind": { "const": "artifact_grant" } } },
+      "then": { "properties": { "required_capability": { "const": "collaboration.artifact_grant" } } }
+    }
+  ]
+}

@@ -6602,7 +6602,7 @@ fn kimi_null_error_key_on_a_successful_response_is_not_a_provider_error() {
     );
     assert_eq!(status, 202, "body: {started}");
 
-    let mut completed = false;
+    let mut completed_action = None;
     for _ in 0..300 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
         assert!(
@@ -6616,23 +6616,36 @@ fn kimi_null_error_key_on_a_successful_response_is_not_a_provider_error() {
                 }),
             "`error: null` is an empty key, not a provider failure"
         );
-        completed = snapshot["member_actions"]
+        completed_action = snapshot["member_actions"]
             .as_array()
             .into_iter()
             .flatten()
-            .any(|action| {
+            .find(|action| {
                 action["member_run_id"].as_str() == Some(member_id.as_str())
                     && action["action_type"].as_str() == Some("turn_completed")
                     && action["status"].as_str() == Some("succeeded")
-            });
-        if completed {
+            })
+            .cloned();
+        if completed_action.is_some() {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+    let completed_action = completed_action
+        .expect("a successful round carrying `error: null` must record a successful provider turn");
+    let durable_summary = completed_action["summary"].as_str().unwrap_or_default();
     assert!(
-        completed,
-        "a successful round carrying `error: null` must record a successful provider turn"
+        durable_summary.contains("transcript remains provider-native"),
+        "the durable action must be a coordination fact: {completed_action}"
+    );
+    assert!(
+        !durable_summary.contains("fake member finished round"),
+        "provider-authored response text must not be copied into MemberAction: {completed_action}"
+    );
+    assert_eq!(
+        completed_action["evidence_refs"],
+        serde_json::json!([]),
+        "provider output must not fabricate Harness Evidence refs"
     );
 }
 

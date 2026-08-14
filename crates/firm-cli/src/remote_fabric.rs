@@ -223,10 +223,33 @@ pub(crate) fn resolved_message_from_operation(
 ) -> Result<Message, FabricError> {
     let reference = match operation.closed_body()? {
         ClosedOperationBody::Message(reference) => reference,
+        ClosedOperationBody::CollaborationBusiness(reference)
+            if reference.business_kind == "team_message_deliver"
+                && reference.required_capability == "collaboration.team_message_deliver" =>
+        {
+            serde_json::from_value::<MessageReference>(
+                reference
+                    .payload
+                    .get("message_reference")
+                    .cloned()
+                    .ok_or_else(|| {
+                        FabricError::none(
+                            FabricErrorCode::InvalidPayload,
+                            "team_message_deliver lacks server-frozen message_reference",
+                        )
+                    })?,
+            )
+            .map_err(|error| {
+                FabricError::none(
+                    FabricErrorCode::InvalidPayload,
+                    format!("team_message_deliver payload is not a MessageReference: {error}"),
+                )
+            })?
+        }
         _ => {
             return Err(FabricError::none(
                 FabricErrorCode::InvalidPayload,
-                "operation is not a canonical Message envelope",
+                "operation is not a canonical Message or team_message_deliver envelope",
             ))
         }
     };
@@ -262,6 +285,7 @@ fn decode_embedded_message(
         "team_id": message.team_id,
         "team_run_id": message.team_run_id,
         "work_id": message.work_id,
+        "collaboration_scope": message.collaboration_scope,
         "kind": message.kind,
         "body": message.body,
         "body_digest": message.body_digest,

@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.local/schemas/provider-events/provider-observation.schema.json",
+  "title": "ProviderObservation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "observation_id", "provider", "adapter_version",
+    "native_source_ref", "agent_identity_id", "agent_session_id",
+    "agent_session_generation", "node_daemon_id", "node_daemon_generation",
+    "ordering_position", "observed_at", "semantic_kind", "lifecycle_phase",
+    "completeness", "effect_certainty", "visibility", "redacted", "truncated",
+    "source_content_fingerprint", "payload"
+  ],
+  "properties": {
+    "schema_version": {"const": "agentfirm.provider_observation.v1"},
+    "observation_id": {"type": "string", "minLength": 1},
+    "provider": {"enum": ["codex", "claude", "kimi", "pi"]},
+    "adapter_version": {"const": "agentfirm.provider_event_adapter.v1"},
+    "native_source_ref": {"type": "string", "pattern": "^provider-source:[A-Za-z0-9:_-]+$"},
+    "agent_identity_id": {"type": "string", "minLength": 1},
+    "agent_session_id": {"type": "string", "minLength": 1},
+    "agent_session_generation": {"type": "integer", "minimum": 1},
+    "node_daemon_id": {"type": "string", "minLength": 1},
+    "node_daemon_generation": {"type": "integer", "minimum": 1},
+    "provider_thread_id": {"type": ["string", "null"], "minLength": 1},
+    "provider_turn_id": {"type": ["string", "null"], "minLength": 1},
+    "provider_event_id": {"type": ["string", "null"], "minLength": 1},
+    "ordering_position": {"type": "integer", "minimum": 1},
+    "causal_parent_id": {"type": ["string", "null"], "minLength": 1},
+    "correlation_id": {"type": ["string", "null"], "minLength": 1},
+    "runtime_command_id": {"type": ["string", "null"], "minLength": 1},
+    "occurred_at": {"type": ["string", "null"], "minLength": 1},
+    "observed_at": {"type": "string", "minLength": 1},
+    "semantic_kind": {
+      "enum": [
+        "authored_response", "reasoning_summary", "tool_call_requested",
+        "tool_call_started", "tool_call_completed", "tool_call_failed",
+        "artifact_created", "usage_reported", "interaction_required",
+        "interaction_resolved", "runtime_started", "runtime_ready",
+        "runtime_stopped", "transport_interrupted", "turn_completed",
+        "turn_failed", "turn_cancelled", "command_recovery_required",
+        "malformed_or_incomplete"
+      ]
+    },
+    "lifecycle_phase": {"enum": ["requested", "started", "progress", "terminal", "recovery"]},
+    "completeness": {"enum": ["partial", "complete", "incomplete", "recovery_required"]},
+    "effect_certainty": {"enum": ["none", "not_applied", "applied", "unknown"]},
+    "visibility": {"enum": ["session_owner_private", "team_public", "operator_only"]},
+    "redacted": {"type": "boolean"},
+    "truncated": {"type": "boolean"},
+    "source_content_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Provider-native content fingerprint for response-local dedupe; not a Harness Evidence reference."},
+    "payload": {"$ref": "#/$defs/payload"}
+  },
+  "$defs": {
+    "payload": {
+      "oneOf": [
+        {"$ref": "#/$defs/authoredResponse"},
+        {"$ref": "#/$defs/reasoningSummary"},
+        {"$ref": "#/$defs/tool"},
+        {"$ref": "#/$defs/artifact"},
+        {"$ref": "#/$defs/usage"},
+        {"$ref": "#/$defs/interaction"},
+        {"$ref": "#/$defs/runtime"},
+        {"$ref": "#/$defs/transport"},
+        {"$ref": "#/$defs/turn"},
+        {"$ref": "#/$defs/recovery"},
+        {"$ref": "#/$defs/malformed"}
+      ]
+    },
+    "authoredResponse": {"type": "object", "additionalProperties": false, "required": ["type", "text"], "properties": {"type": {"const": "authored_response"}, "text": {"type": "string", "maxLength": 4000}}},
+    "reasoningSummary": {"type": "object", "additionalProperties": false, "required": ["type", "summary"], "properties": {"type": {"const": "reasoning_summary"}, "summary": {"type": "string", "maxLength": 600}}},
+    "tool": {"type": "object", "additionalProperties": false, "required": ["type", "tool_name"], "properties": {"type": {"const": "tool"}, "tool_name": {"type": "string", "maxLength": 160}, "call_id": {"type": ["string", "null"], "maxLength": 160}, "display_detail": {"type": ["string", "null"], "maxLength": 600}}},
+    "artifact": {"type": "object", "additionalProperties": false, "required": ["type", "display_name"], "properties": {"type": {"const": "artifact"}, "display_name": {"type": "string", "maxLength": 160}, "media_type": {"type": ["string", "null"], "maxLength": 160}, "content_digest": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"}}},
+    "usage": {"type": "object", "additionalProperties": false, "required": ["type"], "properties": {"type": {"const": "usage"}, "input_tokens": {"type": ["integer", "null"], "minimum": 0}, "output_tokens": {"type": ["integer", "null"], "minimum": 0}, "total_tokens": {"type": ["integer", "null"], "minimum": 0}}},
+    "interaction": {"type": "object", "additionalProperties": false, "required": ["type", "reason_code", "prompt"], "properties": {"type": {"const": "interaction"}, "reason_code": {"type": "string", "maxLength": 160}, "prompt": {"type": "string", "maxLength": 600}}},
+    "runtime": {"type": "object", "additionalProperties": false, "required": ["type", "state"], "properties": {"type": {"const": "runtime"}, "state": {"type": "string", "maxLength": 160}}},
+    "transport": {"type": "object", "additionalProperties": false, "required": ["type", "reason_code"], "properties": {"type": {"const": "transport"}, "reason_code": {"type": "string", "maxLength": 160}}},
+    "turn": {"type": "object", "additionalProperties": false, "required": ["type", "outcome"], "properties": {"type": {"const": "turn"}, "outcome": {"type": "string", "maxLength": 160}, "display_summary": {"type": ["string", "null"], "maxLength": 600}}},
+    "recovery": {"type": "object", "additionalProperties": false, "required": ["type", "reason_code"], "properties": {"type": {"const": "recovery"}, "reason_code": {"type": "string", "maxLength": 160}}},
+    "malformed": {"type": "object", "additionalProperties": false, "required": ["type", "reason_code"], "properties": {"type": {"const": "malformed"}, "reason_code": {"type": "string", "maxLength": 160}}}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"effect_certainty": {"enum": ["not_applied", "applied", "unknown"]}}},
+      "then": {"properties": {"runtime_command_id": {"type": "string", "minLength": 1}}}
+    },
+    {"if":{"properties":{"semantic_kind":{"const":"authored_response"}}},"then":{"properties":{"payload":{"$ref":"#/$defs/authoredResponse"}}}},
+    {"if":{"properties":{"semantic_kind":{"const":"reasoning_summary"}}},"then":{"properties":{"payload":{"$ref":"#/$defs/reasoningSummary"}}}},
+    {"if":{"properties":{"semantic_kind":{"enum":["tool_call_requested","tool_call_started","tool_call_completed","tool_call_failed"]}}},"then":{"properties":{"payload":{"$ref":"#/$defs/tool"}}}},
+    {"if":{"properties":{"semantic_kind":{"const":"artifact_created"}}},"then":{"properties":{"payload":{"$ref":"#/$defs/artifact"}}}},
+    {"if":{"properties":{"semantic_kind":{"const":"usage_reported"}}},"then":{"properties":{"payload":{"$ref":"#/$defs/usage"}}}},
+    {"if":{"properties":{"semantic_kind":{"enum":["interaction_required","interaction_resolved"]}}},"then":{"properties":{"payload":{"$ref":"#/$defs/interaction"}}}},
+    {"if":{"properties":{"semantic_kind":{"enum":["runtime_started","runtime_ready","runtime_stopped"]}}},"then":{"properties":{"payload":{"$ref":"#/$defs/runtime"}}}},
+    {"if":{"properties":{"semantic_kind":{"const":"transport_interrupted"}}},"then":{"properties":{"payload":{"$ref":"#/$defs/transport"}}}},
+    {"if":{"properties":{"semantic_kind":{"enum":["turn_completed","turn_failed","turn_cancelled"]}}},"then":{"properties":{"payload":{"$ref":"#/$defs/turn"}}}},
+    {"if":{"properties":{"semantic_kind":{"const":"malformed_or_incomplete"}}},"then":{"properties":{"payload":{"$ref":"#/$defs/malformed"}}}},
+    {
+      "if": {"properties": {"semantic_kind": {"const": "command_recovery_required"}}},
+      "then": {
+        "properties": {
+          "completeness": {"const": "recovery_required"},
+          "effect_certainty": {"const": "unknown"},
+          "runtime_command_id": {"type": "string", "minLength": 1}
+        },
+        "required": ["runtime_command_id"]
+      }
+    },
+    {
+      "if": {"properties": {"visibility": {"const": "team_public"}}},
+      "then": {
+        "properties": {
+          "semantic_kind": {
+            "enum": [
+              "interaction_required", "interaction_resolved", "runtime_started",
+              "runtime_ready", "runtime_stopped", "transport_interrupted",
+              "command_recovery_required"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

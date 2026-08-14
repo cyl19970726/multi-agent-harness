@@ -110,6 +110,8 @@ export function OperatorView({
                   <Card label="Gateway lease age" value={formatAge(fabric.control_plane_metrics?.gateway_lease_age_ms)} />
                   <Card label="Reconcile lag" value={String(fabric.control_plane_metrics?.reconcile_lag ?? "unknown")} />
                   <Card label="Reconcile required" value={String(fabric.recovery_required?.length ?? 0)} />
+                  <Card label="Delegations" value={String(fabric.collaboration?.delegation_count ?? "unavailable")} />
+                  <Card label="Collaboration attention" value={String(fabric.collaboration?.attention_count ?? "unavailable")} />
                 </div>
               ) : (
                 <p className="text-xs text-muted-foreground">

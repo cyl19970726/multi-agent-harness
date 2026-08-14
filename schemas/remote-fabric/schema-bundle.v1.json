@@ -5,6 +5,7 @@
     "artifact-manifest.schema.json",
     "artifact-reference.schema.json",
     "company-node.schema.json",
+    "collaboration-business-reference.schema.json",
     "delivery-intent-reference.schema.json",
     "fabric-frame.schema.json",
     "message-reference.schema.json",
@@ -19,6 +20,7 @@
   ],
   "operation_registry": [
     "artifact.reference.v1",
+    "collaboration.business.v1",
     "delivery_intent.reference.v1",
     "fabric.probe.v1",
     "fabric.reconcile_probe.v1",

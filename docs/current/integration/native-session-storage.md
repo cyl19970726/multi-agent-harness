@@ -22,13 +22,15 @@ This contract defines the adapter seam between:
 
 ## Implemented V1 surface and extension seam
 
-V1 implements mode-aware binding, availability probing, bounded on-demand
-native reads, and explicit provider-native resume through provider-specific
-Rust functions, schema, HTTP/MCP/CLI surfaces, and Dashboard projection. It
-does not expose one public Rust trait with the exact name below.
+V1 implements mode-aware binding, availability probing, exact-owner bounded
+on-demand reads, and explicit provider-native resume through provider-specific
+Rust functions. History is exposed only in the authenticated AgentWorkspace
+projection; the old run-addressed HTTP readers are retired. It does not expose
+one public Rust trait with the exact name below.
 
-The following pseudocode also shows the intended extension seam. Cursor-based
-reads and a unified adapter-level interrupt method are not implemented as one
+The following pseudocode also shows the intended extension seam. The historical
+read is deliberately a fresh bounded read with no durable or recoverable
+cursor. A unified adapter-level interrupt method is not implemented as one
 generic interface today; live interruption remains mode-specific under ADR
 0031.
 
@@ -36,7 +38,7 @@ generic interface today; live interruption remains mode-specific under ADR
 trait NativeSessionAdapter {
     fn bind(&self, launch: LaunchReceipt) -> NativeSessionRef;
     fn probe(&self, session: &NativeSessionRef) -> NativeSessionAvailability;
-    fn read(&self, session: &NativeSessionRef, cursor: Option<NativeCursor>)
+    fn read(&self, session: &NativeSessionRef, limit: usize)
         -> NativeActivityPage;
     fn resume(&self, session: &NativeSessionRef, input: ResumeInput)
         -> NativeResumeReceipt;
@@ -52,7 +54,7 @@ NativeActivityPage
   source_provider
   native_session_id
   availability
-  cursor / next_cursor
+  source_snapshot_fingerprint   # response-local; not a cursor
   records[]
     kind = user_message | assistant_message | tool | command | file |
            approval_request | provider_child | turn_status | error
@@ -113,10 +115,10 @@ promotes it into a coordination object. Automatic copying is prohibited.
 GET Harness Team/Member projection
   -> Mission/Wave/TeamRun/MemberRun/Work/WorkDelivery/messages/interactions/outcome/gate
 
-GET native activity for NativeSessionRef
+GET authenticated AgentWorkspace for exact AgentIdentity
   -> provider adapter probe
   -> provider-native bounded read (latest 300 displayable items)
-  -> sanitized NativeActivityProjection
+  -> SessionEventProjection grouped by provider turn/episode
 
 UI merge
   -> one chronological presentation
@@ -206,10 +208,12 @@ states. UI must not invent native activity or resume from a Harness replay.
 - `MemberRun.native_session` carries the mode-aware locator and verified
   capability snapshot. New provider activity is not written to
   `member_actions.jsonl` or `team_run_events.jsonl`.
-- `GET /v1/member-runs/{id}/native-activity` resolves the provider-owned file
-  server-side and returns a bounded, thinking-free display projection. Native
-  paths never leave the backend and the response is never cached into a
-  Harness ledger.
+- Authenticated `AgentWorkspace.data.session_event_projection` resolves the
+  canonical AgentSession and current NodeDaemon generation server-side, then
+  returns a bounded thinking-free projection. Host-selected Member views
+  structurally omit this field. The legacy
+  `GET /v1/member-runs/{id}/native-activity` route returns `410 Gone` because it
+  cannot prove the exact owner.
 - A retry can bind a member to an earlier provider session with HTTP/MCP member
   field `resume_native_session_id` or CLI
   `--resume-member <member-name>:<native-session-id>`. Resume is never inferred
@@ -227,23 +231,25 @@ states. UI must not invent native activity or resume from a Harness replay.
    Codex provider-derived action/event writes.
 3. **Kimi and Claude readers/resume (complete):** verify installed provider storage and
    privacy first; stop NDJSON/stderr mirror writes.
-4. **Dashboard joined projection (complete for V1):** provider source,
+4. **Dashboard backend projection (complete for V1):** provider source,
    availability, bounded activity, and an honest truncation signal. The UI
-   displays resume support; explicit resume selection remains on TeamRun
-   retry/create CLI, MCP, and HTTP inputs.
+   binding belongs to the frontend Task; explicit resume selection remains on
+   TeamRun retry/create CLI, MCP, and HTTP inputs.
 5. **Removal (complete):** delete obsolete provider-event ledgers, transcript/stdout/JSONL
    fields, reducers, and old local mirrored data; no compatibility reader.
-6. **Acceptance (complete for the ADR 0032 boundary):** a real mixed-provider
-   TeamRun proves assignments, native activity reads, outcomes and gate, while
-   deterministic mode tests prove explicit resume and zero duplicate provider
-   history.
+6. **Acceptance (DEV-20 implementation evidence):** deterministic provider
+   conformance and exact-owner HTTP integration prove native reads, privacy,
+   explicit unavailable state, and zero duplicate provider history. A mixed
+   real-provider UI journey remains separate live acceptance.
 
 ## Remaining projection extensions
 
-- Native activity items currently carry kind, status, title, summary, and time;
-  provider-native item/parent ids are not yet exposed in the generic projection.
-- The read endpoint returns the latest bounded window with `truncated`; cursor
-  pagination is not yet implemented.
+- Historical observations carry their display-safe semantic payload and opaque
+  provider-native event ids where the provider exposes them. Filesystem paths
+  and raw transcript rows stay server-side.
+- The read endpoint returns a bounded on-demand window with `truncated`.
+  Pagination is intentionally deferred; it must not introduce a durable or
+  recoverable Harness projection cursor.
 - Dashboard shows native availability and whether resume is supported, but the
   operator-facing resume/fresh choice is not yet a Member Focus control.
 - These are projection/control-plane extensions, not permission to restore a

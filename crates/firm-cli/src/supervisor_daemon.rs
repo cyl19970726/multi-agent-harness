@@ -8,6 +8,7 @@
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,7 +18,7 @@ use std::time::{Duration, Instant};
 use crate::{
     current_unix_ms_u64, drive_prepared_team_run, ensure_team_message_fabric,
     ensure_team_runtime_fabric, prepare_team_run_start_body, CliError, CliResult, HarnessStore,
-    PreparedTeamRunStart, TeamRunLedger, TeamSupervisorRegistration,
+    LiveProviderActivityUpdate, PreparedTeamRunStart, TeamRunLedger, TeamSupervisorRegistration,
 };
 
 // ---------------------------------------------------------------------------
@@ -72,6 +73,12 @@ struct PendingControlConnection {
     accepted_at: Instant,
 }
 
+#[derive(Clone)]
+struct LiveProviderActivityEndpoint {
+    authority: String,
+    token: String,
+}
+
 enum ControlReadState {
     Pending,
     Closed,
@@ -105,6 +112,10 @@ pub(crate) struct MultiTeamDaemon {
     /// Machine-local provider handles keyed by canonical AgentSession id.
     /// Team membership is intentionally absent from this registry.
     session_runtimes: Mutex<HashMap<String, crate::provider_adapter::NodeSessionRuntime>>,
+    /// Volatile callback registered by the current local `serve` process. It
+    /// is never written to the Store and a daemon restart deliberately loses
+    /// it. The bearer token is required on every loopback ingress request.
+    live_provider_activity_endpoint: Arc<Mutex<Option<LiveProviderActivityEndpoint>>>,
     max_concurrency: usize,
     idle_timeout_secs: u64,
     scan_interval: Duration,
@@ -169,6 +180,7 @@ impl MultiTeamDaemon {
                 socket_path.display()
             ))
         })?;
+        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
         listener
             .set_nonblocking(true)
             .map_err(|e| CliError::Usage(format!("cannot set socket non-blocking: {e}")))?;
@@ -192,6 +204,7 @@ impl MultiTeamDaemon {
             instance_id,
             contexts: Mutex::new(Vec::new()),
             session_runtimes: Mutex::new(HashMap::new()),
+            live_provider_activity_endpoint: Arc::new(Mutex::new(None)),
             max_concurrency,
             idle_timeout_secs,
             scan_interval: Duration::from_secs(scan_interval_secs),
@@ -484,6 +497,18 @@ impl MultiTeamDaemon {
         store: HarnessStore,
         run_id: &str,
     ) -> CliResult<()> {
+        // Provider admissions are scoped to the exact Project Binding and
+        // physical Execution Space.  The machine daemon opens stores from the
+        // space registry rather than through CLI resolution, so recover that
+        // scope from the canonical TeamRun before provider preflight.  Without
+        // this, an admission written through the public CLI is invisible to
+        // the daemon and every review-required provider is rejected even
+        // though the exact tuple was admitted.
+        let run_scope = crate::latest_team_run(&store, run_id)?;
+        let store = store.with_provider_compatibility_scope(
+            run_scope.project_binding_id,
+            format!("execution-space:{}", space.id),
+        );
         self.ensure_node_authority(&space, &store)?;
         // P0-2 fix: enforce concurrent team-run limit.
         {
@@ -513,6 +538,7 @@ impl MultiTeamDaemon {
         let run_id = run_id.to_string();
         let max_concurrency = self.max_concurrency;
         let idle_timeout_secs = self.idle_timeout_secs;
+        let live_provider_activity_endpoint = Arc::clone(&self.live_provider_activity_endpoint);
 
         // Validate and create registration outside the context lock (fixes P0-7).
         let body = prepare_team_run_start_body(&store, &run_id, max_concurrency)?;
@@ -597,14 +623,33 @@ impl MultiTeamDaemon {
         );
 
         let execution_space_id = space.id.clone();
+        let callback_space_id = execution_space_id.clone();
         let thread = std::thread::spawn(move || {
+            let live_sink = Arc::new(move |update: LiveProviderActivityUpdate| {
+                let endpoint = live_provider_activity_endpoint
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone();
+                if let Some(endpoint) = endpoint {
+                    if let Err(error) =
+                        post_live_provider_activity(&endpoint, &callback_space_id, &update)
+                    {
+                        *live_provider_activity_endpoint
+                            .lock()
+                            .unwrap_or_else(|lock_error| lock_error.into_inner()) = None;
+                        eprintln!(
+                            "[node-daemon] live provider activity callback unavailable: {error}"
+                        );
+                    }
+                }
+            });
             drive_prepared_team_run(
                 prepared,
                 Some(space),
                 None,
                 max_concurrency,
                 Duration::from_secs(idle_timeout_secs),
-                None,
+                Some(live_sink),
             )
         });
 
@@ -793,6 +838,36 @@ impl MultiTeamDaemon {
 
         let cmd_name = cmd["cmd"].as_str().unwrap_or("");
         match cmd_name {
+            "register_live_provider_activity" => {
+                let authority = cmd["authority"].as_str().unwrap_or("").trim();
+                let token = cmd["token"].as_str().unwrap_or("").trim();
+                let loopback = authority
+                    .parse::<std::net::SocketAddr>()
+                    .ok()
+                    .is_some_and(|address| address.ip().is_loopback());
+                if !loopback || token.len() < 32 || token.len() > 256 {
+                    Self::write_control_response(
+                        stream,
+                        &serde_json::json!({
+                            "ok": false,
+                            "error": "live provider activity requires a loopback authority and a 32-256 character token"
+                        }),
+                    )?;
+                    return Ok(());
+                }
+                *self
+                    .live_provider_activity_endpoint
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) =
+                    Some(LiveProviderActivityEndpoint {
+                        authority: authority.to_string(),
+                        token: token.to_string(),
+                    });
+                Self::write_control_response(
+                    stream,
+                    &serde_json::json!({"ok": true, "registered": true}),
+                )?;
+            }
             "runtime" => {
                 let envelope: harness_core::agentfirm_api::ControlCommandEnvelope =
                     match serde_json::from_value(cmd["envelope"].clone()) {
@@ -950,8 +1025,13 @@ impl MultiTeamDaemon {
                                 } else {
                                     (None, None)
                                 };
-                                let body_digest = harness_store::canonical_json_fingerprint(
-                                    &serde_json::json!({"body": draft.body}),
+                                // The immutable transfer contract hashes the
+                                // exact Message body bytes. Hashing a wrapper
+                                // JSON object here makes a valid source-authored
+                                // Message unverifiable on the target Node.
+                                let body_digest = format!(
+                                    "sha256:{}",
+                                    harness_fabric::sha256_hex(draft.body.as_bytes())
                                 );
                                 let fingerprint = harness_store::canonical_json_fingerprint(
                                     &serde_json::json!({
@@ -964,6 +1044,7 @@ impl MultiTeamDaemon {
                                         "team_id": draft.team_id,
                                         "team_run_id": draft.team_run_id,
                                         "work_id": draft.work_id,
+                                        "collaboration_scope": draft.collaboration_scope,
                                         "kind": draft.kind,
                                         "body": draft.body,
                                         "body_digest": body_digest,
@@ -975,8 +1056,23 @@ impl MultiTeamDaemon {
                                         "idempotency_key": envelope.idempotency_key,
                                     }),
                                 );
+                                let collaboration_authority = envelope
+                                    .payload
+                                    .get("delegation_authority")
+                                    .filter(|value| !value.is_null())
+                                    .map(|value| {
+                                        serde_json::from_value::<
+                                            harness_core::collaboration::CollaborationMessageAuthority,
+                                        >(value.clone())
+                                        .map_err(|error| {
+                                            CliError::Usage(format!(
+                                                "INVALID_COLLABORATION_MESSAGE_AUTHORITY: {error}"
+                                            ))
+                                        })
+                                    })
+                                    .transpose()?;
                                 store
-                                    .author_message(
+                                    .author_message_with_collaboration_authority(
                                         &effect_mutation,
                                         harness_core::agentfirm_api::Message {
                                             id: format!("message:{}", envelope.idempotency_key),
@@ -993,6 +1089,7 @@ impl MultiTeamDaemon {
                                             team_id: draft.team_id,
                                             team_run_id: draft.team_run_id,
                                             work_id: draft.work_id,
+                                            collaboration_scope: draft.collaboration_scope,
                                             kind: draft.kind,
                                             body: draft.body,
                                             body_digest,
@@ -1005,6 +1102,7 @@ impl MultiTeamDaemon {
                                             idempotency_key: envelope.idempotency_key.clone(),
                                             created_at: accepted_at.clone(),
                                         },
+                                        collaboration_authority.as_ref(),
                                     )
                                     .map_err(|error| CliError::Usage(error.to_string()))
                                     .and_then(|result| {
@@ -1644,6 +1742,74 @@ pub(crate) fn daemon_status_via_socket(firm_home: &Path, node_id: &str) -> Optio
         return None;
     }
     Some(response)
+}
+
+fn post_live_provider_activity(
+    endpoint: &LiveProviderActivityEndpoint,
+    execution_space_id: &str,
+    update: &LiveProviderActivityUpdate,
+) -> Result<(), std::io::Error> {
+    let mut stream = std::net::TcpStream::connect(&endpoint.authority)?;
+    stream.set_read_timeout(Some(Duration::from_millis(500)))?;
+    stream.set_write_timeout(Some(Duration::from_millis(500)))?;
+    let body = serde_json::to_vec(update).map_err(std::io::Error::other)?;
+    let encoded_space = execution_space_id.replace('%', "%25").replace(' ', "%20");
+    write!(
+        stream,
+        "POST /v1/live/provider-activity?space={encoded_space} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nX-AgentFirm-Live-Token: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        endpoint.authority,
+        endpoint.token,
+        body.len(),
+    )?;
+    stream.write_all(&body)?;
+    stream.flush()?;
+    let mut status_line = String::new();
+    std::io::BufReader::new(&mut stream).read_line(&mut status_line)?;
+    if !status_line.contains(" 202 ") {
+        return Err(std::io::Error::other(format!(
+            "serve rejected live provider activity: {}",
+            status_line.trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Register the current `serve` process as the volatile live-activity sink.
+/// A missing daemon is not an error: serve remains usable and a later restart
+/// registers again. The endpoint is loopback-only and never durable.
+pub(crate) fn register_live_provider_activity_via_socket(
+    firm_home: &Path,
+    node_id: &str,
+    authority: &str,
+    token: &str,
+) -> Option<Result<String, std::io::Error>> {
+    let socket_path = node_daemon_socket_path(firm_home, node_id);
+    let mut stream = match UnixStream::connect(&socket_path) {
+        Ok(stream) => stream,
+        Err(_) => return None,
+    };
+    if let Err(error) = stream.set_read_timeout(Some(Duration::from_secs(5))) {
+        return Some(Err(error));
+    }
+    if let Err(error) = stream.set_write_timeout(Some(Duration::from_secs(5))) {
+        return Some(Err(error));
+    }
+    let command = serde_json::json!({
+        "cmd": "register_live_provider_activity",
+        "authority": authority,
+        "token": token,
+    });
+    if let Err(error) = writeln!(stream, "{command}") {
+        return Some(Err(error));
+    }
+    if let Err(error) = stream.flush() {
+        return Some(Err(error));
+    }
+    let mut response = String::new();
+    if let Err(error) = std::io::BufReader::new(&mut stream).read_line(&mut response) {
+        return Some(Err(error));
+    }
+    Some(Ok(response.trim().to_string()))
 }
 
 /// Send an authenticated runtime command to the one local NodeDaemon. The

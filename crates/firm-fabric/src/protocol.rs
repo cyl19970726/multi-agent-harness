@@ -356,6 +356,7 @@ pub const RUNTIME_COMMAND_REFERENCE_KIND: &str = "runtime_command.reference.v1";
 pub const MESSAGE_REFERENCE_KIND: &str = "message.reference.v1";
 pub const DELIVERY_INTENT_REFERENCE_KIND: &str = "delivery_intent.reference.v1";
 pub const ARTIFACT_REFERENCE_KIND: &str = "artifact.reference.v1";
+pub const COLLABORATION_BUSINESS_OPERATION_KIND: &str = "collaboration.business.v1";
 
 pub const PROBE_BODY_SCHEMA: &str = "agentfirm.remote_fabric.probe.v1";
 pub const RECONCILE_PROBE_BODY_SCHEMA: &str = "agentfirm.remote_fabric.reconcile_probe.v1";
@@ -365,6 +366,8 @@ pub const MESSAGE_REFERENCE_SCHEMA: &str = "agentfirm.remote_fabric.message_refe
 pub const DELIVERY_INTENT_REFERENCE_SCHEMA: &str =
     "agentfirm.remote_fabric.delivery_intent_reference.v1";
 pub const ARTIFACT_REFERENCE_SCHEMA: &str = "agentfirm.remote_fabric.artifact_reference.v1";
+pub const COLLABORATION_BUSINESS_OPERATION_SCHEMA: &str =
+    "agentfirm.collaboration.routed_business_operation.v1";
 
 /// Closed transport probe. Probe operations never acquire application
 /// authority and cannot carry arbitrary fields that a future reader might
@@ -445,6 +448,24 @@ pub struct ArtifactReference {
     pub artifact_digest: String,
 }
 
+/// Closed Wave 6 business envelope carried by the Wave 5 transport. The
+/// fabric validates its exact kind/capability/placement tuple but never folds
+/// the payload into WorkDelegation, Message, Work, or artifact business truth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollaborationBusinessReference {
+    pub business_kind: String,
+    pub required_capability: String,
+    pub business_actor_kind: String,
+    pub business_actor_id: String,
+    pub target_team_id: String,
+    pub target_team_revision: u64,
+    pub placement_generation: u64,
+    pub expected_revision: u64,
+    pub payload_digest: String,
+    pub payload: Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClosedOperationBody {
     Probe(FabricProbeBody),
@@ -453,6 +474,7 @@ pub enum ClosedOperationBody {
     Message(MessageReference),
     DeliveryIntent(DeliveryIntentReference),
     Artifact(ArtifactReference),
+    CollaborationBusiness(CollaborationBusinessReference),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -535,6 +557,9 @@ impl RoutedOperation {
             }
             (ARTIFACT_REFERENCE_KIND, ARTIFACT_REFERENCE_SCHEMA) => {
                 ClosedOperationBody::Artifact(decode(&self.body, &self.kind)?)
+            }
+            (COLLABORATION_BUSINESS_OPERATION_KIND, COLLABORATION_BUSINESS_OPERATION_SCHEMA) => {
+                ClosedOperationBody::CollaborationBusiness(decode(&self.body, &self.kind)?)
             }
             _ => {
                 return Err(FabricError::none(
@@ -622,6 +647,50 @@ fn validate_closed_body(
         }
         ClosedOperationBody::Artifact(body) => {
             non_empty(&body.artifact_id) && digest(&body.artifact_digest)
+        }
+        ClosedOperationBody::CollaborationBusiness(body) => {
+            const KINDS: [(&str, &str); 8] = [
+                ("delegation_propose", "collaboration.delegation_propose"),
+                ("delegation_decide", "collaboration.delegation_decide"),
+                ("target_work_create", "collaboration.target_work_create"),
+                (
+                    "delegation_cancel_request",
+                    "collaboration.delegation_cancel_request",
+                ),
+                (
+                    "delegation_cancel_decide",
+                    "collaboration.delegation_cancel_decide",
+                ),
+                ("team_message_deliver", "collaboration.team_message_deliver"),
+                ("remote_fact_publish", "collaboration.remote_fact_publish"),
+                ("artifact_grant", "collaboration.artifact_grant"),
+            ];
+            KINDS.contains(&(
+                body.business_kind.as_str(),
+                body.required_capability.as_str(),
+            )) && matches!(
+                body.business_actor_kind.as_str(),
+                "human" | "agent_member" | "service"
+            ) && non_empty(&body.business_actor_id)
+                && non_empty(&body.target_team_id)
+                && body.target_team_revision > 0
+                && body.placement_generation == 1
+                && fingerprint(&body.payload_digest)
+                && canonical_digest(&body.payload)
+                    .is_ok_and(|digest| format!("sha256:{digest}") == body.payload_digest)
+                && operation.expected_target_revision == Some(body.expected_revision)
+                && operation.authorization_context.get("target_team_id")
+                    == Some(&body.target_team_id)
+                && operation.authorization_context.get("target_team_revision")
+                    == Some(&body.target_team_revision.to_string())
+                && operation.authorization_context.get("placement_generation")
+                    == Some(&body.placement_generation.to_string())
+                && operation.authorization_context.get("required_capability")
+                    == Some(&body.required_capability)
+                && operation.authorization_context.get("business_actor_kind")
+                    == Some(&body.business_actor_kind)
+                && operation.authorization_context.get("business_actor_id")
+                    == Some(&body.business_actor_id)
         }
     };
     if !valid {
@@ -855,6 +924,23 @@ pub struct ArtifactCapabilityRequest {
     pub purpose: ArtifactCapabilityPurpose,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactDownloadRequest {
+    pub capability: ArtifactCapability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactDownloadChunk {
+    pub artifact_id: String,
+    pub artifact_digest: String,
+    pub offset: u64,
+    pub total_size: u64,
+    pub bytes: Vec<u8>,
+    pub terminal: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "frame_kind", content = "payload", rename_all = "snake_case")]
 pub enum FabricPayload {
@@ -872,6 +958,8 @@ pub enum FabricPayload {
     ReconcileResult { receipts: Vec<RouteReceipt> },
     ArtifactCapabilityRequest(ArtifactCapabilityRequest),
     ArtifactCapabilityResponse(ArtifactCapability),
+    ArtifactDownloadRequest(ArtifactDownloadRequest),
+    ArtifactDownloadChunk(ArtifactDownloadChunk),
     LeaseFence { reason: String },
     Drain { reason: String },
     ProtocolShutdown { reason: String },

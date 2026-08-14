@@ -597,8 +597,11 @@ impl NodeLocalFabricStore {
                 "target inbox operation or attempt does not match this Node authority",
             ));
         }
-        if operation.control_plane_generation != session.control_plane_generation
-            || attempt.target_gateway_generation != session.gateway_generation
+        // The immutable operation records the Control Plane generation that
+        // originally accepted it. A later Control Plane may safely route that
+        // same closed operation through a successor attempt; the current
+        // attempt, not the immutable origin envelope, owns the delivery fence.
+        if attempt.target_gateway_generation != session.gateway_generation
             || attempt.control_plane_generation != session.control_plane_generation
         {
             return Err(FabricError::none(
@@ -684,7 +687,8 @@ impl NodeLocalFabricStore {
                 attempt.state,
                 RouteAttemptState::Queued | RouteAttemptState::Sent
             )
-            || operation.control_plane_generation != session.control_plane_generation
+            // Expiry likewise consumes the current successor attempt while
+            // preserving the immutable operation's originating generation.
             || attempt.target_gateway_generation != session.gateway_generation
             || attempt.control_plane_generation != session.control_plane_generation
         {
@@ -1074,21 +1078,38 @@ fn load_local_journal(path: &Path) -> Result<(NodeLocalFabricState, String, u64)
             break;
         };
         let end = offset + relative_end;
-        let frame: LocalJournalFrame =
-            serde_json::from_slice(&bytes[offset..end]).map_err(|error| {
+        let committed = &bytes[offset..end];
+        let frame: LocalJournalFrame = serde_json::from_slice(committed).map_err(|error| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                format!("Node local committed frame is invalid: {error}"),
+            )
+        })?;
+        // Verify the canonical bytes that were actually committed, not a
+        // re-serialization through today's Rust structs. A later compatible
+        // reader may add a `#[serde(default)]` field; materializing that field
+        // before hashing would falsely classify a valid historical chain as
+        // corrupt. Closed-schema deserialization still rejects unknown fields.
+        let mut wire: serde_json::Value = serde_json::from_slice(committed).map_err(|error| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                format!("Node local committed frame is invalid: {error}"),
+            )
+        })?;
+        let wire_digest = wire
+            .as_object_mut()
+            .and_then(|object| object.remove("frame_digest"))
+            .and_then(|value| value.as_str().map(str::to_string))
+            .ok_or_else(|| {
                 FabricError::none(
                     FabricErrorCode::StoreUnavailable,
-                    format!("Node local committed frame is invalid: {error}"),
+                    "Node local committed frame is missing frame_digest",
                 )
             })?;
-        let core = LocalJournalCore {
-            transaction_sequence: frame.transaction_sequence,
-            previous_digest: frame.previous_digest.clone(),
-            state: frame.state.clone(),
-        };
         if frame.transaction_sequence != expected_sequence
             || frame.previous_digest != expected_previous
-            || frame.frame_digest != canonical_digest(&core)?
+            || frame.frame_digest != wire_digest
+            || wire_digest != canonical_digest(&wire)?
             || frame.state.revision != frame.transaction_sequence
         {
             return Err(FabricError::none(

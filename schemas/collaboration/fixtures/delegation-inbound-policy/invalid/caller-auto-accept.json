@@ -1,0 +1,1 @@
+{"id":"policy-a-b","company_id":"company-1","target_team_id":"team-b","source_team_id":"team-a","mode":"auto_accept","allowed_outcome_classes":["implementation"],"max_active_delegations":1,"created_by_target_host":{"kind":"agent_member","id":"host-b"},"created_at":"unix-ms:1","caller_selected_authority":true}

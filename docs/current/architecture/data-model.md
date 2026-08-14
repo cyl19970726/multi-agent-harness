@@ -21,12 +21,13 @@ project binding; Mission is derived through Team and is not duplicated on the
 Run.
 
 Cross-Team cooperation is explicit `WorkDelegation`, not parent/child topology.
-The source remains accountable until the delegation reaches a terminal result.
-Delegation events are append-only, versioned, idempotent, and reject cycles.
-Creation idempotency fingerprints the complete delegation and target-Work
-intent; omitted entity ids are derived from the idempotency key. Target Work
-block/resume/terminal transitions embed their delegation roll-up in the same
-`WorkOperation`, so every public mutation surface observes one atomic result.
+The Company collaboration store owns the relationship and decisions; source
+and target Execution Spaces independently own their native Work. Cross-node
+mutations route through the accepted Remote Node Fabric and fold relationship
+truth only after an exact terminal application receipt. Target Work completion
+never completes source Work. Local WorkDelegation writers and transport-time
+fallbacks are retired. See
+[Cross-machine Team collaboration](cross-machine-team-collaboration.md).
 
 ## Runtime trust
 

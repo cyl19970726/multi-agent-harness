@@ -447,7 +447,8 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
         completed_rounds, 2,
         "the persistent member must execute both turns"
     );
-    // Issue #232: turn_evidence_refs must land on the recorded action.
+    // Provider-emitted source references are provenance only. They cannot
+    // become Harness Evidence without an explicit canonical Evidence write.
     let turn_actions: Vec<_> = detail_json["actions"]
         .as_array()
         .expect("member actions")
@@ -458,20 +459,16 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
     let turn1_refs = turn_actions[0]["evidence_refs"]
         .as_array()
         .expect("evidence_refs for turn 1");
-    assert_eq!(
-        turn1_refs
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect::<Vec<_>>(),
-        vec!["src/member.ts"],
-        "turn 1 must record the provider-emitted evidence refs"
+    assert!(
+        turn1_refs.is_empty(),
+        "provider-emitted refs must not fabricate Harness Evidence"
     );
     let turn2_refs = turn_actions[1]["evidence_refs"]
         .as_array()
         .expect("evidence_refs for turn 2");
     assert!(
         turn2_refs.is_empty(),
-        "turn 2 must record empty evidence refs from provider"
+        "turn 2 must also have no automatic Evidence refs"
     );
     let status_body = String::from_utf8_lossy(&status.stdout);
     assert!(

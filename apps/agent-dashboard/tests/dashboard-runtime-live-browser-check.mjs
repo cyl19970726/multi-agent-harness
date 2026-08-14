@@ -8,7 +8,7 @@
  * same-origin proxy; no snapshot, SSE frame, or business row is fabricated.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -34,6 +34,9 @@ const actorRef = { actor_type: "human", actor_id: "human-live-owner" };
 const roleViewSchemaDir = join(repoRoot, "schemas", "role-views", "agentfirm.role_views.v1");
 const roleViewSchemaNames = ["common", "role-view", "company-work", "team-workspace", "host-console", "member-workbench", "operator"];
 const roleViewAjv = new Ajv2020({strict:false, allErrors:true});
+for (const file of readdirSync(join(repoRoot, "schemas", "collaboration")).filter(file => file.endsWith(".schema.json"))) {
+  roleViewAjv.addSchema(JSON.parse(readFileSync(join(repoRoot, "schemas", "collaboration", file), "utf8")));
+}
 for (const name of roleViewSchemaNames) {
   roleViewAjv.addSchema(JSON.parse(readFileSync(join(roleViewSchemaDir, `${name}.schema.json`), "utf8")));
 }
@@ -433,6 +436,24 @@ const primaryDeniedBySecondary = await roleView(`/v1/views/host-console/${liveTe
 const secondaryDeniedByPrimary = await roleView(`/v1/views/host-console/${secondaryTeam.id}?project=${projectId}&space=${secondarySpaceId}`, agentFirmToken);
 check(primaryDeniedBySecondary.status===403 && secondaryDeniedByPrimary.status===403,
 "sibling Team Host identities are denied bidirectionally");
+const collaborationAction = (envelope) => envelope.body.allowed_actions?.find((action) =>
+  /collaboration|delegation|cancellation|remote_fact/.test(String(action.kind)),
+);
+const unavailableTeam = await roleView(`/v1/views/team-workspace/${liveTeam.id}?project=${projectId}&space=${spaceId}`, agentFirmToken);
+const unavailableHost = await roleView(`/v1/views/host-console/${liveTeam.id}?project=${projectId}&space=${spaceId}`, agentFirmToken);
+const unavailableMember = await roleView(`/v1/views/member-workbench/${liveMemberRunId}?project=${projectId}&space=${spaceId}`, memberAgentFirmToken);
+for (const [label, envelope, schema] of [
+  ["Team", unavailableTeam, "team-workspace"],
+  ["Host", unavailableHost, "host-console"],
+  ["Member", unavailableMember, "member-workbench"],
+]) {
+  if (envelope.status !== 200) throw new Error(`${label} unavailable collaboration projection: ${JSON.stringify(envelope.body)}`);
+  validateLiveRoleView(schema, envelope.body);
+  check(
+    envelope.body.data.collaboration?.state === "unavailable" && !collaborationAction(envelope),
+    `${label} fails closed without a valid collaboration projection and advertises no collaboration action`,
+  );
+}
 const siblingNodeDenied = await roleView(`/v1/views/operator/${liveNode.id}?project=${projectId}&space=${spaceId}`, siblingNodeAgentFirmToken);
 const primaryNodeDeniedOnSibling = await roleView(`/v1/views/operator/${siblingNode.id}?project=${projectId}&space=${secondarySpaceId}`, operatorAgentFirmToken);
 const siblingNodeProjection = await roleView(`/v1/views/operator/${siblingNode.id}?project=${projectId}&space=${secondarySpaceId}`, siblingNodeAgentFirmToken);
@@ -547,9 +568,15 @@ try {
   await page.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"team",team:liveTeamRunId})}`, {waitUntil:"domcontentloaded"});
   await page.locator('[data-testid="authenticated-team-workspace"]').waitFor();
   await waitForText(page, "Real browser RoleAction loop");
+  await waitForText(page, "DELEGATIONS");
+  check(await page.getByRole("button", {name:/collaboration|delegation/i}).count()===0,
+    "real Team browser exposes unavailable collaboration state without an executable action");
   check(true, "real Team Workspace RoleView is populated before Host navigation");
   await page.getByRole("button", {name:"Host Console"}).click();
   await page.getByRole("heading", {name:"Host Console"}).waitFor();
+  await waitForText(page, "Cross-machine collaboration");
+  check(await page.getByRole("button", {name:/collaboration|delegation/i}).count()===0,
+    "real Host browser exposes unavailable collaboration state without an executable action");
   await page.getByRole("button", {name:"assign work",exact:true}).click();
   await page.getByLabel("MemberRun ID").fill(liveMemberRunId);
   await page.getByRole("button", {name:"Execute action"}).click();
@@ -564,7 +591,14 @@ try {
   await memberPage.getByRole("tab", {name:/Session/}).waitFor();
   await memberPage.getByRole("tab", {name:/Work/}).click();
   await waitForText(memberPage, "Real browser RoleAction loop");
+  const composerActionLabels = await memberPage.getByLabel("Composer action").locator("option").allTextContents();
+  check(
+    composerActionLabels.includes("start work"),
+    "Agent Workspace composer preserves canonical RoleAction token labels",
+  );
   await memberPage.getByLabel("Composer action").selectOption({label:"start work"});
+  check(await memberPage.getByRole("button", {name:/collaboration|delegation/i}).count()===0,
+    "real Member browser exposes unavailable collaboration state without an executable action");
   await memberPage.getByRole("button", {name:"start work"}).click();
   await memberPage.getByRole("button", {name:"Execute action"}).click();
   await memberPage.getByLabel("Composer action").selectOption({label:"block work"});

@@ -68,6 +68,7 @@ mod native_session;
 mod pi_rpc;
 mod project;
 mod provider_adapter;
+mod provider_event_api;
 #[cfg(unix)]
 mod remote_fabric;
 mod resident;
@@ -10292,7 +10293,6 @@ const PROVIDER_TERMINAL_STATUS_PREFIX: &str = "provider_terminal";
 
 impl ProviderTerminalFailure {
     /// `provider_terminal:<reason>:<http status or ->`.
-    #[cfg(test)]
     fn to_provider_status(&self) -> String {
         let status = self
             .http_status
@@ -12700,6 +12700,7 @@ fn publish_team_message(
             team_id: Some(run.agent_team_id.clone()),
             team_run_id: Some(run.id.clone()),
             work_id: message.work_id.clone(),
+            collaboration_scope: None,
             kind,
             body: message.body.clone(),
             correlation_id: message.correlation_id.clone(),
@@ -14669,6 +14670,12 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
         args,
         "team-run work list|show|create|delegate|delegation|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|reconcile-delivery|poll-github-ci",
     )?;
+    if matches!(args[0].as_str(), "delegate" | "delegation") {
+        return Err(CliError::Usage(
+            "RETIRED_WRITE_AUTHORITY: local TeamRun WorkDelegation commands are retired; use the Company Control Plane collaboration API and collaboration_delegation MCP reads"
+                .into(),
+        ));
+    }
     match args[0].as_str() {
         "list" => {
             let team_run_id = value(args, "--team-run-id");
@@ -15957,19 +15964,12 @@ fn dispatch_headless_host_once(
                     .provider_request_id
                     .or(outcome.provider_turn_id)
                     .map(|id| format!("{provider}:{thread_id}:{id}"))
-                    .or_else(|| {
-                        outcome
-                            .evidence_ids
-                            .first()
-                            .map(|id| format!("{provider}:{thread_id}:terminal-evidence:{id}"))
-                    })
-                    .ok_or_else(|| {
-                        StoreError::Conflict(
-                            "headless Host turn returned no provider terminal evidence".to_string(),
-                        )
-                    })?;
+                    .unwrap_or_else(|| format!("{provider}:{thread_id}:terminal"));
                 host_dispatcher::DispatcherConsumerSuccess::new(
-                    (outcome.summary, delivered_attention_ids),
+                    (
+                        outcome.response_text.unwrap_or(outcome.summary),
+                        delivered_attention_ids,
+                    ),
                     receipt,
                 )
             },
@@ -17219,14 +17219,12 @@ fn member_supervisor_test_idle_grace() -> Option<Duration> {
         .map(Duration::from_millis)
 }
 
-/// Live member thinking is an ephemeral operator hint, never a ledger row.
-/// Each preview expires in the browser shortly after publication and is not
-/// available to reconnecting clients.
-const LIVE_MEMBER_ACTIVITY_TTL_MS: u128 = 10_000;
-const LIVE_MEMBER_ACTIVITY_MAX_CHARS: usize = 240;
-const LIVE_MEMBER_ACTIVITY_THROTTLE: Duration = Duration::from_secs(1);
-static LIVE_MEMBER_ACTIVITY_REVISION: AtomicU64 = AtomicU64::new(1);
-static LIVE_MEMBER_ACTIVITY_INGRESS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+/// Display-safe provider activity is an ephemeral operator hint, never a
+/// ledger row. The serve process owns the TTL registry and current-subscriber
+/// SSE fan-out; provider supervisors only send short, typed updates into it.
+const LIVE_PROVIDER_ACTIVITY_MAX_CHARS: usize = 240;
+const LIVE_PROVIDER_ACTIVITY_THROTTLE: Duration = Duration::from_secs(1);
+static LIVE_PROVIDER_ACTIVITY_TOKEN: OnceLock<String> = OnceLock::new();
 
 /// Process-local control plane for provider sessions started by `serve` or the
 /// MCP server. The durable TeamMessageProjection remains the conversation record; this
@@ -19011,15 +19009,94 @@ fn dispatch_live_member_control(
     }
 }
 
-#[derive(Clone, Debug)]
-struct LiveMemberActivityPreview {
-    team_run_id: String,
-    member_run_id: String,
-    provider: String,
-    preview: String,
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum LiveProviderActivityUpdate {
+    Updated {
+        team_run_id: String,
+        member_run_id: String,
+        provider: String,
+        kind: provider_event_api::LiveProviderActivityKind,
+        display_summary: String,
+    },
+    Terminal {
+        team_run_id: String,
+        member_run_id: String,
+    },
 }
 
-type LiveMemberActivitySink = Arc<dyn Fn(LiveMemberActivityPreview) + Send + Sync>;
+type LiveMemberActivitySink = Arc<dyn Fn(LiveProviderActivityUpdate) + Send + Sync>;
+
+fn emit_live_provider_activity(
+    sink: &LiveMemberActivitySink,
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    kind: provider_event_api::LiveProviderActivityKind,
+    display_summary: String,
+) {
+    sink(LiveProviderActivityUpdate::Updated {
+        team_run_id: ledger.run_id.clone(),
+        member_run_id: member.id.clone(),
+        provider: member.provider.clone(),
+        kind,
+        display_summary,
+    });
+}
+
+fn emit_live_provider_terminal(
+    sink: Option<&LiveMemberActivitySink>,
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+) {
+    if let Some(sink) = sink {
+        sink(LiveProviderActivityUpdate::Terminal {
+            team_run_id: ledger.run_id.clone(),
+            member_run_id: member.id.clone(),
+        });
+    }
+}
+
+fn display_safe_tool_status(status: &str, started_event: bool) -> &'static str {
+    match status {
+        "in_progress" | "running" | "started" => "running",
+        "completed" | "success" | "succeeded" => "completed",
+        "failed" | "error" => "failed",
+        "cancelled" | "canceled" => "cancelled",
+        _ if started_event => "running",
+        _ => "completed",
+    }
+}
+
+struct LiveProviderTurnGuard {
+    sink: Option<LiveMemberActivitySink>,
+    team_run_id: String,
+    member_run_id: String,
+}
+
+impl LiveProviderTurnGuard {
+    fn new(
+        sink: Option<LiveMemberActivitySink>,
+        team_run_id: String,
+        member_run_id: String,
+    ) -> Self {
+        Self {
+            sink,
+            team_run_id,
+            member_run_id,
+        }
+    }
+}
+
+impl Drop for LiveProviderTurnGuard {
+    fn drop(&mut self) {
+        if let Some(sink) = &self.sink {
+            sink(LiveProviderActivityUpdate::Terminal {
+                team_run_id: self.team_run_id.clone(),
+                member_run_id: self.member_run_id.clone(),
+            });
+        }
+    }
+}
 
 /// The orchestrator's serialized view of one run's ledger. Read paths are
 /// unlocked (append-only JSONL); every "compute next seq + append" pair holds
@@ -19360,7 +19437,8 @@ impl TeamRunLedger {
 
     /// `provider_status` carries the transport's OWN terminal metadata in a
     /// machine-readable token. It is the only field a capacity classifier may
-    /// read: `summary` is prose and also contains the member's own text.
+    /// read. `summary` is a Harness-owned coordination fact and must never copy
+    /// the provider-authored response or transcript.
     #[allow(clippy::too_many_arguments)]
     fn append_action_with_provider_status(
         &self,
@@ -20579,6 +20657,47 @@ struct MemberOutcome {
     summary: String,
 }
 
+/// Describe a provider turn as a Harness-owned execution fact without copying
+/// the provider-authored response into MemberAction or supervisor output. The
+/// provider-native Session remains the sole transcript/history authority;
+/// explicit TeamMessage, WorkReport, Delivery, Review, and Evidence operations
+/// are persisted independently through their canonical writers.
+fn provider_turn_coordination_summary(
+    provider: &str,
+    round: u32,
+    has_authored_output: bool,
+) -> String {
+    let output = if has_authored_output {
+        "with authored output"
+    } else {
+        "without authored output"
+    };
+    format!(
+        "{provider} provider round {round} completed {output}; transcript remains provider-native"
+    )
+}
+
+fn provider_turn_failure_summary(provider: &str, round: u32) -> String {
+    format!(
+        "{provider} provider round {round} failed; inspect the provider-native session for details"
+    )
+}
+
+fn structured_provider_turn_failure_summary(
+    provider: &str,
+    round: u32,
+    failure: &ProviderTerminalFailure,
+) -> String {
+    let http_status = failure
+        .http_status
+        .map(|status| format!(" (HTTP {status})"))
+        .unwrap_or_default();
+    format!(
+        "{provider} provider round {round} failed: {}{http_status}; inspect the provider-native session for details",
+        failure.reason
+    )
+}
+
 struct MemberRuntimeContext {
     execution_space_id: Option<String>,
     project_id: Option<String>,
@@ -20968,6 +21087,29 @@ pub(crate) fn ensure_team_runtime_fabric(
             )));
         }
     } else {
+        let host_native_session_ref = body
+            .run
+            .host_thread_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .map(|id| harness_core::agentfirm_api::NativeSessionRef {
+                provider: host_provider.to_string(),
+                execution_mode: "host_native".to_string(),
+                native_session_id: id.to_string(),
+                native_locator_kind: match host_provider {
+                    "codex" => "codex_rollout",
+                    "kimi" => "kimi_code_session",
+                    "claude" => "claude_project_session",
+                    _ => "provider_native_session",
+                }
+                .to_string(),
+                provider_version: None,
+                adapter_contract_version: "host-native-read-v1".to_string(),
+                availability: harness_core::agentfirm_api::NativeSessionAvailability::Unknown,
+                supports_resume: true,
+                last_verified_at: None,
+                parent_native_session_id: None,
+            });
         store.create_agent_session(
             &MutationContext {
                 execution_space_id: execution_space_id.to_string(),
@@ -20997,7 +21139,7 @@ pub(crate) fn ensure_team_runtime_fabric(
                 effective_permission_ceiling: host.permission_ceiling,
                 lifecycle: AgentSessionStatus::Cold,
                 runtime_generation: 1,
-                native_session_ref: None,
+                native_session_ref: host_native_session_ref,
                 current_turn_id: None,
                 queued_input_count: 0,
                 version: 1,
@@ -22658,19 +22800,18 @@ fn run_codex_member(
                 zero_output_streak = 0;
             }
 
-            let (action_status, round_summary) = if final_text.trim().is_empty() {
-                (MemberActionStatus::Failed, "(empty turn)".to_string())
+            let action_status = if final_text.trim().is_empty() {
+                MemberActionStatus::Failed
             } else {
                 let result = parse_round_result(&final_text);
-                let status = if result == MemberRoundResult::Done {
+                if result == MemberRoundResult::Done {
                     MemberActionStatus::Succeeded
                 } else {
                     MemberActionStatus::Failed
-                };
-                let summary = extract_report_section(&final_text, "SUMMARY")
-                    .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
-                (status, summary)
+                }
             };
+            let round_summary =
+                provider_turn_coordination_summary("Codex", round, !final_text.trim().is_empty());
             let action = ledger.append_action(
                 &member.id,
                 "turn_completed",
@@ -22841,29 +22982,19 @@ fn project_codex_team_event_live(
     let title = match item_type {
         "command_execution" => "Bash".to_string(),
         "file_change" => "File change".to_string(),
-        "mcp_tool_call" => item
-            .get("tool")
-            .or_else(|| item.get("name"))
-            .and_then(|value| value.as_str())
-            .map(|name| format!("MCP · {name}"))
-            .unwrap_or_else(|| "MCP tool".to_string()),
+        "mcp_tool_call" => "MCP tool".to_string(),
         "web_search" => "Web search".to_string(),
-        other => other.replace('_', " "),
+        _ => "Tool".to_string(),
     };
     let provider_status = item
         .get("status")
         .and_then(|value| value.as_str())
-        .unwrap_or(if event_type == "item.started" {
-            "in_progress"
-        } else {
-            "completed"
-        });
+        .unwrap_or_default();
+    let provider_status = display_safe_tool_status(provider_status, event_type == "item.started");
     let summary = match item_type {
-        "command_execution" => item
-            .get("command")
-            .and_then(|value| value.as_str())
-            .map(|command| truncate_on_char_boundary(command, 240).to_string())
-            .unwrap_or_else(|| format!("command {provider_status}")),
+        // Tool progress is display-safe metadata, not command arguments or
+        // provider transcript content.
+        "command_execution" => format!("Bash {provider_status}"),
         "file_change" => format!(
             "{} file change(s)",
             item.get("changes")
@@ -22874,12 +23005,14 @@ fn project_codex_team_event_live(
         _ => format!("{title} {provider_status}"),
     };
     if let Some(sink) = live_sink {
-        sink(LiveMemberActivityPreview {
-            team_run_id: ledger.run_id.clone(),
-            member_run_id: member.id.clone(),
-            provider: member.provider.clone(),
-            preview: summary,
-        });
+        let kind = if event_type == "item.started" {
+            provider_event_api::LiveProviderActivityKind::ToolStarted
+        } else if matches!(provider_status, "failed" | "cancelled") {
+            provider_event_api::LiveProviderActivityKind::ToolFailed
+        } else {
+            provider_event_api::LiveProviderActivityKind::ToolCompleted
+        };
+        emit_live_provider_activity(sink, ledger, member, kind, summary);
     }
 }
 
@@ -22932,6 +23065,8 @@ fn run_codex_app_server_turn(
         active_work,
         lineage,
     } = context;
+    let _live_turn_guard =
+        LiveProviderTurnGuard::new(live_sink.clone(), ledger.run_id.clone(), member.id.clone());
     require_provider_session_authority(ledger, &member.agent_member_id, true)?;
     let mut turn_id = client.start_turn(prompt)?;
     // The turn/start response is the earliest honest evidence that the
@@ -22955,7 +23090,7 @@ fn run_codex_app_server_turn(
     let mut active_turn_id = turn_id.clone();
     let mut final_text = String::new();
     let mut last_activity = Instant::now();
-    let mut last_live_activity = Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE;
+    let mut last_live_activity = Instant::now() - LIVE_PROVIDER_ACTIVITY_THROTTLE;
     let mut interrupt_requested = false;
     let mut close_requested = false;
     let mut pending_native_controls =
@@ -23118,22 +23253,38 @@ fn run_codex_app_server_turn(
                     Some("item/agentMessage/delta") => {
                         if let Some(delta) = params.get("delta").and_then(|value| value.as_str()) {
                             final_text.push_str(delta);
+                            if last_live_activity.elapsed() >= LIVE_PROVIDER_ACTIVITY_THROTTLE {
+                                if let Some(sink) = &live_sink {
+                                    last_live_activity = Instant::now();
+                                    emit_live_provider_activity(
+                                        sink,
+                                        ledger,
+                                        member,
+                                        provider_event_api::LiveProviderActivityKind::ResponseStreaming,
+                                        format!("assistant response streaming · {} chars", final_text.len()),
+                                    );
+                                }
+                            }
                         }
                     }
-                    Some("item/reasoning/summaryTextDelta") | Some("item/reasoning/textDelta") => {
+                    // Only the provider's display-safe reasoning summary is
+                    // eligible. Raw reasoning text/CoT notifications are
+                    // intentionally ignored.
+                    Some("item/reasoning/summaryTextDelta") => {
                         let preview = params
                             .get("delta")
                             .and_then(|value| value.as_str())
                             .and_then(sanitize_live_member_preview);
-                        if last_live_activity.elapsed() >= LIVE_MEMBER_ACTIVITY_THROTTLE {
+                        if last_live_activity.elapsed() >= LIVE_PROVIDER_ACTIVITY_THROTTLE {
                             if let (Some(sink), Some(preview)) = (&live_sink, preview) {
                                 last_live_activity = Instant::now();
-                                sink(LiveMemberActivityPreview {
-                                    team_run_id: ledger.run_id.clone(),
-                                    member_run_id: member.id.clone(),
-                                    provider: member.provider.clone(),
+                                emit_live_provider_activity(
+                                    sink,
+                                    ledger,
+                                    member,
+                                    provider_event_api::LiveProviderActivityKind::Thinking,
                                     preview,
-                                });
+                                );
                             }
                         }
                     }
@@ -23365,6 +23516,9 @@ fn run_claude_agent_sdk_team_member(
     let cwd = &context.cwd;
     let idle_timeout = context.idle_timeout;
     let turn_leases = &context.turn_leases;
+    let live_sink = context.live_sink.clone();
+    let _live_member_guard =
+        LiveProviderTurnGuard::new(live_sink.clone(), ledger.run_id.clone(), member.id.clone());
     let runner = claude_agent_sdk_runner_path(cwd)?;
 
     let mut member_row = member.clone();
@@ -23637,6 +23791,7 @@ fn run_claude_agent_sdk_team_member(
     let mut closed_cleanly = false;
     let mut transport_disconnected = false;
     let mut idle_since = inflight_works.is_empty().then(Instant::now);
+    let mut last_live_activity = Instant::now() - LIVE_PROVIDER_ACTIVITY_THROTTLE;
 
     loop {
         require_provider_session_authority(ledger, &member.agent_member_id, false)?;
@@ -23798,11 +23953,49 @@ fn run_claude_agent_sdk_team_member(
                     }
                 }
                 "assistant_message" => {
+                    let mut emitted_tool = false;
+                    let mut emitted_text = false;
                     if let Some(blocks) = data.get("content").and_then(|v| v.as_array()) {
                         for block in blocks {
-                            if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                                turn_text.push_str(text);
+                            match block.get("type").and_then(|value| value.as_str()) {
+                                Some("text") => {
+                                    if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                                        turn_text.push_str(text);
+                                        emitted_text = true;
+                                    }
+                                }
+                                Some("tool_use") => emitted_tool = true,
+                                // Thinking blocks are provider-private. The SDK
+                                // does not label them as display-safe summaries,
+                                // so their contents are discarded here.
+                                Some("thinking" | "redacted_thinking") => {}
+                                _ => {}
                             }
+                        }
+                    }
+                    if emitted_tool {
+                        if let Some(sink) = &live_sink {
+                            emit_live_provider_activity(
+                                sink,
+                                ledger,
+                                &member_row,
+                                provider_event_api::LiveProviderActivityKind::ToolStarted,
+                                "tool started".to_string(),
+                            );
+                        }
+                    }
+                    if emitted_text
+                        && last_live_activity.elapsed() >= LIVE_PROVIDER_ACTIVITY_THROTTLE
+                    {
+                        if let Some(sink) = &live_sink {
+                            last_live_activity = Instant::now();
+                            emit_live_provider_activity(
+                                sink,
+                                ledger,
+                                &member_row,
+                                provider_event_api::LiveProviderActivityKind::ResponseStreaming,
+                                format!("assistant response streaming · {} chars", turn_text.len()),
+                            );
                         }
                     }
                 }
@@ -23846,13 +24039,7 @@ fn run_claude_agent_sdk_team_member(
                     }
                 }
                 "turn_complete" => {
-                    let turn_evidence_refs: Vec<String> = data
-                        .get("evidenceRefs")
-                        .and_then(|value| value.as_array())
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|value| value.as_str().map(str::to_string))
-                        .collect();
+                    emit_live_provider_terminal(live_sink.as_ref(), ledger, &member_row);
                     // A provider API failure arrives with subtype "success" and
                     // `isError: true` (issue #293). The runner forwards the
                     // honest fields; without this check the ledger would record
@@ -23922,11 +24109,15 @@ fn run_claude_agent_sdk_team_member(
                     } else {
                         MemberActionStatus::Failed
                     };
-                    let summary = provider_error.clone().unwrap_or_else(|| {
-                        extract_report_section(&turn_text, "SUMMARY").unwrap_or_else(|| {
-                            turn_text.lines().take(3).collect::<Vec<_>>().join("\n")
-                        })
-                    });
+                    let summary = if let Some(failure) = provider_terminal.as_ref() {
+                        structured_provider_turn_failure_summary("Claude", round, failure)
+                    } else {
+                        provider_turn_coordination_summary(
+                            "Claude",
+                            round,
+                            !turn_text.trim().is_empty(),
+                        )
+                    };
                     let title = trigger_work
                         .as_ref()
                         .map(|work| format!("Work turn completed: {}", work.work.title))
@@ -23948,8 +24139,8 @@ fn run_claude_agent_sdk_team_member(
                         &summary,
                         provider_terminal
                             .as_ref()
-                            .map(|failure| failure.reason.clone()),
-                        &turn_evidence_refs,
+                            .map(ProviderTerminalFailure::to_provider_status),
+                        &[],
                     )?;
                     ledger.fold_event(
                         TeamRunEventSourceKind::Member,
@@ -23976,6 +24167,7 @@ fn run_claude_agent_sdk_team_member(
                     turn_lease.take();
                 }
                 "interrupted" => {
+                    emit_live_provider_terminal(live_sink.as_ref(), ledger, &member_row);
                     let mut retained = Vec::new();
                     for pending in pending_control_effects.drain(..) {
                         if pending.action
@@ -24013,6 +24205,7 @@ fn run_claude_agent_sdk_team_member(
                     turn_lease.take();
                 }
                 "member_closed" => {
+                    emit_live_provider_terminal(live_sink.as_ref(), ledger, &member_row);
                     for pending in pending_control_effects.drain(..) {
                         crate::provider_adapter::settle_team_control(
                             ledger,
@@ -24040,6 +24233,7 @@ fn run_claude_agent_sdk_team_member(
                     break;
                 }
                 "runner_error" => {
+                    emit_live_provider_terminal(live_sink.as_ref(), ledger, &member_row);
                     crate::provider_adapter::settle_team_controls_without_terminal_ack(
                         ledger,
                         pending_control_effects.drain(..),
@@ -24330,7 +24524,6 @@ fn latest_member_handoff_for_turn(
 struct ClaudeTeamTurn {
     session_id: String,
     final_text: String,
-    evidence_refs: Vec<String>,
 }
 
 fn claude_team_permission_mode() -> &'static str {
@@ -24347,6 +24540,8 @@ fn run_claude_team_turn(
     ledger: &TeamRunLedger,
     collaboration_env: &[(String, String)],
 ) -> CliResult<ClaudeTeamTurn> {
+    let _live_turn_guard =
+        LiveProviderTurnGuard::new(live_sink.clone(), ledger.run_id.clone(), member.id.clone());
     let mut cmd = Command::new("claude");
     cmd.arg("-p")
         .arg(prompt)
@@ -24469,11 +24664,9 @@ fn run_claude_team_turn(
         .ok_or_else(|| CliError::Usage("Claude completed without a native session id".into()))?;
     let final_text = extract_claude_reply_text(&events)
         .ok_or_else(|| CliError::Usage("Claude completed without an assistant result".into()))?;
-    let evidence_refs = extract_claude_evidence_refs(&events);
     Ok(ClaudeTeamTurn {
         session_id,
         final_text,
-        evidence_refs,
     })
 }
 
@@ -24495,16 +24688,13 @@ fn project_claude_team_event_live(
         if block.get("type").and_then(|value| value.as_str()) != Some("tool_use") {
             continue;
         }
-        let title = block
-            .get("name")
-            .and_then(|value| value.as_str())
-            .unwrap_or("tool");
-        sink(LiveMemberActivityPreview {
-            team_run_id: ledger.run_id.clone(),
-            member_run_id: member.id.clone(),
-            provider: member.provider.clone(),
-            preview: format!("tool started · {title}"),
-        });
+        emit_live_provider_activity(
+            sink,
+            ledger,
+            member,
+            provider_event_api::LiveProviderActivityKind::ToolStarted,
+            "tool started".to_string(),
+        );
     }
 }
 
@@ -24868,6 +25058,11 @@ fn run_kimi_member(
         let mut provider_effect_started = false;
         let outcome_result = {
             let _turn_lease = turn_leases.acquire();
+            let _live_turn_guard = LiveProviderTurnGuard::new(
+                live_sink.clone(),
+                ledger.run_id.clone(),
+                member.id.clone(),
+            );
             let claimed_reverse_response = Arc::new(Mutex::new(None::<TeamMessageProjection>));
             let claimed_for_request = Arc::clone(&claimed_reverse_response);
             let claimed_after_write = Arc::clone(&claimed_reverse_response);
@@ -24887,6 +25082,15 @@ fn run_kimi_member(
                 |update| mapper.handle(update),
                 |request| {
                     require_provider_session_authority(ledger, &member.agent_member_id, true)?;
+                    if let Some(sink) = &live_sink {
+                        emit_live_provider_activity(
+                            sink,
+                            ledger,
+                            &member_row,
+                            provider_event_api::LiveProviderActivityKind::InteractionWaiting,
+                            "Kimi is waiting for interaction".to_string(),
+                        );
+                    }
                     let reply = handle_kimi_provider_request(ledger, &member_row, request)?;
                     *claimed_for_request
                         .lock()
@@ -25159,15 +25363,11 @@ fn run_kimi_member(
             // with the Claude provider-error contract, issue #293).
             let result = parse_round_result(&final_text);
             let output_empty = final_text.trim().is_empty();
-            let summary = outcome.provider_error.clone().unwrap_or_else(|| {
-                if output_empty {
-                    "provider ended the round without durable agent output".to_string()
-                } else {
-                    extract_report_section(&final_text, "SUMMARY").unwrap_or_else(|| {
-                        final_text.lines().take(3).collect::<Vec<_>>().join("\n")
-                    })
-                }
-            });
+            let summary = if outcome.provider_error.is_some() {
+                provider_turn_failure_summary("Kimi", round)
+            } else {
+                provider_turn_coordination_summary("Kimi", round, !output_empty)
+            };
             let action = ledger.append_action(
                 &member.id,
                 if outcome.provider_error.is_some() {
@@ -25624,8 +25824,6 @@ fn run_pi_team_member(
     loop {
         round += 1;
         let prompt = prompt_text.clone();
-        let member_id_clone = member.id.clone();
-        let member_provider = member.provider.clone();
         let source_record_id = active_work
             .as_ref()
             .map(|claimed| claimed.delivery.id.as_str())
@@ -25641,18 +25839,18 @@ fn run_pi_team_member(
 
         let turn_result = {
             let _turn_lease = turn_leases.acquire();
+            let _live_turn_guard = LiveProviderTurnGuard::new(
+                live_sink.clone(),
+                ledger.run_id.clone(),
+                member.id.clone(),
+            );
             pi_client.prompt(
                 &prompt,
                 idle_timeout,
                 |event| {
-                    if let Some(preview) = pi_rpc::PiRpcClient::project_live(event) {
+                    if let Some((kind, preview)) = pi_rpc::PiRpcClient::project_live(event) {
                         if let Some(sink) = &live_sink {
-                            sink(LiveMemberActivityPreview {
-                                team_run_id: ledger.run_id.clone(),
-                                member_run_id: member_id_clone.clone(),
-                                provider: member_provider.clone(),
-                                preview,
-                            });
+                            emit_live_provider_activity(sink, ledger, member, kind, preview);
                         }
                     }
                 },
@@ -25833,19 +26031,18 @@ fn run_pi_team_member(
             } else {
                 zero_output_streak = 0;
             }
-            let (action_status, round_summary) = if is_zero_output {
-                (MemberActionStatus::Failed, "(empty turn)".to_string())
+            let action_status = if is_zero_output {
+                MemberActionStatus::Failed
             } else {
                 let result = parse_round_result(&final_text);
-                let action_status = if result == MemberRoundResult::Done {
+                if result == MemberRoundResult::Done {
                     MemberActionStatus::Succeeded
                 } else {
                     MemberActionStatus::Failed
-                };
-                let round_summary = extract_report_section(&final_text, "SUMMARY")
-                    .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
-                (action_status, round_summary)
+                }
             };
+            let round_summary =
+                provider_turn_coordination_summary("Pi", round, !final_text.trim().is_empty());
             let action = ledger.append_action(
                 &member.id,
                 "turn_completed",
@@ -26277,11 +26474,114 @@ fn sanitize_live_member_preview(value: &str) -> Option<String> {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    let preview = normalized
+    if normalized.contains("-----BEGIN ") && normalized.contains("PRIVATE KEY-----") {
+        return Some("[REDACTED PRIVATE KEY]".into());
+    }
+    let mut redact_next_credential = false;
+    let redacted = normalized
+        .split_whitespace()
+        .map(|token| {
+            if redact_next_credential {
+                redact_next_credential = false;
+                return "[REDACTED TOKEN]".to_string();
+            }
+            let lower = token.to_ascii_lowercase();
+            if lower.trim_matches(|character: char| !character.is_ascii_alphanumeric()) == "bearer"
+            {
+                redact_next_credential = true;
+                return token.to_string();
+            }
+            if let Some((marker, index)) = [
+                "token=",
+                "password=",
+                "secret=",
+                "api_key=",
+                "authorization=",
+            ]
+            .iter()
+            .find_map(|marker| lower.find(marker).map(|index| (*marker, index)))
+            {
+                return format!("{}{}[REDACTED]", &token[..index], marker);
+            }
+            let unquoted = token.trim_start_matches(['\"', '\'', '(', '[', '{']);
+            if unquoted.starts_with("sk-") && unquoted.len() >= 20 {
+                return "[REDACTED TOKEN]".into();
+            }
+            let bytes = unquoted.as_bytes();
+            let absolute_path = unquoted.starts_with('/')
+                || unquoted.starts_with("~/")
+                || unquoted.starts_with("\\\\")
+                || (bytes.len() >= 3
+                    && bytes[0].is_ascii_alphabetic()
+                    && bytes[1] == b':'
+                    && matches!(bytes[2], b'/' | b'\\'));
+            if absolute_path {
+                return "[REDACTED PATH]".into();
+            }
+            token.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let preview = redacted
         .chars()
-        .take(LIVE_MEMBER_ACTIVITY_MAX_CHARS)
+        .take(LIVE_PROVIDER_ACTIVITY_MAX_CHARS)
         .collect::<String>();
     (!preview.is_empty()).then_some(preview)
+}
+
+#[cfg(test)]
+mod tests_live_provider_preview {
+    use super::*;
+
+    #[test]
+    fn live_preview_is_bounded_single_line_and_redacts_secret_shapes() {
+        let preview = sanitize_live_member_preview(
+            "Inspecting\n/Users/alice/.config/private token=abc123 \
+             sk-123456789012345678901234 password=hunter2 /tmp/provider.log \
+             C:\\Users\\alice\\secret Bearer bearer-secret",
+        )
+        .expect("sanitized preview");
+        assert!(!preview.contains('\n'));
+        assert!(!preview.contains("/Users/alice"));
+        assert!(!preview.contains("abc123"));
+        assert!(!preview.contains("123456789012345678901234"));
+        assert!(!preview.contains("hunter2"));
+        assert!(!preview.contains("/tmp/provider.log"));
+        assert!(!preview.contains("C:\\Users"));
+        assert!(!preview.contains("bearer-secret"));
+        assert!(preview.contains("[REDACTED PATH]"));
+        assert!(preview.chars().count() <= LIVE_PROVIDER_ACTIVITY_MAX_CHARS);
+    }
+
+    #[test]
+    fn live_preview_replaces_private_key_blocks_and_drops_empty_input() {
+        assert_eq!(
+            sanitize_live_member_preview(
+                "-----BEGIN OPENSSH PRIVATE KEY----- secret -----END OPENSSH PRIVATE KEY-----"
+            )
+            .as_deref(),
+            Some("[REDACTED PRIVATE KEY]")
+        );
+        assert_eq!(sanitize_live_member_preview("\u{0}\n\t"), None);
+    }
+}
+
+fn new_live_provider_activity_token() -> String {
+    let mut bytes = [0u8; 32];
+    if std::fs::File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(&mut bytes))
+        .is_ok()
+    {
+        return bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    }
+    // A callback token is process-local defense-in-depth over a user-owned
+    // Unix control socket. Fall back without creating a durable identifier.
+    format!(
+        "serve-{}-{}-{}",
+        std::process::id(),
+        current_unix_ms_u64(),
+        generated_id("live-token")
+    )
 }
 
 fn kimi_interaction_prompt(frame: &serde_json::Value) -> String {
@@ -26935,19 +27235,15 @@ fn handle_kimi_provider_request(
 }
 
 /// Maps `session/update` frames of one prompt round onto the member ledger.
-/// Reasoning streams (`agent_thought_chunk`) are intentionally ignored here:
-/// no MemberAction or other durable record may contain thinking. A future
-/// transient live channel can surface a sanitized, non-replayable indicator
-/// without changing this ledger contract.
+/// Reasoning streams (`agent_thought_chunk`) are eligible only for the
+/// transient display-safe channel; no MemberAction or other durable record may
+/// contain them.
 struct MemberUpdateMapper<'a> {
     ledger: &'a TeamRunLedger,
     member: ProviderRuntimeProjection,
     live_sink: Option<LiveMemberActivitySink>,
     last_live_activity_at: Instant,
     text: String,
-    /// toolCallId → title retained only in memory so a completion projection
-    /// stays readable. Provider tool activity is never written to Harness.
-    open_tools: std::collections::HashMap<String, String>,
 }
 
 impl<'a> MemberUpdateMapper<'a> {
@@ -26960,9 +27256,8 @@ impl<'a> MemberUpdateMapper<'a> {
             ledger,
             member,
             live_sink,
-            last_live_activity_at: Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE,
+            last_live_activity_at: Instant::now() - LIVE_PROVIDER_ACTIVITY_THROTTLE,
             text: String::new(),
-            open_tools: std::collections::HashMap::new(),
         }
     }
 
@@ -26971,22 +27266,20 @@ impl<'a> MemberUpdateMapper<'a> {
             return;
         };
         if kind.contains("thought") {
-            if self.last_live_activity_at.elapsed() < LIVE_MEMBER_ACTIVITY_THROTTLE {
+            if self.last_live_activity_at.elapsed() < LIVE_PROVIDER_ACTIVITY_THROTTLE {
                 return;
             }
-            let preview = update
-                .get("content")
-                .and_then(|content| content.get("text"))
-                .and_then(|text| text.as_str())
-                .and_then(sanitize_live_member_preview);
-            if let (Some(sink), Some(preview)) = (&self.live_sink, preview) {
+            // Kimi ACP does not label thought chunks as display-safe reasoning
+            // summaries. Surface only the phase fact and discard its text.
+            if let Some(sink) = &self.live_sink {
                 self.last_live_activity_at = Instant::now();
-                sink(LiveMemberActivityPreview {
-                    team_run_id: self.ledger.run_id.clone(),
-                    member_run_id: self.member.id.clone(),
-                    provider: self.member.provider.clone(),
-                    preview,
-                });
+                emit_live_provider_activity(
+                    sink,
+                    self.ledger,
+                    &self.member,
+                    provider_event_api::LiveProviderActivityKind::Thinking,
+                    "Kimi is thinking".to_string(),
+                );
             }
             return;
         }
@@ -26998,18 +27291,16 @@ impl<'a> MemberUpdateMapper<'a> {
             {
                 self.text.push_str(text);
             }
-            if self.last_live_activity_at.elapsed() >= LIVE_MEMBER_ACTIVITY_THROTTLE {
+            if self.last_live_activity_at.elapsed() >= LIVE_PROVIDER_ACTIVITY_THROTTLE {
                 if let Some(sink) = &self.live_sink {
                     self.last_live_activity_at = Instant::now();
-                    sink(LiveMemberActivityPreview {
-                        team_run_id: self.ledger.run_id.clone(),
-                        member_run_id: self.member.id.clone(),
-                        provider: self.member.provider.clone(),
-                        preview: format!(
-                            "assistant response streaming · {} chars",
-                            self.text.len()
-                        ),
-                    });
+                    emit_live_provider_activity(
+                        sink,
+                        self.ledger,
+                        &self.member,
+                        provider_event_api::LiveProviderActivityKind::ResponseStreaming,
+                        format!("assistant response streaming · {} chars", self.text.len()),
+                    );
                 }
             }
             return;
@@ -27018,35 +27309,46 @@ impl<'a> MemberUpdateMapper<'a> {
             return;
         }
         if kind.contains("tool") {
-            let tool_id = update
-                .get("toolCallId")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let title = update
-                .get("title")
-                .and_then(|v| v.as_str())
-                .or_else(|| update.get("kind").and_then(|v| v.as_str()))
-                .unwrap_or("tool call")
-                .to_string();
-            let status = update.get("status").and_then(|v| v.as_str()).unwrap_or("");
-            let terminal = matches!(status, "completed" | "failed" | "error" | "cancelled");
-            let preview = if kind == "tool_call" || !kind.contains("update") {
-                self.open_tools.insert(tool_id.clone(), title.clone());
-                Some(format!("tool started · {title}"))
+            let raw_status = update.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            let terminal = matches!(
+                raw_status,
+                "completed"
+                    | "success"
+                    | "succeeded"
+                    | "failed"
+                    | "error"
+                    | "cancelled"
+                    | "canceled"
+            );
+            let status = display_safe_tool_status(raw_status, !terminal);
+            let (activity_kind, preview) = if kind == "tool_call" || !kind.contains("update") {
+                (
+                    provider_event_api::LiveProviderActivityKind::ToolStarted,
+                    Some("tool started".to_string()),
+                )
             } else if terminal {
-                let title = self.open_tools.remove(&tool_id).unwrap_or(title);
-                Some(format!("tool {status} · {title}"))
+                (
+                    if matches!(status, "failed" | "cancelled") {
+                        provider_event_api::LiveProviderActivityKind::ToolFailed
+                    } else {
+                        provider_event_api::LiveProviderActivityKind::ToolCompleted
+                    },
+                    Some(format!("tool {status}")),
+                )
             } else {
-                None
+                (
+                    provider_event_api::LiveProviderActivityKind::ToolStarted,
+                    None,
+                )
             };
             if let (Some(sink), Some(preview)) = (&self.live_sink, preview) {
-                sink(LiveMemberActivityPreview {
-                    team_run_id: self.ledger.run_id.clone(),
-                    member_run_id: self.member.id.clone(),
-                    provider: self.member.provider.clone(),
+                emit_live_provider_activity(
+                    sink,
+                    self.ledger,
+                    &self.member,
+                    activity_kind,
                     preview,
-                });
+                );
             }
         }
         // Anything else (available_commands_update, plan, ...): not journaled.
@@ -27850,39 +28152,57 @@ fn hook_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     Ok(())
 }
 
-fn broadcast_live_member_activity(
+fn broadcast_live_provider_activity(
     manager: &sse::SseManager,
-    project_id: &str,
-    activity: LiveMemberActivityPreview,
+    execution_space_id: &str,
+    project_binding_id: &str,
+    owner_agent_identity_id: &str,
+    event: serde_json::Value,
 ) -> serde_json::Value {
-    let emitted_ms = current_unix_ms();
-    let value = serde_json::json!({
-        "team_run_id": activity.team_run_id,
-        "member_run_id": activity.member_run_id,
-        "provider": activity.provider,
-        "kind": "thinking",
-        "preview": activity.preview,
-        "revision": LIVE_MEMBER_ACTIVITY_REVISION.fetch_add(1, Ordering::Relaxed),
-        "emitted_at": format!("unix-ms:{emitted_ms}"),
-        "expires_at": format!("unix-ms:{}", emitted_ms + LIVE_MEMBER_ACTIVITY_TTL_MS),
-    });
-    manager.broadcast_member_activity(project_id, value.clone());
-    value
+    manager.broadcast_live_provider_activity(
+        execution_space_id,
+        project_binding_id,
+        owner_agent_identity_id,
+        event.clone(),
+    );
+    event
 }
 
 fn handle_sse_stream(
+    store: &HarnessStore,
     execution_space_id: &str,
+    private_project_binding_id: Option<&str>,
     company_scope_id: Option<&str>,
+    private_agent_identity_id: Option<&str>,
     mut stream: TcpStream,
     sse_manager: sse::SseManager,
 ) -> CliResult<()> {
     use std::time::Duration;
 
+    // A private live overlay is valid only for one connected stream lifetime.
+    // Clear any pre-connection residue before subscribing so reconnect cannot
+    // turn process memory into a replay surface.
+    if let (Some(agent_identity_id), Some(project_binding_id)) =
+        (private_agent_identity_id, private_project_binding_id)
+    {
+        provider_event_api::clear_live_for_agent(
+            store,
+            execution_space_id,
+            project_binding_id,
+            agent_identity_id,
+        )?;
+    }
+
     // Subscribe before exposing the initial snapshot marker. The browser starts
     // its authoritative GET after that marker; registering first guarantees
     // that a write crossing the marker -> GET boundary is queued for this
     // stream instead of falling into a gap between the GET and subscription.
-    let rx = sse_manager.subscribe_scoped(execution_space_id, company_scope_id);
+    let rx = sse_manager.subscribe_scoped_private(
+        execution_space_id,
+        company_scope_id,
+        private_agent_identity_id,
+        private_project_binding_id,
+    );
 
     // Send SSE header
     sse::write_sse_header(&mut stream)?;
@@ -27898,7 +28218,9 @@ fn handle_sse_stream(
     let snapshot_json = serde_json::json!({
         "generated_at": now_string(),
         "execution_space_id": execution_space_id,
+        "private_project_binding_id": private_project_binding_id,
         "company_scope_id": company_scope_id,
+        "private_provider_activity": private_agent_identity_id.is_some(),
         "stream_epoch": sse_manager.stream_epoch(),
     });
     sse::write_sse_frame(&mut stream, "snapshot", &snapshot_json)?;
@@ -28028,8 +28350,9 @@ fn handle_sse_stream(
                             }
                         }
                     }
-                    sse::SseEventFrame::MemberActivity(activity) => {
-                        if sse::write_sse_frame(&mut stream, "member_activity", &activity).is_err()
+                    sse::SseEventFrame::LiveProviderActivity(activity) => {
+                        if sse::write_sse_frame(&mut stream, "live_provider_activity", &activity)
+                            .is_err()
                         {
                             break;
                         }
@@ -28048,6 +28371,19 @@ fn handle_sse_stream(
                 break; // Channel closed, exit
             }
         }
+    }
+
+    if let (Some(agent_identity_id), Some(project_binding_id)) =
+        (private_agent_identity_id, private_project_binding_id)
+    {
+        // The transport is already gone; cleanup is best-effort and must not
+        // turn an ordinary disconnect into a new HTTP error response.
+        let _ = provider_event_api::clear_live_for_agent(
+            store,
+            execution_space_id,
+            project_binding_id,
+            agent_identity_id,
+        );
     }
 
     Ok(())
@@ -28422,7 +28758,8 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
     // startup (per-project truncation drops in-flight events for ALL projects at
     // once — see Risks). Production serve always truncates.
     let listener = TcpListener::bind(&addr)?;
-    println!("serving harness API on http://{addr}");
+    let bound_addr = listener.local_addr()?;
+    println!("serving harness API on http://{bound_addr}");
     // Show WHICH store this serve reads — the #1 confusion in issue #89 item 3 was
     // serve and run-script silently using different `.harness` dirs. Print the
     // absolute path so it can be compared against run-script's at a glance.
@@ -28443,6 +28780,39 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
     );
 
     let sse_manager = sse::SseManager::new();
+
+    // Register this exact serve process as the NodeDaemon's volatile activity
+    // sink. No endpoint or token is durable; either process restarting drops
+    // the bridge until serve registers again.
+    #[cfg(unix)]
+    if let Some(firm_home) = projects.firm_home.clone() {
+        if bound_addr.ip().is_loopback() {
+            let token = LIVE_PROVIDER_ACTIVITY_TOKEN
+                .get_or_init(new_live_provider_activity_token)
+                .clone();
+            if let Ok(node_id) = read_local_node_id() {
+                let callback_authority = bound_addr.to_string();
+                std::thread::spawn(move || loop {
+                    match supervisor_daemon::register_live_provider_activity_via_socket(
+                        &firm_home,
+                        &node_id,
+                        &callback_authority,
+                        &token,
+                    ) {
+                        Some(Ok(response)) if response.contains("\"ok\":true") => {}
+                        Some(Ok(response)) => eprintln!(
+                            "serve: NodeDaemon rejected volatile activity sink: {response}"
+                        ),
+                        Some(Err(error)) => {
+                            eprintln!("serve: cannot register volatile activity sink: {error}")
+                        }
+                        None => {}
+                    }
+                    std::thread::sleep(Duration::from_secs(2));
+                });
+            }
+        }
+    }
 
     // Start one Execution-Space-multiplexed SSE watcher. The watcher re-scans the
     // registry so spaces registered after serve starts become live without a
@@ -28629,11 +28999,11 @@ fn daemon_command(args: &[String]) -> CliResult<()> {
 
 #[derive(Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AgentFirmHttpCredential {
-    token: String,
-    actor: harness_core::agentfirm_api::ActorRef,
+pub(crate) struct AgentFirmHttpCredential {
+    pub(crate) token: String,
+    pub(crate) actor: harness_core::agentfirm_api::ActorRef,
     #[serde(default)]
-    authority_actors: Vec<harness_core::agentfirm_api::ActorRef>,
+    pub(crate) authority_actors: Vec<harness_core::agentfirm_api::ActorRef>,
 }
 
 #[derive(serde::Deserialize)]
@@ -28673,6 +29043,8 @@ struct RuntimeDispatchIntent {
 #[serde(deny_unknown_fields)]
 struct RuntimeAuthorMessageIntent {
     draft: harness_core::agentfirm_api::MessageDraft,
+    #[serde(default)]
+    remote_transfer: Option<fabric_runtime::QueueCollaborationMessageRequest>,
 }
 
 fn runtime_command_capability(
@@ -28707,7 +29079,7 @@ fn runtime_control_actor_is_authorized(
     Ok(false)
 }
 
-fn resolve_agentfirm_http_credential(
+pub(crate) fn resolve_agentfirm_http_credential(
     presented_token: Option<&str>,
 ) -> Result<AgentFirmHttpCredential, String> {
     let encoded = std::env::var("AGENTFIRM_HTTP_CREDENTIALS_JSON")
@@ -28818,6 +29190,7 @@ fn handle_http_connection(
     let mut trust_expected_version = None;
     let mut trust_confirmed_action = None;
     let mut trust_identity_override_header = false;
+    let mut live_provider_activity_token = None;
     loop {
         let mut line = String::new();
         reader.read_line(&mut line)?;
@@ -28843,6 +29216,9 @@ fn handle_http_connection(
             }
             if name.eq_ignore_ascii_case("x-agentfirm-confirm") {
                 trust_confirmed_action = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("x-agentfirm-live-token") {
+                live_provider_activity_token = Some(value.trim().to_string());
             }
             if matches!(
                 name.to_ascii_lowercase().as_str(),
@@ -28903,6 +29279,189 @@ fn handle_http_connection(
                 }
             }),
         )?;
+        return Ok(());
+    }
+    if method == "POST" && path_only == "/v1/collaboration/delegations" {
+        if trust_identity_override_header {
+            write_http_json(
+                &mut stream,
+                "401 Unauthorized",
+                &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":"request headers cannot select collaboration actor or authority identity"}}),
+            )?;
+            return Ok(());
+        }
+        let credential = match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
+            Ok(value) => value,
+            Err(message) => {
+                write_http_json(
+                    &mut stream,
+                    "401 Unauthorized",
+                    &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":message}}),
+                )?;
+                return Ok(());
+            }
+        };
+        let Some(idempotency_key) = trust_idempotency_key
+            .as_deref()
+            .filter(|key| !key.trim().is_empty())
+        else {
+            write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok":false,"error":{"code":"IDEMPOTENCY_CONFLICT","message":"Idempotency-Key is required"}}),
+            )?;
+            return Ok(());
+        };
+        if trust_expected_version != Some(0) {
+            write_http_json(
+                &mut stream,
+                "409 Conflict",
+                &serde_json::json!({"ok":false,"error":{"code":"EXPECTED_REVISION_CONFLICT","message":"new Delegation proposal requires If-Match: 0"}}),
+            )?;
+            return Ok(());
+        }
+        let request = match serde_json::from_slice::<
+            fabric_runtime::QueueCollaborationProposalRequest,
+        >(&body)
+        {
+            Ok(value) => value,
+            Err(error) => {
+                write_http_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &serde_json::json!({"ok":false,"error":{"code":"INVALID_PAYLOAD","message":error.to_string()}}),
+                )?;
+                return Ok(());
+            }
+        };
+        let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
+        let local_node_id = read_local_node_id()?;
+        match fabric_runtime::queue_collaboration_proposal(
+            &store_owned,
+            &firm_home,
+            &project_id,
+            &local_node_id,
+            &credential,
+            idempotency_key,
+            &request,
+            current_unix_ms_u64(),
+        ) {
+            Ok(value) => write_http_json(
+                &mut stream,
+                "202 Accepted",
+                &serde_json::json!({"ok":true,"queued":value}),
+            )?,
+            Err(error) => {
+                let status = match error.code {
+                    harness_fabric::FabricErrorCode::UnauthorizedActor => "403 Forbidden",
+                    harness_fabric::FabricErrorCode::ExpectedRevisionConflict => "409 Conflict",
+                    _ => "400 Bad Request",
+                };
+                write_http_json(
+                    &mut stream,
+                    status,
+                    &serde_json::json!({"ok":false,"error":{"code":format!("{:?}",error.code).to_ascii_uppercase(),"message":error.message}}),
+                )?;
+            }
+        }
+        return Ok(());
+    }
+    let collaboration_publication_delegation = path_only
+        .strip_prefix("/v1/collaboration/delegations/")
+        .and_then(|suffix| suffix.strip_suffix("/publications"))
+        .filter(|delegation_id| !delegation_id.is_empty() && !delegation_id.contains('/'));
+    if method == "POST" && collaboration_publication_delegation.is_some() {
+        if trust_identity_override_header {
+            write_http_json(
+                &mut stream,
+                "401 Unauthorized",
+                &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":"request headers cannot select collaboration actor or authority identity"}}),
+            )?;
+            return Ok(());
+        }
+        let credential = match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
+            Ok(value) => value,
+            Err(message) => {
+                write_http_json(
+                    &mut stream,
+                    "401 Unauthorized",
+                    &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":message}}),
+                )?;
+                return Ok(());
+            }
+        };
+        let Some(idempotency_key) = trust_idempotency_key
+            .as_deref()
+            .filter(|key| !key.trim().is_empty())
+        else {
+            write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok":false,"error":{"code":"IDEMPOTENCY_CONFLICT","message":"Idempotency-Key is required"}}),
+            )?;
+            return Ok(());
+        };
+        let Some(expected_revision) = trust_expected_version.filter(|version| *version > 0) else {
+            write_http_json(
+                &mut stream,
+                "409 Conflict",
+                &serde_json::json!({"ok":false,"error":{"code":"EXPECTED_REVISION_CONFLICT","message":"If-Match exact Delegation revision is required"}}),
+            )?;
+            return Ok(());
+        };
+        let request = match serde_json::from_slice::<
+            fabric_runtime::QueueRemoteFactPublicationRequest,
+        >(&body)
+        {
+            Ok(value) => value,
+            Err(error) => {
+                write_http_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &serde_json::json!({"ok":false,"error":{"code":"INVALID_PAYLOAD","message":error.to_string()}}),
+                )?;
+                return Ok(());
+            }
+        };
+        if Some(request.delegation_id.as_str()) != collaboration_publication_delegation {
+            write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok":false,"error":{"code":"INVALID_PAYLOAD","message":"path and body Delegation identities differ"}}),
+            )?;
+            return Ok(());
+        }
+        let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
+        let local_node_id = read_local_node_id()?;
+        match fabric_runtime::queue_remote_fact_publication(
+            &store_owned,
+            &firm_home,
+            &project_id,
+            &local_node_id,
+            &credential,
+            idempotency_key,
+            expected_revision,
+            &request,
+            current_unix_ms_u64(),
+        ) {
+            Ok(value) => write_http_json(
+                &mut stream,
+                "202 Accepted",
+                &serde_json::json!({"ok":true,"queued":value}),
+            )?,
+            Err(error) => {
+                let status = match error.code {
+                    harness_fabric::FabricErrorCode::UnauthorizedActor => "403 Forbidden",
+                    harness_fabric::FabricErrorCode::ExpectedRevisionConflict => "409 Conflict",
+                    _ => "400 Bad Request",
+                };
+                write_http_json(
+                    &mut stream,
+                    status,
+                    &serde_json::json!({"ok":false,"error":{"code":format!("{:?}",error.code).to_ascii_uppercase(),"message":error.message}}),
+                )?;
+            }
+        }
         return Ok(());
     }
     if method == "POST" && path_only == "/v1/agentfirm/runtime-commands" {
@@ -28970,6 +29529,31 @@ fn handle_http_connection(
                         return Ok(());
                     }
                 };
+                let delegation_authority = if let Some(remote_transfer) =
+                    intent.remote_transfer.as_ref()
+                {
+                    match fabric_runtime::resolve_collaboration_message_authority(
+                        &store_owned,
+                        &execution_space::firm_home().map_err(execution_space_err)?,
+                        &project_id,
+                        &read_local_node_id()?,
+                        &credential,
+                        &intent.draft,
+                        remote_transfer,
+                    ) {
+                        Ok(authority) => Some(authority),
+                        Err(error) => {
+                            write_http_json(
+                                &mut stream,
+                                "403 Forbidden",
+                                &serde_json::json!({"ok":false,"error":{"code":format!("{:?}",error.code).to_ascii_uppercase(),"message":error.message}}),
+                            )?;
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    None
+                };
                 let target_node_id = intent
                     .draft
                     .team_run_id
@@ -28993,7 +29577,11 @@ fn handle_http_connection(
                 (
                     target_node_id,
                     None,
-                    serde_json::json!({"draft": intent.draft}),
+                    serde_json::json!({
+                        "draft": intent.draft,
+                        "remote_transfer": intent.remote_transfer,
+                        "delegation_authority": delegation_authority,
+                    }),
                 )
             }
             RuntimeCommandKind::StartSession => {
@@ -29218,7 +29806,7 @@ fn handle_http_connection(
             };
             actor
         } else {
-            credential.actor
+            credential.actor.clone()
         };
         let server_payload = if request.command == RuntimeCommandKind::StartSession {
             let mut payload = server_payload;
@@ -29258,7 +29846,73 @@ fn handle_http_connection(
             &envelope.target_node_id,
             &envelope,
         ) {
-            Ok(response) => write_http_json(&mut stream, "200 OK", &response)?,
+            Ok(response) => {
+                if response.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+                    write_http_json(&mut stream, "409 Conflict", &response)?;
+                    return Ok(());
+                }
+                if envelope.command == RuntimeCommandKind::AuthorMessage {
+                    if let Some(remote_transfer) = envelope
+                        .payload
+                        .get("remote_transfer")
+                        .filter(|value| !value.is_null())
+                    {
+                        let request = serde_json::from_value::<
+                            fabric_runtime::QueueCollaborationMessageRequest,
+                        >(remote_transfer.clone())
+                        .map_err(|error| {
+                            CliError::Usage(format!(
+                                "INVALID_COLLABORATION_MESSAGE_TRANSFER: {error}"
+                            ))
+                        })?;
+                        let message = serde_json::from_value::<harness_core::agentfirm_api::Message>(
+                            response.get("result").cloned().ok_or_else(|| {
+                                CliError::Usage("COLLABORATION_MESSAGE_RESULT_MISSING".into())
+                            })?,
+                        )?;
+                        match fabric_runtime::queue_collaboration_message(
+                            &firm_home,
+                            &project_id,
+                            &envelope.target_node_id,
+                            &credential,
+                            &envelope.idempotency_key,
+                            &message,
+                            &request,
+                            serde_json::from_value(
+                                envelope
+                                    .payload
+                                    .get("delegation_authority")
+                                    .cloned()
+                                    .ok_or_else(|| {
+                                        CliError::Usage(
+                                            "COLLABORATION_MESSAGE_AUTHORITY_MISSING".into(),
+                                        )
+                                    })?,
+                            )?,
+                            current_unix_ms_u64(),
+                        ) {
+                            Ok(queued) => write_http_json(
+                                &mut stream,
+                                "202 Accepted",
+                                &serde_json::json!({
+                                    "ok": true,
+                                    "message": message,
+                                    "remote_transfer": queued,
+                                }),
+                            )?,
+                            Err(error) => write_http_json(
+                                &mut stream,
+                                "409 Conflict",
+                                &serde_json::json!({"ok":false,"error":{"code":format!("{:?}",error.code).to_ascii_uppercase(),"message":error.message}}),
+                            )?,
+                        }
+                    } else {
+                        write_http_json(&mut stream, "200 OK", &response)?;
+                    }
+                } else {
+                    write_http_json(&mut stream, "200 OK", &response)?;
+                }
+            }
             Err(error) => write_http_json(
                 &mut stream,
                 "503 Service Unavailable",
@@ -29838,11 +30492,54 @@ fn handle_http_connection(
                 )?
             }
             "/v1/events" => {
+                let private_agent_identity_id = match trust_transport_token.as_deref() {
+                    None => None,
+                    Some(_) => {
+                        match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
+                            Ok(credential)
+                                if credential.actor.kind
+                                    == harness_core::agentfirm_api::ActorKind::AgentMember =>
+                            {
+                                Some(credential.actor.id)
+                            }
+                            Ok(_) => None,
+                            Err(message) => {
+                                write_http_json(
+                                    &mut stream,
+                                    "401 Unauthorized",
+                                    &serde_json::json!({"ok":false,"error":{"code":"NOT_AUTHORIZED","message":message}}),
+                                )?;
+                                return Ok(());
+                            }
+                        }
+                    }
+                };
+                let private_project_binding_id = if private_agent_identity_id.is_some() {
+                    match projects.exact_project_context_for(project_param.as_deref(), &project_id)
+                    {
+                        Ok(project) => Some(project.id),
+                        Err(error) => {
+                            write_http_json(
+                                &mut stream,
+                                "404 Not Found",
+                                &serde_json::json!({"ok":false,"error":{"code":"PROJECT_BINDING_NOT_FOUND","message":error.to_string()}}),
+                            )?;
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    None
+                };
                 // Scope coordination to the selected Execution Space and Company
                 // invalidations to the independently selected Company Store.
+                // Private live provider activity additionally requires the
+                // exact AgentIdentity actor; Host authority never widens it.
                 handle_sse_stream(
+                    &store_owned,
                     &project_id,
+                    private_project_binding_id.as_deref(),
                     company_store_owned.as_ref().map(|(id, _)| id.as_str()),
+                    private_agent_identity_id.as_deref(),
                     stream,
                     sse_manager,
                 )?
@@ -29863,75 +30560,27 @@ fn handle_http_connection(
                 if member_path.starts_with("/v1/member-runs/")
                     && member_path.ends_with("/native-activity") =>
             {
-                let member_run_id = member_path
-                    .strip_prefix("/v1/member-runs/")
-                    .and_then(|rest| rest.strip_suffix("/native-activity"))
-                    .unwrap_or_default();
-                let member = latest_member_runs_in_append_order(store)?
-                    .into_iter()
-                    .find(|member| member.id == member_run_id);
-                match member {
-                    Some(member) => match member.native_session.as_ref() {
-                        Some(session) => write_http_json(
-                            &mut stream,
-                            "200 OK",
-                            &native_session::read_activity(session)?,
-                        )?,
-                        None => write_http_json(
-                            &mut stream,
-                            "409 Conflict",
-                            &serde_json::json!({
-                                "error": "native_session_unbound",
-                                "member_run_id": member_run_id,
-                            }),
-                        )?,
-                    },
-                    None => write_http_json(
-                        &mut stream,
-                        "404 Not Found",
-                        &serde_json::json!({
-                            "error": "member_run_not_found",
-                            "member_run_id": member_run_id,
-                        }),
-                    )?,
-                }
+                write_http_json(
+                    &mut stream,
+                    "410 Gone",
+                    &serde_json::json!({
+                        "error": "legacy_native_activity_route_retired",
+                        "detail": "This unscoped route cannot prove the exact Session owner. Use the authenticated AgentWorkspace session_event_projection; provider-native open/resume remains a separate authorized action."
+                    }),
+                )?
             }
             step_path
                 if step_path.starts_with("/v1/workflow-steps/")
                     && step_path.ends_with("/native-activity") =>
             {
-                let step_id = step_path
-                    .strip_prefix("/v1/workflow-steps/")
-                    .and_then(|rest| rest.strip_suffix("/native-activity"))
-                    .unwrap_or_default();
-                let step = latest_workflow_steps_in_append_order(store)?
-                    .into_iter()
-                    .find(|step| step.id == step_id);
-                match step {
-                    Some(step) => match step.native_session.as_ref() {
-                        Some(session) => write_http_json(
-                            &mut stream,
-                            "200 OK",
-                            &native_session::read_activity(session)?,
-                        )?,
-                        None => write_http_json(
-                            &mut stream,
-                            "409 Conflict",
-                            &serde_json::json!({
-                                "error": "native_session_unbound",
-                                "workflow_step_id": step_id,
-                            }),
-                        )?,
-                    },
-                    None => write_http_json(
-                        &mut stream,
-                        "404 Not Found",
-                        &serde_json::json!({
-                            "error": "workflow_step_not_found",
-                            "workflow_step_id": step_id,
-                        }),
-                    )?,
-                }
+                write_http_json(
+                    &mut stream,
+                    "410 Gone",
+                    &serde_json::json!({
+                        "error": "legacy_native_activity_route_retired",
+                        "detail": "Workflow output remains Harness-owned result truth. Provider-native Session history is not exposed through this unscoped route."
+                    }),
+                )?
             }
             // GET /v1/workflows — the registered (built-in) workflow catalog,
             // run-independent { name, summary } pairs from the compiled registry.
@@ -30080,73 +30729,127 @@ fn handle_http_connection(
         return Ok(());
     }
 
-    // POST /v1/live/member-activity — optional ingress for provider adapters
-    // running outside this process. It validates the project/run/member join,
-    // sanitizes one short preview, and broadcasts only to current subscribers.
-    // No store method is called and reconnecting clients cannot replay it.
     if path_only == "/v1/live/member-activity" {
-        let result = (|| -> CliResult<serde_json::Value> {
-            let team_run_id = required_json_string(&body_json, "team_run_id")?;
-            let member_run_id = required_json_string(&body_json, "member_run_id")?;
-            let preview =
-                sanitize_live_member_preview(&required_json_string(&body_json, "preview")?)
-                    .ok_or_else(|| {
-                        CliError::Usage("member activity preview must not be empty".to_string())
-                    })?;
-            let run = latest_team_run(store, &team_run_id)?;
-            if run.status != TeamRunStatus::Running {
-                return Err(CliError::Usage(format!(
-                    "team run {team_run_id} is {}, not running",
-                    serde_snake_label(&run.status)
-                )));
+        write_http_json(
+            &mut stream,
+            "410 Gone",
+            &serde_json::json!({
+                "ok": false,
+                "error": "retired_live_member_activity",
+                "detail": "Use the typed, exact-AgentSession /v1/live/provider-activity bridge."
+            }),
+        )?;
+        return Ok(());
+    }
+
+    // POST /v1/live/provider-activity — private loopback ingress from the one
+    // local NodeDaemon. The body cannot select an AgentSession: serve resolves
+    // the exact current session from canonical runtime state or fails closed.
+    // Registry and SSE output are process-memory-only and never replayed.
+    if path_only == "/v1/live/provider-activity" {
+        let expected_token = LIVE_PROVIDER_ACTIVITY_TOKEN.get();
+        if expected_token.is_none()
+            || live_provider_activity_token.as_deref() != expected_token.map(String::as_str)
+        {
+            write_http_json(
+                &mut stream,
+                "401 Unauthorized",
+                &serde_json::json!({"ok": false, "error": "invalid_live_provider_activity_token"}),
+            )?;
+            return Ok(());
+        }
+        let update = match serde_json::from_value::<LiveProviderActivityUpdate>(body_json) {
+            Ok(update) => update,
+            Err(error) => {
+                write_http_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &serde_json::json!({"ok": false, "error": format!("invalid live provider activity: {error}")}),
+                )?;
+                return Ok(());
             }
-            let member = latest_member_runs_in_append_order(store)?
+        };
+        let result = (|| -> CliResult<serde_json::Value> {
+            let (team_run_id, member_run_id) = match &update {
+                LiveProviderActivityUpdate::Updated {
+                    team_run_id,
+                    member_run_id,
+                    ..
+                }
+                | LiveProviderActivityUpdate::Terminal {
+                    team_run_id,
+                    member_run_id,
+                } => (team_run_id.clone(), member_run_id.clone()),
+            };
+            let member = latest_member_runs_in_append_order(&store_owned)?
                 .into_iter()
                 .find(|member| member.id == member_run_id)
                 .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
-            if member.team_run_id != team_run_id {
-                return Err(CliError::Usage(format!(
-                    "member run {member_run_id} does not belong to team run {team_run_id}"
-                )));
-            }
-            ensure_member_coordination_open(&member)?;
-            if matches!(
-                member.status,
-                MemberRunStatus::Completed
-                    | MemberRunStatus::Failed
-                    | MemberRunStatus::Stopped
-                    | MemberRunStatus::Blocked
-            ) {
-                return Err(CliError::Usage(format!(
-                    "member run {member_run_id} is terminal and cannot publish live activity"
-                )));
-            }
-            let ingress_key = format!("{project_id}:{member_run_id}");
-            let ingress = LIVE_MEMBER_ACTIVITY_INGRESS.get_or_init(|| Mutex::new(HashMap::new()));
-            let mut last_by_member = ingress.lock().unwrap_or_else(|error| error.into_inner());
-            // This registry is only a short-lived ingress throttle. Drop stale
-            // member keys so transient provider sessions cannot grow it without
-            // bound over the lifetime of the server.
-            last_by_member.retain(|_, last| last.elapsed() < Duration::from_secs(60));
-            if last_by_member
-                .get(&ingress_key)
-                .is_some_and(|last| last.elapsed() < LIVE_MEMBER_ACTIVITY_THROTTLE)
-            {
-                return Err(CliError::Usage(
-                    "member activity preview is rate limited".to_string(),
-                ));
-            }
-            last_by_member.insert(ingress_key, Instant::now());
-            drop(last_by_member);
-            Ok(broadcast_live_member_activity(
+            let run = latest_team_run(&store_owned, &team_run_id)?;
+            let project_binding_id = run.project_binding_id.clone();
+            let scope = provider_event_api::exact_live_scope(
+                &store_owned,
+                &project_id,
+                &project_binding_id,
+                &team_run_id,
+                &member,
+            )
+            .map_err(|reason| CliError::Usage(reason.to_string()))?;
+            let event = match update {
+                LiveProviderActivityUpdate::Updated {
+                    provider,
+                    kind,
+                    display_summary,
+                    ..
+                } => {
+                    if run.status != TeamRunStatus::Running {
+                        return Err(CliError::Usage(format!(
+                            "team run {team_run_id} is {}, not running",
+                            serde_snake_label(&run.status)
+                        )));
+                    }
+                    ensure_member_coordination_open(&member)?;
+                    if matches!(
+                        member.status,
+                        MemberRunStatus::Completed
+                            | MemberRunStatus::Failed
+                            | MemberRunStatus::Stopped
+                            | MemberRunStatus::Blocked
+                    ) {
+                        return Err(CliError::Usage(format!(
+                            "member run {member_run_id} is terminal and cannot publish live activity"
+                        )));
+                    }
+                    if provider != member.provider {
+                        return Err(CliError::Usage(
+                            "provider activity does not match the canonical MemberRun provider"
+                                .to_string(),
+                        ));
+                    }
+                    let display_summary = sanitize_live_member_preview(&display_summary)
+                        .ok_or_else(|| {
+                            CliError::Usage(
+                                "live provider activity summary must not be empty".to_string(),
+                            )
+                        })?;
+                    let activity = provider_event_api::record_live(
+                        scope.clone(),
+                        &member.provider,
+                        kind,
+                        display_summary,
+                    );
+                    provider_event_api::updated_live_event(&scope, activity)
+                }
+                LiveProviderActivityUpdate::Terminal { .. } => {
+                    provider_event_api::clear_live_terminal(&scope)
+                }
+            };
+            Ok(broadcast_live_provider_activity(
                 &sse_manager,
                 &project_id,
-                LiveMemberActivityPreview {
-                    team_run_id,
-                    member_run_id,
-                    provider: member.provider,
-                    preview,
-                },
+                &project_binding_id,
+                &member.agent_member_id,
+                event,
             ))
         })();
         match result {
@@ -30497,6 +31200,11 @@ fn handle_http_action(
     path: &str,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
+    if role_actions_api::is_retired_legacy_write_path(path) {
+        return Err(CliError::Usage(
+            "RETIRED_WRITE_AUTHORITY: legacy local Work/WorkDelegation writers are closed".into(),
+        ));
+    }
     if path == "/v1/missions" {
         return create_mission_value(store, body);
     }
@@ -32018,7 +32726,7 @@ fn create_message_value(
     };
     store.append_message(&message)?;
     if let Some(member) = target.as_ref() {
-        append_agent_event(
+        append_harness_runtime_control_fact(
             store,
             &member.id,
             member.provider_runtime_id.as_deref(),
@@ -32769,7 +33477,7 @@ fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<Provid
             member.status = ProviderLaunchStatus::Error;
             member.last_seen_at = Some(now_string());
             store.append_member(&member)?;
-            append_agent_event(
+            append_harness_runtime_control_fact(
                 store,
                 &member.id,
                 member.provider_runtime_id.as_deref(),
@@ -32787,7 +33495,7 @@ fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<Provid
     member.last_seen_at = Some(now_string());
     store.append_runtime(&runtime)?;
     store.append_member(&member)?;
-    append_agent_event(
+    append_harness_runtime_control_fact(
         store,
         &member.id,
         Some(runtime.id.as_str()),
@@ -35246,8 +35954,8 @@ fn count_unique_worktree_diff_files(diff: &str) -> usize {
 }
 
 /// `workflow get-output <run_id> [--step <label>]` — retrieve a run's leaf
-/// durable WorkflowStep outcomes in authored order and join optional native
-/// provider activity through each step's `NativeSessionRef`.
+/// durable WorkflowStep outcomes in authored order. The generic workflow
+/// command does not join private provider-native Session history.
 fn workflow_get_output_value(
     store: &HarnessStore,
     args: &[String],
@@ -35293,18 +36001,13 @@ fn workflow_get_output_value(
             }
         }
         let output = step.output_summary.clone().unwrap_or_default();
-        let native_activity = step
-            .native_session
-            .as_ref()
-            .map(native_session::read_activity)
-            .transpose()?;
         out_steps.push(serde_json::json!({
             "label": step.label,
             "status": serde_json::to_value(step.status)?,
             "native_session": step.native_session,
             "source": "workflow_step",
             "result": step.result,
-            "native_activity": native_activity,
+            "provider_native_history": "not_exposed_by_workflow_output",
             "output": output,
         }));
     }
@@ -36969,7 +37672,7 @@ fn deliver_agent_messages_value(
         .as_ref()
         .is_some_and(|runtime| !runtime_is_alive(runtime))
     {
-        append_agent_event(
+        append_harness_runtime_control_fact(
             store,
             &member.id,
             member.provider_runtime_id.as_deref(),
@@ -37033,7 +37736,7 @@ fn deliver_agent_messages_value(
         member.current_task_id = claimed_message.task_id.clone();
         member.last_seen_at = Some(now_string());
         store.append_member(&member)?;
-        append_agent_event(
+        append_harness_runtime_control_fact(
             store,
             &member.id,
             member.provider_runtime_id.as_deref(),
@@ -37049,7 +37752,7 @@ fn deliver_agent_messages_value(
                 .clone()
                 .or_else(|| Some(format!("dry-thread-{}", member.id)));
             let provider_turn_id = Some(format!("dry-turn-{}", claimed_message.id));
-            let evidence_ids = record_claimed_delivery_terminal(
+            record_claimed_delivery_terminal(
                 store,
                 &delivery_id,
                 &claimed_message,
@@ -37068,12 +37771,12 @@ fn deliver_agent_messages_value(
                 provider_turn_id,
                 terminal_source: Some(MessageTerminalSource::DryRun),
                 provider_request_id: None,
-                evidence_ids,
                 exit_code: Some(0),
                 tokens: None,
                 cost_usd: None,
                 model: None,
                 structured: None,
+                response_text: None,
                 summary: "dry-run delivery completed".into(),
             }
         } else {
@@ -37099,7 +37802,7 @@ fn deliver_agent_messages_value(
                     "{} runtime start failed after claim: {error}",
                     member.provider
                 );
-                let evidence_ids = record_claimed_delivery_terminal(
+                record_claimed_delivery_terminal(
                     store,
                     &delivery_id,
                     &claimed_message,
@@ -37118,17 +37821,17 @@ fn deliver_agent_messages_value(
                     provider_turn_id: None,
                     terminal_source: Some(MessageTerminalSource::Failed),
                     provider_request_id: None,
-                    evidence_ids,
                     exit_code: Some(1),
                     tokens: None,
                     cost_usd: None,
                     model: None,
                     structured: None,
+                    response_text: None,
                     summary,
                 }
             } else if runtime.is_none() {
                 let summary = format!("agent {agent_id} has no running provider runtime");
-                let evidence_ids = record_claimed_delivery_terminal(
+                record_claimed_delivery_terminal(
                     store,
                     &delivery_id,
                     &claimed_message,
@@ -37147,12 +37850,12 @@ fn deliver_agent_messages_value(
                     provider_turn_id: None,
                     terminal_source: Some(MessageTerminalSource::Failed),
                     provider_request_id: None,
-                    evidence_ids,
                     exit_code: Some(1),
                     tokens: None,
                     cost_usd: None,
                     model: None,
                     structured: None,
+                    response_text: None,
                     summary,
                 }
             } else {
@@ -37188,23 +37891,6 @@ fn deliver_agent_messages_value(
             last_error: delivery_error_message(&delivery.status, &delivery.summary),
         });
         store.append_message(&delivered_message)?;
-        if !delivery_unresolved {
-            let report = RegistryMessage {
-                id: generated_id("msg"),
-                task_id: delivered_message.task_id.clone(),
-                from_agent_id: member.id.clone(),
-                to_agent_id: None,
-                channel: Some("provider-report".into()),
-                kind: RegistryMessageIntent::Report,
-                delivery_status: RegistryDeliveryStatus::Delivered,
-                content: delivery.summary.clone(),
-                evidence_ids: delivery.evidence_ids.clone(),
-                created_at: now_string(),
-                delivery: delivered_message.delivery.clone(),
-                sender_kind: SenderKind::Agent,
-            };
-            store.append_message(&report)?;
-        }
         if let Some(thread_id) = delivery.provider_thread_id.clone() {
             member.provider_thread_id = Some(thread_id);
         }
@@ -37244,7 +37930,7 @@ fn deliver_agent_messages_value(
         }
         member.last_seen_at = Some(now_string());
         store.append_member(&member)?;
-        append_agent_event(
+        append_harness_runtime_control_fact(
             store,
             &member.id,
             member.provider_runtime_id.as_deref(),
@@ -37402,12 +38088,16 @@ struct DeliveryOutcome {
     provider_turn_id: Option<String>,
     terminal_source: Option<MessageTerminalSource>,
     provider_request_id: Option<String>,
-    evidence_ids: Vec<String>,
     exit_code: Option<i32>,
     tokens: Option<TokenUsage>,
     cost_usd: Option<f64>,
     model: Option<String>,
     structured: Option<serde_json::Value>,
+    /// Provider-authored response retained only for the current in-process
+    /// consumer. It is never copied into RegistryMessage, Evidence, runtime
+    /// health, or another Harness history store.
+    response_text: Option<String>,
+    /// Harness-owned delivery/control fact safe for durable coordination rows.
     summary: String,
 }
 
@@ -37496,7 +38186,7 @@ fn retry_delivery_value(
     message.delivery_status = RegistryDeliveryStatus::Queued;
     message.delivery = None;
     store.append_message(&message)?;
-    append_agent_event(
+    append_harness_runtime_control_fact(
         store,
         agent_id,
         member.provider_runtime_id.as_deref(),
@@ -37647,6 +38337,7 @@ fn build_turn_input(message: &RegistryMessage, delivery_attempt_id: &str) -> ser
 /// the endpoint verbatim so callers that only inspect existence/format keep
 /// working without assuming a unix socket. This keeps the seam provider-neutral
 /// per ADR 0011 — the endpoint format is the one place Codex assumed a socket.
+#[cfg(test)]
 fn reconcile_running_delivery_attempts(
     store: &HarnessStore,
     agent_member_id: &str,
@@ -37698,25 +38389,6 @@ fn reconcile_running_delivery_attempts(
             reconciled_task_ids.insert(task_id);
         }
         store.append_message(&message)?;
-        let delivery_id = message
-            .delivery
-            .as_ref()
-            .and_then(|delivery| delivery.delivery_id.as_deref())
-            .unwrap_or("unknown");
-        store.append_message(&RegistryMessage {
-            id: generated_id("msg"),
-            task_id: message.task_id.clone(),
-            from_agent_id: agent_member_id.into(),
-            to_agent_id: None,
-            channel: Some("provider-report".into()),
-            kind: RegistryMessageIntent::Report,
-            delivery_status: RegistryDeliveryStatus::Delivered,
-            content: format!("Delivery {delivery_id} completed from provider-native activity"),
-            evidence_ids: message.evidence_ids.clone(),
-            created_at: now_string(),
-            delivery: message.delivery.clone(),
-            sender_kind: SenderKind::Agent,
-        })?;
         reconciled_any = true;
     }
     if reconciled_any {
@@ -37742,6 +38414,7 @@ fn reconcile_running_delivery_attempts(
     Ok(reconciled_any)
 }
 
+#[cfg(test)]
 fn mark_runtime_delivery_reconciled(
     store: &HarnessStore,
     runtime_id: &str,
@@ -37926,17 +38599,6 @@ fn terminal_source_from_values(values: &[serde_json::Value]) -> Option<MessageTe
     None
 }
 
-fn turn_id_from_container(value: &serde_json::Value) -> Option<String> {
-    value
-        .get("turn")
-        .and_then(|turn| turn.get("id"))
-        .and_then(|id| id.as_str())
-        .or_else(|| value.get("turnId").and_then(|id| id.as_str()))
-        .or_else(|| value.get("turn_id").and_then(|id| id.as_str()))
-        .or_else(|| value.get("id").and_then(|id| id.as_str()))
-        .map(str::to_string)
-}
-
 // Test-only helper: extracts a thread id from codex app-server values; unit-tested only.
 #[cfg(test)]
 fn extract_thread_id(values: &[serde_json::Value], request_id: &str) -> Option<String> {
@@ -37966,6 +38628,7 @@ fn extract_thread_id(values: &[serde_json::Value], request_id: &str) -> Option<S
     None
 }
 
+#[cfg(test)]
 fn thread_id_from_container(value: &serde_json::Value) -> Option<String> {
     for path in [
         &["thread", "id"][..],
@@ -37981,6 +38644,7 @@ fn thread_id_from_container(value: &serde_json::Value) -> Option<String> {
     None
 }
 
+#[cfg(test)]
 fn json_path_string(value: &serde_json::Value, path: &[&str]) -> Option<String> {
     let mut current = value;
     for key in path {
@@ -39805,7 +40469,7 @@ fn run_kimi_delivery(
         .join("deliveries")
         .join(delivery_id);
     fs::create_dir_all(&session_dir)?;
-    let (process_success, _events, raw_events, session_id, stderr_log) =
+    let (process_success, _events, raw_events, session_id, _stderr_log) =
         run_kimi_exec_delivery_real(&session_dir, member, message, timeout_ms, project)?;
     // Kimi -p stream-json carries no usage/model/cost/structured frame; degrade per
     // kimi_exec(). Reply/status/session come from the kimi-native parsers on the raw
@@ -39817,29 +40481,9 @@ fn run_kimi_delivery(
     let status = infer_kimi_status(&raw_events, process_success);
     let structured = structured_for_status(&status, raw_structured);
     let terminal_source = status_to_terminal_source(&status);
-    let resolved_session_id = session_id
-        .clone()
-        .unwrap_or_else(|| generated_id("session"));
     // Only a real session id parsed from the stream is resumable; the synthetic
     // fallback is not surfaced as a resume token (claude-identical).
     let resumable_session_id = session_id.clone();
-    let evidence_id = generated_id("evidence");
-    let evidence = Evidence {
-        id: evidence_id.clone(),
-        task_id: message.task_id.clone(),
-        source_type: "kimi_delivery_session".into(),
-        source_ref: format!("native-session:kimi:{resolved_session_id}"),
-        summary: format!(
-            "Kimi stream-json delivery {} for message {} ({} frames)",
-            resolved_session_id,
-            message.id,
-            raw_events.len()
-        ),
-        created_at: now_string(),
-        evidence_kind: None,
-        goal_id: None,
-    };
-    store.append_evidence(&evidence)?;
 
     let _ = fs::remove_dir_all(&session_dir);
     Ok(DeliveryOutcome {
@@ -39851,17 +40495,18 @@ fn run_kimi_delivery(
         terminal_source,
         status,
         provider_request_id: None,
-        evidence_ids: vec![evidence_id],
         exit_code: if process_success { Some(0) } else { Some(1) },
         tokens,
         cost_usd,
         model,
         structured,
+        response_text: process_success
+            .then(|| extract_kimi_reply_text(&raw_events))
+            .flatten(),
         summary: if process_success {
-            extract_kimi_reply_text(&raw_events)
-                .unwrap_or_else(|| format!("Kimi delivery succeeded: {} frames", raw_events.len()))
+            "Kimi provider delivery completed; transcript remains provider-native".to_string()
         } else {
-            format!("Kimi delivery failed: {}", stderr_log)
+            "Kimi provider delivery failed; inspect the provider-native session".to_string()
         },
     })
 }
@@ -40176,24 +40821,6 @@ fn extract_claude_reply_text(events: &[ClaudeStreamEvent]) -> Option<String> {
         }
     }
     (!parts.is_empty()).then(|| parts.join("\n"))
-}
-
-/// Extract evidence refs from a `claude -p --output-format stream-json`
-/// stream. Scans the terminal `result` event for an optional `evidenceRefs`
-/// array (strings); returns empty vec when absent.
-fn extract_claude_evidence_refs(events: &[ClaudeStreamEvent]) -> Vec<String> {
-    for event in events.iter().rev() {
-        if event.event_type != "result" {
-            continue;
-        }
-        if let Some(refs) = event.payload.get("evidenceRefs").and_then(|v| v.as_array()) {
-            return refs
-                .iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect();
-        }
-    }
-    Vec::new()
 }
 
 /// Map ProviderExecutionStatus to terminal source.
@@ -40622,40 +41249,6 @@ fn codex_mcp_id_key(id: &str) -> String {
     }
 }
 
-// Record only the Harness-level link from a delivery attempt to provider-native
-// session truth. The provider owns the transcript, tool history, and resume data.
-struct ExecDeliverySessionRecord<'a> {
-    delivery_id: &'a str,
-    message: &'a RegistryMessage,
-    provider_thread_id: Option<String>,
-}
-
-fn record_exec_delivery_session(
-    store: &HarnessStore,
-    record: ExecDeliverySessionRecord<'_>,
-) -> CliResult<String> {
-    let evidence_id = generated_id("evidence");
-    let evidence = Evidence {
-        id: evidence_id.clone(),
-        task_id: record.message.task_id.clone(),
-        source_type: "codex_exec_delivery_session".into(),
-        source_ref: record
-            .provider_thread_id
-            .as_ref()
-            .map(|id| format!("native-session:codex:{id}"))
-            .unwrap_or_else(|| "native-session:codex:unavailable".to_string()),
-        summary: format!(
-            "Codex exec-stream delivery {} for message {}",
-            record.delivery_id, record.message.id
-        ),
-        created_at: now_string(),
-        evidence_kind: None,
-        goal_id: None,
-    };
-    store.append_evidence(&evidence)?;
-    Ok(evidence_id)
-}
-
 /// This is the exec-stream variant of run_codex_app_server_exchange.
 #[allow(clippy::too_many_arguments)]
 fn run_codex_exec_delivery(
@@ -40675,7 +41268,7 @@ fn run_codex_exec_delivery(
     fs::create_dir_all(&session_dir)?;
     let spec = build_launch_spec(member, message);
 
-    let (process_success, events, raw_events, stderr_log) = run_codex_exec_process(
+    let (process_success, events, raw_events, _stderr_log) = run_codex_exec_process(
         &session_dir,
         member,
         message,
@@ -40703,28 +41296,12 @@ fn run_codex_exec_delivery(
     let structured =
         structured_for_status(&status, codex_delivery_structured(reply.as_deref(), &spec));
 
-    let evidence_id = record_exec_delivery_session(
-        store,
-        ExecDeliverySessionRecord {
-            delivery_id,
-            message,
-            provider_thread_id: provider_thread_id.clone(),
-        },
-    )?;
-
     let summary = match status {
-        ProviderExecutionStatus::Succeeded => reply
-            .clone()
-            .unwrap_or_else(|| "Codex exec --json turn completed successfully".into()),
+        ProviderExecutionStatus::Succeeded => {
+            "Codex provider delivery completed; transcript remains provider-native".into()
+        }
         ProviderExecutionStatus::Failed => {
-            if stderr_log.is_empty() {
-                "Codex exec --json failed: no output".into()
-            } else {
-                format!(
-                    "Codex exec --json failed: {}",
-                    stderr_log.lines().next().unwrap_or("unknown error")
-                )
-            }
+            "Codex provider delivery failed; inspect the provider-native session".into()
         }
         ProviderExecutionStatus::Stale => {
             "Codex exec --json produced output but did not complete before timeout".into()
@@ -40743,12 +41320,12 @@ fn run_codex_exec_delivery(
         provider_turn_id,
         terminal_source,
         provider_request_id: None, // exec stream does not use request_id
-        evidence_ids: vec![evidence_id],
         exit_code,
         tokens,
         cost_usd,
         model,
         structured,
+        response_text: reply,
         summary,
     })
 }
@@ -40915,7 +41492,7 @@ fn run_claude_delivery(
     // frame (see `resident.rs`). The returned tuple shape is identical to the
     // default path, so status inference and telemetry stay provider-neutral.
     let resident = env::var("HARNESS_CLAUDE_RESIDENT").as_deref() == Ok("1");
-    let (process_success, events, raw_events, session_id, stderr_log) = if resident {
+    let (process_success, events, raw_events, session_id, _stderr_log) = if resident {
         run_claude_resident_delivery_real(&session_dir, member, message, timeout_ms, project)?
     } else {
         run_claude_exec_delivery_real(&session_dir, member, message, timeout_ms, project)?
@@ -40925,35 +41502,11 @@ fn run_claude_delivery(
     let status = infer_claude_session_status(&events, process_success);
     let structured = structured_for_status(&status, raw_structured);
     let terminal_source = status_to_terminal_source(&status);
-    let resolved_session_id = session_id
-        .clone()
-        .unwrap_or_else(|| generated_id("session"));
-
     // The id we hand back as the member's provider thread for the NEXT delivery
     // to resume. Only a real session id parsed from the provider output is
     // resumable; the synthetic fallback id above is not, so it is not surfaced
     // as a resume token.
     let resumable_session_id = session_id.clone();
-
-    // Record an Evidence row for the delivery session, mirroring the codex path
-    // so every provider delivery is auditable from the snapshot.
-    let evidence_id = generated_id("evidence");
-    let evidence = Evidence {
-        id: evidence_id.clone(),
-        task_id: message.task_id.clone(),
-        source_type: "claude_delivery_session".into(),
-        source_ref: format!("native-session:claude:{resolved_session_id}"),
-        summary: format!(
-            "Claude stream-json delivery {} for message {} ({} events)",
-            resolved_session_id,
-            message.id,
-            events.len()
-        ),
-        created_at: now_string(),
-        evidence_kind: None,
-        goal_id: None,
-    };
-    store.append_evidence(&evidence)?;
 
     let _ = fs::remove_dir_all(&session_dir);
     Ok(DeliveryOutcome {
@@ -40967,19 +41520,18 @@ fn run_claude_delivery(
         terminal_source,
         status,
         provider_request_id: None,
-        evidence_ids: vec![evidence_id],
         exit_code: if process_success { Some(0) } else { Some(1) },
         tokens,
         cost_usd,
         model,
         structured,
+        response_text: process_success
+            .then(|| extract_claude_reply_text(&events))
+            .flatten(),
         summary: if process_success {
-            // Surface the agent's actual reply as the report content; fall back
-            // to a status line only when the turn produced no assistant text.
-            extract_claude_reply_text(&events)
-                .unwrap_or_else(|| format!("Claude delivery succeeded: {} events", events.len()))
+            "Claude provider delivery completed; transcript remains provider-native".to_string()
         } else {
-            format!("Claude delivery failed: {}", stderr_log)
+            "Claude provider delivery failed; inspect the provider-native session".to_string()
         },
     })
 }
@@ -41251,117 +41803,52 @@ fn json_str(value: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn provider_hook_summary(
-    provider: &str,
-    hook_event_name: &str,
-    payload: &serde_json::Value,
-) -> String {
-    let provider_label = match provider {
-        "codex" => "Codex",
-        "claude" => "Claude",
-        "kimi" => "Kimi",
-        other => other,
-    };
-    match hook_event_name {
-        "SessionStart" | "sessionStart" => format!(
-            "{provider_label} SessionStart hook source={}",
-            json_str(payload, "source").unwrap_or_else(|| "unknown".into())
-        ),
-        "PreToolUse" | "PostToolUse" | "PermissionRequest" | "preToolUse" | "postToolUse"
-        | "permissionRequest" => format!(
-            "{provider_label} {hook_event_name} hook tool={}",
-            json_str(payload, "tool_name").unwrap_or_else(|| "unknown".into())
-        ),
-        "SubagentStart" | "SubagentStop" | "subagentStart" | "subagentStop" => format!(
-            "{provider_label} {hook_event_name} hook child={} type={}",
-            json_str(payload, "agent_id").unwrap_or_else(|| "unknown".into()),
-            json_str(payload, "agent_type").unwrap_or_else(|| "unknown".into())
-        ),
-        "Stop" | "stop" => format!(
-            "{provider_label} Stop hook turn={}",
-            json_str(payload, "turn_id").unwrap_or_else(|| "unknown".into())
-        ),
-        other => format!("{provider_label} hook {other}"),
-    }
-}
-
 fn record_provider_hook_event(
     store: &HarnessStore,
     args: &[String],
     provider: &str,
 ) -> CliResult<()> {
     store.init()?;
+    let mut stdin = String::new();
+    std::io::stdin().read_to_string(&mut stdin)?;
+    accept_provider_hook_event(store, args, provider, &parse_hook_payload(&stdin))
+}
+
+fn accept_provider_hook_event(
+    store: &HarnessStore,
+    args: &[String],
+    provider: &str,
+    _payload: &serde_json::Value,
+) -> CliResult<()> {
     let agent_id = value(args, "--agent")
         .or_else(|| env::var("HARNESS_AGENT_MEMBER_ID").ok())
         .ok_or_else(|| CliError::Usage("--agent is required".into()))?;
     let runtime_id = value(args, "--runtime").or_else(|| env::var("HARNESS_AGENT_RUNTIME_ID").ok());
-    let mut stdin = String::new();
-    std::io::stdin().read_to_string(&mut stdin)?;
-    let payload = parse_hook_payload(&stdin);
-    let hook_event_name = value(args, "--event")
-        .or_else(|| json_str(&payload, "hook_event_name"))
-        .unwrap_or_else(|| "unknown".into());
-    let task_id = value(args, "--task")
-        .or_else(|| env::var("HARNESS_TASK_ID").ok())
-        .or_else(|| {
-            latest_member(store, &agent_id)
-                .ok()
-                .and_then(|member| member.current_task_id)
-        });
-    let provider_thread_id = thread_id_from_container(&payload);
-    let provider_turn_id =
-        json_str(&payload, "turn_id").or_else(|| turn_id_from_container(&payload));
-    let now = now_string();
-    let event = Evidence {
-        id: generated_id("event"),
-        task_id: task_id.clone(),
-        source_type: "provider_hook_observation".into(),
-        source_ref: serde_json::json!({
-            "agent_identity_id": &agent_id,
-            "provider_runtime_id": &runtime_id,
-            "provider": provider,
-            "provider_thread_id": &provider_thread_id,
-            "provider_turn_id": &provider_turn_id,
-            "provider_child_thread_id": json_str(&payload, "agent_id"),
-            "hook_event": &hook_event_name,
-        })
-        .to_string(),
-        summary: provider_hook_summary(provider, &hook_event_name, &payload),
-        created_at: now.clone(),
-        evidence_kind: Some("provider_runtime_observation".into()),
-        goal_id: None,
-    };
-    store.append_evidence(&event)?;
-    if let Ok(mut member) = latest_member(store, &agent_id) {
-        member.last_seen_at = Some(now.clone());
-        member.status = if hook_event_name.eq_ignore_ascii_case("stop") {
-            member.current_task_id = None;
-            ProviderLaunchStatus::Idle
-        } else {
-            ProviderLaunchStatus::Running
-        };
-        store.append_member(&member)?;
+    let member = latest_member(store, &agent_id)?;
+    if member.provider != provider {
+        return Err(CliError::Usage(format!(
+            "provider hook binding mismatch: AgentMember {agent_id} uses {}, not {provider}",
+            member.provider
+        )));
     }
     if let Some(runtime_id) = runtime_id {
-        if let Some(mut runtime) = latest_runtime(store, &runtime_id)? {
-            runtime.last_event_at = Some(now);
-            store.append_runtime(&runtime)?;
+        let runtime = latest_runtime(store, &runtime_id)?.ok_or_else(|| {
+            CliError::Usage(format!("provider hook runtime {runtime_id} does not exist"))
+        })?;
+        if runtime.agent_member_id != agent_id || runtime.provider != provider {
+            return Err(CliError::Usage(format!(
+                "provider hook runtime {runtime_id} is not bound to {provider} AgentMember {agent_id}"
+            )));
         }
     }
-    if hook_event_name.eq_ignore_ascii_case("stop") {
-        reconcile_running_delivery_attempts(
-            store,
-            &agent_id,
-            task_id.as_deref(),
-            provider_thread_id.as_deref(),
-            provider_turn_id.as_deref(),
-            MessageTerminalSource::HookStop,
-        )?;
-    }
+    // Compatibility ingress only. Provider hooks are neither AgentSession
+    // lifecycle authority nor Evidence/Delivery authority; the NodeDaemon and
+    // canonical transport writers own those transitions. The raw frame is
+    // deliberately discarded after validating the bound AgentMember.
     Ok(())
 }
 
-fn append_agent_event(
+fn append_harness_runtime_control_fact(
     store: &HarnessStore,
     agent_member_id: &str,
     runtime_id: Option<&str>,
@@ -41373,7 +41860,7 @@ fn append_agent_event(
     let event = Evidence {
         id: generated_id("event"),
         task_id: task_id.map(str::to_string),
-        source_type: "provider_runtime_observation".into(),
+        source_type: "harness_runtime_control_fact".into(),
         source_ref: serde_json::json!({
             "agent_identity_id": agent_member_id,
             "provider_runtime_id": runtime_id,
@@ -41384,7 +41871,7 @@ fn append_agent_event(
         .to_string(),
         summary: summary.into(),
         created_at: now_string(),
-        evidence_kind: Some("provider_runtime_observation".into()),
+        evidence_kind: Some("harness_runtime_control_fact".into()),
         goal_id: None,
     };
     store.append_evidence(&event)?;
@@ -42528,12 +43015,12 @@ mod workflow_runtime_tests {
             provider_turn_id: None,
             terminal_source: Some(MessageTerminalSource::Unknown),
             provider_request_id: None,
-            evidence_ids: Vec::new(),
             exit_code: Some(0),
             tokens,
             cost_usd,
             model,
             structured,
+            response_text: None,
             summary: "test delivery".into(),
         }
     }
@@ -45703,6 +46190,18 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
+    #[test]
+    fn provider_tool_status_is_a_closed_display_safe_vocabulary() {
+        assert_eq!(display_safe_tool_status("in_progress", true), "running");
+        assert_eq!(display_safe_tool_status("failed", false), "failed");
+        assert_eq!(display_safe_tool_status("cancelled", false), "cancelled");
+        assert_eq!(display_safe_tool_status("/private/path", true), "running");
+        assert_eq!(
+            display_safe_tool_status("secret-provider-status", false),
+            "completed"
+        );
+    }
+
     trait TestSupervisorLeaseExt {
         fn acquire_test_supervisor_lease(
             &self,
@@ -48525,7 +49024,65 @@ package:com.tencent.mm
     }
 
     #[test]
-    fn taskless_running_delivery_reconciliation_clears_member_and_reports() {
+    fn provider_hook_ingress_validates_binding_and_discards_native_frame() {
+        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("hook")));
+        let store = HarnessStore::new(&root);
+        let mut member = make_member("agent-1");
+        member.provider_runtime_id = Some("runtime-1".into());
+        store.append_member(&member).expect("append member");
+        store
+            .append_runtime(&ProviderProcess {
+                id: "runtime-1".into(),
+                agent_member_id: member.id.clone(),
+                provider: "codex".into(),
+                status: ProviderProcessStatus::Running,
+                pid: None,
+                control_endpoint: None,
+                command: "codex".into(),
+                args: Vec::new(),
+                started_at: "unix-ms:1".into(),
+                ended_at: None,
+                last_event_at: Some("unix-ms:1".into()),
+                health: ProviderProcessHealth::default(),
+            })
+            .expect("append runtime");
+        let before_member = latest_member(&store, "agent-1").expect("member before");
+        let before_runtime = latest_runtime(&store, "runtime-1")
+            .expect("runtime before")
+            .expect("runtime exists");
+        let args = vec![
+            "--agent".to_string(),
+            "agent-1".to_string(),
+            "--runtime".to_string(),
+            "runtime-1".to_string(),
+        ];
+        accept_provider_hook_event(
+            &store,
+            &args,
+            "codex",
+            &serde_json::json!({
+                "hook_event_name":"Stop",
+                "session_id":"private-session",
+                "turn_id":"private-turn",
+                "tool_name":"private-tool"
+            }),
+        )
+        .expect("exact hook binding is accepted and discarded");
+
+        assert_eq!(latest_member(&store, "agent-1").unwrap(), before_member);
+        assert_eq!(
+            latest_runtime(&store, "runtime-1").unwrap().unwrap(),
+            before_runtime
+        );
+        assert!(store.evidence().unwrap().is_empty());
+        assert!(store.messages().unwrap().is_empty());
+        assert!(accept_provider_hook_event(&store, &args, "kimi", &serde_json::json!({})).is_err());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn taskless_running_delivery_reconciliation_clears_member_without_fabricating_report() {
         let root =
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("direct")));
         let store = HarnessStore::new(&root);
@@ -48578,20 +49135,14 @@ package:com.tencent.mm
             latest_message.delivery_status,
             RegistryDeliveryStatus::Delivered
         );
-        let report = store
-            .messages()
-            .expect("messages")
-            .into_iter()
-            .find(|message| {
-                message.kind == RegistryMessageIntent::Report
-                    && message.channel.as_deref() == Some("provider-report")
-                    && message.delivery.as_ref().is_some_and(|delivery| {
-                        delivery.delivery_id.as_deref() == Some("delivery-1")
-                    })
-            })
-            .expect("provider report");
-        assert_eq!(report.task_id, None);
-        assert!(report.evidence_ids.is_empty());
+        assert!(
+            store
+                .messages()
+                .expect("messages")
+                .into_iter()
+                .all(|message| message.kind != RegistryMessageIntent::Report),
+            "provider terminal activity must never fabricate an authored report Message"
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -49294,6 +49845,7 @@ package:com.tencent.mm
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
+    #[cfg(any())]
     #[test]
     fn http_and_mcp_work_mutations_share_atomic_delegation_rollup() {
         let (store, root) = temp_store("delegation-surface-rollup");
@@ -53365,6 +53917,23 @@ package:com.tencent.mm
     }
 
     #[test]
+    fn durable_provider_turn_summary_never_copies_native_response() {
+        let native_response = "## RESULT\ndone\n## SUMMARY\nprivate provider transcript marker";
+        let summary =
+            provider_turn_coordination_summary("Kimi", 7, !native_response.trim().is_empty());
+
+        assert_eq!(
+            summary,
+            "Kimi provider round 7 completed with authored output; transcript remains provider-native"
+        );
+        assert!(!summary.contains("private provider transcript marker"));
+        assert_eq!(
+            provider_turn_failure_summary("Claude", 3),
+            "Claude provider round 3 failed; inspect the provider-native session for details"
+        );
+    }
+
+    #[test]
     fn member_handoff_last_structured_report_wins() {
         let text = "## RESULT\nblocked\n## SUMMARY\nfirst attempt\n\
                     Retrying after Host feedback.\n\
@@ -54878,72 +55447,5 @@ invalid json line
                 .and_then(extract_json_object),
             Some(serde_json::json!({"ok": true}))
         );
-    }
-}
-
-#[cfg(test)]
-mod tests_extract_claude_evidence_refs {
-    use super::*;
-
-    #[test]
-    fn result_with_evidence_refs() {
-        let events = vec![ClaudeStreamEvent::parse_line(
-            r#"{"type":"result","result":"done","evidenceRefs":["src/a.ts","docs/b.md"]}"#,
-        )
-        .unwrap()];
-        let refs = extract_claude_evidence_refs(&events);
-        assert_eq!(refs, vec!["src/a.ts", "docs/b.md"]);
-    }
-
-    #[test]
-    fn result_without_evidence_refs() {
-        let events =
-            vec![ClaudeStreamEvent::parse_line(r#"{"type":"result","result":"done"}"#).unwrap()];
-        let refs = extract_claude_evidence_refs(&events);
-        assert_eq!(refs, Vec::<String>::new());
-    }
-
-    #[test]
-    fn no_result_event() {
-        let events = vec![ClaudeStreamEvent::parse_line(
-            r#"{"type":"stream_event","event":{"type":"message","message":{"content":[{"type":"text","text":"hello"}]}}}"#,
-        )
-        .unwrap()];
-        let refs = extract_claude_evidence_refs(&events);
-        assert_eq!(refs, Vec::<String>::new());
-    }
-
-    #[test]
-    fn result_with_empty_evidence_refs() {
-        let events = vec![ClaudeStreamEvent::parse_line(
-            r#"{"type":"result","result":"done","evidenceRefs":[]}"#,
-        )
-        .unwrap()];
-        let refs = extract_claude_evidence_refs(&events);
-        assert_eq!(refs, Vec::<String>::new());
-    }
-
-    #[test]
-    fn result_interleaved_uses_last_result() {
-        let events = vec![
-            ClaudeStreamEvent::parse_line(
-                r#"{"type":"stream_event","event":{"type":"message","message":{"content":[{"type":"text","text":"ok"}]}}}"#,
-            )
-            .unwrap(),
-            ClaudeStreamEvent::parse_line(
-                r#"{"type":"result","result":"done","evidenceRefs":["first.ts"]}"#,
-            )
-            .unwrap(),
-            ClaudeStreamEvent::parse_line(
-                r#"{"type":"stream_event","event":{"type":"message","message":{"content":[{"type":"text","text":"more"}]}}}"#,
-            )
-            .unwrap(),
-            ClaudeStreamEvent::parse_line(
-                r#"{"type":"result","result":"done","evidenceRefs":["last.ts"]}"#,
-            )
-            .unwrap(),
-        ];
-        let refs = extract_claude_evidence_refs(&events);
-        assert_eq!(refs, vec!["last.ts"]);
     }
 }

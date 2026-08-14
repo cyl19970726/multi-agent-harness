@@ -162,6 +162,14 @@ If a second authorized Mac or a reachable trusted TLS endpoint is unavailable,
 report the real dogfood gate as blocked. Never substitute loopback processes or
 an extra process on one Mac while calling the result “two-Mac”.
 
+For the explicitly approved DEV-7 rerun, the trusted TLS endpoint is carried
+over an existing user-provided Tailscale overlay. This is test transport only:
+it does not prove or advertise AgentFirm NAT traversal, Internet exposure, P2P
+discovery or Tailscale ownership. The exact overlay peer addresses, route
+interface and TLS IP SAN are frozen evidence, while AgentFirm mTLS, enrollment,
+NodeDaemon/Gateway generations and actor authority continue to govern every
+application operation.
+
 Secret-free submitted-run evidence is recorded under
 [`evidence/`](evidence/). Evidence pages are immutable after their exact review
 revision and CI run are bound; a later submission receives a new page or an

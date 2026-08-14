@@ -27,6 +27,7 @@ export function MemberWorkbench({
   apiUrl,
   space,
   project,
+  company,
   memberRunId,
   onAction,
   actionsCurrent,
@@ -34,6 +35,7 @@ export function MemberWorkbench({
   apiUrl: string;
   space: string;
   project: string;
+  company?: string;
   memberRunId: string;
   onAction: RoleActionExecutor;
   actionsCurrent: boolean;
@@ -49,7 +51,7 @@ export function MemberWorkbench({
     fetchRoleView<MemberWorkbenchData>(
       apiUrl,
       `/v1/views/member-workbench/${encodeURIComponent(memberRunId)}`,
-      { space, project },
+      { space, project, company },
     )
       .then((value) => {
         if (live) {
@@ -66,7 +68,7 @@ export function MemberWorkbench({
     return () => {
       live = false;
     };
-  }, [apiUrl, space, project, memberRunId, refresh]);
+  }, [apiUrl, space, project, company, memberRunId, refresh]);
   const teamRunId = view?.data.member_run.team_run_id;
   const teamId = view
     ? [...view.data.my_works, ...view.data.eligible_ready_pool].find(
@@ -155,6 +157,11 @@ export function MemberWorkbench({
                 </div>
               </header>
               <AttentionStrip view={view} />
+              <div className="border-y border-border bg-secondary/20 px-3 py-2 text-xs text-muted-foreground" aria-label="Member collaboration scope">
+                {view.data.collaboration?.state === "observed"
+                  ? `${view.data.collaboration.delegations?.length ?? 0} active Work-linked cross-Team Delegations are visible to this Member. No remote shell, transcript or unrelated Team state is exposed.`
+                  : view.data.collaboration?.reason ?? "Company collaboration projection unavailable."}
+              </div>
               <div className="grid gap-8 xl:grid-cols-[minmax(0,1.25fr)_minmax(22rem,.75fr)]">
                 <div className="space-y-7">
                   <section className="border-y border-border py-4">
