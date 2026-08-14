@@ -160,20 +160,29 @@ Phase 4 Owner 视觉验收 ──批注→回写 spec/清单→再迭代──�
 | 实现分叉 | 同一组件 ≥2 个私有实现 | 合并进 registry 的 canonical 件 |
 | 验收粒度错误 | 只看 diff/测试，没看渲染 | 补像素/截图证据再下结论 |
 
-## 工具箱（通用模式，按项目替换命令）
+## 工具箱与参考文件（references/）
 
-- **像素采样**：PIL 对截图取色/找边线/量字高（色板与几何实测）
-- **并排 montage**：设计图缩放到实现视口宽，左右拼接成单图供 Owner 对照
-- **证据绑定**：截图文件名/manifest 带 exact SHA；证据目录 gitignored
-- **本仓适配**（multi-agent-harness）：`pnpm exec tsc -p apps/agent-dashboard/tsconfig.json --noEmit`；
-  `AGENT_WORKSPACE_EVIDENCE_DIR=<dir> [FIRM_BUILD_GIT_REV=<40位sha>] node apps/agent-dashboard/tests/agent-workspace-browser-check.mjs`
-  （fixture 七帧 + 移动视口断言）；证据目录 `.visual-evidence/`；冻结接口
-  `apps/agent-dashboard/src/model/roleViews.ts`（类型只读）；设计真源在 Notion
+通用流程的支撑文件，按需加载，不要全量预读：
 
-## 本仓专有参考（references/，通用流程之外的 harness 细节）
+- `references/measurement-toolbox.md` — **测量与渲染验证工具箱**（Phase 2/3 必用）：
+  像素采样、几何测量、并排 montage、层叠/产物根因排查五步法、证据绑定约定、
+  round 间差异定位。全部脚本化、可复测
+- `references/product-module-discovery.md` — **Phase 0 合同展开**：能力优先（不许
+  从"做个 dashboard"开始）、journey 映射、surface 正当性判定、coverage 标签
+  （designed/pattern/existing-accepted/excluded）、readiness 问题清单
+- `references/frontend-module-spec.md` — **合同/规格的结构化模板**：唯一 canonical
+  位置与版本管理、UI 引用不可变 hash、追溯矩阵（需求→journey→surface→引用→
+  组件→API→测试→exact-revision 证据→评审）、readiness gate；附
+  `scripts/validate_frontend_module_spec.py` 结构校验
+- `references/fidelity-and-review.md` — **Phase 3/4 验收闸**：分层 gate（几何→
+  主旅程→覆盖→视觉系统→响应式/状态→exact-revision 自审→独立评审→Owner 闸）、
+  硬不变量 vs 视觉分双轨、证据包绑定、**失效触发器**（revision/规格/参照变更即
+  作废旧评审）、评审失效模式黑名单
 
-- `product-model.md` — harness 对象 → 页面映射规则
-- `acceptance-gates.md` — 工作流验收闸（browser-based PM/User 验收）
-- `page-design-workflow.md` / `layout-principles.md` — 页级布局合同与图/看板原则
-- `architecture-stack-decision.md` / `implementation-loop.md` / `subagent-design-loop.md`
-  — 架构决策记录与实现/子代理循环（程序性细则；与本文件冲突处以本文件为准）
+与本文件冲突处以本文件为准。
+
+## 本仓适配（multi-agent-harness）
+
+- 机械验证：`pnpm exec tsc -p apps/agent-dashboard/tsconfig.json --noEmit`
+- 证据捕获：`AGENT_WORKSPACE_EVIDENCE_DIR=<dir> [FIRM_BUILD_GIT_REV=<40位sha>] node apps/agent-dashboard/tests/agent-workspace-browser-check.mjs`（fixture 七帧 + 移动视口断言）
+- 证据目录 `.visual-evidence/`（gitignored）；冻结接口 `apps/agent-dashboard/src/model/roleViews.ts`（类型只读）；设计真源在 Notion
