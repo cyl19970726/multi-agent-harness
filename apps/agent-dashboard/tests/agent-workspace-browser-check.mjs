@@ -155,6 +155,12 @@ try{
     await toolRow.locator('xpath=ancestor::div[@data-boundary-aligned="true"]').waitFor();
     assert.equal(await toolRow.locator('xpath=ancestor::article').getAttribute("data-selected"),"true","selected event does not retain a stable center-row state");
     assert.equal(await page.getByText("Native observation in focus",{exact:true}).count(),1,"selected event detail is not delegated to the context rail");
+    await page.locator('textarea[aria-label="Message"]').fill("Trigger a benign background revalidate");
+    await page.getByRole("button",{name:"Send",exact:true}).click();
+    await page.getByText("Message recorded. Refreshing this Agent Workspace.",{exact:true}).waitFor();
+    await page.waitForLoadState("networkidle");
+    assert.equal(await page.getByText("Native observation in focus",{exact:true}).count(),1,"background revalidate dropped the selected native observation");
+    assert.equal(await toolRow.locator('xpath=ancestor::article').getAttribute("data-selected"),"true","background revalidate dropped the selected stream row state");
     await page.screenshot({path:join(evidenceDir,`member-event-detail--1440x1000--${capturedSourceSha}.png`),animations:"disabled"});
   }
   await page.getByRole("tab",{name:/Messages/}).click();await page.getByRole("button",{name:"inbox",exact:true}).waitFor();
@@ -178,6 +184,12 @@ try{
   else await page.locator(".agent-work-row").first().waitFor();
   await waitForStableWriteSurface(page);
   if(!liveConfig)assert.equal(await page.locator('.agent-work-row[data-current="true"]').first().getByText("Restore authored conversation dominance",{exact:true}).count(),1,"Current Work emphasis does not follow context_summary.current_work_id");
+  if(!liveConfig){
+    await page.locator('.agent-work-row[data-current="true"]').first().click();
+    await page.getByText("Work in focus",{exact:true}).waitFor();
+    assert.ok(await page.locator('.aw-context-selection-inset').getByText(/rev 4 \(latest\)/).count()===1,"selected Work detail does not expose its canonical revision");
+    assert.equal(await page.locator('.aw-context-selection-inset .aw-fact-row').filter({hasText:"Gates"}).filter({hasText:"1/2"}).count(),1,"selected Work detail does not expose gate progress");
+  }
   if(!liveConfig){
     const clippedWorkRows=await page.locator('.agent-work-row').evaluateAll(rows=>rows.filter(row=>{const rect=row.getBoundingClientRect();return rect.top<window.innerHeight&&rect.bottom>window.innerHeight;}).map(row=>row.textContent?.trim().slice(0,80)));
     assert.deepEqual(clippedWorkRows,[],`Work first viewport ends on a partially obscured responsibility: ${JSON.stringify(clippedWorkRows)}`);
