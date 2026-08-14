@@ -1,6 +1,7 @@
 //! Real-CLI coverage for the exact-session headless Host consumer (#387).
 
 use std::process::Command;
+use std::{fs::OpenOptions, io::Write};
 
 use harness_core::{
     AgentTeamRun, HostAttention, HostAttentionKind, HostAttentionStatus, HostBindingLeaseStatus,
@@ -13,6 +14,17 @@ mod fake_provider;
 mod firm_env;
 
 use firm_env::{current_project_id, run_firm, TempHome};
+
+fn append_legacy_jsonl<T: serde::Serialize>(path: &std::path::Path, value: &T) {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("open Legacy fixture ledger");
+    serde_json::to_writer(&mut file, value).expect("serialize Legacy fixture row");
+    file.write_all(b"\n").expect("terminate Legacy fixture row");
+    file.sync_all().expect("persist Legacy fixture row");
+}
 
 #[test]
 fn dispatch_host_resumes_exact_kimi_session_and_releases_lease() {
@@ -29,7 +41,7 @@ fn dispatch_host_resumes_exact_kimi_session_and_releases_lease() {
     let run = AgentTeamRun {
         id: "team-run-host-dispatch".into(),
         agent_team_id: "team-host-dispatch".into(),
-        execution_node_id: "node-host-dispatch".into(),
+        execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
         previous_run_id: None,
         project_binding_id: project_id.clone(),
         host_surface: "kimi".into(),
@@ -45,7 +57,29 @@ fn dispatch_host_resumes_exact_kimi_session_and_releases_lease() {
         updated_at: "unix-ms:1".into(),
         completed_at: None,
     };
-    store.append_team_run(&run).unwrap();
+    store
+        .insert_execution_node(&harness_core::ExecutionNode {
+            id: run.execution_node_id.clone(),
+            display_name: "test-node".into(),
+            status: harness_core::ExecutionNodeStatus::Active,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        })
+        .unwrap();
+    store
+        .register_node_project(
+            &harness_core::NodeProjectRegistration {
+                node_id: run.execution_node_id.clone(),
+                execution_space_id: project_id.clone(),
+                project_binding_id: run.project_binding_id.clone(),
+                status: harness_core::NodeProjectRegistrationStatus::Active,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            },
+            &project_id,
+        )
+        .unwrap();
+    append_legacy_jsonl(&store.root().join("team_runs.jsonl"), &run);
     let host_actor = TeamActorRef {
         kind: TeamActorKind::Host,
         id: "host".into(),

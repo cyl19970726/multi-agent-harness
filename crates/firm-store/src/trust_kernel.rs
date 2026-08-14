@@ -1,4 +1,8 @@
-use crate::{HarnessStore, StoreError, StoreResult};
+use crate::{
+    ensure_member_lifecycle_revision, ensure_member_provenance_unchanged,
+    ensure_provider_compatibility_cause_unchanged, latest_by_id, HarnessStore, StoreError,
+    StoreResult,
+};
 use firm_core::agentfirm_api::{
     integration_plan_module_v1, ActorKind, ActorRef, AgentIdentity, AgentMember,
     AgentMemberOrganizationStatus, AgentSession, AgentSessionStatus, CanonicalMessageDelivery,
@@ -16,7 +20,11 @@ use firm_core::agentfirm_api::{
     WorkspaceOwnership, WorkspaceSafetyProof,
 };
 use firm_core::collaboration::CollaborationMessageAuthority;
-use firm_core::{TeamActorKind, TeamActorRef, Work, WorkCommandContext, WorkDelegationRevision};
+use firm_core::{
+    MemberCoordinationStatus as LegacyMemberCoordinationStatus, MemberRunStatus,
+    ProviderRuntimeProjection, TeamActorKind, TeamActorRef, Validate, Work, WorkCommandContext,
+    WorkDelegationRevision,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -1451,6 +1459,135 @@ impl HarnessStore {
             side_records,
             Vec::new(),
         )
+    }
+
+    /// Advance one current provider runtime generation while keeping the
+    /// canonical MemberRun and its runtime projection coherent under the same
+    /// Store write lock. Generic projection CAS deliberately cannot change a
+    /// generation: reopen/recovery must use this combined authority boundary.
+    ///
+    /// The two physical ledgers are validated and serialized before the first
+    /// write. They are not backed by a cross-file crash journal; a storage
+    /// failure between the Legacy JSONL append and canonical atomic replace is
+    /// therefore detected as an incomplete current TeamRun on restart and
+    /// fails closed rather than being silently repaired.
+    pub fn compare_and_advance_member_run_generation(
+        &self,
+        expected: &ProviderRuntimeProjection,
+        next: &ProviderRuntimeProjection,
+    ) -> StoreResult<()> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let current = latest_by_id(
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
+            |row| row.id.clone(),
+        )
+        .remove(&expected.id)
+        .ok_or_else(|| StoreError::Conflict(format!("member run not found: {}", expected.id)))?;
+        if current != *expected {
+            return Err(StoreError::Conflict(format!(
+                "ProviderRuntimeProjection {} changed concurrently; retry the generation transition",
+                expected.id
+            )));
+        }
+        let execution_space_id = self.require_current_member_mutation_scope_unlocked(&current)?;
+        ensure_member_provenance_unchanged(&current, next)?;
+        ensure_member_lifecycle_revision(&current, next)?;
+        ensure_provider_compatibility_cause_unchanged(&current, next)?;
+        if next.runtime_generation != current.runtime_generation.saturating_add(1) {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_GENERATION_TRANSITION_REQUIRED: ProviderRuntimeProjection {} must advance runtime_generation exactly once through combined Store authority",
+                current.id
+            )));
+        }
+        next.validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+
+        let canonical_envelope = self
+            .latest_trust_envelopes_unlocked(&execution_space_id, "member_run")?
+            .remove(&current.id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "MEMBER_RUN_MATERIALIZATION_INCOMPLETE: TeamRun {} declares MemberRun {} but no canonical MemberRun exists",
+                    current.team_run_id, current.id
+                ))
+            })?;
+        let mut canonical = event_projection::<MemberRun>(&canonical_envelope)?;
+        if canonical.team_run_id != current.team_run_id
+            || canonical.agent_member_id != current.agent_member_id
+            || canonical.role_snapshot != current.role
+            || canonical.runtime_generation != current.runtime_generation
+        {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_RUN_MATERIALIZATION_MISMATCH: TeamRun {} MemberRun {} cannot advance a mismatched canonical generation in Execution Space {}",
+                current.team_run_id, current.id, execution_space_id
+            )));
+        }
+
+        canonical.coordination_status = match next.coordination_status {
+            LegacyMemberCoordinationStatus::Active => MemberCoordinationStatus::Active,
+            LegacyMemberCoordinationStatus::Closed => MemberCoordinationStatus::Closed,
+            LegacyMemberCoordinationStatus::Retired => MemberCoordinationStatus::Retired,
+        };
+        canonical.runtime_status = match next.status {
+            MemberRunStatus::Starting => MemberRuntimeStatus::Starting,
+            MemberRunStatus::Idle => MemberRuntimeStatus::Idle,
+            MemberRunStatus::Queued => MemberRuntimeStatus::Queued,
+            MemberRunStatus::Running => MemberRuntimeStatus::Running,
+            MemberRunStatus::Waiting => MemberRuntimeStatus::Waiting,
+            MemberRunStatus::Disconnected => MemberRuntimeStatus::Disconnected,
+            MemberRunStatus::Reviewing => MemberRuntimeStatus::Reviewing,
+            MemberRunStatus::Blocked => MemberRuntimeStatus::Blocked,
+            MemberRunStatus::Completed => MemberRuntimeStatus::Completed,
+            MemberRunStatus::Failed => MemberRuntimeStatus::Failed,
+            MemberRunStatus::Stopped => MemberRuntimeStatus::Stopped,
+        };
+        canonical.runtime_generation = next.runtime_generation;
+        canonical.version = canonical.version.saturating_add(1);
+        canonical.started_at = next.started_at.clone();
+        canonical.last_event_at = next.last_event_at.clone();
+        canonical.finished_at = next.finished_at.clone();
+
+        let context = MutationContext {
+            execution_space_id,
+            authenticated_actor: ActorRef {
+                kind: ActorKind::Service,
+                id: "node-daemon:member-generation".to_string(),
+            },
+            authority_actor: Some(ActorRef {
+                kind: ActorKind::AgentMember,
+                id: current.agent_member_id.clone(),
+            }),
+            command_name: "team_run.advance_member_generation".to_string(),
+            idempotency_key: format!(
+                "team-run-member-generation:{}:{}",
+                current.id, next.runtime_generation
+            ),
+            expected_version: canonical.version.saturating_sub(1),
+            request_fingerprint: None,
+        };
+        let payload = serde_json::json!({
+            "member_run_id": current.id,
+            "team_run_id": current.team_run_id,
+            "runtime_generation": next.runtime_generation,
+            "coordination_status": canonical.coordination_status,
+            "runtime_status": canonical.runtime_status,
+        });
+        // Prove both rows serialize before the first durable mutation.
+        serde_json::to_value(next)?;
+        serde_json::to_value(&canonical)?;
+        self.append_jsonl_unlocked("member_runs.jsonl", next)?;
+        self.commit_trust_projection_unlocked(
+            &context,
+            "member_run",
+            &canonical.id,
+            "generation_advanced",
+            payload,
+            &canonical,
+            Vec::new(),
+            Vec::new(),
+        )?;
+        Ok(())
     }
 
     pub fn resume_trust_native_session(
@@ -7556,7 +7693,7 @@ mod tests {
                 .unwrap();
         }
         store
-            .append_team_run(&firm_core::AgentTeamRun {
+            .legacy_import_append_team_run_projection(&firm_core::AgentTeamRun {
                 id: run_id.into(),
                 agent_team_id: team_id.into(),
                 execution_node_id: "11111111-1111-4111-8111-111111111111".into(),
@@ -7669,7 +7806,7 @@ mod tests {
 
     fn seed_membership_scope(store: &HarnessStore) {
         store
-            .append_team_run(&firm_core::AgentTeamRun {
+            .legacy_import_append_team_run_projection(&firm_core::AgentTeamRun {
                 id: "team-run-membership-test".into(),
                 agent_team_id: "team-membership-test".into(),
                 execution_node_id: "11111111-1111-4111-8111-111111111111".into(),

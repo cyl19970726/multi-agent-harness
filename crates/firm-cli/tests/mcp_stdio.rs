@@ -2804,4 +2804,89 @@ fn mcp_stdio_work_list_brief_since_and_board_summary() {
     assert!(summary.contains("unassigned=1"), "summary: {summary}");
     assert!(summary.contains("ready=2"), "summary: {summary}");
     assert!(summary.contains("alice: idle"), "summary: {summary}");
+
+    let execution_space_id = "mcp-space-board-reads";
+    let store = HarnessStore::new(home.spaces_dir().join(execution_space_id));
+    let run = store
+        .team_runs()
+        .expect("TeamRuns")
+        .into_iter()
+        .rev()
+        .find(|run| run.id == team_run_id)
+        .expect("current TeamRun");
+    let dangling_id = "member-run-mcp-dangling";
+    let mut partial = run.clone();
+    partial.member_run_ids.push(dangling_id.to_string());
+    let mut team_run_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(store.root().join("team_runs.jsonl"))
+        .expect("open Legacy TeamRun fixture");
+    writeln!(
+        team_run_file,
+        "{}",
+        serde_json::to_string(&partial).unwrap()
+    )
+    .unwrap();
+    team_run_file.flush().unwrap();
+    let before = directory_snapshot(&home.spaces_dir());
+    for tool in [
+        "team_run_events",
+        "team_run_board_summary",
+        "team_run_status",
+    ] {
+        let response = mcp.request(
+            "tools/call",
+            serde_json::json!({"name": tool, "arguments": {"team_run_id": team_run_id}}),
+        );
+        assert!(
+            call_error_text(&response).contains(dangling_id),
+            "{tool}: {response}"
+        );
+    }
+    assert_eq!(directory_snapshot(&home.spaces_dir()), before);
+
+    let mut legacy = store
+        .member_runs()
+        .expect("legacy members")
+        .into_iter()
+        .find(|member| member.id == alice_id)
+        .expect("source legacy member");
+    legacy.id = dangling_id.to_string();
+    let mut legacy_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(store.root().join("member_runs.jsonl"))
+        .expect("open Legacy member fixture");
+    writeln!(legacy_file, "{}", serde_json::to_string(&legacy).unwrap()).unwrap();
+    legacy_file.flush().unwrap();
+    let mut canonical = store
+        .trust_member_runs(execution_space_id)
+        .expect("canonical members")
+        .into_iter()
+        .find(|member| member.id == alice_id)
+        .expect("source canonical member");
+    canonical.id = dangling_id.to_string();
+    let actor = harness_core::agentfirm_api::ActorRef {
+        kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+        id: canonical.agent_member_id.clone(),
+    };
+    store
+        .create_trust_member_run(
+            &harness_core::agentfirm_api::MutationContext {
+                execution_space_id: execution_space_id.to_string(),
+                authenticated_actor: actor.clone(),
+                authority_actor: Some(actor),
+                command_name: "test.reconstruct_member_run".into(),
+                idempotency_key: "test-reconstruct-mcp-dangling".into(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            canonical,
+        )
+        .expect("restore canonical completeness");
+    call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({"name": "team_run_board_summary", "arguments": {"team_run_id": team_run_id}}),
+    ));
 }

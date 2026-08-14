@@ -278,6 +278,18 @@ if (mcpSpaceEnumerationCount !== 0
     || !mcp.includes("current_team_run_execution_space(run)")) {
   failures.push("MCP must delegate exact TeamRun scope resolution to the locked Store authority without enumerating physical Spaces");
 }
+for (const currentProjection of [
+  "fn tool_team_run_board_summary",
+  "fn tool_team_run_status",
+  "fn tool_team_run_events",
+]) {
+  const start = mcp.indexOf(currentProjection);
+  const end = mcp.indexOf("\nfn ", start + currentProjection.length);
+  const body = start >= 0 ? mcp.slice(start, end > start ? end : undefined) : "";
+  if (!body.includes("require_current_team_run(store")) {
+    failures.push(`${currentProjection} bypasses strict whole-TeamRun completeness`);
+  }
+}
 const summaryStart = mcp.indexOf("fn canonical_message_summary_for_run");
 const summaryEnd = mcp.indexOf("fn mcp_team_run_execution_space_id", summaryStart);
 const summaryBody = summaryStart >= 0 && summaryEnd > summaryStart

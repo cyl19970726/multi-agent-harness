@@ -83,6 +83,19 @@ fn unix_ms() -> u64 {
         .as_millis() as u64
 }
 
+fn append_legacy_projection<T: serde::Serialize>(store: &HarnessStore, ledger: &str, value: &T) {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(store.root().join(ledger))
+        .expect("open Legacy projection fixture ledger");
+    serde_json::to_writer(&mut file, value).expect("serialize Legacy projection fixture");
+    file.write_all(b"\n")
+        .expect("terminate Legacy projection fixture row");
+    file.sync_all()
+        .expect("persist Legacy projection fixture row");
+}
+
 fn context(actor: ActorRef, command: &str, key: &str, expected_version: u64) -> MutationContext {
     MutationContext {
         execution_space_id: SPACE.into(),
@@ -233,7 +246,7 @@ fn seed_team(store: &HarnessStore, label: &str, member_ids: &[&str]) -> AgentTea
         updated_at: "t1".into(),
         completed_at: None,
     };
-    store.append_team_run(&run).expect("append team run");
+    append_legacy_projection(store, "team_runs.jsonl", &run);
     run
 }
 
@@ -320,8 +333,10 @@ fn seed_active_team_work(store: &HarnessStore, label: &str, work_id: &str) -> St
     let run = seed_team(store, label, &["worker"]);
     let runtime_id = "runtime-worker";
     create_member_and_run(store, &human("host"), &run.id, "worker", runtime_id, false);
-    store
-        .append_member_run(&RuntimeMemberRun {
+    append_legacy_projection(
+        store,
+        "member_runs.jsonl",
+        &RuntimeMemberRun {
             id: runtime_id.into(),
             team_run_id: run.id.clone(),
             slot_id: None,
@@ -346,8 +361,8 @@ fn seed_active_team_work(store: &HarnessStore, label: &str, work_id: &str) -> St
             started_at: "t1".into(),
             last_event_at: None,
             finished_at: None,
-        })
-        .expect("seed runtime MemberRun");
+        },
+    );
     let team_id = seed_team_work_from_run(store, &run, work_id);
     let host = TeamActorRef {
         kind: TeamActorKind::Host,
@@ -1650,9 +1665,10 @@ fn canonical_acceptance_rolls_up_delegation_in_the_same_operation() {
         target_runtime_id,
         false,
     );
-    harness
-        .store
-        .append_member_run(&RuntimeMemberRun {
+    append_legacy_projection(
+        &harness.store,
+        "member_runs.jsonl",
+        &RuntimeMemberRun {
             id: target_runtime_id.into(),
             team_run_id: target_run.id.clone(),
             slot_id: None,
@@ -1677,8 +1693,8 @@ fn canonical_acceptance_rolls_up_delegation_in_the_same_operation() {
             started_at: "t1".into(),
             last_event_at: None,
             finished_at: None,
-        })
-        .expect("seed target runtime");
+        },
+    );
     let host_actor = TeamActorRef {
         kind: TeamActorKind::Host,
         id: "host".into(),

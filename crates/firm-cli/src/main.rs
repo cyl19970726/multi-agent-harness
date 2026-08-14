@@ -8782,9 +8782,8 @@ fn latest_legacy_wave(store: &HarnessStore, id: &str) -> CliResult<LegacyWave> {
 /// events yet). Scans the run's folded event log.
 fn next_team_run_seq(store: &HarnessStore, team_run_id: &str) -> CliResult<u64> {
     let max_seq = store
-        .team_run_events()?
+        .current_team_run_events(team_run_id)?
         .into_iter()
-        .filter(|event| event.team_run_id == team_run_id)
         .map(|event| event.seq)
         .max()
         .unwrap_or(0);
@@ -11896,8 +11895,10 @@ fn create_team_run(
         completed_at: None,
     };
 
-    // A freshly-generated run id has no events yet, so seq starts at 1.
-    let mut seq = next_team_run_seq(store, &run_id)?;
+    // A freshly-generated run id has no current projection or events yet, so
+    // its first guarded event sequence is exactly 1. Do not route creation
+    // through the current-event reader before the combined admission commits.
+    let mut seq = 1;
     let canonical_member_runs = member_runs
         .iter()
         .map(|runtime| canonical_member_run_admission(execution_space_id, runtime))
@@ -12123,6 +12124,7 @@ fn rename_team_run_member(
         ));
     }
     let run = latest_team_run(store, team_run_id)?;
+    team_run_execution_space_id(store, &run)?;
     if !run.member_run_ids.iter().any(|id| id == member_run_id) {
         return Err(CliError::Usage(format!(
             "member run {member_run_id} does not belong to team run {team_run_id}"
@@ -12178,6 +12180,7 @@ fn deactivate_team_run_member(
         ));
     }
     let run = latest_team_run(store, team_run_id)?;
+    team_run_execution_space_id(store, &run)?;
     if !run.member_run_ids.iter().any(|id| id == member_run_id) {
         return Err(CliError::Usage(format!(
             "member run {member_run_id} does not belong to team run {team_run_id}"
@@ -13739,7 +13742,7 @@ fn team_run_recover(
                 reopened_member.finished_at = None;
                 reopened_member.last_event_at = Some(now_str.clone());
                 store_conflict_as_usage(
-                    store.compare_and_append_member_run(member, &reopened_member),
+                    store.compare_and_advance_member_run_generation(member, &reopened_member),
                 )?;
                 ledger.append_action(
                     &member.id,
@@ -13793,7 +13796,7 @@ fn team_run_recover(
                 rebound_member.finished_at = None;
                 rebound_member.last_event_at = Some(now_str.clone());
                 store_conflict_as_usage(
-                    store.compare_and_append_member_run(member, &rebound_member),
+                    store.compare_and_advance_member_run_generation(member, &rebound_member),
                 )?;
                 ledger.append_action(
                     &member.id,
@@ -14282,7 +14285,8 @@ fn member_board_state<'a>(
 /// is a bounded plain-text read, and a JSON wrapper would tax the same
 /// budget it exists to protect.
 fn team_run_board_summary_text(store: &HarnessStore, team_run_id: &str) -> CliResult<String> {
-    latest_team_run(store, team_run_id)?;
+    let run = latest_team_run(store, team_run_id)?;
+    team_run_execution_space_id(store, &run)?;
     let works: Vec<Work> = store
         .latest_works()?
         .into_iter()
@@ -16816,9 +16820,9 @@ fn team_run_command(
                 .and_then(|raw| raw.parse::<u64>().ok())
                 .unwrap_or(0);
             let mut events: Vec<TeamRunEvent> = store
-                .team_run_events()?
+                .current_team_run_events(&id)?
                 .into_iter()
-                .filter(|event| event.team_run_id == id && event.seq > after_seq)
+                .filter(|event| event.seq > after_seq)
                 .collect();
             events.sort_by_key(|event| event.seq);
             if json {
@@ -16859,9 +16863,8 @@ fn team_run_command(
             // next", not "replay this run's whole history".
             if value(args, "--after-seq").is_none() {
                 after_seq = store
-                    .team_run_events()?
+                    .current_team_run_events(&id)?
                     .into_iter()
-                    .filter(|event| event.team_run_id == id)
                     .map(|event| event.seq)
                     .max()
                     .unwrap_or(0);
@@ -16869,9 +16872,9 @@ fn team_run_command(
             let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
             loop {
                 let mut events: Vec<TeamRunEvent> = store
-                    .team_run_events()?
+                    .current_team_run_events(&id)?
                     .into_iter()
-                    .filter(|event| event.team_run_id == id && event.seq > after_seq)
+                    .filter(|event| event.seq > after_seq)
                     .collect();
                 events.sort_by_key(|event| event.seq);
                 if !events.is_empty() {
@@ -18780,6 +18783,8 @@ where
         return Err(supervisor_lease_lost_error(&team_run_id));
     }
     require_current_supervisor_lease(store, &team_run_id, supervisor_id, generation)?;
+    let run = latest_team_run(store, &team_run_id)?;
+    team_run_execution_space_id(store, &run)?;
     let control = LIVE_MEMBER_CONTROLS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -19038,6 +19043,8 @@ fn dispatch_live_member_control(
     request: LiveMemberControlRequest,
 ) -> CliResult<serde_json::Value> {
     let team_run_id = request.team_run_id();
+    let run = latest_team_run(store, team_run_id)?;
+    team_run_execution_space_id(store, &run)?;
     let lease = store
         .latest_team_supervisor_lease(team_run_id)?
         .ok_or_else(|| {
@@ -21416,6 +21423,7 @@ pub(crate) fn prepare_team_run_start_body(
     _max_concurrency: usize,
 ) -> CliResult<PreparedTeamRunBody> {
     let run = latest_team_run(store, run_id)?;
+    team_run_execution_space_id(store, &run)?;
     if matches!(run.status, TeamRunStatus::Failed | TeamRunStatus::Cancelled) {
         return Err(CliError::Usage(format!(
             "team run {run_id} is {} and cannot attach a member supervisor",
@@ -26958,14 +26966,14 @@ fn wait_for_provider_interaction_response(
         {
             return Ok(None);
         }
-        let lifecycle_cancelled = latest_team_run_events_in_append_order(&ledger.store)?
-            .into_iter()
-            .any(|event| {
-                event.team_run_id == ledger.run_id
-                    && event.entity_type == "message"
-                    && event.entity_id == request.id
-                    && event.operation == "cancelled"
-            });
+        let lifecycle_cancelled =
+            current_team_run_events_in_append_order(&ledger.store, &ledger.run_id)?
+                .into_iter()
+                .any(|event| {
+                    event.entity_type == "message"
+                        && event.entity_id == request.id
+                        && event.operation == "cancelled"
+                });
         if lifecycle_cancelled {
             return Ok(None);
         }
@@ -31863,6 +31871,7 @@ fn close_team_member_value(
     let reason =
         optional_json_string(body, "reason")?.unwrap_or_else(|| "Host closed member".to_string());
     let run = latest_team_run(store, team_run_id)?;
+    team_run_execution_space_id(store, &run)?;
     if !run.member_run_ids.iter().any(|id| id == member_run_id) {
         return Err(CliError::Usage(format!(
             "member run {member_run_id} does not belong to team run {team_run_id}"
@@ -32063,6 +32072,7 @@ pub(crate) fn reopen_team_member_value(
         ));
     }
     let run = latest_team_run(store, team_run_id)?;
+    team_run_execution_space_id(store, &run)?;
     if !run.member_run_ids.iter().any(|id| id == member_run_id) {
         return Err(CliError::Usage(format!(
             "member run {member_run_id} does not belong to team run {team_run_id}"
@@ -32197,7 +32207,7 @@ pub(crate) fn reopen_team_member_value(
     };
     member.finished_at = None;
     member.last_event_at = Some(now_string());
-    store_conflict_as_usage(store.compare_and_append_member_run(&expected, &member))?;
+    store_conflict_as_usage(store.compare_and_advance_member_run_generation(&expected, &member))?;
 
     let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
     ledger.append_action(
@@ -38956,7 +38966,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     // snapshot: thinking is not product state or evidence.
     let member_actions = visible_member_actions_in_append_order(store)?;
     let delegation_runs = latest_delegation_runs_in_append_order(store)?;
-    let team_run_events = recent_team_run_events_in_append_order(store, 500)?;
+    let team_run_events = recent_current_team_run_events_in_append_order(store, &team_runs, 500)?;
     let member_cards: Vec<_> = members
         .values()
         .map(|member| {
@@ -39375,10 +39385,13 @@ fn latest_delegation_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
-fn latest_team_run_events_in_append_order(store: &HarnessStore) -> CliResult<Vec<TeamRunEvent>> {
+fn current_team_run_events_in_append_order(
+    store: &HarnessStore,
+    team_run_id: &str,
+) -> CliResult<Vec<TeamRunEvent>> {
     let mut ids = Vec::new();
     let mut by_id = BTreeMap::new();
-    for event in store.team_run_events()? {
+    for event in store.current_team_run_events(team_run_id)? {
         ids.retain(|id| id != &event.id);
         ids.push(event.id.clone());
         by_id.insert(event.id.clone(), event);
@@ -39389,11 +39402,15 @@ fn latest_team_run_events_in_append_order(store: &HarnessStore) -> CliResult<Vec
 /// Snapshot projection of the folded team-run event log: latest-wins by id,
 /// then capped to the most recent `per_run_cap` events per team run (by seq)
 /// so a chatty run cannot bloat every dashboard snapshot.
-fn recent_team_run_events_in_append_order(
+fn recent_current_team_run_events_in_append_order(
     store: &HarnessStore,
+    team_runs: &[AgentTeamRun],
     per_run_cap: usize,
 ) -> CliResult<Vec<TeamRunEvent>> {
-    let events = latest_team_run_events_in_append_order(store)?;
+    let mut events = Vec::new();
+    for run in team_runs {
+        events.extend(current_team_run_events_in_append_order(store, &run.id)?);
+    }
     let mut seqs_by_run: BTreeMap<String, Vec<u64>> = BTreeMap::new();
     for event in &events {
         seqs_by_run
@@ -46115,9 +46132,11 @@ agent("a NEW second leaf that changes the ordinal alignment")
             started_at: now_string(),
             completed_at: Some(now_string()),
         };
-        store
-            .append_member_action(&legacy)
-            .expect("append legacy row");
+        append_jsonl_value(
+            &store.root().join("member_actions.jsonl"),
+            &serde_json::to_value(&legacy).expect("serialize Legacy member action fixture"),
+        )
+        .expect("append legacy row");
 
         assert_eq!(store.member_actions().expect("raw ledger").len(), 1);
         let snapshot = dashboard_snapshot(&store).expect("snapshot");
@@ -46384,7 +46403,7 @@ mod tests {
             )
             .expect("acquire current Supervisor lease");
         let events_before = store
-            .team_run_events()
+            .legacy_team_run_events()
             .expect("events before rejected Close");
 
         let error = dispatch_local_live_member_control(
@@ -46415,7 +46434,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .team_run_events()
+                .legacy_team_run_events()
                 .expect("events after rejected Close"),
             events_before,
             "authority-rejected Close emitted a lifecycle side effect"
@@ -46438,7 +46457,9 @@ mod tests {
                 60_000,
             )
             .expect("acquire first Supervisor lease");
-        let events_before = store.team_run_events().expect("events before stale Close");
+        let events_before = store
+            .legacy_team_run_events()
+            .expect("events before stale Close");
         let (control_rx, _control_registration) = register_live_member_control(&member, 1);
         let supervisor_valid = AtomicBool::new(true);
         let authority_gate = Mutex::new(());
@@ -46496,7 +46517,9 @@ mod tests {
             "stale generation persisted Close"
         );
         assert_eq!(
-            store.team_run_events().expect("events after stale Close"),
+            store
+                .legacy_team_run_events()
+                .expect("events after stale Close"),
             events_before,
             "stale generation emitted a lifecycle event"
         );
@@ -48192,9 +48215,15 @@ mod tests {
                 }
                 _ => unreachable!(),
             }
-            store
-                .compare_and_append_member_run(&supplied, &latest)
-                .expect("advance canonical member before callback");
+            if case == "generation" {
+                store
+                    .compare_and_advance_member_run_generation(&supplied, &latest)
+                    .expect("advance canonical member generation before callback");
+            } else {
+                store
+                    .compare_and_append_member_run(&supplied, &latest)
+                    .expect("advance canonical member before callback");
+            }
 
             let error = handle_kimi_provider_request(
                 &ledger,
@@ -48347,8 +48376,10 @@ package:com.tencent.mm
         let root =
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("native-open")));
         let store = HarnessStore::new(&root);
-        store
-            .append_team_run(&AgentTeamRun {
+        store.init().expect("initialize native-open test store");
+        append_jsonl_value(
+            &store.root().join("team_runs.jsonl"),
+            &serde_json::to_value(AgentTeamRun {
                 id: "team-native-open".into(),
                 agent_team_id: "team-native-open-definition".into(),
                 execution_node_id: "node-native-open".into(),
@@ -48367,14 +48398,19 @@ package:com.tencent.mm
                 updated_at: "unix-ms:1".into(),
                 completed_at: None,
             })
-            .expect("declare native-open test member");
-        store
-            .append_member_run(&native_open_test_member(
+            .expect("serialize Legacy TeamRun fixture"),
+        )
+        .expect("declare native-open test member");
+        append_jsonl_value(
+            &store.root().join("member_runs.jsonl"),
+            &serde_json::to_value(native_open_test_member(
                 "claude",
                 "claude_agent_sdk",
                 "851b37dd-1234-5678-9abc-0123456789ab",
             ))
-            .expect("append member run");
+            .expect("serialize Legacy member fixture"),
+        )
+        .expect("append member run");
         member_run_command(
             &store,
             &[
@@ -50317,6 +50353,18 @@ package:com.tencent.mm
             std::slice::from_ref(&third),
         )
         .expect("seed valid third identity before the zero-write boundary");
+        let lease = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-partial-fence",
+                std::process::id(),
+                "tcp://127.0.0.1:1",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("seed current Supervisor before the zero-write boundary");
+        let (control_rx, _control_registration) =
+            register_live_member_control(&created.member_runs[0], 2);
         let before = durable_store_file_bytes(&store);
         let expect_incomplete = |error: CliError| {
             let rendered = error.to_string();
@@ -50358,6 +50406,102 @@ package:com.tencent.mm
         expect_incomplete(
             transition_team_run(&store, &partial.id, TeamRunStatus::Cancelled)
                 .expect_err("current lifecycle mutation must fail closed for partial TeamRun"),
+        );
+        expect_incomplete(
+            rename_team_run_member(
+                &store,
+                &partial.id,
+                &created.member_runs[0].id,
+                "RenamedWhilePartial",
+            )
+            .expect_err("rename must reject a partial TeamRun"),
+        );
+        expect_incomplete(
+            deactivate_team_run_member(
+                &store,
+                &partial.id,
+                &created.member_runs[0].id,
+                "must remain byte-zero",
+            )
+            .expect_err("deactivate must reject a partial TeamRun"),
+        );
+        expect_incomplete(
+            reopen_team_member_value(
+                &store,
+                &partial.id,
+                &created.member_runs[0].id,
+                &serde_json::json!({"reopened_by": "host", "reason": "partial fence"}),
+            )
+            .expect_err("reopen must reject before provider-profile refresh"),
+        );
+        let start_error = match prepare_team_run_start_body(&store, &partial.id, 2) {
+            Ok(_) => panic!("start preparation must reject before provider-profile refresh"),
+            Err(error) => error,
+        };
+        expect_incomplete(start_error);
+        expect_incomplete(
+            team_run_board_summary_text(&store, &partial.id)
+                .expect_err("board summary must reject partial current state"),
+        );
+        expect_incomplete(CliError::Store(
+            store
+                .current_team_run_events(&partial.id)
+                .expect_err("current event projection must reject partial state"),
+        ));
+        assert!(
+            !store
+                .legacy_team_run_events()
+                .expect("explicit Legacy event diagnostic remains readable")
+                .is_empty(),
+            "historical event rows remain available only through the Legacy reader"
+        );
+
+        let close_admission_hook_calls = AtomicUsize::new(0);
+        expect_incomplete(
+            dispatch_local_live_member_control_with_close_admission_hook(
+                &store,
+                &lease.supervisor_id,
+                lease.generation,
+                &AtomicBool::new(true),
+                &Mutex::new(()),
+                LiveMemberControlRequest::Steer {
+                    team_run_id: partial.id.clone(),
+                    member_run_id: created.member_runs[0].id.clone(),
+                    content: "must never reach provider".into(),
+                    requested_by: "host".into(),
+                },
+                || {
+                    close_admission_hook_calls.fetch_add(1, Ordering::SeqCst);
+                },
+            )
+            .expect_err("Steer must reject before touching the live provider control"),
+        );
+        expect_incomplete(
+            dispatch_local_live_member_control_with_close_admission_hook(
+                &store,
+                &lease.supervisor_id,
+                lease.generation,
+                &AtomicBool::new(true),
+                &Mutex::new(()),
+                LiveMemberControlRequest::Close {
+                    team_run_id: partial.id.clone(),
+                    member_run_id: created.member_runs[0].id.clone(),
+                    reason: "must never latch".into(),
+                    requested_by: "host".into(),
+                },
+                || {
+                    close_admission_hook_calls.fetch_add(1, Ordering::SeqCst);
+                },
+            )
+            .expect_err("Close must reject before its durable admission hook"),
+        );
+        assert_eq!(close_admission_hook_calls.load(Ordering::SeqCst), 0);
+        assert!(
+            matches!(
+                control_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ),
+            "partial TeamRun control reached the provider channel"
         );
         assert_eq!(
             durable_store_file_bytes(&store),
@@ -52063,7 +52207,7 @@ package:com.tencent.mm
         reopened.status = MemberRunStatus::Idle;
         reopened.finished_at = None;
         store
-            .compare_and_append_member_run(&closed, &reopened)
+            .compare_and_advance_member_run_generation(&closed, &reopened)
             .expect("reopen next generation");
         assert!(transition_provider_interaction_member(
             &ledger,
@@ -52509,7 +52653,7 @@ package:com.tencent.mm
                     let mut unrelated = expected.clone();
                     unrelated.runtime_generation += 1;
                     unrelated.last_event_at = Some("unix-ms:201".into());
-                    store.compare_and_append_member_run(expected, &unrelated)?;
+                    store.compare_and_advance_member_run_generation(expected, &unrelated)?;
                 }
                 Ok(())
             },
@@ -53050,7 +53194,7 @@ package:com.tencent.mm
             parent_native_session_id: None,
         });
         store
-            .compare_and_append_member_run(&second, &new_generation)
+            .compare_and_advance_member_run_generation(&second, &new_generation)
             .expect("advance generation and session");
         assert!(matches!(
             prepare_member_workspace_for_spawn(&ledger, &second, &snapshot)
@@ -53366,7 +53510,7 @@ package:com.tencent.mm
         reopened.started_at = "unix-ms:200".into();
         reopened.last_event_at = Some("unix-ms:200".into());
         store
-            .compare_and_append_member_run(&initial, &reopened)
+            .compare_and_advance_member_run_generation(&initial, &reopened)
             .expect("seed reopened queued generation");
         let lease = store
             .acquire_test_supervisor_lease(

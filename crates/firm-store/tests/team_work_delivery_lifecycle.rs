@@ -120,15 +120,15 @@ fn team_fixture(
     let member_b = member("b");
     harness
         .store
-        .append_team_run(&run)
+        .legacy_import_append_team_run_projection(&run)
         .expect("append team run");
     harness
         .store
-        .append_member_run(&member_a)
+        .legacy_import_append_member_run_projection(&member_a)
         .expect("append member a");
     harness
         .store
-        .append_member_run(&member_b)
+        .legacy_import_append_member_run_projection(&member_b)
         .expect("append member b");
     (harness, run, member_a, member_b)
 }

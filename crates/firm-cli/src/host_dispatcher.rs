@@ -404,10 +404,32 @@ mod tests {
         ));
         let store = HarnessStore::new(root.clone());
         store.init().expect("init");
+        store
+            .insert_execution_node(&harness_core::ExecutionNode {
+                id: "00000000-0000-4000-8000-000000000001".into(),
+                display_name: "test-node".into(),
+                status: harness_core::ExecutionNodeStatus::Active,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            })
+            .expect("insert test Node");
+        store
+            .register_node_project(
+                &harness_core::NodeProjectRegistration {
+                    node_id: "00000000-0000-4000-8000-000000000001".into(),
+                    execution_space_id: "test-space".into(),
+                    project_binding_id: "project-1".into(),
+                    status: harness_core::NodeProjectRegistrationStatus::Active,
+                    created_at: "unix-ms:1".into(),
+                    updated_at: "unix-ms:1".into(),
+                },
+                "test-space",
+            )
+            .expect("register test project");
         let run = AgentTeamRun {
             id: "run-1".into(),
             agent_team_id: "team-1".into(),
-            execution_node_id: "node-1".into(),
+            execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
             previous_run_id: None,
             project_binding_id: "project-1".into(),
             host_surface: "codex".into(),
@@ -423,7 +445,11 @@ mod tests {
             updated_at: "unix-ms:1".into(),
             completed_at: None,
         };
-        store.append_team_run(&run).expect("append run");
+        crate::append_jsonl_value(
+            &store.root().join("team_runs.jsonl"),
+            &serde_json::to_value(&run).expect("serialize Legacy TeamRun fixture"),
+        )
+        .expect("append run");
         (store, root, run)
     }
 
@@ -545,7 +571,7 @@ mod tests {
             .expect("stale attention");
         assert_eq!(row.status, HostAttentionStatus::Actionable);
         assert!(row.claim_id.is_none());
-        let events = store.team_run_events().expect("events");
+        let events = store.legacy_team_run_events().expect("events");
         assert_eq!(events.len(), 1, "repeat poll reuses the durable event");
         assert_eq!(events[0].entity_id, row.id);
         std::fs::remove_dir_all(root).expect("cleanup");
@@ -567,7 +593,7 @@ mod tests {
                     .expect("no binding is a stable observation");
             assert_eq!(outcome.inspected, 0);
         }
-        assert!(store.team_run_events().unwrap().is_empty());
+        assert!(store.legacy_team_run_events().unwrap().is_empty());
         let mut rebound = unbound.clone();
         rebound.host_thread_id = Some("thread-1".into());
         rebound.updated_at = "unix-ms:3".into();
@@ -592,7 +618,7 @@ mod tests {
                     .expect("conflict is a stable observation");
             assert_eq!(outcome.inspected, 0);
         }
-        assert!(store.team_run_events().unwrap().is_empty());
+        assert!(store.legacy_team_run_events().unwrap().is_empty());
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 

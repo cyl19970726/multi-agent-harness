@@ -1075,7 +1075,16 @@ impl HarnessStore {
         self.append_jsonl("workflow_artifact_manifests.jsonl", value)
     }
 
-    pub fn append_team_run(&self, value: &AgentTeamRun) -> StoreResult<()> {
+    /// Reconstruct one raw historical TeamRun projection during an explicit
+    /// Legacy import. Current callers must use the combined TeamRun/member
+    /// admission APIs so a non-empty run is never published without its
+    /// canonical MemberRuns.
+    #[cfg(test)]
+    #[doc(hidden)]
+    pub(crate) fn legacy_import_append_team_run_projection(
+        &self,
+        value: &AgentTeamRun,
+    ) -> StoreResult<()> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         if let Some(current) =
@@ -1119,6 +1128,7 @@ impl HarnessStore {
                 expected.id
             )));
         }
+        self.current_team_run_execution_space_unlocked(&current)?;
         if next.member_run_ids != current.member_run_ids {
             return Err(StoreError::Conflict(
                 "TEAM_MEMBERSHIP_REQUIRES_ADMISSION: Host binding revision cannot change member_run_ids"
@@ -1870,7 +1880,15 @@ impl HarnessStore {
         self.append_jsonl_unlocked("missions.jsonl", &mission)
     }
 
-    pub fn append_member_run(&self, value: &ProviderRuntimeProjection) -> StoreResult<()> {
+    /// Reconstruct one raw historical ProviderRuntimeProjection during an
+    /// explicit Legacy import. It is intentionally not a current admission
+    /// path and never materializes the canonical MemberRun.
+    #[cfg(test)]
+    #[doc(hidden)]
+    pub(crate) fn legacy_import_append_member_run_projection(
+        &self,
+        value: &ProviderRuntimeProjection,
+    ) -> StoreResult<()> {
         value
             .validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
@@ -1938,6 +1956,13 @@ impl HarnessStore {
                 expected.id
             )));
         }
+        self.require_current_member_mutation_scope_unlocked(&current)?;
+        if next.runtime_generation != current.runtime_generation {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_GENERATION_TRANSITION_AUTHORITY_REQUIRED: ProviderRuntimeProjection {} generation changes must use compare_and_advance_member_run_generation",
+                current.id
+            )));
+        }
         ensure_member_provenance_unchanged(&current, next)?;
         ensure_member_lifecycle_revision(&current, next)?;
         ensure_provider_compatibility_cause_unchanged(&current, next)?;
@@ -1972,6 +1997,7 @@ impl HarnessStore {
                 expected.id
             )));
         }
+        self.require_current_member_mutation_scope_unlocked(&current)?;
         current
             .validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
@@ -2038,6 +2064,7 @@ impl HarnessStore {
                 expected.id
             )));
         }
+        self.require_current_member_mutation_scope_unlocked(&current)?;
         current
             .validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
@@ -2277,6 +2304,22 @@ impl HarnessStore {
             )));
         }
         self.current_team_run_execution_space_unlocked(&current)
+    }
+
+    /// Fence a current MemberRun mutation against the complete owning
+    /// TeamRun while the caller holds the Store write lock.
+    fn require_current_member_mutation_scope_unlocked(
+        &self,
+        member: &ProviderRuntimeProjection,
+    ) -> StoreResult<String> {
+        let run = self.require_team_run_unlocked(&member.team_run_id)?;
+        if !run.member_run_ids.iter().any(|id| id == &member.id) {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_RUN_SCOPE_MISMATCH: ProviderRuntimeProjection {} is not declared by TeamRun {}",
+                member.id, run.id
+            )));
+        }
+        self.current_team_run_execution_space_unlocked(&run)
     }
 
     fn validate_member_run_admission_rows_unlocked(
@@ -4877,6 +4920,7 @@ impl HarnessStore {
     /// member. A same-team ProviderRuntimeProjection row is not membership authority: the
     /// append-only ledger can contain stale or forged rows that were never
     /// admitted to the TeamRun.
+    #[cfg(test)]
     fn ensure_unique_member_identity_unlocked(
         &self,
         team_run: &AgentTeamRun,
@@ -6148,6 +6192,7 @@ impl HarnessStore {
                 value.member_run_id, member.team_run_id, value.team_run_id
             )));
         }
+        self.require_current_member_mutation_scope_unlocked(&member)?;
         if let Some(current) = latest_by_id(
             self.read_jsonl::<TeamMemberCloseRequest>("team_member_close_requests.jsonl")?,
             |request| request.member_run_id.clone(),
@@ -6235,6 +6280,7 @@ impl HarnessStore {
                 value.member_run_id, member.team_run_id, value.team_run_id
             )));
         }
+        self.require_current_member_mutation_scope_unlocked(&member)?;
         if let Some(current) = latest_by_id(
             self.read_jsonl::<TeamMemberCloseRequest>("team_member_close_requests.jsonl")?,
             |request| request.member_run_id.clone(),
@@ -6296,6 +6342,7 @@ impl HarnessStore {
                 value.member_run_id, member.team_run_id, value.team_run_id
             )));
         }
+        self.require_current_member_mutation_scope_unlocked(&member)?;
         if let Some(current) = latest_by_id(
             self.read_jsonl::<TeamMemberCloseRequest>("team_member_close_requests.jsonl")?,
             |request| request.member_run_id.clone(),
@@ -6335,6 +6382,8 @@ impl HarnessStore {
                 "Close request {request_id} does not own ProviderRuntimeProjection {member_run_id} in TeamRun {team_run_id}"
             )));
         }
+        let run = self.require_team_run_unlocked(team_run_id)?;
+        self.current_team_run_execution_space_unlocked(&run)?;
         if request.status == TeamMemberCloseStatus::Applied {
             return Ok(request);
         }
@@ -6693,7 +6742,11 @@ impl HarnessStore {
                     .to_string(),
             ));
         }
-        self.append_jsonl("member_actions.jsonl", value)
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let run = self.require_team_run_unlocked(&value.team_run_id)?;
+        self.current_team_run_execution_space_unlocked(&run)?;
+        self.append_jsonl_unlocked("member_actions.jsonl", value)
     }
 
     /// Append a provider/control receipt only while the exact ProviderRuntimeProjection
@@ -6737,6 +6790,7 @@ impl HarnessStore {
             )));
         }
         let run = self.require_team_run_unlocked(&current.team_run_id)?;
+        self.current_team_run_execution_space_unlocked(&run)?;
         if !run
             .member_run_ids
             .iter()
@@ -6780,7 +6834,14 @@ impl HarnessStore {
         self.append_jsonl("delegation_runs.jsonl", value)
     }
 
-    pub fn append_team_run_event(&self, value: &TeamRunEvent) -> StoreResult<()> {
+    /// Reconstruct a raw historical TeamRun event during explicit Legacy
+    /// import. Current event writers must use the guarded next-sequence APIs.
+    #[cfg(test)]
+    #[doc(hidden)]
+    pub(crate) fn legacy_import_append_team_run_event(
+        &self,
+        value: &TeamRunEvent,
+    ) -> StoreResult<()> {
         self.append_jsonl("team_run_events.jsonl", value)
     }
 
@@ -6789,6 +6850,8 @@ impl HarnessStore {
     pub fn append_team_run_event_next(&self, mut value: TeamRunEvent) -> StoreResult<TeamRunEvent> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        let run = self.require_team_run_unlocked(&value.team_run_id)?;
+        self.current_team_run_execution_space_unlocked(&run)?;
         value.seq = self
             .read_jsonl::<TeamRunEvent>("team_run_events.jsonl")?
             .into_iter()
@@ -6810,6 +6873,8 @@ impl HarnessStore {
         require_non_empty_store(stable_key, "TeamRun event stable key")?;
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        let run = self.require_team_run_unlocked(&value.team_run_id)?;
+        self.current_team_run_execution_space_unlocked(&run)?;
         value.id = format!("trev-stable-{}", content_hash_hex16(stable_key));
         let events = self.read_jsonl::<TeamRunEvent>("team_run_events.jsonl")?;
         if let Some(existing) = events.iter().find(|event| event.id == value.id) {
@@ -6853,6 +6918,7 @@ impl HarnessStore {
                 expected.id
             )));
         }
+        self.current_team_run_execution_space_unlocked(&current)?;
         if next.member_run_ids != current.member_run_ids {
             return Err(StoreError::Conflict(
                 "TEAM_MEMBERSHIP_REQUIRES_ADMISSION: lifecycle revision cannot change member_run_ids; use admit_member_run"
@@ -7979,8 +8045,23 @@ impl HarnessStore {
         self.read_jsonl("delegation_runs.jsonl")
     }
 
-    pub fn team_run_events(&self) -> StoreResult<Vec<TeamRunEvent>> {
+    /// Raw historical event rows for explicit Legacy diagnostics/export.
+    /// Current product projections must use `current_team_run_events`.
+    pub fn legacy_team_run_events(&self) -> StoreResult<Vec<TeamRunEvent>> {
         self.read_jsonl("team_run_events.jsonl")
+    }
+
+    /// Read the current event projection only after the whole TeamRun has one
+    /// coherent canonical Execution Space.
+    pub fn current_team_run_events(&self, team_run_id: &str) -> StoreResult<Vec<TeamRunEvent>> {
+        self.init()?;
+        let run = self.require_team_run_unlocked(team_run_id)?;
+        self.current_team_run_execution_space_unlocked(&run)?;
+        Ok(self
+            .read_jsonl("team_run_events.jsonl")?
+            .into_iter()
+            .filter(|event: &TeamRunEvent| event.team_run_id == team_run_id)
+            .collect())
     }
 
     fn append_jsonl<T: Serialize>(&self, file_name: &str, value: &T) -> StoreResult<()> {
@@ -10138,6 +10219,29 @@ mod tests {
         );
 
         let event_run_id = "team-run-concurrent-events".to_string();
+        seed_current_team_run_fixture(
+            &store,
+            &AgentTeamRun {
+                id: event_run_id.clone(),
+                agent_team_id: "team-concurrent-events".into(),
+                execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
+                project_binding_id: "project-test".into(),
+                previous_run_id: None,
+                host_surface: "test".into(),
+                host_thread_id: None,
+                host_actor: None,
+                host_control_mode: Default::default(),
+                objective: "concurrent current-event sequence".into(),
+                execution_root: None,
+                status: TeamRunStatus::Running,
+                member_run_ids: Vec::new(),
+                budget_limit_usd: None,
+                created_at: "unix-ms:3".into(),
+                updated_at: "unix-ms:3".into(),
+                completed_at: None,
+            },
+            &[],
+        );
 
         let event_barrier = Arc::new(Barrier::new(8));
         let event_handles = (0..8)
@@ -10167,7 +10271,7 @@ mod tests {
             handle.join().expect("event thread").expect("append event");
         }
         let mut seqs = store
-            .team_run_events()
+            .legacy_team_run_events()
             .expect("events")
             .into_iter()
             .map(|event| event.seq)
@@ -10642,6 +10746,177 @@ mod tests {
         ))
     }
 
+    fn canonical_member_admission_for_test(
+        execution_space_id: &str,
+        runtime: &ProviderRuntimeProjection,
+    ) -> CanonicalMemberRunAdmission {
+        CanonicalMemberRunAdmission {
+            context: firm_core::agentfirm_api::MutationContext {
+                execution_space_id: execution_space_id.into(),
+                authenticated_actor: firm_core::agentfirm_api::ActorRef {
+                    kind: firm_core::agentfirm_api::ActorKind::Service,
+                    id: "test-node-daemon".into(),
+                },
+                authority_actor: Some(firm_core::agentfirm_api::ActorRef {
+                    kind: firm_core::agentfirm_api::ActorKind::AgentMember,
+                    id: runtime.agent_member_id.clone(),
+                }),
+                command_name: "team_run.materialize_member_run".into(),
+                idempotency_key: format!("test-member-run:{}", runtime.id),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            run: firm_core::agentfirm_api::MemberRun {
+                id: runtime.id.clone(),
+                agent_member_id: runtime.agent_member_id.clone(),
+                team_run_id: runtime.team_run_id.clone(),
+                role_snapshot: runtime.role.clone(),
+                provider_profile_snapshot: None,
+                requested_controls: serde_json::json!({}),
+                effective_controls: serde_json::json!({}),
+                coordination_status: firm_core::agentfirm_api::MemberCoordinationStatus::Active,
+                runtime_status: firm_core::agentfirm_api::MemberRuntimeStatus::Idle,
+                runtime_generation: runtime.runtime_generation,
+                workspace_binding_id: None,
+                native_session: None,
+                version: 1,
+                started_at: runtime.started_at.clone(),
+                last_event_at: runtime.last_event_at.clone(),
+                finished_at: runtime.finished_at.clone(),
+            },
+        }
+    }
+
+    fn seed_current_team_run_fixture(
+        store: &HarnessStore,
+        run: &AgentTeamRun,
+        members: &[ProviderRuntimeProjection],
+    ) {
+        use firm_core::agentfirm_api::{
+            ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus, MutationContext,
+            PermissionCeiling,
+        };
+
+        const SPACE: &str = "unit-test-space";
+        store.init().expect("initialize current TeamRun fixture");
+        if !store
+            .latest_execution_nodes()
+            .expect("read Nodes")
+            .iter()
+            .any(|node| node.id == run.execution_node_id)
+        {
+            store
+                .insert_execution_node(&ExecutionNode {
+                    id: run.execution_node_id.clone(),
+                    display_name: "test-node".into(),
+                    status: ExecutionNodeStatus::Active,
+                    created_at: "unix-ms:1".into(),
+                    updated_at: "unix-ms:1".into(),
+                })
+                .expect("insert Node");
+        }
+        store
+            .register_node_project(
+                &NodeProjectRegistration {
+                    node_id: run.execution_node_id.clone(),
+                    execution_space_id: SPACE.into(),
+                    project_binding_id: run.project_binding_id.clone(),
+                    status: NodeProjectRegistrationStatus::Active,
+                    created_at: "unix-ms:1".into(),
+                    updated_at: "unix-ms:1".into(),
+                },
+                SPACE,
+            )
+            .expect("register fixture project");
+        let mission_id = format!("mission-{}", run.id);
+        store
+            .insert_mission(&Mission {
+                id: mission_id.clone(),
+                title: mission_id.clone(),
+                objective: run.objective.clone(),
+                context: String::new(),
+                desired_outcome: None,
+                status: MissionStatus::Running,
+                legacy_wave_ids: Vec::new(),
+                outcome_summary: None,
+                completed_by: None,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+                completed_at: None,
+            })
+            .expect("insert fixture Mission");
+        let identities = members
+            .iter()
+            .map(|member| member.agent_member_id.clone())
+            .collect::<Vec<_>>();
+        for member in members {
+            if !store
+                .trust_agent_members(SPACE)
+                .expect("read AgentMembers")
+                .iter()
+                .any(|candidate| candidate.id == member.agent_member_id)
+            {
+                store
+                    .create_trust_agent_member(
+                        &MutationContext {
+                            execution_space_id: SPACE.into(),
+                            authenticated_actor: ActorRef {
+                                kind: ActorKind::Human,
+                                id: "fixture-host".into(),
+                            },
+                            authority_actor: None,
+                            command_name: "agent_member.create".into(),
+                            idempotency_key: format!("fixture-agent:{}", member.agent_member_id),
+                            expected_version: 0,
+                            request_fingerprint: None,
+                        },
+                        AgentMember {
+                            id: member.agent_member_id.clone(),
+                            name: member.name.clone(),
+                            description: "current TeamRun fixture".into(),
+                            role: member.role.clone(),
+                            capabilities: Vec::new(),
+                            skill_refs: Vec::new(),
+                            provider_profile_ref: None,
+                            model_preference: None,
+                            workspace_policy: "test".into(),
+                            permission_ceiling: PermissionCeiling::WorkspaceWrite,
+                            organization_status: AgentMemberOrganizationStatus::Active,
+                            version: 1,
+                            created_by: ActorRef {
+                                kind: ActorKind::Human,
+                                id: "fixture-host".into(),
+                            },
+                            created_at: "unix-ms:1".into(),
+                            updated_at: "unix-ms:1".into(),
+                        },
+                    )
+                    .expect("create fixture AgentMember");
+            }
+        }
+        store
+            .insert_agent_team_with_unique_mission(&AgentTeam {
+                id: run.agent_team_id.clone(),
+                name: run.agent_team_id.clone(),
+                description: "current TeamRun fixture".into(),
+                mission_id,
+                host_agent_id: identities.first().cloned().unwrap_or_else(|| "host".into()),
+                node_id: run.execution_node_id.clone(),
+                status: firm_core::AgentTeamStatus::Active,
+                member_ids: identities,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            })
+            .expect("insert fixture AgentTeam");
+        let canonical = members
+            .iter()
+            .map(|member| canonical_member_admission_for_test(SPACE, member))
+            .collect::<Vec<_>>();
+        store
+            .create_team_run_with_member_runs_from_agent_team(run, SPACE, members, &canonical)
+            .expect("create coherent current TeamRun fixture");
+    }
+
     fn seed_host_attention_fixture(
         store: &HarnessStore,
         run_id: &str,
@@ -10666,7 +10941,6 @@ mod tests {
             updated_at: "unix-ms:1".into(),
             completed_at: None,
         };
-        store.append_team_run(&run).expect("seed TeamRun");
         let member = ProviderRuntimeProjection {
             id: format!("member-{run_id}"),
             team_run_id: run_id.into(),
@@ -10693,9 +10967,7 @@ mod tests {
             zero_output_streak: 0,
             last_consumed_work_version: None,
         };
-        store
-            .append_member_run(&member)
-            .expect("seed ProviderRuntimeProjection");
+        seed_current_team_run_fixture(store, &run, std::slice::from_ref(&member));
         let work = store
             .insert_work(
                 Work {
@@ -11336,7 +11608,7 @@ mod tests {
 
     fn seed_lease_run(store: &HarnessStore, id: &str) {
         store
-            .append_team_run(&AgentTeamRun {
+            .legacy_import_append_team_run_projection(&AgentTeamRun {
                 id: id.into(),
                 agent_team_id: format!("team-{id}"),
                 execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
@@ -11592,7 +11864,9 @@ mod tests {
             completed_at: None,
         };
 
-        store.append_team_run(&run).expect("append team run");
+        store
+            .legacy_import_append_team_run_projection(&run)
+            .expect("append team run");
         // Required Team/Node/Project authority makes legacy sparse rows unreadable
         // after the clean cutover.
         append_sparse_row(
@@ -11649,7 +11923,7 @@ mod tests {
         };
 
         store
-            .append_team_run(&AgentTeamRun {
+            .legacy_import_append_team_run_projection(&AgentTeamRun {
                 id: "tr-1".into(),
                 agent_team_id: "team-tr-1".into(),
                 execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
@@ -11671,7 +11945,7 @@ mod tests {
             .expect("declare initial TeamRun membership");
 
         store
-            .append_member_run(&member_run)
+            .legacy_import_append_member_run_projection(&member_run)
             .expect("append member run");
         append_sparse_row(
             &root,
@@ -11760,7 +12034,7 @@ mod tests {
         let member_id = format!("member-{run_id}");
         let session_id = format!("session-{run_id}");
         store
-            .append_team_run(&AgentTeamRun {
+            .legacy_import_append_team_run_projection(&AgentTeamRun {
                 id: run_id.to_string(),
                 agent_team_id: format!("team-{run_id}"),
                 execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
@@ -11781,7 +12055,7 @@ mod tests {
             })
             .expect("seed TeamRun");
         store
-            .append_member_run(&ProviderRuntimeProjection {
+            .legacy_import_append_member_run_projection(&ProviderRuntimeProjection {
                 id: member_id.clone(),
                 team_run_id: run_id.to_string(),
                 slot_id: None,
@@ -12773,7 +13047,9 @@ mod tests {
             updated_at: "unix-ms:1".into(),
             completed_at: None,
         };
-        store.append_team_run(&run).expect("append run");
+        store
+            .legacy_import_append_team_run_projection(&run)
+            .expect("append run");
 
         let first = store
             .acquire_test_supervisor_lease(&run.id, "supervisor-a", 101, "test:a", 100, 1_000)
@@ -12978,7 +13254,9 @@ mod tests {
             updated_at: "unix-ms:1".into(),
             completed_at: None,
         };
-        store.append_team_run(&run).expect("append run");
+        store
+            .legacy_import_append_team_run_projection(&run)
+            .expect("append run");
 
         let lease = store
             .acquire_test_supervisor_lease(
@@ -13158,8 +13436,7 @@ mod tests {
             zero_output_streak: 0,
             last_consumed_work_version: None,
         };
-        store.append_team_run(&run).expect("append run");
-        store.append_member_run(&member).expect("append member");
+        seed_current_team_run_fixture(&store, &run, std::slice::from_ref(&member));
 
         let request = TeamMemberCloseRequest {
             id: "close-1".into(),
@@ -13223,9 +13500,11 @@ mod tests {
             completed_at: Some("unix-ms:2".into()),
         };
 
+        // Raw serialization compatibility is a Legacy diagnostic fixture, not
+        // a current MemberAction authorization path.
         store
-            .append_member_action(&action)
-            .expect("append member action");
+            .append_jsonl("member_actions.jsonl", &action)
+            .expect("append legacy member action fixture");
         append_sparse_row(
             &root,
             "member_actions.jsonl",
@@ -13308,7 +13587,7 @@ mod tests {
         };
 
         store
-            .append_team_run_event(&event)
+            .legacy_import_append_team_run_event(&event)
             .expect("append team run event");
         append_sparse_row(
             &root,
@@ -13316,7 +13595,9 @@ mod tests {
             r#"{"id":"tre-sparse","seq":4,"team_run_id":"tr-1","source_kind":"host","entity_type":"team_run","entity_id":"tr-1","operation":"created","summary":"run started","occurred_at":"unix-ms:3"}"#,
         );
 
-        let events = store.team_run_events().expect("read team run events");
+        let events = store
+            .legacy_team_run_events()
+            .expect("read team run events");
         assert_eq!(events.len(), 2);
         assert_eq!(events[0], event);
         let sparse = &events[1];
@@ -13332,6 +13613,29 @@ mod tests {
     fn ensure_team_run_event_is_idempotent_and_rejects_semantic_mismatch() {
         let root = team_test_root("ensure-team-run-event");
         let store = HarnessStore::new(&root);
+        seed_current_team_run_fixture(
+            &store,
+            &AgentTeamRun {
+                id: "tr-1".into(),
+                agent_team_id: "team-event-idempotency".into(),
+                execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
+                project_binding_id: "project-test".into(),
+                previous_run_id: None,
+                host_surface: "test".into(),
+                host_thread_id: None,
+                host_actor: None,
+                host_control_mode: Default::default(),
+                objective: "event idempotency".into(),
+                execution_root: None,
+                status: TeamRunStatus::Running,
+                member_run_ids: Vec::new(),
+                budget_limit_usd: None,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+                completed_at: None,
+            },
+            &[],
+        );
         let event = TeamRunEvent {
             id: "caller-id-is-ignored".into(),
             seq: 0,
@@ -13354,7 +13658,7 @@ mod tests {
             .ensure_team_run_event_next("tr-1:attention-1:actionable:0", retry)
             .expect("same causal transition");
         assert_eq!(first, second);
-        assert_eq!(store.team_run_events().unwrap().len(), 1);
+        assert_eq!(store.legacy_team_run_events().unwrap().len(), 1);
 
         let mut mismatch = event;
         mismatch.summary = "different causal meaning".into();
@@ -13423,10 +13727,66 @@ mod tests {
         };
         let member_a = member("a");
         let member_b = member("b");
-        store.append_team_run(&run).expect("append team run");
-        store.append_member_run(&member_a).expect("append member a");
-        store.append_member_run(&member_b).expect("append member b");
+        seed_current_team_run_fixture(&store, &run, &[member_a.clone(), member_b.clone()]);
         (root, store, run, member_a, member_b)
+    }
+
+    #[test]
+    fn current_member_generation_advances_only_through_combined_canonical_cas() {
+        let (root, store, run, member, _) = work_test_fixture("member-generation-combined");
+        let mut next = member.clone();
+        next.runtime_generation = 2;
+        next.status = MemberRunStatus::Queued;
+        next.started_at = "unix-ms:2".into();
+        next.last_event_at = Some("unix-ms:2".into());
+
+        let legacy_before = std::fs::read(root.join("member_runs.jsonl")).unwrap();
+        let canonical_before =
+            std::fs::read(root.join("agentfirm_trust_operations.jsonl")).unwrap();
+        let rejected = store
+            .compare_and_append_member_run(&member, &next)
+            .expect_err("generic projection CAS cannot advance generation");
+        assert!(rejected
+            .to_string()
+            .contains("MEMBER_GENERATION_TRANSITION_AUTHORITY_REQUIRED"));
+        assert_eq!(
+            std::fs::read(root.join("member_runs.jsonl")).unwrap(),
+            legacy_before
+        );
+        assert_eq!(
+            std::fs::read(root.join("agentfirm_trust_operations.jsonl")).unwrap(),
+            canonical_before
+        );
+
+        store
+            .compare_and_advance_member_run_generation(&member, &next)
+            .expect("combined Store authority advances both projections");
+        assert_eq!(
+            store
+                .trust_member_runs("unit-test-space")
+                .unwrap()
+                .into_iter()
+                .find(|candidate| candidate.id == member.id)
+                .unwrap()
+                .runtime_generation,
+            2
+        );
+        assert_eq!(
+            store
+                .member_runs()
+                .unwrap()
+                .into_iter()
+                .rev()
+                .find(|candidate| candidate.id == member.id)
+                .unwrap()
+                .runtime_generation,
+            2
+        );
+        assert_eq!(
+            store.current_team_run_execution_space(&run).unwrap(),
+            "unit-test-space"
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
     fn host_work_context(id: &str, key: &str, at: &str) -> WorkCommandContext {
@@ -13641,7 +14001,7 @@ mod tests {
                 .legacy_create_team_run_projection_for_test(&run, "delegation-test-space")
                 .expect("create TeamRun");
             store
-                .append_member_run(&member)
+                .legacy_import_append_member_run_projection(&member)
                 .expect("append ProviderRuntimeProjection");
             rows.push((run, member));
         }
@@ -15150,7 +15510,7 @@ mod tests {
         replacement.started_at = "unix-ms:5".into();
         replacement.finished_at = None;
         store
-            .compare_and_append_member_run(&failed, &replacement)
+            .compare_and_advance_member_run_generation(&failed, &replacement)
             .expect("append same-id replacement generation");
 
         let rebound = store
@@ -15514,7 +15874,7 @@ mod tests {
         reopened_member.status = MemberRunStatus::Idle;
         reopened_member.runtime_generation += 1;
         store
-            .compare_and_append_member_run(&closed_member, &reopened_member)
+            .compare_and_advance_member_run_generation(&closed_member, &reopened_member)
             .expect("record reopened member");
         let submitted = store
             .submit_work(
@@ -16444,7 +16804,9 @@ mod tests {
             updated_at: "unix-ms:1".into(),
             completed_at: None,
         };
-        store.append_team_run(&run).expect("append unbound run");
+        store
+            .legacy_import_append_team_run_projection(&run)
+            .expect("append unbound run");
         let member = ProviderRuntimeProjection {
             id: "mr-work-unbound-ha".into(),
             team_run_id: run.id.clone(),
@@ -16471,7 +16833,9 @@ mod tests {
             zero_output_streak: 0,
             last_consumed_work_version: None,
         };
-        store.append_member_run(&member).expect("append member");
+        store
+            .legacy_import_append_member_run_projection(&member)
+            .expect("append member");
         let work = store
             .insert_work(
                 unassigned_test_work(&run.id, "work-unbound-ha-1"),

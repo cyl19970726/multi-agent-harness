@@ -916,23 +916,22 @@ mod projection_tests {
             store.init().unwrap();
         }
         for (store, run_id) in [(&first_store, "run-a"), (&second_store, "run-b")] {
-            store
-                .append_team_run(
-                    &serde_json::from_value(json!({
-                        "id": run_id,
-                        "agent_team_id": format!("team-{run_id}"),
-                        "execution_node_id": "00000000-0000-4000-8000-000000000001",
-                        "project_binding_id": "projection-project",
-                        "host_surface": "test",
-                        "objective": "cross-space Work projection",
-                        "status": "running",
-                        "member_run_ids": [],
-                        "created_at": "1",
-                        "updated_at": "1"
-                    }))
-                    .unwrap(),
-                )
-                .unwrap();
+            crate::append_jsonl_value(
+                &store.root().join("team_runs.jsonl"),
+                &json!({
+                    "id": run_id,
+                    "agent_team_id": format!("team-{run_id}"),
+                    "execution_node_id": "00000000-0000-4000-8000-000000000001",
+                    "project_binding_id": "projection-project",
+                    "host_surface": "test",
+                    "objective": "cross-space Work projection",
+                    "status": "running",
+                    "member_run_ids": [],
+                    "created_at": "1",
+                    "updated_at": "1"
+                }),
+            )
+            .unwrap();
         }
         insert_test_work(&first_store, "work-first", "run-a", "event-first");
         insert_test_work(&second_store, "work-second", "run-b", "event-second");

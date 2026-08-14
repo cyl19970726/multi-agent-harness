@@ -1395,7 +1395,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     successor_provider_run.finished_at = None;
     let successor_run_id = successor_provider_run.id.clone();
     store
-        .compare_and_append_member_run(&failed_provider_run, &successor_provider_run)
+        .compare_and_advance_member_run_generation(&failed_provider_run, &successor_provider_run)
         .expect("append higher-generation replacement runtime");
     let host_steps = [
         (

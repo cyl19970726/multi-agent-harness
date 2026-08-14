@@ -489,6 +489,7 @@ fn tool_team_run_work_list(store: &HarnessStore, arguments: &Value) -> Result<Va
 /// tool result here.
 fn tool_team_run_board_summary(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
     let team_run_id = required_str(arguments, "team_run_id")?;
+    require_current_team_run(store, team_run_id)?;
     let summary =
         team_run_board_summary_text(store, team_run_id).map_err(|error| error.to_string())?;
     Ok(json!({"summary": summary}))
@@ -1283,7 +1284,8 @@ fn tool_team_run_status(
     arguments: &Value,
 ) -> Result<Value, String> {
     let id = required_str(arguments, "team_run_id")?;
-    let run = latest_team_run(store, id).map_err(|error| error.to_string())?;
+    let run = require_current_team_run(store, id)?;
+    let execution_space_id = mcp_team_run_execution_space_id(store, resolved, &run)?;
     let member_runs: Vec<_> = latest_member_runs_in_append_order(store)
         .map_err(|error| error.to_string())?
         .into_iter()
@@ -1304,7 +1306,6 @@ fn tool_team_run_status(
             })
         })
         .collect();
-    let execution_space_id = mcp_team_run_execution_space_id(store, resolved, &run)?;
     let message_summary = canonical_message_summary_for_run(store, id, &execution_space_id)?;
     let supervisor = store
         .latest_team_supervisor_lease(id)
@@ -1454,18 +1455,27 @@ fn tool_team_run_host_inbox(store: &HarnessStore, arguments: &Value) -> Result<V
 /// resumed after a seen seq (pass the last seq you have as `after_seq`).
 fn tool_team_run_events(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
     let id = required_str(arguments, "team_run_id")?;
+    require_current_team_run(store, id)?;
     let after_seq = arguments
         .get("after_seq")
         .and_then(Value::as_u64)
         .unwrap_or(0);
     let mut events: Vec<TeamRunEvent> = store
-        .team_run_events()
+        .current_team_run_events(id)
         .map_err(|error| crate::CliError::Store(error).to_string())?
         .into_iter()
-        .filter(|event| event.team_run_id == id && event.seq > after_seq)
+        .filter(|event| event.seq > after_seq)
         .collect();
     events.sort_by_key(|event| event.seq);
     Ok(json!(events))
+}
+
+fn require_current_team_run(store: &HarnessStore, id: &str) -> Result<AgentTeamRun, String> {
+    let run = latest_team_run(store, id).map_err(|error| error.to_string())?;
+    store
+        .current_team_run_execution_space(&run)
+        .map_err(|error| error.to_string())?;
+    Ok(run)
 }
 
 /// Mission / Mission Log authoring plus Agent Team tools. Descriptions ARE the interface
