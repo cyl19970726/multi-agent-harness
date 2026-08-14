@@ -3,7 +3,7 @@ export const ROLE_VIEW_SCHEMA = "agentfirm.role_views.v1" as const;
 export type RoleViewFreshness = "current" | "stale" | "unavailable" | "unknown";
 export type RoleViewKind = "company_work" | "team_workspace" | "host_console" | "agent_workspace" | "member_workbench" | "operator";
 
-export interface ActorRef { kind: string; id: string }
+export interface ActorRef { kind: string; id: string; /** Server-resolved durable display label; the raw id remains the secondary display. */ display_name?: string|null }
 export interface TargetRef { kind: string; id: string }
 export interface AttentionItem {
   kind: string; severity: "info" | "warning" | "critical"; source_ref: TargetRef;
@@ -203,14 +203,22 @@ export interface MemberCapacitySummary {
 }
 export interface MessageDeliverySummary {
   id:string; recipient_member_run_id:string; status:string; version:number; provider_receipt_id:string|null; updated_at:string|null;
+  /** Canonical recipient identity and its server-resolved label (DEV-25). */
+  recipient_identity_id?: string|null; recipient_display_name?: string|null;
 }
+export type MessageDeliveryState = "unsettled"|"queued"|"delivered"|"acknowledged"|"failed";
 export interface MessageSummary {
   message_id:string; work_id:string|null; sender:ActorRef; recipients:ActorRef[];
   body:string; kind:string; correlation_id:string; causation_id:string|null;
-  response_intent:string; reply_eligible:boolean; created_at:string; deliveries:MessageDeliverySummary[];
+  response_intent:string; reply_eligible:boolean; created_at:string;
+  /** Server-computed aggregate over the canonical per-recipient deliveries (DEV-25). */
+  delivery_state?: MessageDeliveryState;
+  deliveries:MessageDeliverySummary[];
 }
 export interface TeamActivitySummary {
   source:string; id:string; work_id:string|null; actor_ref:ActorRef|null; status:string|null; summary:string|null; created_at:string;
+  /** Parent Message id for `message_delivery` rows (DEV-25). */
+  message_id?: string|null;
 }
 export interface RuntimeFabricSummary {
   agent_identities:RoleRecordSummary[]; agent_sessions:RoleRecordSummary[]; team_memberships:RoleRecordSummary[];
@@ -323,11 +331,16 @@ export interface LiveProviderActivityEvent {
   scope:{execution_space_id:string;project_id:string;team_run_id:string;member_run_id:string;agent_session_id:string;agent_session_generation:number};
   activity:LiveProviderActivity|null;
 }
+export type HostSessionMode = "harness_managed"|"external_interactive"|"unbound";
 export interface AgentWorkspaceRosterItem extends Partial<MemberCapacitySummary> {
   agent_member_ref:ActorRef; display_name:string; role:string; is_host?:boolean;
+  /** Host rows only: how the Host provider session is owned (DEV-24). */
+  host_session_mode?:HostSessionMode;
 }
 interface AgentWorkspaceSelectedAgent {
   agent_member_ref:ActorRef;display_name:string;role:string;organization_status:string;is_host:boolean;current_member_run_ref:string|null;provider:string|null;execution_mode:string|null;runtime_status:string|null;
+  /** Present (non-null) only when the selected agent is the Team Host (DEV-24). */
+  host_session_mode?:HostSessionMode|null;
 }
 interface AgentWorkspaceConfiguration {
   description:string|null;prompt_ref:string|null;prompt_projection:string;skill_refs:string[];capabilities:string[];tool_refs:string[];tools_projection:string;provider_profile_ref:string|null;model_preference:string|null;workspace_policy:string|null;permission_ceiling:string|null;forbidden_actions:string[];forbidden_actions_projection:string;workspace_binding:RoleRecordSummary|null;
