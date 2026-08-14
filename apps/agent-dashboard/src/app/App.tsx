@@ -333,8 +333,13 @@ export function App() {
     affectedDomains: readonly FreshnessDomain[] = freshnessDomains,
   ): void => {
     resyncDirtyRef.current = true;
-    setFreshnessState("stale");
-    setDomainFreshness((current) => updateFreshness(current, affectedDomains, "stale"));
+    if (affectedDomains.length > 0) {
+      // Staleness follows the invalidation's domain mapping: real projection
+      // changes mark their domains stale until the authoritative read lands,
+      // while ambient lease churn maps to an empty list and never re-dirties.
+      setFreshnessState("stale");
+      setDomainFreshness((current) => updateFreshness(current, affectedDomains, "stale"));
+    }
 
     const drain = () => {
       if (resyncInFlightRef.current || !resyncDirtyRef.current) return;

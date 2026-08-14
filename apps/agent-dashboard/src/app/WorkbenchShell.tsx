@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, type ReactNode } from "react";
+import { lazy, Suspense, useMemo, useState, type ReactNode } from "react";
 import {
   BookOpen,
   BriefcaseBusiness,
@@ -176,7 +176,6 @@ export function WorkbenchShell({
   const memberFocusMode = selection.surface === "team" && Boolean(selection.memberRunId);
   const focusedTeamMode = selection.surface === "team" && Boolean(selection.teamId);
   const compactExecutionMode = memberFocusMode || focusedTeamMode;
-  const quietAgentWorkspaceMode = selection.surface === "team" && Boolean(selection.teamConversation);
   const roleActionsCurrent = actionsEnabled && domainFreshness.works === "live" && domainFreshness.runtime === "live";
   function updateSelection(next: Partial<SelectionState>) {
     onSelectionChange({ ...selection, ...next });
@@ -189,7 +188,6 @@ export function WorkbenchShell({
         selection={selection}
         onSelectionChange={updateSelection}
         compact={compactExecutionMode}
-        quiet={quietAgentWorkspaceMode}
       />
       <div className="flex min-w-0 flex-1 flex-col pb-14 sm:pb-0">
         {!compactExecutionMode && <TopBar
@@ -675,13 +673,11 @@ function AppRail({
   selection,
   onSelectionChange,
   compact = false,
-  quiet = false,
 }: {
   model: WorkbenchModel;
   selection: SelectionState;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
   compact?: boolean;
-  quiet?: boolean;
 }) {
   const selectedRun = (model.snapshot.team_runs ?? []).find((run) => run.id === selection.teamId);
   const selectedTeam = (model.snapshot.teams ?? []).find(
@@ -848,7 +844,7 @@ function AppRail({
         <div className={cn("grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground shadow-sm", compact && "member-focus-brand")} aria-label="Company OS">
           {compact ? <Sparkles className="size-[19px]" /> : <Building2 className="size-4" />}
         </div>
-        {!quiet && <nav aria-label="Compact product navigation" className="mt-4 flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto px-2">
+        <nav aria-label="Compact product navigation" className="mt-4 flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto px-2">
           {navigationGroups.map((group, index) => (
             <div key={group.label} className={cn("flex flex-col items-center gap-1", index > 0 && "mt-2 border-t border-border pt-2")}>
               {group.items.map((item) => {
@@ -875,9 +871,8 @@ function AppRail({
               })}
             </div>
           ))}
-        </nav>}
-        {quiet && <span className="mt-auto pb-1 text-[11px] font-semibold tracking-[-0.02em] text-muted-foreground" aria-hidden="true">AF</span>}
-        {!quiet && mission && (
+        </nav>
+        {mission && (
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -985,6 +980,17 @@ function SurfaceSwitch({
   companyId: string;
   isLoading: boolean;
 }) {
+  // Content-derived snapshot revision: generated_at, ambient Supervisor lease
+  // heartbeat rows and volatile live previews are excluded so a heartbeat
+  // commit never forces a surface revalidate, while any durable projection
+  // change still does.
+  const snapshotContentRevision = useMemo(() => {
+    const content: Record<string, unknown> = { ...model.snapshot };
+    delete content.generated_at;
+    delete content.team_supervisor_leases;
+    delete content.live_member_activity;
+    return JSON.stringify(content);
+  }, [model.snapshot]);
   const shared = {
     model,
     onSelectionChange,
@@ -1011,7 +1017,7 @@ function SurfaceSwitch({
     );
   }
   if (selection.surface === "work") {
-    return <CompanyWorkIndex apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} refreshKey={model.snapshot.generated_at} selection={selection} onSelectionChange={onSelectionChange} />;
+    return <CompanyWorkIndex apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} refreshKey={snapshotContentRevision} selection={selection} onSelectionChange={onSelectionChange} />;
   }
   if (isCompanyOsSurface(selection.surface)) {
     const livePending = isLoading || (actionsEnabled && !model.snapshot.company_os);
@@ -1039,18 +1045,18 @@ function SurfaceSwitch({
       );
     case "team":
       return selection.teamConversation && (selection.teamId||selection.memberRunId) ? (
-        <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} routeIdentity={selection.teamId??selection.memberRunId!} selection={selection} refreshKey={model.snapshot.generated_at} onAction={onRoleAction} actionsEnabled={actionsEnabled} onSelectionChange={onSelectionChange}/>
+        <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} routeIdentity={selection.teamId??selection.memberRunId!} selection={selection} refreshKey={snapshotContentRevision} onAction={onRoleAction} actionsEnabled={actionsEnabled} onSelectionChange={onSelectionChange}/>
       ) : selection.teamId ? (
-        <TeamWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} teamId={selection.teamId} refreshKey={model.snapshot.generated_at} selection={selection} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} agentWorkspaceActionsEnabled={actionsEnabled} onSelectionChange={onSelectionChange} />
+        <TeamWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} teamId={selection.teamId} refreshKey={snapshotContentRevision} selection={selection} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} agentWorkspaceActionsEnabled={actionsEnabled} onSelectionChange={onSelectionChange} />
       ) : selection.memberRunId ? (
-        <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} routeIdentity={selection.memberRunId} selection={selection} refreshKey={model.snapshot.generated_at} onAction={onRoleAction} actionsEnabled={actionsEnabled} onSelectionChange={onSelectionChange}/>
+        <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} routeIdentity={selection.memberRunId} selection={selection} refreshKey={snapshotContentRevision} onAction={onRoleAction} actionsEnabled={actionsEnabled} onSelectionChange={onSelectionChange}/>
       ) : (
         <AgentTeamsHome {...shared} />
       );
     case "operator": {
       const nodeId = selection.nodeId ?? model.snapshot.execution_nodes?.[0]?.id;
       return nodeId
-        ? <OperatorView key={model.snapshot.generated_at} apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} nodeId={nodeId} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} />
+        ? <OperatorView apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} nodeId={nodeId} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} />
         : <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">No Execution Node is registered.</div>;
     }
     case "debug":

@@ -33,6 +33,10 @@ try {
     "authoritative Work operation invalidation affects Works plus read-model convergence only",
   );
   check(
+    freshnessDomainsForInvalidation(invalidation("execution_space", "team_supervisor_leases.jsonl")).length === 0,
+    "Supervisor heartbeat lease churn dirties no product domain",
+  );
+  check(
     freshnessDomainsForInvalidation(invalidation("company", "company_os_documents.jsonl")).join(",") === "docs,runtime",
     "Docs ledger invalidation affects Docs plus read-model convergence only",
   );

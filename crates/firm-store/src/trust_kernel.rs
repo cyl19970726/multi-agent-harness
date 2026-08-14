@@ -7,12 +7,12 @@ use firm_core::agentfirm_api::{
     FailureAnalysis, GateEvaluation, GateRequirement, GateRequirementSource, GateVerdict,
     GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberRun, MemberRuntimeStatus,
     MemberWorkspaceBinding, Message, MessageRecipientKind, MessageSubscription,
-    MessageSubscriptionKind, MessageSubscriptionStatus, MutationContext, ProviderInvocation,
-    ProviderReceipt, RuntimeCommandKind, RuntimeCommandRecord, RuntimeCommandStatus,
-    RuntimeEffectCertainty, RuntimeRecoveryResolution, SubscriptionCursor, TeamMembership,
-    TeamMembershipRole, TeamMembershipStatus, TrustError, TrustErrorCode, WorkDelivery,
-    WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus, WorkFinding,
-    WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
+    MessageSubscriptionKind, MessageSubscriptionStatus, MutationContext, NativeSessionRef,
+    ProviderInvocation, ProviderReceipt, RuntimeCommandKind, RuntimeCommandRecord,
+    RuntimeCommandStatus, RuntimeEffectCertainty, RuntimeRecoveryResolution, SubscriptionCursor,
+    TeamMembership, TeamMembershipRole, TeamMembershipStatus, TrustError, TrustErrorCode,
+    WorkDelivery, WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
+    WorkFinding, WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
     WorkspaceOwnership, WorkspaceSafetyProof,
 };
 use firm_core::collaboration::CollaborationMessageAuthority;
@@ -1335,6 +1335,92 @@ impl HarnessStore {
             member_run_id,
             "native_session_resume_requested",
             serde_json::json!({"updated_at": updated_at}),
+            &run,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    /// Write the settled provider-native Session binding onto a trust MemberRun.
+    /// Fresh starts cannot know the provider thread id at MemberRun creation, so
+    /// the binding lands later as its own CAS + generation-fenced mutation.
+    /// Coordination status, runtime status, and runtime generation are untouched.
+    /// The write is idempotent for the same native id (an identical rebind
+    /// carries the same value) and rejects a conflicting rebind to another id.
+    pub fn bind_member_run_native_session(
+        &self,
+        context: &MutationContext,
+        member_run_id: &str,
+        expected_generation: u64,
+        native_session: NativeSessionRef,
+        updated_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<MemberRun>> {
+        self.init()?;
+        let _trust_lock = self.acquire_write_lock()?;
+        required(
+            &native_session.native_session_id,
+            "NativeSessionRef.native_session_id",
+        )?;
+        required(&native_session.provider, "NativeSessionRef.provider")?;
+        let mut run = self
+            .latest_trust_envelopes_unlocked(&context.execution_space_id, "member_run")?
+            .remove(member_run_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "MemberRun not found",
+                    "member_run",
+                    member_run_id,
+                    None,
+                )
+            })
+            .and_then(|envelope| event_projection::<MemberRun>(&envelope))?;
+        if run.coordination_status != MemberCoordinationStatus::Active {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "only an active MemberRun can bind a provider-native Session",
+                "member_run",
+                member_run_id,
+                Some(run.version),
+            ));
+        }
+        if run.runtime_generation != expected_generation {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                format!(
+                    "MemberRun runtime generation is {}, the settled binding observed {expected_generation}",
+                    run.runtime_generation
+                ),
+                "member_run",
+                member_run_id,
+                Some(run.version),
+            ));
+        }
+        if let Some(current) = run.native_session.as_ref() {
+            if current.native_session_id != native_session.native_session_id {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "MemberRun already binds another provider-native Session",
+                    "member_run",
+                    member_run_id,
+                    Some(run.version),
+                ));
+            }
+        }
+        run.native_session = Some(native_session.clone());
+        run.version += 1;
+        run.last_event_at = Some(updated_at.to_string());
+        self.commit_trust_projection_unlocked(
+            context,
+            "member_run",
+            member_run_id,
+            "native_session_bound",
+            serde_json::json!({
+                "member_run_id": member_run_id,
+                "runtime_generation": expected_generation,
+                "native_session": native_session,
+                "updated_at": updated_at,
+            }),
             &run,
             Vec::new(),
             Vec::new(),
@@ -4574,6 +4660,98 @@ impl HarnessStore {
         )
     }
 
+    /// Write the settled provider-native Session binding onto the canonical
+    /// AgentSession. A fresh-start session is materialized before the provider
+    /// thread exists (`native_session_ref` starts unset), so the settled binding
+    /// lands later as its own CAS + generation-fenced mutation. Lifecycle and
+    /// runtime generation are untouched. The write is idempotent for the same
+    /// native id and rejects a conflicting rebind to another id.
+    pub fn bind_agent_session_native_session(
+        &self,
+        context: &MutationContext,
+        session_id: &str,
+        expected_generation: u64,
+        native_session_ref: NativeSessionRef,
+    ) -> StoreResult<CanonicalMutationResult<AgentSession>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        required(
+            &native_session_ref.native_session_id,
+            "NativeSessionRef.native_session_id",
+        )?;
+        required(&native_session_ref.provider, "NativeSessionRef.provider")?;
+        let mut session = self
+            .latest_trust_envelopes_unlocked(&context.execution_space_id, "agent_session")?
+            .remove(session_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "AgentSession not found",
+                    "agent_session",
+                    session_id,
+                    None,
+                )
+            })
+            .and_then(|envelope| event_projection::<AgentSession>(&envelope))?;
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            &session.node_id,
+            &session.node_daemon_id,
+            session.node_daemon_generation,
+            &context.authenticated_actor,
+            "agent_session",
+            session_id,
+        )?;
+        if session.lifecycle == AgentSessionStatus::Closed {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "a closed AgentSession cannot bind a provider-native Session",
+                "agent_session",
+                session_id,
+                Some(session.version),
+            ));
+        }
+        if session.runtime_generation != expected_generation {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                format!(
+                    "AgentSession runtime generation is {}, the settled binding observed {expected_generation}",
+                    session.runtime_generation
+                ),
+                "agent_session",
+                session_id,
+                Some(session.version),
+            ));
+        }
+        if let Some(current) = session.native_session_ref.as_ref() {
+            if current.native_session_id != native_session_ref.native_session_id {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "AgentSession already binds another provider-native Session",
+                    "agent_session",
+                    session_id,
+                    Some(session.version),
+                ));
+            }
+        }
+        session.native_session_ref = Some(native_session_ref.clone());
+        session.version += 1;
+        self.commit_trust_projection_unlocked(
+            context,
+            "agent_session",
+            session_id,
+            "native_session_bound",
+            serde_json::json!({
+                "session_id": session_id,
+                "runtime_generation": expected_generation,
+                "native_session_ref": native_session_ref,
+            }),
+            &session,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
     pub fn fabric_work_execution_bindings(
         &self,
         execution_space_id: &str,
@@ -7407,6 +7585,246 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].membership_generation, 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn settled_native_session(id: &str) -> NativeSessionRef {
+        NativeSessionRef {
+            provider: "codex".into(),
+            execution_mode: "codex_app_server".into(),
+            native_session_id: id.into(),
+            native_locator_kind: "codex_rollout".into(),
+            provider_version: None,
+            adapter_contract_version: "codex-app-server-v1".into(),
+            availability: firm_core::agentfirm_api::NativeSessionAvailability::Available,
+            supports_resume: true,
+            last_verified_at: Some("t2".into()),
+            parent_native_session_id: None,
+        }
+    }
+
+    #[test]
+    fn bind_agent_session_native_session_is_cas_generation_fenced_and_idempotent() {
+        let (store, root) = fabric_store();
+        store
+            .create_agent_identity(
+                &context("host", "identity.create", "identity-bind-native", 0),
+                identity("bind-native"),
+            )
+            .unwrap();
+        store
+            .create_agent_session(
+                &service_context("session.create", "session-bind-native", 0),
+                session("session-bind-native", "bind-native"),
+            )
+            .unwrap();
+        let native = settled_native_session("thread-settled-1");
+
+        let stale_generation = store
+            .bind_agent_session_native_session(
+                &service_context("session.native.bind", "bind-native-stale-generation", 1),
+                "session-bind-native",
+                2,
+                native.clone(),
+            )
+            .expect_err("a settled binding from another runtime generation is fenced");
+        assert!(
+            stale_generation
+                .to_string()
+                .contains("MEMBER_RUN_GENERATION_FENCED"),
+            "{stale_generation}"
+        );
+        let stale_version = store
+            .bind_agent_session_native_session(
+                &service_context("session.native.bind", "bind-native-stale-version", 0),
+                "session-bind-native",
+                1,
+                native.clone(),
+            )
+            .expect_err("the bind CAS rejects a stale expected version");
+        assert!(
+            stale_version.to_string().contains("VERSION_CONFLICT"),
+            "{stale_version}"
+        );
+
+        let bound = store
+            .bind_agent_session_native_session(
+                &service_context("session.native.bind", "bind-native-session", 1),
+                "session-bind-native",
+                1,
+                native.clone(),
+            )
+            .expect("first settle binds the native Session");
+        assert!(!bound.replayed);
+        assert_eq!(bound.projection.version, 2);
+        assert_eq!(bound.projection.native_session_ref.as_ref(), Some(&native));
+        assert_eq!(bound.projection.lifecycle, AgentSessionStatus::Idle);
+        assert_eq!(bound.projection.runtime_generation, 1);
+
+        let replay = store
+            .bind_agent_session_native_session(
+                &service_context("session.native.bind", "bind-native-session", 1),
+                "session-bind-native",
+                1,
+                native.clone(),
+            )
+            .expect("the exact same bind replays");
+        assert!(replay.replayed);
+        assert_eq!(replay.projection.version, 2);
+        assert_eq!(replay.event.id, bound.event.id);
+
+        let rewritten = store
+            .bind_agent_session_native_session(
+                &service_context("session.native.bind", "bind-native-session-again", 2),
+                "session-bind-native",
+                1,
+                native.clone(),
+            )
+            .expect("rebinding the same native id is idempotent in effect");
+        assert_eq!(rewritten.projection.version, 3);
+        assert_eq!(
+            rewritten
+                .projection
+                .native_session_ref
+                .as_ref()
+                .map(|value| value.native_session_id.as_str()),
+            Some("thread-settled-1")
+        );
+
+        let conflicting = store
+            .bind_agent_session_native_session(
+                &service_context("session.native.bind", "bind-native-conflict", 3),
+                "session-bind-native",
+                1,
+                settled_native_session("thread-other"),
+            )
+            .expect_err("a different native id cannot overwrite the binding");
+        assert!(
+            conflicting
+                .to_string()
+                .contains("already binds another provider-native Session"),
+            "{conflicting}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bind_member_run_native_session_is_cas_generation_fenced_and_idempotent() {
+        let (store, root) = fabric_store();
+        append_runtime_team(&store, "team-bind-native", "team-run-bind-native");
+        let run = MemberRun {
+            id: "member-run-bind-native".into(),
+            agent_member_id: "fixture-host".into(),
+            team_run_id: "team-run-bind-native".into(),
+            role_snapshot: "implementer".into(),
+            provider_profile_snapshot: Some("codex/codex_app_server".into()),
+            requested_controls: serde_json::json!({}),
+            effective_controls: serde_json::json!({}),
+            coordination_status: MemberCoordinationStatus::Active,
+            runtime_status: MemberRuntimeStatus::Idle,
+            runtime_generation: 1,
+            workspace_binding_id: None,
+            native_session: None,
+            version: 1,
+            started_at: "t1".into(),
+            last_event_at: None,
+            finished_at: None,
+        };
+        store
+            .create_trust_member_run(
+                &context("host", "member_run.create", "member-run-bind-native", 0),
+                run,
+            )
+            .unwrap();
+        let native = settled_native_session("thread-settled-2");
+
+        let stale_generation = store
+            .bind_member_run_native_session(
+                &context(
+                    "host",
+                    "member_run.native.bind",
+                    "bind-run-stale-generation",
+                    1,
+                ),
+                "member-run-bind-native",
+                2,
+                native.clone(),
+                "t2",
+            )
+            .expect_err("a settled binding from another runtime generation is fenced");
+        assert!(
+            stale_generation
+                .to_string()
+                .contains("MEMBER_RUN_GENERATION_FENCED"),
+            "{stale_generation}"
+        );
+        let stale_version = store
+            .bind_member_run_native_session(
+                &context(
+                    "host",
+                    "member_run.native.bind",
+                    "bind-run-stale-version",
+                    0,
+                ),
+                "member-run-bind-native",
+                1,
+                native.clone(),
+                "t2",
+            )
+            .expect_err("the bind CAS rejects a stale expected version");
+        assert!(
+            stale_version.to_string().contains("VERSION_CONFLICT"),
+            "{stale_version}"
+        );
+
+        let bound = store
+            .bind_member_run_native_session(
+                &context("host", "member_run.native.bind", "bind-run-native", 1),
+                "member-run-bind-native",
+                1,
+                native.clone(),
+                "t2",
+            )
+            .expect("first settle binds the native Session");
+        assert!(!bound.replayed);
+        assert_eq!(bound.projection.version, 2);
+        assert_eq!(bound.projection.native_session.as_ref(), Some(&native));
+        assert_eq!(
+            bound.projection.coordination_status,
+            MemberCoordinationStatus::Active
+        );
+        assert_eq!(bound.projection.runtime_status, MemberRuntimeStatus::Idle);
+        assert_eq!(bound.projection.runtime_generation, 1);
+        assert_eq!(bound.projection.last_event_at.as_deref(), Some("t2"));
+
+        let replay = store
+            .bind_member_run_native_session(
+                &context("host", "member_run.native.bind", "bind-run-native", 1),
+                "member-run-bind-native",
+                1,
+                native.clone(),
+                "t2",
+            )
+            .expect("the exact same bind replays");
+        assert!(replay.replayed);
+        assert_eq!(replay.projection.version, 2);
+        assert_eq!(replay.event.id, bound.event.id);
+
+        let conflicting = store
+            .bind_member_run_native_session(
+                &context("host", "member_run.native.bind", "bind-run-conflict", 2),
+                "member-run-bind-native",
+                1,
+                settled_native_session("thread-other"),
+                "t3",
+            )
+            .expect_err("a different native id cannot overwrite the binding");
+        assert!(
+            conflicting
+                .to_string()
+                .contains("already binds another provider-native Session"),
+            "{conflicting}"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
