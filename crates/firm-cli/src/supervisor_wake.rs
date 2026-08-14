@@ -196,6 +196,13 @@ impl WakeBackoff {
     pub fn current_duration(&self, policy: &WakePolicy) -> Duration {
         backoff_duration(policy, self.consecutive_sleeps)
     }
+
+    /// Sleep for the current backoff duration, then tick the counter.
+    pub fn sleep_and_tick(&mut self, policy: &WakePolicy) {
+        let d = self.current_duration(policy);
+        std::thread::sleep(d);
+        self.tick();
+    }
 }
 
 impl Default for WakeBackoff {

@@ -1,6 +1,6 @@
 #![recursion_limit = "256"]
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -20446,220 +20446,6 @@ fn stop_member_for_latched_close(
     Ok(())
 }
 
-/// Cursor tracking the store-local wake hint file written by
-/// `harness_store::bump_wake_hint`. The hint is a non-authoritative
-/// accelerator: a content change only triggers an early store re-scan, and
-/// the backoff schedule remains the authoritative reconciliation fallback.
-struct WakeHintCursor {
-    path: std::path::PathBuf,
-    last_content: Option<String>,
-}
-
-impl WakeHintCursor {
-    fn new(store: &HarnessStore) -> Self {
-        Self::from_path(harness_store::wake_hint_path(store.root()))
-    }
-
-    fn from_path(path: std::path::PathBuf) -> Self {
-        // Prime the cursor so the first wait does not report a spurious
-        // change for a hint written before this loop started.
-        let last_content = std::fs::read_to_string(&path).ok();
-        Self { path, last_content }
-    }
-
-    /// Returns true when the hint content changed since the last check.
-    /// A missing/unreadable file is latched as a valid state, so its later
-    /// creation is still observed as a change.
-    fn changed(&mut self) -> bool {
-        let content = std::fs::read_to_string(&self.path).ok();
-        let changed = content != self.last_content;
-        self.last_content = content;
-        changed
-    }
-}
-
-/// Bounded wait replacing a bare `thread::sleep` in the idle-member wake
-/// loop. Returns early when (a) a process-local control command arrived
-/// (drained into `stash` for the loop top to handle) or (b) the store wake
-/// hint changed. Otherwise returns after `duration`. The chunk granularity
-/// bounds the added latency without a watcher thread or a new dependency.
-fn wake_wait(
-    duration: Duration,
-    controls: &ControlReceiver<MemberControlCommand>,
-    stash: &mut VecDeque<MemberControlCommand>,
-    hint: &mut WakeHintCursor,
-) {
-    wake_wait_chunked(duration, Duration::from_millis(200), controls, stash, hint)
-}
-
-fn wake_wait_chunked(
-    duration: Duration,
-    chunk: Duration,
-    controls: &ControlReceiver<MemberControlCommand>,
-    stash: &mut VecDeque<MemberControlCommand>,
-    hint: &mut WakeHintCursor,
-) {
-    let started = Instant::now();
-    loop {
-        while let Ok(command) = controls.try_recv() {
-            stash.push_back(command);
-        }
-        if !stash.is_empty() || hint.changed() {
-            return;
-        }
-        let elapsed = started.elapsed();
-        if elapsed >= duration {
-            return;
-        }
-        std::thread::sleep((duration - elapsed).min(chunk));
-    }
-}
-
-fn next_control_command(
-    controls: &ControlReceiver<MemberControlCommand>,
-    stash: &mut VecDeque<MemberControlCommand>,
-) -> Option<MemberControlCommand> {
-    stash.pop_front().or_else(|| controls.try_recv().ok())
-}
-
-#[cfg(test)]
-mod wake_wait_tests {
-    use super::*;
-    use std::sync::mpsc::sync_channel;
-
-    fn interrupt_command() -> (
-        MemberControlCommand,
-        ControlReceiver<CliResult<serde_json::Value>>,
-    ) {
-        let (reply_tx, reply_rx) = sync_channel(1);
-        (
-            MemberControlCommand::Interrupt {
-                reason: "test".into(),
-                requested_by: "tester".into(),
-                reply: reply_tx,
-            },
-            reply_rx,
-        )
-    }
-
-    fn temp_hint_root() -> std::path::PathBuf {
-        // Nanosecond timestamps can repeat under parallel tests on coarse
-        // clocks; an explicit counter guarantees uniqueness (a shared dir
-        // let one test remove another test's hint file mid-wait).
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let root = std::env::temp_dir().join(format!(
-            "wake-wait-test-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        root
-    }
-
-    #[test]
-    fn wake_wait_returns_immediately_when_control_is_waiting() {
-        let (tx, rx) = sync_channel(1);
-        let (command, _reply_rx) = interrupt_command();
-        tx.send(command).unwrap();
-        let mut stash = VecDeque::new();
-        let root = temp_hint_root();
-        let mut hint = WakeHintCursor::from_path(harness_store::wake_hint_path(&root));
-
-        let started = Instant::now();
-        wake_wait_chunked(
-            Duration::from_secs(30),
-            Duration::from_millis(10),
-            &rx,
-            &mut stash,
-            &mut hint,
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "waiting control must interrupt the backoff sleep"
-        );
-        assert_eq!(stash.len(), 1, "command is stashed for the loop top");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn wake_wait_wakes_early_on_hint_change() {
-        let (_tx, rx) = sync_channel::<MemberControlCommand>(1);
-        let mut stash = VecDeque::new();
-        let root = temp_hint_root();
-        let mut hint = WakeHintCursor::from_path(harness_store::wake_hint_path(&root));
-
-        // Bump continuously so even a heavily delayed scheduler still lands
-        // a hint while the wait is sleeping; a single one-shot bump made
-        // this test flaky under parallel load.
-        let bump_root = root.clone();
-        std::thread::spawn(move || {
-            for _ in 0..200 {
-                std::thread::sleep(Duration::from_millis(50));
-                harness_store::bump_wake_hint(&bump_root, "message");
-            }
-        });
-
-        let started = Instant::now();
-        wake_wait_chunked(
-            Duration::from_secs(30),
-            Duration::from_millis(25),
-            &rx,
-            &mut stash,
-            &mut hint,
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "wake-relevant commit hint must interrupt the backoff sleep"
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn wake_wait_without_events_waits_full_duration() {
-        // Reconciliation fallback: no hint, no control — the full backoff
-        // duration still elapses, so a lost hint costs nothing but latency.
-        let (_tx, rx) = sync_channel::<MemberControlCommand>(1);
-        let mut stash = VecDeque::new();
-        let root = temp_hint_root();
-        let mut hint = WakeHintCursor::from_path(harness_store::wake_hint_path(&root));
-
-        let started = Instant::now();
-        wake_wait_chunked(
-            Duration::from_millis(150),
-            Duration::from_millis(50),
-            &rx,
-            &mut stash,
-            &mut hint,
-        );
-        assert!(
-            started.elapsed() >= Duration::from_millis(140),
-            "fallback reconcile must keep the backoff schedule"
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn next_control_command_drains_stash_before_channel() {
-        let (tx, rx) = sync_channel(2);
-        let (stashed, _r1) = interrupt_command();
-        let (channeled, _r2) = interrupt_command();
-        let mut stash = VecDeque::from([stashed]);
-        tx.send(channeled).unwrap();
-
-        let first = next_control_command(&rx, &mut stash);
-        let second = next_control_command(&rx, &mut stash);
-        assert!(matches!(
-            first,
-            Some(MemberControlCommand::Interrupt { .. })
-        ));
-        assert!(matches!(
-            second,
-            Some(MemberControlCommand::Interrupt { .. })
-        ));
-        assert!(next_control_command(&rx, &mut stash).is_none());
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn wait_for_idle_member_wake(
     ledger: &TeamRunLedger,
@@ -20677,14 +20463,12 @@ fn wait_for_idle_member_wake(
         harness_core::agentfirm_api::AgentSessionStatus::Idle,
     )?;
     let idle_since = Instant::now();
-    let mut control_stash: VecDeque<MemberControlCommand> = VecDeque::new();
-    let mut wake_hint = WakeHintCursor::new(&ledger.store);
     loop {
         // A command may have passed the control-plane fence just before this
         // generation lost ownership. Recheck before reading any process-local
         // handle or touching the durable mailbox.
         ledger.require_supervisor_lease()?;
-        while let Some(command) = next_control_command(controls, &mut control_stash) {
+        while let Ok(command) = controls.try_recv() {
             match command {
                 MemberControlCommand::Close {
                     reason,
@@ -20917,18 +20701,13 @@ fn wait_for_idle_member_wake(
                     return Ok(IdleMemberWake::ActiveWorkContinuation(Box::new(work)));
                 }
             }
-            supervisor_wake::WakeDecision::Sleep(duration) => {
+            supervisor_wake::WakeDecision::Sleep(_duration) => {
                 if member_supervisor_test_idle_grace()
                     .is_some_and(|grace| idle_since.elapsed() >= grace)
                 {
                     return Ok(IdleMemberWake::TestRetired);
                 }
-                backoff.tick();
-                // Non-authoritative early wake: a control command or a
-                // wake-relevant store commit (new mail, queued work delivery,
-                // close latch) interrupts the backoff sleep. A lost hint is
-                // harmless — the full duration still elapses and reconciles.
-                wake_wait(duration, controls, &mut control_stash, &mut wake_hint);
+                backoff.sleep_and_tick(policy);
                 continue;
             }
             supervisor_wake::WakeDecision::Degraded(reason) => {
