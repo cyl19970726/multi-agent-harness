@@ -14,7 +14,7 @@ use harness_core::agentfirm_api::{
 };
 use harness_core::{
     ExecutionNode, ExecutionNodeStatus, MemberRunStatus, NodeProjectRegistration,
-    NodeProjectRegistrationStatus,
+    NodeProjectRegistrationStatus, ProviderCompatibilityStatus,
 };
 use harness_store::HarnessStore;
 
@@ -1397,6 +1397,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     store
         .compare_and_append_member_run(&failed_provider_run, &successor_provider_run)
         .expect("append higher-generation replacement runtime");
+
     let host_steps = [
         (
             "assign",
@@ -1567,6 +1568,83 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
             label,
         );
     }
+
+    // An idle member on an unreviewed provider tuple keeps its runtime
+    // availability fact but must not be counted Ready, and the adapter review
+    // state rides along as its own fact with remediation metadata.
+    let mut review_run = successor_provider_run.clone();
+    review_run.runtime_generation += 1;
+    review_run.started_at = "unix-ms:matrix-review-required".into();
+    let mut review_profile = review_run
+        .provider_profile
+        .clone()
+        .expect("provider profile snapshot");
+    review_profile.provider_version = Some("0.146.0".into());
+    review_profile.compatibility_status = ProviderCompatibilityStatus::ReviewRequired;
+    review_profile.compatibility_note = Some(
+        "Installed provider version has not been reviewed against this adapter contract; \
+         regenerate protocol schemas and run provider acceptance before promotion."
+            .into(),
+    );
+    review_run.provider_profile = Some(review_profile);
+    store
+        .compare_and_append_member_run(&successor_provider_run, &review_run)
+        .expect("append review-required runtime generation");
+    let review_team_view_route =
+        format!("/v1/views/team-workspace/{}?project={project_id}", team.id);
+    let (status, review_team_view) =
+        serve.get_json_with_headers(&review_team_view_route, &[("X-AgentFirm-Token", TOKEN)]);
+    assert_eq!(
+        status, 200,
+        "review-required Team RoleView: {review_team_view}"
+    );
+    let review_member = review_team_view["data"]["members"]
+        .as_array()
+        .and_then(|members| {
+            members
+                .iter()
+                .find(|member| member["current_member_run_ref"] == review_run.id)
+        })
+        .cloned()
+        .expect("review-required member row");
+    assert_eq!(review_member["capacity"], "available");
+    assert_eq!(
+        review_member["provider_compatibility"], "review_required",
+        "unreviewed exact tuple renders review_required as a separate fact"
+    );
+    assert_eq!(review_member["provider_version"], "0.146.0");
+    assert!(review_member["provider_compatibility_note"]
+        .as_str()
+        .is_some_and(|note| note.contains("run provider acceptance")));
+    let ready_members = review_team_view["data"]["pressure_summary"]["ready_members"]
+        .as_u64()
+        .expect("ready_members");
+    let review_members = review_team_view["data"]["members"]
+        .as_array()
+        .expect("members");
+    let available_members = review_members
+        .iter()
+        .filter(|member| member["capacity"] == "available")
+        .count() as u64;
+    let review_blocked_available = review_members
+        .iter()
+        .filter(|member| {
+            member["capacity"] == "available"
+                && matches!(
+                    member["provider_compatibility"].as_str(),
+                    Some("review_required") | Some("incompatible") | Some("unavailable")
+                )
+        })
+        .count() as u64;
+    assert!(
+        review_blocked_available >= 1,
+        "the review-required member is present and still runtime-available"
+    );
+    assert_eq!(
+        ready_members,
+        available_members - review_blocked_available,
+        "every unreviewed or incompatible tuple is excluded from Ready"
+    );
 
     // Historical/corrupt stores can contain two active generations for one
     // AgentMember in the same TeamRun. Reads must never choose one
