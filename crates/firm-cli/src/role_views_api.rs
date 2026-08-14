@@ -8,7 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use harness_core::agentfirm_api::{ActorKind, ActorRef};
-use harness_core::{AgentTeam, AgentTeamRun, HostControlMode, NativeSessionRef, Work, WorkCondition, WorkPhase};
+use harness_core::{
+    AgentTeam, AgentTeamRun, HostControlMode, NativeSessionRef, Work, WorkCondition, WorkPhase,
+};
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
@@ -628,7 +630,12 @@ fn team_activity(
         .messages
         .iter()
         .filter(|message| run_id.is_some_and(|id| message["team_run_id"] == id))
-        .map(|message| (message["id"].as_str().unwrap_or_default(), message["work_id"].clone()))
+        .map(|message| {
+            (
+                message["id"].as_str().unwrap_or_default(),
+                message["work_id"].clone(),
+            )
+        })
         .collect::<BTreeMap<_, _>>();
     for delivery in facts.message_deliveries.iter().filter(|delivery| {
         delivery["message_id"]
@@ -712,9 +719,10 @@ fn message_delivery_state(deliveries: &[&Value]) -> &'static str {
     if deliveries.is_empty() {
         return "unsettled";
     }
-    if deliveries.iter().any(|delivery| {
-        matches!(status(delivery), "failed" | "expired" | "invalidated")
-    }) {
+    if deliveries
+        .iter()
+        .any(|delivery| matches!(status(delivery), "failed" | "expired" | "invalidated"))
+    {
         return "failed";
     }
     if deliveries
@@ -723,9 +731,10 @@ fn message_delivery_state(deliveries: &[&Value]) -> &'static str {
     {
         return "acknowledged";
     }
-    if deliveries.iter().any(|delivery| {
-        matches!(status(delivery), "claimed" | "provider_received")
-    }) {
+    if deliveries
+        .iter()
+        .any(|delivery| matches!(status(delivery), "claimed" | "provider_received"))
+    {
         return "delivered";
     }
     "queued"
@@ -3523,7 +3532,10 @@ mod tests {
             message_delivery_state(&[&row("provider_received")]),
             "delivered"
         );
-        assert_eq!(message_delivery_state(&[&row("acknowledged")]), "acknowledged");
+        assert_eq!(
+            message_delivery_state(&[&row("acknowledged")]),
+            "acknowledged"
+        );
         assert_eq!(message_delivery_state(&[&row("failed")]), "failed");
         assert_eq!(message_delivery_state(&[&row("expired")]), "failed");
         assert_eq!(message_delivery_state(&[&row("invalidated")]), "failed");
@@ -3585,7 +3597,10 @@ mod tests {
             "unbound"
         );
         assert_eq!(
-            host_session_mode(Some(&host_run_fixture(Some("  "), HostControlMode::Managed))),
+            host_session_mode(Some(&host_run_fixture(
+                Some("  "),
+                HostControlMode::Managed
+            ))),
             "unbound",
             "a blank thread id is not a binding"
         );

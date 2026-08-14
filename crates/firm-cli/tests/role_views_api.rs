@@ -3064,7 +3064,11 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
         assert_eq!(status, 200, "Host console for send revision: {view}");
         view["allowed_actions"]
             .as_array()
-            .and_then(|actions| actions.iter().find(|action| action["kind"] == "send_message"))
+            .and_then(|actions| {
+                actions
+                    .iter()
+                    .find(|action| action["kind"] == "send_message")
+            })
             .and_then(|action| action["required_version"].as_u64())
             .expect("send_message required version")
             .to_string()
@@ -3090,7 +3094,11 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
             .expect("message id")
             .to_string()
     };
-    let linked_message_id = send("send-linked-1", "Work-linked Host note", Some("work-linked-1"));
+    let linked_message_id = send(
+        "send-linked-1",
+        "Work-linked Host note",
+        Some("work-linked-1"),
+    );
     let unlinked_message_id = send("send-unlinked-1", "Deliberately unlinked Host note", None);
 
     // Drive the Work-linked delivery to its authoritative acknowledged state.
@@ -3103,8 +3111,7 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
         .expect("canonical deliveries")
         .into_iter()
         .find(|delivery| {
-            delivery.message_id == linked_message_id
-                && delivery.recipient_identity_id == member_id
+            delivery.message_id == linked_message_id && delivery.recipient_identity_id == member_id
         })
         .expect("Work-linked delivery");
     assert_eq!(
@@ -3169,8 +3176,7 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
     // Issue 2: the parent Message and the delivery Activity row present one
     // authoritative status, the Work correlation survives, and actor labels
     // resolve server-side.
-    let team_workspace_route =
-        format!("/v1/views/team-workspace/{}?project={project_id}", team.id);
+    let team_workspace_route = format!("/v1/views/team-workspace/{}?project={project_id}", team.id);
     let (status, workspace) =
         serve.get_json_with_headers(&team_workspace_route, &[("X-AgentFirm-Token", TOKEN)]);
     assert_eq!(status, 200, "TeamWorkspace: {workspace}");
@@ -3189,7 +3195,8 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
     assert_eq!(linked_delivery_summary["status"], "acknowledged");
     assert_eq!(linked_delivery_summary["recipient_identity_id"], member_id);
     assert_eq!(
-        linked_delivery_summary["recipient_display_name"], "Acceptance Member"
+        linked_delivery_summary["recipient_display_name"],
+        "Acceptance Member"
     );
     let unlinked = messages
         .iter()
@@ -3217,13 +3224,12 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
     );
     assert_eq!(linked_delivery_row["actor_ref"]["id"], member_id);
     assert_eq!(
-        linked_delivery_row["actor_ref"]["display_name"], "Acceptance Member"
+        linked_delivery_row["actor_ref"]["display_name"],
+        "Acceptance Member"
     );
     let unlinked_delivery_row = activity
         .iter()
-        .find(|row| {
-            row["source"] == "message_delivery" && row["message_id"] == unlinked_message_id
-        })
+        .find(|row| row["source"] == "message_delivery" && row["message_id"] == unlinked_message_id)
         .expect("unlinked delivery activity row");
     assert_eq!(
         unlinked_delivery_row["work_id"],
@@ -3243,13 +3249,10 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
     // Issue 1: the exact Host self view carries the external-interactive mode
     // label, the owner-private Session projection, the transient live slot,
     // and the authorized conversation surface.
-    let host_workspace_route = format!(
-        "/v1/views/agent-workspace/{run_id}?project={project_id}&agent_id={host_id}"
-    );
-    let (status, host_workspace) = serve.get_json_with_headers(
-        &host_workspace_route,
-        &[("X-AgentFirm-Token", TOKEN)],
-    );
+    let host_workspace_route =
+        format!("/v1/views/agent-workspace/{run_id}?project={project_id}&agent_id={host_id}");
+    let (status, host_workspace) =
+        serve.get_json_with_headers(&host_workspace_route, &[("X-AgentFirm-Token", TOKEN)]);
     assert_eq!(status, 200, "Host AgentWorkspace: {host_workspace}");
     let host_selected = &host_workspace["data"]["selected_agent"];
     assert_eq!(host_selected["is_host"], true);
@@ -3278,15 +3281,16 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
     assert!(serialized_host_projection.contains("display-safe host observation"));
     assert!(!serialized_host_projection.contains("raw-chain-of-thought-must-not-appear"));
     assert!(
-        host_workspace["data"].get("live_provider_activity").is_some(),
+        host_workspace["data"]
+            .get("live_provider_activity")
+            .is_some(),
         "Host self view carries the nullable transient live slot"
     );
     assert!(host_workspace["allowed_actions"]
         .as_array()
         .expect("Host actions")
         .iter()
-        .any(|action| action["kind"] == "send_message"
-            && action["disabled_reason"].is_null()));
+        .any(|action| action["kind"] == "send_message" && action["disabled_reason"].is_null()));
 
     // A TeamRun without a bound Host thread is honestly unbound.
     let (status, unbound_run) = serve.post_json(
