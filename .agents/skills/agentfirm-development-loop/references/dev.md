@@ -4,10 +4,21 @@ Dev owns implementation and decides when work is ready to review.
 
 ## Work
 
+- Begin from the `TASK_ASSIGNED` handoff. Confirm the Task ID, linked GitHub
+  Issue when present, actual starting revision/context, and any scope conflict.
+  This receipt is not a separate Claim lifecycle or message type.
 - Follow the Task goal and acceptance criteria.
 - Iterate freely without Candidate or readiness approval.
 - Keep Task blocker and useful progress evidence understandable to the Brain.
 - Send `ATTENTION_REQUIRED` only for a real blocker or missing decision.
+
+When implementation exposes another problem:
+
+- fix it in the same Task when it is required by that Task's acceptance;
+- send the Brain a concise finding with reproduction and impact when it is an
+  independent follow-up;
+- do not silently broaden scope or create a replacement Task yourself unless
+  the Brain explicitly delegates issue triage.
 
 ## Submit
 
