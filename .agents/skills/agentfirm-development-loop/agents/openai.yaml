@@ -1,4 +1,4 @@
 interface:
   display_name: "AgentFirm Development Loop"
-  short_description: "Run a simple Task and Review retry loop"
-  default_prompt: "Use $agentfirm-development-loop to let the Brain assign a Task, have Dev submit it for exact-version Review, and either finish it or return the same Task for more work."
+  short_description: "Triage issues into a simple Task and Review loop"
+  default_prompt: "Use $agentfirm-development-loop to triage an actionable repository issue into one linked Task, assign it to Dev, review an exact revision, and either finish it or return the same Task for more work."

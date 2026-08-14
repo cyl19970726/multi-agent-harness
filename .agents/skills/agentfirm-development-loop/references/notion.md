@@ -18,6 +18,12 @@ Use one current Task database with:
 - Review Revision
 - Current Reviewer
 
+An optional `GitHub Issue` URL may record the repository problem that caused a
+Task. It is provenance only: GitHub does not own the Notion Task status, and
+Notion must not mirror a second Issue lifecycle. Do not add `Issue` as a Task
+status. Do not require a `Task Kind` field unless users demonstrate a real
+filtering need.
+
 Use only these statuses: `Planned`, `Doing`, `In Review`, `Changes Required`, `Blocked`, `Done`.
 
 ### Reviews
@@ -53,3 +59,5 @@ After migration, verify:
 4. Review history retains every submission and exact revision/version.
 5. No default view or Playbook asks users to maintain Work and Run together.
 6. Advanced legacy records are clearly non-authoritative and hidden from ordinary operation.
+7. An independently actionable repository defect can be traced from one
+   GitHub Issue to one current Notion Task without duplicate status writing.
