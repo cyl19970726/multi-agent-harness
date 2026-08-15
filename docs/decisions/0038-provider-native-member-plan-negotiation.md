@@ -13,6 +13,8 @@ extends: ADR 0032 provider-native execution truth; ADR 0037 member autonomy
 > rules. Do not use the `plan_*` chain, `goal_mode` table, paused/active Goal
 > mapping, or provider coverage claims below for new work. Current continuation
 > semantics live in `docs/member-continuation-model.md`.
+> ADR 0056 also supersedes all PendingInteraction and per-request permission
+> workflow references retained below as historical evidence.
 
 ## Context
 

@@ -41,8 +41,6 @@ export interface SelectionState {
   docsHealth?: string;
   /** Native Mission detail, addressed as `?mission=<id>`. */
   missionId?: string;
-  /** Native Wave detail inside a Mission, addressed as `?wave=<id>`. */
-  waveId?: string;
   /**
    * The selected Agent Team run id (a team_run id), addressed as `?team=<id>`.
    * Opens the Team surface's run detail when set; the list shows when absent.
@@ -250,11 +248,8 @@ function selectionFromSearch(search: string, pathname = "/"): SelectionState {
     next.missionId = mission;
     if (!surface) next.surface = "missions";
   }
-  const wave = params.get("wave");
-  if (wave) {
-    next.waveId = wave;
-    if (!surface) next.surface = "missions";
-  }
+  // `?wave=` was an ADR 0051 pre-cutover deep link. Ignore it: Legacy Wave
+  // history is visible only inside its owning Mission's read-only section.
   // Canonical doc address: ?doc=<path>; setting it implies the docs surface
   // (mirror of the ?agent= / ?workflowRun= rules).
   const doc = params.get("doc");
@@ -379,7 +374,7 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   setOrDelete("memberRun", selection.memberRunId);
   setOrDelete("team", selection.teamId);
   setOrDelete("mission", selection.missionId);
-  setOrDelete("wave", selection.waveId);
+  params.delete("wave"); // retired ADR 0051 compatibility link, never written
   setOrDelete("doc", selection.docPath);
   setOrDelete("workflowRun", selection.workflowRunId);
   setOrDelete("workView", selection.workView);
@@ -437,7 +432,6 @@ const selectionCompareKeys = [
   "customPageId",
   "docsHealth",
   "missionId",
-  "waveId",
   "teamId",
   "memberId",
   "memberRunId",

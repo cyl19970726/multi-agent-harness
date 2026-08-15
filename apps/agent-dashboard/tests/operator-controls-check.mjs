@@ -78,13 +78,12 @@ async function main() {
     body: "Proceed",
     correlationId: "corr/c",
     causationId: "message/d",
-    originWaveId: "wave/a",
   });
   check(
     answer.body.correlation_id === "corr/c"
       && answer.body.causation_id === "message/d"
-      && answer.body.source_plan_ref === "wave/a",
-    "Lead reply preserves conversation correlation, causation, optional Work link, and Wave navigation context",
+      && !Object.hasOwn(answer.body, "source_plan_ref"),
+    "Lead reply preserves conversation correlation and causation without a retired plan reference",
   );
   check(
     actions.startTeamRun("run/a").path === "/v1/team-runs/run%2Fa/start",
@@ -92,6 +91,7 @@ async function main() {
   );
   const create = actions.createTeamRun({
     objective: "workspace contract",
+    agentTeamId: "team/a",
     executionRoot: "/workspace/project",
     members: [{
       name: "fixer",
@@ -102,9 +102,12 @@ async function main() {
     }],
   });
   check(
-    create.body.execution_root === "/workspace/project"
+    create.body.agent_team_id === "team/a"
+      && !Object.hasOwn(create.body, "mission_id")
+      && !Object.hasOwn(create.body, "wave_id")
+      && create.body.execution_root === "/workspace/project"
       && create.body.members[0].provider_cwd_hint === "/workspace/external-worktree",
-    "TeamRun create action preserves run execution root and member worktree override",
+    "TeamRun create sends only agent_team_id for identity and preserves workspace overrides",
   );
   const messageCausedWork = actions.createTeamWork("run/a", {
     title: "Investigate request",
@@ -115,12 +118,19 @@ async function main() {
     messageCausedWork.body.caused_by_message_id === "message/c",
     "Work creation API can preserve an explicit source-message relation",
   );
-  const resolve = actions.resolvePendingInteraction("run/a", "interaction/b", "q0_opt_0", "lead");
+  const resolve = actions.answerProviderMessage("run/a", "message/b", "q0_opt_0");
   check(
-    resolve.path === "/v1/team-runs/run%2Fa/interactions/interaction%2Fb/resolve"
+    resolve.path === "/v1/team-runs/run%2Fa/messages/message%2Fb/answer"
       && resolve.body.option_id === "q0_opt_0"
-      && resolve.body.resolved_by === "lead",
-    "Provider interaction resolution preserves the exact option and actor",
+      && !Object.hasOwn(resolve.body, "resolved_by"),
+    "Provider Message answer sends only the exact response; authenticated transport resolves the Host",
+  );
+  const freeText = actions.answerProviderMessage("run/a", "message/b", undefined, "Use the safe default");
+  check(
+    freeText.body.response_text === "Use the safe default"
+      && !Object.hasOwn(freeText.body, "option_id")
+      && !Object.hasOwn(freeText.body, "resolved_by"),
+    "Provider Message free-text answer sends response_text without caller identity",
   );
   const steer = actions.steerTeamMember("run/a", "member/b", "focus on the gate");
   check(
@@ -267,33 +277,31 @@ async function main() {
     "TeamRun start has an explicit pending state",
   );
   check(
-    teamSource.includes("pendingInteractions")
-      && teamSource.includes("resolvePendingInteraction(")
-      && teamSource.includes('interaction.route === "human" ? "operator" : "host"')
-      && teamSource.includes("Awaiting governed policy decision"),
-    "Team Activity renders provider questions and approvals as actionable pressure",
+    !teamSource.includes("pending" + "Interactions")
+      && !teamSource.includes("resolve" + "Pending" + "Interaction("),
+    "Team Activity has no second provider-question authority",
   );
   check(
-    missionSource.includes("readyToClose")
-      && missionSource.includes("MissionCloseDialog")
+    missionSource.includes("MissionCloseDialog")
       && missionSource.includes("MissionLogDialog"),
-    "Mission closeout and Mission Log entry controls are rendered",
+    "Mission closeout and Mission Log controls render without a Wave readiness gate",
   );
   check(
     missionSource.includes("appendMissionLog(")
-      && missionSource.includes('setLogKind("replan")')
-      && missionSource.includes("Append Host judgment")
-      && missionSource.includes("Host decisions are recorded as Mission Log entries (ADR 0051)")
+      && missionSource.includes("Append judgment")
+      && missionSource.includes("append-only Mission Log")
       && !missionSource.includes("updateWaveContext")
       && !missionSource.includes("advanceWave")
       && !missionSource.includes("gateWave")
       && !missionSource.includes("createWave"),
-    "Mission Canvas revises the Host plan through Mission Log entries without advancing the Wave",
+    "Mission detail records Host judgment only through append-only Mission Log entries",
   );
   check(
-    missionSource.includes("linkedTeamSummaries.map")
-      && missionSource.includes("Mission-owned Team; no TeamRun has started yet."),
-    "Mission Canvas renders its immutable Mission-owned AgentTeam without collapsing its run history",
+    missionSource.includes("teams.map((team)")
+      && missionSource.includes("The Team belongs to this Mission")
+      && missionSource.includes("agentTeamId: team.id")
+      && !missionSource.includes("waveId:"),
+    "Mission detail renders its Mission-owned AgentTeam and creates TeamRuns from agent_team_id only",
   );
   check(
     memberSource.includes('composerMode === "steer"')
@@ -323,11 +331,11 @@ async function main() {
     "Member Focus exposes explicit Claude Desktop import with a single-writer warning",
   );
   check(
-    teamSource.includes("missionId: navigationMission?.id")
-      && teamSource.includes("waveId: navigationWave?.id")
-      && memberSource.includes("missionId: navigationMissionId")
-      && memberSource.includes("waveId: navigationWave?.id"),
-    "Team and Member navigation preserve Mission/Wave context across deep links",
+    !teamSource.includes("navigationWave")
+      && !memberSource.includes("navigationWave")
+      && !teamSource.includes("waveId:")
+      && !memberSource.includes("waveId:"),
+    "Team and Member navigation do not recreate retired Wave deep-link context",
   );
   check(
     memberSource.includes("Current Work · Member Goal")

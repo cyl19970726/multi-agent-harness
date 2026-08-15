@@ -5,6 +5,11 @@ description: Use when a Host Agent must create, resume, or re-plan a long-runnin
 
 # Orchestrate Missions
 
+`orchestrate-mission-waves` is a compatibility skill name retained for existing
+installations and prompts. Its current workflow orchestrates a Mission through
+append-only Mission Log judgment and shared TeamWork. It never creates,
+updates, advances, gates, or closes a Wave.
+
 ## Host Console projection
 
 For local product operation, use `GET /v1/views/host-console/{team_id}` as the
@@ -40,21 +45,23 @@ Host (Lead)    = decision-maker: review, accept, assign, close, re-plan
 
 These hard invariants apply to every Host and Member. The full shared text lives in [`skills/shared-references/SKILL.md`](../shared-references/SKILL.md); when a rule appears in both skills, the shared copy is authoritative. The rules below are the Host-Lead-specific application.
 
-### Wave Vocabulary (Disambiguation)
+### Legacy Wave Vocabulary (Disambiguation)
 
 The word **wave** in this skill name and in batch labels (e.g. "Governance wave
 2") is a **planning-rhythm / batch label**, not a governed object. Wave as a
 writable governed object (`wave create|update|advance`) was retired by ADR 0051;
-no Wave state exists. Mission phases that were once recorded under wave
-transitions are now recorded exclusively through Mission Log entries
-(`--kind judgment|replan|closeout_evidence`).
+no current Wave lifecycle or writable Wave state exists. Historical `Wave`,
+`WaveStatus`, `wave_ids`, and Wave-ledger rows may remain readable only to
+interpret pre-cutover evidence. Mission phases that were once recorded under
+Wave transitions are now recorded exclusively through Mission Log entries
+(`--kind judgment|replan|recovery|closeout_evidence`).
 
 Retired-object pointers:
 - `HARNESS_ORIGIN_WAVE_ID` is a compatibility-only environment variable (see
   Collaboration Envelope below).
 - `wave list|show|history` are historical read-only commands. They read
-  compatibility records from pre-ADR-0051 runs but cannot create, mutate, or
-  advance a wave.
+  compatibility records from pre-ADR-0051 runs but cannot create, mutate,
+  advance, gate, or close a Wave.
 - **Convention**: use lowercase `wave` as a batch noun, never capitalized
   `Wave` as an object name in new documentation, code, or Work titles.
 
@@ -85,8 +92,9 @@ Select exactly one top-level execution driver per MemberRun — see shared hard 
 ## Run The Host Loop
 
 1. **Observe.** Select the Execution Space and Project Binding explicitly.
-   Inspect Mission, the Mission Log, its Mission-owned Team, Works, messages, pending
-   interactions, Member/Supervisor health, and native-session bindings.
+   Inspect Mission, the Mission Log, its Mission-owned Team, Works, messages,
+   provider-native requests that actually paused a turn, Member/Supervisor
+   health, and native-session bindings.
 2. **Orient.** Create or update Mission Markdown with the durable objective,
    constraints, decision boundary, and success standard.
 3. **Record judgment.** Append a Mission Log entry (`harness mission log
@@ -351,7 +359,7 @@ cancellation reason and create explicit follow-up responsibility.
 
 - `idle`: assign or expose ready claimable Work.
 - `working`: queue new Work without interrupting the active turn.
-- `waiting interaction`: resolve the exact PendingInteraction before driving.
+- `waiting question`: answer the exact correlated Message before driving.
 - `crashed/disconnected`: run `harness team-run recover --id <run>` to adopt/restart
   the supervisor generation, reconcile stale deliveries, resume compatible native
   sessions, and rebind incompatible Works. Never run `team-run create` during
@@ -512,4 +520,5 @@ When developing Star Harness itself and the product contract is in question,
 read canonical repository files `docs/current/product/agent-team-works.md`,
 `docs/decisions/0050-agent-team-work-board-and-message-boundary.md`,
 `docs/decisions/0051-single-intent-spine.md`, and
-`docs/current/product/mission-wave-host-plan.md`.
+`docs/current/product/mission-wave-host-plan.md` (compatibility filename;
+current contract is Mission + Mission Log).

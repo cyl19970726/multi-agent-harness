@@ -1,7 +1,7 @@
-# Mission, Host Plan Waves, And Agent Teams
+# Mission, Mission Log, And Agent Teams
 
 ```text
-status: canonical; Works cutover in progress; Wave retired for Host judgment (ADR 0051)
+status: canonical; filename retained for compatibility; Wave retired for Host judgment (ADR 0051)
 owner_role: product
 architecture: ADR 0034 + ADR 0037 + ADR 0050 + ADR 0051
 ```
@@ -20,7 +20,9 @@ external memory without turning that memory into a rigid scheduler.
 - **Agent Team** is the Mission's one flat execution agency, led by its Host
   and placed immutably on one Node.
 - **Works** say what exists, who owns it, and its current execution state.
-- **Messages** let Host and Members discuss Works without becoming task state.
+- **Messages** preserve authenticated author identity and let Host and Members
+  discuss Works; subscriptions route them to independent per-recipient
+  CanonicalMessageDelivery rows without becoming task state.
 - **Provider-native sessions** prove what each member actually executed.
 - **Agent Members** own end-to-end Works and may use native subagents
   without giving away responsibility.
@@ -37,7 +39,8 @@ provider-native sessions and use Kimi only for targeted review.
 
 ## Success
 - Mission, Mission Log, Team and Member views remain navigable.
-- Chat, pending interaction, steer, interrupt and resume are honest.
+- Chat, correlated provider-interaction Message kinds, steer, interrupt and
+  resume are honest.
 - All acceptance checks pass from latest master.
 ```
 
@@ -62,7 +65,7 @@ passes; the interaction lane may carry into a later entry.
 
 ```bash
 firm mission log append --mission-id <id> --kind judgment \
-  --body "$(cat wave-1-judgment.md)"
+  --body "$(cat mission-judgment-1.md)"
 ```
 
 When the build lane completes but review is still running, the Host appends
@@ -153,29 +156,38 @@ session continue.
   delivery deltas. It is not inferred from a Message or correlation id.
 - Host assignment and later Host-originated resume/request-changes/rebind
   create WorkDelivery records that use the Supervisor's durable delivery
-  substrate without becoming authored TeamMessages. Member self-claim is an
+  substrate without becoming authored Messages. Member self-claim is an
   atomic pull inside the bound runtime and therefore creates no loopback
   delivery; its Claimed WorkEvent and command result are the possession proof.
 - Ready unassigned Works may be atomically claimed by eligible Members. Host
   assignment remains available for constrained or high-risk work.
-- Team messages carry typed Host, Member, stable Agent, Operator, or Service
-  sender and recipients; display names never define authorship.
+- Identity-first Messages freeze the typed Host, Member, stable Agent,
+  Operator, or Service author at the source NodeDaemon; display names and
+  caller-selected actor fields never define authorship.
+- MessageSubscription selects authorized sources, while the target NodeDaemon
+  owns one CanonicalMessageDelivery for each resolved recipient. Delivery
+  progress never rewrites the immutable source-authored Message.
 - Messages may link a Work and preserve conversational correlation, but never
   change owner, status, readiness, submission, or acceptance by themselves.
 - Members may send direct peer messages inside the same TeamRun. Routine peer
   collaboration is visible to the Lead but does not require Lead approval.
-- Member-to-Host messages are delivered when the control plane receives them.
-  Host-to-member and peer messages queue for the recipient's next available
-  round.
+- Member-to-Host Messages route into the Host's per-recipient delivery. Host-to-member
+  and peer Messages queue through their recipients' CanonicalMessageDelivery
+  rows for the next available round.
 - Accepting a prerequisite Work may make another Work ready. The Host may
   assign it, or an eligible Member may atomically claim it.
 - `source_plan_ref` is optional navigation metadata.
-- Host and members can query inbox/status projections without reading provider
+- Host and members can query Message inbox/status projections without reading provider
   transcripts.
 - One machine NodeDaemon generation owns every local TeamRun. Each Team
   Supervisor generation is parent-fenced by it and owns provider delivery and
-  live controls for one run. Claim, provider receipt, recipient ACK, semantic
-  reply, and Host acceptance remain distinct.
+  live controls for one run. Work claim, provider receipt,
+  CanonicalMessageDelivery acknowledgement, semantic reply, and Host
+  acceptance remain distinct. WorkDelivery, Message/CanonicalMessageDelivery,
+  and RuntimeCommand are independent planes and cannot impersonate one another.
+- `TeamMessage`, `TeamMessageProjection`, `team_messages.jsonl`, and their
+  ACK/manual-ACK writers are Legacy read/export only; current examples and
+  acceptance never rely on them.
 
 ### Member autonomy
 
@@ -187,12 +199,13 @@ session continue.
   the member's permissions and evidence obligations and do not become
   `MemberRun`s.
 - Use another Member when a lane needs its own durable identity, Workspace,
-  mailbox, native session, or independent acceptance.
+  Message inbox, native session, or independent acceptance.
 - Steer is live only when the execution mode supports real current-turn
   injection. Unsupported/unavailable Steer fails; the caller may separately
   choose an ordinary queued Message for the next round.
-- Provider-pausing questions and approvals are `PendingInteraction`; ordinary
-  team coordination is `TeamMessage`.
+- Provider-pausing questions are `provider_interaction_request` Messages and
+  answers are correlated `provider_interaction_response` Messages. Session
+  permissions are frozen at start and are not routed as messages.
 
 ## UX Contract
 
@@ -213,7 +226,7 @@ Keep the approved Mission Canvas layout. Make targeted semantic changes:
 - Member rows link to Member Focus.
 - Carry-over badges use Work origin and current state; they do not imply a
   Mission Log entry or a historical Wave owns the member.
-- Lead Inbox groups member questions and coordination. Works separately expose
+- Lead Message Inbox groups member questions and coordination. Works separately expose
   blockers, submissions, and reviews, with linked discussion where present.
 - Team/Member controls expose the current Supervisor/reconnect state and typed
   author → recipient route; a stale owner disables live control without hiding
@@ -231,12 +244,13 @@ The Host gives two durable collaborators independent end-to-end lanes:
 ```markdown
 | Member | Role | Responsibility | Deliverable |
 | --- | --- | --- | --- |
-| RuntimeBuilder | Runtime owner | Design, implement, and validate Inbox/delivery; use internal subagents as useful | Submitted Work with patch/tests |
+| RuntimeBuilder | Runtime owner | Design, implement, and validate Message Inbox/delivery; use internal subagents as useful | Submitted Work with patch/tests |
 | DashboardBuilder | UX owner | Design, implement, and validate Works/Member Focus; use internal subagents as useful | Submitted Work with UI checks |
 ```
 
 Each member plans its own lane and may delegate bounded design, coding, or test
-work to native subagents. The Host answers correlated questions, integrates a
+work to native subagents. The Host answers correlated provider-interaction
+Messages, integrates a
 completed lane without waiting for the other, and appends the Mission Log
 judgment while the unfinished member keeps its original MemberRun, Work
 ownership, Workspace, and provider session. A separate Reviewer Member is

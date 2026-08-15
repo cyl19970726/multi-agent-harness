@@ -13,9 +13,10 @@ It installs experience adapters only:
   Host was busy; and
 - Dashboard deep-link guidance.
 
-Product architecture, Works/WorkDelivery, messages, Mission/Wave state,
-TeamRun lifecycle, and provider capability review remain in Harness. Provider transcripts, tool
-activity, and subagent history remain in provider-native sessions.
+Product architecture, Works/WorkDelivery, messages, Mission records and the
+append-only Mission Log, TeamRun lifecycle, and provider capability review
+remain in Harness. Provider transcripts, tool activity, and subagent history
+remain in provider-native sessions.
 
 Bound Member hooks pass an explicit provider identity, so Claude/Kimi events
 cannot be mislabeled as Codex. Hooks never ACK mail, impersonate a Host or

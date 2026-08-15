@@ -16,7 +16,7 @@
   "sessionStart": {
     "skill": "orchestrate-mission-waves"
   },
-  "skillInstructions": "Use the Harness CLI as the complete path. Mission stores durable intent; Agent Team Works store responsibility, status, submission, and Host acceptance; TeamMessage is Work-linked conversation only. Members may use provider-native subagents internally, provider pauses use PendingInteraction, and provider-native sessions remain execution truth.",
+  "skillInstructions": "Use the Harness CLI as the complete path. Mission stores durable intent; Agent Team Works store responsibility, status, submission, and Host acceptance; correlated TeamMessages carry conversation and provider questions. Members may use provider-native subagents internally; AgentSession permission is frozen before start, and provider-native sessions remain execution truth.",
   "mcpServers": {
     "harness": {
       "command": "harness",

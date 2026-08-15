@@ -4,7 +4,7 @@ import { Markdown } from "@/components/workbench/Markdown";
 import type { WorkbenchActivityItem } from "@/components/workbench/activity/ActivityStream";
 
 import type { StableTeamActivity } from "../../../model/teamSelectors";
-import type { MemberRun, PendingInteraction, TeamMessageProjection } from "../../../types";
+import type { MemberRun, TeamMessageProjection } from "../../../types";
 import { effectiveTeamMessageResponseIntent } from "../../../types";
 import {
   formatTime,
@@ -93,53 +93,6 @@ export function summarizeDeliveries(message: TeamMessageProjection, members: Map
     return `${queuedLabel}${delivered || acknowledged ? ` · ${delivered + acknowledged} received` : ""}`;
   }
   return `${delivered} delivered${acknowledged ? ` · ${acknowledged} ACK` : ""}`;
-}
-
-export function toInteractionActivity(
-  interaction: PendingInteraction,
-  members: Map<string, MemberRun>,
-  actionsEnabled: boolean,
-  onResolve: (optionId: string) => void,
-): WorkbenchActivityItem {
-  return {
-    id: `interaction:${interaction.id}`,
-    kind: "decision",
-    glyph: interaction.kind === "question" ? "message" : "decision",
-    title: (
-      <span className="inline-flex flex-wrap items-center gap-2">
-        <span>{interaction.title}</span>
-        <Badge tone="warn">{interaction.route} decision</Badge>
-      </span>
-    ),
-    body: interaction.prompt,
-    actor: memberLabel(members, interaction.member_run_id),
-    timestamp: formatTime(interaction.created_at),
-    occurredAt: interaction.created_at,
-    tone: "warn",
-    prominence: "pressure",
-    action: (
-      <div className="flex max-w-72 flex-wrap justify-end gap-1.5 rounded-lg border border-status-warn/25 bg-status-warn/[0.055] p-2">
-        {interaction.options.map((option) => (
-          <Button
-            key={option.id}
-            size="sm"
-            className="min-h-11 sm:min-h-0"
-            variant={option.intent?.startsWith("reject") ? "secondary" : "default"}
-            disabled={!actionsEnabled || interaction.route === "policy"}
-            onClick={() => onResolve(option.id)}
-          >
-            {option.label}
-          </Button>
-        ))}
-        {interaction.route === "policy" && (
-          <span className="self-center text-[10px] text-muted-foreground">Awaiting governed policy decision</span>
-        )}
-        {interaction.options.length === 0 && (
-          <span className="text-[10px] text-muted-foreground">No compatible response option</span>
-        )}
-      </div>
-    ),
-  };
 }
 
 export function toActivityItems(

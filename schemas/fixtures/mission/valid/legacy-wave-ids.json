@@ -1,0 +1,12 @@
+{
+  "id": "mission-legacy-wave-ids",
+  "title": "Historical Mission with Wave references",
+  "objective": "Preserve ADR 0051-era Mission rows for read and export.",
+  "status": "completed",
+  "wave_ids": ["wave-legacy-1", "wave-legacy-2"],
+  "outcome_summary": "Historical outcome retained without authorizing new Wave writes.",
+  "completed_by": "legacy-host",
+  "created_at": "2026-07-19T00:00:00Z",
+  "updated_at": "2026-07-19T00:03:00Z",
+  "completed_at": "2026-07-19T00:03:00Z"
+}

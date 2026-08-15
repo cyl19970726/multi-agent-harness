@@ -22,7 +22,7 @@ export interface Project {
   owns_execution_store?: boolean;
 }
 
-/** Provider-neutral Mission/Wave/Team/Workflow coordination namespace. */
+/** Provider-neutral Mission/Team/Workflow coordination namespace. */
 export interface ExecutionSpace {
   id: string;
   name?: string;
@@ -260,7 +260,6 @@ export interface Mission {
   context?: string;
   desired_outcome?: string | null;
   status?: MissionStatus | string;
-  wave_ids?: string[];
   outcome_summary?: string | null;
   completed_by?: string | null;
   created_at?: string;
@@ -268,11 +267,11 @@ export interface Mission {
   completed_at?: string | null;
 }
 
-/** Executor selected by a Wave; each retains its own runtime semantics. */
-export type WaveExecutorKind = "agent_team" | "dynamic_workflow" | "host";
+/** @deprecated ADR 0051 pre-cutover history only. */
+export type LegacyWaveExecutorKind = "agent_team" | "dynamic_workflow" | "host";
 
-/** Lifecycle of a Wave, independent from its lightweight acceptance gate. */
-export type WaveStatus =
+/** @deprecated ADR 0051 pre-cutover history only. */
+export type LegacyWaveStatus =
   | "planned"
   | "running"
   | "waiting"
@@ -281,11 +280,14 @@ export type WaveStatus =
   | "failed"
   | "cancelled";
 
-/** Lightweight Wave gate state. */
-export type WaveGateStatus = "pending" | "accepted" | "revise" | "blocked";
+/** @deprecated ADR 0051 pre-cutover history only. */
+export type LegacyWaveGateStatus = "pending" | "accepted" | "revise" | "blocked";
 
-/** One ordered, lightweight unit of a Mission. */
-export interface Wave {
+/**
+ * One ADR 0051 pre-cutover Wave row. Legacy historical read-only: current
+ * Mission status, closeout, TeamRun creation, and navigation never consume it.
+ */
+export interface LegacyWave {
   id: string;
   mission_id: string;
   index: number;
@@ -295,14 +297,14 @@ export interface Wave {
   revision?: number;
   updated_by?: string | null;
   exit_criteria?: string | null;
-  status?: WaveStatus | string;
-  executor_kind: WaveExecutorKind | string;
+  status?: LegacyWaveStatus | string;
+  executor_kind: LegacyWaveExecutorKind | string;
   executor_run_ids?: string[];
   accepted_run_id?: string | null;
   plan_note?: string | null;
   outcome_summary?: string | null;
   artifact_refs?: string[];
-  gate_status?: WaveGateStatus | string;
+  gate_status?: LegacyWaveGateStatus | string;
   gate_note?: string | null;
   accepted_by?: string | null;
   accepted_at?: string | null;
@@ -345,7 +347,7 @@ export type TeamRunStatus =
 
 /**
  * One execution of a required Mission-owned AgentTeam. Its members and native
- * sessions may continue across Host-plan Waves. Wire shape is snake_case;
+ * sessions continue under Mission intent and append-only Mission Log judgment. Wire shape is snake_case;
  * timestamps are "unix-ms:<ms>" strings like the rest of the snapshot.
  */
 export interface TeamRun {
@@ -1003,33 +1005,6 @@ export interface MemberAction {
   completed_at?: string | null;
 }
 
-export interface PendingInteractionOption {
-  id: string;
-  label: string;
-  intent?: string | null;
-}
-
-export interface PendingInteraction {
-  id: string;
-  team_run_id: string;
-  member_run_id: string;
-  provider: string;
-  provider_request_id: string;
-  method: string;
-  kind: "question" | "tool_approval" | "plan_review" | "unknown" | string;
-  route: "lead" | "human" | "policy" | string;
-  status: "pending" | "answered" | "approved" | "denied" | "dismissed" | "unsupported" | "cancelled" | string;
-  title: string;
-  prompt: string;
-  options: PendingInteractionOption[];
-  tool_call_id?: string | null;
-  response_option_id?: string | null;
-  response_text?: string | null;
-  created_at: string;
-  resolved_at?: string | null;
-  resolved_by?: string | null;
-}
-
 /**
  * A delegation spawned from a member run. `mode === "provider_native"` means the
  * provider spawned it on its own and the harness only CAPTURED it; every other
@@ -1113,9 +1088,8 @@ export interface DashboardSnapshot {
   workflow_steps?: WorkflowStep[];
   /** Native durable Mission rows. */
   missions?: Mission[];
-  /** Native ordered Wave rows. Historical only — ADR 0051 retired Wave
-   * write commands; new Host judgment is recorded on mission_log below. */
-  waves?: Wave[];
+  /** ADR 0051 pre-cutover rows, exposed only in an isolated historical view. */
+  legacy_waves?: LegacyWave[];
   /** Append-only Mission Log rows (ADR 0051): the Host's versioned judgment,
    * replacing Wave as the write path. Every row is a permanent entry, not a
    * latest-wins projection. */
@@ -1124,7 +1098,7 @@ export interface DashboardSnapshot {
   team_runs?: TeamRun[];
   member_runs?: MemberRun[];
   team_messages?: TeamMessageProjection[];
-  /** Wave 4C canonical runtime/message fabric. Legacy `team_messages` is read-only history. */
+  /** Development batch Wave 4C canonical runtime/message fabric. Legacy `team_messages` is read-only history. */
   agent_identities?: AgentIdentity[];
   agent_sessions?: AgentSession[];
   team_memberships?: TeamMembership[];
@@ -1141,7 +1115,6 @@ export interface DashboardSnapshot {
   team_supervisor_leases?: TeamSupervisorLease[];
   team_member_close_requests?: TeamMemberCloseRequest[];
   member_actions?: MemberAction[];
-  pending_interactions?: PendingInteraction[];
   delegation_runs?: DelegationRun[];
   team_run_events?: TeamRunEvent[];
 }

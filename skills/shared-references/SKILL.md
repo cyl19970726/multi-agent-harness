@@ -1,6 +1,6 @@
 ---
 name: shared-references
-description: Shared Hard Invariants referenced by team coordination skills. Do not install directly; load as a cross-reference from orchestrate-mission-waves or collaborate-as-agent-team-member.
+description: Shared Hard Invariants referenced by team coordination skills. Do not install directly; load as a cross-reference from the compatibility-named orchestrate-mission-waves Host skill or collaborate-as-agent-team-member.
 ---
 
 # Shared Hard Invariants
@@ -15,7 +15,7 @@ joining raw ledgers, and never treat an `AllowedAction` as authority when it has
 a `disabled_reason`.
 
 These rules bind the Host Lead and every Agent Team Member. The Host-facing
-skill (`orchestrate-mission-waves`) and the Member-facing skill
+compatibility-named Host skill (`orchestrate-mission-waves`) and the Member-facing skill
 (`collaborate-as-agent-team-member`) both reference this file. Where this file
 and a canonical doc (ADR, schema, product doc) conflict, the canonical doc
 wins.

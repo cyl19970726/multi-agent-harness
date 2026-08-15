@@ -27,6 +27,10 @@ and temporary Sub-Agents are implementation details, not separately claimable
 repository tasks. Notion cannot launch a local Codex Session; the Session is
 started externally and records its own active Session id during claim.
 
+Here **development Wave** is only the established name for one repository
+delivery batch. It is not the retired runtime `Wave` structure and creates no
+Mission child lifecycle, advance action, or gate.
+
 ## Truth Boundaries
 
 | Surface | Owns | Does not own |
@@ -49,7 +53,7 @@ Before editing:
    Review Report, and `In Progress` stage.
 5. Re-read the record and stop if another Session owns it.
 
-Never start writable work on a dirty shared project root. Concurrent Waves use
+Never start writable work on a dirty shared project root. Concurrent development Waves use
 separate worktrees and an explicit merge order. Shared hot files require a
 declared integration fence; later work must absorb, not overwrite, the earlier
 merged invariants.
@@ -63,13 +67,13 @@ handoffs, and evidence. Raw command streams, private checklists, provider
 transcripts, and Sub-Agent internals do not belong in Notion.
 
 Harness Members are not admitted for repository repair until the explicit
-dogfood admission standard passes. A bootstrap or repair Wave may use the
+dogfood admission standard passes. A bootstrap or repair development Wave may use the
 Primary Codex Session and bounded temporary Sub-Agents, while honestly stating
 that this is not Harness Member execution.
 
 ## Pull Request And Candidate SHA
 
-One Wave produces one integration PR. The PR links the Spec and umbrella Issue
+One development Wave produces one integration PR. The PR links the Spec and umbrella Issue
 and states:
 
 - what changed and what deliberately did not change;

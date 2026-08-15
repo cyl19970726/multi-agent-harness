@@ -44,7 +44,7 @@ durable company context
 flowchart TD
   Product["Company product layer<br/>Docs · Organization · Work · Finance"]
   Governance["Governance layer<br/>policy · Approval · authority · audit"]
-  Execution["Execution foundation<br/>Mission/Wave · Agent Team · Workflow · Host"]
+  Execution["Execution foundation<br/>Mission/Mission Log · Agent Team · Workflow · Host"]
   Runtime["Provider/runtime layer<br/>sessions · events · plugins · MCP · workspaces"]
   Evidence["Outcome layer<br/>artifacts · checks · evidence · metrics"]
   Interface["Operator interfaces<br/>Company OS · Agent Dashboard"]
@@ -61,8 +61,8 @@ flowchart TD
 | Layer | Why it exists | Must preserve |
 | --- | --- | --- |
 | Company product | the company needs one durable model for knowledge, actors, commitments and effects | each fact has one owning system and linked projections never become copies |
-| Governance | sensitive effects need named policy and authority | Approval is distinct from comments, execution completion and Wave gates |
-| Execution foundation | long or parallel work needs provider-neutral coordination | Mission has ordered Host-plan Wave revisions; independent runtimes own execution truth and are related by Mission, Works, conversation, and evidence |
+| Governance | sensitive effects need named policy and authority | Approval is distinct from comments, execution completion and Mission closeout judgment |
+| Execution foundation | long or parallel work needs provider-neutral coordination | Mission has append-only Host judgment, replan, recovery, and closeout entries; independent runtimes own execution truth and are related by Mission, Works, conversation, and evidence |
 | Runtime / Project Binding | providers and repositories differ in process, session, tool, worktree, instruction, and observation capability | provider cwd comes from a project root or validated worktree; provider state never becomes organization identity or business authority |
 | Outcome/evidence | accepted claims must be reconstructable | outcomes point to useful artifacts, checks and durable records without storing private thinking |
 | Interface | humans and Agents need comprehensible operating views | Company OS presents business truth; Agent Dashboard presents execution truth |
@@ -76,7 +76,7 @@ flowchart TD
 | Work | TeamWorks, Milestones, responsibility, Assignment, lifecycle, evidence and result routing | source knowledge, organization identity or finance ledger truth | every commitment says who owns it and where its result returns |
 | Finance | budgets, Commitments, invoices, Payments, refunds and financial evidence | general task or document truth | requested, authorized and actual monetary effects remain distinct |
 | Governance | module/organization evolution, policy, Approval and audit | hidden prompt authority or silent structural mutation | high-risk effects stop at the required Human boundary |
-| Mission/Wave | durable intent/context and ordered versioned Host plans, changed facts, judgments and advance outcomes | business ownership, payment approval, task graph, or runtime containment | Wave stays small; Host plan history remains reconstructable |
+| Mission/Mission Log | durable intent/context plus append-only Host judgment, replan, recovery, and closeout records | business ownership, payment approval, task graph, lifecycle object, or runtime containment | Mission Log entries stay small; Host judgment history remains reconstructable |
 | Agent Team | one Mission's flat Team identity, immutable Node placement, long-lived TeamRuns, run-scoped members, durable Supervisor generations, Works, WorkDelivery and typed conversation | reuse across Missions, nested Team topology, Standing Organization membership, or copied provider history | one Team equals one Mission; responsibility is proven by Work/WorkEvent; live control by the NodeDaemon-fenced Supervisor; execution detail by native-session bindings |
 | Dynamic Workflow | WorkflowRun, steps, outputs and artifacts | universal company coordination | workflow truth stays inside its executor contract |
 | Provider/runtime | sessions, processes, events, workspace and capability observation | TeamWork or Organization truth | optional hooks may observe only what the provider actually exposes |

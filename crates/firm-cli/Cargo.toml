@@ -27,5 +27,8 @@ sha2.workspace = true
 crossbeam = "0.8"
 notify = "6.1"
 
+[dev-dependencies]
+harness_store = { package = "firm-store", path = "../firm-store", features = ["test-support"] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

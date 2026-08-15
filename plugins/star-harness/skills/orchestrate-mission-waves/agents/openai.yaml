@@ -1,4 +1,4 @@
 interface:
-  display_name: "Orchestrate Mission Waves"
-  short_description: "Coordinate Missions, Waves, and shared Works"
-  default_prompt: "Use $orchestrate-mission-waves to plan this Mission, update Host Wave judgment, coordinate shared Agent Team Works, and record explicit acceptance."
+  display_name: "Orchestrate Missions"
+  short_description: "Coordinate Missions, Mission Logs, and shared Works"
+  default_prompt: "Use $orchestrate-mission-waves (compatibility name) to plan this Mission, append Host judgment to its Mission Log, coordinate shared Agent Team Works, and record explicit acceptance."

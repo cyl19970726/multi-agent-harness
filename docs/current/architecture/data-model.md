@@ -7,9 +7,14 @@ shape and validation.
 
 ```text
 Mission 1 ── 1 AgentTeam ── * AgentTeamRun ── * MemberRun
-                    │                 │
-                    │                 └── * Work / Message / Evidence
+                    │                 │          └── WorkExecutionBinding
+                    │                 └── * Work / Evidence
                     └── 1 ExecutionNode
+
+AgentIdentity ── * AgentSession
+      └── authors Message ── * CanonicalMessageDelivery ──> AgentSession
+
+NodeDaemon ── * RuntimeCommand ──> provider effect
 
 WorkDelegation: source Team/Work ──> target Team/Work
 ```
@@ -50,6 +55,9 @@ Space; a registration from one Store cannot name another Space.
 | Who executes a lane? | `MemberRun` plus current `Work` ownership |
 | How does work cross Teams? | `WorkDelegation` and events |
 | Who may drive a Run? | current parent-fenced `TeamSupervisorLease` |
+| Who authored conversation? | identity-first `Message`, attested by the source NodeDaemon generation |
+| What proves one recipient's delivery state? | `CanonicalMessageDelivery` bound to that recipient identity and exact AgentSession generation |
+| What authorizes a provider/process effect? | `RuntimeCommand`; never Message, CanonicalMessageDelivery, Work, TeamRun, or MemberRun |
 | What proves execution? | Work result, checks, artifacts, provider-native refs |
 
 The provider-native store owns transcript truth. Harness persists only the
@@ -57,5 +65,8 @@ native session locator and coordination evidence it needs; any activity shown
 in the Dashboard is an ephemeral read projection from that provider-owned
 source, never a second transcript ledger.
 
-Wave rows are historical read-only compatibility data. They are not part of
-new Team, Run, Work, scheduling, or acceptance contracts.
+`Wave`, `WaveStatus`, `WaveGateStatus`, `Mission.wave_ids`, and `waves.jsonl`
+are ADR 0051 pre-cutover historical read/export compatibility data. They are
+not part of new Mission, Team, Run, Work, scheduling, or acceptance contracts.
+All new Host judgment, replan, recovery, and closeout evidence is appended as
+`MissionLogEntry` rows inside the owning Mission.

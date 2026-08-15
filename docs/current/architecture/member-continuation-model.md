@@ -19,7 +19,7 @@ execution:
 
 ```text
 Mission
-  -> ordered Host-plan Wave
+  -> append-only Mission Log (Host judgment/replan/recovery/closeout)
   -> one flat AgentTeam -> AgentTeamRun
   -> MemberRun
        -> active Work + WorkDelivery
@@ -34,7 +34,7 @@ These layers answer different questions:
 | Layer | Question | Authority |
 | --- | --- | --- |
 | Mission | Why does the long-running work exist? | Harness |
-| Wave | What is the Host's current plan and judgment? | Harness |
+| Mission Log entry | What did the Host judge, replan, recover, or close out? | Harness |
 | Work | What result does this Member own and what is its state? | Harness `Work` + `WorkEvent` |
 | MemberRun | Which durable team participant owns the lane? | Harness |
 | Mailbox | What coordination has been sent, delivered and acknowledged? | Harness |
@@ -145,7 +145,7 @@ Harness remains the communication authority in both driver modes:
 | Member busy | Queue ordinary messages; never silently interrupt. |
 | Provider continuation active | Inject only through a verified safe provider operation or cycle boundary; otherwise leave mail queued. |
 | Host chooses Steer | Use the selected mode's real current-activity injection and terminal acknowledgement. |
-| Provider asks for authority | Create `PendingInteraction`; do not infer approval from tool completion. |
+| Provider asks a question | Create a correlated Message and wait for its correlated reply. |
 | Native continuation satisfies its condition | Record/project the provider fact, then await explicit Work submission/Host acceptance as required. |
 | Host explicitly closes Member | Latch Close before teardown, release the managed runtime, and freeze delivery without deleting the MemberRun or native-session binding. |
 | Host explicitly reopens Member | Increment `runtime_generation`; a managed adapter resumes the exact recorded native session and frozen mail becomes actionable. |
@@ -161,7 +161,9 @@ uniform mailbox promise:
 | Kimi `kimi_acp` | `next_round_batched` | Mail is claimed and rendered together at the next round boundary. |
 
 This field describes delivery timing only. Provider-native transcripts remain
-the sole turn/execution record and are never copied into TeamMessage storage.
+the sole turn/execution record and are never copied into current Message or
+`CanonicalMessageDelivery` storage. Legacy TeamMessage storage is read/export
+only and is not a fallback mailbox.
 
 Self-activation is allowed only when observable. If a Member activates native
 continuation through natural language or a provider command, the Adapter must
@@ -260,17 +262,17 @@ The Host:
 2. selects one execution driver from reviewed capabilities;
 3. gives writable members disjoint worktrees or explicit shared-file
    coordination;
-4. observes Works, WorkDelivery, Inbox, PendingInteraction and native continuation;
+4. observes Works, WorkDelivery, Inbox, correlated questions and native continuation;
 5. uses explicit Steer, Interrupt, driver change and Close operations;
 6. accepts submitted Work separately from provider completion.
 
 The Member:
 
-1. owns the Work across provider cycles and Host-plan Waves;
+1. owns the Work across provider cycles and Host replans recorded in the Mission Log;
 2. may use native planning, continuation and subagents within its permission
    and Workspace boundary;
 3. records block/submission through Work operations and communicates questions,
-   explanation and peer coordination through Work-linked `TeamMessage`;
+   explanation and peer coordination through Work-linked `Message` rows;
 4. does not claim that a native Goal or final response equals Host acceptance;
 5. reports when native continuation or permissions prevent safe coordination.
 
@@ -284,7 +286,7 @@ Execution driver
 Continuation state and condition
 Workspace execution lease
 Permission posture
-Pending interactions
+Correlated provider questions
 Queued/delivered team mail
 Native session availability
 Current native activity

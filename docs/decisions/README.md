@@ -28,7 +28,7 @@ consequences, affected modules, and validation path.
 | [0027](0027-company-os-primary-model.md) | amended by 0051 | Docs + mixed Organization product cores remain; separate agent scheduling hierarchy is superseded |
 | [0028](0028-retire-goal-phase-task-graph.md) | active | Retire the superseded coordination stack |
 | [0029](0029-agent-programmable-document-runtime.md) | active, staged; page layer superseded by 0054 | Basic docs, structured views and governed custom pages |
-| [0030](0030-provider-interaction-contract.md) | active | Execution-mode profiles, durable PendingInteraction routing, and provider-versus-semantic truth |
+| [0030](0030-provider-interaction-contract.md) | superseded by 0056 | Historical provider-interaction object and permission-routing contract |
 | [0031](0031-interactive-provider-modes-and-version-drift.md) | active | Chat/steer/interrupt semantics and adapter version review gates |
 | [0032](0032-provider-native-session-is-execution-truth.md) | active, implemented | Provider-native session owns transcript/tool activity/resume; Harness owns coordination, outcomes, refs and gates |
 | [0033](0033-agent-team-workspace-contract.md) | active, implemented | Agent Team store, project, run execution, and member worktree roots are distinct and observable |
@@ -53,6 +53,7 @@ consequences, affected modules, and validation path.
 | [0053](0053-finance-contract-layer-retirement.md) | accepted; staged retirement | Finance contract layer retired; Commitment/Payment code remains dormant until decommission |
 | [0054](0054-ai-first-docs-page-model-and-storage.md) | accepted; implementation pending | AI-first Docs: closed block kind set, Markdown-first serialization, whole-page revisions, JSONL canonical store with derived SQLite read layer and content-addressed blobs |
 | [0055](0055-remote-node-fabric.md) | accepted; implemented | One Company Control Plane, outbound NodeGateway children, and FabricStore as the sole cross-Node route truth |
+| [0056](0056-correlated-message-and-session-permission-cutover.md) | accepted; implemented | Provider questions are correlated Messages; permission is frozen at AgentSession start; the second interaction object is removed |
 
 ## Split Rule
 

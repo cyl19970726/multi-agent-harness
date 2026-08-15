@@ -374,7 +374,7 @@ export type AgentWorkspaceData=AgentWorkspacePrivateData|AgentWorkspaceHostMembe
 export interface MemberWorkbenchData {
   agent_member:{id:string;role:string;organization_status:string}; member_run:{id:string;agent_member_id:string;team_run_id:string;coordination_status:string;runtime_status:string;runtime_generation:number;native_session_health:string}; my_works:WorkSummary[];
   eligible_ready_pool:WorkSummary[]; unread_messages:MessageSummary[]; queued_deliveries:RoleRecordSummary[];
-  workspace_binding:RoleRecordSummary|null; native_session_health:string; pending_provider_interactions:RoleRecordSummary[];
+  workspace_binding:RoleRecordSummary|null; native_session_health:string;
   report_history:RoleRecordSummary[]; finding_history:RoleRecordSummary[]; failure_history:RoleRecordSummary[]; gate_requirements:RoleRecordSummary[];
   collaboration:CollaborationProjectionSummary; runtime_fabric:RuntimeFabricSummary;
 }

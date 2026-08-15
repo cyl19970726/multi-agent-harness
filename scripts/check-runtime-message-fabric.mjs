@@ -34,7 +34,13 @@ function stripCfgItems(source, cfgName) {
 }
 
 function productionRust(path) {
-  return stripCfgItems(stripCfgItems(readFileSync(path, "utf8"), "any()"), "test");
+  return stripCfgItems(
+    stripCfgItems(
+      stripCfgItems(readFileSync(path, "utf8"), "any()"),
+      "test",
+    ),
+    'any(test, feature = "test-support")',
+  );
 }
 
 const requiredSchemas = [
@@ -176,8 +182,24 @@ for (const token of [
 ]) {
   if (!server.includes(token)) failures.push(`missing executable hard-cutover fence: ${token}`);
 }
-if (readFileSync("crates/firm-store/src/lib.rs", "utf8").match(/pub fn append_team_message[\s\S]{0,450}RETIRED_RUNTIME_WRITER/g)?.length !== 2) {
-  failures.push("retired Team message Store writer entry points are not both hard rejected");
+const legacyStore = productionRust("crates/firm-store/src/lib.rs");
+if (legacyStore.match(/pub fn append_team_message_checked[\s\S]{0,450}RETIRED_RUNTIME_WRITER/g)?.length !== 1) {
+  failures.push("retired manual TeamMessage Store seam is not a single fail-closed entry point");
+}
+if (/fn record_provider_interaction_response\s*\(/.test(legacyStore)) {
+  failures.push("retired provider-interaction response writer remains production-executable");
+}
+if (/append_jsonl(?:_unlocked)?\s*\(\s*"team_messages\.jsonl"/.test(legacyStore)) {
+  failures.push("production Store retains a team_messages.jsonl mutator; the ledger is Legacy archive-only");
+}
+if (/read_jsonl\s*::<\s*TeamMessageProjection\s*>\s*\(\s*"team_messages\.jsonl"/.test(legacyStore)) {
+  failures.push("production Store retains an implicit team_messages.jsonl reader; expose history only through an explicit Legacy archive seam");
+}
+if (/pub fn team_messages\s*\(/.test(legacyStore)) {
+  failures.push("Store exposes ambiguous team_messages(); the historical reader must be named legacy_team_messages()");
+}
+if (!/pub fn legacy_team_messages\s*\(/.test(legacyStore)) {
+  failures.push("Store is missing the explicitly named read-only legacy_team_messages() archive seam");
 }
 try {
   readFileSync("schemas/provider-dispatch-envelope.schema.json", "utf8");
@@ -224,13 +246,121 @@ for (const [command, marker] of [
   }
 }
 const mcp = readFileSync("crates/firm-cli/src/mcp.rs", "utf8");
-for (const [tool, marker] of [
-  ["team_run_send_message", "cannot select a sender identity"],
-  ["team_message_acknowledge", "cannot authenticate the recipient session"],
-  ["team_run_reconcile_delivery", "cannot supply target NodeDaemon authority"],
+const memberTrustTransport = productionRust("crates/firm-cli/src/agentfirm_api.rs");
+if (memberTrustTransport.includes("CreateMemberRun")
+    || memberTrustTransport.includes('path.ends_with("/member-runs")')) {
+  failures.push("HTTP Member Trust transport still exposes standalone MemberRun creation");
+}
+for (const lifecycleToken of [
+  "transition_current_team_member_lifecycle",
+  "CurrentTeamMemberLifecycleTransition::Close",
+  "CurrentTeamMemberLifecycleTransition::Reopen",
+  "CurrentTeamMemberLifecycleTransition::Retire",
+  "CurrentTeamMemberLifecycleTransition::ResumeNativeSession",
 ]) {
-  if (!mcp.includes(`RETIRED_WRITE_AUTHORITY: ${tool} ${marker}`)) {
-    failures.push(`${tool} MCP tool is not a hard-retired writer`);
+  if (!memberTrustTransport.includes(lifecycleToken)) {
+    failures.push(`current Member lifecycle transport bypasses combined TeamRun authority: ${lifecycleToken}`);
+  }
+}
+for (const retiredLifecycleCall of [
+  ".transition_trust_member_run(",
+  ".resume_trust_native_session(",
+]) {
+  if (memberTrustTransport.includes(retiredLifecycleCall)) {
+    failures.push(`current Member lifecycle transport retains canonical-only mutation: ${retiredLifecycleCall}`);
+  }
+}
+const trustKernelProduction = productionRust("crates/firm-store/src/trust_kernel.rs");
+const runtimeStoreProduction = productionRust("crates/firm-store/src/lib.rs");
+const firmStoreCargo = readFileSync("crates/firm-store/Cargo.toml", "utf8");
+const firmCliCargo = readFileSync("crates/firm-cli/Cargo.toml", "utf8");
+const firmCliProductionDependencies = firmCliCargo.split("[dev-dependencies]")[0];
+if (/default\s*=.*test-support/.test(firmStoreCargo)
+    || firmCliProductionDependencies.includes('features = ["test-support"]')) {
+  failures.push("firm-store test-support reconstruction seam is enabled by a production/default feature");
+}
+for (const productionOnlyTestSeam of [
+  "legacy_import_create_trust_member_run_projection",
+  "transition_trust_member_run",
+  "resume_trust_native_session",
+]) {
+  if (trustKernelProduction.includes(`fn ${productionOnlyTestSeam}(`)) {
+    failures.push(`firm-store production surface still compiles retired/test-only lifecycle writer: ${productionOnlyTestSeam}`);
+  }
+}
+if (runtimeStoreProduction.includes("fn legacy_import_append_member_run_projection(")) {
+  failures.push("firm-store production surface still compiles the Legacy raw MemberRun reconstruction writer");
+}
+if (!mcp.includes("const MCP_MEMBER_TRUST_COMMANDS")
+    || mcp.includes('"create_member_run"')
+    || !mcp.includes("MemberRun creation is available only through team_run_create or team_run_add_member")) {
+  failures.push("MCP Member Trust inventory does not fail-close standalone MemberRun creation");
+}
+for (const removedTool of [
+  "team_run_send_message",
+  "team_message_acknowledge",
+  "team_run_reconcile_delivery",
+]) {
+  if (mcp.includes(`\"name\": \"${removedTool}\"`) || mcp.includes(`\"${removedTool}\" =>`)) {
+    failures.push(`${removedTool} remains advertised or dispatchable instead of failing closed as an unknown MCP tool`);
+  }
+}
+for (const retiredReader of [
+  "latest_team_messages_in_append_order",
+  "has_actionable_delivered_manual_ack",
+]) {
+  if (productionRust("crates/firm-cli/src/mcp.rs").includes(retiredReader)) {
+    failures.push(`MCP current status/inbox retains legacy TeamMessageProjection reader: ${retiredReader}`);
+  }
+}
+for (const canonicalReader of ["fabric_messages", "fabric_message_deliveries", "message_summary"]) {
+  if (!mcp.includes(canonicalReader)) {
+    failures.push(`MCP current status lacks canonical Message-fabric visibility: ${canonicalReader}`);
+  }
+}
+const mcpSpaceEnumerationCount = [...mcp.matchAll(/canonical_execution_space_ids/g)].length;
+if (mcpSpaceEnumerationCount !== 0
+    || !mcp.includes("fn mcp_team_run_execution_space_id")
+    || !mcp.includes("current_team_run_execution_space(run)")) {
+  failures.push("MCP must delegate exact TeamRun scope resolution to the locked Store authority without enumerating physical Spaces");
+}
+for (const currentProjection of [
+  "fn tool_team_run_board_summary",
+  "fn tool_team_run_status",
+  "fn tool_team_run_events",
+]) {
+  const start = mcp.indexOf(currentProjection);
+  const end = mcp.indexOf("\nfn ", start + currentProjection.length);
+  const body = start >= 0 ? mcp.slice(start, end > start ? end : undefined) : "";
+  if (!body.includes("require_current_team_run(store")) {
+    failures.push(`${currentProjection} bypasses strict whole-TeamRun completeness`);
+  }
+}
+const summaryStart = mcp.indexOf("fn canonical_message_summary_for_run");
+const summaryEnd = mcp.indexOf("fn mcp_team_run_execution_space_id", summaryStart);
+const summaryBody = summaryStart >= 0 && summaryEnd > summaryStart
+  ? mcp.slice(summaryStart, summaryEnd)
+  : "";
+if (!summaryBody.includes("execution_space_id: &str")
+    || summaryBody.includes("canonical_execution_space_ids")
+    || !summaryBody.includes("fabric_messages(execution_space_id)")
+    || !summaryBody.includes("fabric_message_deliveries(execution_space_id)")) {
+  failures.push("MCP TeamRun message summary is not bound to one resolved canonical Execution Space");
+}
+for (const authorityToken of ["current_team_run_execution_space(run)", "EXECUTION_SPACE_SCOPE_MISMATCH"]) {
+  if (!mcp.includes(authorityToken)) {
+    failures.push(`MCP TeamRun Execution Space resolver is missing: ${authorityToken}`);
+  }
+}
+const roleViewTransport = productionRust("crates/firm-cli/src/role_views_api.rs");
+for (const roleViewScopeToken of [
+  "current_team_run_execution_space(&run)",
+  "resolved_space == space_id",
+  'member_run["coordination_status"] == "active"',
+  'Some("disconnected" | "failed" | "stopped")',
+]) {
+  if (!roleViewTransport.includes(roleViewScopeToken)) {
+    failures.push(`RoleView current TeamRun projection bypasses strict exact-space authority: ${roleViewScopeToken}`);
   }
 }
 for (const routeToken of [
@@ -250,9 +380,40 @@ const providerDispatchLedgerMatches = [
 if (providerDispatchLedgerMatches !== 1 || !legacyExport.includes('ledger: "provider_dispatch_events.jsonl"')) {
   failures.push("provider_dispatch_events historical allowlist must be exactly one read-only legacy export entry");
 }
+const legacyTeamMessageLedgerMatches = [
+  ...legacyExport.matchAll(/team_messages\.jsonl/g),
+].length;
+if (legacyTeamMessageLedgerMatches !== 1 || !legacyExport.includes('ledger: "team_messages.jsonl"')) {
+  failures.push("team_messages historical allowlist must be exactly one explicit read-only Legacy export entry");
+}
 for (const path of activeRuntimeSources) {
   if (productionRust(path).includes("provider_dispatch_events.jsonl")) {
     failures.push(`${path} retains current provider_dispatch ledger authority`);
+  }
+}
+
+// No current lineage, status, detail, inbox, or replay projection may consult
+// the retired append-only TeamMessageProjection ledger. Explicit Legacy export
+// is the sole historical read path. Disabled tests and frozen historical source
+// are stripped before this production audit.
+for (const path of [
+  "crates/firm-cli/src/main.rs",
+  "crates/firm-cli/src/mcp.rs",
+  "crates/firm-cli/src/supervisor_daemon.rs",
+  "crates/firm-cli/src/fabric_runtime.rs",
+  "crates/firm-cli/src/role_actions_api.rs",
+  "crates/firm-cli/src/role_views_api.rs",
+]) {
+  const text = productionRust(path);
+  for (const retiredReader of [
+    "latest_team_messages_in_append_order",
+    "store.legacy_team_messages()",
+    "store.legacy_team_messages()?",
+    'read_jsonl::<TeamMessageProjection>("team_messages.jsonl")',
+  ]) {
+    if (text.includes(retiredReader)) {
+      failures.push(`${path} retains a current team_messages.jsonl lineage/status/detail/replay reader: ${retiredReader}`);
+    }
   }
 }
 
@@ -277,7 +438,7 @@ if (!runtimeDoc.includes("Team `close-member` closes only that")) {
 for (const token of [
   "AgentIdentity -> AgentSession",
   "Work -> WorkExecutionBinding",
-  "Message -> Subscription",
+  "Message -> MessageSubscription",
   "NodeDaemon -> durable RuntimeCommand",
 ]) {
   if (!rootRules.includes(token)) failures.push(`AGENTS.md runtime model drifted: ${token}`);

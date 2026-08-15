@@ -398,7 +398,7 @@ export function DebugSurface({ model, sourceLabel }: { model: WorkbenchModel; so
     ["Source", sourceLabel],
     ["Generated", snapshot.generated_at ?? "unknown"],
     ["Missions", String(snapshot.missions?.length ?? 0)],
-    ["Waves", String(snapshot.waves?.length ?? 0)],
+    ["Legacy Waves", String(snapshot.legacy_waves?.length ?? 0)],
     ["Agent team runs", String(snapshot.team_runs?.length ?? 0)],
     ["Workflow runs", String(snapshot.workflow_runs?.length ?? 0)],
     ["Bound native sessions", String(snapshot.members?.filter((member) => member.native_session).length ?? 0)],

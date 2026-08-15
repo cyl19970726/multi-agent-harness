@@ -18,18 +18,17 @@ use harness_core::{
     AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence, ExecutionNode, ExecutionNodeStatus,
     ExecutionSpace, GitHubLink, GitHubLinkKind, HostAttention, HostAttentionStatus,
     HostBindingLease, HostBindingLeaseOwnerKind, HostControlMode, HostDispatchConfig, LaunchMcp,
-    LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus, MemberCoordinationStatus,
-    MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot, MessageTerminalSource,
-    Mission, MissionLogEntry, MissionLogEntryKind, MissionStatus, NativeSessionAvailability,
-    NativeSessionRef, NodeDaemonLeaseStatus, NodeProjectRegistration,
-    NodeProjectRegistrationStatus, OrdinaryMessageBoundary, PendingInteraction,
-    PendingInteractionKind, PendingInteractionRoute, PendingInteractionStatus, ProjectContext,
-    ProjectKind, ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence,
-    ProviderCapacityEvidence, ProviderCapacitySnapshot, ProviderCapacityState,
-    ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
-    ProviderCompatibilityAdmissionPolicy, ProviderCompatibilityBlockBoundary,
-    ProviderCompatibilityBlockCause, ProviderCompatibilityBlockSource, ProviderCompatibilityStatus,
-    ProviderControlValue, ProviderDispatchAttempt, ProviderDispatchIntent, ProviderEventFidelity,
+    LaunchPermission, LaunchSpec, LegacyWave, MemberAction, MemberActionStatus,
+    MemberCoordinationStatus, MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot,
+    MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind, MissionStatus,
+    NativeSessionAvailability, NativeSessionRef, NodeDaemonLeaseStatus, NodeProjectRegistration,
+    NodeProjectRegistrationStatus, OrdinaryMessageBoundary, ProjectContext, ProjectKind,
+    ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
+    ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityAdmission,
+    ProviderCompatibilityAdmissionLifecycle, ProviderCompatibilityAdmissionPolicy,
+    ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
+    ProviderCompatibilityBlockSource, ProviderCompatibilityStatus, ProviderControlValue,
+    ProviderDispatchAttempt, ProviderDispatchIntent, ProviderEventFidelity,
     ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
     ProviderIntegrationProfile, ProviderInteractionMessageOption, ProviderInteractionMode,
     ProviderInteractionRequestBody, ProviderInteractionResponseBody, ProviderInteractionType,
@@ -40,15 +39,15 @@ use harness_core::{
     RegistryMessageIntent, Review, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
     TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection,
     TeamRecipientKind, TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus,
-    TeamSupervisorLease, Validate, Wave, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext,
+    TeamSupervisorLease, Validate, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext,
     WorkCondition, WorkDelegation, WorkDelegationState, WorkPhase, WorkPriority, WorkRef,
     WorkResolution, WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus,
     WorkflowPatch, WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep,
     WorkflowStepStatus, WorkflowTerminalReason, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
-    canonical_surface, HarnessStore, HostAttentionClaimResult, MessageDeliveryClaimResult,
-    StoreError,
+    canonical_surface, CanonicalMemberRunAdmission, HarnessStore, HostAttentionClaimResult,
+    MessageDeliveryClaimResult, StoreError,
 };
 use thiserror::Error;
 
@@ -106,16 +105,18 @@ impl CliError {
     }
 }
 
-/// Whether a routed message is currently actionable as a manual acknowledgement.
-///
-/// The compatibility `unacked_messages` projection deliberately excludes queued,
-/// injected, failed, expired, and already-acknowledged deliveries. A message is
-/// counted once when at least one recipient has a `manual_ack` delivery that has
-/// reached `delivered`.
-pub(crate) fn has_actionable_delivered_manual_ack(message: &TeamMessageProjection) -> bool {
+/// Whether canonical Message fabric still exposes a Host delivery that has not
+/// reached acknowledgement. The compatibility TeamMessage delivery policy is
+/// not authority for this current status projection.
+pub(crate) fn has_actionable_unacknowledged_host_delivery(message: &TeamMessageProjection) -> bool {
     message.deliveries.iter().any(|delivery| {
-        delivery.policy == TeamDeliveryPolicy::ManualAck
-            && delivery.status == TeamDeliveryStatus::Delivered
+        delivery.member_id == "host"
+            && matches!(
+                delivery.status,
+                TeamDeliveryStatus::Queued
+                    | TeamDeliveryStatus::Claimed
+                    | TeamDeliveryStatus::Delivered
+            )
     })
 }
 
@@ -177,7 +178,7 @@ enum StoreSource {
 
 /// The resolved coordination store plus its independent execution bindings.
 ///
-/// `execution_space_context` owns Mission/Wave/Agent Team/Workflow rows.
+/// `execution_space_context` owns Mission/Mission Log/Agent Team/Workflow rows.
 /// `context` is the selected Project Binding compatibility adapter and owns
 /// provider cwd, repository instructions, Skills, Git/worktree and permission
 /// boundaries. Neither identity implies the other.
@@ -386,7 +387,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
         });
     }
 
-    // Execution Space owns Mission/Wave/Agent Team/Workflow coordination.
+    // Execution Space owns Mission/Mission Log/Agent Team/Workflow coordination.
     // Selecting a Project Binding never changes this store.
     let (space_selector, space_source) = match take_flag_value(args, "--space") {
         Some(value) => (Some(value), StoreSource::SpaceFlag),
@@ -829,7 +830,7 @@ fn execution_space_json(space: &ExecutionSpace, current: &str) -> serde_json::Va
         "company_id": space.company_id,
         "is_current": space.id == current,
         "identity_boundary": "execution_space",
-        "owns": ["mission", "wave", "agent_team", "team_run", "member_run", "team_message", "workflow"],
+        "owns": ["mission", "mission_log", "agent_team", "team_run", "member_run", "team_message", "workflow"],
     })
 }
 
@@ -946,7 +947,6 @@ const EXECUTION_LEDGER_NAMES: &[&str] = &[
     "work_operations.jsonl",
     "host_attentions.jsonl",
     "team_supervisor_leases.jsonl",
-    "pending_interactions.jsonl",
     "delegation_runs.jsonl",
     "team_run_events.jsonl",
     "agentfirm_trust_operations.jsonl",
@@ -1869,7 +1869,6 @@ fn project_migration_ledger_allowed(name: &str) -> bool {
             | "gaps.jsonl"
             | "host_attentions.jsonl"
             | "team_supervisor_leases.jsonl"
-            | "pending_interactions.jsonl"
             | "delegation_runs.jsonl"
             | "team_run_events.jsonl"
             | "agentfirm_trust_operations.jsonl"
@@ -1984,7 +1983,16 @@ fn run() -> CliResult<()> {
         "node" => node_command(&store, &resolved, &args[1..])?,
         "team" => team_command(&store, &args[1..])?,
         "mission" => mission_command(&store, &args[1..])?,
-        "wave" => wave_command(&store, &args[1..])?,
+        "legacy" => legacy_command(&store, &args[1..])?,
+        "wave" => {
+            let subcommand = args.get(1).map(String::as_str).unwrap_or("help");
+            if retired_wave_write_command(subcommand) {
+                return Err(retired_wave_write_error(subcommand));
+            }
+            return Err(CliError::Usage(
+                "Wave is Legacy-only (ADR 0051). Historical reads moved to `harness legacy wave list|show|history`; current planning uses `harness mission log`.".to_string(),
+            ));
+        }
         "team-run" => team_run_command(&store, &resolved, &args[1..])?,
         "member-run" => member_run_command(&store, &args[1..])?,
         "member" => member_command(&store, &args[1..])?,
@@ -2092,7 +2100,7 @@ fn retired_command(command: &str) -> bool {
 
 fn retired_surface_error(command: &str) -> CliError {
     CliError::Usage(format!(
-        "`harness {command}` was retired with the Goal/GoalPhase/Task Graph coordination stack; use Mission/Wave plus agent-team, dynamic-workflow, or host execution. Historical data remains available only through `harness legacy-goal-task export|verify`."
+        "`harness {command}` was retired with the Goal/GoalPhase/Task Graph coordination stack; use Mission plus its append-only Mission Log, agent-team, dynamic-workflow, or host execution. Historical data remains available only through `harness legacy-goal-task export|verify`."
     ))
 }
 
@@ -8368,7 +8376,7 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Mission / Wave — lightweight product-control surfaces (ADR 0026).
+// Mission + append-only Mission Log — current product-control surfaces.
 // ---------------------------------------------------------------------------
 
 fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -8552,7 +8560,7 @@ fn format_mission_log_entries_text(entries: &[MissionLogEntry]) -> String {
 }
 
 /// Complete durable Mission intent. Prior to ADR 0051 this required every
-/// ordered Wave to have an explicit Host advance outcome; Wave write
+/// ordered Legacy Wave to have an explicit Host advance outcome; those write
 /// commands are now retired, so a native post-cutover Mission closes on its
 /// own outcome (the Host records `kind = closeout_evidence` in the Mission
 /// Log beforehand by convention — see `HarnessStore::compare_and_close_mission`).
@@ -8601,16 +8609,26 @@ pub(crate) fn close_mission(
     Ok(completed)
 }
 
-fn wave_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+fn legacy_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "legacy wave")?;
+    match args[0].as_str() {
+        "wave" => legacy_wave_command(store, &args[1..]),
+        other => Err(CliError::Usage(format!(
+            "unknown legacy command: {other}; expected `legacy wave`"
+        ))),
+    }
+}
+
+fn legacy_wave_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "wave list|show|history (create/update/advance/gate retired by ADR 0051; use `mission log append`)",
+        "legacy wave list|show|history (read-only ADR 0051 compatibility)",
     )?;
     match args[0].as_str() {
         "list" => {
             let mission_id = value(args, "--mission-id");
             let waves = store
-                .latest_waves()?
+                .latest_legacy_waves()?
                 .into_iter()
                 .filter(|wave| {
                     mission_id
@@ -8620,11 +8638,11 @@ fn wave_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 .collect::<Vec<_>>();
             print_json(&waves)?;
         }
-        "show" => print_json(&latest_wave(store, &required(args, "--id")?)?)?,
+        "show" => print_json(&latest_legacy_wave(store, &required(args, "--id")?)?)?,
         "history" => {
             let id = required(args, "--id")?;
             let history = store
-                .waves()?
+                .legacy_waves()?
                 .into_iter()
                 .filter(|wave| wave.id == id)
                 .collect::<Vec<_>>();
@@ -8633,10 +8651,11 @@ fn wave_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             }
             print_json(&history)?;
         }
-        command if retired_wave_write_command(command) => {
-            return Err(retired_wave_write_error(command))
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown legacy wave command: {other}; only list|show|history are readable"
+            )))
         }
-        other => return Err(CliError::Usage(format!("unknown wave command: {other}"))),
     }
     Ok(())
 }
@@ -8654,7 +8673,7 @@ pub(crate) fn retired_wave_write_command(command: &str) -> bool {
 
 pub(crate) fn retired_wave_write_error(command: &str) -> CliError {
     CliError::Usage(format!(
-        "`harness wave {command}` was retired with the Mission Log cutover (ADR 0051): Mission absorbs Wave as an append-only judgment log. Use `harness mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <markdown>` instead. `wave list`, `wave show`, and `wave history` remain available for historical Wave rows."
+        "`harness wave {command}` was retired with the Mission Log cutover (ADR 0051): Mission absorbs Wave as an append-only judgment log. Use `harness mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <markdown>` instead. Historical rows are read only through `harness legacy wave list|show|history`."
     ))
 }
 
@@ -8691,7 +8710,7 @@ pub(crate) fn create_mission(
         context: context.unwrap_or_default(),
         desired_outcome,
         status: MissionStatus::Planned,
-        wave_ids: Vec::new(),
+        legacy_wave_ids: Vec::new(),
         outcome_summary: None,
         completed_by: None,
         created_at: now_string(),
@@ -8732,12 +8751,12 @@ pub(crate) fn revise_mission_context(
     Ok(mission)
 }
 
-/// Read one native Wave by id. Wave write commands (`create`/`update`/
+/// Read one Legacy Wave by id. Its write commands (`create`/`update`/
 /// `advance`/`gate`) retired with the ADR 0051 Mission Log cutover; this
-/// stays because `wave show` and legacy row lookups remain historical reads.
-fn latest_wave(store: &HarnessStore, id: &str) -> CliResult<Wave> {
+/// remains only for `legacy wave show` and historical row inspection.
+fn latest_legacy_wave(store: &HarnessStore, id: &str) -> CliResult<LegacyWave> {
     store
-        .latest_waves()?
+        .latest_legacy_waves()?
         .into_iter()
         .find(|wave| wave.id == id)
         .ok_or_else(|| CliError::Usage(format!("wave not found: {id}")))
@@ -8763,9 +8782,8 @@ fn latest_wave(store: &HarnessStore, id: &str) -> CliResult<Wave> {
 /// events yet). Scans the run's folded event log.
 fn next_team_run_seq(store: &HarnessStore, team_run_id: &str) -> CliResult<u64> {
     let max_seq = store
-        .team_run_events()?
+        .current_team_run_events(team_run_id)?
         .into_iter()
-        .filter(|event| event.team_run_id == team_run_id)
         .map(|event| event.seq)
         .max()
         .unwrap_or(0);
@@ -9154,7 +9172,7 @@ fn team_member_provider_profile_for_mode(
             compatibility_note: Some("Codex rollout storage is the execution history; Harness keeps only its NativeSessionRef and coordination outcome. App-server is the interactive mode.".to_string()),
             // codex exec --json is non-interactive in this adapter. A future
             // follow-up contract must first turn an end-of-round blocker into
-            // a PendingInteraction; do not claim it before that exists.
+            // a correlated question Message; do not claim it before that exists.
             interaction_mode: ProviderInteractionMode::Unsupported,
             ordinary_message_boundary: OrdinaryMessageBoundary::Unknown,
             plan_mode: ProviderFeatureMode::Unsupported,
@@ -11430,11 +11448,10 @@ fn agentfirm_native_session_ref(
     }
 }
 
-fn materialize_canonical_member_run(
-    store: &HarnessStore,
+fn canonical_member_run_admission(
     execution_space_id: &str,
     runtime: &ProviderRuntimeProjection,
-) -> CliResult<()> {
+) -> CanonicalMemberRunAdmission {
     let native_session = runtime
         .native_session
         .as_ref()
@@ -11478,23 +11495,24 @@ fn materialize_canonical_member_run(
         last_event_at: runtime.last_event_at.clone(),
         finished_at: runtime.finished_at.clone(),
     };
-    let context = harness_core::agentfirm_api::MutationContext {
-        execution_space_id: execution_space_id.to_string(),
-        authenticated_actor: harness_core::agentfirm_api::ActorRef {
-            kind: harness_core::agentfirm_api::ActorKind::Service,
-            id: "node-daemon:team-run-create".into(),
+    CanonicalMemberRunAdmission {
+        context: harness_core::agentfirm_api::MutationContext {
+            execution_space_id: execution_space_id.to_string(),
+            authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                kind: harness_core::agentfirm_api::ActorKind::Service,
+                id: "node-daemon:team-run-create".into(),
+            },
+            authority_actor: Some(harness_core::agentfirm_api::ActorRef {
+                kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+                id: runtime.agent_member_id.clone(),
+            }),
+            command_name: "team_run.materialize_member_run".into(),
+            idempotency_key: format!("team-run-member-run:{}", runtime.id),
+            expected_version: 0,
+            request_fingerprint: None,
         },
-        authority_actor: Some(harness_core::agentfirm_api::ActorRef {
-            kind: harness_core::agentfirm_api::ActorKind::AgentMember,
-            id: runtime.agent_member_id.clone(),
-        }),
-        command_name: "team_run.materialize_member_run".into(),
-        idempotency_key: format!("team-run-member-run:{}", runtime.id),
-        expected_version: 0,
-        request_fingerprint: None,
-    };
-    store_conflict_as_usage(store.create_trust_member_run(&context, run))?;
-    Ok(())
+        run,
+    }
 }
 
 fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Value {
@@ -11540,7 +11558,7 @@ fn ensure_legacy_unit_test_team_binding(
             context: String::new(),
             desired_outcome: None,
             status: MissionStatus::Planned,
-            wave_ids: Vec::new(),
+            legacy_wave_ids: Vec::new(),
             outcome_summary: None,
             completed_by: None,
             created_at: now.clone(),
@@ -11654,7 +11672,11 @@ fn ensure_unit_test_canonical_members(
                 provider_profile_ref: Some(member.provider.clone()),
                 model_preference: member.model.clone(),
                 workspace_policy: "managed-worktree".into(),
-                permission_ceiling: harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite,
+                permission_ceiling: if member.provider == "kimi" {
+                    harness_core::agentfirm_api::PermissionCeiling::FullAccess
+                } else {
+                    harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite
+                },
                 organization_status:
                     harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active,
                 version: 1,
@@ -11873,9 +11895,20 @@ fn create_team_run(
         completed_at: None,
     };
 
-    // A freshly-generated run id has no events yet, so seq starts at 1.
-    let mut seq = next_team_run_seq(store, &run_id)?;
-    store_conflict_as_usage(store.create_team_run_from_agent_team(&team_run, execution_space_id))?;
+    // A freshly-generated run id has no current projection or events yet, so
+    // its first guarded event sequence is exactly 1. Do not route creation
+    // through the current-event reader before the combined admission commits.
+    let mut seq = 1;
+    let canonical_member_runs = member_runs
+        .iter()
+        .map(|runtime| canonical_member_run_admission(execution_space_id, runtime))
+        .collect::<Vec<_>>();
+    store_conflict_as_usage(store.create_team_run_with_member_runs_from_agent_team(
+        &team_run,
+        execution_space_id,
+        &member_runs,
+        &canonical_member_runs,
+    ))?;
     append_team_run_event(
         store,
         &run_id,
@@ -11893,8 +11926,6 @@ fn create_team_run(
     // `member_runs` is built from `members` in order above, so zip pairs each
     // ProviderRuntimeProjection with the spec that produced it and its optional initial Work.
     for (member, member_run) in members.iter().zip(&member_runs) {
-        store.materialize_initial_member_run(member_run)?;
-        materialize_canonical_member_run(store, execution_space_id, member_run)?;
         append_team_run_event(
             store,
             &run_id,
@@ -11981,7 +12012,6 @@ fn add_team_run_member(
     team_run_id: &str,
     member: &TeamMemberSpec,
     initial_work: Option<&str>,
-    source_plan_ref: Option<String>,
 ) -> CliResult<(AgentTeamRun, ProviderRuntimeProjection, Option<Work>)> {
     validate_team_member_execution_mode(member)?;
     validate_team_member_identity(store, member)?;
@@ -12010,10 +12040,18 @@ fn add_team_run_member(
         )));
     }
     let member_run = build_member_run_for_team(project_context, team_run_id, member)?;
+    let execution_space_id = team_run_execution_space_id(store, &current)?;
     let mut next = current.clone();
     next.member_run_ids.push(member_run.id.clone());
     next.updated_at = now_string();
-    store_conflict_as_usage(store.admit_member_run(&current, &next, &member_run))?;
+    let canonical_member_run = canonical_member_run_admission(&execution_space_id, &member_run);
+    store_conflict_as_usage(store.admit_member_run_with_canonical(
+        &current,
+        &next,
+        &member_run,
+        &execution_space_id,
+        &canonical_member_run,
+    ))?;
     append_team_run_event(
         store,
         team_run_id,
@@ -12030,50 +12068,45 @@ fn add_team_run_member(
     )?;
     let work = initial_work
         .map(|brief| {
-            store_conflict_as_usage(
-                store.insert_work(
-                    Work {
-                        id: generated_id("work"),
-                        team_run_id: team_run_id.to_string(),
-                        team_id: None,
-                        created_by_member_id: None,
-                        parent_work_id: None,
-                        title: format!("{}: {}", member_run.name, member_run.role),
-                        context_markdown: source_plan_ref
-                            .as_deref()
-                            .map(|wave| format!("Origin Wave: `{wave}`"))
-                            .unwrap_or_default(),
-                        completion_criteria_markdown: brief.trim().to_string(),
-                        phase: WorkPhase::Open,
-                        condition: WorkCondition::Normal,
-                        resolution: None,
-                        owner_member_id: None,
-                        active_member_run_id: Some(member_run.id.clone()),
-                        claim_mode: WorkClaimMode::HostAssign,
-                        eligible_member_ids: Vec::new(),
-                        prerequisite_work_ids: Vec::new(),
-                        priority: WorkPriority::Normal,
-                        created_by_actor: compatibility_team_actor("host", "add_team_run_member"),
-                        result_summary: None,
-                        blocker_reason: None,
-                        artifact_refs: Vec::new(),
-                        check_refs: Vec::new(),
-                        github_links: Vec::new(),
-                        version: 0,
-                        created_at: String::new(),
-                        updated_at: String::new(),
-                    },
-                    WorkCommandContext {
-                        event_id: generated_id("work-event"),
-                        performed_by_actor: compatibility_team_actor("host", "add_team_run_member"),
-                        authority_actor: None,
-                        causation_ref: None,
-                        idempotency_key: generated_id("work-command"),
-                        created_at: now_string(),
-                        duplicate_ok: false,
-                    },
-                ),
-            )
+            store_conflict_as_usage(store.insert_work(
+                Work {
+                    id: generated_id("work"),
+                    team_run_id: team_run_id.to_string(),
+                    team_id: None,
+                    created_by_member_id: None,
+                    parent_work_id: None,
+                    title: format!("{}: {}", member_run.name, member_run.role),
+                    context_markdown: String::new(),
+                    completion_criteria_markdown: brief.trim().to_string(),
+                    phase: WorkPhase::Open,
+                    condition: WorkCondition::Normal,
+                    resolution: None,
+                    owner_member_id: None,
+                    active_member_run_id: Some(member_run.id.clone()),
+                    claim_mode: WorkClaimMode::HostAssign,
+                    eligible_member_ids: Vec::new(),
+                    prerequisite_work_ids: Vec::new(),
+                    priority: WorkPriority::Normal,
+                    created_by_actor: compatibility_team_actor("host", "add_team_run_member"),
+                    result_summary: None,
+                    blocker_reason: None,
+                    artifact_refs: Vec::new(),
+                    check_refs: Vec::new(),
+                    github_links: Vec::new(),
+                    version: 0,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                },
+                WorkCommandContext {
+                    event_id: generated_id("work-event"),
+                    performed_by_actor: compatibility_team_actor("host", "add_team_run_member"),
+                    authority_actor: None,
+                    causation_ref: None,
+                    idempotency_key: generated_id("work-command"),
+                    created_at: now_string(),
+                    duplicate_ok: false,
+                },
+            ))
         })
         .transpose()?;
     Ok((next, member_run, work))
@@ -12091,6 +12124,7 @@ fn rename_team_run_member(
         ));
     }
     let run = latest_team_run(store, team_run_id)?;
+    team_run_execution_space_id(store, &run)?;
     if !run.member_run_ids.iter().any(|id| id == member_run_id) {
         return Err(CliError::Usage(format!(
             "member run {member_run_id} does not belong to team run {team_run_id}"
@@ -12146,6 +12180,7 @@ fn deactivate_team_run_member(
         ));
     }
     let run = latest_team_run(store, team_run_id)?;
+    team_run_execution_space_id(store, &run)?;
     if !run.member_run_ids.iter().any(|id| id == member_run_id) {
         return Err(CliError::Usage(format!(
             "member run {member_run_id} does not belong to team run {team_run_id}"
@@ -12370,7 +12405,6 @@ fn send_team_message_as_work(
         work_id,
         correlation_id,
         causation_id,
-        source_plan_ref,
         TeamMessageDeliveryMode::Routed,
         response_intent,
     )?;
@@ -12388,7 +12422,6 @@ fn prepare_team_message_as(
     work_id: Option<String>,
     correlation_id: Option<String>,
     causation_id: Option<String>,
-    source_plan_ref: Option<String>,
     delivery_mode: TeamMessageDeliveryMode,
     response_intent: Option<ProviderResponseIntent>,
 ) -> CliResult<TeamMessageProjection> {
@@ -12488,16 +12521,6 @@ fn prepare_team_message_as(
             ensure_member_coordination_open(member)?;
         }
     }
-    if let Some(source_plan_ref) = source_plan_ref.as_deref() {
-        let mission_id = team_run_mission_id(store, &run)?;
-        let wave = latest_wave(store, source_plan_ref)?;
-        if wave.mission_id != mission_id {
-            return Err(CliError::Usage(format!(
-                "origin Wave {source_plan_ref} belongs to Mission {}, not TeamRun Mission {mission_id}",
-                wave.mission_id
-            )));
-        }
-    }
     if let Some(work_id) = work_id.as_deref() {
         let work = store
             .latest_works()?
@@ -12517,7 +12540,9 @@ fn prepare_team_message_as(
         id: generated_id("tmsg"),
         team_run_id: team_run_id.to_string(),
         work_id,
-        source_plan_ref,
+        // Retained only as a deserialization field for pre-ADR-0051 rows.
+        // Current messages never bind their provenance to a Legacy Wave.
+        source_plan_ref: None,
         sender: Some(sender.clone()),
         sender_runtime_id: sender_runtime_id.clone(),
         recipients: recipient_runtime_ids
@@ -12590,11 +12615,13 @@ fn publish_team_message(
         MessageRecipientRef, ResponseIntent, RuntimeCommandKind,
     };
     let run = latest_team_run(store, &message.team_run_id)?;
+    let execution_space_id = team_run_execution_space_id(store, &run)?;
     let registration = store
         .latest_node_project_registrations()?
         .into_iter()
         .find(|registration| {
             registration.node_id == run.execution_node_id
+                && registration.execution_space_id == execution_space_id
                 && registration.project_binding_id == run.project_binding_id
                 && registration.status == NodeProjectRegistrationStatus::Active
         })
@@ -12858,6 +12885,7 @@ fn canonical_team_messages_for_run(
     team_run_id: &str,
 ) -> CliResult<Vec<TeamMessageProjection>> {
     let run = latest_team_run(store, team_run_id)?;
+    let execution_space_id = team_run_execution_space_id(store, &run)?;
     let member_runs = latest_member_runs_in_append_order(store)?;
     let identity_to_runtime = member_runs
         .iter()
@@ -12869,65 +12897,80 @@ fn canonical_team_messages_for_run(
         .map(|team| team.host_agent_id)
         .ok_or_else(|| CliError::Usage("TeamRun references a missing AgentTeam".into()))?;
     let mut projected = Vec::new();
-    for execution_space_id in store.canonical_execution_space_ids()? {
-        let deliveries = store.fabric_message_deliveries(&execution_space_id)?;
-        for message in store
-            .fabric_messages(&execution_space_id)?
-            .into_iter()
-            .filter(|message| message.team_run_id.as_deref() == Some(team_run_id))
+    let deliveries = store.fabric_message_deliveries(&execution_space_id)?;
+    for message in store
+        .fabric_messages(&execution_space_id)?
+        .into_iter()
+        .filter(|message| message.team_run_id.as_deref() == Some(team_run_id))
+    {
+        let recipient_rows = deliveries
+            .iter()
+            .filter(|delivery| delivery.message_id == message.id)
+            .filter_map(|delivery| {
+                let runtime_id = if delivery.recipient_identity_id == host_identity {
+                    "host".to_string()
+                } else {
+                    identity_to_runtime
+                        .get(&delivery.recipient_identity_id)
+                        .cloned()?
+                };
+                Some((runtime_id, delivery))
+            })
+            .collect::<Vec<_>>();
+        if recipient_rows.is_empty()
+            && message.recipients.iter().any(|recipient| {
+                recipient.kind
+                    == harness_core::agentfirm_api::MessageRecipientKind::ControlPlaneActor
+                    && recipient.id == host_identity
+            })
         {
-            let recipient_rows = deliveries
-                .iter()
-                .filter(|delivery| delivery.message_id == message.id)
-                .filter_map(|delivery| {
-                    let runtime_id = if delivery.recipient_identity_id == host_identity {
-                        "host".to_string()
-                    } else {
-                        identity_to_runtime
-                            .get(&delivery.recipient_identity_id)
-                            .cloned()?
-                    };
-                    Some((runtime_id, delivery))
-                })
-                .collect::<Vec<_>>();
-            if recipient_rows.is_empty()
-                && message.recipients.iter().any(|recipient| {
-                    recipient.kind
-                        == harness_core::agentfirm_api::MessageRecipientKind::ControlPlaneActor
-                        && recipient.id == host_identity
-                })
-            {
-                projected.push(project_canonical_inbox_message(&message, "host", None));
-                continue;
-            }
-            let Some((first_runtime, first_delivery)) = recipient_rows.first() else {
-                continue;
+            let mut row = project_canonical_inbox_message(&message, "host", None);
+            row.sender_runtime_id = if message.sender_actor_ref.id == host_identity {
+                "host".to_string()
+            } else {
+                identity_to_runtime
+                    .get(&message.sender_actor_ref.id)
+                    .cloned()
+                    .unwrap_or_else(|| message.sender_actor_ref.id.clone())
             };
-            let mut row =
-                project_canonical_inbox_message(&message, first_runtime, Some(first_delivery));
-            row.recipient_runtime_ids = recipient_rows
-                .iter()
-                .map(|(runtime_id, _)| runtime_id.clone())
-                .collect();
-            row.recipients = row
-                .recipient_runtime_ids
-                .iter()
-                .map(|id| TeamRecipientRef {
-                    kind: TeamRecipientKind::ProviderRuntimeProjection,
-                    id: id.clone(),
-                })
-                .collect();
-            row.deliveries = recipient_rows
-                .iter()
-                .filter_map(|(runtime_id, delivery)| {
-                    project_canonical_inbox_message(&message, runtime_id, Some(delivery))
-                        .deliveries
-                        .into_iter()
-                        .next()
-                })
-                .collect();
             projected.push(row);
+            continue;
         }
+        let Some((first_runtime, first_delivery)) = recipient_rows.first() else {
+            continue;
+        };
+        let mut row =
+            project_canonical_inbox_message(&message, first_runtime, Some(first_delivery));
+        row.sender_runtime_id = if message.sender_actor_ref.id == host_identity {
+            "host".to_string()
+        } else {
+            identity_to_runtime
+                .get(&message.sender_actor_ref.id)
+                .cloned()
+                .unwrap_or_else(|| message.sender_actor_ref.id.clone())
+        };
+        row.recipient_runtime_ids = recipient_rows
+            .iter()
+            .map(|(runtime_id, _)| runtime_id.clone())
+            .collect();
+        row.recipients = row
+            .recipient_runtime_ids
+            .iter()
+            .map(|id| TeamRecipientRef {
+                kind: TeamRecipientKind::ProviderRuntimeProjection,
+                id: id.clone(),
+            })
+            .collect();
+        row.deliveries = recipient_rows
+            .iter()
+            .filter_map(|(runtime_id, delivery)| {
+                project_canonical_inbox_message(&message, runtime_id, Some(delivery))
+                    .deliveries
+                    .into_iter()
+                    .next()
+            })
+            .collect();
+        projected.push(row);
     }
     projected.sort_by(|left, right| {
         left.created_at
@@ -12935,6 +12978,24 @@ fn canonical_team_messages_for_run(
             .then_with(|| left.id.cmp(&right.id))
     });
     Ok(projected)
+}
+
+/// Resolve the one Execution Space that owns a TeamRun's canonical runtime
+/// projections. MemberRun materialization is the frozen run-scoped binding;
+/// Node registrations are only a fail-closed fallback for a pre-materialized
+/// run and must themselves be unambiguous.
+fn team_run_execution_space_id(store: &HarnessStore, run: &AgentTeamRun) -> CliResult<String> {
+    store_conflict_as_usage(store.current_team_run_execution_space(run))
+}
+
+fn team_run_unacknowledged_message_count(
+    store: &HarnessStore,
+    team_run_id: &str,
+) -> CliResult<usize> {
+    Ok(canonical_team_messages_for_run(store, team_run_id)?
+        .iter()
+        .filter(|message| has_actionable_unacknowledged_host_delivery(message))
+        .count())
 }
 
 fn project_canonical_inbox_message(
@@ -13107,7 +13168,7 @@ fn resolve_team_message_lineage(
     supplied_correlation_id: Option<String>,
     supplied_causation_id: Option<String>,
 ) -> CliResult<(String, Option<String>)> {
-    let messages = latest_team_messages_in_append_order(store)?;
+    let messages = canonical_team_messages_for_run(store, team_run_id)?;
     let has_explicit_correlation = supplied_correlation_id.is_some();
 
     if let Some(correlation_id) = supplied_correlation_id.as_deref() {
@@ -13188,20 +13249,11 @@ pub(crate) fn team_run_mission_id(store: &HarnessStore, run: &AgentTeamRun) -> C
         })
 }
 
-fn team_run_wave_index(store: &HarnessStore, run: &AgentTeamRun) -> CliResult<Option<u32>> {
-    let _ = (store, run);
-    Ok(None)
-}
-
 fn team_run_display_json(store: &HarnessStore, run: &AgentTeamRun) -> CliResult<serde_json::Value> {
-    let mut value = serde_json::to_value(run)?;
-    if let Some(object) = value.as_object_mut() {
-        object.insert(
-            "wave_index".to_string(),
-            serde_json::to_value(team_run_wave_index(store, run)?)?,
-        );
-    }
-    Ok(value)
+    // A current status projection is also an authority decision: never show a
+    // partially materialized Legacy TeamRun as controllable current state.
+    team_run_execution_space_id(store, run)?;
+    Ok(serde_json::to_value(run)?)
 }
 
 /// Parse a team run status from its snake_case wire name.
@@ -13223,8 +13275,8 @@ fn parse_team_run_status(s: &str) -> CliResult<TeamRunStatus> {
 /// persistent member runtimes may carry work into a later run of the same Team. A running attempt
 /// still cannot be status-cancelled until provider execution has a real
 /// cooperative interruption path.
-/// Completing an attempt only makes it eligible for the separate Wave gate; it
-/// does not accept the Wave.
+/// Completing an attempt records only this attempt's outcome. It neither closes
+/// the Mission nor appends a Mission Log closeout entry.
 /// Appends the new AgentTeamRun row (latest-wins) and folds a TeamRunEvent so
 /// the dashboard timeline narrates the gate decision. Shared by
 /// POST /v1/team-runs/{id}/transition and the `team-run complete|cancel` arms.
@@ -13234,6 +13286,7 @@ pub(crate) fn transition_team_run(
     target: TeamRunStatus,
 ) -> CliResult<AgentTeamRun> {
     let current = latest_team_run(store, team_run_id)?;
+    team_run_execution_space_id(store, &current)?;
     let previous_status = current.status;
     let allowed = matches!(
         (previous_status, target),
@@ -13689,7 +13742,7 @@ fn team_run_recover(
                 reopened_member.finished_at = None;
                 reopened_member.last_event_at = Some(now_str.clone());
                 store_conflict_as_usage(
-                    store.compare_and_append_member_run(member, &reopened_member),
+                    store.compare_and_advance_member_run_generation(member, &reopened_member),
                 )?;
                 ledger.append_action(
                     &member.id,
@@ -13743,7 +13796,7 @@ fn team_run_recover(
                 rebound_member.finished_at = None;
                 rebound_member.last_event_at = Some(now_str.clone());
                 store_conflict_as_usage(
-                    store.compare_and_append_member_run(member, &rebound_member),
+                    store.compare_and_advance_member_run_generation(member, &rebound_member),
                 )?;
                 ledger.append_action(
                     &member.id,
@@ -14232,7 +14285,8 @@ fn member_board_state<'a>(
 /// is a bounded plain-text read, and a JSON wrapper would tax the same
 /// budget it exists to protect.
 fn team_run_board_summary_text(store: &HarnessStore, team_run_id: &str) -> CliResult<String> {
-    latest_team_run(store, team_run_id)?;
+    let run = latest_team_run(store, team_run_id)?;
+    team_run_execution_space_id(store, &run)?;
     let works: Vec<Work> = store
         .latest_works()?
         .into_iter()
@@ -16041,7 +16095,7 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|board-summary|work|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
+        "team-run create|list|status|board-summary|work|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|answer-message|events|wait|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -16254,24 +16308,29 @@ fn team_run_command(
                 println!("{}\t{}", run.id, serde_snake_label(&run.status));
             }
         }
-        "resolve-interaction" => {
+        "answer-message" => {
             let team_run_id = required(args, "--id")?;
-            let interaction_id = required(args, "--interaction-id")?;
-            let mut body = serde_json::json!({
-                "resolved_by": value(args, "--resolved-by").unwrap_or_else(|| "host".to_string())
-            });
+            let message_id = required(args, "--message-id")?;
+            let mut body = serde_json::json!({});
             if let Some(option_id) = value(args, "--option-id") {
                 body["option_id"] = serde_json::Value::String(option_id);
             }
             if let Some(response_text) = value(args, "--response-text") {
                 body["response_text"] = serde_json::Value::String(response_text);
             }
-            let interaction =
-                resolve_pending_interaction_value(store, &team_run_id, &interaction_id, &body)?;
+            let actor = team_run_host_actor(store, &team_run_id)?;
+            let response = answer_provider_message_value(
+                store,
+                &team_run_id,
+                &message_id,
+                &body,
+                &actor,
+                "trusted_local_cli",
+            )?;
             if json {
-                print_json(&interaction)?;
+                print_json(&response)?;
             } else {
-                println!("{}", interaction["id"].as_str().unwrap_or(&interaction_id));
+                println!("{}", response["id"].as_str().unwrap_or(&message_id));
             }
         }
         "list" => {
@@ -16299,14 +16358,10 @@ fn team_run_command(
                 print_json(&display)?;
             } else {
                 for run in &runs {
-                    let wave_index = team_run_wave_index(store, run)?
-                        .map(|index| index.to_string())
-                        .unwrap_or_else(|| "unresolved".to_string());
                     println!(
-                        "{}\t{}\twave={}\tmembers={}\t{}\t{}",
+                        "{}\t{}\tmembers={}\t{}\t{}",
                         run.id,
                         serde_snake_label(&run.status),
-                        wave_index,
                         run.member_run_ids.len(),
                         run.created_at,
                         run.objective
@@ -16323,7 +16378,6 @@ fn team_run_command(
                     .filter(|member| member.team_run_id == id)
                     .collect();
             let actions = visible_member_actions_in_append_order(store)?;
-            let messages = latest_team_messages_in_append_order(store)?;
             let works: Vec<Work> = store
                 .latest_works()?
                 .into_iter()
@@ -16337,11 +16391,7 @@ fn team_run_command(
                     })
                     .max_by_key(|action| action.seq)
             };
-            let unacked_messages = messages
-                .iter()
-                .filter(|message| message.team_run_id == id)
-                .filter(|message| has_actionable_delivered_manual_ack(message))
-                .count();
+            let unacked_messages = team_run_unacknowledged_message_count(store, &id)?;
             let supervisor = store.latest_team_supervisor_lease(&id)?;
             let supervisor_current = supervisor.as_ref().is_some_and(is_supervisor_current);
             #[cfg(unix)]
@@ -16365,7 +16415,6 @@ fn team_run_command(
                     .collect();
                 print_json(&serde_json::json!({
                     "team_run": run,
-                    "wave_index": team_run_wave_index(store, &run)?,
                     "members": members,
                     "unacked_messages": unacked_messages,
                     "supervisor": {
@@ -16394,14 +16443,10 @@ fn team_run_command(
                     );
                 }
             } else {
-                let wave_index = team_run_wave_index(store, &run)?
-                    .map(|index| index.to_string())
-                    .unwrap_or_else(|| "unresolved".to_string());
                 println!(
-                    "{}\t{}\twave={}\t{}",
+                    "{}\t{}\t{}",
                     run.id,
                     serde_snake_label(&run.status),
-                    wave_index,
                     run.objective
                 );
                 for member in &member_runs {
@@ -16418,7 +16463,7 @@ fn team_run_command(
                         last
                     );
                 }
-                println!("unacked_messages (delivered manual ACKs): {unacked_messages}");
+                println!("unacked_messages (canonical Host deliveries): {unacked_messages}");
                 if unacked_messages > 0 && run.host_thread_id.is_none() {
                     eprintln!(
                         "[WARNING] {unacked_messages} unacked message(s) queued without host binding — member messages may be waiting silently.\n\
@@ -16665,7 +16710,6 @@ fn team_run_command(
                 &required(args, "--id")?,
                 &member,
                 initial_work.as_deref(),
-                value(args, "--origin-wave-id"),
             )?;
             print_json(&serde_json::json!({
                 "team_run": run,
@@ -16776,9 +16820,9 @@ fn team_run_command(
                 .and_then(|raw| raw.parse::<u64>().ok())
                 .unwrap_or(0);
             let mut events: Vec<TeamRunEvent> = store
-                .team_run_events()?
+                .current_team_run_events(&id)?
                 .into_iter()
-                .filter(|event| event.team_run_id == id && event.seq > after_seq)
+                .filter(|event| event.seq > after_seq)
                 .collect();
             events.sort_by_key(|event| event.seq);
             if json {
@@ -16819,9 +16863,8 @@ fn team_run_command(
             // next", not "replay this run's whole history".
             if value(args, "--after-seq").is_none() {
                 after_seq = store
-                    .team_run_events()?
+                    .current_team_run_events(&id)?
                     .into_iter()
-                    .filter(|event| event.team_run_id == id)
                     .map(|event| event.seq)
                     .max()
                     .unwrap_or(0);
@@ -16829,9 +16872,9 @@ fn team_run_command(
             let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
             loop {
                 let mut events: Vec<TeamRunEvent> = store
-                    .team_run_events()?
+                    .current_team_run_events(&id)?
                     .into_iter()
-                    .filter(|event| event.team_run_id == id && event.seq > after_seq)
+                    .filter(|event| event.seq > after_seq)
                     .collect();
                 events.sort_by_key(|event| event.seq);
                 if !events.is_empty() {
@@ -17066,10 +17109,7 @@ fn member_run_detail_json(
         .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
     let team_run = latest_team_run(store, &member.team_run_id)?;
 
-    let messages = latest_team_messages_in_append_order(store)?
-        .into_iter()
-        .filter(|message| message.team_run_id == member.team_run_id)
-        .collect::<Vec<_>>();
+    let messages = canonical_team_messages_for_run(store, &member.team_run_id)?;
     let inbox = messages
         .iter()
         .filter(|message| {
@@ -17108,13 +17148,6 @@ fn member_run_detail_json(
             action.team_run_id == member.team_run_id && action.member_run_id == member_run_id
         })
         .collect::<Vec<_>>();
-    let pending_interactions = latest_pending_interactions_in_append_order(store)?
-        .into_iter()
-        .filter(|interaction| {
-            interaction.team_run_id == member.team_run_id
-                && interaction.member_run_id == member_run_id
-        })
-        .collect::<Vec<_>>();
     let supervisor = store.latest_team_supervisor_lease(&member.team_run_id)?;
     let close_request = store.latest_team_member_close_request(member_run_id)?;
     let actionable_inbox = if member.coordination_is_active() {
@@ -17148,7 +17181,6 @@ fn member_run_detail_json(
             "outbox": outbox,
             "actionable_inbox_count": actionable_inbox,
         },
-        "pending_interactions": pending_interactions,
         "supervisor": supervisor,
         "close_request": close_request,
         "actions": actions,
@@ -17390,28 +17422,7 @@ fn prepare_provider_effect_kind(
         RuntimeEffectCertainty,
     };
 
-    let mut matches = Vec::new();
-    for execution_space_id in ledger.store.canonical_execution_space_ids()? {
-        for session in ledger
-            .store
-            .fabric_agent_sessions(&execution_space_id)?
-            .into_iter()
-            .filter(|session| {
-                session.agent_identity_id == member.agent_member_id
-                    && session.lifecycle != AgentSessionStatus::Closed
-            })
-        {
-            matches.push((execution_space_id.clone(), session));
-        }
-    }
-    if matches.len() != 1 {
-        return Err(CliError::Usage(format!(
-            "AGENT_SESSION_AMBIGUOUS: provider effect for {} requires one current session, found {}",
-            member.agent_member_id,
-            matches.len()
-        )));
-    }
-    let (execution_space_id, session) = matches.pop().unwrap();
+    let (execution_space_id, session) = provider_session_for_member(ledger, member)?;
     let lifecycle_is_eligible = match command_kind {
         harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider
         | harness_core::agentfirm_api::RuntimeCommandKind::CancelProviderTurn => {
@@ -17606,30 +17617,9 @@ fn prepare_provider_process_effect(
     member: &ProviderRuntimeProjection,
 ) -> CliResult<ProviderEffectAdmission> {
     use harness_core::agentfirm_api::{
-        ActorKind, ActorRef, AgentSessionStatus, ControlCommandEnvelope, RuntimeCommandKind,
+        ActorKind, ActorRef, ControlCommandEnvelope, RuntimeCommandKind,
     };
-    let mut matches = Vec::new();
-    for execution_space_id in ledger.store.canonical_execution_space_ids()? {
-        for session in ledger
-            .store
-            .fabric_agent_sessions(&execution_space_id)?
-            .into_iter()
-            .filter(|session| {
-                session.agent_identity_id == member.agent_member_id
-                    && session.lifecycle != AgentSessionStatus::Closed
-            })
-        {
-            matches.push((execution_space_id.clone(), session));
-        }
-    }
-    if matches.len() != 1 {
-        return Err(CliError::Usage(format!(
-            "AGENT_SESSION_AMBIGUOUS: provider process for {} requires one current session, found {}",
-            member.agent_member_id,
-            matches.len()
-        )));
-    }
-    let (execution_space_id, session) = matches.pop().unwrap();
+    let (execution_space_id, session) = provider_session_for_member(ledger, member)?;
     let lease = ledger
         .store
         .latest_node_daemon_lease(&session.node_id)?
@@ -17767,28 +17757,7 @@ fn transition_provider_session_for_member(
     desired: harness_core::agentfirm_api::AgentSessionStatus,
 ) -> CliResult<()> {
     use harness_core::agentfirm_api::AgentSessionStatus;
-    let mut matches = Vec::new();
-    for space_id in ledger.store.canonical_execution_space_ids()? {
-        for session in ledger
-            .store
-            .fabric_agent_sessions(&space_id)?
-            .into_iter()
-            .filter(|session| {
-                session.agent_identity_id == member.agent_member_id
-                    && session.lifecycle != AgentSessionStatus::Closed
-            })
-        {
-            matches.push((space_id.clone(), session));
-        }
-    }
-    if matches.len() != 1 {
-        return Err(CliError::Usage(format!(
-            "AGENT_SESSION_AMBIGUOUS: {} requires exactly one current session, found {}",
-            member.agent_member_id,
-            matches.len()
-        )));
-    }
-    let (space_id, mut session) = matches.pop().unwrap();
+    let (space_id, mut session) = provider_session_for_member(ledger, member)?;
     let daemon = ledger
         .store
         .latest_node_daemon_lease(&session.node_id)?
@@ -17881,33 +17850,125 @@ fn transition_provider_session_for_member(
     Ok(())
 }
 
+/// Resolve the only provider session authorized for this exact MemberRun.
+/// Agent identities are organization-wide and may legitimately have sessions
+/// in other Execution Spaces; they are never sufficient routing authority.
+fn provider_session_for_member(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+) -> CliResult<(String, harness_core::agentfirm_api::AgentSession)> {
+    use harness_core::agentfirm_api::AgentSessionStatus;
+
+    let run = latest_team_run(&ledger.store, &ledger.run_id)?;
+    if member.team_run_id != run.id || !run.member_run_ids.contains(&member.id) {
+        return Err(CliError::Usage(format!(
+            "MEMBER_RUN_SCOPE_MISMATCH: member {} does not belong to TeamRun {}",
+            member.id, run.id
+        )));
+    }
+    let execution_space_id = team_run_execution_space_id(&ledger.store, &run)?;
+    let member_scope = ledger
+        .store
+        .trust_member_run_scope(&member.id)?
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "MEMBER_RUN_SCOPE_MISMATCH: member {} has no canonical Execution Space",
+                member.id
+            ))
+        })?;
+    if member_scope != execution_space_id {
+        return Err(CliError::Usage(format!(
+            "MEMBER_RUN_SCOPE_MISMATCH: member {} belongs to Execution Space {}, not TeamRun space {}",
+            member.id, member_scope, execution_space_id
+        )));
+    }
+    let canonical_members = ledger
+        .store
+        .trust_member_runs(&execution_space_id)?
+        .into_iter()
+        .filter(|candidate| candidate.id == member.id)
+        .collect::<Vec<_>>();
+    let canonical_member = match canonical_members.as_slice() {
+        [canonical_member] => canonical_member,
+        rows => {
+            return Err(CliError::Usage(format!(
+                "MEMBER_RUN_SCOPE_MISMATCH: member {} has {} canonical projections in Execution Space {}",
+                member.id,
+                rows.len(),
+                execution_space_id
+            )))
+        }
+    };
+    if canonical_member.team_run_id != run.id
+        || canonical_member.agent_member_id != member.agent_member_id
+        || canonical_member.runtime_generation != member.runtime_generation
+    {
+        return Err(CliError::Usage(format!(
+            "MEMBER_RUN_SCOPE_MISMATCH: canonical member {} does not match TeamRun, identity, or generation",
+            member.id
+        )));
+    }
+    let sessions = ledger
+        .store
+        .fabric_agent_sessions(&execution_space_id)?
+        .into_iter()
+        .filter(|session| {
+            session.agent_identity_id == member.agent_member_id
+                && session.lifecycle != AgentSessionStatus::Closed
+        })
+        .collect::<Vec<_>>();
+    let session = match sessions.as_slice() {
+        [session] => (*session).clone(),
+        rows => {
+            return Err(CliError::Usage(format!(
+                "AGENT_SESSION_AMBIGUOUS: member {} requires one current session in Execution Space {}, found {}",
+                member.id,
+                execution_space_id,
+                rows.len()
+            )))
+        }
+    };
+    if session.execution_space_id != execution_space_id
+        || session.provider_kind != member.provider
+        || session.runtime_generation != member.runtime_generation
+    {
+        return Err(CliError::Usage(format!(
+            "AGENT_SESSION_GENERATION_FENCED: member {} expects {} generation {}, but scoped session {} is {} generation {}",
+            member.id,
+            member.provider,
+            member.runtime_generation,
+            session.id,
+            session.provider_kind,
+            session.runtime_generation
+        )));
+    }
+    Ok((execution_space_id, session))
+}
+
 fn require_provider_session_authority(
     ledger: &TeamRunLedger,
     agent_identity_id: &str,
     require_active: bool,
 ) -> CliResult<harness_core::agentfirm_api::AgentSession> {
     use harness_core::agentfirm_api::AgentSessionStatus;
-    let mut matches = Vec::new();
-    for execution_space_id in ledger.store.canonical_execution_space_ids()? {
-        for session in ledger
-            .store
-            .fabric_agent_sessions(&execution_space_id)?
-            .into_iter()
-            .filter(|session| {
-                session.agent_identity_id == agent_identity_id
-                    && session.lifecycle != AgentSessionStatus::Closed
-            })
-        {
-            matches.push(session);
+    let members = latest_member_runs_in_append_order(&ledger.store)?
+        .into_iter()
+        .filter(|member| {
+            member.team_run_id == ledger.run_id && member.agent_member_id == agent_identity_id
+        })
+        .collect::<Vec<_>>();
+    let member = match members.as_slice() {
+        [member] => member,
+        rows => {
+            return Err(CliError::Usage(format!(
+                "MEMBER_RUN_SCOPE_MISMATCH: TeamRun {} has {} members for AgentIdentity {}",
+                ledger.run_id,
+                rows.len(),
+                agent_identity_id
+            )))
         }
-    }
-    if matches.len() != 1 {
-        return Err(CliError::Usage(format!(
-            "AGENT_SESSION_AMBIGUOUS: provider authority for {agent_identity_id} requires one current session, found {}",
-            matches.len()
-        )));
-    }
-    let session = matches.pop().unwrap();
+    };
+    let (_, session) = provider_session_for_member(ledger, member)?;
     if require_active && session.lifecycle != AgentSessionStatus::Active {
         return Err(CliError::Usage(format!(
             "AGENT_SESSION_NOT_ACTIVE: provider authority requires Active session {}, found {:?}",
@@ -17932,35 +17993,50 @@ fn require_provider_session_authority(
     Ok(session)
 }
 
+fn require_member_provider_session_authority(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    require_active: bool,
+) -> CliResult<harness_core::agentfirm_api::AgentSession> {
+    let (_, session) = provider_session_for_member(ledger, member)?;
+    if require_active
+        && session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Active
+    {
+        return Err(CliError::Usage(format!(
+            "AGENT_SESSION_NOT_ACTIVE: provider authority requires Active session {}, found {:?}",
+            session.id, session.lifecycle
+        )));
+    }
+    Ok(session)
+}
+
 fn claim_canonical_messages_for_member(
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,
 ) -> CliResult<Vec<TeamMessageProjection>> {
-    let mut placements = Vec::new();
-    for space_id in ledger.store.canonical_execution_space_ids()? {
-        for session in ledger
-            .store
-            .fabric_agent_sessions(&space_id)?
-            .into_iter()
-            .filter(|session| {
-                session.agent_identity_id == member.agent_member_id
-                    && session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
-            })
-        {
-            placements.push((space_id.clone(), session));
-        }
-    }
-    if placements.is_empty() {
+    let run = latest_team_run(&ledger.store, &ledger.run_id)?;
+    let execution_space_id = team_run_execution_space_id(&ledger.store, &run)?;
+    let sessions = ledger
+        .store
+        .fabric_agent_sessions(&execution_space_id)?
+        .into_iter()
+        .filter(|session| {
+            session.agent_identity_id == member.agent_member_id
+                && session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
+        })
+        .collect::<Vec<_>>();
+    if sessions.is_empty() {
         return Ok(Vec::new());
     }
-    if placements.len() != 1 {
+    if sessions.len() != 1 {
         return Err(CliError::Usage(format!(
-            "AGENT_SESSION_AMBIGUOUS: {} has {} current machine-local sessions",
+            "AGENT_SESSION_AMBIGUOUS: {} has {} current sessions in TeamRun Execution Space {}",
             member.agent_member_id,
-            placements.len()
+            sessions.len(),
+            execution_space_id
         )));
     }
-    let (execution_space_id, session) = placements.pop().unwrap();
+    let session = sessions.into_iter().next().expect("one session");
     let messages = ledger
         .store
         .fabric_messages(&execution_space_id)?
@@ -18707,6 +18783,8 @@ where
         return Err(supervisor_lease_lost_error(&team_run_id));
     }
     require_current_supervisor_lease(store, &team_run_id, supervisor_id, generation)?;
+    let run = latest_team_run(store, &team_run_id)?;
+    team_run_execution_space_id(store, &run)?;
     let control = LIVE_MEMBER_CONTROLS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -18737,7 +18815,7 @@ where
                     generation,
                 )?;
                 drop(authority_guard);
-                cancel_pending_member_interactions(
+                cancel_unanswered_provider_messages(
                     store,
                     &team_run_id,
                     &member_run_id,
@@ -18806,7 +18884,7 @@ where
             generation,
         )?;
         drop(authority_guard);
-        cancel_pending_member_interactions(
+        cancel_unanswered_provider_messages(
             store,
             &team_run_id,
             &member_run_id,
@@ -18965,6 +19043,8 @@ fn dispatch_live_member_control(
     request: LiveMemberControlRequest,
 ) -> CliResult<serde_json::Value> {
     let team_run_id = request.team_run_id();
+    let run = latest_team_run(store, team_run_id)?;
+    team_run_execution_space_id(store, &run)?;
     let lease = store
         .latest_team_supervisor_lease(team_run_id)?
         .ok_or_else(|| {
@@ -19748,7 +19828,7 @@ impl TeamRunLedger {
     }
 
     /// Latest-wins messages of this run, in append order.
-    fn team_messages(&self) -> CliResult<Vec<TeamMessageProjection>> {
+    fn canonical_team_messages(&self) -> CliResult<Vec<TeamMessageProjection>> {
         canonical_team_messages_for_run(&self.store, &self.run_id)
     }
 
@@ -20009,28 +20089,26 @@ impl TeamRunLedger {
         let member = self
             .latest_member_run(member_id)?
             .ok_or_else(|| CliError::Usage(format!("member run not found: {member_id}")))?;
-        let mut placements = Vec::new();
-        for execution_space_id in self.store.canonical_execution_space_ids()? {
-            for session in self
-                .store
-                .fabric_agent_sessions(&execution_space_id)?
-                .into_iter()
-                .filter(|session| {
-                    session.agent_identity_id == member.agent_member_id
-                        && session.runtime_generation == member.runtime_generation
-                })
-            {
-                placements.push((execution_space_id.clone(), session));
-            }
-        }
-        if placements.len() != 1 {
+        let run = latest_team_run(&self.store, &self.run_id)?;
+        let execution_space_id = team_run_execution_space_id(&self.store, &run)?;
+        let sessions = self
+            .store
+            .fabric_agent_sessions(&execution_space_id)?
+            .into_iter()
+            .filter(|session| {
+                session.agent_identity_id == member.agent_member_id
+                    && session.runtime_generation == member.runtime_generation
+            })
+            .collect::<Vec<_>>();
+        if sessions.len() != 1 {
             return Err(CliError::Usage(format!(
-                "AGENT_SESSION_AMBIGUOUS: message recovery for {} found {} current sessions",
+                "AGENT_SESSION_AMBIGUOUS: message recovery for {} found {} current sessions in TeamRun Execution Space {}",
                 member.agent_member_id,
-                placements.len()
+                sessions.len(),
+                execution_space_id
             )));
         }
-        let (execution_space_id, session) = placements.pop().unwrap();
+        let session = sessions.into_iter().next().expect("one session");
         let daemon = self
             .store
             .latest_node_daemon_lease(&session.node_id)?
@@ -20077,7 +20155,7 @@ impl TeamRunLedger {
     /// member's own sends, which it obviously already "has").
     fn queued_messages_for(&self, member_id: &str) -> CliResult<Vec<TeamMessageProjection>> {
         Ok(self
-            .team_messages()?
+            .canonical_team_messages()?
             .into_iter()
             .filter(|message| message.sender_runtime_id != member_id)
             .filter(|message| {
@@ -20323,13 +20401,7 @@ fn refresh_member_after_provider_callbacks(
         validate_provider_callback_drift(round_start, &latest)?;
     }
     if latest.status == MemberRunStatus::Waiting {
-        let legacy_unresolved = latest_pending_interactions_in_append_order(&ledger.store)?
-            .into_iter()
-            .any(|interaction| {
-                interaction.member_run_id == latest.id
-                    && interaction.status == PendingInteractionStatus::Pending
-            });
-        let messages = ledger.team_messages()?;
+        let messages = ledger.canonical_team_messages()?;
         let message_unresolved = messages.iter().any(|request| {
             request.kind == ProviderDispatchIntent::ProviderInteractionRequest
                 && request.sender_runtime_id == latest.id
@@ -20341,9 +20413,9 @@ fn refresh_member_after_provider_callbacks(
                         && response.causation_id.as_deref() == Some(request.id.as_str())
                 })
         });
-        if legacy_unresolved || message_unresolved {
+        if message_unresolved {
             return Err(CliError::Usage(format!(
-                "provider round for ProviderRuntimeProjection {} cannot finalize while an interaction remains pending",
+                "provider round for ProviderRuntimeProjection {} cannot finalize while a correlated provider question remains unanswered",
                 latest.id
             )));
         }
@@ -21351,6 +21423,7 @@ pub(crate) fn prepare_team_run_start_body(
     _max_concurrency: usize,
 ) -> CliResult<PreparedTeamRunBody> {
     let run = latest_team_run(store, run_id)?;
+    team_run_execution_space_id(store, &run)?;
     if matches!(run.status, TeamRunStatus::Failed | TeamRunStatus::Cancelled) {
         return Err(CliError::Usage(format!(
             "team run {run_id} is {} and cannot attach a member supervisor",
@@ -22578,6 +22651,12 @@ fn run_codex_member(
     let collaboration_env = envelope.environment();
     // Fence immediately before app-server start/resume. Durable preparation
     // above is replay-safe; the provider process is not.
+    let provider_session = require_member_provider_session_authority(ledger, &member_row, false)?;
+    let permission_mapping = crate::provider_adapter::map_permission(
+        &provider_session.provider_kind,
+        provider_session.effective_permission_ceiling,
+    )
+    .map_err(CliError::Usage)?;
     let process_effect = prepare_provider_process_effect(ledger, &member_row)?;
     let app_server_result = codex_app_server::CodexAppServerClient::spawn(
         cwd,
@@ -22596,8 +22675,8 @@ fn run_codex_member(
             member_name: &member.name,
             collaboration_env: &collaboration_env,
             plan_mode: false,
-            sandbox: None,
-            approval_policy: None,
+            sandbox: permission_mapping.native_sandbox.as_str(),
+            approval_policy: permission_mapping.native_approval.as_str(),
         },
     );
     let mut app_server = match app_server_result {
@@ -24565,7 +24644,7 @@ fn active_assignment_for_round(
 
 fn member_handoff_ids(ledger: &TeamRunLedger, member_run_id: &str) -> CliResult<HashSet<String>> {
     Ok(ledger
-        .team_messages()?
+        .canonical_team_messages()?
         .into_iter()
         .filter(|message| {
             message.sender_runtime_id == member_run_id
@@ -24641,7 +24720,7 @@ fn latest_member_handoff_for_turn(
     member_run_id: &str,
     lineage: &MemberTurnLineage<'_>,
 ) -> CliResult<Option<TeamMessageProjection>> {
-    let messages = ledger.team_messages()?;
+    let messages = ledger.canonical_team_messages()?;
     Ok(messages
         .iter()
         .rev()
@@ -24930,6 +25009,15 @@ fn run_kimi_member(
     // Fence immediately before ACP session start/resume. A successor may
     // reattach this same native session after this generation quiesces.
     let resumed_native_session = member.native_session.is_some();
+    // Kimi has no provider-native narrow sandbox. Admission therefore proves
+    // that this exact runtime generation is bound to a frozen full-access
+    // AgentSession before the ACP process is allowed to start.
+    let provider_session = require_member_provider_session_authority(ledger, &member_row, false)?;
+    crate::provider_adapter::map_permission(
+        &provider_session.provider_kind,
+        provider_session.effective_permission_ceiling,
+    )
+    .map_err(CliError::Usage)?;
     let process_effect = prepare_provider_process_effect(ledger, &member_row)?;
     let client_result = kimi_acp::KimiAcpClient::spawn(
         cwd,
@@ -26764,21 +26852,19 @@ fn provider_interaction_request_message(
     let canonical_body = body.to_canonical_json().map_err(CliError::Usage)?;
     let correlation_id = body.correlation_id();
     let _guard = ledger.write_lock();
-    let mut existing = Vec::new();
-    for execution_space_id in ledger.store.canonical_execution_space_ids()? {
-        existing.extend(
-            ledger
-                .store
-                .fabric_messages(&execution_space_id)?
-                .into_iter()
-                .filter(|message| {
-                    message.team_run_id.as_deref() == Some(ledger.run_id.as_str())
-                        && message.kind
-                            == harness_core::agentfirm_api::MessageKind::ProviderInteractionRequest
-                        && message.correlation_id == correlation_id
-                }),
-        );
-    }
+    let run = latest_team_run(&ledger.store, &ledger.run_id)?;
+    let execution_space_id = team_run_execution_space_id(&ledger.store, &run)?;
+    let existing = ledger
+        .store
+        .fabric_messages(&execution_space_id)?
+        .into_iter()
+        .filter(|message| {
+            message.team_run_id.as_deref() == Some(ledger.run_id.as_str())
+                && message.kind
+                    == harness_core::agentfirm_api::MessageKind::ProviderInteractionRequest
+                && message.correlation_id == correlation_id
+        })
+        .collect::<Vec<_>>();
     if let Some(existing_request) = existing.first() {
         if existing.len() != 1 || existing_request.body != canonical_body {
             return Err(CliError::Usage(format!(
@@ -26799,7 +26885,6 @@ fn provider_interaction_request_message(
             &canonical_body,
             None,
             Some(correlation_id.clone()),
-            None,
             None,
             TeamMessageDeliveryMode::Routed,
             Some(ProviderResponseIntent::ResponseRequired),
@@ -26881,14 +26966,14 @@ fn wait_for_provider_interaction_response(
         {
             return Ok(None);
         }
-        let lifecycle_cancelled = latest_team_run_events_in_append_order(&ledger.store)?
-            .into_iter()
-            .any(|event| {
-                event.team_run_id == ledger.run_id
-                    && event.entity_type == "message"
-                    && event.entity_id == request.id
-                    && event.operation == "cancelled"
-            });
+        let lifecycle_cancelled =
+            current_team_run_events_in_append_order(&ledger.store, &ledger.run_id)?
+                .into_iter()
+                .any(|event| {
+                    event.entity_type == "message"
+                        && event.entity_id == request.id
+                        && event.operation == "cancelled"
+                });
         if lifecycle_cancelled {
             return Ok(None);
         }
@@ -26956,6 +27041,31 @@ fn handle_codex_provider_request(
         })
         .unwrap_or_else(|| generated_id("provider-request"));
 
+    // The AgentSession's effective permission ceiling is frozen before Codex
+    // starts and is enforced by its native sandbox with approvalPolicy=never.
+    // A later approval callback cannot widen that ceiling and does not become
+    // a second Harness permission workflow. Unexpected callbacks fail closed.
+    if matches!(
+        method,
+        "item/commandExecution/requestApproval"
+            | "item/fileChange/requestApproval"
+            | "item/permissions/requestApproval"
+    ) {
+        ledger.append_provider_control_receipt_once(
+            &member,
+            "Codex approval callback rejected",
+            "session-start permission ceiling is immutable; unexpected approval callback failed closed",
+        )?;
+        return Ok(ProviderInteractionReply {
+            result: if method == "item/permissions/requestApproval" {
+                serde_json::json!({"permissions": {}, "scope": "turn"})
+            } else {
+                serde_json::json!({"decision": "decline"})
+            },
+            claimed_response: None,
+        });
+    }
+
     let (interaction_type, title, prompt, options) = if method == "item/tool/requestUserInput" {
         let questions = params
             .get("questions")
@@ -27007,34 +27117,6 @@ fn handle_codex_provider_request(
                 .to_string(),
             options,
         )
-    } else if matches!(
-        method,
-        "item/commandExecution/requestApproval"
-            | "item/fileChange/requestApproval"
-            | "item/permissions/requestApproval"
-    ) {
-        (
-            ProviderInteractionType::ToolApproval,
-            "Codex approval".to_string(),
-            params
-                .get("reason")
-                .or_else(|| params.get("command"))
-                .and_then(|value| value.as_str())
-                .unwrap_or("Codex requested permission for an action")
-                .to_string(),
-            vec![
-                ProviderInteractionMessageOption {
-                    id: "approve_once".to_string(),
-                    label: "Approve once".to_string(),
-                    intent: Some("allow_once".to_string()),
-                },
-                ProviderInteractionMessageOption {
-                    id: "deny".to_string(),
-                    label: "Deny".to_string(),
-                    intent: Some("reject_once".to_string()),
-                },
-            ],
-        )
     } else {
         return Err(CliError::Usage(format!(
             "unsupported Codex app-server request {method}; denied fail-closed"
@@ -27053,11 +27135,7 @@ fn handle_codex_provider_request(
     if created {
         ledger.append_action(
             &member.id,
-            if interaction_type == ProviderInteractionType::Question {
-                "waiting_for_input"
-            } else {
-                "waiting_for_approval"
-            },
+            "waiting_for_input",
             MemberActionStatus::Started,
             &title,
             &prompt,
@@ -27081,7 +27159,7 @@ fn handle_codex_provider_request(
         };
     ledger.append_action(
         &member.id,
-        "interaction_resolved",
+        "provider_question_resolved",
         if resolved.is_some() {
             MemberActionStatus::Succeeded
         } else {
@@ -27089,9 +27167,9 @@ fn handle_codex_provider_request(
         },
         &title,
         if resolved.is_some() {
-            "provider interaction response received"
+            "correlated provider answer received"
         } else {
-            "provider interaction cancelled by lifecycle"
+            "provider question cancelled by lifecycle"
         },
     )?;
 
@@ -27127,41 +27205,151 @@ fn handle_codex_provider_request(
             claimed_response,
         });
     }
-    if method == "item/permissions/requestApproval" {
-        let approved = response.as_ref().is_some_and(|response| {
-            response
-                .choice
-                .as_deref()
-                .is_some_and(|choice| choice == "approve_once")
-        });
-        return Ok(ProviderInteractionReply {
-            result: serde_json::json!({
-            "permissions": if approved {
-                params.get("permissions").cloned().unwrap_or_else(|| serde_json::json!({}))
-            } else {
-                serde_json::json!({})
-            },
-            "scope": "turn"
-            }),
-            claimed_response,
-        });
-    }
-    let approved = response.as_ref().is_some_and(|response| {
-        response
-            .choice
-            .as_deref()
-            .is_some_and(|choice| choice == "approve_once")
-    });
-    Ok(ProviderInteractionReply {
-        result: serde_json::json!({
-        "decision": if approved {
-            "accept"
-        } else {
-            "decline"
+    Err(CliError::Usage(format!(
+        "unsupported Codex app-server response path for {method}; denied fail-closed"
+    )))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KimiAcpV1PermissionIntent {
+    AllowOnce,
+    AllowAlways,
+    RejectOnce,
+    RejectAlways,
+}
+
+impl KimiAcpV1PermissionIntent {
+    fn parse(value: Option<&str>) -> Option<Self> {
+        match value {
+            Some("allow_once") => Some(Self::AllowOnce),
+            Some("allow_always") => Some(Self::AllowAlways),
+            Some("reject_once") => Some(Self::RejectOnce),
+            Some("reject_always") => Some(Self::RejectAlways),
+            _ => None,
         }
-        }),
-        claimed_response,
+    }
+
+    fn is_allow(self) -> bool {
+        matches!(self, Self::AllowOnce | Self::AllowAlways)
+    }
+}
+
+fn kimi_acp_v1_indexed_option_id(id: &str, prefix: &str) -> bool {
+    id.strip_prefix(prefix).is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
     })
+}
+
+fn kimi_acp_v1_reserved_option_id(id: &str) -> bool {
+    id.starts_with("q0_") || id.starts_with("plan_")
+}
+
+/// Classify the reviewed Kimi ACP v1 `session/request_permission` wire shape.
+///
+/// Permission `kind` is the canonical discriminator. Opaque option ids are
+/// considered only after every kind is recognized and at least one exact
+/// allow intent exists. This prevents a reject-only or future/unknown tool
+/// callback from becoming a user-facing Message merely by colliding with the
+/// current Kimi Code question or plan option-id namespace.
+fn classify_kimi_acp_v1_interaction(
+    title: &str,
+    options: &[ProviderInteractionMessageOption],
+) -> ProviderInteractionType {
+    if options.is_empty() {
+        return ProviderInteractionType::Unknown;
+    }
+    let Some(intents) = options
+        .iter()
+        .map(|option| KimiAcpV1PermissionIntent::parse(option.intent.as_deref()))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return ProviderInteractionType::Unknown;
+    };
+    if !intents.iter().any(|intent| intent.is_allow()) {
+        return ProviderInteractionType::RejectOnly;
+    }
+
+    let question_shape = title == "AskUserQuestion"
+        && options.iter().zip(&intents).all(|(option, intent)| {
+            matches!(intent, KimiAcpV1PermissionIntent::AllowOnce)
+                && kimi_acp_v1_indexed_option_id(&option.id, "q0_opt_")
+                || matches!(intent, KimiAcpV1PermissionIntent::RejectOnce) && option.id == "q0_skip"
+        })
+        && intents
+            .iter()
+            .any(|intent| matches!(intent, KimiAcpV1PermissionIntent::AllowOnce))
+        && options.iter().any(|option| option.id == "q0_skip");
+    if question_shape {
+        return ProviderInteractionType::Question;
+    }
+
+    let plan_shape = title == "ExitPlanMode"
+        && options.iter().zip(&intents).all(|(option, intent)| {
+            matches!(intent, KimiAcpV1PermissionIntent::AllowOnce)
+                && (option.id == "plan_approve"
+                    || kimi_acp_v1_indexed_option_id(&option.id, "plan_opt_"))
+                || matches!(intent, KimiAcpV1PermissionIntent::RejectOnce)
+                    && matches!(option.id.as_str(), "plan_revise" | "plan_reject_and_exit")
+        })
+        && intents
+            .iter()
+            .any(|intent| matches!(intent, KimiAcpV1PermissionIntent::AllowOnce))
+        && options.iter().any(|option| option.id == "plan_revise")
+        && options
+            .iter()
+            .any(|option| option.id == "plan_reject_and_exit");
+    if plan_shape {
+        return ProviderInteractionType::PlanReview;
+    }
+
+    // These titles and option-id namespaces are reserved Kimi user-decision
+    // protocols. A non-canonical or mismatched reserved shape is unknown; it
+    // must never fall through into unattended tool approval.
+    if matches!(title, "AskUserQuestion" | "ExitPlanMode")
+        || options
+            .iter()
+            .any(|option| kimi_acp_v1_reserved_option_id(&option.id))
+    {
+        return ProviderInteractionType::Unknown;
+    }
+
+    ProviderInteractionType::ToolApproval
+}
+
+/// Decode the reviewed Kimi ACP v1 option array as one indivisible wire
+/// shape. Silently dropping one malformed entry can turn a reserved question
+/// or plan prompt into a tool approval, so any absent, non-string, empty, or
+/// otherwise incomplete option invalidates the whole callback.
+fn decode_kimi_acp_v1_options(
+    params: &serde_json::Value,
+) -> Option<Vec<ProviderInteractionMessageOption>> {
+    let raw = params.get("options")?.as_array()?;
+    if raw.is_empty() {
+        return None;
+    }
+    raw.iter()
+        .map(|option| {
+            let id = option.get("optionId")?.as_str()?.trim();
+            let label = option.get("name")?.as_str()?.trim();
+            let intent = option.get("kind")?.as_str()?.trim();
+            if id.is_empty() || label.is_empty() || intent.is_empty() {
+                return None;
+            }
+            Some(ProviderInteractionMessageOption {
+                id: id.to_string(),
+                label: label.to_string(),
+                intent: Some(intent.to_string()),
+            })
+        })
+        .collect()
+}
+
+fn decode_kimi_acp_v1_title(params: &serde_json::Value) -> Option<&str> {
+    let title = params.pointer("/toolCall/title")?.as_str()?;
+    if title.is_empty() || title.trim() != title {
+        return None;
+    }
+    Some(title)
 }
 
 fn handle_kimi_provider_request(
@@ -27171,52 +27359,17 @@ fn handle_kimi_provider_request(
 ) -> CliResult<ProviderInteractionReply> {
     let supplied_member = member;
     let params = frame.get("params").unwrap_or(frame);
-    let options = params
-        .get("options")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|option| {
-            Some(ProviderInteractionMessageOption {
-                id: option.get("optionId")?.as_str()?.to_string(),
-                label: option
-                    .get("name")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("Option")
-                    .to_string(),
-                intent: option
-                    .get("kind")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string),
-            })
-        })
-        .collect::<Vec<_>>();
-    let title = params
-        .pointer("/toolCall/title")
-        .and_then(|value| value.as_str())
-        .unwrap_or("Provider interaction")
-        .to_string();
-    let question =
-        title == "AskUserQuestion" || options.iter().any(|option| option.id.starts_with("q0_"));
-    let plan_review = options.iter().any(|option| option.id.starts_with("plan_"));
-    let interaction_type = if question {
-        ProviderInteractionType::Question
-    } else if plan_review {
-        ProviderInteractionType::PlanReview
-    } else if options.iter().any(|option| {
-        option
-            .intent
-            .as_deref()
-            .is_some_and(|intent| intent.starts_with("allow"))
-            || option.id.contains("approve")
-            || option.id.contains("allow")
-    }) {
-        ProviderInteractionType::ToolApproval
-    } else if !options.is_empty() {
-        ProviderInteractionType::RejectOnly
-    } else {
-        ProviderInteractionType::Unknown
+    let (Some(title), Some(options)) = (
+        decode_kimi_acp_v1_title(params),
+        decode_kimi_acp_v1_options(params),
+    ) else {
+        return Ok(ProviderInteractionReply {
+            result: serde_json::json!({"outcome": {"outcome": "cancelled"}}),
+            claimed_response: None,
+        });
     };
+    let title = title.to_string();
+    let interaction_type = classify_kimi_acp_v1_interaction(&title, &options);
     let provider_request_id = frame
         .get("id")
         .map(|value| {
@@ -27235,39 +27388,34 @@ fn handle_kimi_provider_request(
         .ok_or_else(|| CliError::Usage(format!("member run {} not found", supplied_member.id)))?;
     validate_provider_callback_drift(supplied_member, &member)?;
 
-    // Agent Team members run with the explicit full-access launch contract.
-    // A routine tool permission prompt that exposes a safe allow option is an
-    // adapter acknowledgement, not an unresolved product interaction. Answer
-    // it directly and retain only a bounded control receipt; persisting a
-    // synthetic pending -> approved pair floods the Lead inbox and falsely
-    // implies that a Human or policy decision was required. The receipt is
-    // bounded to the first safe acknowledgement per ProviderRuntimeProjection: one durable row
-    // proves the policy became active, later per-tool prompts are answered the
-    // same way without new rows, and no tool title or command text is logged.
+    // Kimi exposes no native narrow sandbox. Only an exact allow intent on an
+    // exact current FullAccess AgentSession is therefore provably in-ceiling.
+    // Option ids and labels are untrusted display strings and never grant
+    // authority.
     if interaction_type == ProviderInteractionType::ToolApproval {
+        let session = require_member_provider_session_authority(ledger, &member, true)?;
+        if session.effective_permission_ceiling
+            != harness_core::agentfirm_api::PermissionCeiling::FullAccess
+        {
+            return Err(CliError::Usage(format!(
+                "PROVIDER_PERMISSION_MISMATCH: Kimi permission callback cannot widen frozen {:?} session {}",
+                session.effective_permission_ceiling, session.id
+            )));
+        }
         if let Some(option_id) = options
             .iter()
-            .find(|option| {
-                option.intent.as_deref() == Some("allow_always")
-                    || option.id.contains("approve_always")
-                    || option.id.contains("allow_always")
-            })
+            .find(|option| option.intent.as_deref() == Some("allow_always"))
             .or_else(|| {
-                options.iter().find(|option| {
-                    option
-                        .intent
-                        .as_deref()
-                        .is_some_and(|intent| intent.starts_with("allow"))
-                        || option.id.contains("approve")
-                        || option.id.contains("allow")
-                })
+                options
+                    .iter()
+                    .find(|option| option.intent.as_deref() == Some("allow_once"))
             })
             .map(|option| option.id.clone())
         {
             ledger.append_provider_control_receipt_once(
                 &member,
                 "Kimi full-access tool permission acknowledged",
-                "provider exposed a safe allow option; full-access adapter acknowledged it without creating a PendingInteraction",
+                "provider exposed an exact allow intent; the current frozen full-access AgentSession acknowledged it directly",
             )?;
             return Ok(ProviderInteractionReply {
                 result: serde_json::json!({
@@ -27277,11 +27425,14 @@ fn handle_kimi_provider_request(
             });
         }
     }
-    // ACP can only answer `session/request_permission` with a provider option.
-    // An unknown request with no options has no recoverable native responder;
-    // fail closed in-process instead of creating a durable request that no
-    // valid TeamMessageProjection response could ever deliver.
-    if interaction_type == ProviderInteractionType::Unknown {
+    // A permission callback without an exact allow intent cannot widen the
+    // frozen AgentSession ceiling. Reject-only and unknown requests fail closed
+    // in-process; only real user questions and plan-review prompts become
+    // correlated Messages.
+    if matches!(
+        interaction_type,
+        ProviderInteractionType::RejectOnly | ProviderInteractionType::Unknown
+    ) {
         return Ok(ProviderInteractionReply {
             result: serde_json::json!({"outcome": {"outcome": "cancelled"}}),
             claimed_response: None,
@@ -27304,11 +27455,7 @@ fn handle_kimi_provider_request(
     if created {
         ledger.append_action(
             &member.id,
-            if interaction_type == ProviderInteractionType::Question {
-                "waiting_for_input"
-            } else {
-                "waiting_for_approval"
-            },
+            "waiting_for_input",
             MemberActionStatus::Started,
             &title,
             &prompt,
@@ -27339,7 +27486,7 @@ fn handle_kimi_provider_request(
     };
     ledger.append_action(
         &member.id,
-        "interaction_resolved",
+        "provider_question_resolved",
         if response.is_some() {
             MemberActionStatus::Succeeded
         } else {
@@ -27347,9 +27494,9 @@ fn handle_kimi_provider_request(
         },
         &title,
         if response.is_some() {
-            "provider interaction response received"
+            "correlated provider answer received"
         } else {
-            "provider interaction cancelled by lifecycle"
+            "provider question cancelled by lifecycle"
         },
     )?;
     Ok(ProviderInteractionReply {
@@ -27580,7 +27727,6 @@ struct MemberCollaborationEnvelope {
     member_run_id: String,
     work_id: Option<String>,
     work_version: Option<u64>,
-    source_plan_ref: Option<String>,
     roster: Vec<ProviderRuntimeProjection>,
 }
 
@@ -27607,7 +27753,6 @@ impl MemberCollaborationEnvelope {
             ("PROJECT_ID", self.project_id.as_deref()),
             ("MISSION_ID", self.mission_id.as_deref()),
             ("WORK_ID", self.work_id.as_deref()),
-            ("ORIGIN_WAVE_ID", self.source_plan_ref.as_deref()),
         ] {
             if let Some(value) = value {
                 values.push((format!("FIRM_{suffix}"), value.to_string()));
@@ -27646,7 +27791,6 @@ fn member_collaboration_envelope(
         member_run_id: member.id.clone(),
         work_id: None,
         work_version: None,
-        source_plan_ref: None,
         roster,
     })
 }
@@ -28415,13 +28559,6 @@ fn handle_sse_stream(
                             }
                         }
                     }
-                    sse::SseEventFrame::Wave(wave) => {
-                        if let Ok(json) = serde_json::to_value(&wave) {
-                            if sse::write_sse_frame(&mut stream, "wave", &json).is_err() {
-                                break;
-                            }
-                        }
-                    }
                     sse::SseEventFrame::AgentTeamRun(run) => {
                         if let Ok(json) = serde_json::to_value(&run) {
                             if sse::write_sse_frame(&mut stream, "agent_team_run", &json).is_err() {
@@ -28457,15 +28594,6 @@ fn handle_sse_stream(
                     sse::SseEventFrame::MemberAction(action) => {
                         if let Ok(json) = serde_json::to_value(&action) {
                             if sse::write_sse_frame(&mut stream, "member_action", &json).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                    sse::SseEventFrame::PendingInteraction(interaction) => {
-                        if let Ok(json) = serde_json::to_value(&interaction) {
-                            if sse::write_sse_frame(&mut stream, "pending_interaction", &json)
-                                .is_err()
-                            {
                                 break;
                             }
                         }
@@ -29391,7 +29519,16 @@ fn handle_http_connection(
         )?;
         return Ok(());
     }
+    let provider_message_answer = path_only
+        .strip_prefix("/v1/team-runs/")
+        .is_some_and(|rest| {
+            matches!(
+                rest.split('/').collect::<Vec<_>>().as_slice(),
+                [_, "messages", _, "answer"]
+            )
+        });
     let retired_message_write = method == "POST"
+        && !provider_message_answer
         && (path_only == "/v1/messages"
             || (path_only.starts_with("/v1/team-runs/")
                 && (path_only.ends_with("/messages") || path_only.contains("/messages/")))
@@ -30110,6 +30247,36 @@ fn handle_http_connection(
             expected_version,
             request_fingerprint: None,
         };
+        if let Some((team_run_id, message_id)) = agentfirm_api::provider_answer_route(&path_only) {
+            match answer_provider_message_value(
+                &store_owned,
+                team_run_id,
+                message_id,
+                &serde_json::from_slice(&body).map_err(CliError::Json)?,
+                &auth.actor,
+                "http_token",
+            ) {
+                Ok(result) => write_http_json(
+                    &mut stream,
+                    "200 OK",
+                    &serde_json::json!({"ok": true, "result": result}),
+                )?,
+                Err(error) => {
+                    let message = error.to_string();
+                    let status = if message.contains("UNAUTHORIZED_ACTOR") {
+                        "403 Forbidden"
+                    } else {
+                        "409 Conflict"
+                    };
+                    write_http_json(
+                        &mut stream,
+                        status,
+                        &serde_json::json!({"ok": false, "error": {"code": "PROVIDER_INTERACTION_ANSWER_REJECTED", "message": message}}),
+                    )?;
+                }
+            }
+            return Ok(());
+        }
         if role_actions_api::is_http_mutation_path(&path_only) {
             let role_store = match projects.scoped_store_for_project(
                 &store_owned,
@@ -30198,7 +30365,7 @@ fn handle_http_connection(
             &serde_json::json!({
                 "ok": false,
                 "error": "retired_coordination_surface",
-                "detail": "This Goal/GoalPhase/Task Graph API was retired. Use /v1/missions, /v1/waves, /v1/team-runs, or /v1/company-os/*; historical rows are export-only through `harness legacy-goal-task export|verify`."
+                "detail": "This Goal/GoalPhase/Task Graph API was retired. Use /v1/missions, /v1/missions/{id}/log, /v1/team-runs, or /v1/company-os/*; historical rows are export-only through `harness legacy-goal-task export|verify`."
             }),
         )?;
         return Ok(());
@@ -30837,7 +31004,7 @@ fn handle_http_connection(
 
     // POST /v1/companies/switch — flip the active Company Store selector.
     // This is independent from project selection and does not affect
-    // Mission/Wave, Agent Team, Workflow, or provider cwd routing.
+    // Mission/Mission Log, Agent Team, Workflow, or provider cwd routing.
     if path_only == "/v1/companies/switch" {
         match handle_company_switch(projects, &body_json) {
             Ok((id, switch_store)) => write_http_json(
@@ -30915,6 +31082,12 @@ fn handle_http_connection(
                 .find(|member| member.id == member_run_id)
                 .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
             let run = latest_team_run(&store_owned, &team_run_id)?;
+            let current_execution_space_id = team_run_execution_space_id(&store_owned, &run)?;
+            if current_execution_space_id != project_id {
+                return Err(CliError::Usage(format!(
+                    "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {team_run_id} belongs to Execution Space {current_execution_space_id}, not {project_id}"
+                )));
+            }
             let project_binding_id = run.project_binding_id.clone();
             let scope = provider_event_api::exact_live_scope(
                 &store_owned,
@@ -31459,7 +31632,6 @@ fn handle_http_action(
             team_run_id,
             &member,
             initial_work.as_deref(),
-            optional_json_string(body, "source_plan_ref")?,
         )?;
         return Ok(serde_json::json!({
             "team_run": run,
@@ -31487,8 +31659,10 @@ fn handle_http_action(
                 "RETIRED_WRITE_AUTHORITY: run-addressed message reconciliation is closed for {team_run_id}/{message_id}"
             )));
         }
-        if let [team_run_id, "interactions", interaction_id, "resolve"] = parts.as_slice() {
-            return resolve_pending_interaction_value(store, team_run_id, interaction_id, body);
+        if let [team_run_id, "messages", message_id, "answer"] = parts.as_slice() {
+            return Err(CliError::Usage(format!(
+                "UNAUTHORIZED_ACTOR: provider answer route {team_run_id}/{message_id} requires authenticated mutation dispatch"
+            )));
         }
         if let [team_run_id, "members", member_run_id, "steer"] = parts.as_slice() {
             return steer_team_member_value(store, team_run_id, member_run_id, body);
@@ -31585,7 +31759,6 @@ fn steer_team_member_value(
         None,
         correlation_id,
         causation_id,
-        json_string(body, "source_plan_ref"),
         TeamMessageDeliveryMode::InjectDelivered,
         None,
     )?;
@@ -31604,7 +31777,7 @@ fn interrupt_team_member_value(
     let reason = optional_json_string(body, "reason")?
         .unwrap_or_else(|| "operator requested interruption".to_string());
     require_member_interrupt_capability(store, team_run_id, member_run_id)?;
-    cancel_pending_member_interactions(store, team_run_id, member_run_id, &requested_by, &reason)?;
+    cancel_unanswered_provider_messages(store, team_run_id, member_run_id, &requested_by, &reason)?;
     dispatch_live_member_control(
         store,
         LiveMemberControlRequest::Interrupt {
@@ -31652,7 +31825,7 @@ fn require_member_interrupt_capability(
     Ok(())
 }
 
-fn cancel_pending_member_interactions(
+fn cancel_unanswered_provider_messages(
     store: &HarnessStore,
     team_run_id: &str,
     member_run_id: &str,
@@ -31664,8 +31837,7 @@ fn cancel_pending_member_interactions(
         .find(|member| member.id == member_run_id && member.team_run_id == team_run_id)
         .map(|member| member.agent_member_id)
         .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
-    // Canonical provider requests have no PendingInteraction row. Drive their
-    // exact Host MessageDelivery through claim -> provider receipt -> ACK
+    // Drive the exact Host MessageDelivery through claim -> provider receipt -> ACK
     // without fabricating an answer; the blocked provider callback observes
     // the ACK and returns a native cancellation. The retired TeamMessage
     // delivery ledger is never mutated here.
@@ -31688,36 +31860,7 @@ fn cancel_pending_member_interactions(
             "message",
             &request.id,
             "cancelled",
-            &format!("provider interaction cancelled by {requested_by}: {reason}"),
-        )?;
-    }
-    // Unblock reverse provider requests before waiting for a live adapter
-    // acknowledgement. Otherwise the provider thread and HTTP caller can
-    // deadlock while the adapter is paused in PendingInteraction.
-    for interaction in latest_pending_interactions_in_append_order(store)?
-        .into_iter()
-        .filter(|interaction| {
-            interaction.team_run_id == team_run_id
-                && interaction.member_run_id == member_run_id
-                && interaction.status == PendingInteractionStatus::Pending
-        })
-    {
-        let mut cancelled = interaction;
-        cancelled.status = PendingInteractionStatus::Cancelled;
-        cancelled.resolved_at = Some(now_string());
-        cancelled.resolved_by = Some(requested_by.to_string());
-        cancelled.response_text = Some(reason.to_string());
-        store.append_pending_interaction(&cancelled)?;
-        append_team_run_event(
-            store,
-            team_run_id,
-            0,
-            TeamRunEventSourceKind::Host,
-            Some(member_run_id.to_string()),
-            "pending_interaction",
-            &cancelled.id,
-            "resolved",
-            "pending provider interaction cancelled by member lifecycle control",
+            &format!("provider question cancelled by {requested_by}: {reason}"),
         )?;
     }
     Ok(())
@@ -31734,6 +31877,7 @@ fn close_team_member_value(
     let reason =
         optional_json_string(body, "reason")?.unwrap_or_else(|| "Host closed member".to_string());
     let run = latest_team_run(store, team_run_id)?;
+    team_run_execution_space_id(store, &run)?;
     if !run.member_run_ids.iter().any(|id| id == member_run_id) {
         return Err(CliError::Usage(format!(
             "member run {member_run_id} does not belong to team run {team_run_id}"
@@ -31770,7 +31914,7 @@ fn close_team_member_value(
         member.status,
         MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
     ) {
-        cancel_pending_member_interactions(
+        cancel_unanswered_provider_messages(
             store,
             team_run_id,
             member_run_id,
@@ -31836,7 +31980,7 @@ fn close_team_member_value(
                 .into(),
         ));
     };
-    cancel_pending_member_interactions(store, team_run_id, member_run_id, &requested_by, &reason)?;
+    cancel_unanswered_provider_messages(store, team_run_id, member_run_id, &requested_by, &reason)?;
     let member = mark_member_coordination_closed(store, team_run_id, member_run_id)?;
     let mut member = member;
     let expected = member.clone();
@@ -31934,6 +32078,7 @@ pub(crate) fn reopen_team_member_value(
         ));
     }
     let run = latest_team_run(store, team_run_id)?;
+    team_run_execution_space_id(store, &run)?;
     if !run.member_run_ids.iter().any(|id| id == member_run_id) {
         return Err(CliError::Usage(format!(
             "member run {member_run_id} does not belong to team run {team_run_id}"
@@ -32068,7 +32213,7 @@ pub(crate) fn reopen_team_member_value(
     };
     member.finished_at = None;
     member.last_event_at = Some(now_string());
-    store_conflict_as_usage(store.compare_and_append_member_run(&expected, &member))?;
+    store_conflict_as_usage(store.compare_and_advance_member_run_generation(&expected, &member))?;
 
     let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
     ledger.append_action(
@@ -32148,130 +32293,137 @@ pub(crate) fn reopened_member_requires_supervisor_start(
     Ok(false)
 }
 
-pub(crate) fn resolve_pending_interaction_value(
-    store: &HarnessStore,
-    team_run_id: &str,
-    interaction_id: &str,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    let current = latest_pending_interactions_in_append_order(store)?
-        .into_iter()
-        .find(|interaction| interaction.id == interaction_id);
-    let Some(current) = current else {
-        return resolve_provider_interaction_message_value(
-            store,
-            team_run_id,
-            interaction_id,
-            body,
-        );
-    };
-    if current.team_run_id != team_run_id {
-        return Err(CliError::Usage(format!(
-            "interaction {interaction_id} does not belong to team run {team_run_id}"
-        )));
-    }
-    if current.status != PendingInteractionStatus::Pending {
-        return Err(CliError::Usage(format!(
-            "interaction {interaction_id} is already {}",
-            serde_snake_label(&current.status)
-        )));
-    }
-    let resolved_by = required_json_string(body, "resolved_by")?;
-    let authorized = match current.route {
-        PendingInteractionRoute::Lead => matches!(resolved_by.as_str(), "host" | "lead"),
-        PendingInteractionRoute::Human => matches!(resolved_by.as_str(), "operator" | "human"),
-        PendingInteractionRoute::Policy => resolved_by == "policy",
-    };
-    if !authorized {
-        return Err(CliError::Usage(format!(
-            "interaction {} requires {} authority; resolved_by={resolved_by} is not allowed",
-            interaction_id,
-            serde_snake_label(&current.route)
-        )));
-    }
-    let option_id = json_string(body, "option_id");
-    let response_text = json_string(body, "response_text");
-    if option_id.is_none() && response_text.is_none() {
-        return Err(CliError::Usage(
-            "interaction resolution requires option_id or response_text".to_string(),
-        ));
-    }
-    let selected = option_id
-        .as_deref()
-        .map(|id| {
-            current
-                .options
-                .iter()
-                .find(|option| option.id == id)
-                .cloned()
-                .ok_or_else(|| CliError::Usage(format!("unknown interaction option: {id}")))
-        })
-        .transpose()?;
-    let status = match current.kind {
-        PendingInteractionKind::Question => {
-            if selected.as_ref().is_some_and(|option| {
-                option.intent.as_deref() == Some("reject_once") || option.id.ends_with("_skip")
-            }) {
-                PendingInteractionStatus::Dismissed
-            } else {
-                PendingInteractionStatus::Answered
-            }
-        }
-        PendingInteractionKind::ToolApproval | PendingInteractionKind::PlanReview => {
-            if selected.as_ref().is_some_and(|option| {
-                option
-                    .intent
-                    .as_deref()
-                    .is_some_and(|intent| intent.starts_with("allow"))
-                    || option.id.contains("approve")
-                    || option.id.starts_with("plan_opt_")
-            }) {
-                PendingInteractionStatus::Approved
-            } else if matches!(current.kind, PendingInteractionKind::PlanReview)
-                && selected.is_none()
-            {
-                // Fallback: when a PlanReview arrives without a matched option (e.g. the
-                // Lead used --response-text instead of --option-id plan_approve), default
-                // to Approved — ADR 0039: Harness has no Plan Gate, and a denied
-                // provider-native plan review traps the member in a plan-mode loop.
-                PendingInteractionStatus::Approved
-            } else {
-                PendingInteractionStatus::Denied
-            }
-        }
-        PendingInteractionKind::Unknown => PendingInteractionStatus::Answered,
-    };
-    let mut resolved = current;
-    resolved.status = status;
-    resolved.response_option_id = option_id;
-    resolved.response_text = response_text;
-    resolved.resolved_at = Some(now_string());
-    resolved.resolved_by = Some(resolved_by);
-    store.append_pending_interaction(&resolved)?;
-    append_team_run_event(
-        store,
-        team_run_id,
-        0,
-        TeamRunEventSourceKind::Host,
-        Some(resolved.member_run_id.clone()),
-        "pending_interaction",
-        &resolved.id,
-        "resolved",
-        &format!(
-            "{} resolved as {}",
-            resolved.title,
-            serde_snake_label(&resolved.status)
-        ),
-    )?;
-    serde_json::to_value(resolved).map_err(CliError::Json)
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderAnswerRequest {
+    #[serde(default)]
+    option_id: Option<String>,
+    #[serde(default)]
+    response_text: Option<String>,
 }
 
-fn resolve_provider_interaction_message_value(
+fn team_run_host_actor(
     store: &HarnessStore,
     team_run_id: &str,
-    request_id: &str,
+) -> CliResult<harness_core::agentfirm_api::ActorRef> {
+    let run = latest_team_run(store, team_run_id)?;
+    let team = latest_teams(store)?
+        .remove(&run.agent_team_id)
+        .ok_or_else(|| CliError::Usage("TeamRun references a missing AgentTeam".into()))?;
+    Ok(harness_core::agentfirm_api::ActorRef {
+        kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+        id: team.host_agent_id,
+    })
+}
+
+fn authenticated_host_answer_sender(
+    store: &HarnessStore,
+    team_run_id: &str,
+    actor: &harness_core::agentfirm_api::ActorRef,
+    authn_source: &str,
+) -> CliResult<TeamActorRef> {
+    use harness_core::agentfirm_api::{
+        ActorKind, AgentSessionStatus, TeamMembershipRole, TeamMembershipStatus,
+    };
+    let run = latest_team_run(store, team_run_id)?;
+    let team = latest_teams(store)?
+        .remove(&run.agent_team_id)
+        .ok_or_else(|| CliError::Usage("TeamRun references a missing AgentTeam".into()))?;
+    if actor.kind != ActorKind::AgentMember || actor.id != team.host_agent_id {
+        return Err(CliError::Usage(format!(
+            "UNAUTHORIZED_ACTOR: only AgentTeam {} Host {} may answer provider questions; authenticated actor is {:?}:{}",
+            team.id, team.host_agent_id, actor.kind, actor.id
+        )));
+    }
+    let execution_space_id = team_run_execution_space_id(store, &run)?;
+    let placements = store
+        .fabric_team_memberships(&execution_space_id)?
+        .into_iter()
+        .filter(|membership| {
+            membership.team_id == team.id
+                && membership.agent_identity_id == actor.id
+                && membership.node_id == team.node_id
+                && membership.role == TeamMembershipRole::Host
+                && membership.state == TeamMembershipStatus::Active
+        })
+        .collect::<Vec<_>>();
+    if placements.len() != 1 {
+        return Err(CliError::Usage(format!(
+            "UNAUTHORIZED_ACTOR: authenticated Host has {} active exact TeamMemberships in TeamRun Execution Space {}",
+            placements.len(), execution_space_id
+        )));
+    }
+    let sessions = store
+        .fabric_agent_sessions(&execution_space_id)?
+        .into_iter()
+        .filter(|session| {
+            session.agent_identity_id == actor.id
+                && session.node_id == team.node_id
+                && !matches!(
+                    session.lifecycle,
+                    AgentSessionStatus::Closed | AgentSessionStatus::RecoveryRequired
+                )
+        })
+        .collect::<Vec<_>>();
+    let session = match sessions.as_slice() {
+        [session] => session,
+        [] => {
+            return Err(CliError::Usage(
+                "UNAUTHORIZED_ACTOR: authenticated Host has no current AgentSession".into(),
+            ))
+        }
+        _ => {
+            return Err(CliError::Usage(
+                "UNAUTHORIZED_ACTOR: authenticated Host has ambiguous AgentSessions".into(),
+            ))
+        }
+    };
+    store
+        .latest_node_daemon_lease(&session.node_id)?
+        .filter(|lease| {
+            lease.daemon_id == session.node_daemon_id
+                && lease.generation == session.node_daemon_generation
+                && lease.status == NodeDaemonLeaseStatus::Active
+                && lease.expires_unix_ms > current_unix_ms_u64()
+        })
+        .ok_or_else(|| CliError::Usage("NODE_DAEMON_GENERATION_FENCED".into()))?;
+    Ok(TeamActorRef {
+        kind: TeamActorKind::Host,
+        id: actor.id.clone(),
+        display_name: None,
+        authn_source: Some(authn_source.to_string()),
+    })
+}
+
+pub(crate) fn answer_provider_message_value(
+    store: &HarnessStore,
+    team_run_id: &str,
+    message_id: &str,
     body: &serde_json::Value,
+    authenticated_actor: &harness_core::agentfirm_api::ActorRef,
+    authn_source: &str,
 ) -> CliResult<serde_json::Value> {
+    answer_provider_message_value_with_hook(
+        store,
+        team_run_id,
+        message_id,
+        body,
+        authenticated_actor,
+        authn_source,
+        || Ok(()),
+    )
+}
+
+fn answer_provider_message_value_with_hook(
+    store: &HarnessStore,
+    team_run_id: &str,
+    message_id: &str,
+    body: &serde_json::Value,
+    authenticated_actor: &harness_core::agentfirm_api::ActorRef,
+    authn_source: &str,
+    after_response_publish: impl FnOnce() -> CliResult<()>,
+) -> CliResult<serde_json::Value> {
+    let request_id = message_id;
     let current_messages = canonical_team_messages_for_run(store, team_run_id)?;
     let request = current_messages
         .iter()
@@ -32287,30 +32439,42 @@ fn resolve_provider_interaction_message_value(
     }
     let request_body = ProviderInteractionRequestBody::parse_canonical_json(&request.body)
         .map_err(CliError::Usage)?;
-    let resolved_by = required_json_string(body, "resolved_by")?;
-    let authorized = match request_body.interaction_type {
-        ProviderInteractionType::Question | ProviderInteractionType::PlanReview => {
-            matches!(resolved_by.as_str(), "host" | "lead")
-        }
-        ProviderInteractionType::ToolApproval | ProviderInteractionType::RejectOnly => {
-            resolved_by == "policy"
-        }
-        ProviderInteractionType::Unknown => {
-            matches!(resolved_by.as_str(), "operator" | "human")
-        }
-    };
-    if !authorized {
+    if !matches!(
+        request_body.interaction_type,
+        ProviderInteractionType::Question | ProviderInteractionType::PlanReview
+    ) {
         return Err(CliError::Usage(format!(
-            "provider interaction {request_id} does not authorize resolved_by={resolved_by}"
+            "provider interaction {request_id} is not a Host-answerable question or plan review"
         )));
     }
-    acknowledge_provider_request_as_host(store, team_run_id, &request)?;
-    let choice = optional_json_string(body, "option_id")?;
-    let text = optional_json_string(body, "response_text")?;
+    let sender =
+        authenticated_host_answer_sender(store, team_run_id, authenticated_actor, authn_source)?;
+    let answer = serde_json::from_value::<ProviderAnswerRequest>(body.clone())
+        .map_err(|error| CliError::Usage(format!("invalid provider answer body: {error}")))?;
+    let choice = answer.option_id.filter(|value| !value.trim().is_empty());
+    let text = answer
+        .response_text
+        .filter(|value| !value.trim().is_empty());
     if choice.is_some() == text.is_some() {
         return Err(CliError::Usage(
             "interaction resolution requires exactly one of option_id or response_text".to_string(),
         ));
+    }
+    if let Some(choice) = choice.as_deref() {
+        if !request_body
+            .options
+            .iter()
+            .any(|option| option.id == choice)
+        {
+            return Err(CliError::Usage(format!(
+                "provider interaction {request_id} does not expose option_id {choice}"
+            )));
+        }
+    }
+    if text.is_some() && !request_body.options.is_empty() {
+        return Err(CliError::Usage(format!(
+            "provider interaction {request_id} exposes exact options and does not accept free-form text"
+        )));
     }
     let response_body = ProviderInteractionResponseBody {
         interaction_type: request_body.interaction_type,
@@ -32321,38 +32485,17 @@ fn resolve_provider_interaction_message_value(
         generation: request_body.generation,
     };
     let response_json = response_body.to_canonical_json().map_err(CliError::Usage)?;
-    let sender = match resolved_by.as_str() {
-        "host" | "lead" => TeamActorRef {
-            kind: TeamActorKind::Host,
-            id: "host".to_string(),
-            display_name: None,
-            authn_source: Some("interaction_resolve".to_string()),
-        },
-        "policy" => TeamActorRef {
-            kind: TeamActorKind::Service,
-            id: "policy".to_string(),
-            display_name: None,
-            authn_source: Some("interaction_resolve".to_string()),
-        },
-        _ => TeamActorRef {
-            kind: TeamActorKind::Operator,
-            id: resolved_by.clone(),
-            display_name: None,
-            authn_source: Some("interaction_resolve".to_string()),
-        },
-    };
     let response_id = provider_interaction_response_id(request_id).map_err(CliError::Usage)?;
     let existing_response = current_messages.into_iter().find(|message| {
         message.kind == ProviderDispatchIntent::ProviderInteractionResponse
             && message.causation_id.as_deref() == Some(request_id)
     });
-    if let Some(existing) = existing_response {
+    if let Some(existing) = existing_response.as_ref() {
         if existing.body != response_json || existing.correlation_id != request.correlation_id {
             return Err(CliError::Usage(format!(
                 "provider interaction response {request_id} was replayed with different semantics"
             )));
         }
-        return serde_json::to_value(existing).map_err(CliError::Json);
     }
     let response = TeamMessageProjection {
         id: response_id,
@@ -32392,8 +32535,34 @@ fn resolve_provider_interaction_message_value(
         }],
         created_at: now_string(),
     };
-    let response = publish_team_message(store, &sender, response)?;
+    let response = publish_provider_answer_response_first(
+        existing_response,
+        || publish_team_message(store, &sender, response),
+        after_response_publish,
+        || acknowledge_provider_request_as_host(store, team_run_id, &request),
+    )?;
     serde_json::to_value(response).map_err(CliError::Json)
+}
+
+fn publish_provider_answer_response_first(
+    existing_response: Option<TeamMessageProjection>,
+    publish_response: impl FnOnce() -> CliResult<TeamMessageProjection>,
+    after_response_publish: impl FnOnce() -> CliResult<()>,
+    acknowledge_request: impl FnOnce() -> CliResult<()>,
+) -> CliResult<TeamMessageProjection> {
+    let response = match existing_response {
+        Some(existing) => existing,
+        None => {
+            let published = publish_response()?;
+            // Response-first is the recoverable ordering. If the process dies
+            // here, the stable response remains discoverable and an exact
+            // retry finishes ACK without publishing a duplicate.
+            after_response_publish()?;
+            published
+        }
+    };
+    acknowledge_request()?;
+    Ok(response)
 }
 
 fn acknowledge_provider_request_as_host(
@@ -32409,20 +32578,16 @@ fn acknowledge_provider_request_as_host(
         .remove(&run.agent_team_id)
         .map(|team| team.host_agent_id)
         .ok_or_else(|| CliError::Usage("TeamRun references a missing AgentTeam".into()))?;
-    let mut matches = Vec::new();
-    for execution_space_id in store.canonical_execution_space_ids()? {
-        for delivery in store
-            .fabric_message_deliveries(&execution_space_id)?
-            .into_iter()
-            .filter(|delivery| {
-                delivery.message_id == request.id && delivery.recipient_identity_id == host_identity
-            })
-        {
-            matches.push((execution_space_id.clone(), delivery));
-        }
-    }
-    let (execution_space_id, mut delivery) = match matches.as_slice() {
-        [(space, delivery)] => (space.clone(), delivery.clone()),
+    let execution_space_id = team_run_execution_space_id(store, &run)?;
+    let matches = store
+        .fabric_message_deliveries(&execution_space_id)?
+        .into_iter()
+        .filter(|delivery| {
+            delivery.message_id == request.id && delivery.recipient_identity_id == host_identity
+        })
+        .collect::<Vec<_>>();
+    let mut delivery = match matches.as_slice() {
+        [delivery] => delivery.clone(),
         [] => {
             return Err(CliError::Usage(format!(
                 "provider interaction {} has no exact Host delivery",
@@ -32439,14 +32604,27 @@ fn acknowledge_provider_request_as_host(
     if delivery.status == CanonicalMessageDeliveryStatus::Acknowledged {
         return Ok(());
     }
-    let session = store
+    let sessions = store
         .fabric_agent_sessions(&execution_space_id)?
         .into_iter()
-        .find(|session| {
+        .filter(|session| {
             session.agent_identity_id == host_identity
-                && session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
+                && !matches!(
+                    session.lifecycle,
+                    harness_core::agentfirm_api::AgentSessionStatus::Closed
+                        | harness_core::agentfirm_api::AgentSessionStatus::RecoveryRequired
+                )
         })
-        .ok_or_else(|| CliError::Usage("Host has no current AgentSession".into()))?;
+        .collect::<Vec<_>>();
+    let session = match sessions.as_slice() {
+        [session] => session,
+        [] => return Err(CliError::Usage("Host has no current AgentSession".into())),
+        _ => {
+            return Err(CliError::Usage(
+                "Host has ambiguous current AgentSessions".into(),
+            ))
+        }
+    };
     let lease = store
         .latest_node_daemon_lease(&session.node_id)?
         .filter(|lease| {
@@ -32546,8 +32724,8 @@ fn create_mission_value(
     )?)?)
 }
 
-/// POST /v1/missions/{id}/close — close durable intent after every Wave has an
-/// accepted completed gate.
+/// POST /v1/missions/{id}/close — close durable intent with an explicit
+/// Mission outcome. Legacy Wave rows never gate a new Mission.
 fn close_mission_value(
     store: &HarnessStore,
     mission_id: &str,
@@ -32707,93 +32885,6 @@ fn ack_host_attention_value(
         store.acknowledge_host_attention(attention_id, &surface, &thread, &now),
     )?;
     Ok(serde_json::json!({ "attention": final_attention, "idempotent": false }))
-}
-
-/// POST /v1/team-runs/{run}/messages/{message}/ack — acknowledge only a
-/// delivered recipient row belonging to the TeamRun named by the URL.
-#[cfg(any())]
-fn acknowledge_team_message_value(
-    store: &HarnessStore,
-    team_run_id: &str,
-    message_id: &str,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    let member_id = required_json_string(body, "member_id")?;
-    let message = latest_team_messages_in_append_order(store)?
-        .into_iter()
-        .find(|message| message.id == message_id)
-        .ok_or_else(|| CliError::Usage(format!("team message not found: {message_id}")))?;
-    if message.team_run_id != team_run_id {
-        return Err(CliError::Usage(format!(
-            "message {message_id} does not belong to team run {team_run_id}"
-        )));
-    }
-    Ok(serde_json::to_value(acknowledge_team_message(
-        store, message_id, &member_id,
-    )?)?)
-}
-
-/// Explicit operator reconciliation for a delivery left in `claimed` after a
-/// Supervisor crash. It never guesses whether the provider consumed content.
-#[cfg(any())]
-pub(crate) fn reconcile_team_message_delivery_value(
-    store: &HarnessStore,
-    team_run_id: &str,
-    message_id: &str,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    let member_run_id = required_json_string(body, "member_run_id")?;
-    let claim_id = required_json_string(body, "claim_id")?;
-    let reason = required_json_string(body, "reason")?;
-    if reason.trim().is_empty() {
-        return Err(CliError::Usage("reason must not be empty".to_string()));
-    }
-    let provider_accepted = json_bool(body, "provider_accepted").unwrap_or(false);
-    let requeue = json_bool(body, "requeue").unwrap_or(false);
-    if provider_accepted == requeue {
-        return Err(CliError::Usage(
-            "choose exactly one of provider_accepted=true or requeue=true".to_string(),
-        ));
-    }
-    let provider_receipt_id = optional_json_string(body, "provider_receipt_id")?;
-    if provider_accepted && provider_receipt_id.is_none() {
-        return Err(CliError::Usage(
-            "provider_accepted requires provider_receipt_id".to_string(),
-        ));
-    }
-    if requeue && provider_receipt_id.is_some() {
-        return Err(CliError::Usage(
-            "provider_receipt_id is invalid when requeue=true".to_string(),
-        ));
-    }
-    let message = store_conflict_as_usage(store.reconcile_team_message_delivery_claim(
-        team_run_id,
-        message_id,
-        &member_run_id,
-        &claim_id,
-        provider_accepted,
-        provider_receipt_id.as_deref(),
-        &now_string(),
-    ))?;
-    append_team_run_event(
-        store,
-        team_run_id,
-        next_team_run_seq(store, team_run_id)?,
-        TeamRunEventSourceKind::Operator,
-        None,
-        "message",
-        message_id,
-        "updated",
-        &format!(
-            "delivery for {member_run_id} reconciled as {}: {reason}",
-            if provider_accepted {
-                "provider_accepted"
-            } else {
-                "requeued"
-            }
-        ),
-    )?;
-    Ok(serde_json::to_value(message)?)
 }
 
 /// Explicit successor-Supervisor reconciliation for a stale Work delivery
@@ -33292,10 +33383,9 @@ fn create_team_run_value(
     execution_space_id: &str,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
-    if body.get("wave_index").is_some() {
+    if body.get("wave_index").is_some() || body.get("wave_id").is_some() {
         return Err(CliError::Usage(
-            "JSON field wave_index was retired; supply wave_id and derive order from the native Wave"
-                .to_string(),
+            "JSON fields wave_id and wave_index are Legacy-only; supply agent_team_id and derive Mission through AgentTeam".to_string(),
         ));
     }
     let agent_team_id = optional_json_string(body, "agent_team_id")?;
@@ -33364,8 +33454,8 @@ fn create_team_run_value(
         optional_json_string(body, "host_thread_id")?,
         optional_json_string(body, "previous_run_id")?,
         agent_team_id,
-        optional_json_string(body, "mission_id")?,
-        optional_json_string(body, "wave_id")?,
+        None,
+        None,
         &members,
     )?;
     Ok(created_team_run_json(&created))
@@ -38822,8 +38912,8 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let workflow_patches = latest_workflow_patches_in_append_order(store)?;
     let workflow_artifact_manifests = latest_workflow_artifact_manifests_in_append_order(store)?;
     let missions = store.latest_missions()?;
-    let waves = store.latest_waves()?;
-    // Unlike Wave/Mission, a MissionLogEntry is never revised in place — every
+    let legacy_waves = store.latest_legacy_waves()?;
+    // Unlike Mission, a MissionLogEntry is never revised in place — every
     // row is a permanent entry, so the whole-snapshot projection reads the raw
     // append-order ledger (`mission_log()`), not a latest-wins fold.
     let mission_log = store.mission_log()?;
@@ -38835,7 +38925,6 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     // Message + per-recipient MessageDelivery plane. Retired
     // team_messages/provider_dispatch ledgers remain export-only history and
     // are never folded into a current Dashboard snapshot.
-    let mut team_messages = Vec::new();
     let mut trust_scopes = BTreeSet::new();
     for member_run in &member_runs {
         if let Some(scope) = store.trust_member_run_scope(&member_run.id)? {
@@ -38858,131 +38947,10 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         let deliveries = store.fabric_message_deliveries(&execution_space_id)?;
         canonical_messages.extend(space_messages.iter().cloned());
         canonical_message_deliveries.extend(deliveries.iter().cloned());
-        for message in space_messages {
-            let message_deliveries = deliveries
-                .iter()
-                .filter(|delivery| delivery.message_id == message.id)
-                .map(|delivery| ProviderDispatchAttempt {
-                    member_id: member_runs
-                        .iter()
-                        .find(|member| {
-                            member.agent_member_id == delivery.recipient_identity_id
-                                && message.team_run_id.as_deref()
-                                    == Some(member.team_run_id.as_str())
-                        })
-                        .map(|member| member.id.clone())
-                        .unwrap_or_else(|| delivery.recipient_identity_id.clone()),
-                    policy: TeamDeliveryPolicy::Queue,
-                    status: match delivery.status {
-                        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Queued
-                        | harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Routed => {
-                            TeamDeliveryStatus::Queued
-                        }
-                        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Claimed => {
-                            TeamDeliveryStatus::Claimed
-                        }
-                        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::ProviderReceived => {
-                            TeamDeliveryStatus::Delivered
-                        }
-                        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Acknowledged => {
-                            TeamDeliveryStatus::Acknowledged
-                        }
-                        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Failed
-                        | harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Invalidated => {
-                            TeamDeliveryStatus::Failed
-                        }
-                        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Expired => {
-                            TeamDeliveryStatus::Expired
-                        }
-                    },
-                    attempt: delivery.attempt,
-                    claim_id: delivery.claim_id.clone(),
-                    claimed_by_supervisor_id: None,
-                    claimed_generation: delivery.claimed_node_daemon_generation,
-                    claimed_unix_ms: None,
-                    claim_expires_unix_ms: None,
-                    provider_receipt_id: delivery.provider_receipt_id.clone(),
-                    failure_reason: delivery.failure_detail.clone(),
-                    updated_at: delivery.updated_at.clone(),
-                })
-                .collect::<Vec<_>>();
-            let recipient_runtime_ids = message_deliveries
-                .iter()
-                .map(|delivery| delivery.member_id.clone())
-                .collect::<Vec<_>>();
-            team_messages.push(TeamMessageProjection {
-                id: message.id.clone(),
-                team_run_id: message.team_run_id.clone().unwrap_or_default(),
-                work_id: message.work_id.clone(),
-                source_plan_ref: None,
-                sender: Some(TeamActorRef {
-                    kind: match message.sender_actor_ref.kind {
-                        harness_core::agentfirm_api::ActorKind::AgentMember => {
-                            TeamActorKind::AgentMember
-                        }
-                        harness_core::agentfirm_api::ActorKind::Service => TeamActorKind::Service,
-                        harness_core::agentfirm_api::ActorKind::Human
-                        | harness_core::agentfirm_api::ActorKind::External => {
-                            TeamActorKind::Operator
-                        }
-                    },
-                    id: message.sender_actor_ref.id.clone(),
-                    display_name: None,
-                    authn_source: Some("canonical_trust_kernel".into()),
-                }),
-                sender_runtime_id: message
-                    .sender_agent_id
-                    .as_ref()
-                    .and_then(|identity_id| {
-                        member_runs
-                            .iter()
-                            .find(|member| {
-                                member.agent_member_id == *identity_id
-                                    && message.team_run_id.as_deref()
-                                        == Some(member.team_run_id.as_str())
-                            })
-                            .map(|member| member.id.clone())
-                    })
-                    .unwrap_or_else(|| message.sender_actor_ref.id.clone()),
-                recipients: recipient_runtime_ids
-                    .iter()
-                    .map(|id| TeamRecipientRef {
-                        kind: TeamRecipientKind::ProviderRuntimeProjection,
-                        id: id.clone(),
-                    })
-                    .collect(),
-                recipient_runtime_ids,
-                kind: match message.kind {
-                    harness_core::agentfirm_api::MessageKind::Message
-                    | harness_core::agentfirm_api::MessageKind::Reply => {
-                        ProviderDispatchIntent::Message
-                    }
-                    harness_core::agentfirm_api::MessageKind::RequestDecision => {
-                        ProviderDispatchIntent::Control
-                    }
-                    harness_core::agentfirm_api::MessageKind::ProviderInteractionRequest => {
-                        ProviderDispatchIntent::ProviderInteractionRequest
-                    }
-                    harness_core::agentfirm_api::MessageKind::ProviderInteractionResponse => {
-                        ProviderDispatchIntent::ProviderInteractionResponse
-                    }
-                },
-                body: message.body,
-                correlation_id: message.correlation_id,
-                causation_id: message.causation_id,
-                response_intent: Some(match message.response_intent {
-                    harness_core::agentfirm_api::ResponseIntent::Informational => {
-                        ProviderResponseIntent::Informational
-                    }
-                    harness_core::agentfirm_api::ResponseIntent::ResponseRequired => {
-                        ProviderResponseIntent::ResponseRequired
-                    }
-                }),
-                evidence_refs: message.evidence_refs,
-                deliveries: message_deliveries,
-                created_at: message.created_at,
-            });
-        }
+    }
+    let mut team_messages = Vec::new();
+    for run in &team_runs {
+        team_messages.extend(canonical_team_messages_for_run(store, &run.id)?);
     }
     team_messages.sort_by(|left, right| {
         left.created_at
@@ -39003,9 +38971,8 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     // intact for migration/audit, but never project those rows into a new
     // snapshot: thinking is not product state or evidence.
     let member_actions = visible_member_actions_in_append_order(store)?;
-    let pending_interactions = latest_pending_interactions_in_append_order(store)?;
     let delegation_runs = latest_delegation_runs_in_append_order(store)?;
-    let team_run_events = recent_team_run_events_in_append_order(store, 500)?;
+    let team_run_events = recent_current_team_run_events_in_append_order(store, &team_runs, 500)?;
     let member_cards: Vec<_> = members
         .values()
         .map(|member| {
@@ -39083,7 +39050,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "workflow_patches": workflow_patches,
         "workflow_artifact_manifests": workflow_artifact_manifests,
         "missions": missions,
-        "waves": waves,
+        "legacy_waves": legacy_waves,
         "mission_log": mission_log,
         "team_runs": team_runs,
         "member_runs": member_runs,
@@ -39105,7 +39072,6 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "team_supervisor_leases": team_supervisor_leases,
         "team_member_close_requests": team_member_close_requests,
         "member_actions": member_actions,
-        "pending_interactions": pending_interactions,
         "delegation_runs": delegation_runs,
         "team_run_events": team_run_events,
         "company_os": company_os
@@ -39182,7 +39148,7 @@ fn dashboard_meta(store: &HarnessStore) -> CliResult<serde_json::Value> {
 
 /// A bounded canonical projection for a Team deep link. It contains only
 /// Harness coordination state belonging to the selected TeamRun plus its
-/// Mission, Team, members, and Waves. Provider-native transcript/activity is
+/// Mission, Mission Log, Team, members, and Legacy Wave history. Provider-native transcript/activity is
 /// deliberately absent and remains available only through native-session
 /// projection routes.
 fn dashboard_team_run_snapshot(
@@ -39231,7 +39197,6 @@ fn dashboard_team_run_snapshot(
         "team_supervisor_leases",
         "team_member_close_requests",
         "member_actions",
-        "pending_interactions",
         "delegation_runs",
         "team_run_events",
     ] {
@@ -39254,7 +39219,7 @@ fn dashboard_team_run_snapshot(
             .as_deref()
             .is_some_and(|id| json_field_eq(row, "id", id))
     });
-    retain_json_rows(&mut snapshot, "waves", |row| {
+    retain_json_rows(&mut snapshot, "legacy_waves", |row| {
         mission_id
             .as_deref()
             .is_some_and(|id| json_field_eq(row, "mission_id", id))
@@ -39362,19 +39327,6 @@ fn latest_member_runs_in_append_order(
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
-fn latest_team_messages_in_append_order(
-    store: &HarnessStore,
-) -> CliResult<Vec<TeamMessageProjection>> {
-    let mut ids = Vec::new();
-    let mut by_id = BTreeMap::new();
-    for message in store.team_messages()? {
-        ids.retain(|id| id != &message.id);
-        ids.push(message.id.clone());
-        by_id.insert(message.id.clone(), message);
-    }
-    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
-}
-
 fn latest_team_supervisor_leases_in_append_order(
     store: &HarnessStore,
 ) -> CliResult<Vec<TeamSupervisorLease>> {
@@ -39418,19 +39370,6 @@ fn latest_member_actions_in_append_order(store: &HarnessStore) -> CliResult<Vec<
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
-pub(crate) fn latest_pending_interactions_in_append_order(
-    store: &HarnessStore,
-) -> CliResult<Vec<PendingInteraction>> {
-    let mut ids = Vec::new();
-    let mut by_id = BTreeMap::new();
-    for interaction in store.pending_interactions()? {
-        ids.retain(|id| id != &interaction.id);
-        ids.push(interaction.id.clone());
-        by_id.insert(interaction.id.clone(), interaction);
-    }
-    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
-}
-
 /// Project the product-visible MemberAction view. Legacy v0 reasoning rows
 /// remain in the append-only ledger but are never surfaced to a new operator
 /// or MCP consumer as durable state.
@@ -39452,10 +39391,13 @@ fn latest_delegation_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
-fn latest_team_run_events_in_append_order(store: &HarnessStore) -> CliResult<Vec<TeamRunEvent>> {
+fn current_team_run_events_in_append_order(
+    store: &HarnessStore,
+    team_run_id: &str,
+) -> CliResult<Vec<TeamRunEvent>> {
     let mut ids = Vec::new();
     let mut by_id = BTreeMap::new();
-    for event in store.team_run_events()? {
+    for event in store.current_team_run_events(team_run_id)? {
         ids.retain(|id| id != &event.id);
         ids.push(event.id.clone());
         by_id.insert(event.id.clone(), event);
@@ -39466,11 +39408,15 @@ fn latest_team_run_events_in_append_order(store: &HarnessStore) -> CliResult<Vec
 /// Snapshot projection of the folded team-run event log: latest-wins by id,
 /// then capped to the most recent `per_run_cap` events per team run (by seq)
 /// so a chatty run cannot bloat every dashboard snapshot.
-fn recent_team_run_events_in_append_order(
+fn recent_current_team_run_events_in_append_order(
     store: &HarnessStore,
+    team_runs: &[AgentTeamRun],
     per_run_cap: usize,
 ) -> CliResult<Vec<TeamRunEvent>> {
-    let events = latest_team_run_events_in_append_order(store)?;
+    let mut events = Vec::new();
+    for run in team_runs {
+        events.extend(current_team_run_events_in_append_order(store, &run.id)?);
+    }
     let mut seqs_by_run: BTreeMap<String, Vec<u64>> = BTreeMap::new();
     for event in &events {
         seqs_by_run
@@ -42195,7 +42141,6 @@ mission log append    --mission-id <id>
                       --kind judgment|replan|recovery|closeout_evidence
                       --body <md> [--actor <id>] [--json]
 mission log show       --mission-id <id> [--tail <n>] [--json]
-wave list (historical) [--mission-id <id>]
 "#;
 
 const CHEATSHEET_ALL: &str = r#"team-run create --objective <text> --agent-team-id <id>
@@ -42233,7 +42178,6 @@ mission close --id <id> --outcome <text>
 mission log append --mission-id <id>
   --kind judgment|replan|recovery|closeout_evidence --body <md>
 mission log show --mission-id <id> [--tail <n>]
-wave list (history) [--mission-id <id>]
 "#;
 
 fn print_help() {
@@ -42250,8 +42194,8 @@ fn print_help() {
   mission create|list|show|update-context|close
   mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <md>
   mission log show --mission-id <id> [--tail <n>]
-  wave list|show|history (historical reads only; create|update|advance|gate retired by ADR 0051 -- use `mission log append`)
-  team-run create|list|status|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
+  legacy wave list|show|history (historical reads only)
+  team-run create|list|status|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|answer-message|events|complete|cancel
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.
@@ -46194,9 +46138,11 @@ agent("a NEW second leaf that changes the ordinal alignment")
             started_at: now_string(),
             completed_at: Some(now_string()),
         };
-        store
-            .append_member_action(&legacy)
-            .expect("append legacy row");
+        append_jsonl_value(
+            &store.root().join("member_actions.jsonl"),
+            &serde_json::to_value(&legacy).expect("serialize Legacy member action fixture"),
+        )
+        .expect("append legacy row");
 
         assert_eq!(store.member_actions().expect("raw ledger").len(), 1);
         let snapshot = dashboard_snapshot(&store).expect("snapshot");
@@ -46462,34 +46408,8 @@ mod tests {
                 60_000,
             )
             .expect("acquire current Supervisor lease");
-        let interaction = PendingInteraction {
-            id: "pending-close-fence".into(),
-            team_run_id: created.team_run.id.clone(),
-            member_run_id: member.id.clone(),
-            provider: "codex".into(),
-            provider_request_id: "provider-close-fence".into(),
-            method: "item/tool/requestUserInput".into(),
-            kind: PendingInteractionKind::Question,
-            route: PendingInteractionRoute::Lead,
-            status: PendingInteractionStatus::Pending,
-            title: "Pending before rejected Close".into(),
-            prompt: "Must remain pending".into(),
-            options: Vec::new(),
-            tool_call_id: None,
-            response_option_id: None,
-            response_text: None,
-            created_at: "unix-ms:close-fence".into(),
-            resolved_at: None,
-            resolved_by: None,
-        };
-        store
-            .append_pending_interaction(&interaction)
-            .expect("seed pending provider interaction");
-        let interactions_before = store
-            .pending_interactions()
-            .expect("pending interactions before rejected Close");
         let events_before = store
-            .team_run_events()
+            .legacy_team_run_events()
             .expect("events before rejected Close");
 
         let error = dispatch_local_live_member_control(
@@ -46520,14 +46440,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .pending_interactions()
-                .expect("pending interactions after rejected Close"),
-            interactions_before,
-            "authority-rejected Close cancelled a provider interaction"
-        );
-        assert_eq!(
-            store
-                .team_run_events()
+                .legacy_team_run_events()
                 .expect("events after rejected Close"),
             events_before,
             "authority-rejected Close emitted a lifecycle side effect"
@@ -46550,33 +46463,9 @@ mod tests {
                 60_000,
             )
             .expect("acquire first Supervisor lease");
-        let interaction = PendingInteraction {
-            id: "pending-close-toctou".into(),
-            team_run_id: created.team_run.id.clone(),
-            member_run_id: member.id.clone(),
-            provider: "codex".into(),
-            provider_request_id: "provider-close-toctou".into(),
-            method: "item/tool/requestUserInput".into(),
-            kind: PendingInteractionKind::Question,
-            route: PendingInteractionRoute::Lead,
-            status: PendingInteractionStatus::Pending,
-            title: "Pending across stale-generation Close".into(),
-            prompt: "Must remain pending".into(),
-            options: Vec::new(),
-            tool_call_id: None,
-            response_option_id: None,
-            response_text: None,
-            created_at: "unix-ms:close-toctou".into(),
-            resolved_at: None,
-            resolved_by: None,
-        };
-        store
-            .append_pending_interaction(&interaction)
-            .expect("seed pending provider interaction");
-        let interactions_before = store
-            .pending_interactions()
-            .expect("pending interactions before stale Close");
-        let events_before = store.team_run_events().expect("events before stale Close");
+        let events_before = store
+            .legacy_team_run_events()
+            .expect("events before stale Close");
         let (control_rx, _control_registration) = register_live_member_control(&member, 1);
         let supervisor_valid = AtomicBool::new(true);
         let authority_gate = Mutex::new(());
@@ -46635,13 +46524,8 @@ mod tests {
         );
         assert_eq!(
             store
-                .pending_interactions()
-                .expect("pending interactions after stale Close"),
-            interactions_before,
-            "stale generation cancelled a provider interaction"
-        );
-        assert_eq!(
-            store.team_run_events().expect("events after stale Close"),
+                .legacy_team_run_events()
+                .expect("events after stale Close"),
             events_before,
             "stale generation emitted a lifecycle event"
         );
@@ -47083,7 +46967,7 @@ mod tests {
                         context: String::new(),
                         desired_outcome: None,
                         status: MissionStatus::Planned,
-                        wave_ids: Vec::new(),
+                        legacy_wave_ids: Vec::new(),
                         outcome_summary: None,
                         completed_by: None,
                         created_at: "unix-ms:2".into(),
@@ -47567,10 +47451,31 @@ mod tests {
         store
             .compare_and_append_member_run(&initial, &running)
             .expect("seed persisted provider callback member");
-        (
-            TeamRunLedger::without_supervisor(store, &created.team_run.id),
-            running,
+        let lease = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                &format!("provider-callback-{provider}"),
+                std::process::id(),
+                "test://provider-callback",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire provider callback Supervisor");
+        ensure_test_runtime_fabric(store, &created, &lease);
+        let ledger = TeamRunLedger::new(
+            store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        transition_provider_session_for_member(
+            &ledger,
+            &running,
+            harness_core::agentfirm_api::AgentSessionStatus::Active,
         )
+        .expect("activate provider callback AgentSession");
+        (ledger, running)
     }
 
     fn kimi_safe_approval_frame(session_id: &str, id: u64) -> serde_json::Value {
@@ -47631,10 +47536,9 @@ mod tests {
             "codex_app_server",
             "thread-multi-question",
         );
-        let messages_before = store.team_messages().expect("team messages before").len();
-        let interactions_before = store
-            .pending_interactions()
-            .expect("pending interactions before")
+        let messages_before = store
+            .legacy_team_messages()
+            .expect("Legacy messages before")
             .len();
         let actions_before = store.member_actions().expect("member actions before").len();
         let frame = serde_json::json!({
@@ -47658,17 +47562,12 @@ mod tests {
             "unexpected error: {error}"
         );
         assert_eq!(
-            store.team_messages().expect("team messages after").len(),
+            store
+                .legacy_team_messages()
+                .expect("Legacy messages after")
+                .len(),
             messages_before,
             "unsupported request must not create a provider request message"
-        );
-        assert_eq!(
-            store
-                .pending_interactions()
-                .expect("pending interactions after")
-                .len(),
-            interactions_before,
-            "unsupported request must not create a legacy interaction"
         );
         assert_eq!(
             store.member_actions().expect("member actions after").len(),
@@ -47743,8 +47642,8 @@ mod tests {
             })
         };
 
-        // Many repeated safe approvals: every prompt is still answered with
-        // its safe allow option, none creates a PendingInteraction, and the
+        // Many repeated exact approvals: every prompt is still answered with
+        // its exact allow intent, and the
         // durable stream converges to ONE bounded provider_control receipt.
         for id in 700..707 {
             let outcome = handle_kimi_provider_request(&ledger, &member, &safe_frame(id))
@@ -47776,17 +47675,446 @@ mod tests {
             "Kimi full-access tool permission acknowledged"
         );
         assert_eq!(receipt.status, MemberActionStatus::Succeeded);
-        assert!(receipt.summary.contains("safe allow option"));
+        assert!(receipt.summary.contains("exact allow intent"));
         assert!(
             !receipt.summary.contains("sensitive command") && !receipt.title.contains("Bash"),
             "no tool title or command text may be persisted: {receipt:?}"
         );
+    }
+
+    #[test]
+    fn kimi_permission_matching_uses_exact_intent_not_option_id_substrings() {
+        let (store, _root) = temp_store("kimi-exact-permission-intent");
+        let (ledger, member) =
+            persisted_native_test_member(&store, "kimi", "kimi_acp", "session-exact-intent");
+        for (id, option_id, intent) in [
+            (801, "disallow_tool", "reject_once"),
+            (802, "not_approved_but_contains_approve", "reject_always"),
+            (803, "allowish_display_id", "deny"),
+        ] {
+            let frame = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": "session-exact-intent",
+                    "options": [{"optionId": option_id, "name": "Misleading", "kind": intent}],
+                    "toolCall": {"toolCallId": format!("{id}:bash"), "title": "Bash"}
+                }
+            });
+            let outcome = handle_kimi_provider_request(&ledger, &member, &frame)
+                .expect("non-allow intent is rejected in-process");
+            assert_eq!(outcome.result["outcome"]["outcome"], "cancelled");
+        }
         assert!(
             store
-                .pending_interactions()
-                .expect("pending interactions")
-                .is_empty(),
-            "safe approvals must never create PendingInteractions"
+                .member_actions()
+                .expect("member actions")
+                .into_iter()
+                .all(|action| action.title != "Kimi full-access tool permission acknowledged"),
+            "misleading option ids must never create an approval receipt"
+        );
+    }
+
+    #[test]
+    fn kimi_acp_v1_discriminator_requires_canonical_intent_and_exact_wire_shape() {
+        let option = |id: &str, intent: &str| ProviderInteractionMessageOption {
+            id: id.into(),
+            label: "Hostile display label".into(),
+            intent: Some(intent.into()),
+        };
+
+        assert_eq!(
+            classify_kimi_acp_v1_interaction(
+                "AskUserQuestion",
+                &[
+                    option("q0_opt_0", "allow_once"),
+                    option("q0_skip", "reject_once"),
+                ],
+            ),
+            ProviderInteractionType::Question
+        );
+        assert_eq!(
+            classify_kimi_acp_v1_interaction(
+                "ExitPlanMode",
+                &[
+                    option("plan_approve", "allow_once"),
+                    option("plan_revise", "reject_once"),
+                    option("plan_reject_and_exit", "reject_once"),
+                ],
+            ),
+            ProviderInteractionType::PlanReview
+        );
+        for (title, options, expected) in [
+            (
+                "AskUserQuestion",
+                vec![option("q0_opt_0", "reject_once")],
+                ProviderInteractionType::RejectOnly,
+            ),
+            (
+                "ExitPlanMode",
+                vec![option("plan_approve", "reject_always")],
+                ProviderInteractionType::RejectOnly,
+            ),
+            (
+                "AskUserQuestion",
+                vec![option("q0_opt_0", "future_allow")],
+                ProviderInteractionType::Unknown,
+            ),
+            (
+                "AskUserQuestion",
+                vec![option("q0_opt_0", "allow_once")],
+                ProviderInteractionType::Unknown,
+            ),
+            (
+                "ExitPlanMode",
+                vec![
+                    option("plan_approve", "allow_once"),
+                    option("plan_revise", "reject_once"),
+                ],
+                ProviderInteractionType::Unknown,
+            ),
+            (
+                "Bash",
+                vec![option("plan_approve", "allow_once")],
+                ProviderInteractionType::Unknown,
+            ),
+            (
+                "Bash",
+                vec![
+                    option("approve_once", "allow_once"),
+                    option("reject", "reject_once"),
+                ],
+                ProviderInteractionType::ToolApproval,
+            ),
+        ] {
+            assert_eq!(classify_kimi_acp_v1_interaction(title, &options), expected);
+        }
+    }
+
+    #[test]
+    fn kimi_hostile_colliding_option_ids_cancel_with_zero_durable_side_effects() {
+        let (store, _root) = temp_store("kimi-hostile-option-id-collision");
+        let (ledger, member) = persisted_native_test_member(
+            &store,
+            "kimi",
+            "kimi_acp",
+            "session-hostile-option-id-collision",
+        );
+        let messages_before = store
+            .legacy_team_messages()
+            .expect("Legacy messages before");
+        let actions_before = store.member_actions().expect("member actions before");
+        let members_before = store.member_runs().expect("member runs before");
+        let operations_before = store
+            .canonical_operations()
+            .expect("canonical operations before");
+
+        for (id, title, option_id, intent) in [
+            (811, "AskUserQuestion", "q0_opt_0", "reject_once"),
+            (812, "ExitPlanMode", "plan_approve", "reject_always"),
+            (813, "AskUserQuestion", "q0_opt_7", "future_allow"),
+            (814, "ExitPlanMode", "plan_revise", "future_reject"),
+        ] {
+            let frame = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": "session-hostile-option-id-collision",
+                    "options": [{
+                        "optionId": option_id,
+                        "name": "Prefix collision must not route",
+                        "kind": intent
+                    }],
+                    "toolCall": {
+                        "toolCallId": format!("{id}:hostile"),
+                        "title": title
+                    }
+                }
+            });
+            let outcome = handle_kimi_provider_request(&ledger, &member, &frame)
+                .expect("hostile callback must cancel in-process");
+            assert_eq!(outcome.result["outcome"]["outcome"], "cancelled");
+            assert!(outcome.claimed_response.is_none());
+        }
+
+        assert_eq!(
+            store.legacy_team_messages().expect("Legacy messages after"),
+            messages_before,
+            "hostile callbacks must not create Message waits"
+        );
+        assert_eq!(
+            store.member_actions().expect("member actions after"),
+            actions_before,
+            "hostile callbacks must not write provider-control receipts"
+        );
+        assert_eq!(
+            store.member_runs().expect("member runs after"),
+            members_before,
+            "hostile callbacks must not move the Member into Waiting"
+        );
+        assert_eq!(
+            store
+                .canonical_operations()
+                .expect("canonical operations after"),
+            operations_before,
+            "hostile callbacks must not write canonical operations"
+        );
+    }
+
+    #[test]
+    fn kimi_reserved_prompts_decode_options_all_or_nothing_and_fail_without_side_effects() {
+        let (store, _root) = temp_store("kimi-all-or-nothing-options");
+        let (ledger, member) = persisted_native_test_member(
+            &store,
+            "kimi",
+            "kimi_acp",
+            "session-all-or-nothing-options",
+        );
+        let legacy_messages_before = store
+            .legacy_team_messages()
+            .expect("Legacy messages before");
+        let actions_before = store.member_actions().expect("member actions before");
+        let members_before = store.member_runs().expect("member runs before");
+        let operations_before = store
+            .canonical_operations()
+            .expect("canonical operations before");
+        let fabric_messages_before = store
+            .fabric_messages("unit-test-space")
+            .expect("fabric messages before");
+        let fabric_deliveries_before = store
+            .fabric_message_deliveries("unit-test-space")
+            .expect("fabric deliveries before");
+
+        let malformed_options = vec![
+            serde_json::json!([
+                {"optionId": "q0_opt_0", "name": "Yes", "kind": "allow_once"},
+                {"optionId": "q0_skip", "name": "Skip"}
+            ]),
+            serde_json::json!([
+                {"optionId": "plan_approve", "name": "Approve", "kind": "allow_once"},
+                {"name": "Revise", "kind": "reject_once"},
+                {"optionId": "plan_reject_and_exit", "name": "Reject", "kind": "reject_once"}
+            ]),
+            serde_json::json!([
+                {"optionId": "q0_opt_0", "kind": "allow_once"},
+                {"optionId": "q0_skip", "name": "Skip", "kind": "reject_once"}
+            ]),
+            serde_json::json!([
+                {"optionId": 7, "name": "Approve", "kind": "allow_once"},
+                {"optionId": "plan_revise", "name": "Revise", "kind": "reject_once"},
+                {"optionId": "plan_reject_and_exit", "name": "Reject", "kind": "reject_once"}
+            ]),
+            serde_json::json!([
+                {"optionId": "q0_opt_0", "name": "Yes", "kind": "allow_once"}
+            ]),
+            serde_json::json!([
+                {"optionId": "plan_approve", "name": "Approve", "kind": "allow_once"},
+                {"optionId": "plan_revise", "name": "Revise", "kind": "reject_once"}
+            ]),
+        ];
+        for (index, options) in malformed_options.into_iter().enumerate() {
+            let title = if index % 2 == 0 {
+                "AskUserQuestion"
+            } else {
+                "ExitPlanMode"
+            };
+            let frame = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 820 + index,
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": "session-all-or-nothing-options",
+                    "options": options,
+                    "toolCall": {
+                        "toolCallId": format!("{}:hostile", 820 + index),
+                        "title": title
+                    }
+                }
+            });
+            let outcome = handle_kimi_provider_request(&ledger, &member, &frame)
+                .expect("malformed reserved callback cancels in-process");
+            assert_eq!(outcome.result["outcome"]["outcome"], "cancelled");
+            assert!(outcome.claimed_response.is_none());
+        }
+
+        assert_eq!(
+            store.legacy_team_messages().expect("Legacy messages after"),
+            legacy_messages_before
+        );
+        assert_eq!(
+            store.member_actions().expect("member actions after"),
+            actions_before
+        );
+        assert_eq!(
+            store.member_runs().expect("member runs after"),
+            members_before
+        );
+        assert_eq!(
+            store
+                .canonical_operations()
+                .expect("canonical operations after"),
+            operations_before
+        );
+        assert_eq!(
+            store
+                .fabric_messages("unit-test-space")
+                .expect("fabric messages after"),
+            fabric_messages_before
+        );
+        assert_eq!(
+            store
+                .fabric_message_deliveries("unit-test-space")
+                .expect("fabric deliveries after"),
+            fabric_deliveries_before
+        );
+    }
+
+    #[test]
+    fn kimi_invalid_titles_and_mixed_options_fail_before_any_durable_effect() {
+        let (store, _root) = temp_store("kimi-invalid-title-fail-closed");
+        let (ledger, member) = persisted_native_test_member(
+            &store,
+            "kimi",
+            "kimi_acp",
+            "session-invalid-title-fail-closed",
+        );
+        let legacy_messages_before = store
+            .legacy_team_messages()
+            .expect("Legacy messages before");
+        let actions_before = store.member_actions().expect("member actions before");
+        let members_before = store.member_runs().expect("member runs before");
+        let operations_before = store
+            .canonical_operations()
+            .expect("canonical operations before");
+        let fabric_messages_before = store
+            .fabric_messages("unit-test-space")
+            .expect("fabric messages before");
+        let fabric_deliveries_before = store
+            .fabric_message_deliveries("unit-test-space")
+            .expect("fabric deliveries before");
+
+        let title_cases = [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!(7)),
+            Some(serde_json::json!("")),
+            Some(serde_json::json!("   ")),
+        ];
+        for (index, title) in title_cases.into_iter().enumerate() {
+            let mut tool_call = serde_json::json!({
+                "toolCallId": format!("{}:missing-title", 840 + index)
+            });
+            if let Some(title) = title {
+                tool_call
+                    .as_object_mut()
+                    .expect("toolCall object")
+                    .insert("title".into(), title);
+            }
+            let options = if index % 2 == 0 {
+                serde_json::json!([
+                    {"optionId": "q0_opt_0", "name": "Yes", "kind": "allow_once"},
+                    {"optionId": "q0_skip", "name": "Skip", "kind": "reject_once"}
+                ])
+            } else {
+                serde_json::json!([
+                    {"optionId": "plan_approve", "name": "Approve", "kind": "allow_once"},
+                    {"optionId": "plan_revise", "name": "Revise", "kind": "reject_once"},
+                    {"optionId": "plan_reject_and_exit", "name": "Reject", "kind": "reject_once"}
+                ])
+            };
+            let frame = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 840 + index,
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": "session-invalid-title-fail-closed",
+                    "options": options,
+                    "toolCall": tool_call
+                }
+            });
+            let outcome = handle_kimi_provider_request(&ledger, &member, &frame)
+                .expect("invalid title must cancel in-process");
+            assert_eq!(outcome.result["outcome"]["outcome"], "cancelled");
+            assert!(outcome.claimed_response.is_none());
+        }
+
+        for (index, (title, options)) in [
+            (
+                "AskUserQuestion",
+                serde_json::json!([
+                    {"optionId": "q0_opt_0", "name": "Yes", "kind": "allow_once"},
+                    {"optionId": "q0_skip", "name": "Skip", "kind": "future_reject"}
+                ]),
+            ),
+            (
+                "ExitPlanMode",
+                serde_json::json!([
+                    {"optionId": "plan_approve", "name": "Approve", "kind": "allow_once"},
+                    {"optionId": "plan_revise", "name": "Revise"},
+                    {"optionId": "plan_reject_and_exit", "name": "Reject", "kind": "reject_once"}
+                ]),
+            ),
+            (
+                "Bash",
+                serde_json::json!([
+                    {"optionId": "approve_once", "name": "Approve", "kind": "allow_once"},
+                    {"optionId": "reject", "name": "Reject", "kind": "future_reject"}
+                ]),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let frame = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 850 + index,
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": "session-invalid-title-fail-closed",
+                    "options": options,
+                    "toolCall": {
+                        "toolCallId": format!("{}:mixed", 850 + index),
+                        "title": title
+                    }
+                }
+            });
+            let outcome = handle_kimi_provider_request(&ledger, &member, &frame)
+                .expect("malformed mixed options must cancel in-process");
+            assert_eq!(outcome.result["outcome"]["outcome"], "cancelled");
+            assert!(outcome.claimed_response.is_none());
+        }
+
+        assert_eq!(
+            store.legacy_team_messages().expect("Legacy messages after"),
+            legacy_messages_before
+        );
+        assert_eq!(
+            store.member_actions().expect("member actions after"),
+            actions_before
+        );
+        assert_eq!(
+            store.member_runs().expect("member runs after"),
+            members_before
+        );
+        assert_eq!(
+            store
+                .canonical_operations()
+                .expect("canonical operations after"),
+            operations_before
+        );
+        assert_eq!(
+            store
+                .fabric_messages("unit-test-space")
+                .expect("fabric messages after"),
+            fabric_messages_before
+        );
+        assert_eq!(
+            store
+                .fabric_message_deliveries("unit-test-space")
+                .expect("fabric deliveries after"),
+            fabric_deliveries_before
         );
     }
 
@@ -47862,13 +48190,6 @@ mod tests {
             member_controls, 2,
             "the seeded unrelated row is preserved alongside the one bounded receipt: {actions:?}"
         );
-        assert!(
-            store
-                .pending_interactions()
-                .expect("pending interactions")
-                .is_empty(),
-            "safe approvals must never create PendingInteractions"
-        );
     }
 
     #[test]
@@ -47900,9 +48221,15 @@ mod tests {
                 }
                 _ => unreachable!(),
             }
-            store
-                .compare_and_append_member_run(&supplied, &latest)
-                .expect("advance canonical member before callback");
+            if case == "generation" {
+                store
+                    .compare_and_advance_member_run_generation(&supplied, &latest)
+                    .expect("advance canonical member generation before callback");
+            } else {
+                store
+                    .compare_and_append_member_run(&supplied, &latest)
+                    .expect("advance canonical member before callback");
+            }
 
             let error = handle_kimi_provider_request(
                 &ledger,
@@ -48055,8 +48382,10 @@ package:com.tencent.mm
         let root =
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("native-open")));
         let store = HarnessStore::new(&root);
-        store
-            .append_team_run(&AgentTeamRun {
+        store.init().expect("initialize native-open test store");
+        append_jsonl_value(
+            &store.root().join("team_runs.jsonl"),
+            &serde_json::to_value(AgentTeamRun {
                 id: "team-native-open".into(),
                 agent_team_id: "team-native-open-definition".into(),
                 execution_node_id: "node-native-open".into(),
@@ -48075,14 +48404,19 @@ package:com.tencent.mm
                 updated_at: "unix-ms:1".into(),
                 completed_at: None,
             })
-            .expect("declare native-open test member");
-        store
-            .append_member_run(&native_open_test_member(
+            .expect("serialize Legacy TeamRun fixture"),
+        )
+        .expect("declare native-open test member");
+        append_jsonl_value(
+            &store.root().join("member_runs.jsonl"),
+            &serde_json::to_value(native_open_test_member(
                 "claude",
                 "claude_agent_sdk",
                 "851b37dd-1234-5678-9abc-0123456789ab",
             ))
-            .expect("append member run");
+            .expect("serialize Legacy member fixture"),
+        )
+        .expect("append member run");
         member_run_command(
             &store,
             &[
@@ -49726,6 +50060,25 @@ package:com.tencent.mm
         (HarnessStore::new(&root), root)
     }
 
+    fn durable_store_file_bytes(store: &HarnessStore) -> BTreeMap<String, Vec<u8>> {
+        let mut files = BTreeMap::new();
+        if !store.root().exists() {
+            return files;
+        }
+        for entry in std::fs::read_dir(store.root()).expect("read test Store") {
+            let entry = entry.expect("read Store entry");
+            let file_type = entry.file_type().expect("read Store entry type");
+            if !file_type.is_file() || entry.file_name() == ".store.lock" {
+                continue;
+            }
+            files.insert(
+                entry.file_name().to_string_lossy().into_owned(),
+                std::fs::read(entry.path()).expect("read durable Store file"),
+            );
+        }
+        files
+    }
+
     #[test]
     fn team_run_materializes_canonical_member_runs_in_its_execution_space() {
         let (store, root) = temp_store("canonical-member-run-materialization");
@@ -49743,6 +50096,579 @@ package:com.tencent.mm
             assert_eq!(projection.team_run_id, created.team_run.id);
             assert_eq!(projection.runtime_generation, runtime.runtime_generation);
         }
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn initial_member_admission_rejects_foreign_only_identity_without_any_durable_write() {
+        let (store, root) = temp_store("initial-member-admission-space-fence");
+        let (project_context, team_id) =
+            ensure_legacy_unit_test_team_binding(&store).expect("seed exact Team binding");
+        let local = TeamMemberSpec {
+            agent_member_id: "agent-initial-local".into(),
+            name: "InitialLocal".into(),
+            role: "builder".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: vec!["crates/local".into()],
+            resume_native_session_id: None,
+            initial_work: Some("deliver the local half".into()),
+        };
+        let foreign_only = TeamMemberSpec {
+            agent_member_id: "agent-initial-foreign-only".into(),
+            name: "InitialForeignOnly".into(),
+            role: "builder".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: vec!["crates/foreign".into()],
+            resume_native_session_id: None,
+            initial_work: Some("deliver the foreign half".into()),
+        };
+        ensure_unit_test_canonical_members(
+            &store,
+            "unit-test-space",
+            &team_id,
+            std::slice::from_ref(&local),
+        )
+        .expect("seed local AgentMember");
+        ensure_unit_test_canonical_members(
+            &store,
+            "foreign-member-space",
+            &team_id,
+            std::slice::from_ref(&foreign_only),
+        )
+        .expect("seed foreign-only AgentMember");
+        let members = vec![local, foreign_only];
+        let before = durable_store_file_bytes(&store);
+
+        let error = match create_team_run(
+            &store,
+            Some(&project_context),
+            Some("unit-test-space"),
+            None,
+            "Reject a mixed-scope initial roster atomically",
+            None,
+            "test",
+            None,
+            None,
+            Some(team_id.clone()),
+            None,
+            None,
+            &members,
+        ) {
+            Ok(_) => panic!("foreign-only AgentMember must fail exact-space admission"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("selected Execution Space"),
+            "unexpected scoped error: {error}"
+        );
+        assert_eq!(
+            durable_store_file_bytes(&store),
+            before,
+            "failed initial admission must not write TeamRun, runtime, event, Work, provider, or canonical ledgers"
+        );
+
+        ensure_unit_test_canonical_members(
+            &store,
+            "unit-test-space",
+            &team_id,
+            std::slice::from_ref(&members[1]),
+        )
+        .expect("materialize the same AgentMember in the selected space");
+        let retried = create_team_run(
+            &store,
+            Some(&project_context),
+            Some("unit-test-space"),
+            None,
+            "Retry the same initial roster",
+            None,
+            "test",
+            None,
+            None,
+            Some(team_id),
+            None,
+            None,
+            &members,
+        )
+        .expect("zero-write rejection must leave the roster retryable");
+        assert_eq!(retried.member_runs.len(), 2);
+        assert_eq!(retried.works.len(), 2);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn dynamic_member_admission_rejects_foreign_only_identity_without_any_durable_write() {
+        let (store, root) = temp_store("dynamic-member-admission-space-fence");
+        let created = create_two_member_team_run(&store);
+        let late = TeamMemberSpec {
+            agent_member_id: "agent-dynamic-foreign-only".into(),
+            name: "DynamicForeignOnly".into(),
+            role: "reviewer".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: vec!["crates/review".into()],
+            resume_native_session_id: None,
+            initial_work: None,
+        };
+        ensure_unit_test_canonical_members(
+            &store,
+            "foreign-member-space",
+            &created.team_run.agent_team_id,
+            std::slice::from_ref(&late),
+        )
+        .expect("seed foreign-only AgentMember");
+        let before = durable_store_file_bytes(&store);
+
+        let error = add_team_run_member(
+            &store,
+            None,
+            &created.team_run.id,
+            &late,
+            Some("review the accepted result"),
+        )
+        .expect_err("foreign-only AgentMember must fail dynamic exact-space admission");
+        assert!(
+            error.to_string().contains("selected Execution Space"),
+            "unexpected scoped error: {error}"
+        );
+        assert_eq!(
+            durable_store_file_bytes(&store),
+            before,
+            "failed dynamic admission must have byte-zero durable side effects"
+        );
+
+        ensure_unit_test_canonical_members(
+            &store,
+            "unit-test-space",
+            &created.team_run.agent_team_id,
+            std::slice::from_ref(&late),
+        )
+        .expect("materialize the same AgentMember in the selected space");
+        let (run, member, work) = add_team_run_member(
+            &store,
+            None,
+            &created.team_run.id,
+            &late,
+            Some("review the accepted result"),
+        )
+        .expect("zero-write rejection must leave the same name and identity retryable");
+        assert!(run.member_run_ids.contains(&member.id));
+        assert!(work.is_some());
+        assert!(store
+            .trust_member_runs("unit-test-space")
+            .expect("canonical MemberRuns")
+            .iter()
+            .any(|candidate| candidate.id == member.id));
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn partial_legacy_team_run_is_diagnostic_only_until_canonical_completeness_is_restored() {
+        let (store, root) = temp_store("partial-current-team-run-fence");
+        let created = create_two_member_team_run(&store);
+        let dangling_spec = TeamMemberSpec {
+            agent_member_id: "agent-dangling-legacy".into(),
+            name: "DanglingLegacy".into(),
+            role: "legacy_only".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: vec!["crates/dangling".into()],
+            resume_native_session_id: None,
+            initial_work: None,
+        };
+        ensure_unit_test_canonical_members(
+            &store,
+            "unit-test-space",
+            &created.team_run.agent_team_id,
+            std::slice::from_ref(&dangling_spec),
+        )
+        .expect("seed exact-space durable identity, but no canonical MemberRun");
+        let dangling = build_member_run_for_team(None, &created.team_run.id, &dangling_spec)
+            .expect("build historical dangling runtime projection");
+        let current = latest_team_run(&store, &created.team_run.id).expect("current TeamRun");
+        let lease = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-partial-fence",
+                std::process::id(),
+                "tcp://127.0.0.1:1",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("seed current Supervisor before reconstructing partial history");
+        let mut partial = current.clone();
+        partial.member_run_ids.push(dangling.id.clone());
+        partial.updated_at = "unix-ms:s6-partial".into();
+        // Reconstruct the exact historical S6 on-disk state without exposing
+        // a production Store writer capable of creating it.
+        for (ledger, value) in [
+            (
+                "team_runs.jsonl",
+                serde_json::to_value(&partial).expect("serialize partial TeamRun"),
+            ),
+            (
+                "member_runs.jsonl",
+                serde_json::to_value(&dangling).expect("serialize dangling runtime"),
+            ),
+        ] {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(store.root().join(ledger))
+                .expect("open historical fixture ledger");
+            serde_json::to_writer(&mut file, &value).expect("write historical fixture row");
+            writeln!(file).expect("terminate historical fixture row");
+            file.sync_all().expect("persist historical fixture row");
+        }
+        assert!(store
+            .member_runs()
+            .expect("raw Legacy diagnostics remain readable")
+            .iter()
+            .any(|member| member.id == dangling.id));
+        assert!(store
+            .trust_member_runs("unit-test-space")
+            .expect("canonical members")
+            .iter()
+            .all(|member| member.id != dangling.id));
+
+        let third = TeamMemberSpec {
+            agent_member_id: "agent-valid-third".into(),
+            name: "ValidThird".into(),
+            role: "reviewer".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: vec!["crates/review".into()],
+            resume_native_session_id: None,
+            initial_work: None,
+        };
+        ensure_unit_test_canonical_members(
+            &store,
+            "unit-test-space",
+            &created.team_run.agent_team_id,
+            std::slice::from_ref(&third),
+        )
+        .expect("seed valid third identity before the zero-write boundary");
+        let (control_rx, _control_registration) =
+            register_live_member_control(&created.member_runs[0], 2);
+        let before = durable_store_file_bytes(&store);
+        let expect_incomplete = |error: CliError| {
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains("MEMBER_RUN_MATERIALIZATION_INCOMPLETE")
+                    && rendered.contains(&dangling.id),
+                "partial current TeamRun must name the exact missing member: {rendered}"
+            );
+        };
+        expect_incomplete(CliError::Store(
+            store
+                .acquire_team_supervisor_under_node_lease(
+                    &partial.id,
+                    &partial.execution_node_id,
+                    &lease.node_daemon_id,
+                    lease.node_daemon_generation,
+                    &lease.execution_space_id,
+                    &partial.project_binding_id,
+                    &lease.supervisor_id,
+                    lease.owner_process_id,
+                    &lease.owner_locator,
+                    current_unix_ms_u64(),
+                    60_000,
+                )
+                .expect_err("partial TeamRun cannot acquire or reuse Supervisor authority"),
+        ));
+
+        expect_incomplete(
+            add_team_run_member(
+                &store,
+                None,
+                &created.team_run.id,
+                &third,
+                Some("review without mutating a partial TeamRun"),
+            )
+            .expect_err("partial TeamRun cannot admit a valid third member or initial Work"),
+        );
+        let partial = latest_team_run(&store, &created.team_run.id).expect("partial TeamRun");
+        expect_incomplete(
+            team_run_display_json(&store, &partial)
+                .expect_err("current status must fail closed for partial TeamRun"),
+        );
+        expect_incomplete(
+            canonical_team_messages_for_run(&store, &partial.id)
+                .expect_err("current inbox/lineage must fail closed for partial TeamRun"),
+        );
+        expect_incomplete(
+            member_run_detail_json(&store, &created.member_runs[0].id)
+                .expect_err("current member detail must fail closed for partial TeamRun"),
+        );
+        let ledger = TeamRunLedger::without_supervisor(&store, &partial.id);
+        expect_incomplete(
+            require_member_provider_session_authority(&ledger, &created.member_runs[0], false)
+                .expect_err("provider/control authority must fail before resolving a session"),
+        );
+        expect_incomplete(
+            transition_team_run(&store, &partial.id, TeamRunStatus::Cancelled)
+                .expect_err("current lifecycle mutation must fail closed for partial TeamRun"),
+        );
+        expect_incomplete(
+            rename_team_run_member(
+                &store,
+                &partial.id,
+                &created.member_runs[0].id,
+                "RenamedWhilePartial",
+            )
+            .expect_err("rename must reject a partial TeamRun"),
+        );
+        expect_incomplete(
+            deactivate_team_run_member(
+                &store,
+                &partial.id,
+                &created.member_runs[0].id,
+                "must remain byte-zero",
+            )
+            .expect_err("deactivate must reject a partial TeamRun"),
+        );
+        expect_incomplete(
+            reopen_team_member_value(
+                &store,
+                &partial.id,
+                &created.member_runs[0].id,
+                &serde_json::json!({"reopened_by": "host", "reason": "partial fence"}),
+            )
+            .expect_err("reopen must reject before provider-profile refresh"),
+        );
+        let start_error = match prepare_team_run_start_body(&store, &partial.id, 2) {
+            Ok(_) => panic!("start preparation must reject before provider-profile refresh"),
+            Err(error) => error,
+        };
+        expect_incomplete(start_error);
+        expect_incomplete(
+            team_run_board_summary_text(&store, &partial.id)
+                .expect_err("board summary must reject partial current state"),
+        );
+        expect_incomplete(CliError::Store(
+            store
+                .current_team_run_events(&partial.id)
+                .expect_err("current event projection must reject partial state"),
+        ));
+        assert!(
+            !store
+                .legacy_team_run_events()
+                .expect("explicit Legacy event diagnostic remains readable")
+                .is_empty(),
+            "historical event rows remain available only through the Legacy reader"
+        );
+
+        let close_admission_hook_calls = AtomicUsize::new(0);
+        expect_incomplete(
+            dispatch_local_live_member_control_with_close_admission_hook(
+                &store,
+                &lease.supervisor_id,
+                lease.generation,
+                &AtomicBool::new(true),
+                &Mutex::new(()),
+                LiveMemberControlRequest::Steer {
+                    team_run_id: partial.id.clone(),
+                    member_run_id: created.member_runs[0].id.clone(),
+                    content: "must never reach provider".into(),
+                    requested_by: "host".into(),
+                },
+                || {
+                    close_admission_hook_calls.fetch_add(1, Ordering::SeqCst);
+                },
+            )
+            .expect_err("Steer must reject before touching the live provider control"),
+        );
+        expect_incomplete(
+            dispatch_local_live_member_control_with_close_admission_hook(
+                &store,
+                &lease.supervisor_id,
+                lease.generation,
+                &AtomicBool::new(true),
+                &Mutex::new(()),
+                LiveMemberControlRequest::Close {
+                    team_run_id: partial.id.clone(),
+                    member_run_id: created.member_runs[0].id.clone(),
+                    reason: "must never latch".into(),
+                    requested_by: "host".into(),
+                },
+                || {
+                    close_admission_hook_calls.fetch_add(1, Ordering::SeqCst);
+                },
+            )
+            .expect_err("Close must reject before its durable admission hook"),
+        );
+        assert_eq!(close_admission_hook_calls.load(Ordering::SeqCst), 0);
+        assert!(
+            matches!(
+                control_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ),
+            "partial TeamRun control reached the provider channel"
+        );
+        assert_eq!(
+            durable_store_file_bytes(&store),
+            before,
+            "all rejected current projections, controls, admission, and Work creation must be byte-zero"
+        );
+
+        let canonical = canonical_member_run_admission("unit-test-space", &dangling);
+        store
+            .legacy_import_create_trust_member_run_projection(&canonical.context, canonical.run)
+            .expect("explicit test-only reconstruction restores canonical completeness");
+        assert_eq!(
+            store
+                .current_team_run_execution_space(&partial)
+                .expect("fully coherent TeamRun resolves"),
+            "unit-test-space"
+        );
+        let (repaired, admitted, work) = add_team_run_member(
+            &store,
+            None,
+            &partial.id,
+            &third,
+            Some("review after explicit coherence restoration"),
+        )
+        .expect("same request succeeds only after explicit canonical reconstruction");
+        assert!(repaired.member_run_ids.contains(&admitted.id));
+        assert!(work.is_some());
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn duplicate_canonical_member_run_scope_is_never_current_authority() {
+        let (store, root) = temp_store("duplicate-canonical-member-scope");
+        let created = create_two_member_team_run(&store);
+        let member = created.member_runs[0].clone();
+        let spec = TeamMemberSpec {
+            agent_member_id: member.agent_member_id.clone(),
+            name: member.name.clone(),
+            role: member.role.clone(),
+            provider: member.provider.clone(),
+            execution_mode: Some("codex_app_server".into()),
+            model: member.model.clone(),
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: member.owned_paths.clone(),
+            resume_native_session_id: None,
+            initial_work: None,
+        };
+        ensure_unit_test_canonical_members(
+            &store,
+            "foreign-duplicate-member-space",
+            &created.team_run.agent_team_id,
+            &[spec],
+        )
+        .expect("seed the foreign AgentMember identity");
+        let duplicate = canonical_member_run_admission("foreign-duplicate-member-space", &member);
+        store
+            .legacy_import_create_trust_member_run_projection(&duplicate.context, duplicate.run)
+            .expect("reconstruct duplicate cross-space canonical projection");
+
+        let error = store
+            .current_team_run_execution_space(&created.team_run)
+            .expect_err("duplicate canonical scope can never be current authority")
+            .to_string();
+        assert!(
+            error.contains("MEMBER_RUN_MATERIALIZATION_MISMATCH")
+                && error.contains(&member.id)
+                && error.contains("2 canonical Execution Space projections"),
+            "exact duplicate must be named: {error}"
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn dynamic_member_admission_revalidates_paused_local_identity_before_writing() {
+        let (store, root) = temp_store("dynamic-member-admission-paused-fence");
+        let created = create_two_member_team_run(&store);
+        let late = TeamMemberSpec {
+            agent_member_id: "agent-dynamic-paused-local".into(),
+            name: "DynamicPausedLocal".into(),
+            role: "reviewer".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: Vec::new(),
+            resume_native_session_id: None,
+            initial_work: None,
+        };
+        ensure_unit_test_canonical_members(
+            &store,
+            "unit-test-space",
+            &created.team_run.agent_team_id,
+            std::slice::from_ref(&late),
+        )
+        .expect("seed local AgentMember");
+        ensure_unit_test_canonical_members(
+            &store,
+            "foreign-member-space",
+            &created.team_run.agent_team_id,
+            std::slice::from_ref(&late),
+        )
+        .expect("seed active foreign decoy for the old all-space precheck");
+        store
+            .transition_trust_agent_member(
+                &harness_core::agentfirm_api::MutationContext {
+                    execution_space_id: "unit-test-space".into(),
+                    authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                        kind: harness_core::agentfirm_api::ActorKind::Service,
+                        id: "test-host".into(),
+                    },
+                    authority_actor: None,
+                    command_name: "test.agent_member.pause".into(),
+                    idempotency_key: "pause-local-before-admission".into(),
+                    expected_version: 1,
+                    request_fingerprint: None,
+                },
+                &late.agent_member_id,
+                harness_core::agentfirm_api::AgentMemberOrganizationStatus::Paused,
+                "unix-ms:3",
+            )
+            .expect("pause selected-space AgentMember");
+        let before = durable_store_file_bytes(&store);
+
+        let error = add_team_run_member(
+            &store,
+            None,
+            &created.team_run.id,
+            &late,
+            Some("must not start while paused"),
+        )
+        .expect_err("selected-space paused state must win over active foreign decoy");
+        assert!(
+            error.to_string().contains("AGENT_MEMBER_PAUSED"),
+            "unexpected paused error: {error}"
+        );
+        assert_eq!(
+            durable_store_file_bytes(&store),
+            before,
+            "paused exact-space revalidation must occur before every durable admission write"
+        );
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -49847,7 +50773,7 @@ package:com.tencent.mm
             Some("provider-receipt-canonical")
         );
         assert!(store
-            .team_messages()
+            .legacy_team_messages()
             .expect("legacy TeamMessages")
             .iter()
             .all(|message| message.id != claimed.id));
@@ -49989,7 +50915,7 @@ package:com.tencent.mm
                 context: String::new(),
                 desired_outcome: None,
                 status: MissionStatus::Running,
-                wave_ids: Vec::new(),
+                legacy_wave_ids: Vec::new(),
                 outcome_summary: None,
                 completed_by: None,
                 created_at: "unix-ms:1".into(),
@@ -50304,11 +51230,605 @@ package:com.tencent.mm
         .expect("materialize canonical test AgentSessions and TeamMemberships");
     }
 
+    fn ensure_foreign_test_message_fabric(
+        store: &HarnessStore,
+        created: &CreatedTeamRun,
+        lease: &TeamSupervisorLease,
+        execution_space_id: &str,
+    ) {
+        store
+            .register_node_project(
+                &NodeProjectRegistration {
+                    node_id: created.team_run.execution_node_id.clone(),
+                    execution_space_id: execution_space_id.to_string(),
+                    project_binding_id: created.team_run.project_binding_id.clone(),
+                    status: NodeProjectRegistrationStatus::Active,
+                    created_at: "unix-ms:foreign-space".into(),
+                    updated_at: "unix-ms:foreign-space".into(),
+                },
+                execution_space_id,
+            )
+            .expect("register colliding foreign Execution Space");
+        let team = store
+            .latest_teams()
+            .expect("read test Team")
+            .remove(&created.team_run.agent_team_id)
+            .expect("test Team");
+        let mut members = vec![TeamMemberSpec {
+            agent_member_id: team.host_agent_id,
+            name: "ForeignTestHost".into(),
+            role: "host".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: Vec::new(),
+            resume_native_session_id: None,
+            initial_work: None,
+        }];
+        members.extend(created.member_runs.iter().map(|member| TeamMemberSpec {
+            agent_member_id: member.agent_member_id.clone(),
+            name: member.name.clone(),
+            role: member.role.clone(),
+            provider: member.provider.clone(),
+            execution_mode: Some("codex_app_server".into()),
+            model: member.model.clone(),
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: member.owned_paths.clone(),
+            resume_native_session_id: None,
+            initial_work: None,
+        }));
+        ensure_unit_test_canonical_members(
+            store,
+            execution_space_id,
+            &created.team_run.agent_team_id,
+            &members,
+        )
+        .expect("materialize foreign canonical AgentMembers");
+        ensure_team_message_fabric(
+            store,
+            &created.team_run.id,
+            execution_space_id,
+            &lease.node_daemon_id,
+            lease.node_daemon_generation,
+        )
+        .expect("materialize foreign canonical AgentSessions and TeamMemberships");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn author_test_canonical_message(
+        store: &HarnessStore,
+        created: &CreatedTeamRun,
+        lease: &TeamSupervisorLease,
+        execution_space_id: &str,
+        id: &str,
+        sender_identity_id: &str,
+        recipient_identity_id: &str,
+        kind: harness_core::agentfirm_api::MessageKind,
+        body: &str,
+        correlation_id: &str,
+        causation_id: Option<&str>,
+        response_intent: harness_core::agentfirm_api::ResponseIntent,
+    ) -> harness_core::agentfirm_api::Message {
+        use harness_core::agentfirm_api::{
+            ActorKind, ActorRef, Message, MessageAddressKind, MessageRecipientKind,
+            MessageRecipientRef, MutationContext,
+        };
+        use sha2::{Digest, Sha256};
+
+        let session = store
+            .fabric_agent_sessions(execution_space_id)
+            .expect("canonical test AgentSessions")
+            .into_iter()
+            .find(|session| session.agent_identity_id == sender_identity_id)
+            .expect("sender has one canonical AgentSession");
+        let sender = ActorRef {
+            kind: ActorKind::AgentMember,
+            id: sender_identity_id.to_string(),
+        };
+        let recipient = MessageRecipientRef {
+            kind: MessageRecipientKind::AgentIdentity,
+            id: recipient_identity_id.to_string(),
+        };
+        let recipients = vec![recipient.clone()];
+        let body_digest = format!("sha256:{:x}", Sha256::digest(body.as_bytes()));
+        let idempotency_key = format!("test-author:{id}");
+        let content_fingerprint = harness_store::canonical_json_fingerprint(&serde_json::json!({
+            "sender_actor_ref": sender,
+            "sender_agent_id": sender_identity_id,
+            "sender_session_id": session.id,
+            "address_kind": MessageAddressKind::DirectAgent,
+            "target_ref": recipient,
+            "recipients": recipients,
+            "team_id": created.team_run.agent_team_id,
+            "team_run_id": created.team_run.id,
+            "work_id": null,
+            "collaboration_scope": null,
+            "kind": kind,
+            "body": body,
+            "body_digest": body_digest,
+            "correlation_id": correlation_id,
+            "causation_id": causation_id,
+            "response_intent": response_intent,
+            "evidence_refs": Vec::<String>::new(),
+            "schema_version": 1,
+            "idempotency_key": idempotency_key,
+        }));
+        let message = Message {
+            id: id.to_string(),
+            source_execution_space_id: execution_space_id.to_string(),
+            source_node_id: session.node_id.clone(),
+            source_node_daemon_id: lease.node_daemon_id.clone(),
+            source_authority_generation: lease.node_daemon_generation,
+            sender_actor_ref: sender,
+            sender_agent_id: Some(sender_identity_id.to_string()),
+            sender_session_id: Some(session.id),
+            address_kind: MessageAddressKind::DirectAgent,
+            target_ref: recipient,
+            recipients,
+            team_id: Some(created.team_run.agent_team_id.clone()),
+            team_run_id: Some(created.team_run.id.clone()),
+            work_id: None,
+            collaboration_scope: None,
+            kind,
+            body: body.to_string(),
+            body_digest,
+            correlation_id: correlation_id.to_string(),
+            causation_id: causation_id.map(str::to_string),
+            response_intent,
+            evidence_refs: Vec::new(),
+            content_fingerprint,
+            schema_version: 1,
+            idempotency_key: idempotency_key.clone(),
+            created_at: now_string(),
+        };
+        store
+            .author_message(
+                &MutationContext {
+                    execution_space_id: execution_space_id.to_string(),
+                    authenticated_actor: ActorRef {
+                        kind: ActorKind::Service,
+                        id: lease.node_daemon_id.clone(),
+                    },
+                    authority_actor: None,
+                    command_name: "test.message.author".into(),
+                    idempotency_key,
+                    expected_version: 0,
+                    request_fingerprint: None,
+                },
+                message.clone(),
+            )
+            .expect("author canonical Message");
+        message
+    }
+
+    #[test]
+    fn canonical_message_fabric_drives_lineage_status_and_member_detail_without_legacy_rows() {
+        let (store, root) = temp_store("canonical-current-message-projections");
+        let created = create_two_member_team_run(&store);
+        let lease = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "canonical-current-message-projections",
+                std::process::id(),
+                "test://canonical-current-message-projections",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire canonical test Supervisor");
+        ensure_test_runtime_fabric(&store, &created, &lease);
+        let team = store
+            .latest_teams()
+            .expect("test Team")
+            .remove(&created.team_run.agent_team_id)
+            .expect("Team exists");
+        let member = &created.member_runs[0];
+        let legacy_path = store.root().join("team_messages.jsonl");
+        std::fs::write(&legacy_path, b"{malformed legacy archive")
+            .expect("seed unreadable Legacy archive sentinel");
+        let legacy_before = std::fs::read(&legacy_path).expect("legacy bytes before");
+
+        author_test_canonical_message(
+            &store,
+            &created,
+            &lease,
+            &lease.execution_space_id,
+            "canonical-host-request",
+            &team.host_agent_id,
+            &member.agent_member_id,
+            harness_core::agentfirm_api::MessageKind::Message,
+            "Please report status",
+            "canonical-conversation",
+            None,
+            harness_core::agentfirm_api::ResponseIntent::ResponseRequired,
+        );
+        author_test_canonical_message(
+            &store,
+            &created,
+            &lease,
+            &lease.execution_space_id,
+            "canonical-member-reply",
+            &member.agent_member_id,
+            &team.host_agent_id,
+            harness_core::agentfirm_api::MessageKind::Reply,
+            "Status complete",
+            "canonical-conversation",
+            Some("canonical-host-request"),
+            harness_core::agentfirm_api::ResponseIntent::Informational,
+        );
+        let foreign_space = "foreign-colliding-message-space";
+        ensure_foreign_test_message_fabric(&store, &created, &lease, foreign_space);
+        author_test_canonical_message(
+            &store,
+            &created,
+            &lease,
+            foreign_space,
+            "foreign-host-request",
+            &team.host_agent_id,
+            &member.agent_member_id,
+            harness_core::agentfirm_api::MessageKind::Message,
+            "Foreign request must remain isolated",
+            "foreign-conversation",
+            None,
+            harness_core::agentfirm_api::ResponseIntent::ResponseRequired,
+        );
+        author_test_canonical_message(
+            &store,
+            &created,
+            &lease,
+            foreign_space,
+            "foreign-member-reply",
+            &member.agent_member_id,
+            &team.host_agent_id,
+            harness_core::agentfirm_api::MessageKind::Reply,
+            "Foreign reply must remain isolated",
+            "foreign-conversation",
+            Some("foreign-host-request"),
+            harness_core::agentfirm_api::ResponseIntent::Informational,
+        );
+
+        let lineage = resolve_team_message_lineage(
+            &store,
+            &created.team_run.id,
+            &ProviderDispatchIntent::Message,
+            None,
+            Some("canonical-member-reply".into()),
+        )
+        .expect("canonical reply supplies lineage");
+        assert_eq!(lineage.0, "canonical-conversation");
+        assert_eq!(lineage.1.as_deref(), Some("canonical-member-reply"));
+        assert!(resolve_team_message_lineage(
+            &store,
+            &created.team_run.id,
+            &ProviderDispatchIntent::Message,
+            None,
+            Some("foreign-member-reply".into()),
+        )
+        .expect_err("foreign-space message cannot establish current-run lineage")
+        .to_string()
+        .contains("does not identify a message"));
+        let current = canonical_team_messages_for_run(&store, &created.team_run.id)
+            .expect("exact-space canonical projection");
+        assert_eq!(current.len(), 2);
+        assert!(current
+            .iter()
+            .all(|message| !message.id.starts_with("foreign-")));
+        let member_inbox = team_run_inbox(&store, &created.team_run.id, &member.id, true)
+            .expect("exact-space Member inbox");
+        assert_eq!(
+            member_inbox
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["canonical-host-request"]
+        );
+        assert_eq!(
+            team_run_unacknowledged_message_count(&store, &created.team_run.id)
+                .expect("canonical status count"),
+            1,
+            "member-to-Host canonical delivery is current unacknowledged status"
+        );
+        let detail = member_run_detail_json(&store, &member.id).expect("canonical member detail");
+        assert_eq!(detail["mailbox"]["inbox"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            detail["mailbox"]["outbox"].as_array().map(Vec::len),
+            Some(1),
+            "canonical sender identity must project back to its MemberRun"
+        );
+        let host_inbox = team_run_inbox(&store, &created.team_run.id, "host", true)
+            .expect("exact-space Host inbox");
+        assert_eq!(
+            host_inbox
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["canonical-member-reply"]
+        );
+        let dashboard = dashboard_snapshot(&store).expect("exact-space Dashboard snapshot");
+        assert_eq!(
+            dashboard["team_messages"]
+                .as_array()
+                .expect("current Team message projection")
+                .iter()
+                .filter(|message| {
+                    message["team_run_id"].as_str() == Some(created.team_run.id.as_str())
+                })
+                .map(|message| message["id"].as_str().expect("message id"))
+                .collect::<Vec<_>>(),
+            vec!["canonical-host-request", "canonical-member-reply"],
+            "Dashboard current messages must ignore a foreign-space run-id collision"
+        );
+        assert_eq!(
+            std::fs::read(&legacy_path).expect("legacy bytes after"),
+            legacy_before,
+            "current lineage/status/detail must neither read nor write the Legacy archive"
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn provider_authority_never_borrows_a_sole_foreign_space_session() {
+        use harness_core::agentfirm_api::{AgentSessionStatus, RuntimeCommandKind};
+
+        let (store, root) = temp_store("provider-session-exact-space");
+        let created = create_two_member_team_run(&store);
+        let lease = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "provider-session-exact-space",
+                std::process::id(),
+                "test://provider-session-exact-space",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire canonical test Supervisor");
+        let foreign_space = "foreign-sole-provider-session-space";
+        ensure_foreign_test_message_fabric(&store, &created, &lease, foreign_space);
+        let member = &created.member_runs[0];
+        let before = store
+            .fabric_agent_sessions(foreign_space)
+            .expect("foreign sessions")
+            .into_iter()
+            .find(|session| session.agent_identity_id == member.agent_member_id)
+            .expect("sole foreign provider session");
+        assert_ne!(before.lifecycle, AgentSessionStatus::Closed);
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+
+        for error in [
+            require_member_provider_session_authority(&ledger, member, false)
+                .expect_err("authority cannot borrow the foreign session"),
+            transition_provider_session_for_member(&ledger, member, AgentSessionStatus::Active)
+                .expect_err("transition cannot mutate the foreign session"),
+            prepare_provider_process_effect(&ledger, member)
+                .expect_err("process effect cannot target the foreign session"),
+            prepare_provider_effect_kind(
+                &ledger,
+                member,
+                "foreign-session-input",
+                "must remain local",
+                RuntimeCommandKind::DispatchProvider,
+                "provider.dispatch",
+            )
+            .expect_err("provider effect cannot target the foreign session"),
+        ] {
+            assert!(
+                error.to_string().contains("found 0"),
+                "exact local-space absence must fail closed: {error}"
+            );
+        }
+        let after = store
+            .fabric_agent_sessions(foreign_space)
+            .expect("foreign sessions after rejection")
+            .into_iter()
+            .find(|session| session.id == before.id)
+            .expect("foreign provider session remains");
+        assert_eq!(after, before);
+        assert!(store
+            .runtime_commands(&lease.execution_space_id)
+            .expect("local RuntimeCommands")
+            .is_empty());
+        assert!(store
+            .runtime_commands(foreign_space)
+            .expect("foreign RuntimeCommands")
+            .is_empty());
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn provider_request_replay_uses_canonical_message_only() {
+        let (store, root) = temp_store("canonical-provider-request-replay");
+        let created = create_two_member_team_run(&store);
+        let lease = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "canonical-provider-request-replay",
+                std::process::id(),
+                "test://canonical-provider-request-replay",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire canonical test Supervisor");
+        ensure_test_runtime_fabric(&store, &created, &lease);
+        let team = store
+            .latest_teams()
+            .expect("test Team")
+            .remove(&created.team_run.agent_team_id)
+            .expect("Team exists");
+        let mut member = created.member_runs[0].clone();
+        let expected = member.clone();
+        member.native_session = Some(NativeSessionRef {
+            provider: member.provider.clone(),
+            execution_mode: "codex_app_server".into(),
+            native_session_id: "canonical-replay-session".into(),
+            native_locator_kind: "codex_thread".into(),
+            provider_version: None,
+            adapter_contract_version: "test".into(),
+            availability: NativeSessionAvailability::Available,
+            supports_resume: true,
+            last_verified_at: None,
+            parent_native_session_id: None,
+        });
+        store
+            .compare_and_append_member_run(&expected, &member)
+            .expect("bind provider-native session");
+        let options = vec![ProviderInteractionMessageOption {
+            id: "answer::0".into(),
+            label: "Proceed".into(),
+            intent: Some("answer".into()),
+        }];
+        let body = ProviderInteractionRequestBody {
+            interaction_type: ProviderInteractionType::Question,
+            prompt: "Continue?".into(),
+            options: options.clone(),
+            provider: member.provider.clone(),
+            provider_request_id: "native-request-7".into(),
+            method: "item/tool/requestUserInput".into(),
+            session: "canonical-replay-session".into(),
+            member: member.id.clone(),
+            generation: member.runtime_generation,
+        };
+        let canonical_body = body.to_canonical_json().expect("canonical request body");
+        let correlation = body.correlation_id();
+        let legacy_path = store.root().join("team_messages.jsonl");
+        std::fs::write(&legacy_path, b"{malformed legacy archive")
+            .expect("seed unreadable Legacy archive sentinel");
+        let legacy_before = std::fs::read(&legacy_path).expect("legacy bytes before");
+        let authored = author_test_canonical_message(
+            &store,
+            &created,
+            &lease,
+            &lease.execution_space_id,
+            "canonical-provider-request",
+            &member.agent_member_id,
+            &team.host_agent_id,
+            harness_core::agentfirm_api::MessageKind::ProviderInteractionRequest,
+            &canonical_body,
+            &correlation,
+            None,
+            harness_core::agentfirm_api::ResponseIntent::ResponseRequired,
+        );
+        let foreign_space = "foreign-colliding-provider-replay-space";
+        ensure_foreign_test_message_fabric(&store, &created, &lease, foreign_space);
+        author_test_canonical_message(
+            &store,
+            &created,
+            &lease,
+            foreign_space,
+            "foreign-provider-request",
+            &member.agent_member_id,
+            &team.host_agent_id,
+            harness_core::agentfirm_api::MessageKind::ProviderInteractionRequest,
+            "{\"foreign\":true}",
+            &correlation,
+            None,
+            harness_core::agentfirm_api::ResponseIntent::ResponseRequired,
+        );
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let (replayed, created_again) = provider_interaction_request_message(
+            &ledger,
+            &member,
+            "native-request-7",
+            "item/tool/requestUserInput",
+            ProviderInteractionType::Question,
+            "Continue?".into(),
+            options,
+        )
+        .expect("exact canonical provider request replay converges");
+        assert!(!created_again);
+        assert_eq!(replayed.id, authored.id);
+        assert_eq!(
+            canonical_team_messages_for_run(&store, &created.team_run.id)
+                .expect("canonical messages")
+                .iter()
+                .filter(|message| {
+                    message.kind == ProviderDispatchIntent::ProviderInteractionRequest
+                })
+                .count(),
+            1
+        );
+        assert_eq!(
+            std::fs::read(&legacy_path).expect("legacy bytes after"),
+            legacy_before,
+            "provider request replay must neither read nor write the Legacy archive"
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
     struct FaithfulProviderControlShim {
         provider: &'static str,
         primitive: crate::provider_adapter::NativeControlPrimitive,
         native_effects: usize,
         fail_after_dispatch: bool,
+    }
+
+    #[test]
+    fn provider_answer_response_first_retry_recovers_without_duplicate_or_early_ack() {
+        let response = TeamMessageProjection {
+            id: "stable-response".into(),
+            team_run_id: "run".into(),
+            work_id: None,
+            source_plan_ref: None,
+            sender: None,
+            sender_runtime_id: "host".into(),
+            recipients: Vec::new(),
+            recipient_runtime_ids: Vec::new(),
+            kind: ProviderDispatchIntent::ProviderInteractionResponse,
+            body: "{}".into(),
+            correlation_id: "request".into(),
+            causation_id: Some("request".into()),
+            response_intent: Some(ProviderResponseIntent::Informational),
+            evidence_refs: Vec::new(),
+            deliveries: Vec::new(),
+            created_at: "unix-ms:1".into(),
+        };
+        let published = std::cell::Cell::new(0usize);
+        let acknowledged = std::cell::Cell::new(0usize);
+        let injected = publish_provider_answer_response_first(
+            None,
+            || {
+                published.set(published.get() + 1);
+                Ok(response.clone())
+            },
+            || Err(CliError::Usage("injected crash after publish".into())),
+            || {
+                acknowledged.set(acknowledged.get() + 1);
+                Ok(())
+            },
+        )
+        .expect_err("crash window must surface");
+        assert!(injected.to_string().contains("injected crash"));
+        assert_eq!(published.get(), 1);
+        assert_eq!(acknowledged.get(), 0, "ACK cannot precede publish");
+
+        let recovered = publish_provider_answer_response_first(
+            Some(response.clone()),
+            || panic!("exact retry must reuse the durable response"),
+            || panic!("existing response does not cross the publish crash window"),
+            || {
+                acknowledged.set(acknowledged.get() + 1);
+                Ok(())
+            },
+        )
+        .expect("exact retry finishes ACK");
+        assert_eq!(recovered.id, response.id);
+        assert_eq!(published.get(), 1, "retry cannot publish a duplicate");
+        assert_eq!(acknowledged.get(), 1);
     }
 
     impl crate::provider_adapter::ProviderNativeControl for FaithfulProviderControlShim {
@@ -50385,12 +51905,14 @@ package:com.tencent.mm
             transition_provider_session_for_member(&ledger, &member, AgentSessionStatus::Active)
                 .expect("activate provider session");
 
-            let mapping = crate::provider_adapter::map_permission(
-                provider,
-                PermissionCeiling::WorkspaceWrite,
-            )
-            .expect("provider permission mapping");
-            assert_eq!(mapping.effective, PermissionCeiling::WorkspaceWrite);
+            let requested_ceiling = if provider == "kimi" {
+                PermissionCeiling::FullAccess
+            } else {
+                PermissionCeiling::WorkspaceWrite
+            };
+            let mapping = crate::provider_adapter::map_permission(provider, requested_ceiling)
+                .expect("provider permission mapping");
+            assert_eq!(mapping.effective, requested_ceiling);
             assert_eq!(
                 crate::provider_adapter::effective_delivery_mode(
                     provider,
@@ -50586,67 +52108,6 @@ package:com.tencent.mm
     }
 
     #[test]
-    fn legacy_pending_interaction_resolve_stays_on_legacy_ledger() {
-        let (store, root) = temp_store("legacy-pending-interaction-resolve");
-        let created = create_two_member_team_run(&store);
-        let member = &created.member_runs[0];
-        let legacy = PendingInteraction {
-            id: "legacy-pending-1".into(),
-            team_run_id: created.team_run.id.clone(),
-            member_run_id: member.id.clone(),
-            provider: "codex".into(),
-            provider_request_id: "legacy-provider-request-1".into(),
-            method: "item/tool/requestUserInput".into(),
-            kind: PendingInteractionKind::Question,
-            route: PendingInteractionRoute::Lead,
-            status: PendingInteractionStatus::Pending,
-            title: "Legacy question".into(),
-            prompt: "Continue the legacy operation?".into(),
-            options: vec![harness_core::PendingInteractionOption {
-                id: "continue".into(),
-                label: "Continue".into(),
-                intent: Some("answer".into()),
-            }],
-            tool_call_id: None,
-            response_option_id: None,
-            response_text: None,
-            created_at: "unix-ms:legacy-created".into(),
-            resolved_at: None,
-            resolved_by: None,
-        };
-        store
-            .append_pending_interaction(&legacy)
-            .expect("seed legacy pending interaction");
-        let messages_before = store.team_messages().expect("messages before");
-
-        let resolved = resolve_pending_interaction_value(
-            &store,
-            &created.team_run.id,
-            &legacy.id,
-            &serde_json::json!({
-                "resolved_by": "host",
-                "option_id": "continue"
-            }),
-        )
-        .expect("resolve legacy row through compatibility endpoint");
-        assert_eq!(resolved["status"].as_str(), Some("answered"));
-        assert_eq!(resolved["response_option_id"].as_str(), Some("continue"));
-        assert_eq!(
-            store.team_messages().expect("messages after"),
-            messages_before,
-            "legacy resolve must not fabricate or consume TeamMessages"
-        );
-        let latest = latest_pending_interactions_in_append_order(&store)
-            .expect("latest legacy interactions")
-            .into_iter()
-            .find(|interaction| interaction.id == legacy.id)
-            .expect("resolved legacy row");
-        assert_eq!(latest.status, PendingInteractionStatus::Answered);
-        assert_eq!(latest.resolved_by.as_deref(), Some("host"));
-        std::fs::remove_dir_all(root).expect("cleanup");
-    }
-
-    #[test]
     fn provider_interaction_cas_rebases_retries_and_fences_lifecycle() {
         let (store, root) = temp_store("provider-interaction-cas");
         let created = create_two_member_team_run(&store);
@@ -50769,7 +52230,7 @@ package:com.tencent.mm
         reopened.status = MemberRunStatus::Idle;
         reopened.finished_at = None;
         store
-            .compare_and_append_member_run(&closed, &reopened)
+            .compare_and_advance_member_run_generation(&closed, &reopened)
             .expect("reopen next generation");
         assert!(transition_provider_interaction_member(
             &ledger,
@@ -50899,12 +52360,7 @@ package:com.tencent.mm
         assert!(stale_replay
             .to_string()
             .contains("replayed with different semantics"));
-        assert!(store
-            .pending_interactions()
-            .expect("legacy pending ledger")
-            .is_empty());
-
-        let response = resolve_pending_interaction_value(
+        let response = answer_provider_message_value(
             &store,
             &created.team_run.id,
             &request.id,
@@ -50918,7 +52374,7 @@ package:com.tencent.mm
             response["kind"].as_str(),
             Some("provider_interaction_response")
         );
-        let exact_retry = resolve_pending_interaction_value(
+        let exact_retry = answer_provider_message_value(
             &store,
             &created.team_run.id,
             &request.id,
@@ -50929,7 +52385,7 @@ package:com.tencent.mm
         )
         .expect("exact response retry converges");
         assert_eq!(exact_retry["id"], response["id"]);
-        let conflict = resolve_pending_interaction_value(
+        let conflict = answer_provider_message_value(
             &store,
             &created.team_run.id,
             &request.id,
@@ -51014,7 +52470,8 @@ package:com.tencent.mm
             )
             .expect("replacement completes after native write");
 
-        let messages = latest_team_messages_in_append_order(&store).expect("messages");
+        let messages = canonical_team_messages_for_run(&store, &created.team_run.id)
+            .expect("canonical messages");
         let latest_request = messages
             .iter()
             .find(|message| message.id == request.id)
@@ -51219,7 +52676,7 @@ package:com.tencent.mm
                     let mut unrelated = expected.clone();
                     unrelated.runtime_generation += 1;
                     unrelated.last_event_at = Some("unix-ms:201".into());
-                    store.compare_and_append_member_run(expected, &unrelated)?;
+                    store.compare_and_advance_member_run_generation(expected, &unrelated)?;
                 }
                 Ok(())
             },
@@ -51760,7 +53217,7 @@ package:com.tencent.mm
             parent_native_session_id: None,
         });
         store
-            .compare_and_append_member_run(&second, &new_generation)
+            .compare_and_advance_member_run_generation(&second, &new_generation)
             .expect("advance generation and session");
         assert!(matches!(
             prepare_member_workspace_for_spawn(&ledger, &second, &snapshot)
@@ -51894,8 +53351,9 @@ package:com.tencent.mm
             "save_member_run must sync the settled binding onto the canonical AgentSession"
         );
 
-        // A same-id save is a no-op for the trust rows; an unchanged save
-        // never touches them either.
+        // Lifecycle timestamps are part of the strict current projection and
+        // therefore advance both ledgers even when the native binding itself
+        // is unchanged.
         let before = store
             .canonical_operations()
             .expect("operations before idempotent saves")
@@ -51913,7 +53371,14 @@ package:com.tencent.mm
             .canonical_operations()
             .expect("operations after idempotent saves")
             .len();
-        assert_eq!(before, after, "unchanged binding writes no trust mutation");
+        assert_eq!(after, before + 1, "lifecycle timestamp syncs canonically");
+        let canonical_after = store
+            .trust_member_runs(&space_id)
+            .expect("trust MemberRuns after timestamp update")
+            .into_iter()
+            .find(|run| run.id == settled.id)
+            .expect("canonical trust MemberRun after timestamp update");
+        assert_eq!(canonical_after.last_event_at, status_only.last_event_at);
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -52076,7 +53541,7 @@ package:com.tencent.mm
         reopened.started_at = "unix-ms:200".into();
         reopened.last_event_at = Some("unix-ms:200".into());
         store
-            .compare_and_append_member_run(&initial, &reopened)
+            .compare_and_advance_member_run_generation(&initial, &reopened)
             .expect("seed reopened queued generation");
         let lease = store
             .acquire_test_supervisor_lease(
@@ -53904,7 +55369,6 @@ package:com.tencent.mm
                 initial_work: None,
             },
             Some("Join the running collaboration"),
-            None,
         );
         let add_error = match add_result {
             Ok(_) => panic!("Agent Team add-member must reject one-shot Codex exec"),
@@ -54412,17 +55876,10 @@ package:com.tencent.mm
                  real match arm in mission_log_command"
             );
         }
-        // `wave create|update|advance|gate` retired with the ADR 0051 Mission
-        // Log cutover (see `retired_wave_write_command`); only `list` remains
-        // documented (historical read). This deliberately does NOT check for
-        // the retired leaves, so this test would fail loudly if one were ever
-        // re-added to the cheatsheet without also being wired.
-        let wave_body = function_body(MAIN_RS_SOURCE, "wave_command");
-        assert!(
-            subcommand_is_real(wave_body, "list"),
-            "wave list is documented in the cheatsheet but is not a \
-             real match arm in wave_command"
-        );
+        // Wave is absent from current workflow cheatsheets. Historical reads
+        // live under the explicit `legacy wave` namespace only.
+        assert!(!CHEATSHEET_MISSION.contains("wave "));
+        assert!(!CHEATSHEET_ALL.contains("wave "));
         for retired in ["create", "update", "advance", "gate"] {
             assert!(
                 !CHEATSHEET_MISSION.contains(&format!("wave {retired}")),

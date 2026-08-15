@@ -1,74 +1,73 @@
 # Development system pattern
 
-## Separate the three lifecycles
+## Default to one Task authority
 
-Use three authorities when a development system must represent durable work, repeated execution, and governed documents:
+The default development system is deliberately small:
+
+```text
+Brain assigns Task
+  -> Dev works freely
+  -> READY_FOR_REVIEW at one exact revision
+  -> Reviewer writes one immutable Review
+  -> Pass: Task Done
+  -> Changes Required: same Task returns to Doing
+```
+
+Use one Task database as the current authority. Do not require a second Run,
+Candidate, readiness gate, event ledger, or merge-authorization state machine.
+Add an advanced execution-attempt object only when a demonstrated operational
+need cannot be represented by Task plus immutable Review history.
+
+## Task and Review responsibilities
 
 | Authority | Owns | Must not own |
 |---|---|---|
-| Development Work | objective, scope, overall state, priority, owner, next action | each execution attempt or full document bodies |
-| Delivery Runs | one attempt/candidate, assignee or provider, run state, timestamps, result | the durable work state or canonical specification |
-| Development Documents | typed authored artifacts and their document status | live execution state duplicated from a run |
+| Development Task | goal/acceptance, owner, status, next action, blocker, working revision, review revision, current reviewer | repeated editable copies of review history |
+| Development Review | Task relation, submission number, exact reviewed revision, verdict, findings, reviewer, reviewed time | current Task routing or mutable execution state |
+| Development Document | typed Specification or durable supporting material | duplicate Task status or a hidden execution lifecycle |
 
-This separation supports one work item with many candidates, retries, or reviews without overwriting history.
+Task statuses are: `Planned`, `Doing`, `In Review`, `Changes Required`,
+`Blocked`, and `Done`.
 
-## Keep the document set intentional
+## Review history
 
-Default to three document types unless a real governance need proves another type:
+Brain allocates the next submission number when routing `READY_FOR_REVIEW`.
+Every submission receives one Review record. Code review binds to the exact
+review revision. `Changes Required` preserves the Review, clears the active
+review routing, and returns the same Task to `Doing`; it does not create a new
+Task or mandatory successor Run.
 
-- **Specification:** desired behavior, scope, constraints, acceptance criteria, and open decisions.
-- **Execution Report:** approach, chronological journal when useful, changed artifacts, checks, deviations, and completion summary.
-- **Review Report:** reviewer findings, evidence assessment, gate outcome, and required follow-up.
+Review findings may link to GitHub, checks, evidence, and a Specification. Do
+not split a normal submission into Snapshot and Result databases.
 
-Put journal and completion inside the Execution Report instead of creating separate generic document types. A document type should exist because it has distinct authorship, audience, lifecycle, or gate semantics—not because it is another phase label.
+## Build the Task page as a cockpit
 
-## Model relations semantically
+The default Task page should answer:
 
-Recommended minimum connections:
+1. What outcome and acceptance criteria govern this Task?
+2. Who owns it and what is its current status?
+3. What happens next, or what is blocking it?
+4. Which Specification and GitHub Issue/PR are related?
+5. What immutable Review history exists?
 
-- A Run belongs to exactly one Work item.
-- A Document belongs to one Work item.
-- An Execution Report normally identifies the Run it reports.
-- A Review Report identifies the Run or proposal it evaluates when that distinction matters.
-- A Specification may govern multiple Runs under the same Work item.
+Use a filtered linked Review view rather than copied review tables or generic
+`Related pages` sections. Relations should be named by meaning: `Task`,
+`Specification`, `Reviews`, and `GitHub Issue`.
 
-Use clear property names such as `Work`, `Run`, `Specification`, and `Review Report`. Avoid a single polymorphic `Related pages` relation.
+## Keep execution activity at its source
 
-## Assign state to the correct owner
-
-- Work owns overall lifecycle and next action.
-- Run owns attempt state and execution outcome.
-- Review Report owns the reviewer recommendation or gate finding.
-- The accepted Decision, if modeled separately, owns acceptance.
-
-Do not infer that Work is complete merely because a Run finished. Do not make the Review Report silently overwrite Run history. Rollups may summarize authoritative state, but should not create a second editable state field.
-
-## Build the Work page as a cockpit
-
-The default Work page should answer:
-
-1. What outcome is being pursued?
-2. What is the current decision/state?
-3. What happens next, and who owns it?
-4. Which specification governs the work?
-5. Which runs occurred or are active?
-6. What execution and review evidence exists?
-
-Use filtered linked views of Delivery Runs and Development Documents rather than copied tables. Keep the narrative concise and place exceptional decisions in context.
-
-## Support candidate and retry history
-
-Represent parallel candidates, provider sessions, retries, or remediation attempts as separate Runs. Preserve abandoned or rejected runs with explicit status. Never reuse one run record so aggressively that evidence from a prior attempt disappears.
+The Codex/provider Session is source truth for activity; GitHub is source truth
+for commits, CI, PR, and merge. Notion records semantic checkpoints, not every
+commit or provider event. Working revision is the last reported exact revision,
+not a readiness permission.
 
 ## Avoid common collapses
 
 Reject designs that:
 
-- place Work, Run, and Document states in one row;
-- make a document URL field stand in for a relation;
-- create one mega-page for spec, live journal, completion, and review;
-- copy run status into several documents;
-- use generic page relations to recreate an implicit graph;
-- put every implementation log in the canonical knowledge wiki.
-
-Development evidence may link to canonical architecture docs, but execution artifacts and durable knowledge have different lifecycles and should remain distinguishable.
+- make Task and Run mandatory editable authorities for the same work;
+- introduce Candidate or pre-work readiness as a permission gate;
+- put Specification, execution journal, and Review into one mega-page;
+- duplicate current status, blocker, revision, CI, or next action;
+- use generic page relations or URL fields instead of semantic relations;
+- copy provider/session activity into Notion as a scheduler ledger.

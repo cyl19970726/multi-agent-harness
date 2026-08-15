@@ -588,7 +588,7 @@ pub struct ProjectContext {
 /// Unlike the transitional [`ProjectContext`], a Project Binding never owns an
 /// execution store. It says where a provider may run and which repository,
 /// instruction, Skill-discovery, permission, and worktree boundary applies.
-/// Mission/Wave/Agent Team/Workflow records belong to an independent Execution
+/// Mission/Agent Team/Workflow records belong to an independent Execution
 /// Space.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectBinding {
@@ -1009,16 +1009,18 @@ pub struct Vision {
 }
 
 // ---------------------------------------------------------------------------
-// Mission / Wave product contracts (ADR 0026)
+// Mission plus Legacy Wave compatibility contracts (ADR 0026, superseded by
+// ADR 0051)
 //
 // A Mission owns durable intent, context, one flat AgentTeam, and outcome.
-// Each historical Wave is one versioned Host plan/judgment memo. Execution
+// Each LegacyWave is a pre-ADR 0051 Host plan/judgment memo. Execution
 // records remain independently addressable and are related through Mission,
 // assignment messages, correlations, and optional source_plan_ref.
 // ---------------------------------------------------------------------------
 
 /// Lifecycle of a [`Mission`]. Execution progress belongs to the selected
-/// TeamRun, WorkflowRun, Host, and provider-native sessions—not to a Wave.
+/// TeamRun, WorkflowRun, Host, and provider-native sessions—not to a Legacy
+/// Wave row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MissionStatus {
@@ -1039,22 +1041,22 @@ pub struct Mission {
     pub id: String,
     pub title: String,
     pub objective: String,
-    /// Durable Markdown brief used by the Host when planning and revising
-    /// Waves. Older rows deserialize as an empty brief.
+    /// Durable Markdown brief used by the Host. Material revisions are
+    /// appended to Mission Log; older rows deserialize as an empty brief.
     #[serde(default)]
     pub context: String,
     #[serde(default)]
     pub desired_outcome: Option<String>,
     #[serde(default)]
     pub status: MissionStatus,
-    /// Ordered Wave identities. Wave rows remain their own append-only ledger;
-    /// this is a convenient explicit membership projection, not a replacement
-    /// for reading the Wave ledger by `mission_id`.
-    #[serde(default)]
-    pub wave_ids: Vec<String>,
+    /// Pre-ADR 0051 ordered Wave identities. The historical wire key remains
+    /// `wave_ids`; new Missions always keep it empty and current code must not
+    /// use it as plan or lifecycle authority.
+    #[serde(default, rename = "wave_ids", skip_serializing_if = "Vec::is_empty")]
+    pub legacy_wave_ids: Vec<String>,
     #[serde(default)]
     pub outcome_summary: Option<String>,
-    /// Actor that explicitly performed Mission closeout. Wave acceptance does
+    /// Actor that explicitly performed Mission closeout. Legacy Wave acceptance does
     /// not infer this responsibility.
     #[serde(default)]
     pub completed_by: Option<String>,
@@ -1064,22 +1066,21 @@ pub struct Mission {
     pub completed_at: Option<String>,
 }
 
-/// Compatibility/projection hint retained on [`Wave`] rows. New Host-plan
-/// Waves default to `Host`; they do not own the TeamRun, WorkflowRun, or native
-/// session that informed the Host's plan. This enum intentionally has no
-/// task-graph variant.
+/// Compatibility/projection hint retained only on pre-ADR 0051
+/// [`LegacyWave`] rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WaveExecutorKind {
+pub enum LegacyWaveExecutorKind {
     AgentTeam,
     DynamicWorkflow,
     Host,
 }
 
-/// Lifecycle of a [`Wave`], kept separate from its lightweight gate result.
+/// Historical lifecycle of a [`LegacyWave`]. Current Mission planning has no
+/// separate lifecycle object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum WaveStatus {
+pub enum LegacyWaveStatus {
     #[default]
     Planned,
     Running,
@@ -1090,11 +1091,11 @@ pub enum WaveStatus {
     Cancelled,
 }
 
-/// Lightweight acceptance state for a [`Wave`]. Repositories may retain
-/// stricter governance on top of this product contract.
+/// Historical acceptance state for a [`LegacyWave`]. Current Mission Log
+/// entries have no gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum WaveGateStatus {
+pub enum LegacyWaveGateStatus {
     #[default]
     Pending,
     Accepted,
@@ -1102,12 +1103,11 @@ pub enum WaveGateStatus {
     Blocked,
 }
 
-/// One ordered, versioned Host plan/judgment memo in a Mission. A Wave has no
-/// task graph, runtime children, synchronization barrier, or session lifecycle.
-/// `executor_run_ids` and `accepted_run_id` remain only for reading historical
-/// direct-executor Wave rows.
+/// One pre-ADR 0051 Host plan/judgment row. This type exists only to decode and
+/// export historical `waves.jsonl`; current product code uses Mission plus
+/// append-only MissionLogEntry and cannot create or mutate this row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Wave {
+pub struct LegacyWave {
     pub id: String,
     pub mission_id: String,
     pub index: u32,
@@ -1117,7 +1117,8 @@ pub struct Wave {
     /// assignments, carry-over, and important deviations.
     #[serde(default)]
     pub context: String,
-    /// Monotonic revision within this Wave id. Append-only Wave rows retain the
+    /// Monotonic revision within this Legacy Wave id. Append-only historical
+    /// rows retain the
     /// prior revisions.
     #[serde(default)]
     pub revision: u32,
@@ -1127,9 +1128,9 @@ pub struct Wave {
     #[serde(default)]
     pub exit_criteria: Option<String>,
     #[serde(default)]
-    pub status: WaveStatus,
+    pub status: LegacyWaveStatus,
     /// Historical direct-executor hint; new authoring uses `Host`.
-    pub executor_kind: WaveExecutorKind,
+    pub executor_kind: LegacyWaveExecutorKind,
     /// Historical direct-executor attempt references.
     #[serde(default)]
     pub executor_run_ids: Vec<String>,
@@ -1143,7 +1144,7 @@ pub struct Wave {
     #[serde(default)]
     pub artifact_refs: Vec<String>,
     #[serde(default)]
-    pub gate_status: WaveGateStatus,
+    pub gate_status: LegacyWaveGateStatus,
     #[serde(default)]
     pub gate_note: Option<String>,
     #[serde(default)]
@@ -1368,7 +1369,7 @@ impl Validate for Mission {
         require_non_empty(&self.id, "Mission.id")?;
         require_non_empty(&self.title, "Mission.title")?;
         require_non_empty(&self.objective, "Mission.objective")?;
-        validate_non_empty_unique_strings(&self.wave_ids, "Mission.wave_ids", true)?;
+        validate_non_empty_unique_strings(&self.legacy_wave_ids, "Mission.legacy_wave_ids", true)?;
         for (value, field) in [
             (self.desired_outcome.as_deref(), "Mission.desired_outcome"),
             (self.outcome_summary.as_deref(), "Mission.outcome_summary"),
@@ -1384,23 +1385,24 @@ impl Validate for Mission {
     }
 }
 
-impl Validate for Wave {
+impl Validate for LegacyWave {
     fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.id, "Wave.id")?;
-        require_non_empty(&self.mission_id, "Wave.mission_id")?;
-        require_non_empty(&self.title, "Wave.title")?;
-        require_non_empty(&self.objective, "Wave.objective")?;
-        require_non_empty(&self.created_at, "Wave.created_at")?;
-        require_non_empty(&self.updated_at, "Wave.updated_at")
+        require_non_empty(&self.id, "LegacyWave.id")?;
+        require_non_empty(&self.mission_id, "LegacyWave.mission_id")?;
+        require_non_empty(&self.title, "LegacyWave.title")?;
+        require_non_empty(&self.objective, "LegacyWave.objective")?;
+        require_non_empty(&self.created_at, "LegacyWave.created_at")?;
+        require_non_empty(&self.updated_at, "LegacyWave.updated_at")
     }
 }
 
 // ---------------------------------------------------------------------------
 // Mission Log (ADR 0051)
 //
-// Mission absorbs Wave as an append-only Mission Log. A MissionLogEntry is
+// Mission replaces the retired Wave lifecycle with an append-only Mission Log.
+// A MissionLogEntry is
 // one immutable, monotonically revisioned Markdown record of Host judgment,
-// re-plan, recovery narration, or closeout evidence. Unlike Wave it has no
+// re-plan, recovery narration, or closeout evidence. Unlike LegacyWave it has no
 // lifecycle, gate, or "advance" operation — there is nothing to accept or
 // reject, only entries to append and read. The Log is required reading, not
 // optional narration: the recovery entrypoint and session re-entry injection
@@ -1426,7 +1428,8 @@ pub enum MissionLogEntryKind {
 }
 
 /// One immutable, append-only Mission Log row (ADR 0051). `revision` is
-/// monotonic per `mission_id` and store-assigned, exactly like `Wave.index`;
+/// monotonic per `mission_id` and store-assigned; Legacy Wave indexes remain
+/// historical compatibility data;
 /// callers never choose it. There is no `updated_at` because a
 /// [`MissionLogEntry`] is never revised in place — a correction is a new
 /// entry, not a mutation of an old one.
@@ -1437,7 +1440,7 @@ pub struct MissionLogEntry {
     pub revision: u32,
     pub kind: MissionLogEntryKind,
     /// Markdown body. Must be non-empty: an append-only judgment log with a
-    /// blank entry is indistinguishable from Wave's write-only failure.
+    /// blank entry is indistinguishable from a failed log write.
     pub body: String,
     /// The actor that authored this entry (a Host identity, "host", or an
     /// explicit operator/agent id).
@@ -3246,74 +3249,6 @@ pub enum ProviderEventFidelity {
     Structured,
 }
 
-/// A provider-originated request that pauses or blocks a ProviderRuntimeProjection until an
-/// authorized actor responds. It is product state; unlike thinking it is
-/// durable, replayable, and visible to the Host/Dashboard.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PendingInteraction {
-    pub id: String,
-    pub team_run_id: String,
-    pub member_run_id: String,
-    pub provider: String,
-    pub provider_request_id: String,
-    pub method: String,
-    pub kind: PendingInteractionKind,
-    pub route: PendingInteractionRoute,
-    pub status: PendingInteractionStatus,
-    pub title: String,
-    pub prompt: String,
-    #[serde(default)]
-    pub options: Vec<PendingInteractionOption>,
-    #[serde(default)]
-    pub tool_call_id: Option<String>,
-    #[serde(default)]
-    pub response_option_id: Option<String>,
-    #[serde(default)]
-    pub response_text: Option<String>,
-    pub created_at: String,
-    #[serde(default)]
-    pub resolved_at: Option<String>,
-    #[serde(default)]
-    pub resolved_by: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PendingInteractionOption {
-    pub id: String,
-    pub label: String,
-    #[serde(default)]
-    pub intent: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PendingInteractionKind {
-    Question,
-    ToolApproval,
-    PlanReview,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PendingInteractionRoute {
-    Lead,
-    Human,
-    Policy,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PendingInteractionStatus {
-    Pending,
-    Answered,
-    Approved,
-    Denied,
-    Dismissed,
-    Unsupported,
-    Cancelled,
-}
-
 /// Kind of a routed [`TeamMessageProjection`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -3321,18 +3256,19 @@ pub enum ProviderDispatchIntent {
     Message,
     /// A real runtime control record, not ordinary chat.
     Control,
-    /// A provider-native turn is paused and has emitted a strictly typed,
-    /// canonical JSON request for Host/Operator input. This is an additive
-    /// message bridge; historical [`PendingInteraction`] rows remain valid.
+    /// A provider-native turn emitted a strictly typed, correlated question.
+    /// The durable product fact is this authored message; waiting remains a
+    /// runtime projection rather than a second interaction lifecycle.
     ProviderInteractionRequest,
     /// The correlated answer to one [`ProviderDispatchIntent::ProviderInteractionRequest`].
     /// Its `causation_id` must point directly at the request message.
     ProviderInteractionResponse,
 }
 
-/// Closed semantic type carried inside a provider-interaction message body.
-/// Request/response phase is represented by [`ProviderDispatchIntent`], never by this
-/// field. `Unknown` is an explicit fail-safe route, not an open string escape.
+/// Closed provider callback classification. Only `Question` and `PlanReview`
+/// are valid in durable correlated Message bodies. Permission callbacks are
+/// classified here only so adapters can acknowledge an in-ceiling option or
+/// fail closed without creating a second permission workflow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderInteractionType {
@@ -3343,9 +3279,7 @@ pub enum ProviderInteractionType {
     Unknown,
 }
 
-/// One provider-native answer option. This is deliberately separate from the
-/// historical [`PendingInteractionOption`] so old ledger rows remain readable
-/// while new bridge bodies reject unknown fields.
+/// One provider-native answer option carried by a correlated Message body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderInteractionMessageOption {
@@ -3427,12 +3361,14 @@ impl ProviderInteractionRequestBody {
         }
         if !matches!(
             self.interaction_type,
-            ProviderInteractionType::Question | ProviderInteractionType::Unknown
-        ) && self.options.is_empty()
-        {
+            ProviderInteractionType::Question | ProviderInteractionType::PlanReview
+        ) {
             return Err(
-                "provider approval/review interactions require at least one option".to_string(),
+                "only provider questions and plan reviews may become durable Messages".to_string(),
             );
+        }
+        if self.interaction_type == ProviderInteractionType::PlanReview && self.options.is_empty() {
+            return Err("provider plan review requires at least one option".to_string());
         }
         Ok(())
     }
@@ -3488,15 +3424,8 @@ impl ProviderInteractionResponseBody {
                 )
             }
         }
-        if self.text.is_some()
-            && !matches!(
-                self.interaction_type,
-                ProviderInteractionType::Question | ProviderInteractionType::Unknown
-            )
-        {
-            return Err(
-                "only question or unknown provider interactions accept free text".to_string(),
-            );
+        if self.text.is_some() && self.interaction_type != ProviderInteractionType::Question {
+            return Err("only provider questions accept free text".to_string());
         }
         Ok(())
     }
@@ -3649,7 +3578,9 @@ pub struct TeamMessageProjection {
     /// on `Work`/`WorkEvent`, never on the message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_id: Option<String>,
-    /// Optional Host-plan Wave that explains why this message was authored.
+    /// Optional pre-ADR 0051 Legacy Wave reference retained for historical
+    /// message decoding only. Current messages leave this empty and relate
+    /// directly to Mission and Work.
     /// It is navigation metadata only and never controls message or member
     /// lifecycle.
     #[serde(default)]
@@ -7145,5 +7076,56 @@ impl std::fmt::Display for ProviderCapabilities {
             .filter_map(|(name, enabled)| if *enabled { Some(*name) } else { None })
             .collect();
         write!(f, "{{{}}}", enabled.join(", "))
+    }
+}
+
+#[cfg(test)]
+mod legacy_wave_serde_tests {
+    use super::*;
+
+    #[test]
+    fn mission_legacy_wave_ids_keep_the_historical_wire_key() {
+        let mission = Mission {
+            id: "mission-legacy".into(),
+            title: "Imported Mission".into(),
+            objective: "Decode historical membership".into(),
+            context: String::new(),
+            desired_outcome: None,
+            status: MissionStatus::Completed,
+            legacy_wave_ids: vec!["wave-1".into()],
+            outcome_summary: Some("done".into()),
+            completed_by: Some("host".into()),
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:2".into(),
+            completed_at: Some("unix-ms:2".into()),
+        };
+
+        let encoded = serde_json::to_value(&mission).expect("serialize Mission");
+        assert_eq!(encoded["wave_ids"], serde_json::json!(["wave-1"]));
+        assert!(encoded.get("legacy_wave_ids").is_none());
+
+        let decoded: Mission = serde_json::from_value(encoded).expect("deserialize Mission");
+        assert_eq!(decoded.legacy_wave_ids, vec!["wave-1"]);
+    }
+
+    #[test]
+    fn current_mission_wire_omits_empty_legacy_wave_membership() {
+        let mission = Mission {
+            id: "mission-current".into(),
+            title: "Current Mission".into(),
+            objective: "Use Mission Log".into(),
+            context: String::new(),
+            desired_outcome: None,
+            status: MissionStatus::Planned,
+            legacy_wave_ids: Vec::new(),
+            outcome_summary: None,
+            completed_by: None,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+            completed_at: None,
+        };
+
+        let encoded = serde_json::to_value(&mission).expect("serialize Mission");
+        assert!(encoded.get("wave_ids").is_none());
     }
 }

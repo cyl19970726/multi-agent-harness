@@ -8,8 +8,9 @@ It sits above the provider runtime implementation reference in
 [execution-foundation.md](../company-os/execution-foundation.md), and above the concrete
 provider implementations in [integration/codex.md](../integration/codex.md),
 [integration/claude.md](../integration/claude.md), and
-[integration/kimi.md](../integration/kimi.md). It does not redefine Mission/Wave,
-executor-native records, TeamWorks, Approvals, or organization authority.
+[integration/kimi.md](../integration/kimi.md). It does not redefine
+Mission/Mission Log, executor-native records, TeamWorks, Approvals, or
+organization authority.
 Continuous Member execution follows the separate
 [Member Continuation Model](member-continuation-model.md).
 
@@ -67,7 +68,8 @@ Supervisor starts no adapter for it, its non-empty provider label is
 informational rather than adapter registration, deliveries stay queued until
 the session polls its inbox, and Close only records closed Harness coordination
 with no external runtime effect. A closed external binding cannot send or
-receive TeamMessages or acknowledge previously queued mail. Reopen keeps the
+receive current Messages or acknowledge previously queued
+`CanonicalMessageDelivery` rows. Reopen keeps the
 same MemberRun and thaws that mailbox, but Harness still cannot restart or
 prove history continuity for the user-owned external conversation.
 Because such a member is explicitly declared non-driven, its mail is accepted
@@ -120,10 +122,10 @@ prompt artifact, not inline chat text**. The contract:
   full system prompt per delivery from this stack:
 
 ```text
-harness base system prompt          (Mission/Wave, honest execution records, decisions)
+harness base system prompt          (Mission/Mission Log, honest execution records, decisions)
   -> repository / adapter rules      (project constraints, commands, safety)
   -> role-specific prompt            (prompt_ref → this member's responsibility)
-  -> execution context               (Mission, current Host-plan Wave, run and Works)
+  -> execution context               (Mission, recent Mission Log judgment, run and Works)
   -> optional company context        (TeamWork, source Document, Actors, approval policy)
   -> delivery envelope               (current Work version or Host/peer conversation)
   -> permission and evidence policy   (allowed tools, approval, report format)
@@ -159,7 +161,7 @@ contract for resolving and injecting skills:
   injects via the system prompt. Either way the rule is the same: the harness
   chooses skills, the platform consumes them.
 - **Kinds.** Two skill kinds are recognized: a **generic harness capability**
-  (how to use Mission/Wave and the selected executor honestly) and a
+  (how to use Mission/Mission Log and the selected executor honestly) and a
   **project/adapter skill** (how to use a project's CLI, Dashboard, acceptance
   evidence, and safety boundaries). Skills are optional tools, never product
   authority.
@@ -299,7 +301,7 @@ probe / ingest** as the canonical names; they map onto the runtime interface):
 | Verb | Runtime interface | Responsibility |
 | --- | --- | --- |
 | **start** | `create_runtime(member, workspace, permissions)` | Launch the platform for this member (process or session handle). |
-| **deliver** | `deliver(message, context)` + `MessageDelivery` | Build the launch spec from the claimed `Message` and run one turn. |
+| **deliver** | `deliver(message, context)` + `CanonicalMessageDelivery` | Build the launch spec from the claimed current `Message` and run one turn. |
 | **probe** | `health(runtime)` | Report runtime health signals (below). |
 | **read/resume** | native-session adapter | Resolve, project, and resume provider-owned session state without copying it. |
 
@@ -316,8 +318,8 @@ and promotes only explicit coordination boundaries:
 ```text
 provider event
   -> NativeActivityProjection   (not persisted)
-  -> PendingInteraction         (only when authority/routing crosses systems)
-  -> explicit TeamMessage / outcome / artifact ref (only on promotion)
+  -> correlated Message         (when a question/reply crosses systems)
+  -> outcome / artifact ref     (only on explicit promotion)
 ```
 
 Rule: browser code never reads private native files directly. The provider
@@ -375,11 +377,14 @@ support, native-child observation, and transient-thinking policy. The separate
 `codex_exec` and `claude_cli` profiles remain useful to Dynamic Workflow and
 legacy one-shot records; neither is a selectable Agent Team mode.
 
-Provider requests that require an answer are `PendingInteraction` rows rather
-than hidden adapter callbacks. Questions, tool approvals, and plan reviews keep
-the exact provider option ids and route to Lead, Policy, or Human. The
-PendingInteraction/control acknowledgement records provider and semantic
-resolution; ordinary provider tool lifecycle remains in the native session.
+Provider questions that require an answer are correlated request/response
+Message kinds rather than hidden adapter callbacks or a separate interaction
+ledger. The reply retains the exact provider option id and resumes the same
+native session through its claimed `CanonicalMessageDelivery`. Permission is
+not a message workflow: the
+AgentSession freezes one effective ceiling before provider start, and the
+adapter fails closed if the provider requests authority outside that ceiling.
+Ordinary provider tool lifecycle remains in the native session.
 
 See [ADR 0030](../../decisions/0030-provider-interaction-contract.md) and
 [ADR 0032](../../decisions/0032-provider-native-session-is-execution-truth.md). New provider
@@ -398,7 +403,7 @@ coordination. Generalized:
 
 | Generic harness owns | Adapter / platform owns |
 | --- | --- |
-| Mission/Wave joins, Agent Team Works/messages, role routing | domain tool descriptors |
+| Mission/Mission Log joins, Agent Team Works/messages, role routing | domain tool descriptors |
 | evidence references, review gates, decisions | project dashboard, artifacts |
 | member identity, prompt/skill refs, permissions | domain logic, live execution, secrets |
 | the neutral launch spec and event reduction | platform-native CLI/SDK call shape |
@@ -543,7 +548,7 @@ abstraction remains additive future work under ADR 0017.
 
 ## Non-Goals
 
-- Do not redefine Mission/Wave, executor-native records, TeamWork, Approval or
+- Do not redefine Mission/Mission Log, executor-native records, TeamWork, Approval or
   organization authority here; those stay in their owning contracts.
 - Do not let one platform's wire vocabulary become the neutral spec.
 - Do not treat provider-native subagents as durable members unless promoted.

@@ -48,18 +48,17 @@ open_questions:
 
 ## Core Page Specs
 
-The current product direction is Mission context -> one flat AgentTeam plus
-ordered Host-plan Waves, owned by
-ADR 0034, while
-durable Team control and typed mail are owned by
-ADR 0044. The
-implemented primary pages are the Mission/Wave Canvas and Agent Team War Room. Historical
+The current product direction is Mission context -> append-only Mission Log ->
+one flat AgentTeam, owned by ADR 0051 and ADR 0034, while
+durable Team control is owned by ADR 0044 and the current identity-first
+Message/CanonicalMessageDelivery cutover by ADR 0056. The
+implemented primary pages are Mission Detail and Log and Agent Team War Room. Historical
 Vision/Goal/Task Work-board and Goal Workbench specs are archived; they do not
 define the new information architecture.
 
 | Page | Status | Layout |
 | --- | --- | --- |
-| [Mission/Wave Canvas](mission-wave-canvas.md) | implemented | durable context, Mission-owned Team, ordered Host-plan revisions |
+| [Mission Detail and Log](mission-detail-log.md) | implemented | durable context, Mission-owned Team, append-only Host judgment/replan/recovery/closeout log |
 | [Agent Team War Room](team-run-war-room.md) | implemented | one Mission-owned, Node-placed long-lived TeamRun |
 | [MemberRun Focus](member-run-focus.md) | implemented candidate | run-scoped member detail |
 | [AgentMember Focus](agent-member-focus.md) | proposed | canonical identity, organization projection, and execution trust |

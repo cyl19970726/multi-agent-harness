@@ -167,7 +167,7 @@ fn member_semantic_row_counts(store: &HarnessStore, member_id: &str) -> (usize, 
         .filter(|action| action.member_run_id == member_id)
         .count();
     let handoffs = store
-        .team_messages()
+        .legacy_team_messages()
         .expect("team messages")
         .into_iter()
         .filter(|message| {
@@ -315,10 +315,10 @@ fn seed_runtime_team(home: &TempHome, project_id: &str, env: &[(&str, &str)]) {
     }
 }
 
-/// Seed the native Mission/Wave ledgers directly so the public team-run
-/// surfaces can prove their optional joins without depending on a separate
-/// Mission authoring command in this integration suite.
-fn seed_native_mission_wave(home: &TempHome, project_id: &str) {
+/// Seed a current Mission plus one pre-cutover Legacy Wave row. Current
+/// TeamRun creation binds only the fixture AgentTeam; the Legacy row exists
+/// solely to prove the historical snapshot/read projection.
+fn seed_mission_with_legacy_wave(home: &TempHome, project_id: &str) {
     let store = home.spaces_dir().join(project_id);
     use std::io::Write as _;
     let mut missions = std::fs::OpenOptions::new()
@@ -373,10 +373,10 @@ fn seed_native_mission_wave(home: &TempHome, project_id: &str) {
 }
 
 /// Seed one additional historical Wave row directly, bypassing the retired
-/// `wave create` write path (ADR 0051). Unlike `seed_native_mission_wave`
+/// `wave create` write path (ADR 0051). Unlike `seed_mission_with_legacy_wave`
 /// (which overwrites `waves.jsonl` with exactly one row) this appends, so
 /// tests needing more than one historical Wave -- or a Wave alongside one
-/// already seeded by `seed_native_mission_wave` -- can call it repeatedly.
+/// already seeded by `seed_mission_with_legacy_wave` -- can call it repeatedly.
 fn seed_historical_wave(
     home: &TempHome,
     project_id: &str,
@@ -711,7 +711,7 @@ fn command_json(home: &TempHome, project_id: &str, args: &[&str]) -> serde_json:
 fn team_run_cli_create_list_status_send_events() {
     let home = TempHome::new("team-run-cli");
     let project_id = init_project(&home, "alpha");
-    seed_native_mission_wave(&home, &project_id);
+    seed_mission_with_legacy_wave(&home, &project_id);
     let project_root = std::fs::canonicalize(home.base().join("alpha"))
         .expect("canonical project root")
         .display()
@@ -1417,7 +1417,7 @@ fn team_run_cli_message_reuses_conversation_lineage_only_within_its_run() {
 fn historical_wave_executor_kind_no_longer_controls_team_run_admission() {
     let home = TempHome::new("team-run-wrong-executor");
     let project_id = init_project(&home, "alpha");
-    seed_native_mission_wave(&home, &project_id);
+    seed_mission_with_legacy_wave(&home, &project_id);
     let wave_path = home.spaces_dir().join(&project_id).join("waves.jsonl");
     let wave = std::fs::read_to_string(&wave_path)
         .expect("read seeded wave")
@@ -1448,7 +1448,7 @@ fn historical_wave_executor_kind_no_longer_controls_team_run_admission() {
 }
 
 #[test]
-fn mission_wave_cli_authoring_with_seeded_wave_and_retired_gate() {
+fn mission_log_cli_and_legacy_wave_read_are_independent_of_team_run() {
     let home = TempHome::new("mission-wave-cli");
     let project_id = init_project(&home, "alpha");
     let mission = command_json(
@@ -1469,9 +1469,8 @@ fn mission_wave_cli_authoring_with_seeded_wave_and_retired_gate() {
         ],
     );
     assert_eq!(mission["id"].as_str(), Some("mission-cli"));
-    // `wave create` is retired (ADR 0051): seed a historical row directly so
-    // TeamRun creation can still explicitly cite an existing Wave id (that
-    // citation path is unaffected -- only Wave *write* commands retired).
+    // `wave create` is retired (ADR 0051): seed a row solely to prove the
+    // explicit Legacy read surface. Current TeamRun identity does not cite it.
     seed_historical_wave(
         &home,
         &project_id,
@@ -1488,10 +1487,8 @@ fn mission_wave_cli_authoring_with_seeded_wave_and_retired_gate() {
             "create",
             "--objective",
             "empty completion",
-            "--mission-id",
-            "mission-cli",
-            "--wave-id",
-            "wave-cli",
+            "--agent-team-id",
+            FIXTURE_TEAM_ID,
             "--member",
             "worker:implementer:kimi",
             "--json",
@@ -1527,7 +1524,7 @@ fn mission_wave_cli_authoring_with_seeded_wave_and_retired_gate() {
     let waiting_wave = command_json(
         &home,
         &project_id,
-        &["wave", "show", "--id", "wave-cli", "--json"],
+        &["legacy", "wave", "show", "--id", "wave-cli", "--json"],
     );
     assert_eq!(waiting_wave["status"].as_str(), Some("planned"));
     let running_mission = command_json(
@@ -1595,8 +1592,8 @@ fn mission_wave_cli_authoring_with_seeded_wave_and_retired_gate() {
         ],
     );
     assert_eq!(closed["status"].as_str(), Some("completed"));
-    // No live path populates wave_ids for a seeded historical Wave.
-    assert_eq!(closed["wave_ids"], serde_json::json!([]));
+    // Current Mission output omits the empty Legacy Wave compatibility field.
+    assert!(closed.get("wave_ids").is_none());
 }
 
 #[test]
@@ -1635,7 +1632,7 @@ fn post_mission_and_retired_wave_write_routes() {
     let (_, snapshot) = serve.get_json("/v1/snapshot");
     assert_eq!(snapshot["missions"].as_array().map(Vec::len), Some(2));
     assert_eq!(
-        snapshot["waves"].as_array().map(Vec::len),
+        snapshot["legacy_waves"].as_array().map(Vec::len),
         Some(0),
         "the rejected POST must not have appended a row"
     );
@@ -1786,26 +1783,6 @@ fn canonical_team_message_routes_member_to_host_identity_without_special_inbox_a
 fn retry_lineage_is_scoped_by_agent_team_not_retired_wave_identity() {
     let home = TempHome::new("team-run-previous-wave");
     let project_id = init_project(&home, "alpha");
-    for (mission_id, wave_id) in [("mission-a", "wave-a"), ("mission-b", "wave-b")] {
-        let _ = command_json(
-            &home,
-            &project_id,
-            &[
-                "mission",
-                "create",
-                "--id",
-                mission_id,
-                "--title",
-                mission_id,
-                "--objective",
-                "test lineage",
-                "--json",
-            ],
-        );
-        // `wave create` is retired (ADR 0051): seed the historical row
-        // directly so TeamRun creation can still cite it via --wave-id.
-        seed_historical_wave(&home, &project_id, wave_id, mission_id, 1, "agent_team");
-    }
     let first = team_run_json(
         &home,
         &project_id,
@@ -1813,16 +1790,15 @@ fn retry_lineage_is_scoped_by_agent_team_not_retired_wave_identity() {
             "create",
             "--objective",
             "first",
-            "--mission-id",
-            "mission-a",
-            "--wave-id",
-            "wave-a",
+            "--agent-team-id",
+            FIXTURE_TEAM_ID,
             "--member",
             "worker-a:implementer:kimi",
             "--json",
         ],
     );
     let first_id = first["team_run"]["id"].as_str().unwrap();
+    assert!(first["team_run"].get("wave_id").is_none());
     let second = team_run_json(
         &home,
         &project_id,
@@ -1855,13 +1831,14 @@ fn post_team_run_creates_entities_and_get_snapshot_projects_them() {
     let project_id = init_project(&home, "alpha");
     let project_root =
         std::fs::canonicalize(home.base().join("alpha")).expect("canonical project root");
-    seed_native_mission_wave(&home, &project_id);
+    seed_mission_with_legacy_wave(&home, &project_id);
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
 
     let (status, body) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
             "objective": "Ship v0",
+            "agent_team_id": FIXTURE_TEAM_ID,
             "execution_root": project_root,
             "budget_limit_usd": 5.0,
             "members": [
@@ -1922,7 +1899,7 @@ fn post_team_run_creates_entities_and_get_snapshot_projects_them() {
         team_runs[0]["member_run_ids"].as_array().map(Vec::len),
         Some(2)
     );
-    let waves = snapshot["waves"].as_array().expect("waves");
+    let waves = snapshot["legacy_waves"].as_array().expect("legacy_waves");
     assert_eq!(waves.len(), 1, "waves: {waves:?}");
     assert_eq!(waves[0]["id"].as_str(), Some("wave-test"));
     assert_eq!(waves[0]["executor_run_ids"], serde_json::json!([]));
@@ -2539,8 +2516,16 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
     );
 }
 
+// Historical TeamMessageProjection end-to-end scenario. Its private
+// claim/receipt helpers were removed from the integration surface by the
+// canonical MessageDelivery clean cutover, so keep the source as migration
+// evidence without compiling it against current APIs. One-for-one executable
+// coverage lives in `member_execution_trust`:
+// - `delivery_claim_and_receipt_are_generation_fenced_and_reconcile_is_explicit`
+// - `successor_supervisor_fences_stale_claim_before_any_canonical_side_effect`
+#[cfg(any())]
 #[test]
-#[ignore = "retired projection claim API; canonical supervisor/message generation fences have dedicated trust-kernel coverage"]
+#[ignore = "retired TeamMessageProjection claim API; canonical MessageDelivery generation/receipt coverage replaces it"]
 fn stale_supervisor_quiesces_and_successor_resumes_mail_once() {
     let home = TempHome::new("team-run-stale-supervisor-quiescence");
     let project_id = init_project_selector_clean(&home, "alpha");
@@ -5192,11 +5177,33 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
         fake_bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
+    let credentials = serde_json::json!([
+        {
+            "token": "host-answer-token",
+            "actor": {"kind": "agent_member", "id": FIXTURE_HOST_ID},
+            "authority_actors": []
+        },
+        {
+            "token": "impostor-answer-token",
+            "actor": {"kind": "service", "id": "not-the-team-host"},
+            "authority_actors": []
+        }
+    ])
+    .to_string();
+    let thread_marker = home.base().join("codex-question-thread.jsonl");
     let serve = ServeHandle::spawn_with_env(
         &home,
         home.base(),
         &[],
-        &[("PATH", path.as_str()), ("FAKE_CODEX_ASK", "1")],
+        &[
+            ("PATH", path.as_str()),
+            ("FAKE_CODEX_ASK", "1"),
+            (
+                "FAKE_CODEX_THREAD_MARKER",
+                thread_marker.to_str().expect("thread marker path"),
+            ),
+            ("AGENTFIRM_HTTP_CREDENTIALS_JSON", credentials.as_str()),
+        ],
     );
     let (_, created) = serve.post_json(
         "/v1/team-runs",
@@ -5236,15 +5243,82 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
         std::thread::sleep(Duration::from_millis(20));
     }
     let interaction_id = interaction_id.expect("Codex provider interaction request message");
-    let (status, resolved) = serve.post_json(
-        &format!("/v1/team-runs/{run_id}/interactions/{interaction_id}/resolve"),
+    let opened = std::fs::read_to_string(&thread_marker).expect("Codex thread/start marker");
+    assert!(
+        opened.contains("\"sandbox\":\"workspace-write\"")
+            && opened.contains("\"approvalPolicy\":\"never\""),
+        "Team provider launch must consume the frozen WorkspaceWrite mapping: {opened}"
+    );
+    let answer_path = format!("/v1/team-runs/{run_id}/messages/{interaction_id}/answer");
+    let (status, unauthenticated) = serve.post_json(
+        &answer_path,
+        &serde_json::json!({"option_id": "implementation::0"}),
+    );
+    assert_eq!(status, 401, "body: {unauthenticated}");
+    let (status, impersonation) = serve.post_json_with_headers(
+        &answer_path,
+        &serde_json::json!({"option_id": "implementation::0"}),
+        &[
+            ("X-AgentFirm-Token", "impostor-answer-token"),
+            ("Idempotency-Key", "impostor-answer"),
+            ("If-Match", "0"),
+        ],
+    );
+    assert_eq!(status, 403, "body: {impersonation}");
+    let (status, caller_selected_identity) = serve.post_json_with_headers(
+        &answer_path,
         &serde_json::json!({"option_id": "implementation::0", "resolved_by": "host"}),
+        &[
+            ("X-AgentFirm-Token", "host-answer-token"),
+            ("Idempotency-Key", "caller-selected-answer-identity"),
+            ("If-Match", "0"),
+        ],
+    );
+    assert_eq!(status, 409, "body: {caller_selected_identity}");
+    let (status, invalid_option) = serve.post_json_with_headers(
+        &answer_path,
+        &serde_json::json!({"option_id": "not-exposed"}),
+        &[
+            ("X-AgentFirm-Token", "host-answer-token"),
+            ("Idempotency-Key", "invalid-option-answer"),
+            ("If-Match", "0"),
+        ],
+    );
+    assert_eq!(status, 409, "body: {invalid_option}");
+    let (_, before_valid) = serve.get_json("/v1/snapshot");
+    assert!(
+        before_valid["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .all(|message| message["kind"].as_str() != Some("provider_interaction_response")),
+        "rejected answers must have zero response side effects: {before_valid}"
+    );
+    let (status, resolved) = serve.post_json_with_headers(
+        &answer_path,
+        &serde_json::json!({"option_id": "implementation::0"}),
+        &[
+            ("X-AgentFirm-Token", "host-answer-token"),
+            ("Idempotency-Key", "valid-host-answer"),
+            ("If-Match", "0"),
+        ],
     );
     assert_eq!(status, 200, "body: {resolved}");
     assert_eq!(
         resolved["result"]["kind"].as_str(),
         Some("provider_interaction_response")
     );
+    let (retry_status, retried) = serve.post_json_with_headers(
+        &answer_path,
+        &serde_json::json!({"option_id": "implementation::0"}),
+        &[
+            ("X-AgentFirm-Token", "host-answer-token"),
+            ("Idempotency-Key", "valid-host-answer-retry"),
+            ("If-Match", "0"),
+        ],
+    );
+    assert_eq!(retry_status, 200, "body: {retried}");
+    assert_eq!(retried["result"]["id"], resolved["result"]["id"]);
     let mut idle_with_delivered_response = false;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
@@ -5265,7 +5339,10 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
             .into_iter()
             .flatten()
             .any(|delivery| {
-                delivery["member_id"].as_str() == Some("agent-runtime-host")
+                // Current TeamRun surfaces use the stable runtime recipient
+                // alias `host`; the canonical AgentIdentity remains visible
+                // separately as `agent-runtime-host` in raw fabric rows.
+                delivery["member_id"].as_str() == Some("host")
                     && delivery["status"].as_str() == Some("acknowledged")
             });
         let response_delivered = snapshot["team_messages"]
@@ -5293,10 +5370,6 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
         idle_with_delivered_response,
         "Codex did not consume the canonical interaction response and return idle; snapshot: {diagnostic_snapshot}"
     );
-    let (_, snapshot) = serve.get_json("/v1/snapshot");
-    assert!(snapshot["pending_interactions"]
-        .as_array()
-        .is_some_and(Vec::is_empty));
 }
 
 #[test]
@@ -5372,9 +5445,6 @@ fn codex_app_server_multi_question_fails_closed_without_interaction_rows() {
             }),
         "unsupported multi-question request became a TeamMessageProjection"
     );
-    assert!(snapshot["pending_interactions"]
-        .as_array()
-        .is_some_and(Vec::is_empty));
     assert!(
         snapshot["member_actions"]
             .as_array()
@@ -5389,7 +5459,7 @@ fn codex_app_server_multi_question_fails_closed_without_interaction_rows() {
 }
 
 #[test]
-fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
+fn interrupt_cancels_waiting_provider_message_before_kimi_prompt() {
     let home = TempHome::new("team-run-kimi-waiting-cancel");
     let _project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -5408,7 +5478,7 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
         "/v1/team-runs",
         &serde_json::json!({
             "objective": "Wait for Lead, then be interrupted",
-            "members": [{"name": "kimi-waiting", "role": "observer", "provider": "kimi", "model": "k2.5", "initial_work": "Exercise pending interaction cancellation"}]
+            "members": [{"name": "kimi-waiting", "role": "observer", "provider": "kimi", "model": "k2.5", "initial_work": "Exercise unanswered provider-question cancellation"}]
         }),
     );
     let run_id = created["result"]["team_run"]["id"]
@@ -5459,7 +5529,7 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
         &serde_json::json!({"reason": "cancel while waiting", "requested_by": "operator"}),
     );
     assert_eq!(status, 200, "body: {interrupted}");
-    let mut idle_with_cancelled_interaction = false;
+    let mut idle_with_cancelled_message = false;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
         let idle = snapshot["member_runs"]
@@ -5478,21 +5548,17 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
                 delivery["message_id"].as_str() == Some(waiting_request_id.as_str())
                     && delivery["status"].as_str() == Some("acknowledged")
             });
-        idle_with_cancelled_interaction = idle && cancelled;
-        if idle_with_cancelled_interaction {
+        idle_with_cancelled_message = idle && cancelled;
+        if idle_with_cancelled_message {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(
-        idle_with_cancelled_interaction,
-        "interrupt did not cancel the waiting interaction and return the Member to idle; snapshot={}",
+        idle_with_cancelled_message,
+        "interrupt did not cancel the waiting provider Message and return the Member to idle; snapshot={}",
         serve.get_json("/v1/snapshot").1
     );
-    let (_, snapshot) = serve.get_json("/v1/snapshot");
-    assert!(snapshot["pending_interactions"]
-        .as_array()
-        .is_some_and(Vec::is_empty));
 }
 
 #[test]
@@ -5634,10 +5700,6 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
             }),
         "Team close must not silently release a WorkExecutionBinding"
     );
-    assert!(snapshot["pending_interactions"]
-        .as_array()
-        .is_some_and(Vec::is_empty));
-
     let close_requests = snapshot["team_member_close_requests"]
         .as_array()
         .expect("close requests");
@@ -5662,7 +5724,6 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
         "team_member_close_requests.jsonl",
         "team_messages.jsonl",
         "member_runs.jsonl",
-        "pending_interactions.jsonl",
         "member_actions.jsonl",
         "team_run_events.jsonl",
         "canonical_operations.jsonl",

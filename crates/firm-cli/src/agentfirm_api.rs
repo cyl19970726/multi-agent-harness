@@ -5,11 +5,13 @@
 
 use harness_core::agentfirm_api::{
     ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus, DeliveryReconcileOutcome,
-    FailureAnalysis, GateEvaluation, GateRequirement, GateWaiver, MemberCoordinationStatus,
-    MemberRun, MemberWorkspaceBinding, MutationContext, TeamMessage, WorkFinding,
-    WorkModuleBinding, WorkReport, WorkspaceLifecycle, WorkspaceSafetyProof,
+    FailureAnalysis, GateEvaluation, GateRequirement, GateWaiver, MemberWorkspaceBinding,
+    MutationContext, TeamMessage, WorkFinding, WorkModuleBinding, WorkReport, WorkspaceLifecycle,
+    WorkspaceSafetyProof,
 };
-use harness_store::{CanonicalMutationResult, HarnessStore, StoreError};
+use harness_store::{
+    CanonicalMutationResult, CurrentTeamMemberLifecycleTransition, HarnessStore, StoreError,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -35,7 +37,7 @@ pub fn is_http_mutation_path(path: &str) -> bool {
         || path.starts_with("/v1/gate-requirements/")
         || path.starts_with("/v1/gate-waivers/")
         || (path.starts_with("/v1/team-runs/")
-            && (path.ends_with("/member-runs") || path.ends_with("/messages")))
+            && (path.ends_with("/messages") || provider_answer_route(path).is_some()))
         || (path.starts_with("/v1/teams/")
             && [
                 "/reports",
@@ -47,6 +49,19 @@ pub fn is_http_mutation_path(path: &str) -> bool {
             ]
             .iter()
             .any(|suffix| path.ends_with(suffix)))
+}
+
+pub fn provider_answer_route(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("/v1/team-runs/")?;
+    let parts = rest.split('/').collect::<Vec<_>>();
+    match parts.as_slice() {
+        [team_run_id, "messages", message_id, "answer"]
+            if !team_run_id.is_empty() && !message_id.is_empty() =>
+        {
+            Some((team_run_id, message_id))
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,21 +82,22 @@ pub enum TrustCommand {
         member_id: String,
         updated_at: String,
     },
-    CreateMemberRun {
-        run: MemberRun,
-    },
+    /// Close an Active MemberRun and stop its current runtime projection.
     CloseMemberRun {
         member_run_id: String,
         updated_at: String,
     },
+    /// Reopen a Closed MemberRun with its resumable native Session.
     ReopenMemberRun {
         member_run_id: String,
         updated_at: String,
     },
+    /// Permanently retire any non-retired MemberRun.
     RetireMemberRun {
         member_run_id: String,
         updated_at: String,
     },
+    /// Resume an Active MemberRun whose runtime is Disconnected, Failed, or Stopped.
     ResumeNativeSession {
         member_run_id: String,
         updated_at: String,
@@ -173,7 +189,6 @@ impl TrustCommand {
             Self::PauseAgentMember { .. } => "agent_member.pause",
             Self::ResumeAgentMember { .. } => "agent_member.resume",
             Self::RetireAgentMember { .. } => "agent_member.retire",
-            Self::CreateMemberRun { .. } => "member_run.create",
             Self::CloseMemberRun { .. } => "member_run.close",
             Self::ReopenMemberRun { .. } => "member_run.reopen",
             Self::RetireMemberRun { .. } => "member_run.retire",
@@ -211,9 +226,6 @@ impl TrustCommand {
             | (Self::ResumeAgentMember { member_id, .. }, ["v1", "agent-members", id, "resume"])
             | (Self::RetireAgentMember { member_id, .. }, ["v1", "agent-members", id, "retire"]) => {
                 member_id == id
-            }
-            (Self::CreateMemberRun { run }, ["v1", "team-runs", id, "member-runs"]) => {
-                &run.team_run_id == id
             }
             (Self::CloseMemberRun { member_run_id, .. }, ["v1", "member-runs", id, "close"])
             | (Self::ReopenMemberRun { member_run_id, .. }, ["v1", "member-runs", id, "reopen"])
@@ -628,40 +640,58 @@ pub fn execute(
             AgentMemberOrganizationStatus::Retired,
             &updated_at,
         )?),
-        TrustCommand::CreateMemberRun { run } => {
-            result(store.create_trust_member_run(&context, run)?)
-        }
         TrustCommand::CloseMemberRun {
             member_run_id,
             updated_at,
-        } => result(store.transition_trust_member_run(
-            &context,
-            &member_run_id,
-            MemberCoordinationStatus::Closed,
-            &updated_at,
-        )?),
+        } => result(
+            store
+                .transition_current_team_member_lifecycle(
+                    &context,
+                    &member_run_id,
+                    CurrentTeamMemberLifecycleTransition::Close,
+                    &updated_at,
+                )?
+                .canonical,
+        ),
         TrustCommand::ReopenMemberRun {
             member_run_id,
             updated_at,
-        } => result(store.transition_trust_member_run(
-            &context,
-            &member_run_id,
-            MemberCoordinationStatus::Active,
-            &updated_at,
-        )?),
+        } => result(
+            store
+                .transition_current_team_member_lifecycle(
+                    &context,
+                    &member_run_id,
+                    CurrentTeamMemberLifecycleTransition::Reopen,
+                    &updated_at,
+                )?
+                .canonical,
+        ),
         TrustCommand::RetireMemberRun {
             member_run_id,
             updated_at,
-        } => result(store.transition_trust_member_run(
-            &context,
-            &member_run_id,
-            MemberCoordinationStatus::Retired,
-            &updated_at,
-        )?),
+        } => result(
+            store
+                .transition_current_team_member_lifecycle(
+                    &context,
+                    &member_run_id,
+                    CurrentTeamMemberLifecycleTransition::Retire,
+                    &updated_at,
+                )?
+                .canonical,
+        ),
         TrustCommand::ResumeNativeSession {
             member_run_id,
             updated_at,
-        } => result(store.resume_trust_native_session(&context, &member_run_id, &updated_at)?),
+        } => result(
+            store
+                .transition_current_team_member_lifecycle(
+                    &context,
+                    &member_run_id,
+                    CurrentTeamMemberLifecycleTransition::ResumeNativeSession,
+                    &updated_at,
+                )?
+                .canonical,
+        ),
         TrustCommand::CreateTeamMessage { .. }
         | TrustCommand::RetryMessageDelivery { .. }
         | TrustCommand::ReconcileMessageDelivery { .. } => Err(StoreError::Conflict(
@@ -847,6 +877,24 @@ mod tests {
             updated_at: "unix-ms:2".into(),
         };
         assert!(authorize(&store, "space", &member, &self_control).is_err());
+    }
+
+    #[test]
+    fn provider_answer_route_is_an_exact_authenticated_mutation_path() {
+        assert_eq!(
+            provider_answer_route("/v1/team-runs/run-1/messages/message-1/answer"),
+            Some(("run-1", "message-1"))
+        );
+        assert!(is_http_mutation_path(
+            "/v1/team-runs/run-1/messages/message-1/answer"
+        ));
+        for path in [
+            "/v1/team-runs/run-1/messages/message-1/answer/extra",
+            "/v1/team-runs//messages/message-1/answer",
+            "/v1/team-runs/run-1/messages//answer",
+        ] {
+            assert_eq!(provider_answer_route(path), None, "{path}");
+        }
     }
 
     #[test]

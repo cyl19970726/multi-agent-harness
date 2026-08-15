@@ -92,7 +92,6 @@ export interface AgentMemberExecutionAssignment {
   sourceRef?: string;
   workId?: string;
   missionId?: string;
-  waveId?: string;
   teamRunId: string;
   memberRunId: string;
   title: string;

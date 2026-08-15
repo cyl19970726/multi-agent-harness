@@ -7,7 +7,8 @@ Status: current contract for DEV-20.
 Provider transcripts remain provider-owned. AgentFirm performs a bounded read
 of a server-selected source and converts each supported native row into a
 `ProviderObservation` during an on-demand request. The observation is a
-disposable read-model value; it is never Message, Work, Delivery, Evidence,
+disposable read-model value; it is never Message, Work,
+CanonicalMessageDelivery, Evidence,
 review, or Decision truth.
 
 ```text
@@ -62,7 +63,7 @@ a future Team projection: it is a separately constructed allowlist containing
 only interaction, runtime availability/interruption, and recovery summaries.
 DEV-20 does not compose that shape into a selected Member's public RoleView.
 Current Team pages continue to use canonical responsibility, Message, Work,
-Delivery, and allowlisted runtime-command summaries.
+CanonicalMessageDelivery, and allowlisted runtime-command summaries.
 
 `LiveProviderActivity` is a different channel: provider sinks send typed,
 display-safe phase/tool/response progress into the serve process; its registry
@@ -84,7 +85,7 @@ chain-of-thought is never saved, reconstructed, or forwarded.
 
 Authored text, reasoning, tool input/output, environment details, paths, and
 raw transcript rows are structurally absent from Team activity. Canonical
-Message, Delivery, Work, report, finding, failure, gate, review, and
+Message, CanonicalMessageDelivery, Work, report, finding, failure, gate, review, and
 RuntimeCommand summaries remain owned by their existing stores and are
 composed by the Team RoleView; provider observations never manufacture them.
 Provider turn completion may append only a generic coordination fact such as
@@ -96,7 +97,8 @@ The same rule applies to legacy Message delivery adapters: their response text
 may be consumed by the current in-process caller, but it does not manufacture a
 `provider-report` Message or a delivery-session Evidence row. Provider hooks
 are validated-and-discarded compatibility ingress; NodeDaemon/AgentSession and
-canonical Delivery writers remain the only lifecycle and delivery authority.
+canonical Message/CanonicalMessageDelivery writers remain the only message and
+delivery authority.
 
 ## Provider fidelity
 

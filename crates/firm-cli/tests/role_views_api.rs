@@ -1395,7 +1395,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     successor_provider_run.finished_at = None;
     let successor_run_id = successor_provider_run.id.clone();
     store
-        .compare_and_append_member_run(&failed_provider_run, &successor_provider_run)
+        .compare_and_advance_member_run_generation(&failed_provider_run, &successor_provider_run)
         .expect("append higher-generation replacement runtime");
 
     let host_steps = [
@@ -1588,7 +1588,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     );
     review_run.provider_profile = Some(review_profile);
     store
-        .compare_and_append_member_run(&successor_provider_run, &review_run)
+        .compare_and_advance_member_run_generation(&successor_provider_run, &review_run)
         .expect("append review-required runtime generation");
     let review_team_view_route =
         format!("/v1/views/team-workspace/{}?project={project_id}", team.id);
@@ -1645,6 +1645,107 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         available_members - review_blocked_available,
         "every unreviewed or incompatible tuple is excluded from Ready"
     );
+    // The public lifecycle surface keeps Close/Reopen and Resume distinct.
+    // Closing an Active member advertises Reopen only; a caller cannot invoke
+    // Resume against that Closed+Stopped projection as an alias for Reopen.
+    let (status, lifecycle_before_close) =
+        serve.get_json_with_headers(&view_route, &[("X-AgentFirm-Token", TOKEN)]);
+    assert_eq!(status, 200, "lifecycle RoleView: {lifecycle_before_close}");
+    let close_action = lifecycle_before_close["allowed_actions"]
+        .as_array()
+        .and_then(|actions| {
+            actions.iter().find(|action| {
+                action["kind"] == "close_member_run" && action["target_ref"]["id"] == member_run_id
+            })
+        })
+        .expect("Active MemberRun close action");
+    let close_version = close_action["required_version"]
+        .as_u64()
+        .expect("close version")
+        .to_string();
+    let close_headers = [
+        ("X-AgentFirm-Token", TOKEN),
+        ("Idempotency-Key", "matrix-member-close"),
+        ("If-Match", close_version.as_str()),
+        ("X-AgentFirm-Confirm", "close_member_run"),
+    ];
+    let lifecycle_route = |operation: &str| {
+        format!("/v1/agentfirm/member-runs/{member_run_id}/{operation}?project={project_id}")
+    };
+    let (status, closed) = serve.post_json_with_headers(
+        &lifecycle_route("close"),
+        &serde_json::json!({"action":"close_member_run"}),
+        &close_headers,
+    );
+    assert_eq!(status, 200, "close MemberRun: {closed}");
+    assert_eq!(closed["projection"]["coordination_status"], "closed");
+    assert_eq!(closed["projection"]["runtime_status"], "stopped");
+    let closed_version = closed["projection"]["version"]
+        .as_u64()
+        .expect("closed version")
+        .to_string();
+    let (status, lifecycle_closed) =
+        serve.get_json_with_headers(&view_route, &[("X-AgentFirm-Token", TOKEN)]);
+    assert_eq!(status, 200, "closed lifecycle RoleView: {lifecycle_closed}");
+    let closed_actions = lifecycle_closed["allowed_actions"]
+        .as_array()
+        .expect("closed actions");
+    assert!(closed_actions.iter().any(|action| {
+        action["kind"] == "reopen_member_run" && action["target_ref"]["id"] == member_run_id
+    }));
+    assert!(!closed_actions.iter().any(|action| {
+        action["kind"] == "resume_native_session" && action["target_ref"]["id"] == member_run_id
+    }));
+    let before_closed_resume = ledger_digest(serve.fixture_store_root());
+    let (status, rejected_generic_closed_resume) = serve.post_json_with_headers(
+        &format!("/v1/member-runs/{member_run_id}/resume-native-session?project={project_id}"),
+        &serde_json::json!({
+            "command":"resume_native_session",
+            "member_run_id":member_run_id,
+            "updated_at":"unix-ms:generic-closed-resume"
+        }),
+        &action_headers(
+            TOKEN,
+            "matrix-member-invalid-generic-closed-resume",
+            &closed_version,
+        ),
+    );
+    assert_eq!(
+        status, 409,
+        "generic HTTP Closed Resume must fail: {rejected_generic_closed_resume}"
+    );
+    assert_eq!(
+        ledger_digest(serve.fixture_store_root()),
+        before_closed_resume,
+        "generic HTTP Closed Resume must have byte-zero durable side effects"
+    );
+    let (status, rejected_closed_resume) = serve.post_json_with_headers(
+        &lifecycle_route("resume-native-session"),
+        &serde_json::json!({"action":"resume_native_session"}),
+        &action_headers(
+            TOKEN,
+            "matrix-member-invalid-closed-resume",
+            &closed_version,
+        ),
+    );
+    assert_eq!(
+        status, 409,
+        "Closed Resume must fail: {rejected_closed_resume}"
+    );
+    assert_eq!(
+        ledger_digest(serve.fixture_store_root()),
+        before_closed_resume,
+        "Closed Resume must have byte-zero durable side effects"
+    );
+    let reopened = assert_exact_role_action_replay(
+        &serve,
+        &lifecycle_route("reopen"),
+        &serde_json::json!({"action":"reopen_member_run"}),
+        &action_headers(TOKEN, "matrix-member-reopen", &closed_version),
+        "reopen Closed MemberRun",
+    );
+    assert_eq!(reopened["projection"]["coordination_status"], "active");
+    assert_eq!(reopened["projection"]["runtime_status"], "queued");
 
     // Historical/corrupt stores can contain two active generations for one
     // AgentMember in the same TeamRun. Reads must never choose one
@@ -1656,7 +1757,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         session.native_session_id = "duplicate-active-session".into();
     }
     store
-        .create_trust_member_run(
+        .legacy_import_create_trust_member_run_projection(
             &MutationContext {
                 execution_space_id: space_id.clone(),
                 authenticated_actor: ActorRef {

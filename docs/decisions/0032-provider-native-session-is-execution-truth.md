@@ -7,6 +7,8 @@ Accepted and implemented as the storage, read, and resume boundary.
 ADR 0050 replaces this document's Assignment/Handoff message examples with
 Agent Team Work, WorkDelivery, Work submission/acceptance, and ordinary
 Work-linked conversation. The provider-native session boundary remains active.
+ADR 0056 replaces this document's PendingInteraction examples with correlated
+provider question/reply Messages and a frozen AgentSession permission ceiling.
 
 This ADR amends ADR 0010, ADR 0025, ADR 0030, and ADR 0031 where they imply
 that Harness must mirror a provider transcript, tool lifecycle, command stream,

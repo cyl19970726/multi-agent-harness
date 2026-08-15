@@ -10,9 +10,8 @@ use std::time::Duration;
 
 use crossbeam::channel::{bounded, Receiver, Sender};
 use harness_core::{
-    AgentTeamRun, MemberAction, Mission, PendingInteraction, ProviderRuntimeProjection,
-    RegistryMessage, TeamMemberCloseRequest, TeamRunEvent, TeamSupervisorLease, Wave, WorkflowRun,
-    WorkflowStep,
+    AgentTeamRun, MemberAction, Mission, ProviderRuntimeProjection, RegistryMessage,
+    TeamMemberCloseRequest, TeamRunEvent, TeamSupervisorLease, WorkflowRun, WorkflowStep,
 };
 
 /// An event frame sent to SSE clients. Durable frames are reconstructed by tailing
@@ -36,8 +35,6 @@ pub enum SseEventFrame {
     TeamRunEvent(TeamRunEvent),
     /// A native Mission was created or updated.
     Mission(Mission),
-    /// A native Wave was created, updated, or gated.
-    Wave(Wave),
     /// An Agent Team attempt was created or updated.
     AgentTeamRun(AgentTeamRun),
     /// An Agent Team member's durable run state changed.
@@ -50,8 +47,6 @@ pub enum SseEventFrame {
     /// operator-visible execution trace for an Agent Team attempt, so they are
     /// tail-replayed and merged latest-wins like the other run records.
     MemberAction(MemberAction),
-    /// A provider request awaiting or carrying an operator/policy response.
-    PendingInteraction(PendingInteraction),
     /// A durable source used by the Dashboard projection changed outside the
     /// serve process. The frame deliberately carries no business row: clients
     /// must refresh the scoped authoritative snapshot instead of treating this
@@ -435,7 +430,6 @@ const WATCHED_FILES: &[&str] = &[
     "team_supervisor_leases.jsonl",
     "team_member_close_requests.jsonl",
     "member_actions.jsonl",
-    "pending_interactions.jsonl",
 ];
 
 /// Ledgers represented in the full Dashboard snapshot but not safely merged as
@@ -719,8 +713,8 @@ fn poll_project(
     consumed_offsets: &mut HashMap<(String, String), u64>,
     manager: &SseManager,
 ) {
-    // Native Mission/Wave contract: these ledgers are the durable source for
-    // the live console's incremental read model. They remain project-scoped by
+    // Current Mission contract: these ledgers are durable sources for the live
+    // console's incremental read model. They remain project-scoped by
     // the common `(project_id, filename)` offsets and manager subscription.
     check_and_broadcast_appends(
         project_id,
@@ -731,21 +725,6 @@ fn poll_project(
             serde_json::from_str::<Mission>(line)
                 .ok()
                 .map(SseEventFrame::Mission)
-                .into_iter()
-                .collect()
-        },
-        manager,
-    );
-
-    check_and_broadcast_appends(
-        project_id,
-        store_root,
-        "waves.jsonl",
-        consumed_offsets,
-        |line| {
-            serde_json::from_str::<Wave>(line)
-                .ok()
-                .map(SseEventFrame::Wave)
                 .into_iter()
                 .collect()
         },
@@ -818,21 +797,6 @@ fn poll_project(
         "member_actions.jsonl",
         consumed_offsets,
         member_action_frames,
-        manager,
-    );
-
-    check_and_broadcast_appends(
-        project_id,
-        store_root,
-        "pending_interactions.jsonl",
-        consumed_offsets,
-        |line| {
-            serde_json::from_str::<PendingInteraction>(line)
-                .ok()
-                .map(SseEventFrame::PendingInteraction)
-                .into_iter()
-                .collect()
-        },
         manager,
     );
 
@@ -1619,11 +1583,11 @@ mod tests {
         std::fs::remove_dir_all(&root_b).expect("cleanup b");
     }
 
-    /// Native Mission/Wave and Agent Team ledgers are tail-able sources for the
-    /// console read model. One project poll must parse each native record into
-    /// its specific frame without requiring a full snapshot refresh.
+    /// Current Mission and Agent Team ledgers are tail-able sources for the
+    /// console read model. Legacy Wave rows are snapshot-only historical data
+    /// and never invalidate current coordination state.
     #[test]
-    fn native_mission_wave_and_team_ledgers_emit_typed_frames() {
+    fn native_mission_and_team_ledgers_emit_typed_frames() {
         let root = unique_dir("native-ledgers");
         std::fs::create_dir_all(&root).expect("create root");
         let manager = SseManager::new();
@@ -1635,10 +1599,6 @@ mod tests {
             (
                 "missions.jsonl",
                 include_str!("../../../schemas/fixtures/mission/valid/basic.json"),
-            ),
-            (
-                "waves.jsonl",
-                include_str!("../../../schemas/fixtures/wave/valid/basic.json"),
             ),
             (
                 "team_runs.jsonl",
@@ -1666,10 +1626,7 @@ mod tests {
             }
         }
 
-        assert_eq!(
-            ledgers,
-            vec!["missions.jsonl", "waves.jsonl", "team_runs.jsonl"]
-        );
+        assert_eq!(ledgers, vec!["missions.jsonl", "team_runs.jsonl"]);
         for (filename, _) in rows {
             assert!(
                 offsets.contains_key(&(TEST_PID.to_string(), filename.to_string())),

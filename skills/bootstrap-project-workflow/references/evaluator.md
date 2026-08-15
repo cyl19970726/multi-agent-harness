@@ -75,7 +75,7 @@ quality, not as a generic object model for other projects.
 ```text
 base_commit: a clean pre-reorg worktree (before docs were reorganized around
 critical mechanisms)
-final_acceptance: this project can use native Mission/Wave execution, linked
+final_acceptance: this project can use native Mission execution and Mission Log judgment, linked
 Agent Team Works, executor-native outcomes, artifacts, gates, and
 Dashboard visibility to develop itself while preserving Company OS truth.
 expected_outcome_class: similar quality to a commit that reorganizes docs

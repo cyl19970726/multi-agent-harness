@@ -231,7 +231,6 @@ export function adaptTrademarkOperationsProjection(source: unknown): TrademarkOp
     sourceRef: text(row.source_ref) || undefined,
     workId: text(row.work_id) || undefined,
     missionId: text(row.mission_id) || undefined,
-    waveId: text(row.wave_id) || undefined,
     teamRunId: text(row.team_run_id),
     memberRunId: text(row.member_run_id),
     title: text(row.title, "TeamWork"),

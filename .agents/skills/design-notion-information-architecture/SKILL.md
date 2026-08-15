@@ -39,7 +39,7 @@ For every audience, write the shortest path from entry to answer to action. Assi
 - Use a hub as navigation over authorities; do not let it become a second authority.
 - Use a view to expose source records in context; do not copy records to create another list.
 
-Name relations by meaning, such as `Work`, `Run`, `Specification`, `Reviewed by`, or `Supersedes`. Reject generic `Related pages` and URL fields that impersonate Notion relations.
+Name relations by meaning, such as `Task`, `Specification`, `Reviews`, `Reviewed by`, or `Supersedes`. Reject generic `Related pages` and URL fields that impersonate Notion relations. For AgentFirm, do not introduce `Run` as a default second Task authority.
 
 Choose top-level modules from recurring user operations and maintained systems, not from the nouns in the product architecture. Place product domains inside the Docs System as document taxonomy or curated hubs unless they have real operational records, actions, ownership, and lifecycle in the workspace.
 

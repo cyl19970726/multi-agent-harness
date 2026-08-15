@@ -4,7 +4,8 @@
 
 Repository development uses the canonical
 [Notion Spec -> Issue -> Codex -> PR flow](workflow-git-pr.md). One Primary
-Session owns a Wave end to end in a clean isolated worktree. Ordinary work uses
+Session owns a development Wave (repository delivery batch, not the retired
+runtime `Wave` structure) end to end in a clean isolated worktree. Ordinary work uses
 final-SHA self-review rather than a mandatory second reviewer; a narrow Host
 Gate is required only when the Development Record says so. Harness Member
 dogfood remains suspended for repository repair, while product TeamWork Gate
@@ -51,29 +52,32 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-The executable Mission/Wave + Agent Team acceptance gate is:
+The executable Mission + Mission Log + Agent Team acceptance gate is:
 
 ```bash
 npx pnpm@9.15.4 acceptance:mission-wave
 ```
 
-It covers native Mission/Wave HTTP and CLI contracts, Agent Team create/start,
+The command name is retained for compatibility. It covers native Mission and
+Mission Log HTTP and CLI contracts, Agent Team create/start,
 shared Works/WorkDelivery, Work-linked conversation, Mission closeout, Host-facing MCP transport, the
 Dashboard read model and operator controls, plus deterministic persistent
 Codex app-server, Claude Agent SDK, and Kimi ACP Team Member adapters. It also
-gates durable Supervisor generations, typed actor mail, atomic delivery
-claim/provider receipt/ACK, cross-process control routing, reconnect, and
+gates durable Supervisor generations, authenticated identity-first Message
+authoring, atomic per-recipient delivery
+claim/provider receipt/per-recipient acknowledgement, cross-process control
+routing, reconnect, and
 explicit Close. Bounded Codex/Claude/Kimi exec paths belong to Dynamic
 Workflow and are never Agent Team fallbacks.
 
 Real self-hosting follows the canonical
 [Agent Team Dogfood Loop](../product/agent-team-dogfood-loop.md). A failed live
-scenario becomes a Host-triaged Repair Wave or tracked issue, then the original
+scenario becomes a Host-triaged repair batch or tracked issue, then the original
 scenario is rerun before the matrix expands. Finding a bug is evidence, not
 Mission closeout.
 
 When a live Member appears stuck, inspect MemberRun/Supervisor health, Inbox
-delivery and PendingInteraction first, then use bounded provider-native session
+delivery and unresolved `provider_interaction_request` Messages first, then use bounded provider-native session
 forensics through its `NativeSessionRef`. Compare tool/process evidence with the
 Member narrative; never read an entire large JSONL into the Host context or
 copy the transcript into Harness. The output is a diagnosis and next control
@@ -82,14 +86,14 @@ action, not a replacement execution history.
 Use focused Rust tests while iterating on one slice:
 
 ```bash
-cargo test -p firm-cli --test mcp_stdio --test team_run_start -- --test-threads=1
+cargo test -p firm-cli --test mcp_stdio --test team_run_api --test team_run_daemon -- --test-threads=1
 cargo test -p firm-cli --test team_run_api \
   persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_completion \
   -- --test-threads=1
 ```
 
 There is currently no packaged live-provider command. When a claim depends on
-a real provider, record the exact Mission, selected Host-plan Wave revision,
+a real provider, record the exact Mission and relevant Mission Log entry,
 Team/Node/Project-fenced TeamRun, MemberRuns, provider-native session ids, Work
 ids/versions, WorkDelivery, linked conversation, submissions/Host
 acceptance, artifacts, and
@@ -155,8 +159,8 @@ starts:
    native session, retaining the old one as history;
 6. reconcile queued/claimed mail, permissions, model controls, cwd/Skill
    roots, and the single writable-Workspace driver; and
-7. probe lane by lane: fresh correlated delivery, same-session answer, Host
-   ACK.
+7. probe lane by lane: fresh correlated delivery, same-session answer, and
+   exact-recipient acknowledgement where the consumer exposes it.
 
 The dogfood execution roster is deliberate: Kimi `kimi_acp` with the reviewed
 K3 model alias at `max` thinking effort is primary (verify the MemberRun
@@ -214,7 +218,7 @@ firm space switch <execution-space-id>
 firm project switch <project-binding-id>
 ```
 
-`--space` / `HARNESS_SPACE` selects Mission/Wave, Agent Team, Workflow, and
+`--space` / `HARNESS_SPACE` selects Mission/Mission Log, Agent Team, Workflow, and
 coordination storage. `--project` / `HARNESS_PROJECT` independently selects
 provider cwd, project instructions, Skills, Git/worktree, and permission
 boundaries. `--store` / `HARNESS_ROOT` remains a deprecation-warned
@@ -239,13 +243,13 @@ The local API also exposes safe control-plane actions used by the Agent
 Dashboard:
 
 ```text
-POST /v1/messages
+POST /v1/agentfirm/team-runs/{id}/messages/send
+POST /v1/agentfirm/team-runs/{id}/messages/reply
+POST /v1/agentfirm/team-runs/{id}/messages/request-decision
 POST /v1/team-runs
 POST /v1/team-runs/{id}/start
 POST /v1/team-runs/{id}/members
-POST /v1/team-runs/{id}/messages
-POST /v1/team-runs/{id}/messages/{message-id}/ack
-POST /v1/team-runs/{id}/messages/{message-id}/reconcile-delivery
+POST /v1/agentfirm/nodes/{node-id}/message-deliveries/{delivery-id}/reconcile
 POST /v1/team-runs/{id}/members/{member-run-id}/steer
 POST /v1/team-runs/{id}/members/{member-run-id}/interrupt
 POST /v1/team-runs/{id}/members/{member-run-id}/close

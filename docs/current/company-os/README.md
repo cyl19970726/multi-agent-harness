@@ -15,7 +15,7 @@ cores are:
    identities, external participants, and services. Agent Teams are flat and
    do not nest (see the [Agent Firm Mental Model](../../mental/agent-firm-mental-model.md)).
 
-This is not a rename of the execution harness. Mission/Wave, Dynamic Workflow,
+This is not a rename of the execution harness. Mission/Mission Log, Dynamic Workflow,
 Agent Team, provider sessions, plugins, and host execution remain the execution
 substrate used by the organization. They do not replace the document system or
 become the company’s primary information architecture.
@@ -67,10 +67,10 @@ The current implementation now has the first explicit Company Store slice:
 project-derived Company OS compatibility path still works. The migration command
 copies only the explicit active Company Store ledger allowlist. Retired
 WorkItem, Assignment, and cutover ledgers are neither copied nor verified; it
-also does not move Mission/Wave, Agent Team, Workflow, provider sessions,
+also does not move Mission/Mission Log, Agent Team, Workflow, provider sessions,
 prompts, or runtimes. ADR 0042 defines the
 implemented identity split: Company Store owns Agent Company Workspace truth,
-Execution Space owns Mission/Wave, Agent Team, Workflow, and Host coordination,
+Execution Space owns Mission/Mission Log, Agent Team, Workflow, and Host coordination,
 and Project Binding owns repo / worktree / provider-cwd selection. Company is
 optional for execution.
 
@@ -191,10 +191,6 @@ rules live in [Documentation Governance](../documentation-governance.md).
 - Wanchengwanling completion roadmap:
   storage-backed unfinished-goal map for CLI/API, skills, custom pages, GitHub
   source sync, SQL read/search, real launch data, and replication templates.
-- [Agent Team foundation closure plan](../product/agent-team-foundation-closure-plan.md):
-  staged implementation and acceptance boundary for the durable Supervisor,
-  typed mailbox, multi-client controls, and Organization runtime substrate.
-
 Historical implementation plans and completion audits are available through Git
-history and the native Mission/Wave records that executed them. They are not
+history and the native Mission/Mission Log records that executed them. They are not
 maintained as a second documentation layer.

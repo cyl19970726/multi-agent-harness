@@ -11,6 +11,9 @@ ADR 0050 removes Assignment Message and moves assignment, blocker, submission,
 review, and acceptance into Work operations. This ADR remains authoritative for
 ordinary planning conversation, durable authored-message delivery, busy/idle
 queueing, and Provider-safe mailbox boundaries.
+ADR 0056 removes PendingInteraction as a product object: paused provider
+questions are ordinary correlated Messages, while permission callbacks are
+handled inside the frozen AgentSession ceiling or fail closed.
 
 ## Context
 

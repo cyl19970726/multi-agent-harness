@@ -10,39 +10,66 @@
 //! - `initialize` → protocolVersion / capabilities / serverInfo handshake.
 //! - `notifications/initialized` (and any other notification) → no response.
 //! - `ping` → `{}`.
-//! - `tools/list` → Mission/Wave authoring plus Agent Team tools.
+//! - `tools/list` → Mission / Mission Log authoring plus Agent Team tools.
 //! - `tools/call` → `{content:[{type:"text",text:<result JSON>}], isError}`.
 //! - unknown method → JSON-RPC -32601. stdin EOF exits.
 
+use std::collections::BTreeSet;
 use std::io::{BufRead, Write};
 
 use harness_core::{
-    PendingInteractionStatus, TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus,
-    TeamSupervisorLeaseStatus, WaveStatus, Work, WorkCausationRef, WorkClaimMode,
-    WorkCommandContext, WorkCondition, WorkPhase, WorkPriority,
+    AgentTeamRun, TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus,
+    TeamSupervisorLeaseStatus, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext,
+    WorkCondition, WorkPhase, WorkPriority,
 };
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
 use crate::{
-    add_team_run_member, agentfirm_api, close_mission, close_team_member_value, create_mission,
-    create_team_run, current_unix_ms_u64, deactivate_team_run_member,
-    delegate_team_run_to_node_daemon, format_work_brief_line, generated_id,
-    has_actionable_delivered_manual_ack, host_inbox_for_native_thread, interrupt_team_member_value,
-    latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
-    latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
+    add_team_run_member, agentfirm_api, answer_provider_message_value, close_mission,
+    close_team_member_value, create_mission, create_team_run, current_unix_ms_u64,
+    deactivate_team_run_member, delegate_team_run_to_node_daemon, format_work_brief_line,
+    generated_id, host_inbox_for_native_thread, interrupt_team_member_value,
+    latest_member_runs_in_append_order, latest_team_run, latest_team_runs_in_append_order,
     mutate_team_work_value, now_string, reconcile_team_work_delivery_value, rename_team_run_member,
-    reopen_team_member_value, reopened_member_requires_supervisor_start,
-    resolve_pending_interaction_value, retired_wave_write_error, revise_mission_context,
+    reopen_team_member_value, reopened_member_requires_supervisor_start, revise_mission_context,
     serde_snake_label, steer_team_member_value, team_member_specs_from_definition,
-    team_run_board_summary_text, team_run_inbox, team_run_mission_id, team_run_wave_index,
-    transition_team_run, visible_member_actions_in_append_order, work_operation_cursors,
-    ResolvedStore, TeamMemberSpec,
+    team_run_board_summary_text, team_run_inbox, team_run_mission_id, transition_team_run,
+    visible_member_actions_in_append_order, work_operation_cursors, ResolvedStore, TeamMemberSpec,
 };
 
 /// MCP protocol revision this server speaks, echoed verbatim in `initialize`
 /// (the simple end of "reply with the client's version or the lower one").
 const PROTOCOL_VERSION: &str = "2024-11-05";
+
+/// Closed command inventory for the generic Member Trust MCP adapter.
+/// MemberRun creation is intentionally absent: current creation is admitted
+/// only by `team_run_create` or `team_run_add_member`, which publish the legacy
+/// runtime projection and canonical MemberRun through one Store boundary.
+const MCP_MEMBER_TRUST_COMMANDS: &[&str] = &[
+    "create_agent_member",
+    "pause_agent_member",
+    "resume_agent_member",
+    "retire_agent_member",
+    "close_member_run",
+    "reopen_member_run",
+    "retire_member_run",
+    "resume_native_session",
+    "create_work_deliveries",
+    "retry_work_delivery",
+    "reconcile_work_delivery",
+    "provision_workspace",
+    "transition_workspace",
+    "create_work_report",
+    "create_work_finding",
+    "create_failure_analysis",
+    "bind_work_module",
+    "create_gate_requirement",
+    "accept_work",
+    "evaluate_gate",
+    "waive_gate",
+    "revoke_gate_waiver",
+];
 
 /// The Vite Dashboard is the human UI. Its development proxy exposes the
 /// Harness API at the same origin, so deep links must not point at the
@@ -55,27 +82,10 @@ fn team_dashboard_url(store: &HarnessStore, resolved: &ResolvedStore, team_run_i
     let mission_id = run
         .as_ref()
         .and_then(|run| team_run_mission_id(store, run).ok());
-    let current_wave_id = mission_id.as_deref().and_then(|mission_id| {
-        let mut waves = store.latest_waves().ok()?;
-        waves.retain(|wave| wave.mission_id == mission_id);
-        waves.sort_by_key(|wave| wave.index);
-        waves
-            .iter()
-            .find(|wave| {
-                matches!(
-                    wave.status,
-                    WaveStatus::Running | WaveStatus::Waiting | WaveStatus::Blocked
-                )
-            })
-            .or_else(|| waves.iter().find(|wave| wave.status == WaveStatus::Planned))
-            .or_else(|| waves.last())
-            .map(|wave| wave.id.clone())
-    });
-    let context = match (mission_id.as_deref(), current_wave_id.as_deref()) {
-        (Some(mission_id), Some(wave_id)) => format!("&mission={mission_id}&wave={wave_id}"),
-        (Some(mission_id), None) => format!("&mission={mission_id}"),
-        _ => String::new(),
-    };
+    let context = mission_id
+        .as_deref()
+        .map(|mission_id| format!("&mission={mission_id}"))
+        .unwrap_or_default();
     let mut selectors = String::new();
     if let Some(space) = resolved.execution_space_context.as_ref() {
         selectors.push_str("&space=");
@@ -173,11 +183,6 @@ pub(crate) fn call_tool(
         "mission_update_context" => tool_mission_update_context(store, &arguments),
         "mission_close" => tool_mission_close(store, &arguments),
         "mission_list" => tool_mission_list(store),
-        "wave_create" => tool_wave_create(store, &arguments),
-        "wave_update" => tool_wave_update(store, &arguments),
-        "wave_advance" => tool_wave_advance(store, &arguments),
-        "wave_list" => tool_wave_list(store, &arguments),
-        "wave_gate" => tool_wave_gate(store, &arguments),
         "team_run_create" => tool_team_run_create(store, resolved, &arguments),
         "team_run_add_member" => tool_team_run_add_member(store, resolved, &arguments),
         "team_run_work_list" => tool_team_run_work_list(store, &arguments),
@@ -205,15 +210,12 @@ pub(crate) fn call_tool(
         "team_run_deactivate_member" => tool_team_run_deactivate_member(store, &arguments),
         "team_run_start" => tool_team_run_start(store, resolved, &arguments),
         "team_run_cancel" => tool_team_run_cancel(store, resolved, &arguments),
-        "team_message_acknowledge" => tool_team_message_acknowledge(store, resolved, &arguments),
         "team_run_list" => tool_team_run_list(store, &arguments),
         "team_run_status" => tool_team_run_status(store, resolved, &arguments),
         "team_run_board_summary" => tool_team_run_board_summary(store, &arguments),
         "team_run_host_inbox" => tool_team_run_host_inbox(store, &arguments),
         "team_run_inbox" => tool_team_run_inbox(store, &arguments),
-        "team_run_send_message" => tool_team_run_send_message(store, &arguments),
-        "team_run_reconcile_delivery" => tool_team_run_reconcile_delivery(store, &arguments),
-        "team_run_resolve_interaction" => tool_team_run_resolve_interaction(store, &arguments),
+        "team_run_answer_message" => tool_team_run_answer_message(store, &arguments),
         "team_run_steer_member" => tool_team_run_steer_member(store, &arguments),
         "team_run_interrupt_member" => tool_team_run_interrupt_member(store, &arguments),
         "team_run_close_member" => tool_team_run_close_member(store, &arguments),
@@ -241,6 +243,17 @@ fn tool_agentfirm_member_trust_mutate(
         "agentfirm_member_trust_mutate",
         &["command", "idempotency_key", "expected_version"],
     )?;
+    let command_value = arguments
+        .get("command")
+        .cloned()
+        .ok_or_else(|| "argument `command` is required".to_string())?;
+    let command_name = command_value
+        .get("command")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "argument `command.command` must be a string".to_string())?;
+    if !MCP_MEMBER_TRUST_COMMANDS.contains(&command_name) {
+        return Err("unsupported or retired MCP Member Trust command".to_string());
+    }
     let execution_space_id = resolved
         .execution_space_context
         .as_ref()
@@ -266,13 +279,8 @@ fn tool_agentfirm_member_trust_mutate(
         }),
         _ => return Err("MCP authority kind and id must be configured together".to_string()),
     };
-    let command = serde_json::from_value::<agentfirm_api::TrustCommand>(
-        arguments
-            .get("command")
-            .cloned()
-            .ok_or_else(|| "argument `command` is required".to_string())?,
-    )
-    .map_err(|error| format!("invalid TrustCommand: {error}"))?;
+    let command = serde_json::from_value::<agentfirm_api::TrustCommand>(command_value)
+        .map_err(|error| format!("invalid TrustCommand: {error}"))?;
     let expected_version = arguments
         .get("expected_version")
         .and_then(Value::as_u64)
@@ -481,6 +489,7 @@ fn tool_team_run_work_list(store: &HarnessStore, arguments: &Value) -> Result<Va
 /// tool result here.
 fn tool_team_run_board_summary(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
     let team_run_id = required_str(arguments, "team_run_id")?;
+    require_current_team_run(store, team_run_id)?;
     let summary =
         team_run_board_summary_text(store, team_run_id).map_err(|error| error.to_string())?;
     Ok(json!({"summary": summary}))
@@ -910,14 +919,36 @@ fn tool_team_run_reopen_member(
     Ok(json!({"reopen": reopened}))
 }
 
-fn tool_team_run_resolve_interaction(
-    store: &HarnessStore,
-    arguments: &Value,
-) -> Result<Value, String> {
+fn tool_team_run_answer_message(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    reject_unknown_arguments(
+        arguments,
+        "team_run_answer_message",
+        &["team_run_id", "message_id", "option_id", "response_text"],
+    )?;
     let team_run_id = required_str(arguments, "team_run_id")?;
-    let interaction_id = required_str(arguments, "interaction_id")?;
-    resolve_pending_interaction_value(store, team_run_id, interaction_id, arguments)
-        .map_err(|error| error.to_string())
+    let message_id = required_str(arguments, "message_id")?;
+    let actor_kind_raw = std::env::var("AGENTFIRM_MCP_ACTOR_KIND")
+        .map_err(|_| "MCP transport is missing AGENTFIRM_MCP_ACTOR_KIND".to_string())?;
+    let actor_id = std::env::var("AGENTFIRM_MCP_ACTOR_ID")
+        .map_err(|_| "MCP transport is missing AGENTFIRM_MCP_ACTOR_ID".to_string())?;
+    let actor_kind = agentfirm_api::parse_actor_kind(&actor_kind_raw)
+        .ok_or_else(|| "AGENTFIRM_MCP_ACTOR_KIND is invalid".to_string())?;
+    let body = serde_json::json!({
+        "option_id": arguments.get("option_id").cloned().unwrap_or(Value::Null),
+        "response_text": arguments.get("response_text").cloned().unwrap_or(Value::Null),
+    });
+    answer_provider_message_value(
+        store,
+        team_run_id,
+        message_id,
+        &body,
+        &harness_core::agentfirm_api::ActorRef {
+            kind: actor_kind,
+            id: actor_id,
+        },
+        "mcp_transport",
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn tool_team_run_start(
@@ -950,14 +981,6 @@ fn tool_team_run_cancel(
     let run = transition_team_run(store, id, TeamRunStatus::Cancelled)
         .map_err(|error| error.to_string())?;
     Ok(json!({"team_run": run, "dashboard_url": team_dashboard_url(store, resolved, id)}))
-}
-
-fn tool_team_message_acknowledge(
-    _store: &HarnessStore,
-    _resolved: &ResolvedStore,
-    _arguments: &Value,
-) -> Result<Value, String> {
-    Err("RETIRED_WRITE_AUTHORITY: team_message_acknowledge cannot authenticate the recipient session; acknowledge canonical MessageDelivery through the target NodeDaemon".to_string())
 }
 
 /// Read a required string argument, or the tool-error message.
@@ -1020,46 +1043,15 @@ fn tool_mission_list(store: &HarnessStore) -> Result<Value, String> {
         .map_err(|error| error.to_string())?))
 }
 
-/// Wave write tools retired by the ADR 0051 Mission Log cutover — see
-/// `crate::retired_wave_write_error`, the single source of truth this
-/// mirrors across CLI, HTTP, and MCP so no surface keeps a live Wave-write
-/// path. `wave_list` (below) stays: historical Wave rows remain readable.
-fn tool_wave_create(_store: &HarnessStore, _arguments: &Value) -> Result<Value, String> {
-    Err(retired_wave_write_error("create").to_string())
-}
-
-fn tool_wave_list(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    let mission_id = optional_str(arguments, "mission_id")?;
-    Ok(json!(store
-        .latest_waves()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .filter(|wave| mission_id.as_deref().is_none_or(|id| wave.mission_id == id))
-        .collect::<Vec<_>>()))
-}
-
-fn tool_wave_update(_store: &HarnessStore, _arguments: &Value) -> Result<Value, String> {
-    Err(retired_wave_write_error("update").to_string())
-}
-
-fn tool_wave_advance(_store: &HarnessStore, _arguments: &Value) -> Result<Value, String> {
-    Err(retired_wave_write_error("advance").to_string())
-}
-
-fn tool_wave_gate(_store: &HarnessStore, _arguments: &Value) -> Result<Value, String> {
-    Err(retired_wave_write_error("gate").to_string())
-}
-
 /// `team_run_create` — journal a new run, idle members, and explicit initial Works.
 fn tool_team_run_create(
     store: &HarnessStore,
     resolved: &ResolvedStore,
     arguments: &Value,
 ) -> Result<Value, String> {
-    if arguments.get("wave_index").is_some() {
+    if arguments.get("wave_index").is_some() || arguments.get("wave_id").is_some() {
         return Err(
-            "wave_index was retired; supply wave_id and derive order from the native Wave"
-                .to_string(),
+            "wave_id and wave_index are Legacy-only and cannot create a current TeamRun; supply agent_team_id and derive Mission through AgentTeam".to_string(),
         );
     }
     let objective = required_str(arguments, "objective")?;
@@ -1144,7 +1136,6 @@ fn tool_team_run_create(
         "team_run_id": created.team_run.id,
         "member_run_ids": created.team_run.member_run_ids,
         "mission_id": team_run_mission_id(store, &created.team_run).map_err(|error| error.to_string())?,
-        "wave_id": null,
         "execution_root": created.team_run.execution_root,
         "member_runs": created.member_runs,
         "works": created.works,
@@ -1207,7 +1198,6 @@ fn tool_team_run_add_member(
         team_run_id,
         &member,
         initial_work.as_deref(),
-        optional_str(arguments, "source_plan_ref")?,
     )
     .map_err(|error| error.to_string())?;
     Ok(json!({
@@ -1272,12 +1262,10 @@ fn tool_team_run_list(store: &HarnessStore, arguments: &Value) -> Result<Value, 
     Ok(Value::Array(
         runs.iter()
             .map(|run| {
-                let wave_index = team_run_wave_index(store, run).ok().flatten();
                 json!({
                     "id": run.id,
                     "objective": run.objective,
                     "status": run.status,
-                    "wave_index": wave_index,
                     "member_count": run.member_run_ids.len(),
                     "project_binding_id": run.project_binding_id,
                     "created_at": run.created_at,
@@ -1288,17 +1276,16 @@ fn tool_team_run_list(store: &HarnessStore, arguments: &Value) -> Result<Value, 
 }
 
 /// `team_run_status` — one run with its members (each carrying the latest
-/// MemberAction, if any), the compatibility `unacked_messages` count of
-/// actionable delivered `manual_ack` messages, and the dashboard URL. Mirrors
-/// the `team-run status --json` projection.
+/// MemberAction, if any), a current canonical Message-fabric summary, and the
+/// dashboard URL. Historical `team_messages.jsonl` rows never participate.
 fn tool_team_run_status(
     store: &HarnessStore,
     resolved: &ResolvedStore,
     arguments: &Value,
 ) -> Result<Value, String> {
     let id = required_str(arguments, "team_run_id")?;
-    let run = latest_team_run(store, id).map_err(|error| error.to_string())?;
-    let wave_index = team_run_wave_index(store, &run).map_err(|error| error.to_string())?;
+    let run = require_current_team_run(store, id)?;
+    let execution_space_id = mcp_team_run_execution_space_id(store, resolved, &run)?;
     let member_runs: Vec<_> = latest_member_runs_in_append_order(store)
         .map_err(|error| error.to_string())?
         .into_iter()
@@ -1306,38 +1293,6 @@ fn tool_team_run_status(
         .collect();
     let actions =
         visible_member_actions_in_append_order(store).map_err(|error| error.to_string())?;
-    let messages =
-        latest_team_messages_in_append_order(store).map_err(|error| error.to_string())?;
-    // Only genuinely pending interactions belong in a status snapshot. A
-    // persistent run accumulates resolved approvals without bound; measured on
-    // team-run-1785417151179 the unfiltered list was 69 resolved records =
-    // 60,342 of 68,213 response chars (88% dead payload) growing monotonically
-    // with run age. History stays available behind `include_resolved`.
-    let include_resolved = arguments
-        .get("include_resolved")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let mut resolved_interactions = 0usize;
-    let pending_interactions: Vec<_> = latest_pending_interactions_in_append_order(store)
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .filter(|interaction| interaction.team_run_id == id)
-        .filter(|interaction| {
-            // `Unsupported` is terminal but ACTIONABLE: the provider could not
-            // render the prompt, so the Host must intervene. Bucketing it as
-            // "resolved" would hide the one terminal state that still needs a
-            // human/Host decision behind a name that reads as "already handled".
-            if matches!(
-                interaction.status,
-                PendingInteractionStatus::Pending | PendingInteractionStatus::Unsupported
-            ) {
-                true
-            } else {
-                resolved_interactions += 1;
-                include_resolved
-            }
-        })
-        .collect();
     let members: Vec<Value> = member_runs
         .iter()
         .map(|member| {
@@ -1351,11 +1306,7 @@ fn tool_team_run_status(
             })
         })
         .collect();
-    let unacked_messages = messages
-        .iter()
-        .filter(|message| message.team_run_id == id)
-        .filter(|message| has_actionable_delivered_manual_ack(message))
-        .count();
+    let message_summary = canonical_message_summary_for_run(store, id, &execution_space_id)?;
     let supervisor = store
         .latest_team_supervisor_lease(id)
         .map_err(|error| error.to_string())?;
@@ -1365,11 +1316,8 @@ fn tool_team_run_status(
     });
     Ok(json!({
         "team_run": run,
-        "wave_index": wave_index,
         "members": members,
-        "pending_interactions": pending_interactions,
-        "resolved_interactions": resolved_interactions,
-        "unacked_messages": unacked_messages,
+        "message_summary": message_summary,
         "supervisor": {
             "lease": supervisor,
             "current": supervisor_current,
@@ -1378,24 +1326,105 @@ fn tool_team_run_status(
     }))
 }
 
-/// The retired MCP tool cannot authenticate a stable sender identity. Keep the
-/// name as an explicit hard-rejection surface until the MCP manifest removes
-/// it; canonical authorship is an authenticated Role Action or source
-/// NodeDaemon RuntimeCommand.
-fn tool_team_run_send_message(_store: &HarnessStore, _arguments: &Value) -> Result<Value, String> {
-    Err("RETIRED_WRITE_AUTHORITY: team_run_send_message cannot select a sender identity; use an authenticated AgentFirm Role Action or source NodeDaemon RuntimeCommand".to_string())
-}
-
-fn tool_team_run_reconcile_delivery(
-    _store: &HarnessStore,
-    _arguments: &Value,
+fn canonical_message_summary_for_run(
+    store: &HarnessStore,
+    team_run_id: &str,
+    execution_space_id: &str,
 ) -> Result<Value, String> {
-    Err("RETIRED_WRITE_AUTHORITY: team_run_reconcile_delivery cannot supply target NodeDaemon authority; use canonical target-NodeDaemon reconciliation".to_string())
+    let mut messages = store
+        .fabric_messages(execution_space_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|message| message.team_run_id.as_deref() == Some(team_run_id))
+        .collect::<Vec<_>>();
+    messages.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let message_ids = messages
+        .iter()
+        .map(|message| message.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let deliveries = store
+        .fabric_message_deliveries(execution_space_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|delivery| message_ids.contains(delivery.message_id.as_str()))
+        .collect::<Vec<_>>();
+    let answered_request_ids = messages
+        .iter()
+        .filter(|message| {
+            message.kind == harness_core::agentfirm_api::MessageKind::ProviderInteractionResponse
+        })
+        .filter_map(|message| message.causation_id.as_deref())
+        .collect::<BTreeSet<_>>();
+    let provider_interaction_requests = messages
+        .iter()
+        .filter(|message| {
+            message.kind == harness_core::agentfirm_api::MessageKind::ProviderInteractionRequest
+        })
+        .count();
+    let provider_interaction_responses = messages
+        .iter()
+        .filter(|message| {
+            message.kind == harness_core::agentfirm_api::MessageKind::ProviderInteractionResponse
+        })
+        .count();
+    let awaiting_host_response = messages
+        .iter()
+        .filter(|message| {
+            message.kind == harness_core::agentfirm_api::MessageKind::ProviderInteractionRequest
+                && !answered_request_ids.contains(message.id.as_str())
+        })
+        .count();
+    let actionable_deliveries = deliveries
+        .iter()
+        .filter(|delivery| {
+            matches!(
+                delivery.status,
+                harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Queued
+                    | harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Routed
+                    | harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Claimed
+                    | harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::ProviderReceived
+            )
+        })
+        .count();
+    Ok(json!({
+        "total": messages.len(),
+        "provider_interaction_requests": provider_interaction_requests,
+        "provider_interaction_responses": provider_interaction_responses,
+        "awaiting_host_response": awaiting_host_response,
+        "actionable_deliveries": actionable_deliveries,
+    }))
 }
 
-/// `team_run_inbox` — latest-wins coordination mail addressed to one member.
-/// The default projection is actionable queued/delivered mail; `all=true`
-/// returns all received messages at their latest stored state.
+/// Resolve the strict current Execution Space of one TeamRun before any MCP
+/// Message projection reads. The Store validates the complete declared member
+/// set under its writer lock; MCP only enforces agreement with its selected
+/// Execution Space and never performs an independent physical-space scan.
+fn mcp_team_run_execution_space_id(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    run: &AgentTeamRun,
+) -> Result<String, String> {
+    let execution_space_id = store
+        .current_team_run_execution_space(run)
+        .map_err(|error| error.to_string())?;
+    if let Some(selected) = resolved.execution_space_context.as_ref() {
+        if selected.id != execution_space_id {
+            return Err(format!(
+                "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} belongs to {}, not selected Execution Space {}",
+                run.id, execution_space_id, selected.id
+            ));
+        }
+    }
+    Ok(execution_space_id)
+}
+
+/// `team_run_inbox` — canonical Message/MessageDelivery projection addressed
+/// to one member. `all=true` includes terminal delivery history; the retired
+/// `team_messages.jsonl` ledger is never consulted.
 fn tool_team_run_inbox(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
     let team_run_id = required_str(arguments, "team_run_id")?;
     let member_run_id = required_str(arguments, "member_run_id")?;
@@ -1408,7 +1437,7 @@ fn tool_team_run_inbox(store: &HarnessStore, arguments: &Value) -> Result<Value,
     Ok(json!({"messages": messages}))
 }
 
-/// `team_run_host_inbox` — aggregate actionable Host mail only for TeamRuns
+/// `team_run_host_inbox` — aggregate canonical Host mail only for TeamRuns
 /// bound to the exact provider-native Host thread.
 fn tool_team_run_host_inbox(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
     let host_surface = required_str(arguments, "host_surface")?;
@@ -1426,32 +1455,48 @@ fn tool_team_run_host_inbox(store: &HarnessStore, arguments: &Value) -> Result<V
 /// resumed after a seen seq (pass the last seq you have as `after_seq`).
 fn tool_team_run_events(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
     let id = required_str(arguments, "team_run_id")?;
+    require_current_team_run(store, id)?;
     let after_seq = arguments
         .get("after_seq")
         .and_then(Value::as_u64)
         .unwrap_or(0);
     let mut events: Vec<TeamRunEvent> = store
-        .team_run_events()
+        .current_team_run_events(id)
         .map_err(|error| crate::CliError::Store(error).to_string())?
         .into_iter()
-        .filter(|event| event.team_run_id == id && event.seq > after_seq)
+        .filter(|event| event.seq > after_seq)
         .collect();
     events.sort_by_key(|event| event.seq);
     Ok(json!(events))
 }
 
-/// Mission/Wave authoring plus Agent Team tools. Descriptions ARE the interface
+fn require_current_team_run(store: &HarnessStore, id: &str) -> Result<AgentTeamRun, String> {
+    let run = latest_team_run(store, id).map_err(|error| error.to_string())?;
+    store
+        .current_team_run_execution_space(&run)
+        .map_err(|error| error.to_string())?;
+    Ok(run)
+}
+
+/// Mission / Mission Log authoring plus Agent Team tools. Descriptions ARE the interface
 /// contract — the host model reads them to decide how to call each tool.
 fn tool_definitions() -> Value {
     json!([
         {
             "name": "agentfirm_member_trust_mutate",
-            "description": "Execute one canonical Member Execution Trust command through the same application service used by CLI and HTTP. Actor identity comes only from the MCP process transport environment.",
+            "description": "Execute one advertised Member Execution Trust lifecycle or Work command. MemberRun creation is available only through team_run_create or team_run_add_member. Close requires Active; Reopen requires Closed; ResumeNativeSession requires Active plus a Disconnected, Failed, or Stopped runtime. Lifecycle changes use the combined TeamRun authority and never mutate only one projection. Actor identity comes only from the MCP process transport environment.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                    "command": {"type": "object", "description": "One tagged TrustCommand payload."},
+                    "command": {
+                        "type": "object",
+                        "description": "One tagged command from the closed MCP Member Trust inventory.",
+                        "properties": {
+                            "command": {"type": "string", "enum": MCP_MEMBER_TRUST_COMMANDS}
+                        },
+                        "required": ["command"]
+                    },
                     "idempotency_key": {"type": "string", "minLength": 1},
                     "expected_version": {"type": "integer", "minimum": 0}
                 },
@@ -1512,7 +1557,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "mission_close",
-            "description": "Complete a Mission with an explicit outcome. Completed Missions are immutable; linked Team lifecycle is unchanged. Wave gate acceptance is no longer required (ADR 0051) — record a closeout_evidence Mission Log entry beforehand by convention.",
+            "description": "Complete a Mission with an explicit outcome. Completed Missions are immutable; linked Team lifecycle is unchanged. Legacy history never gates a new Mission; record a closeout_evidence Mission Log entry beforehand by convention.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1527,75 +1572,6 @@ fn tool_definitions() -> Value {
             "name": "mission_list",
             "description": "List latest native Mission rows.",
             "inputSchema": {"type": "object", "properties": {}}
-        },
-        {
-            "name": "wave_create",
-            "description": "Retired by the ADR 0051 Mission Log cutover; always returns an error. Use `mission_log_append`-equivalent CLI (`harness mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <markdown>`) instead.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string"},
-                    "mission_id": {"type": "string"},
-                    "index": {"type": "integer", "minimum": 1, "description": "Optional explicit order; next order is selected when omitted."},
-                    "title": {"type": "string"},
-                    "objective": {"type": "string"},
-                    "executor_kind": {"type": "string", "enum": ["agent_team", "dynamic_workflow", "host"]},
-                    "exit_criteria": {"type": "string"},
-                    "plan_note": {"type": "string"}
-                    ,"context": {"type": "string", "description": "Host operational memo in Markdown."}
-                    ,"updated_by": {"type": "string", "description": "Defaults to host."}
-                },
-                "required": ["mission_id", "title", "objective"]
-            }
-        },
-        {
-            "name": "wave_update",
-            "description": "Retired by the ADR 0051 Mission Log cutover; always returns an error. Use `harness mission log append` instead.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "wave_id": {"type": "string"},
-                    "context": {"type": "string", "minLength": 1},
-                    "updated_by": {"type": "string", "description": "Defaults to host."}
-                },
-                "required": ["wave_id", "context"]
-            }
-        },
-        {
-            "name": "wave_advance",
-            "description": "Retired by the ADR 0051 Mission Log cutover; always returns an error. Use `harness mission log append` instead.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "wave_id": {"type": "string"},
-                    "outcome": {"type": "string", "minLength": 1},
-                    "advanced_by": {"type": "string", "description": "Defaults to host."},
-                    "artifact_refs": {"type": "array", "items": {"type": "string"}}
-                },
-                "required": ["wave_id", "outcome"]
-            }
-        },
-        {
-            "name": "wave_list",
-            "description": "List latest native Wave rows, optionally limited to one Mission.",
-            "inputSchema": {"type": "object", "properties": {"mission_id": {"type": "string"}}}
-        },
-        {
-            "name": "wave_gate",
-            "description": "Retired by the ADR 0051 Mission Log cutover; always returns an error. An append-only Mission Log has no gate — use `harness mission log append` instead.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "wave_id": {"type": "string"},
-                    "status": {"type": "string", "enum": ["accepted", "revise", "blocked"]},
-                    "run_id": {"type": "string", "description": "Required when status is accepted."},
-                    "accepted_by": {"type": "string", "description": "Defaults to host."},
-                    "note": {"type": "string"},
-                    "outcome": {"type": "string", "description": "Required when status is accepted."},
-                    "artifact_refs": {"type": "array", "items": {"type": "string"}}
-                },
-                "required": ["wave_id", "status"]
-            }
         },
         {
             "name": "team_run_create",
@@ -1750,13 +1726,12 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_add_member",
-            "description": "Add one idle member to an active planning/running/waiting TeamRun and optionally create a first Work. source_plan_ref is Host-plan provenance only.",
+            "description": "Add one idle member to an active planning/running/waiting TeamRun and optionally create a first Work.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "team_run_id": {"type": "string"},
                     "initial_work": {"type": "string", "minLength": 1},
-                    "source_plan_ref": {"type": "string", "description": "Optional Host-plan provenance only."},
                     "member": {
                         "type": "object",
                         "properties": {
@@ -1826,20 +1801,8 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "team_message_acknowledge",
-            "description": "Acknowledge one delivery of a TeamMessageProjection for an explicit member or the reserved host recipient.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "message_id": {"type": "string"},
-                    "member_id": {"type": "string", "description": "Recipient member-run id or `host`."}
-                },
-                "required": ["message_id", "member_id"]
-            }
-        },
-        {
             "name": "team_run_list",
-            "description": "List team runs in the store (latest projection, append order). One Execution Space store holds every tenant bound to it, so pass project_binding_id to see only one project's runs and status to drop finished ones. wave_index is derived by joining wave_id to the native Wave and is null when unresolved.",
+            "description": "List team runs in the store (latest projection, append order). One Execution Space store holds every tenant bound to it, so pass project_binding_id to see only one project's runs and status to drop finished ones. Mission is derived through AgentTeam; Legacy Wave rows never participate.",
             "inputSchema": {"type": "object", "properties": {
                 "project_binding_id": {"type": "string", "description": "Return only runs bound to this project."},
                 "status": {"type": "string", "description": "Return only runs in this status, for example running."}
@@ -1847,12 +1810,11 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_status",
-            "description": "Show one team run: the run row, every member run with its latest MemberAction, provider PendingInteractions that are still pending (resolved history behind include_resolved; resolved_interactions always carries the count), compatibility field unacked_messages (the count of messages with at least one delivered manual_ack delivery awaiting acknowledgement), and the live dashboard URL.",
+            "description": "Show one team run: the run row, every member run with its latest MemberAction, a canonical Message-fabric summary, and the live dashboard URL. Historical team_messages.jsonl rows are excluded.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "team_run_id": {"type": "string", "description": "Run id returned by team_run_create / team_run_list."},
-                    "include_resolved": {"type": "boolean", "default": false, "description": "Include resolved PendingInteraction history; the unbounded resolved list is excluded by default."}
                 },
                 "required": ["team_run_id"]
             }
@@ -1870,7 +1832,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_host_inbox",
-            "description": "Read Host mail across only those TeamRuns explicitly bound to one exact provider-native Host surface/thread. This is the safe Plugin/App integration path: it never leaks another Host task's inbox. By default returns actionable mail; all=true includes acknowledged history.",
+            "description": "Read canonical Host mail across only those TeamRuns explicitly bound to one exact provider-native Host surface/thread. This is the safe Plugin/App integration path: it never leaks another Host task's inbox. By default returns actionable mail; all=true includes terminal canonical delivery history.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1883,7 +1845,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_inbox",
-            "description": "Read latest-wins Harness coordination mail addressed to one ProviderRuntimeProjection (or the reserved host recipient). By default returns actionable queued/delivered messages; all=true returns every received message at its latest stored state, not raw append revisions. Provider-native transcript and tool history are intentionally excluded.",
+            "description": "Read the canonical Message/MessageDelivery projection addressed to one ProviderRuntimeProjection (or the reserved host recipient). By default returns actionable mail; all=true includes terminal delivery history. Historical team_messages.jsonl rows and provider-native transcript/tool history are excluded.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1895,64 +1857,22 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "team_run_send_message",
-            "description": "Route one conversation message inside a team run and fold it into the run's event log. Durable responsibility lives on Work; pass work_id only to link the discussion. MCP Host calls default to sender_kind=host; external gateways must identify operator/service explicitly and may not impersonate a driven ProviderRuntimeProjection. Omit lineage fields for a fresh conversation correlation.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "team_run_id": {"type": "string"},
-                    "sender_runtime_id": {"type": "string", "description": "Compatibility sender projection. Use `host` for MCP Host calls; operator/service gateways provide their stable id here."},
-                    "sender_kind": {"type": "string", "enum": ["host", "operator", "service", "agent_member"], "description": "Authenticated MCP actor provenance. Unbound MCP cannot author AgentMember messages for driven members; those originate from the bound provider runtime. The declared exception is a non-driven external_interactive member, whose user-driven session may self-author here and is recorded with authn_source=mcp:external_interactive."},
-                    "sender_id": {"type": "string", "description": "Stable id of the typed sender; defaults to sender_runtime_id."},
-                    "sender_name": {"type": "string"},
-                    "recipient_runtime_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}, "description": "One or more recipient member run ids, or the reserved host recipient."},
-                    "kind": {"type": "string", "enum": ["message", "handoff", "control"], "description": "Use `message` for planning, questions, answers, progress, blockers, review, broadcasts, and peer coordination. Work owns assignment and lifecycle."},
-                    "body": {"type": "string"},
-                    "work_id": {"type": "string", "description": "Optional Work discussed by this message. It must belong to the same TeamRun."},
-                    "correlation_id": {"type": "string", "description": "Optional existing conversation correlation to reuse."},
-                    "causation_id": {"type": "string", "description": "Optional earlier TeamMessageProjection id in this team run. When paired with correlation_id, it must carry that same correlation."}
-                    ,"source_plan_ref": {"type": "string", "description": "Optional Host-plan provenance only; never a lifecycle boundary."}
-                    ,"response_intent": {"type": "string", "enum": ["informational", "response_required"], "description": "Explicit response intent (ADR 0046 §4). Omit for the kind+sender default: handoff/control always require a response round; ordinary message mail from the coordination plane (host/operator/service) requires one too, while peer member-to-member message mail stays informational and never starts a provider round on its own."}
-                },
-                "required": ["team_run_id", "sender_runtime_id", "recipient_runtime_ids", "kind", "body"]
-            }
-        },
-        {
-            "name": "team_run_reconcile_delivery",
-            "description": "Resolve one TeamMessageProjection delivery left in claimed state after a Supervisor crash. This never guesses provider consumption: choose provider_accepted=true with an audited provider_receipt_id, or requeue=true.",
+            "name": "team_run_answer_message",
+            "description": "Answer a provider-originated correlated question or plan-review Message as the authenticated AgentTeam Host. The exact response Message is durably published before the request delivery is ACKed, so an exact retry can recover a crash between those writes without duplicating the answer.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "team_run_id": {"type": "string"},
                     "message_id": {"type": "string"},
-                    "member_run_id": {"type": "string"},
-                    "claim_id": {"type": "string"},
-                    "provider_accepted": {"type": "boolean"},
-                    "provider_receipt_id": {"type": "string"},
-                    "requeue": {"type": "boolean"},
-                    "reason": {"type": "string", "minLength": 1}
+                    "option_id": {"type": "string", "description": "Exact option id exposed by the provider message."},
+                    "response_text": {"type": "string", "description": "Free-form response only when the provider request exposes no exact options."}
                 },
-                "required": ["team_run_id", "message_id", "member_run_id", "claim_id", "reason"]
-            }
-        },
-        {
-            "name": "team_run_resolve_interaction",
-            "description": "Resolve a provider-originated interaction by legacy PendingInteraction id or provider_interaction_request TeamMessageProjection id. New responses are strict correlated TeamMessages, atomically ACK the request, and enter the provider only through an Inject delivery. Questions/reviews require host|lead, unknown requests operator|human, and tool/reject-only requests policy.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "team_run_id": {"type": "string"},
-                    "interaction_id": {"type": "string"},
-                    "option_id": {"type": "string", "description": "Exact option id exposed by the provider interaction."},
-                    "response_text": {"type": "string", "description": "Free-form response when the provider contract supports it."},
-                    "resolved_by": {"type": "string", "enum": ["host", "lead", "operator", "human", "policy"]}
-                },
-                "required": ["team_run_id", "interaction_id", "resolved_by"]
+                "required": ["team_run_id", "message_id"]
             }
         },
         {
             "name": "team_run_steer_member",
-            "description": "Inject operator or Lead input into a currently active provider turn. This is capability-gated and currently requires codex_app_server; batch modes must use team_run_send_message for the next round.",
+            "description": "Inject operator or Lead input into a currently active provider turn. This is capability-gated and currently requires codex_app_server; when no turn is active, publish a canonical Message through the normal AgentTeam message surface.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

@@ -15,7 +15,6 @@ export interface TeamWarRoomProps {
   teamRunId?: string;
   workId?: string;
   missionId?: string;
-  waveId?: string;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
   apiUrl?: string;
   projectBindingId?: string | null;

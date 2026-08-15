@@ -1,8 +1,11 @@
-# ADR 0030: Provider interaction and semantic event contract
+# ADR 0030: Provider interaction and semantic event contract (Superseded)
+
+> Superseded by [ADR 0056](0056-correlated-message-and-session-permission-cutover.md).
+> This file is historical evidence and is not an active implementation contract.
 
 ## Status
 
-Accepted and implemented in the Agent Team substrate.
+Historical; superseded by ADR 0056.
 
 Amended by ADR
 [0032](0032-provider-native-session-is-execution-truth.md): interaction routing

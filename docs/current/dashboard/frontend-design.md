@@ -16,9 +16,8 @@ decisions stay in [frontend-architecture.md](frontend-architecture.md) and ADR
 [0016](../../decisions/0016-tailwind-shadcn-adoption.md) (stack). Acceptance gates stay in
 acceptance.md.
 
-Mission/Wave direction is canonical in
-../architecture-map.md and
-[ADR 0026](../../decisions/0026-mission-wave-architecture.md). Existing
+Mission + Mission Log direction is canonical in ../architecture-map.md and
+ADR 0051. ADR 0026 preserves the predecessor Mission/Wave design as history. Existing
 Vision/Goal/Task work-board and Goal Workbench contracts are archived; they no
 longer define the top-level product IA.
 
@@ -46,7 +45,7 @@ status:
   current_implementation: Execution Workbench V3 on the active product branch
   stack: React 18 + TypeScript + Vite + Tailwind v4 + shadcn/Radix + lucide + Geist
   theme: light, Notion-like document surface (supersedes 0016 dark theme)
-  mission_wave_direction: implemented; pages/mission-wave-canvas.md
+  mission_log_direction: implemented; pages/mission-detail-log.md
   agent_team_page: implemented; pages/team-run-war-room.md
   retired_coordination_ui: removed from active product surfaces
   implementation_allowed: follow the canonical page and visual contracts
@@ -56,10 +55,10 @@ The Agent Workbench uses Tailwind v4 + shadcn/ui (Radix) + lucide-react + Geist
 with generated identity art and purpose-built execution primitives. Historical
 shell decisions are retained only as design provenance in
 the frontend IA. New
-Mission/Wave changes must:
+Mission/Log changes must:
 
-- start from the architecture map, ADR 0026, and the
-  implemented Mission/Wave Canvas and Agent Team War Room page specs;
+- start from the architecture map, ADR 0051, and the
+  implemented Mission Detail and Log and Agent Team War Room page specs;
 - follow the architecture and stack decision in
   [frontend-architecture.md](frontend-architecture.md) and ADR
   [0016](../../decisions/0016-tailwind-shadcn-adoption.md);
@@ -72,16 +71,16 @@ The UI must make this workflow inspectable without raw JSON or hidden chat
 context:
 
 ```text
-Mission context -> ordered Host-plan Wave revisions
+Mission context -> append-only Mission Log judgment/replan/recovery entries
   -> one flat AgentTeam on one ExecutionNode
   -> shared Works / WorkDelivery / linked conversation / native sessions
   -> Member submit -> Host accept or request changes
-  -> Host judgment -> next Wave or Mission closeout
+  -> Host judgment -> plan adjustment, recovery, or Mission closeout
 ```
 
 The retired coordination views are absent from active product navigation and
 must not be reintroduced as compatibility UI. Stricter governance may add
-review evidence without changing the Mission/Wave object hierarchy.
+review evidence without introducing another Mission lifecycle object.
 
 ## Reading Order
 
@@ -100,15 +99,15 @@ review evidence without changing the Mission/Wave object hierarchy.
 
 ## Page Specs
 
-New product work starts from Mission detail, ordered Waves, and the Agent Team
+New product work starts from Mission detail, its Log, and the Agent Team
 page. Historical Vision/Goal/Task UI material is archived and must not be
-copied into Mission/Wave IA.
+copied into Mission/Log IA.
 
 | Page spec | Owns |
 | --- | --- |
-| [Mission/Wave Canvas](pages/mission-wave-canvas.md) | One Mission's durable context, Mission-owned Team, ordered Host-plan Wave revisions, decisions, and closeout. |
-| [Agent Team War Room](pages/team-run-war-room.md) | One required Mission-owned AgentTeamRun: shared Works ownership/status, Work-linked conversation, member presence, unified activity, artifacts, and selected Host-plan context. |
-| [MemberRun Focus](pages/member-run-focus.md) | One run-scoped Agent Team member: owned/eligible Works, WorkDelivery, native activity/evidence, runtime, and direct Team messages. |
+| [Mission Detail and Log](pages/mission-detail-log.md) | One Mission's durable context, Mission-owned Team, append-only Host judgments, decisions, and closeout. |
+| [Agent Team War Room](pages/team-run-war-room.md) | One required Mission-owned AgentTeamRun: shared Works ownership/status, Work-linked conversation, member presence, unified activity, artifacts, and Mission Log context. |
+| [MemberRun Focus](pages/member-run-focus.md) | One run-scoped Agent Team member: owned/eligible Works, WorkDelivery, native activity/evidence, runtime, and direct canonical Messages. |
 | [AgentMember Focus](pages/agent-member-focus.md) | One canonical AgentMember: organization projection, responsibilities, TeamWorks, documents, availability, and execution trust. |
 | [Debug](pages/debug.md) | Raw snapshot, import/export, and low-level object views outside the primary work surface. |
 

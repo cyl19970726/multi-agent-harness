@@ -52,8 +52,68 @@ if (mainRs && shared) {
   fail("Cannot read main.rs or shared-references SKILL.md");
 }
 
-// ── Rule 2: Plugin manifest must not reference retired concepts ──────────
-console.log("\nRule 2: Plugin manifest (no Wave, no Plan Gate as feature)");
+// ── Rule 2: Mission is current; Wave is compatibility-only ────────────────
+console.log("\nRule 2: Mission + Mission Log current authority; Wave Legacy-only");
+const missionSchema = read(join(ROOT, "schemas/mission.schema.json"));
+const waveSchema = read(join(ROOT, "schemas/wave.schema.json"));
+const schemasReadme = read(join(ROOT, "schemas/README.md"));
+const currentMissionFixture = read(join(ROOT, "schemas/fixtures/mission/valid/basic.json"));
+const legacyMissionFixture = read(join(ROOT, "schemas/fixtures/mission/valid/legacy-wave-ids.json"));
+
+if (!missionSchema || !waveSchema || !schemasReadme || !currentMissionFixture || !legacyMissionFixture) {
+  fail("Cannot read Mission/Wave compatibility contracts");
+} else {
+  try {
+    const mission = JSON.parse(missionSchema);
+    const wave = JSON.parse(waveSchema);
+    const currentFixture = JSON.parse(currentMissionFixture);
+    const legacyFixture = JSON.parse(legacyMissionFixture);
+    const waveIds = mission.properties?.wave_ids;
+
+    if (waveIds?.deprecated !== true || waveIds?.readOnly !== true ||
+        waveIds?.["x-agentfirm-authority"] !== "legacy-historical-read-only") {
+      fail("Mission.wave_ids is not marked deprecated Legacy read-only compatibility");
+    } else {
+      ok("Mission.wave_ids is explicitly Legacy read-only compatibility");
+    }
+
+    if (Object.hasOwn(currentFixture, "wave_ids")) {
+      fail("current Mission fixture still writes wave_ids");
+    } else if (!Array.isArray(legacyFixture.wave_ids) || legacyFixture.wave_ids.length === 0) {
+      fail("Legacy Mission fixture no longer proves wave_ids read compatibility");
+    } else {
+      ok("current Mission fixture omits wave_ids; Legacy fixture preserves read compatibility");
+    }
+
+    const waveIsLegacy = wave.deprecated === true && wave.readOnly === true &&
+      wave["x-agentfirm-authority"] === "legacy-historical-read-only" &&
+      wave["x-agentfirm-new-writes"] === false &&
+      wave["x-agentfirm-new-gates"] === false;
+    if (!waveIsLegacy) {
+      fail("Wave schema is not fully fenced as Legacy historical read-only");
+    } else if (!wave.properties?.gate_status) {
+      fail("Wave schema lost historical gate fields needed for compatibility validation");
+    } else {
+      ok("Wave is Legacy-only while historical gate rows remain validation-compatible");
+    }
+
+    const [currentSchemas, legacySchemas = ""] = schemasReadme.split("## Legacy historical compatibility");
+    if (!currentSchemas.includes("Mission log entry")) {
+      fail("schemas README omits MissionLogEntry from the current Mission model");
+    } else if (currentSchemas.includes("[wave.schema.json]")) {
+      fail("schemas README lists Wave in a current section");
+    } else if (!legacySchemas.includes("[wave.schema.json]")) {
+      fail("schemas README no longer documents the Wave compatibility schema");
+    } else {
+      ok("schemas README separates Mission/MissionLogEntry from Legacy Wave");
+    }
+  } catch (error) {
+    fail(`Mission/Wave compatibility contract is invalid JSON: ${error.message}`);
+  }
+}
+
+// Rule 3: Plugin manifest must not reference retired concepts.
+console.log("\nRule 3: Plugin manifest (no Wave, no Plan Gate as feature)");
 const pluginDir = join(ROOT, "plugins/star-harness");
 const manifests = [
   join(pluginDir, "kimi.plugin.json"),
@@ -89,8 +149,8 @@ for (const mf of manifests) {
   }
 }
 
-// ── Rule 3: Member skill matches CONTRACT prompt for key operations ──────
-console.log("\nRule 3: Member skill ↔ CONTRACT prompt (key operations)");
+// ── Rule 4: Member skill matches CONTRACT prompt for key operations ─────
+console.log("\nRule 4: Member skill ↔ CONTRACT prompt (key operations)");
 const memberSkill = read(join(ROOT, "skills/collaborate-as-agent-team-member/SKILL.md"));
 
 if (memberSkill && mainRs) {

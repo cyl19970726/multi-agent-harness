@@ -1,8 +1,8 @@
 //! Server-built, read-only RoleViews for the local AgentFirm product loop.
 //!
 //! The browser consumes these bounded projections and never folds ledgers or
-//! invents lifecycle state. All writes remain on the Wave 4A canonical
-//! mutation service.
+//! invents lifecycle state. All writes remain on the canonical Mission Log
+//! mutation service shipped by the historical Wave 4A development batch.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -283,14 +283,25 @@ impl Facts {
                 *revisions.entry(team.id.clone()).or_insert(0) += 1;
                 revisions
             });
+        let mut all_latest_runs = BTreeMap::new();
+        for run in &run_rows {
+            all_latest_runs.insert(run.id.clone(), run.clone());
+        }
+        let mut latest_runs = BTreeMap::new();
+        for (id, run) in all_latest_runs {
+            let resolved_space = store
+                .current_team_run_execution_space(&run)
+                .map_err(|error| error.to_string())?;
+            if resolved_space == space_id {
+                latest_runs.insert(id, run);
+            }
+        }
         let run_revisions = run_rows.iter().fold(BTreeMap::new(), |mut revisions, run| {
-            *revisions.entry(run.id.clone()).or_insert(0) += 1;
+            if latest_runs.contains_key(&run.id) {
+                *revisions.entry(run.id.clone()).or_insert(0) += 1;
+            }
             revisions
         });
-        let mut latest_runs = BTreeMap::new();
-        for run in run_rows {
-            latest_runs.insert(run.id.clone(), run);
-        }
         let store_identity = std::fs::canonicalize(store.root())
             .unwrap_or_else(|_| store.root().to_path_buf())
             .display()
@@ -1908,10 +1919,12 @@ fn team_view(
                     disabled,
                 ));
             }
-            if matches!(
-                member_run["runtime_status"].as_str(),
-                Some("disconnected" | "failed" | "stopped")
-            ) {
+            if member_run["coordination_status"] == "active"
+                && matches!(
+                    member_run["runtime_status"].as_str(),
+                    Some("disconnected" | "failed" | "stopped")
+                )
+            {
                 actions.push(action(
                     "resume_native_session",
                     "member_run",
@@ -3008,7 +3021,7 @@ fn member_view(
     Ok(envelope(
         "member_workbench",
         &facts,
-        json!({"agent_member":agent_member_summary(&member),"member_run":member_run_summary(run),"my_works":my,"eligible_ready_pool":pool,"unread_messages":unread,"queued_deliveries":record_summaries("message_delivery",queued),"workspace_binding":workspace.as_ref().map(|value|record_summary("workspace_binding",value)),"native_session_health":run["native_session"].get("availability").cloned().unwrap_or(json!("unknown")),"pending_provider_interactions":[],"report_history":record_summaries("work_report",records(&facts,|v|v["authored_by"]["id"]==member_id&&v.get("report_revision").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"finding_history":record_summaries("work_finding",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("detail_markdown").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"failure_history":record_summaries("failure_analysis",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("observed_failure").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"gate_requirements":record_summaries("gate_requirement",records(&facts,|v|v.get("requirement_set_fingerprint").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id))&&facts.works.iter().any(|work|v["work_id"]==work.id&&v["work_revision"].as_u64()==Some(work.version)))),"collaboration":collaboration}),
+        json!({"agent_member":agent_member_summary(&member),"member_run":member_run_summary(run),"my_works":my,"eligible_ready_pool":pool,"unread_messages":unread,"queued_deliveries":record_summaries("message_delivery",queued),"workspace_binding":workspace.as_ref().map(|value|record_summary("workspace_binding",value)),"native_session_health":run["native_session"].get("availability").cloned().unwrap_or(json!("unknown")),"report_history":record_summaries("work_report",records(&facts,|v|v["authored_by"]["id"]==member_id&&v.get("report_revision").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"finding_history":record_summaries("work_finding",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("detail_markdown").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"failure_history":record_summaries("failure_analysis",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("observed_failure").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"gate_requirements":record_summaries("gate_requirement",records(&facts,|v|v.get("requirement_set_fingerprint").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id))&&facts.works.iter().any(|work|v["work_id"]==work.id&&v["work_revision"].as_u64()==Some(work.version)))),"collaboration":collaboration}),
         vec![],
         actions,
     ))

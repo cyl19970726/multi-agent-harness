@@ -22,11 +22,11 @@
 //!   `fs.readTextFile/writeTextFile` tells the agent to route file IO through
 //!   this client; harness v0 does not serve client methods, so the agent must
 //!   use its own built-in tools instead. `session/request_permission` is the
-//!   one reverse-RPC method the Team Member adapter serves: the orchestrator
-//!   persists new interactions as provider request/response TeamMessages and
-//!   the same ACP turn waits for an answer. PendingInteraction remains only a
-//!   legacy compatibility read/resolve path. Unknown reverse-RPC methods still
-//!   fail closed with method-not-found.
+//!   one reverse-RPC method the Team Member adapter serves. The orchestrator
+//!   selects only exact allow intents inside a frozen full-access AgentSession,
+//!   rejects other permission callbacks, and routes only genuine user
+//!   questions or plan reviews through correlated Messages. Unknown reverse-
+//!   RPC methods still fail closed with method-not-found.
 //! - Reasoning streams (`agent_thought_chunk`) are passed through to the
 //!   caller verbatim. The team-run orchestrator deliberately does not persist
 //!   them: thinking is not evidence, replayable history, or peer-visible
@@ -674,9 +674,10 @@ impl KimiAcpClient {
     }
 
     /// Handle one queued frame. `session/request_permission` is routed to the
-    /// orchestrator so it can durably pause for Lead/Human input. Other client
-    /// methods fail closed because this client deliberately advertises no FS or
-    /// terminal capability.
+    /// orchestrator for frozen-ceiling enforcement; the transport itself never
+    /// guesses an allow option or invents a second approval lifecycle. Other
+    /// client methods fail closed because this client deliberately advertises
+    /// no FS or terminal capability.
     fn handle_incoming(
         &mut self,
         frame: &serde_json::Value,

@@ -3,18 +3,21 @@
 Schemas define object contracts shared by Rust types, API responses, CLI
 outputs, adapters, and the Agent Dashboard.
 
-## Native Mission/Wave Objects
+## Native Mission Objects
 
 | Object | Purpose |
 | --- | --- |
-| `Mission` | Durable intent/context, one owning AgentTeam, ordered Waves, and closeout |
-| `Wave` | One lightweight versioned Host plan/judgment and advance outcome |
+| `Mission` | Durable intent/context, one owning AgentTeam, and closeout |
+| `MissionLogEntry` | One append-only Host judgment, replan, recovery, or closeout-evidence record inside a Mission; not a lifecycle object |
 | `AgentTeam` | One Mission's flat Team with required Host Agent and immutable Node placement |
 | `AgentTeamRun` | One Team execution with required Team, Node, and Project Binding identity |
 | `MemberRun` | One role/provider execution instance inside a TeamRun |
 | `Work` / `WorkOperation` / `WorkEvent` / `WorkDelivery` | TeamRun-scoped responsibility projection, crash-atomic replay row, append-only semantic transition, and versioned runtime delivery |
 | `WorkDelegation` / `WorkDelegationEvent` | Cross-Team responsibility handoff with CAS, idempotency, cycle prevention, and source rollup |
-| `TeamMessage` | Typed sender/recipients, optional `work_id`, correlation/causation, optional origin Wave, response intent, claim/provider-receipt/ACK delivery state; conversation only |
+| `Message` | Immutable identity-first conversation envelope with typed author, correlation/causation, optional Work relation, and closed semantic kind. Provider requests and responses are Message kinds. |
+| `MessageSubscription` / `SubscriptionCursor` | Authorized recipient policy and recipient progress without copying or mutating Message content. |
+| `CanonicalMessageDelivery` | One recipient's queue, claim, exact AgentSession generation, provider receipt, and acknowledgement/cursor state. |
+| `TeamMessage` / `TeamMessageProjection` | Legacy pre-cutover conversation projection with embedded delivery/manual ACK state; read/export only through explicitly Legacy surfaces. |
 | `ExecutionNode` / `NodeProjectRegistration` / `NodeDaemonLease` | Machine identity, available Project Bindings, and the one daemon generation that owns all local TeamRuns |
 | `TeamSupervisorLease` | Latest-wins TeamRun control owner parent-fenced by NodeDaemon generation |
 | `MemberAction` | Transitional action schema; target scope is Harness-owned coordination/control facts, never mirrored provider activity |
@@ -22,10 +25,12 @@ outputs, adapters, and the Agent Dashboard.
 | `TeamRunEvent` | Ordered sanitized event projection for one TeamRun |
 
 Dynamic Workflow and Host execution retain their distinct execution-specific
-objects. Existing Goal/Task/Message/Evidence/Proposal/Decision schemas are
-historical compatibility or optional governance contracts. They are not the
-active Mission/Wave or Agent Team coordination model, and new Agent Team work
-must not depend on Goal, Task Graph, Plan Gate, or generic `Message`.
+objects. Existing Goal/Task schemas and retired TeamMessage projections are
+historical compatibility contracts; Evidence/Proposal/Decision remain optional
+governance contracts. They are not the
+active Mission/Mission Log or Agent Team coordination model, and new Agent Team work
+must not depend on Goal, Task Graph, Plan Gate, or a TeamMessage compatibility
+path.
 
 `Skill`, `ToolAdapter`, and `Dashboard` can start as configuration or views.
 
@@ -34,7 +39,8 @@ must not depend on Goal, Task Graph, Plan Gate, or generic `Message`.
 | Concept | Current maturity | Gateable now |
 | --- | --- | --- |
 | `Mission` | Rust + JSON schema + JSONL store + CLI/API/MCP/read model | yes |
-| `Wave` | Rust + JSON schema + JSONL revisions + Host update/advance | yes |
+| `MissionLogEntry` | Rust + append-only `mission_log.jsonl` store + CLI/API/MCP/read model | yes |
+| `Wave` | Rust + JSON schema + historical JSONL reads/export only; create/update/advance/gate retired by ADR 0051 | legacy only |
 | `AgentTeamRun` family | Rust + JSON schemas + store + CLI/API/MCP/read model | yes |
 | `Work` / `WorkEvent` / `WorkDelivery` | Rust + JSON schemas + WorkOperation JSONL store + CLI/API/MCP/read model | yes |
 | `TeamSupervisorLease` | Rust + JSON schema + JSONL latest-wins store + cross-process routing | yes |
@@ -42,7 +48,10 @@ must not depend on Goal, Task Graph, Plan Gate, or generic `Message`.
 | `AgentTeam` | Rust + JSON schema | yes |
 | `AgentMember` | Rust + JSON schema | yes |
 | `Task` | historical compatibility schema; retired for new coordination | no for new work |
-| `Message` | Agent Membership/runtime compatibility message; Agent Team uses `TeamMessage` | no for Agent Team |
+| `Message` | Rust + JSON schema + canonical Store/API projection; identity-first current conversation authority | yes |
+| `MessageSubscription` / `SubscriptionCursor` | Rust + JSON schemas + canonical Store/API projection | yes |
+| `CanonicalMessageDelivery` | Rust + JSON schema + canonical Store/API projection | yes |
+| `TeamMessage` / `TeamMessageProjection` | historical JSONL/schema reads and export only; current writes and ACK routes retired | legacy only |
 | `MemberRun` | Rust + JSON schema | yes |
 | `MemberRunEvent` | Rust + JSON schema | yes |
 | `ProviderChildThread` | Rust + JSON schema | yes |
@@ -65,18 +74,21 @@ schema contracts are checked with valid and invalid fixtures.
 | Schema | File |
 | --- | --- |
 | Mission | [mission.schema.json](../../../schemas/mission.schema.json) |
-| Wave | [wave.schema.json](../../../schemas/wave.schema.json) |
+| Historical Wave (ADR 0051 pre-cutover rows only) | [wave.schema.json](../../../schemas/wave.schema.json) |
 | Agent Team run | [agent-team-run.schema.json](../../../schemas/agent-team-run.schema.json) |
 | Member run | [member-run.schema.json](../../../schemas/member-run.schema.json) |
 | Work | [work.schema.json](../../../schemas/work.schema.json) |
 | Work event | [work-event.schema.json](../../../schemas/work-event.schema.json) |
 | Work delivery | [work-delivery.schema.json](../../../schemas/work-delivery.schema.json) |
 | Provider-native session locator | [native-session-ref.schema.json](../../../schemas/native-session-ref.schema.json) |
-| Team message | [team-message.schema.json](../../../schemas/team-message.schema.json) |
+| Message | [message.schema.json](../../../schemas/message.schema.json) |
+| Message subscription | [message-subscription.schema.json](../../../schemas/message-subscription.schema.json) |
+| Subscription cursor | [subscription-cursor.schema.json](../../../schemas/subscription-cursor.schema.json) |
+| Canonical message delivery | [canonical-message-delivery.schema.json](../../../schemas/canonical-message-delivery.schema.json) |
+| Legacy Team message projection | [team-message.schema.json](../../../schemas/team-message.schema.json) |
 | Member execution trust error | [trust-error.schema.json](../../../schemas/trust-error.schema.json) |
 | Team Supervisor lease | [team-supervisor-lease.schema.json](../../../schemas/team-supervisor-lease.schema.json) |
 | Member action | [member-action.schema.json](../../../schemas/member-action.schema.json) |
-| Pending provider interaction | [pending-interaction.schema.json](../../../schemas/pending-interaction.schema.json) |
 | Delegation run | [delegation-run.schema.json](../../../schemas/delegation-run.schema.json) |
 | Team run event | [team-run-event.schema.json](../../../schemas/team-run-event.schema.json) |
 | Agent team | [agent-team.schema.json](../../../schemas/agent-team.schema.json) |

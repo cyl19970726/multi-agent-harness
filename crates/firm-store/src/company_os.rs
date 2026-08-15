@@ -1,7 +1,7 @@
 //! Append-only persistence for the Company OS product model.
 //!
 //! The ledgers in this module are deliberately namespaced and independent from
-//! the legacy Goal/Task ledgers and from executor-native Mission/Wave records.
+//! the legacy Goal/Task ledgers and from executor-native Mission and Mission Log records.
 //! Reads use the repository's existing latest-row-wins projection.
 
 use std::fmt;

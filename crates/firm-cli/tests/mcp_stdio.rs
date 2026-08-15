@@ -1,15 +1,17 @@
 //! Integration coverage for `harness mcp`: the binary is spawned as a stdio
 //! MCP server against an isolated HOME and driven with line-delimited
 //! JSON-RPC 2.0 — initialize handshake, tools/list, the Agent Team control
-//! surface end to end (create → start/status → route/reconcile → send/ACK →
+//! surface end to end (create → start/status → canonical question/reply →
 //! events), and the -32601 unknown-method error.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::time::Duration;
 
 mod fake_provider;
 mod firm_env;
-use firm_env::{current_project_id, run_firm, TempHome};
+use firm_env::{current_project_id, run_firm, run_firm_with_env, TempHome};
+use harness_store::HarnessStore;
 
 /// `harness init` a project rooted at `<base>/<name>` and return its id.
 fn init_project(home: &TempHome, name: &str) -> String {
@@ -49,7 +51,7 @@ fn seed_agent_team(home: &TempHome, project_root: &std::path::Path, suffix: &str
             "role": "host",
             "capabilities": ["coordination"],
             "skill_refs": [],
-            "provider_profile_ref": "codex-default",
+            "provider_profile_ref": "codex",
             "model_preference": null,
             "workspace_policy": "managed-worktree",
             "permission_ceiling": "workspace_write",
@@ -134,6 +136,16 @@ fn seed_member_in_active_space(
     suffix: &str,
     role: &str,
 ) -> String {
+    seed_member_in_active_space_with_provider(home, project_root, suffix, role, "kimi")
+}
+
+fn seed_member_in_active_space_with_provider(
+    home: &TempHome,
+    project_root: &std::path::Path,
+    suffix: &str,
+    role: &str,
+    provider: &str,
+) -> String {
     let member_id = format!("mcp-member-{suffix}");
     let command = serde_json::json!({
         "command": "create_agent_member",
@@ -144,7 +156,7 @@ fn seed_member_in_active_space(
             "role": role,
             "capabilities": [role],
             "skill_refs": [],
-            "provider_profile_ref": "kimi-default",
+            "provider_profile_ref": provider,
             "model_preference": null,
             "workspace_policy": "managed-worktree",
             "permission_ceiling": "workspace_write",
@@ -331,6 +343,121 @@ impl Drop for McpClient {
         let _ = self.child.wait();
     }
 }
+
+#[test]
+fn mcp_current_surface_is_mission_only_and_rejects_legacy_wave_tools() {
+    let home = TempHome::new("mcp-mission-only-surface");
+    let project_id = init_project(&home, "mcp-mission-only-project");
+    let mut mcp = McpClient::spawn(&home, &project_id, &[]);
+    let _ = mcp.request(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "mission-only-surface-test", "version": "0"}
+        }),
+    );
+
+    let listed = mcp.request("tools/list", serde_json::json!({}));
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    let names = tools
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for current in [
+        "mission_create",
+        "mission_update_context",
+        "mission_close",
+        "mission_list",
+        "team_run_create",
+    ] {
+        assert!(
+            names.contains(current),
+            "missing current MCP tool {current}"
+        );
+    }
+    assert!(
+        names.iter().all(|name| !name.starts_with("wave_")),
+        "Legacy Wave tools must not be advertised: {names:?}"
+    );
+    for removed in [
+        "team_run_send_message",
+        "team_message_acknowledge",
+        "team_run_reconcile_delivery",
+    ] {
+        assert!(
+            !names.contains(removed),
+            "retired TeamMessageProjection tombstone must not be advertised: {removed}"
+        );
+    }
+
+    let team_run_create = tools
+        .iter()
+        .find(|tool| tool["name"] == "team_run_create")
+        .expect("team_run_create definition");
+    let schema = &team_run_create["inputSchema"];
+    assert!(schema["properties"].get("mission_id").is_none());
+    assert!(schema["properties"].get("wave_id").is_none());
+    assert!(schema["required"]
+        .as_array()
+        .expect("required array")
+        .iter()
+        .any(|field| field == "agent_team_id"));
+
+    let before = directory_snapshot(&home.spaces_dir());
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "wave_create",
+            "arguments": {
+                "id": "must-not-exist",
+                "mission_id": "must-not-exist",
+                "title": "must not write",
+                "objective": "must not write"
+            }
+        }),
+    );
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("unknown tool")),
+        "removed Legacy Wave tool must fail as unknown: {response}"
+    );
+    assert_eq!(
+        directory_snapshot(&home.spaces_dir()),
+        before,
+        "removed Legacy Wave MCP tool must have a byte-zero store delta"
+    );
+    for removed in [
+        "team_run_send_message",
+        "team_message_acknowledge",
+        "team_run_reconcile_delivery",
+    ] {
+        let response = mcp.request(
+            "tools/call",
+            serde_json::json!({
+                "name": removed,
+                "arguments": {
+                    "team_run_id": "must-not-exist",
+                    "message_id": "must-not-exist",
+                    "member_id": "must-not-exist"
+                }
+            }),
+        );
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("unknown tool")),
+            "removed MCP tombstone must fail as unknown: {removed}: {response}"
+        );
+        assert_eq!(
+            directory_snapshot(&home.spaces_dir()),
+            before,
+            "removed MCP tombstone must have a byte-zero store delta: {removed}"
+        );
+    }
+}
+
 fn call_payload(response: &serde_json::Value) -> serde_json::Value {
     let result = &response["result"];
     assert_eq!(
@@ -398,6 +525,37 @@ fn directory_snapshot(root: &std::path::Path) -> std::collections::BTreeMap<Stri
     rows
 }
 
+/// Simulate a hostile recovery/import artifact: the physical Store contains a
+/// second Execution Space with a Message carrying the same TeamRun id. Current
+/// MCP projections must resolve the TeamRun's frozen canonical scope first and
+/// must never fold this foreign row merely because the logical id collides.
+fn inject_foreign_space_copy_of_message(
+    store_root: &std::path::Path,
+    source_execution_space_id: &str,
+    foreign_execution_space_id: &str,
+    message_id: &str,
+    _exclusive_store_guard: &harness_store::StoreExclusiveMigrationGuard,
+) {
+    let ledger = store_root.join("agentfirm_trust_operations.jsonl");
+    let source = std::fs::read_to_string(&ledger).expect("read canonical operation ledger");
+    let mut envelope = source
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|row| {
+            row["execution_space_id"] == source_execution_space_id
+                && row["operation"]["event"]["aggregate_kind"] == "message"
+                && row["operation"]["event"]["aggregate_id"] == message_id
+        })
+        .expect("source Message operation");
+    envelope["execution_space_id"] = serde_json::json!(foreign_execution_space_id);
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&ledger)
+        .expect("open canonical operation ledger for hostile fixture");
+    writeln!(file, "{envelope}").expect("append hostile foreign-space fixture");
+    file.flush().expect("flush hostile foreign-space fixture");
+}
+
 #[test]
 fn remote_fabric_mcp_surface_is_read_only_and_server_resolves_local_node() {
     let home = TempHome::new("mcp-remote-fabric-read");
@@ -439,7 +597,7 @@ fn remote_fabric_mcp_surface_is_read_only_and_server_resolves_local_node() {
 }
 
 #[test]
-fn retired_mcp_team_run_message_writer_fails_closed_with_zero_store_delta() {
+fn removed_mcp_team_run_message_writer_fails_unknown_with_zero_store_delta() {
     let home = TempHome::new("mcp-retired-message-writer");
     let project_id = init_project(&home, "mcp-retired-message-project");
     let mut mcp = McpClient::spawn(&home, &project_id, &[]);
@@ -466,8 +624,10 @@ fn retired_mcp_team_run_message_writer_fails_closed_with_zero_store_delta() {
             }
         }),
     );
-    let error = call_error_text(&response);
-    assert!(error.contains("RETIRED_WRITE_AUTHORITY"), "{error}");
+    let error = response["error"]["message"]
+        .as_str()
+        .expect("removed tool must fail as unknown");
+    assert!(error.contains("unknown tool"), "{error}");
     assert_eq!(
         directory_snapshot(&home.spaces_dir()),
         before,
@@ -498,121 +658,182 @@ fn retired_mcp_team_run_message_writer_fails_closed_with_zero_store_delta() {
     }
 }
 
-// Historical Wave4A reverse-request writer flow. Canonical provider requests
-// are authored by the source NodeDaemon through Message/Delivery; this direct
-// TeamMessageProjection append must not remain executable in tests.
-#[cfg(any())]
 #[test]
-fn mcp_resolves_provider_request_messages_and_keeps_legacy_ledger_empty() {
+fn retired_mcp_standalone_member_run_create_is_unadvertised_and_byte_zero() {
+    let home = TempHome::new("mcp-retired-member-run-create");
+    let project_id = init_project(&home, "mcp-retired-member-run-project");
+    let project_root = home.base().join("mcp-retired-member-run-project");
+    let execution_space_id = "mcp-space-retired-member-run-create";
+    let space = run_firm(
+        &home,
+        &project_root,
+        &[
+            "space",
+            "init",
+            "--id",
+            execution_space_id,
+            "--project-binding",
+            &project_id,
+        ],
+    );
+    assert!(space.status.success(), "space init failed: {space:?}");
+    let mut mcp = McpClient::spawn(
+        &home,
+        &project_id,
+        &[
+            ("AGENTFIRM_MCP_ACTOR_KIND", "human"),
+            ("AGENTFIRM_MCP_ACTOR_ID", "retired-create-caller"),
+        ],
+    );
+    let _ = mcp.request(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "retired-member-run-create-test", "version": "0"}
+        }),
+    );
+    let listed = mcp.request("tools/list", serde_json::json!({}));
+    let member_trust_tool = listed["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .find(|tool| tool["name"] == "agentfirm_member_trust_mutate")
+        .expect("Member Trust lifecycle tool");
+    assert!(
+        !member_trust_tool.to_string().contains("create_member_run"),
+        "standalone MemberRun create must not be advertised: {member_trust_tool}"
+    );
+    let lifecycle_description = member_trust_tool["description"]
+        .as_str()
+        .expect("Member Trust tool description");
+    for contract in [
+        "Close requires Active",
+        "Reopen requires Closed",
+        "ResumeNativeSession requires Active plus a Disconnected, Failed, or Stopped runtime",
+        "combined TeamRun authority",
+    ] {
+        assert!(
+            lifecycle_description.contains(contract),
+            "MCP lifecycle contract is not honestly advertised ({contract}): {lifecycle_description}"
+        );
+    }
+
+    let store = HarnessStore::new(home.spaces_dir().join(execution_space_id));
+    let authority_counts = || {
+        (
+            store.team_runs().expect("TeamRun projections").len(),
+            store
+                .member_runs()
+                .expect("legacy runtime projections")
+                .len(),
+            store
+                .canonical_operations()
+                .expect("canonical trust operations")
+                .len(),
+        )
+    };
+    let before_counts = authority_counts();
+    let before_bytes = directory_snapshot(&home.spaces_dir());
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "agentfirm_member_trust_mutate",
+            "arguments": {
+                "command": {
+                    "command": "create_member_run",
+                    "run": {
+                        "id": "retired-standalone-member-run",
+                        "agent_member_id": "retired-standalone-member",
+                        "team_run_id": "retired-standalone-team-run",
+                        "role_snapshot": "implementer",
+                        "coordination_status": "active",
+                        "runtime_status": "idle",
+                        "runtime_generation": 1,
+                        "version": 1,
+                        "started_at": "unix-ms:1"
+                    }
+                },
+                "idempotency_key": "retired-member-run-create",
+                "expected_version": 0
+            }
+        }),
+    );
+    assert!(
+        call_error_text(&response).contains("unsupported or retired MCP Member Trust command"),
+        "retired standalone create must fail closed: {response}"
+    );
+    assert_eq!(
+        authority_counts(),
+        before_counts,
+        "retired MCP command must not create a TeamRun, legacy runtime projection, or canonical operation"
+    );
+    assert_eq!(
+        directory_snapshot(&home.spaces_dir()),
+        before_bytes,
+        "retired MCP command must produce a byte-zero Store delta"
+    );
+}
+
+#[test]
+fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retry() {
     let home = TempHome::new("mcp-provider-interaction-message");
     let project_id = init_project(&home, "mcp-provider-interaction");
     let project_root = home.base().join("mcp-provider-interaction");
     let team_id = seed_agent_team(&home, &project_root, "provider-interaction");
-    let created = run_firm(
+    let worker_id = seed_member_in_active_space_with_provider(
+        &home,
+        &project_root,
+        "provider-interaction-worker",
+        "implementer",
+        "codex",
+    );
+    let added = run_firm(
         &home,
         &project_root,
         &[
-            "team-run",
-            "create",
-            "--agent-team-id",
+            "team",
+            "add-member",
+            "--id",
             &team_id,
-            "--objective",
-            "Exercise MCP provider response bridge",
             "--member",
-            "mcp-host-provider-interaction:implementer:codex#Wait for MCP answer",
+            &worker_id,
         ],
     );
     assert!(
-        created.status.success(),
-        "create TeamRun: {}",
-        String::from_utf8_lossy(&created.stderr)
+        added.status.success(),
+        "add canonical worker: {}",
+        String::from_utf8_lossy(&added.stderr)
     );
-    let run_id = String::from_utf8_lossy(&created.stdout).trim().to_string();
-    let store = HarnessStore::new(home.spaces_dir().join("mcp-space-provider-interaction"));
-    let initial = store
-        .member_runs()
-        .expect("member runs")
-        .into_iter()
-        .rev()
-        .find(|member| member.team_run_id == run_id)
-        .expect("created member");
-    let mut member = initial.clone();
-    member.status = MemberRunStatus::Running;
-    member.native_session = Some(NativeSessionRef {
-        provider: member.provider.clone(),
-        execution_mode: "codex_app_server".into(),
-        native_session_id: "mcp-native-session".into(),
-        native_locator_kind: "codex_thread".into(),
-        provider_version: None,
-        adapter_contract_version: "test".into(),
-        availability: NativeSessionAvailability::Available,
-        supports_resume: true,
-        last_verified_at: None,
-        parent_native_session_id: None,
-    });
-    store
-        .compare_and_append_member_run(&initial, &member)
-        .expect("seed native member");
-    let request_body = ProviderInteractionRequestBody {
-        interaction_type: ProviderInteractionType::Question,
-        prompt: "Choose one".into(),
-        options: vec![ProviderInteractionMessageOption {
-            id: "choice-a".into(),
-            label: "Choice A".into(),
-            intent: Some("answer".into()),
-        }],
-        provider: member.provider.clone(),
-        provider_request_id: "mcp-reverse-1".into(),
-        method: "item/tool/requestUserInput".into(),
-        session: "mcp-native-session".into(),
-        member: member.id.clone(),
-        generation: member.runtime_generation,
-    };
-    let created_at = "unix-ms:mcp-provider-request".to_string();
-    let request = TeamMessageProjection {
-        id: "tmsg-mcp-provider-request".into(),
-        team_run_id: run_id.clone(),
-        work_id: None,
-        source_plan_ref: None,
-        sender: Some(TeamActorRef {
-            kind: TeamActorKind::ProviderRuntimeProjection,
-            id: member.id.clone(),
-            display_name: None,
-            authn_source: Some("provider_reverse_request_test".into()),
-        }),
-        sender_runtime_id: member.id.clone(),
-        recipients: vec![TeamRecipientRef {
-            kind: TeamRecipientKind::Host,
-            id: "host".into(),
-        }],
-        recipient_runtime_ids: vec!["host".into()],
-        kind: ProviderDispatchIntent::ProviderInteractionRequest,
-        body: request_body.to_canonical_json().expect("canonical request"),
-        correlation_id: request_body.correlation_id(),
-        causation_id: None,
-        response_intent: Some(ProviderResponseIntent::ResponseRequired),
-        evidence_refs: Vec::new(),
-        deliveries: vec![ProviderDispatchAttempt {
-            member_id: "host".into(),
-            policy: TeamDeliveryPolicy::ManualAck,
-            status: TeamDeliveryStatus::Delivered,
-            attempt: 1,
-            claim_id: None,
-            claimed_by_supervisor_id: None,
-            claimed_generation: None,
-            claimed_unix_ms: None,
-            claim_expires_unix_ms: None,
-            provider_receipt_id: Some("mcp-reverse-request-receipt".into()),
-            failure_reason: None,
-            updated_at: created_at.clone(),
-        }],
-        created_at,
-    };
-    store
-        .append_team_message_checked(&request)
-        .expect("append provider request");
+    let fake_bin = fake_provider::install_codex_team_shim(&home.base().join("fakebin-mcp-answer"));
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let daemon = run_firm_with_env(
+        &home,
+        &project_root,
+        &["daemon", "start"],
+        &[("PATH", path.as_str()), ("FAKE_CODEX_ASK", "1")],
+    );
+    assert!(
+        daemon.status.success(),
+        "start NodeDaemon: {}",
+        String::from_utf8_lossy(&daemon.stderr)
+    );
 
-    let mut mcp = McpClient::spawn(&home, &project_id, &[]);
+    let host_id = "mcp-host-provider-interaction";
+    let mut mcp = McpClient::spawn(
+        &home,
+        &project_id,
+        &[
+            ("PATH", path.as_str()),
+            ("FAKE_CODEX_ASK", "1"),
+            ("AGENTFIRM_MCP_ACTOR_KIND", "agent_member"),
+            ("AGENTFIRM_MCP_ACTOR_ID", host_id),
+        ],
+    );
     let _ = mcp.request(
         "initialize",
         serde_json::json!({
@@ -621,15 +842,217 @@ fn mcp_resolves_provider_request_messages_and_keeps_legacy_ledger_empty() {
             "clientInfo": {"name": "provider-bridge-test", "version": "0"}
         }),
     );
+    let created = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_create",
+            "arguments": {
+                "objective": "Exercise canonical MCP provider response bridge",
+                "agent_team_id": team_id,
+                "members": [{
+                    "name": "mcp-question-worker",
+                    "role": "implementer",
+                    "provider": "codex",
+                    "execution_mode": "codex_app_server",
+                    "agent_member_id": worker_id,
+                    "initial_work": "Ask one deterministic provider question"
+                }]
+            }
+        }),
+    ));
+    let run_id = created["team_run_id"]
+        .as_str()
+        .expect("team run id")
+        .to_string();
+    let started = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_start",
+            "arguments": {"team_run_id": run_id, "idle_timeout_s": 5}
+        }),
+    ));
+    assert_eq!(started["team_run"]["status"], "running");
+
+    let store = HarnessStore::new(home.spaces_dir().join("mcp-space-provider-interaction"));
+    let execution_space_id = "mcp-space-provider-interaction";
+    let mut request_id = None;
+    for _ in 0..100 {
+        request_id = store
+            .fabric_messages(execution_space_id)
+            .expect("canonical Message fabric")
+            .into_iter()
+            .find(|message| {
+                serde_json::to_value(message).expect("message JSON")["kind"].as_str()
+                    == Some("provider_interaction_request")
+            })
+            .map(|message| message.id);
+        if request_id.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let request_id = request_id.unwrap_or_else(|| {
+        let status = mcp.request(
+            "tools/call",
+            serde_json::json!({
+                "name": "team_run_status",
+                "arguments": {"team_run_id": run_id}
+            }),
+        );
+        panic!(
+            "NodeDaemon did not author the provider request Message; status={status}; messages={:?}; actions={:?}",
+            store.fabric_messages(execution_space_id),
+            store.member_actions()
+        )
+    });
+    let mut author_command_settled = false;
+    for _ in 0..100 {
+        author_command_settled = store
+            .runtime_commands(execution_space_id)
+            .expect("RuntimeCommand journal")
+            .into_iter()
+            .any(|command| {
+                let command = serde_json::to_value(command).expect("RuntimeCommand JSON");
+                command["command"] == "author_message"
+                    && command["status"] == "applied"
+                    && command["result"]["id"] == request_id
+            });
+        if author_command_settled {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        author_command_settled,
+        "provider request AuthorMessage RuntimeCommand must settle before hostile fixture publication"
+    );
+    let foreign_execution_space_id = "mcp-space-foreign-same-run-id";
+    // The NodeDaemon settles the RuntimeCommand immediately after authoring
+    // the request Message. Both canonical mutations atomically replace the
+    // complete trust ledger, so an out-of-band hostile fixture append must
+    // share the ordinary Store writer lock or the settle rename can discard
+    // it. Retain the guard through the read-only MCP projections to prove the
+    // foreign row exists while status/inbox ignore it.
+    let hostile_fixture_guard = store
+        .acquire_exclusive_migration_guard()
+        .expect("serialize hostile fixture with canonical Store writers");
+    inject_foreign_space_copy_of_message(
+        &home.spaces_dir().join("mcp-space-provider-interaction"),
+        execution_space_id,
+        foreign_execution_space_id,
+        &request_id,
+        &hostile_fixture_guard,
+    );
+    assert_eq!(
+        store
+            .fabric_messages(foreign_execution_space_id)
+            .expect("foreign canonical Message fixture")
+            .len(),
+        1,
+        "hostile fixture must create one colliding foreign-space Message"
+    );
+    // The exact authoring RuntimeCommand is already terminal, so no earlier
+    // canonical replacement can now erase the fixture. Release the guard
+    // before MCP status takes the Store's strict current-TeamRun resolver lock;
+    // the foreign row remains durable until the later answer mutation.
+    drop(hostile_fixture_guard);
+
+    let status_before_answer = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_status",
+            "arguments": {"team_run_id": run_id}
+        }),
+    ));
+    assert_eq!(
+        status_before_answer["message_summary"]["provider_interaction_requests"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(
+        status_before_answer["message_summary"]["provider_interaction_responses"].as_u64(),
+        Some(0)
+    );
+    assert_eq!(
+        status_before_answer["message_summary"]["awaiting_host_response"].as_u64(),
+        Some(1)
+    );
+    let host_inbox_before_answer = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_inbox",
+            "arguments": {"team_run_id": run_id, "member_run_id": "host"}
+        }),
+    ));
+    assert!(
+        host_inbox_before_answer["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.iter().any(|message| message["id"] == request_id)),
+        "canonical Host inbox must expose the unanswered request: {host_inbox_before_answer}"
+    );
+    let mut impostor = McpClient::spawn(
+        &home,
+        &project_id,
+        &[
+            ("AGENTFIRM_MCP_ACTOR_KIND", "service"),
+            ("AGENTFIRM_MCP_ACTOR_ID", "not-the-team-host"),
+        ],
+    );
+    let unauthorized = impostor.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_answer_message",
+            "arguments": {
+                "team_run_id": run_id,
+                "message_id": request_id,
+                "option_id": "implementation::0"
+            }
+        }),
+    );
+    assert!(call_error_text(&unauthorized).contains("UNAUTHORIZED_ACTOR"));
+
+    let spoof = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_answer_message",
+            "arguments": {
+                "team_run_id": run_id,
+                "message_id": request_id,
+                "option_id": "implementation::0",
+                "resolved_by": "host"
+            }
+        }),
+    );
+    assert!(call_error_text(&spoof).contains("resolved_by"));
+
+    let invalid = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_answer_message",
+            "arguments": {
+                "team_run_id": run_id,
+                "message_id": request_id,
+                "option_id": "not-exposed"
+            }
+        }),
+    );
+    assert!(call_error_text(&invalid).contains("does not expose option_id"));
+    assert!(store
+        .fabric_messages(execution_space_id)
+        .expect("messages after rejected answers")
+        .iter()
+        .all(
+            |message| serde_json::to_value(message).expect("message JSON")["kind"]
+                != "provider_interaction_response"
+        ));
+
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
-            "name": "team_run_resolve_interaction",
+            "name": "team_run_answer_message",
             "arguments": {
                 "team_run_id": run_id,
-                "interaction_id": request.id,
-                "option_id": "choice-a",
-                "resolved_by": "host"
+                "message_id": request_id,
+                "option_id": "implementation::0"
             }
         }),
     );
@@ -638,15 +1061,97 @@ fn mcp_resolves_provider_request_messages_and_keeps_legacy_ledger_empty() {
         payload["kind"].as_str(),
         Some("provider_interaction_response")
     );
-    assert!(store
-        .pending_interactions()
-        .expect("legacy pending interactions")
-        .is_empty());
-    let messages = store.team_messages().expect("team messages");
-    assert!(messages.iter().any(|message| {
-        message.kind == ProviderDispatchIntent::ProviderInteractionResponse
-            && message.causation_id.as_deref() == Some("tmsg-mcp-provider-request")
-    }));
+    let retry = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_answer_message",
+            "arguments": {
+                "team_run_id": run_id,
+                "message_id": request_id,
+                "option_id": "implementation::0"
+            }
+        }),
+    ));
+    assert_eq!(retry["id"], payload["id"]);
+    let status_after_retry = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_status",
+            "arguments": {"team_run_id": run_id}
+        }),
+    ));
+    assert_eq!(
+        status_after_retry["message_summary"]["provider_interaction_requests"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(
+        status_after_retry["message_summary"]["provider_interaction_responses"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(
+        status_after_retry["message_summary"]["awaiting_host_response"].as_u64(),
+        Some(0),
+        "exact retry must leave one visible resolved correlation: {status_after_retry}"
+    );
+    let actionable_host_inbox = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_inbox",
+            "arguments": {"team_run_id": run_id, "member_run_id": "host"}
+        }),
+    ));
+    assert!(
+        actionable_host_inbox["messages"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
+        "answered request must leave the actionable canonical Host inbox: {actionable_host_inbox}"
+    );
+    let historical_host_inbox = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_inbox",
+            "arguments": {"team_run_id": run_id, "member_run_id": "host", "all": true}
+        }),
+    ));
+    assert!(
+        historical_host_inbox["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.iter().any(|message| message["id"] == request_id)),
+        "canonical delivery history must preserve the answered request: {historical_host_inbox}"
+    );
+    let responses = store
+        .fabric_messages(execution_space_id)
+        .expect("canonical messages")
+        .into_iter()
+        .filter(|message| {
+            serde_json::to_value(message).expect("message JSON")["kind"]
+                == "provider_interaction_response"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        responses.len(),
+        1,
+        "exact retry must not duplicate response"
+    );
+    assert_eq!(
+        responses[0].causation_id.as_deref(),
+        Some(request_id.as_str())
+    );
+    assert!(
+        store
+            .legacy_team_messages()
+            .expect("legacy message projection")
+            .is_empty(),
+        "canonical provider question/answer must not revive the retired TeamMessage writer"
+    );
+    assert!(
+        !home
+            .spaces_dir()
+            .join(execution_space_id)
+            .join("team_messages.jsonl")
+            .exists(),
+        "canonical provider question/answer must not create the retired ledger"
+    );
 }
 
 /// Seed one historical Wave row directly, bypassing the retired `wave_create`
@@ -730,8 +1235,8 @@ fn mcp_stdio_agent_team_tools() {
     );
     mcp.notify("notifications/initialized");
 
-    // 2. tools/list preserves the original five TeamRun tools and adds the
-    // native Mission/Wave authoring surface.
+    // 2. tools/list exposes the current Mission surface. Legacy Wave tools
+    // are absent rather than advertised as tempting tombstones.
     let response = mcp.request("tools/list", serde_json::json!({}));
     let tools = response["result"]["tools"].as_array().expect("tools array");
     let names: Vec<&str> = tools
@@ -748,11 +1253,6 @@ fn mcp_stdio_agent_team_tools() {
             "mission_update_context",
             "mission_close",
             "mission_list",
-            "wave_create",
-            "wave_update",
-            "wave_advance",
-            "wave_list",
-            "wave_gate",
             "team_run_create",
             "team_run_work_list",
             "team_run_work_show",
@@ -782,7 +1282,7 @@ fn mcp_stdio_agent_team_tools() {
             "team_run_inbox",
             "team_run_send_message",
             "team_run_reconcile_delivery",
-            "team_run_resolve_interaction",
+            "team_run_answer_message",
             "team_run_steer_member",
             "team_run_interrupt_member",
             "team_run_close_member",
@@ -918,11 +1418,7 @@ fn mcp_stdio_agent_team_tools() {
     assert!(start_descriptor.contains("provider-native sessions"));
 
     // 3. Native Mission creation through MCP (the same helper as CLI and
-    // HTTP) supplies the outer identity for the TeamRun. Wave creation is
-    // retired (ADR 0051): the MCP tool now answers isError:true instead of
-    // authoring a row; a historical Wave is seeded directly (never through
-    // `wave_create`) purely so the source_plan_ref navigation check below has
-    // a real pre-cutover Wave id to cite.
+    // HTTP) supplies the outer identity for the TeamRun.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -940,29 +1436,8 @@ fn mcp_stdio_agent_team_tools() {
         "main",
         &[&worker_agent_id, &repair_agent_id],
     );
-    let response = mcp.request(
-        "tools/call",
-        serde_json::json!({
-            "name": "wave_create",
-            "arguments": {
-                "id": "wave-mcp",
-                "mission_id": "mission-mcp",
-                "index": 2,
-                "title": "Team wave",
-                "objective": "Run members",
-                "executor_kind": "agent_team"
-            }
-        }),
-    );
-    let wave_create_error = call_error_text(&response);
-    assert!(
-        wave_create_error.contains("retired") && wave_create_error.contains("mission log append"),
-        "wave_create error: {wave_create_error}"
-    );
-    seed_historical_wave(&home, &project_id, "wave-mcp", "mission-mcp", 2);
-
     // 4. team_run_create with two members → run id + member run ids. Mission
-    // and navigation Wave are derived through the required flat AgentTeam.
+    // is derived through the required flat AgentTeam.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -991,7 +1466,7 @@ fn mcp_stdio_agent_team_tools() {
     );
     assert!(team_run_id.starts_with("team-run-"), "id: {team_run_id}");
     assert_eq!(payload["mission_id"].as_str(), Some("mission-mcp"));
-    assert!(payload["wave_id"].is_null());
+    assert!(payload.get("wave_id").is_none());
     assert_eq!(
         payload["execution_root"].as_str(),
         Some(project_root.to_str().expect("project root"))
@@ -1047,15 +1522,13 @@ fn mcp_stdio_agent_team_tools() {
         )
     );
 
-    // 5. The thin MCP adapter can extend the same run and records the
-    // origin Wave only as Host-plan provenance.
+    // 5. The thin MCP adapter can extend the same Mission-scoped run.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
             "name": "team_run_add_member",
             "arguments": {
                 "team_run_id": team_run_id,
-                "source_plan_ref": "wave-mcp",
                 "initial_work": "repair the interaction path",
                 "member": {
                     "agent_member_id": repair_agent_id,
@@ -1131,10 +1604,6 @@ fn mcp_stdio_agent_team_tools() {
         );
         assert!(member.get("latest_action").is_some(), "latest_action key");
     }
-    assert_eq!(
-        payload["pending_interactions"].as_array().map(Vec::len),
-        Some(0)
-    );
     assert_eq!(payload["unacked_messages"].as_u64(), Some(0));
     assert_eq!(
         payload["dashboard_url"].as_str(),
@@ -1199,7 +1668,7 @@ fn mcp_stdio_agent_team_tools() {
     // requeue, so the normal inbox remains actionable exactly once.
     let store = HarnessStore::new(home.spaces_dir().join("mcp-space-main"));
     let mut claimed_message = store
-        .team_messages()
+        .legacy_team_messages()
         .expect("team messages")
         .into_iter()
         .rev()
@@ -1400,7 +1869,7 @@ fn mcp_stdio_agent_team_tools() {
     // appears in the run event stream. The provider-specific start tests own
     // actual delivery; this test owns the Host-facing MCP contract.
     let mut delivered_message = store
-        .team_messages()
+        .legacy_team_messages()
         .expect("team messages")
         .into_iter()
         .rev()
@@ -1588,9 +2057,8 @@ fn mcp_stdio_agent_team_tools() {
         "stop NodeDaemon failed: {stopped:?}"
     );
 
-    // Mission closeout is a separate Host decision; it no longer requires
-    // any Wave gate (ADR 0051) -- close succeeds directly on its own
-    // outcome, and wave_create/wave_gate both answer isError:true.
+    // Mission closeout is a separate Host decision and no Legacy Wave tool is
+    // part of the MCP capability surface.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -1599,30 +2067,6 @@ fn mcp_stdio_agent_team_tools() {
         }),
     );
     call_payload(&response);
-    let response = mcp.request(
-        "tools/call",
-        serde_json::json!({
-            "name": "wave_create",
-            "arguments": {
-                "id": "wave-close",
-                "mission_id": "mission-close",
-                "title": "Host closeout slice",
-                "objective": "Produce a direct outcome",
-                "executor_kind": "host"
-            }
-        }),
-    );
-    let wave_create_error = call_error_text(&response);
-    assert!(wave_create_error.contains("retired"), "{wave_create_error}");
-    let response = mcp.request(
-        "tools/call",
-        serde_json::json!({
-            "name": "wave_gate",
-            "arguments": {"wave_id": "wave-close", "status": "accepted", "outcome": "host slice done"}
-        }),
-    );
-    let wave_gate_error = call_error_text(&response);
-    assert!(wave_gate_error.contains("retired"), "{wave_gate_error}");
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -1637,7 +2081,7 @@ fn mcp_stdio_agent_team_tools() {
         closed["outcome_summary"].as_str(),
         Some("all intent satisfied")
     );
-    assert_eq!(closed["wave_ids"], serde_json::json!([]));
+    assert!(closed.get("wave_ids").is_none());
 
     // 14. Unknown method → JSON-RPC -32601; unknown tool → -32602; a failing
     //    tool call → isError:true with the reason as text.
@@ -1795,7 +2239,7 @@ fn mcp_stdio_external_interactive_member_authorship() {
     );
     let store = HarnessStore::new(home.spaces_dir().join("mcp-space-external"));
     let reply = store
-        .team_messages()
+        .legacy_team_messages()
         .expect("team messages")
         .into_iter()
         .rev()
@@ -2089,9 +2533,8 @@ fn mcp_stdio_work_rebind_and_successor_delivery_reconcile() {
         .expect("TeamRun");
     let mut next_run = run.clone();
     next_run.member_run_ids.push(replacement.id.clone());
-    store
-        .admit_member_run(&run, &next_run, &replacement)
-        .expect("atomically admit replacement ProviderRuntimeProjection");
+    let _ = (&run, &next_run, &replacement);
+    panic!("historical projection-only MemberRun reconstruction was retired; use current combined TeamRun admission evidence");
 
     let response = mcp.request(
         "tools/call",
@@ -2375,4 +2818,172 @@ fn mcp_stdio_work_list_brief_since_and_board_summary() {
     assert!(summary.contains("unassigned=1"), "summary: {summary}");
     assert!(summary.contains("ready=2"), "summary: {summary}");
     assert!(summary.contains("alice: idle"), "summary: {summary}");
+
+    let execution_space_id = "mcp-space-board-reads";
+    let store = HarnessStore::new(home.spaces_dir().join(execution_space_id));
+    let run = store
+        .team_runs()
+        .expect("TeamRuns")
+        .into_iter()
+        .rev()
+        .find(|run| run.id == team_run_id)
+        .expect("current TeamRun");
+    let mut lifecycle_mcp = McpClient::spawn(
+        &home,
+        &project_id,
+        &[
+            ("AGENTFIRM_MCP_ACTOR_KIND", "agent_member"),
+            ("AGENTFIRM_MCP_ACTOR_ID", "mcp-host-board-reads"),
+        ],
+    );
+    let before_invalid_resume = directory_snapshot(&home.spaces_dir());
+    let invalid_resume = lifecycle_mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "agentfirm_member_trust_mutate",
+            "arguments": {
+                "command": {"command": "resume_native_session", "member_run_id": alice_id, "updated_at": "unix-ms:invalid-active-idle-resume"},
+                "idempotency_key": "invalid-active-idle-resume",
+                "expected_version": 1
+            }
+        }),
+    );
+    assert!(
+        call_error_text(&invalid_resume).contains(
+            "Resume native session requires an active, disconnected, failed, or stopped MemberRun"
+        ),
+        "Active+Idle Resume must fail closed: {invalid_resume}"
+    );
+    assert_eq!(
+        directory_snapshot(&home.spaces_dir()),
+        before_invalid_resume,
+        "invalid MCP Resume must produce a byte-zero Store delta"
+    );
+    let dangling_id = "member-run-mcp-dangling";
+    let mut partial = run.clone();
+    partial.member_run_ids.push(dangling_id.to_string());
+    let mut team_run_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(store.root().join("team_runs.jsonl"))
+        .expect("open Legacy TeamRun fixture");
+    writeln!(
+        team_run_file,
+        "{}",
+        serde_json::to_string(&partial).unwrap()
+    )
+    .unwrap();
+    team_run_file.flush().unwrap();
+    let before = directory_snapshot(&home.spaces_dir());
+    for tool in [
+        "team_run_events",
+        "team_run_board_summary",
+        "team_run_status",
+    ] {
+        let response = mcp.request(
+            "tools/call",
+            serde_json::json!({"name": tool, "arguments": {"team_run_id": team_run_id}}),
+        );
+        assert!(
+            call_error_text(&response).contains(dangling_id),
+            "{tool}: {response}"
+        );
+    }
+    let partial_close = lifecycle_mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "agentfirm_member_trust_mutate",
+            "arguments": {
+                "command": {"command": "close_member_run", "member_run_id": alice_id, "updated_at": "unix-ms:partial-close"},
+                "idempotency_key": "partial-close-zero-effect",
+                "expected_version": 1
+            }
+        }),
+    );
+    assert!(call_error_text(&partial_close).contains(dangling_id));
+    assert_eq!(directory_snapshot(&home.spaces_dir()), before);
+
+    let mut legacy = store
+        .member_runs()
+        .expect("legacy members")
+        .into_iter()
+        .find(|member| member.id == alice_id)
+        .expect("source legacy member");
+    legacy.id = dangling_id.to_string();
+    let mut legacy_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(store.root().join("member_runs.jsonl"))
+        .expect("open Legacy member fixture");
+    writeln!(legacy_file, "{}", serde_json::to_string(&legacy).unwrap()).unwrap();
+    legacy_file.flush().unwrap();
+    let mut canonical = store
+        .trust_member_runs(execution_space_id)
+        .expect("canonical members")
+        .into_iter()
+        .find(|member| member.id == alice_id)
+        .expect("source canonical member");
+    canonical.id = dangling_id.to_string();
+    let actor = harness_core::agentfirm_api::ActorRef {
+        kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+        id: canonical.agent_member_id.clone(),
+    };
+    store
+        .legacy_import_create_trust_member_run_projection(
+            &harness_core::agentfirm_api::MutationContext {
+                execution_space_id: execution_space_id.to_string(),
+                authenticated_actor: actor.clone(),
+                authority_actor: Some(actor),
+                command_name: "test.reconstruct_member_run".into(),
+                idempotency_key: "test-reconstruct-mcp-dangling".into(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            canonical,
+        )
+        .expect("restore canonical completeness");
+    call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({"name": "team_run_board_summary", "arguments": {"team_run_id": team_run_id}}),
+    ));
+    let foreign_space_id = "mcp-space-board-reads-foreign";
+    let foreign = run_firm(
+        &home,
+        &project_root,
+        &[
+            "space",
+            "init",
+            "--id",
+            foreign_space_id,
+            "--project-binding",
+            &project_id,
+        ],
+    );
+    assert!(foreign.status.success(), "foreign space init: {foreign:?}");
+    let mut foreign_mcp = McpClient::spawn(
+        &home,
+        &project_id,
+        &[
+            ("AGENTFIRM_MCP_ACTOR_KIND", "agent_member"),
+            ("AGENTFIRM_MCP_ACTOR_ID", "mcp-host-board-reads"),
+        ],
+    );
+    let before_wrong_space = directory_snapshot(&home.spaces_dir());
+    let wrong_space_close = foreign_mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "agentfirm_member_trust_mutate",
+            "arguments": {
+                "command": {"command": "close_member_run", "member_run_id": alice_id, "updated_at": "unix-ms:wrong-space-close"},
+                "idempotency_key": "wrong-space-close-zero-effect",
+                "expected_version": 1
+            }
+        }),
+    );
+    let wrong_space_error = call_error_text(&wrong_space_close);
+    assert!(
+        wrong_space_error.contains("UNAUTHORIZED_ACTOR"),
+        "wrong-space lifecycle authority must fail closed: {wrong_space_error}"
+    );
+    assert_eq!(directory_snapshot(&home.spaces_dir()), before_wrong_space);
 }

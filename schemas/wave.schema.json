@@ -1,7 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agent-harness.local/schemas/wave.schema.json",
-  "title": "Wave",
+  "title": "Legacy Wave (Historical Read-Only Compatibility)",
+  "description": "Legacy ADR 0051 compatibility schema for deserializing and exporting historical Wave rows. Wave is not a current AgentFirm coordination object: new writes, lifecycle transitions, and gate decisions are forbidden. Current Host judgment is appended to the owning Mission as MissionLogEntry records.",
+  "deprecated": true,
+  "readOnly": true,
+  "x-agentfirm-authority": "legacy-historical-read-only",
+  "x-agentfirm-new-writes": false,
+  "x-agentfirm-new-gates": false,
+  "$comment": "Do not use successful validation against this schema as authorization to create or mutate a Wave. The fields and gate constraints below exist only to validate historical rows without data loss.",
   "type": "object",
   "additionalProperties": false,
   "required": [

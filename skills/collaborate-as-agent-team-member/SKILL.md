@@ -187,7 +187,8 @@ the Lead Inbox immediately but does not interrupt the Host's current reasoning.
 Peer informational mail does not create a provider cycle by itself; select
 response-required intent only when an answer or action is genuinely required.
 
-Provider-pausing questions and approvals are `PendingInteraction`, not ordinary
+Provider-pausing questions and answers are correlated Messages. Permissions are
+frozen at AgentSession start and never become a second workflow. This is not ordinary
 mail. A tool status of `completed` is not the semantic answer.
 
 ## Block Work Honestly
@@ -392,10 +393,11 @@ The harness injects these environment variables when starting your runtime. The 
 
 `HARNESS_MEMBER_RUN_ID` and `HARNESS_TEAM_RUN_ID` are validated on every member-side Work command (`work claim`, `work start`, `work block`, `work submit`). The CLI rejects a call where the bound environment value does not match the command argument.
 
-**Wave vocabulary note.** The word **wave** (including `HARNESS_ORIGIN_WAVE_ID`
-above) is a planning-rhythm / batch label, not a governed object. Wave as a
-writable governed object was retired by ADR 0051. `wave list|show|history` are
-historical read-only commands. Use lowercase `wave` as a batch noun; never use
+**Legacy Wave note.** The word **wave** in a batch label is only a planning
+rhythm, not a governed object. The historical `Wave`, `WaveStatus`, `wave_ids`,
+Wave ledger, and `HARNESS_ORIGIN_WAVE_ID` remain Legacy read-only compatibility
+surfaces. Wave writes were retired by ADR 0051; `wave list|show|history` may
+only interpret historical evidence. Never create or mutate a Wave, or use
 capitalized `Wave` as an object name in new work.
 
 When developing Star Harness itself and the product contract is in question,

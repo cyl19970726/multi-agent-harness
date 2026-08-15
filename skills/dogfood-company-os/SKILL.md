@@ -1,6 +1,6 @@
 ---
 name: dogfood-company-os
-description: Run Company OS as its own operating system through repeated, evidence-backed Docs, Work, Organization, external-delivery, and execution cycles. Use when a Company Lead runs a self-hosting cycle or when Human intent has been faithfully routed to the Company Lead to discover gaps, create or prioritize Work records, route them to Agent Memberships or humans, execute through an appropriate runtime, return results to company memory, inspect the UI, and repeat until the chosen acceptance boundary is healthy. Do not use for initial business bootstrap, one isolated Docs/Work/Org mutation, or Mission/Wave execution alone.
+description: Run Company OS as its own operating system through repeated, evidence-backed Docs, Work, Organization, external-delivery, and execution cycles. Use when a Company Lead runs a self-hosting cycle or when Human intent has been faithfully routed to the Company Lead to discover gaps, create or prioritize Work records, route them to Agent Memberships or humans, execute through an appropriate runtime, return results to company memory, inspect the UI, and repeat until the chosen acceptance boundary is healthy. Do not use for initial business bootstrap, one isolated Docs/Work/Org mutation, or Mission execution alone.
 ---
 
 # Dogfood Company OS
@@ -29,7 +29,7 @@ Docs = durable company memory, operating context, and result return
 Work = commitments, responsibility, lifecycle, acceptance, and provenance
 Organization = durable actors, reporting, permissions, and capability
 External connector = observed source/delivery facts and governed effects
-Execution = Mission/Wave, Agent Team, Workflow, Host, or human work
+Execution = Mission + Mission Log, Agent Team, Workflow, Host, or human work
 Provider session = native transcript, tools, and turn lifecycle
 ```
 
@@ -213,19 +213,21 @@ Choose the smallest truthful executor. A durable Agent Membership may participat
 through its linked Agent Team identity, but Organization identity and execution
 membership remain distinct.
 
-When Mission/Wave and Agent Team are used:
+When Mission and Agent Team are used:
 
 - the same authoritative TeamWork is both the commitment and execution-lane
   responsibility; Company Work only aggregates it;
 - WorkDelivery wakes the selected MemberRun;
-- Mission/Wave records Host intent and judgment;
+- Mission holds durable intent and its append-only Mission Log records material
+  Host judgment, re-plan, recovery, and closeout without owning execution;
 - MemberRun/native Session remains execution continuity; and
 - Work receives delivery evidence and a final report only after execution
   actually exists.
 
-Mission/Wave and Agent Team are optional execution capabilities selected for
-the Work, not Company planning or Organization primitives. Do not make
-Wave completion equal Work acceptance.
+Mission and Agent Team are optional execution capabilities selected for the
+Work, not Company planning or Organization primitives. A Mission Log entry has
+no independent lifecycle or completion meaning and never equals Work
+acceptance. Historical Wave records are Legacy read-only evidence only.
 
 ### 5. Accept And Return
 

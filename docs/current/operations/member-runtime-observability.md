@@ -8,9 +8,10 @@ commands, file activity, native children, and resume state.
 
 ```text
 Harness coordination truth
-  Work / WorkEvent / WorkDelivery / typed mail / Supervisor / transport receipt
-  pending interaction / stable Agent route / control acknowledgement
-  explicit outcome / artifact / check / Host Wave decision
+  Work / WorkEvent / WorkDelivery / identity-first Message / CanonicalMessageDelivery
+  MessageSubscription / Supervisor / transport receipt
+  correlated question/reply / stable Agent route / control acknowledgement
+  explicit outcome / artifact / check / Host Mission Log decision
                      +
 NativeSessionRef
   provider / execution_mode / native_session_id / locator
@@ -35,13 +36,13 @@ live state and is never replayed or evidence.
 | Did a Member pull ready Work itself? | atomic `claimed` WorkEvent plus successful bound-runtime command result; no loopback delivery |
 | Did the Member accept responsibility? | Work `claimed` or `started` event, not WorkDelivery state |
 | Who owns live control? | latest active `TeamSupervisorLease` generation and owner heartbeat |
-| Who sent the input? | typed TeamMessage actor; bound Member context for Member authorship |
+| Who sent the input? | immutable Message sender Actor plus bound AgentIdentity/AgentSession; never a caller-supplied display identity |
 | Is a delivery attempt active? | latest queued/claim/provider-receipt/failure projection |
 | Is the runtime executable? | provider-process health, endpoint, protocol, and delivery probes |
 | What is the agent doing? | on-demand provider-native activity projection |
-| Is input or approval required? | Harness `PendingInteraction` |
+| Is input required? | unresolved correlated question `Message` |
 | Can execution resume? | `NativeSessionRef.supports_resume` plus availability/version checks |
-| What supports the Host decision? | explicit outcome, artifact/check references, and Host Wave update/advance |
+| What supports the Host decision? | explicit outcome, artifact/check references, and append-only Mission Log entry |
 
 Process-alive is not execution-ready. A green runtime requires positive protocol
 and delivery probes; unknown or stale layers render amber.
@@ -52,8 +53,9 @@ Durable Harness data:
 
 - runtime identity and health;
 - current Team Supervisor generation, owner locator/heartbeat, reconnect state,
-  typed Team actors, delivery claims/provider receipts/failures, and
-  canonical `MessageDelivery`;
+  authenticated Message sender AgentIdentity/Session, subscriptions, delivery
+  claims/provider receipts/failures, and
+  canonical per-recipient `CanonicalMessageDelivery`;
 - TeamRun `execution_root`, optional member `provider_cwd_hint`, and the launch-time
   `provider_environment_observation` containing actual cwd, Git HEAD/branch, and only the
   instruction/skill directory paths Harness discovered relative to that cwd;
@@ -62,7 +64,7 @@ Durable Harness data:
 - Work blocker, submission, requested changes, Host acceptance, and
   Host/Lead/Policy conversation or interaction;
 - steer/interrupt/close/resume request and acknowledgement;
-- explicit outcome summaries, artifacts, checks, and Host Wave decisions.
+- explicit outcome summaries, artifacts, checks, and Host Mission Log decisions.
 
 Ephemeral provider projection:
 
@@ -138,11 +140,14 @@ provider-native session.
 
 ## Interaction routing
 
-Provider questions and permission requests cross a governance boundary and are
-promoted to `PendingInteraction`. Lead may answer clarification questions;
-Policy or a human authority resolves permission/destructive-action requests.
+Provider questions are `provider_interaction_request` Messages and Lead answers
+are causation-linked `provider_interaction_response` Messages. The AgentSession
+permission ceiling is frozen before provider start;
+in-ceiling actions proceed directly and out-of-ceiling actions fail closed.
+Protected external effects still require their Company-level approval policy.
 The adapter resumes or continues the same native session when supported and
-records only the interaction decision and control acknowledgement in Harness.
+records only the correlated Message decision and provider-control receipt in
+Harness. It never creates a PendingInteraction ledger.
 
 ## Dashboard behavior
 

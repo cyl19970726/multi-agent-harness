@@ -9,6 +9,9 @@ tracks: https://github.com/cyl19970726/multi-agent-harness/issues/252
 supersedes: repo-derived Company OS Store ownership implied by ADR 0033 docs
 ```
 
+ADR 0056 supersedes the historical PendingInteraction item in the coordination
+inventory. Correlated Messages now carry provider questions and replies.
+
 ## Context
 
 The current multi-project implementation resolves one `ProjectContext` from a

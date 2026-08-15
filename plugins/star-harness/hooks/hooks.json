@@ -25,19 +25,6 @@
         ]
       }
     ],
-    "PermissionRequest": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/star-harness-hook.sh",
-            "timeout": 10,
-            "statusMessage": "Recording Harness permission boundary"
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
         "matcher": "*",

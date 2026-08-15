@@ -130,22 +130,30 @@ A TeamWork may be executed directly by a human or Agent Membership, or may start
 one of the product's one-time long-task capabilities:
 
 ```text
-Mission -> ordered Host-plan Wave
+Mission -> append-only Mission Log entries
 Mission -> one flat AgentTeam
 execution = Agent Team | Dynamic Workflow | Host work
 ```
 
 - `Mission` structures one bounded long-running outcome and owns one flat
   AgentTeam.
-- `Wave` preserves the Host's evolving plan and judgment without becoming a
-  runtime container or barrier.
+- the Mission's append-only Log preserves the Host's evolving judgment,
+  re-planning, recovery, and closeout evidence without becoming a lifecycle,
+  runtime container, gate, or barrier.
 - `AgentTeamRun/MemberRun` records temporary collaboration that may span
-  several Waves while native sessions continue.
+  several Mission Log entries while native sessions continue.
 - one machine NodeDaemon generation owns all local TeamRuns; each live Team
   Supervisor generation is parent-fenced by it and owns that run's provider
   transports, delivery claims, reconnect, and real controls;
-- typed Host/Member/Agent/Operator mail preserves provenance; claim, provider
-  receipt, recipient ACK, semantic reply, and acceptance remain distinct;
+- identity-first Message preserves source-authenticated Host/Member/Agent/
+  Operator authorship; MessageSubscription selects authorized sources and
+  CanonicalMessageDelivery owns each recipient's delivery state;
+- Work claim, provider receipt, CanonicalMessageDelivery acknowledgement,
+  semantic reply, and acceptance remain distinct. Work/WorkDelivery,
+  Message/CanonicalMessageDelivery, and RuntimeCommand are independent planes;
+- correlated provider questions and answers are
+  `provider_interaction_request` / `provider_interaction_response` Message
+  kinds, not a separate interaction object;
 - `DynamicWorkflow` runs a provider-neutral process for the bounded outcome.
 - provider sessions, plugins, MCP, and child work remain execution evidence.
 
@@ -168,8 +176,8 @@ record. Results return through the TeamWork relation.
 6. Finance provides typed, permissioned records linked to business origin.
 7. Governance handles new business domains, document growth, organization
    change, and missing capability.
-8. Execution pages retain Mission/Wave, Team, MemberRun, Supervisor, typed
-   Inbox/Outbox, Workflow, and provider observability as professional
+8. Execution pages retain Mission and Mission Log, Team, MemberRun, Supervisor,
+   typed Message Inbox/Outbox with per-recipient delivery, Workflow, and provider observability as professional
    drill-ins.
 
 ## Near-term acceptance scenario
@@ -192,7 +200,7 @@ The first Company OS scenario is a new Trademark Management module:
 - do not infer assignment from matching names, roles, providers, or sessions;
 - do not make every message a TeamWork;
 - do not introduce a separate Project object above Milestone and TeamWork;
-- do not force every TeamWork into Mission/Wave or another executor;
+- do not force every TeamWork into a Mission or another executor;
 - do not use runtime status as business availability;
 - do not let an Agent satisfy a human-required approval;
 - do not copy finance or metric values between modules;

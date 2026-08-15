@@ -6,13 +6,23 @@ owner_role: execution-foundation
 canonical_for: first native Codex + Kimi AgentTeamRun acceptance and interrupted-attempt recovery
 ```
 
-> Historical implementation evidence: this run predates ADR 0032 and ADR 0050
-> and therefore
+> **Pre-ADR-0051 historical evidence — not a current runtime contract.** Every
+> Wave id, Wave status, Wave gate, Wave advance, and numbered Wave reference in
+> this file records the execution model that existed when the evidence was
+> captured. ADR 0051 later retired Wave authoring and replaced Host judgment
+> with the append-only Mission Log. Preserve the facts below; do not use them to
+> create or control a current runtime Wave. This run also predates ADR 0032 and
+> ADR 0050 and therefore
 > includes provider-derived MemberAction/TeamRunEvent mirrors. It remains valid
 > evidence for transport, correlation, interruption recovery, and gates, but
 > its Assignment/Handoff records are not the current responsibility or
 > acceptance contract. The 2026-07-22 acceptance below replaces
 > its storage claim with native-session reads and no mirrored provider history.
+> Every `TeamMessage`, `team_messages.jsonl`, delivery-policy ACK and mailbox
+> count below is likewise a fact about the pre-ADR-0056 compatibility model.
+> Current Message authoring, inbox and delivery use identity-first `Message`,
+> subscriptions and one `CanonicalMessageDelivery` per recipient; none of the
+> legacy rows below is current write or fallback authority.
 
 ## 2026-07-30 consecutive persistent-Team release acceptance
 

@@ -1,7 +1,7 @@
 //! Canonical Company OS product records.
 //!
 //! These records are deliberately independent from executor-native Mission,
-//! Wave, Agent Team, Workflow, and provider records. In particular, a
+//! Legacy Wave, Agent Team, Workflow, and provider records. In particular, a
 //! Company Work is a read-only aggregate of authoritative TeamWorks; this
 //! module does not define or persist a second task object.
 
@@ -764,7 +764,11 @@ impl ValidateCompanyOs for Milestone {
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionMode {
     Direct,
-    MissionWave,
+    /// Historical execution-mode label retained only to decode existing
+    /// Company OS records. Current execution is Mission-scoped without a Wave
+    /// lifecycle object.
+    #[serde(rename = "mission_wave")]
+    LegacyMissionWave,
     AgentTeam,
     DynamicWorkflow,
     Host,
@@ -779,7 +783,9 @@ pub enum ExecutionKind {
     AgentMemberWork,
     ExternalEngagement,
     Mission,
-    Wave,
+    /// Historical execution reference retained for existing records only.
+    #[serde(rename = "wave")]
+    LegacyWave,
     AgentTeamRun,
     ProviderRuntimeProjection,
     WorkflowRun,
@@ -1454,5 +1460,32 @@ impl ActionCommand {
             });
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod legacy_execution_serde_tests {
+    use super::{ExecutionKind, ExecutionMode};
+
+    #[test]
+    fn legacy_execution_variants_keep_historical_wire_values() {
+        assert_eq!(
+            serde_json::to_value(ExecutionMode::LegacyMissionWave).expect("serialize legacy mode"),
+            serde_json::json!("mission_wave")
+        );
+        assert_eq!(
+            serde_json::to_value(ExecutionKind::LegacyWave).expect("serialize legacy kind"),
+            serde_json::json!("wave")
+        );
+        assert_eq!(
+            serde_json::from_value::<ExecutionMode>(serde_json::json!("mission_wave"))
+                .expect("deserialize legacy mode"),
+            ExecutionMode::LegacyMissionWave
+        );
+        assert_eq!(
+            serde_json::from_value::<ExecutionKind>(serde_json::json!("wave"))
+                .expect("deserialize legacy kind"),
+            ExecutionKind::LegacyWave
+        );
     }
 }

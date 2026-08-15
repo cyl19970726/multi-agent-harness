@@ -2,6 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agent-harness.local/schemas/mission.schema.json",
   "title": "Mission",
+  "description": "The current durable intent and lifecycle object. Host judgment, replanning, recovery, and closeout evidence are appended as MissionLogEntry records rather than modeled as Waves.",
+  "x-agentfirm-authority": "current",
   "type": "object",
   "additionalProperties": false,
   "required": ["id", "title", "objective", "status", "created_at", "updated_at"],
@@ -16,6 +18,10 @@
       "enum": ["planned", "running", "blocked", "completed", "cancelled"]
     },
     "wave_ids": {
+      "description": "Legacy ADR 0051 compatibility only. Historical Mission rows may retain their Wave identifiers for read/export, but current Mission writes MUST omit this field and append MissionLogEntry records instead.",
+      "deprecated": true,
+      "readOnly": true,
+      "x-agentfirm-authority": "legacy-historical-read-only",
       "type": "array",
       "uniqueItems": true,
       "items": { "type": "string", "minLength": 1 }

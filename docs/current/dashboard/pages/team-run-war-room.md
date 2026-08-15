@@ -6,7 +6,8 @@ owner_role: product-design
 canonical_for: one Mission-owned AgentTeamRun
 route_or_surface: Agent Teams -> TeamRun
 architecture: ADR 0025 retained runtime contracts + ADR 0034 lifecycle +
-              ADR 0037 collaboration + ADR 0044 supervision/typed mail +
+              ADR 0037 collaboration + ADR 0044 supervision +
+              ADR 0056 identity-first Message fabric +
               ADR 0050 Works/Message boundary
 ```
 
@@ -19,9 +20,10 @@ answers, which native sessions can be resumed, and what evidence has arrived.
 
 The issue #444 slice restores Works, Activity, Members, Agent Conversation and
 the independent Host Console. It does not claim the complete future runtime or
-large-Team contract: authenticated PendingInteraction resolution, pending
+large-Team contract: correlated provider-question answers, pending
 Close-request projection, Steer/Interrupt safe-point actions, full
-MessageDelivery ACK control, and cursor-backed 1,000-Work/100-Member
+CanonicalMessageDelivery acknowledgement control, and cursor-backed
+1,000-Work/100-Member
 virtualization remain deferred until server-built RoleViews/actions exist. The
 browser never fills those gaps with snapshot joins or fake controls.
 
@@ -37,8 +39,8 @@ Required data:
   placement, and editable member identities;
 - `AgentTeamRun`, required `agent_team_id`, `execution_node_id`, and
   `project_binding_id`, plus status, previous same-Team run, host/runtime facts,
-  and outcome; Mission is derived through `AgentTeam.mission_id` and Wave is
-  never a TeamRun ownership field;
+  and outcome; Mission is derived through `AgentTeam.mission_id`; Mission Log
+  entries never own a TeamRun;
 - `MemberRun` identity, role, provider/model, status, capability profile,
   worktree, and native-session binding;
 - current `TeamSupervisorLease` generation, heartbeat, owner locator,
@@ -46,11 +48,13 @@ Required data:
 - `Work`, `WorkOperation`/`WorkEvent`, Work
   owner/readiness/claim/review/parent-child state and `WorkDelivery`
   claim/provider receipt/failure/invalidation;
-- typed Message sender and recipients, optional Work relation, conversational
-  correlation, projected controls, artifacts, and checks; pending interactions
-  remain a declared server-projection gap in the issue #444 slice;
-- canonical `MessageDelivery` when AgentMember mail was addressed to a
-  participating MemberRun;
+- immutable Message with authenticated sender AgentIdentity/Session,
+  authorized recipients, optional Work relation, conversational correlation,
+  artifacts, and checks;
+- one canonical `CanonicalMessageDelivery` per recipient AgentIdentity, with
+  the exact AgentSession generation frozen when the target NodeDaemon claims it;
+- RuntimeCommand projection for provider controls; Message never carries
+  runtime authority;
 - provider-native activity read on demand, clearly labeled by source and
   availability.
 
@@ -84,9 +88,10 @@ The implementation deliberately reuses the mature visual primitives that are
 still valid under the current model: canonical member avatars, capacity rows,
 the shared Works board and Work sheet, conversation/activity rows, composer,
 authorized action panels, and the exact-self Member home. It does not restore
-Wave-as-executor/gate UI, Assignment Message or legacy ACK paths, browser-side
+Wave authoring/executor/gate UI, Assignment Message or Legacy TeamMessage/ACK
+paths, browser-side
 authority joins/writers, provider transcript mirrors, parent/child Team
-topology, or any second Team/Message/Delivery/Work model.
+topology, or any second Team/Message/CanonicalMessageDelivery/Work model.
 
 The Host Console is an independent Host-only surface. It is not appended below
 the Team tabs. A full Member Profile is a separate deep link for identity and
@@ -103,8 +108,9 @@ resolution. Cards expose owner portrait, readiness,
 criteria preview, blockers, child progress, source TeamWork, unread discussion,
 and update time. Kanban is a projection over Work, never separate state.
 
-Every Host/Member mailbox is computed from TeamMessage recipients and delivery
-records. It is a read-model projection, not a new stored mailbox object. The
+Every Host/Member mailbox is computed from canonical Message recipients,
+subscriptions and per-recipient CanonicalMessageDelivery records. It is a
+read-model projection, not a new stored mailbox object. The
 Host mailbox is visible even though Host is not a fabricated MemberRun. Mailbox
 selection filters sent/received conversation; Member portraits and names open
 Member Focus. A non-modal details drawer is not a replacement for the full page.
@@ -260,11 +266,12 @@ a Codex-like conversation workspace:
 The Host mailbox and conversation pressure rows form the **Lead Inbox** for
 member-authored questions and coordination. Blocked and Review queues come
 from Works and link their discussion. Every item shows sender, Work when
-present, conversational correlation, delivery/ACK state, and the
-responsible next action. Answering reuses the source correlation, records the
-  source message as causation. Reply and MessageDelivery acknowledgement remain
-  separate authority operations; a browser reply never impersonates recipient
-  ACK. Delivery rows expose recipient, status, version and provider receipt.
+present, conversational correlation, per-recipient delivery/acknowledgement
+state, and the responsible next action. Answering reuses the source correlation
+and records the source message as causation. Reply and
+CanonicalMessageDelivery acknowledgement remain separate authority operations;
+a browser reply never impersonates recipient acknowledgement. Delivery rows
+expose recipient AgentIdentity, status, version and provider receipt.
 
 Conversation rows expose reply lineage and optional Work relation. WorkEvent
 history separately shows who assigned, claimed, blocked, submitted, requested
@@ -290,8 +297,10 @@ changes, accepted, released, or cancelled Work.
   authenticated HostConsole projection exists; Close availability must not be
   inferred from member runtime state in the meantime.
 - Inspect projected WorkDelivery and authored Message delivery lineage.
-  PendingInteraction answer and MessageDelivery ACK/reconciliation remain
-  explicit follow-up server-action gaps.
+- Answer `provider_interaction_request` Messages with an authenticated,
+  causation-linked `provider_interaction_response`;
+  CanonicalMessageDelivery acknowledgement/reconciliation remain explicit
+  server actions.
 - Answer Lead Inbox items with inherited correlation and causation. The
   Dashboard may author Host/operator messages; it never impersonates a member.
 - Open Mission/Log context, optional historical Wave, Member Focus, artifact, or native-session
@@ -365,7 +374,7 @@ issue #444 slice verify:
 The shipped state matrix covers initial loading, last-good stale data, useful
 empty, mutation-disabled stale projection, unavailable native activity and a
 completed TeamRun with a still-live runtime. Partial-source failure, pending
-interaction, pending Close request, active-turn Steer/Interrupt,
+provider question, pending Close request, active-turn Steer/Interrupt,
 delivery-reconciliation and Supervisor-generation recovery remain dependent on
 the deferred server projections above.
 

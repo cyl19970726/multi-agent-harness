@@ -22,10 +22,10 @@ Member Continuation Model.
 Star Harness must support Codex first — with Claude Code and Kimi now
 registered as further exec-stream providers — while leaving room for others
 such as OpenClaw, cloud-hosted agents, or a Permission Agent. Provider
-integrations are successful only when they preserve Mission intent,
-Mission intent, its one flat Node-placed Team, and each execution
-capability's honest native records. Provider integrations must not reintroduce the retired
-Goal/GoalPhase planning stack.
+integrations are successful only when they preserve Mission intent, its
+append-only Mission Log, its one flat Node-placed Team, and each execution
+capability's honest native records. Provider integrations must not reintroduce
+the retired Wave or Goal/GoalPhase planning stacks.
 
 ## Integration Boundary
 
@@ -57,8 +57,8 @@ Provider docs answer how a concrete provider implements:
 - default execution driver and native continuation capabilities;
 - continuation inspection, replace/clear, cycle boundaries, and permission
   continuity;
-- message delivery;
-- delivery claim/lease and duplicate-prevention semantics;
+- identity-first Message authoring, subscription and per-recipient delivery;
+- target NodeDaemon claim/AgentSession fencing and duplicate-prevention semantics;
 - event ingestion and reduction;
 - native session discovery, read projection, availability, and resume;
 - queue and context constraints;
@@ -113,7 +113,7 @@ Provider
   reducer_mapping:
   tool_manifest_and_special_semantics:
   reverse_rpc_methods:
-  pending_interaction_routing:
+  correlated_provider_question_routing:
   provider_vs_semantic_completion:
   cancel_interrupt_resume_close:
   queue_policy_constraints:
@@ -138,7 +138,7 @@ Provider
 | --- | --- | --- | --- |
 | Host control | [host-agent-mcp.md](host-agent-mcp.md) | MCP implemented | Codex/Kimi/Claude-style Host contract; independent from the Team Member provider. |
 | Codex | [codex.md](codex.md) | adapter implemented; installed 0.145.0 current | `codex_app_server` is the only new Codex Team mode; bounded `codex_exec` belongs to Workflow and historical reads. |
-| Codex message delivery | [codex-message-delivery.md](codex-message-delivery.md) | implemented in slices | Persistent member mailbox, dispatcher, queue policy, and delivery proof. |
+| Codex message delivery | [codex-message-delivery.md](codex-message-delivery.md) | implemented | Identity-first Message, subscription expansion, per-recipient CanonicalMessageDelivery, NodeDaemon/AgentSession fencing, queue policy and delivery proof. |
 | Claude Code | [claude.md](claude.md) | adapter implemented; locked SDK 0.3.220 reports Claude Code 2.1.220 current | `claude_agent_sdk` is the only new Claude Team mode and 2.1.220 is adapter-reviewed; `claude_cli` remains Workflow/historical only. |
 | Kimi (Moonshot) | [kimi.md](kimi.md) · [ACP Team runtime](kimi-agent-team.md) | adapter implemented; installed 0.31.1 current for reviewed slices | `kimi_acp` is the Team mode. Prompt delivery, K3/max controls, generation-crossing same-session resume, bounded full-access receipts, next-round batched mail, and the ACP `session/cancel` notification are reviewed. |
 | Pi | [pi.md](pi.md) | adapter implemented; 0.83.0 reviewed | `pi_rpc` is the persistent Team mode. Work and ordinary mail use distinct next-round receipts; persistent sessions force thinking off and resume fails closed if native JSONL contains thinking. |
@@ -165,8 +165,8 @@ README until they need their own file.
 6. Host-provider support and Team Member-provider support are separate
    capabilities and must never be inferred from each other.
 7. Each MemberRun snapshots a mode-specific `ProviderIntegrationProfile`.
-8. Provider questions, approvals, and plan reviews become durable
-   `PendingInteraction` rows. Thinking never does.
+8. Provider questions and answers become durable correlated Messages. Session
+   permission is frozen before start and never becomes a second object.
 9. Unknown reverse-RPC methods fail closed and surface as adapter gaps; they
    must not be translated into successful tool completion.
 10. A provider adapter must document native-store discovery, availability,
@@ -182,16 +182,20 @@ README until they need their own file.
     owns its run's provider transports, delivery claims, reconnect, and real
     controls. The adapter must verify transport health before claim and fence
     every routed operation.
-14. Team mail has typed actor provenance. Delivery claim, provider receipt,
-    recipient ACK, semantic response, and Host acceptance are distinct facts.
+14. Team mail has authenticated sender AgentIdentity/Session provenance and one
+    CanonicalMessageDelivery per authorized recipient. Delivery claim, provider
+    receipt, recipient acknowledgement, semantic response, and Host acceptance
+    are distinct facts.
 15. Explicit Close is latched and ends one runtime generation. Idle, Work
-    submission, Wave/Team/Mission completion, and service restart never imply Close;
+    submission, Mission Log append, TeamRun completion, Mission completion, and
+    service restart never imply Close;
     explicit Reopen alone may resume the same MemberRun/native session, while
     Retire is permanent.
 
-The Host reads and resolves pending interactions with the
-`team_run_resolve_interaction` MCP tool (or the equivalent CLI/API route),
-passing the provider's exact option id. Authority is enforced by route: Lead
+The Host answers `provider_interaction_request` Messages with a correlated
+`provider_interaction_response` through the
+`team_run_answer_message` MCP tool (or the equivalent CLI/API route), passing
+the provider's exact option id. Authority is enforced by route: Lead
 accepts `host|lead`, Human accepts `operator|human`, and Policy accepts only
 `policy`. Dashboard controls therefore cannot turn a policy decision into an
 ungoverned operator click.

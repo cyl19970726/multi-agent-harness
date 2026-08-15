@@ -68,7 +68,7 @@ acceptance.
 
 ## Message boundary
 
-Work-linked communication uses `Message`:
+Work-linked communication uses the identity-first `Message` fabric:
 
 - assignment and clarification;
 - blocker and decision request;
@@ -76,8 +76,18 @@ Work-linked communication uses `Message`:
 - request changes and acceptance result;
 - handoff with evidence refs.
 
-Interactive provider prompts are bridged through Message types. A separate
-`PendingInteraction` object is not required for this contract.
+The source NodeDaemon authenticates and freezes the author identity and source
+authority; display names and caller-supplied actor fields never establish
+authorship. `MessageSubscription` selects authorized sources, and every
+recipient receives its own `CanonicalMessageDelivery` owned by the target
+NodeDaemon. Interactive provider questions use the
+`provider_interaction_request` Message kind and answers use the correlated
+`provider_interaction_response` kind; there is no separate interaction
+lifecycle object or permission ledger.
+
+`TeamMessage`, `TeamMessageProjection`, `team_messages.jsonl`, and their
+ACK/manual-ACK writers are Legacy read/export only. They are not accepted
+current Message or delivery authorities.
 
 ## Mutation surface
 
@@ -115,12 +125,17 @@ These states are independent:
 |---|---|
 | Work | phase, condition, resolution, owner, report, gate, decision |
 | runtime | MemberRun, provider session, process lifecycle |
-| delivery | queued, provider received, acknowledged, failed |
+| Work delivery | `WorkDelivery`: Work allocation/revision transport only |
+| Message delivery | `CanonicalMessageDelivery`: per-recipient queued/routed/claimed/provider-received/acknowledged/failed/expired/invalidated state |
+| runtime command | `RuntimeCommand`: fenced provider effects and live controls |
 | organization | Agent Membership identity and authority |
 | company governance | Approval, Finance, Docs, Milestone |
 
 Adapters may correlate these planes by exact ids. They must not infer Work
-truth from name similarity, provider completion, or Company display state.
+truth from name similarity, Message content/delivery state, provider
+completion, a RuntimeCommand result, or Company display state. A Message cannot
+assign Work or authorize a provider effect; a Work mutation or
+CanonicalMessageDelivery transition cannot impersonate authored conversation.
 
 ## Removed compatibility design
 
@@ -143,6 +158,13 @@ The contract is accepted when:
 
 - Rust types and JSON Schema agree on lifecycle and evidence invariants;
 - Store tests prove atomic operations and self-accept rejection;
+- Message tests prove source-authenticated immutable authorship, subscription
+  routing, one CanonicalMessageDelivery per recipient, and correlated
+  provider-interaction request/response kinds;
+- current CLI/API/Dashboard paths read the canonical Message fabric and cannot
+  write the Legacy TeamMessage/ACK ledger;
+- WorkDelivery, CanonicalMessageDelivery, and RuntimeCommand tests prove that
+  none of the three planes can impersonate another;
 - Company API/CLI returns a read-only native Work aggregate;
 - dashboard shows exact Work ids and independent lifecycle axes;
 - old Company task ledgers, actions, routes, and bridge code are physically

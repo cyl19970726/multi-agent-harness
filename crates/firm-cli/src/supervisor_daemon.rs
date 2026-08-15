@@ -818,7 +818,20 @@ impl MultiTeamDaemon {
         stream: &mut UnixStream,
         response: &serde_json::Value,
     ) -> CliResult<()> {
-        writeln!(stream, "{response}").map_err(CliError::Io)?;
+        // Accepted control sockets are nonblocking while the daemon collects
+        // one complete request. A JSON response may be larger than the
+        // socket's immediately available send buffer: `writeln!` can then
+        // leave a valid prefix on the wire before returning WouldBlock, and
+        // dropping the connection makes the client parse that prefix as an
+        // EOF-truncated object. Switch this one bounded response to blocking
+        // I/O and write the fully serialized frame before closing it.
+        stream.set_nonblocking(false).map_err(CliError::Io)?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(10)))
+            .map_err(CliError::Io)?;
+        let mut frame = serde_json::to_vec(response).map_err(CliError::Json)?;
+        frame.push(b'\n');
+        stream.write_all(&frame).map_err(CliError::Io)?;
         stream.flush().map_err(CliError::Io)
     }
 
@@ -1968,6 +1981,39 @@ pub(crate) fn daemon_stop_via_socket(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_response_is_one_complete_json_frame_under_backpressure() {
+        let (mut server, mut client) = UnixStream::pair().expect("create control socket pair");
+        server
+            .set_nonblocking(true)
+            .expect("model accepted nonblocking daemon socket");
+        let response = serde_json::json!({
+            "ok": true,
+            "result": {"payload": "x".repeat(2 * 1024 * 1024)}
+        });
+        let writer = std::thread::spawn(move || {
+            MultiTeamDaemon::write_control_response(&mut server, &response)
+                .expect("write one complete framed response");
+        });
+
+        // Let the response exceed the socket's immediate send capacity before
+        // the reader drains it. The old nonblocking `writeln!` path exposed a
+        // truncated JSON prefix at this boundary.
+        std::thread::sleep(Duration::from_millis(50));
+        let mut bytes = Vec::new();
+        client
+            .read_to_end(&mut bytes)
+            .expect("read complete response frame");
+        writer.join().expect("writer thread");
+        assert!(bytes.ends_with(b"\n"));
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("response is complete JSON");
+        assert_eq!(
+            parsed["result"]["payload"].as_str().map(str::len),
+            Some(2 * 1024 * 1024)
+        );
+    }
 
     #[test]
     fn node_daemon_socket_path_short_home() {

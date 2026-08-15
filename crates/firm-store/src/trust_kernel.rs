@@ -1,4 +1,8 @@
-use crate::{HarnessStore, StoreError, StoreResult};
+use crate::{
+    ensure_member_lifecycle_revision, ensure_member_provenance_unchanged,
+    ensure_provider_compatibility_cause_unchanged, latest_by_id, HarnessStore, StoreError,
+    StoreResult,
+};
 use firm_core::agentfirm_api::{
     integration_plan_module_v1, ActorKind, ActorRef, AgentIdentity, AgentMember,
     AgentMemberOrganizationStatus, AgentSession, AgentSessionStatus, CanonicalMessageDelivery,
@@ -16,7 +20,11 @@ use firm_core::agentfirm_api::{
     WorkspaceOwnership, WorkspaceSafetyProof,
 };
 use firm_core::collaboration::CollaborationMessageAuthority;
-use firm_core::{TeamActorKind, TeamActorRef, Work, WorkCommandContext, WorkDelegationRevision};
+use firm_core::{
+    MemberCoordinationStatus as LegacyMemberCoordinationStatus, MemberRunStatus,
+    ProviderRuntimeProjection, TeamActorKind, TeamActorRef, Validate, Work, WorkCommandContext,
+    WorkDelegationRevision,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -43,6 +51,129 @@ pub struct CanonicalMutationResult<T> {
     pub projection: T,
     pub event: CanonicalMutationEvent,
     pub replayed: bool,
+}
+
+/// The exact canonical half of one current MemberRun admission. The legacy
+/// runtime projection and this canonical projection are validated together by
+/// the Store before either side is mutated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanonicalMemberRunAdmission {
+    pub context: MutationContext,
+    pub run: MemberRun,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurrentTeamMemberLifecycleTransition {
+    Close,
+    Reopen,
+    Retire,
+    ResumeNativeSession,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CurrentTeamMemberLifecycleResult {
+    pub runtime_projection: ProviderRuntimeProjection,
+    pub canonical: CanonicalMutationResult<MemberRun>,
+}
+
+fn canonical_runtime_status(status: MemberRunStatus) -> MemberRuntimeStatus {
+    match status {
+        MemberRunStatus::Starting => MemberRuntimeStatus::Starting,
+        MemberRunStatus::Idle => MemberRuntimeStatus::Idle,
+        MemberRunStatus::Queued => MemberRuntimeStatus::Queued,
+        MemberRunStatus::Running => MemberRuntimeStatus::Running,
+        MemberRunStatus::Waiting => MemberRuntimeStatus::Waiting,
+        MemberRunStatus::Disconnected => MemberRuntimeStatus::Disconnected,
+        MemberRunStatus::Reviewing => MemberRuntimeStatus::Reviewing,
+        MemberRunStatus::Blocked => MemberRuntimeStatus::Blocked,
+        MemberRunStatus::Completed => MemberRuntimeStatus::Completed,
+        MemberRunStatus::Failed => MemberRuntimeStatus::Failed,
+        MemberRunStatus::Stopped => MemberRuntimeStatus::Stopped,
+    }
+}
+
+fn canonical_coordination_status(
+    status: LegacyMemberCoordinationStatus,
+) -> MemberCoordinationStatus {
+    match status {
+        LegacyMemberCoordinationStatus::Active => MemberCoordinationStatus::Active,
+        LegacyMemberCoordinationStatus::Closed => MemberCoordinationStatus::Closed,
+        LegacyMemberCoordinationStatus::Retired => MemberCoordinationStatus::Retired,
+    }
+}
+
+fn canonical_native_session(native: &firm_core::NativeSessionRef) -> StoreResult<NativeSessionRef> {
+    serde_json::from_value(serde_json::to_value(native)?).map_err(StoreError::Json)
+}
+
+pub(crate) fn current_member_lifecycle_matches(
+    canonical: &MemberRun,
+    runtime: &ProviderRuntimeProjection,
+) -> StoreResult<bool> {
+    Ok(current_member_lifecycle_mismatch_fields(canonical, runtime)?.is_empty())
+}
+
+pub(crate) fn current_member_lifecycle_mismatch_fields(
+    canonical: &MemberRun,
+    runtime: &ProviderRuntimeProjection,
+) -> StoreResult<Vec<&'static str>> {
+    let canonical_native = runtime
+        .native_session
+        .as_ref()
+        .map(canonical_native_session)
+        .transpose()?;
+    let mut mismatches = Vec::new();
+    if canonical.team_run_id != runtime.team_run_id {
+        mismatches.push("team_run_id");
+    }
+    if canonical.agent_member_id != runtime.agent_member_id {
+        mismatches.push("agent_member_id");
+    }
+    if canonical.role_snapshot != runtime.role {
+        mismatches.push("role");
+    }
+    if canonical.runtime_generation != runtime.runtime_generation {
+        mismatches.push("runtime_generation");
+    }
+    if canonical.coordination_status != canonical_coordination_status(runtime.coordination_status) {
+        mismatches.push("coordination_status");
+    }
+    if canonical.runtime_status != canonical_runtime_status(runtime.status) {
+        mismatches.push("runtime_status");
+    }
+    if canonical.native_session != canonical_native {
+        mismatches.push("native_session");
+    }
+    if canonical.started_at != runtime.started_at {
+        mismatches.push("started_at");
+    }
+    if canonical.last_event_at != runtime.last_event_at {
+        mismatches.push("last_event_at");
+    }
+    if canonical.finished_at != runtime.finished_at {
+        mismatches.push("finished_at");
+    }
+    Ok(mismatches)
+}
+
+fn current_member_sync_payload(projection: &MemberRun) -> Value {
+    serde_json::json!({
+        "runtime_generation": projection.runtime_generation,
+        "coordination_status": projection.coordination_status,
+        "runtime_status": projection.runtime_status,
+        "native_session": projection.native_session,
+        "started_at": projection.started_at,
+        "last_event_at": projection.last_event_at,
+        "finished_at": projection.finished_at,
+    })
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedCurrentMemberSync {
+    context: MutationContext,
+    projection: MemberRun,
+    transition: &'static str,
+    side_records: Vec<Value>,
 }
 
 fn trust_conflict(error: TrustError) -> StoreError {
@@ -1003,13 +1134,12 @@ impl HarnessStore {
             .map(|envelope| envelope.execution_space_id))
     }
 
-    pub fn create_trust_member_run(
+    fn validate_trust_member_run_authority_unlocked(
         &self,
         context: &MutationContext,
-        run: MemberRun,
-    ) -> StoreResult<CanonicalMutationResult<MemberRun>> {
-        self.init()?;
-        let _trust_lock = self.acquire_write_lock()?;
+        run: &MemberRun,
+        team_run: &firm_core::AgentTeamRun,
+    ) -> StoreResult<()> {
         required(&run.id, "MemberRun.id")?;
         required(&run.agent_member_id, "MemberRun.agent_member_id")?;
         required(&run.team_run_id, "MemberRun.team_run_id")?;
@@ -1022,6 +1152,15 @@ impl HarnessStore {
                 Some(0),
             ));
         }
+        if run.team_run_id != team_run.id {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "MemberRun does not belong to the admitted TeamRun",
+                "member_run",
+                &run.id,
+                None,
+            ));
+        }
         let member = self
             .trust_agent_members(&context.execution_space_id)?
             .into_iter()
@@ -1029,7 +1168,7 @@ impl HarnessStore {
             .ok_or_else(|| {
                 trust_error(
                     TrustErrorCode::InvalidStateTransition,
-                    "MemberRun references a missing AgentMember",
+                    "MemberRun references a missing AgentMember in the selected Execution Space",
                     "member_run",
                     &run.id,
                     None,
@@ -1044,7 +1183,7 @@ impl HarnessStore {
                     "agent_member",
                     &member.id,
                     Some(member.version),
-                ))
+                ));
             }
             AgentMemberOrganizationStatus::Retired => {
                 return Err(trust_error(
@@ -1053,23 +1192,9 @@ impl HarnessStore {
                     "agent_member",
                     &member.id,
                     Some(member.version),
-                ))
+                ));
             }
         }
-        let team_run = self
-            .team_runs()?
-            .into_iter()
-            .rev()
-            .find(|candidate| candidate.id == run.team_run_id)
-            .ok_or_else(|| {
-                trust_error(
-                    TrustErrorCode::InvalidStateTransition,
-                    "MemberRun references a missing TeamRun",
-                    "member_run",
-                    &run.id,
-                    None,
-                )
-            })?;
         let team = self
             .latest_teams()?
             .remove(&team_run.agent_team_id)
@@ -1093,6 +1218,282 @@ impl HarnessStore {
                 None,
             ));
         }
+        Ok(())
+    }
+
+    /// Validate every proposed canonical MemberRun against one frozen TeamRun
+    /// and exact Execution Space while the caller holds the Store write lock.
+    /// This is deliberately stricter than idempotent standalone create: current
+    /// admission must materialize new, absent canonical rows.
+    pub(crate) fn validate_new_trust_member_runs_unlocked(
+        &self,
+        execution_space_id: &str,
+        team_run: &firm_core::AgentTeamRun,
+        admissions: &[CanonicalMemberRunAdmission],
+    ) -> StoreResult<()> {
+        let existing = self.trust_operation_envelopes_unlocked()?;
+        let mut proposed_ids = BTreeSet::new();
+        let mut proposed_idempotency = BTreeSet::new();
+        for admission in admissions {
+            let context = &admission.context;
+            let run = &admission.run;
+            if context.execution_space_id != execution_space_id {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "MemberRun admission changed Execution Space",
+                    "member_run",
+                    &run.id,
+                    None,
+                ));
+            }
+            self.validate_trust_member_run_authority_unlocked(context, run, team_run)?;
+            if !proposed_ids.insert(run.id.clone()) {
+                return Err(trust_error(
+                    TrustErrorCode::VersionConflict,
+                    "MemberRun admission contains a duplicate id",
+                    "member_run",
+                    &run.id,
+                    Some(0),
+                ));
+            }
+            let idempotency_identity = (
+                context.execution_space_id.clone(),
+                context.authenticated_actor.kind,
+                context.authenticated_actor.id.clone(),
+                context.command_name.clone(),
+                context.idempotency_key.clone(),
+            );
+            if !proposed_idempotency.insert(idempotency_identity.clone()) {
+                return Err(trust_error(
+                    TrustErrorCode::IdempotencyKeyReused,
+                    "MemberRun admission contains a duplicate idempotency key",
+                    "member_run",
+                    &run.id,
+                    None,
+                ));
+            }
+            if existing.iter().any(|envelope| {
+                envelope.execution_space_id == execution_space_id
+                    && envelope.operation.event.aggregate_kind == "member_run"
+                    && envelope.operation.event.aggregate_id == run.id
+            }) {
+                return Err(trust_error(
+                    TrustErrorCode::VersionConflict,
+                    "MemberRun already exists in the selected Execution Space",
+                    "member_run",
+                    &run.id,
+                    Some(1),
+                ));
+            }
+            if existing.iter().any(|envelope| {
+                envelope.execution_space_id == idempotency_identity.0
+                    && envelope.authenticated_actor_kind == idempotency_identity.1
+                    && envelope.authenticated_actor_id == idempotency_identity.2
+                    && envelope.command_name == idempotency_identity.3
+                    && envelope.operation.event.idempotency_key == idempotency_identity.4
+            }) {
+                return Err(trust_error(
+                    TrustErrorCode::IdempotencyKeyReused,
+                    "MemberRun admission idempotency key already exists",
+                    "member_run",
+                    &run.id,
+                    None,
+                ));
+            }
+            // Prove the complete canonical payload is serializable before the
+            // caller performs the first legacy-ledger append.
+            serde_json::to_value(run)?;
+        }
+        Ok(())
+    }
+
+    /// Commit a previously validated set of new MemberRuns in one atomic
+    /// replacement of the canonical trust ledger. The caller must retain the
+    /// Store write lock from validation through this call.
+    pub(crate) fn commit_new_trust_member_runs_unlocked(
+        &self,
+        admissions: &[CanonicalMemberRunAdmission],
+    ) -> StoreResult<Vec<CanonicalMutationResult<MemberRun>>> {
+        let mut committed = self.trust_operation_envelopes_unlocked()?;
+        let first_store_sequence = committed
+            .iter()
+            .map(|envelope| envelope.operation.event.store_sequence)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let mut results = Vec::with_capacity(admissions.len());
+        for (next_store_sequence, admission) in (first_store_sequence..).zip(admissions) {
+            let context = &admission.context;
+            let run = &admission.run;
+            let payload = serde_json::to_value(run)?;
+            let fingerprint = context
+                .request_fingerprint
+                .clone()
+                .unwrap_or_else(|| canonical_json_fingerprint(&payload));
+            let event = CanonicalMutationEvent {
+                id: format!("trust-event-{next_store_sequence}"),
+                aggregate_kind: "member_run".to_string(),
+                aggregate_id: run.id.clone(),
+                sequence: 1,
+                store_sequence: next_store_sequence,
+                transition: "created".to_string(),
+                expected_version: 0,
+                resulting_version: 1,
+                performed_by_actor: context.authenticated_actor.clone(),
+                authority_actor: context.authority_actor.clone(),
+                causation_ref: None,
+                idempotency_key: context.idempotency_key.clone(),
+                canonical_request_fingerprint: fingerprint,
+                payload,
+                created_at: now_string(),
+            };
+            let operation = CanonicalOperation {
+                event: event.clone(),
+                resulting_projection: serde_json::to_value(run)?,
+                immutable_side_records: Vec::new(),
+                initial_outbox_records: Vec::new(),
+            };
+            committed.push(TrustOperationEnvelope {
+                execution_space_id: context.execution_space_id.clone(),
+                authenticated_actor_kind: context.authenticated_actor.kind,
+                authenticated_actor_id: context.authenticated_actor.id.clone(),
+                command_name: context.command_name.clone(),
+                operation,
+            });
+            results.push(CanonicalMutationResult {
+                projection: run.clone(),
+                event,
+                replayed: false,
+            });
+        }
+        self.write_trust_operation_envelopes_atomic_unlocked(&committed)?;
+        Ok(results)
+    }
+
+    pub(crate) fn prepare_current_member_runtime_sync_unlocked(
+        &self,
+        execution_space_id: &str,
+        runtime: &ProviderRuntimeProjection,
+    ) -> StoreResult<Option<PreparedCurrentMemberSync>> {
+        self.prepare_current_member_runtime_sync_with_generation_unlocked(
+            execution_space_id,
+            runtime,
+            false,
+        )
+    }
+
+    fn prepare_current_member_runtime_sync_with_generation_unlocked(
+        &self,
+        execution_space_id: &str,
+        runtime: &ProviderRuntimeProjection,
+        allow_reopen_generation_advance: bool,
+    ) -> StoreResult<Option<PreparedCurrentMemberSync>> {
+        let envelope = self
+            .latest_trust_envelopes_unlocked(execution_space_id, "member_run")?
+            .remove(&runtime.id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "MEMBER_RUN_MATERIALIZATION_INCOMPLETE: TeamRun {} declares MemberRun {} but no canonical MemberRun exists",
+                    runtime.team_run_id, runtime.id
+                ))
+            })?;
+        let current = event_projection::<MemberRun>(&envelope)?;
+        let generation_matches = current.runtime_generation == runtime.runtime_generation
+            || (allow_reopen_generation_advance
+                && current.coordination_status == MemberCoordinationStatus::Closed
+                && runtime.coordination_status == LegacyMemberCoordinationStatus::Active
+                && runtime.runtime_generation == current.runtime_generation.saturating_add(1));
+        if current.team_run_id != runtime.team_run_id
+            || current.agent_member_id != runtime.agent_member_id
+            || current.role_snapshot != runtime.role
+            || !generation_matches
+        {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_RUN_MATERIALIZATION_MISMATCH: TeamRun {} MemberRun {} cannot synchronize a mismatched canonical projection in Execution Space {}",
+                runtime.team_run_id, runtime.id, execution_space_id
+            )));
+        }
+        if current_member_lifecycle_matches(&current, runtime)? {
+            return Ok(None);
+        }
+        let mut next = current.clone();
+        next.coordination_status = canonical_coordination_status(runtime.coordination_status);
+        next.runtime_status = canonical_runtime_status(runtime.status);
+        next.runtime_generation = runtime.runtime_generation;
+        next.native_session = runtime
+            .native_session
+            .as_ref()
+            .map(canonical_native_session)
+            .transpose()?;
+        next.started_at = runtime.started_at.clone();
+        next.last_event_at = runtime.last_event_at.clone();
+        next.finished_at = runtime.finished_at.clone();
+        next.version = current.version.saturating_add(1);
+        serde_json::to_value(&next)?;
+        Ok(Some(PreparedCurrentMemberSync {
+            context: MutationContext {
+                execution_space_id: execution_space_id.to_string(),
+                authenticated_actor: ActorRef {
+                    kind: ActorKind::Service,
+                    id: "node-daemon:member-projection-sync".to_string(),
+                },
+                authority_actor: Some(ActorRef {
+                    kind: ActorKind::AgentMember,
+                    id: runtime.agent_member_id.clone(),
+                }),
+                command_name: "team_run.member_projection.sync".to_string(),
+                idempotency_key: format!("team-run-member-sync:{}:{}", runtime.id, next.version),
+                expected_version: current.version,
+                request_fingerprint: None,
+            },
+            projection: next,
+            transition: "runtime_projection_synchronized",
+            side_records: Vec::new(),
+        }))
+    }
+
+    pub(crate) fn commit_prepared_current_member_sync_unlocked(
+        &self,
+        prepared: PreparedCurrentMemberSync,
+    ) -> StoreResult<CanonicalMutationResult<MemberRun>> {
+        self.commit_trust_projection_unlocked(
+            &prepared.context,
+            "member_run",
+            &prepared.projection.id,
+            prepared.transition,
+            current_member_sync_payload(&prepared.projection),
+            &prepared.projection,
+            prepared.side_records,
+            Vec::new(),
+        )
+    }
+
+    /// Explicit reconstruction seam for Legacy/import tests. Current Team
+    /// Member admission must use the combined TeamRun admission APIs.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn legacy_import_create_trust_member_run_projection(
+        &self,
+        context: &MutationContext,
+        run: MemberRun,
+    ) -> StoreResult<CanonicalMutationResult<MemberRun>> {
+        self.init()?;
+        let _trust_lock = self.acquire_write_lock()?;
+        let team_run = self
+            .team_runs()?
+            .into_iter()
+            .rev()
+            .find(|candidate| candidate.id == run.team_run_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "MemberRun references a missing TeamRun",
+                    "member_run",
+                    &run.id,
+                    None,
+                )
+            })?;
+        self.validate_trust_member_run_authority_unlocked(context, &run, &team_run)?;
         self.commit_trust_projection_unlocked(
             context,
             "member_run",
@@ -1105,17 +1506,52 @@ impl HarnessStore {
         )
     }
 
-    pub fn transition_trust_member_run(
+    pub fn transition_current_team_member_lifecycle(
         &self,
         context: &MutationContext,
         member_run_id: &str,
-        next: MemberCoordinationStatus,
+        transition: CurrentTeamMemberLifecycleTransition,
         updated_at: &str,
-    ) -> StoreResult<CanonicalMutationResult<MemberRun>> {
+    ) -> StoreResult<CurrentTeamMemberLifecycleResult> {
         self.init()?;
-        let _trust_lock = self.acquire_write_lock()?;
-        let mut run = self
-            .latest_trust_envelopes_unlocked(&context.execution_space_id, "member_run")?
+        let _lock = self.acquire_write_lock()?;
+        let current = latest_by_id(
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
+            |row| row.id.clone(),
+        )
+        .remove(member_run_id)
+        .ok_or_else(|| {
+            trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "MemberRun not found",
+                "member_run",
+                member_run_id,
+                None,
+            )
+        })?;
+        let team_run = latest_by_id(
+            self.read_jsonl::<firm_core::AgentTeamRun>("team_runs.jsonl")?,
+            |run| run.id.clone(),
+        )
+        .remove(&current.team_run_id)
+        .ok_or_else(|| {
+            trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "MemberRun references a missing TeamRun",
+                "member_run",
+                member_run_id,
+                None,
+            )
+        })?;
+        let execution_space_id = self.current_team_run_execution_space_unlocked(&team_run)?;
+        if execution_space_id != context.execution_space_id {
+            return Err(StoreError::Conflict(format!(
+                "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} belongs to Execution Space {}, not {}",
+                team_run.id, execution_space_id, context.execution_space_id
+            )));
+        }
+        let canonical_current = self
+            .latest_trust_envelopes_unlocked(&execution_space_id, "member_run")?
             .remove(member_run_id)
             .ok_or_else(|| {
                 trust_error(
@@ -1127,131 +1563,215 @@ impl HarnessStore {
                 )
             })
             .and_then(|envelope| event_projection::<MemberRun>(&envelope))?;
-        let transition = match (run.coordination_status, next) {
-            (MemberCoordinationStatus::Active, MemberCoordinationStatus::Closed) => "closed",
-            (MemberCoordinationStatus::Closed, MemberCoordinationStatus::Active) => "reopened",
-            (MemberCoordinationStatus::Active, MemberCoordinationStatus::Retired)
-            | (MemberCoordinationStatus::Closed, MemberCoordinationStatus::Retired) => "retired",
-            _ => {
-                return Err(trust_error(
-                    TrustErrorCode::InvalidStateTransition,
-                    "MemberRun coordination transition is not allowed",
-                    "member_run",
-                    member_run_id,
-                    Some(run.version),
-                ))
+        if !current_member_lifecycle_matches(&canonical_current, &current)? {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_RUN_MATERIALIZATION_MISMATCH: TeamRun {} MemberRun {} lifecycle projections diverge",
+                team_run.id, member_run_id
+            )));
+        }
+
+        let already_at_requested_result = match transition {
+            CurrentTeamMemberLifecycleTransition::Close => {
+                current.coordination_status == LegacyMemberCoordinationStatus::Closed
+                    && current.status == MemberRunStatus::Stopped
+                    && current.last_event_at.as_deref() == Some(updated_at)
+                    && current.finished_at.as_deref() == Some(updated_at)
+            }
+            CurrentTeamMemberLifecycleTransition::Retire => {
+                current.coordination_status == LegacyMemberCoordinationStatus::Retired
+                    && current.status == MemberRunStatus::Stopped
+                    && current.last_event_at.as_deref() == Some(updated_at)
+                    && current.finished_at.as_deref() == Some(updated_at)
+            }
+            CurrentTeamMemberLifecycleTransition::Reopen => {
+                current.coordination_status == LegacyMemberCoordinationStatus::Active
+                    && current.status == MemberRunStatus::Queued
+                    && current.started_at == updated_at
+                    && current.last_event_at.as_deref() == Some(updated_at)
+                    && current.finished_at.is_none()
+            }
+            CurrentTeamMemberLifecycleTransition::ResumeNativeSession => {
+                current.coordination_status == LegacyMemberCoordinationStatus::Active
+                    && current.status == MemberRunStatus::Starting
+                    && current.last_event_at.as_deref() == Some(updated_at)
+                    && current.finished_at.is_none()
             }
         };
-        if transition == "reopened" {
-            let session = run.native_session.as_ref().ok_or_else(|| {
-                trust_error(
-                    TrustErrorCode::NativeSessionMissing,
-                    "reopen requires a resumable NativeSessionRef",
-                    "member_run",
-                    member_run_id,
-                    Some(run.version),
-                )
-            })?;
-            if !session.supports_resume
-                || !matches!(
-                    session.availability,
-                    firm_core::agentfirm_api::NativeSessionAvailability::Available
-                        | firm_core::agentfirm_api::NativeSessionAvailability::Stale
-                )
-            {
-                return Err(trust_error(
-                    TrustErrorCode::NativeSessionIncompatible,
-                    "NativeSessionRef is not safely resumable",
-                    "member_run",
-                    member_run_id,
-                    Some(run.version),
-                ));
+        if already_at_requested_result {
+            let payload = current_member_sync_payload(&canonical_current);
+            let fingerprint = context
+                .request_fingerprint
+                .clone()
+                .unwrap_or_else(|| canonical_json_fingerprint(&payload));
+            if let Some(replay) = self.replay_trust_projection_unlocked(
+                context,
+                "member_run",
+                member_run_id,
+                &fingerprint,
+            )? {
+                return Ok(CurrentTeamMemberLifecycleResult {
+                    runtime_projection: current,
+                    canonical: replay,
+                });
             }
-            run.runtime_generation += 1;
-            run.runtime_status = MemberRuntimeStatus::Idle;
-        } else if transition == "closed" {
-            run.runtime_status = MemberRuntimeStatus::Stopped;
-        } else {
-            run.runtime_status = MemberRuntimeStatus::Stopped;
-            run.finished_at = Some(updated_at.to_string());
         }
-        run.coordination_status = next;
-        run.version += 1;
-        run.last_event_at = Some(updated_at.to_string());
 
-        let mut side_records = Vec::new();
-        if transition == "reopened" {
-            if let Some(binding_id) = run.workspace_binding_id.as_deref() {
-                let mut binding = self
-                    .trust_workspace_bindings(&context.execution_space_id)?
-                    .into_iter()
-                    .find(|binding| binding.id == binding_id)
-                    .ok_or_else(|| {
-                        trust_error(
-                            TrustErrorCode::WorkspacePathUnsafe,
-                            "reopen requires the bound workspace projection",
-                            "workspace_binding",
-                            binding_id,
-                            None,
-                        )
-                    })?;
-                if matches!(
-                    binding.lifecycle,
-                    WorkspaceLifecycle::Missing
-                        | WorkspaceLifecycle::CleanupBlocked
-                        | WorkspaceLifecycle::Removed
-                ) {
+        let mut next = current.clone();
+        let transition_name = match transition {
+            CurrentTeamMemberLifecycleTransition::Close => {
+                if !current.coordination_is_active() {
                     return Err(trust_error(
-                        TrustErrorCode::WorkspaceCleanupBlocked,
-                        "reopen cannot reattach an unavailable workspace",
-                        "workspace_binding",
-                        binding_id,
-                        Some(binding.version),
+                        TrustErrorCode::InvalidStateTransition,
+                        "Close requires an active MemberRun",
+                        "member_run",
+                        member_run_id,
+                        Some(canonical_current.version),
                     ));
                 }
-                let observed = observe_workspace_safety(Path::new(&binding.canonical_root))?;
-                if !observed.link_escape_free {
-                    return Err(trust_error(
-                        TrustErrorCode::WorkspaceLinkEscape,
-                        "reopen workspace contains a symbolic-link escape",
-                        "workspace_binding",
-                        binding_id,
-                        Some(binding.version),
-                    ));
-                }
-                if observed.conflicted || observed.dirty {
-                    return Err(trust_error(
-                        if observed.conflicted {
-                            TrustErrorCode::WorkspaceConflicted
-                        } else {
-                            TrustErrorCode::WorkspaceDirty
-                        },
-                        "reopen requires a clean conflict-free workspace",
-                        "workspace_binding",
-                        binding_id,
-                        Some(binding.version),
-                    ));
-                }
-                binding.lifecycle = WorkspaceLifecycle::Attached;
-                binding.attached_member_generation = Some(run.runtime_generation);
-                binding.dirty_fingerprint = None;
-                binding.blocked_reason = None;
-                binding.version += 1;
-                binding.updated_at = updated_at.to_string();
-                side_records.push(serde_json::to_value(binding)?);
+                next.coordination_status = LegacyMemberCoordinationStatus::Closed;
+                next.status = MemberRunStatus::Stopped;
+                next.finished_at = Some(updated_at.to_string());
+                "closed"
             }
-        }
-        if transition == "closed" || transition == "retired" {
-            for mut delivery in self.trust_work_deliveries(&context.execution_space_id)? {
+            CurrentTeamMemberLifecycleTransition::Retire => {
+                if current.coordination_is_retired() {
+                    return Err(trust_error(
+                        TrustErrorCode::InvalidStateTransition,
+                        "MemberRun is already retired",
+                        "member_run",
+                        member_run_id,
+                        Some(canonical_current.version),
+                    ));
+                }
+                next.coordination_status = LegacyMemberCoordinationStatus::Retired;
+                next.status = MemberRunStatus::Stopped;
+                next.finished_at = Some(updated_at.to_string());
+                "retired"
+            }
+            CurrentTeamMemberLifecycleTransition::Reopen => {
+                if current.coordination_status != LegacyMemberCoordinationStatus::Closed {
+                    return Err(trust_error(
+                        TrustErrorCode::InvalidStateTransition,
+                        "Reopen requires a closed MemberRun",
+                        "member_run",
+                        member_run_id,
+                        Some(canonical_current.version),
+                    ));
+                }
+                let session = current.native_session.as_ref().ok_or_else(|| {
+                    trust_error(
+                        TrustErrorCode::NativeSessionMissing,
+                        "reopen requires a resumable NativeSessionRef",
+                        "member_run",
+                        member_run_id,
+                        Some(canonical_current.version),
+                    )
+                })?;
+                if !session.supports_resume
+                    || matches!(
+                        session.availability,
+                        firm_core::NativeSessionAvailability::Missing
+                            | firm_core::NativeSessionAvailability::Incompatible
+                    )
+                {
+                    return Err(trust_error(
+                        TrustErrorCode::NativeSessionIncompatible,
+                        "NativeSessionRef is not safely resumable",
+                        "member_run",
+                        member_run_id,
+                        Some(canonical_current.version),
+                    ));
+                }
+                next.runtime_generation = current.runtime_generation.saturating_add(1);
+                next.coordination_status = LegacyMemberCoordinationStatus::Active;
+                next.status = MemberRunStatus::Queued;
+                next.started_at = updated_at.to_string();
+                next.finished_at = None;
+                "reopened"
+            }
+            CurrentTeamMemberLifecycleTransition::ResumeNativeSession => {
+                if current.coordination_status != LegacyMemberCoordinationStatus::Active
+                    || !matches!(
+                        current.status,
+                        MemberRunStatus::Disconnected
+                            | MemberRunStatus::Failed
+                            | MemberRunStatus::Stopped
+                    )
+                {
+                    return Err(trust_error(
+                        TrustErrorCode::InvalidStateTransition,
+                        "Resume native session requires an active, disconnected, failed, or stopped MemberRun",
+                        "member_run",
+                        member_run_id,
+                        Some(canonical_current.version),
+                    ));
+                }
+                let session = current.native_session.as_ref().ok_or_else(|| {
+                    trust_error(
+                        TrustErrorCode::NativeSessionMissing,
+                        "resume native session requires a resumable NativeSessionRef",
+                        "member_run",
+                        member_run_id,
+                        Some(canonical_current.version),
+                    )
+                })?;
+                if !session.supports_resume
+                    || matches!(
+                        session.availability,
+                        firm_core::NativeSessionAvailability::Missing
+                            | firm_core::NativeSessionAvailability::Incompatible
+                    )
+                {
+                    return Err(trust_error(
+                        TrustErrorCode::NativeSessionIncompatible,
+                        "NativeSessionRef is not safely resumable",
+                        "member_run",
+                        member_run_id,
+                        Some(canonical_current.version),
+                    ));
+                }
+                // Resuming a still-active MemberRun reattaches its exact
+                // frozen provider-native session. It is not a coordination
+                // reopen and therefore does not mint a new runtime
+                // generation.
+                next.status = MemberRunStatus::Starting;
+                next.finished_at = None;
+                "native_session_resume_requested"
+            }
+        };
+        next.last_event_at = Some(updated_at.to_string());
+        next.validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        let allow_reopen_generation_advance =
+            transition == CurrentTeamMemberLifecycleTransition::Reopen;
+        let mut prepared = self
+            .prepare_current_member_runtime_sync_with_generation_unlocked(
+                &execution_space_id,
+                &next,
+                allow_reopen_generation_advance,
+            )?
+            .ok_or_else(|| {
+                StoreError::Conflict("MemberRun lifecycle transition made no change".to_string())
+            })?;
+        prepared.context = context.clone();
+        prepared.transition = transition_name;
+        if matches!(
+            transition,
+            CurrentTeamMemberLifecycleTransition::Close
+                | CurrentTeamMemberLifecycleTransition::Retire
+        ) {
+            for mut delivery in self.trust_work_deliveries(&execution_space_id)? {
                 if delivery.recipient_member_run_id != member_run_id {
                     continue;
                 }
-                if transition == "closed" && delivery.status == WorkDeliveryStatus::Queued {
-                    delivery.freeze_generation = Some(run.runtime_generation);
+                if transition == CurrentTeamMemberLifecycleTransition::Close
+                    && delivery.status == WorkDeliveryStatus::Queued
+                {
+                    delivery.freeze_generation = Some(next.runtime_generation);
                     delivery.version += 1;
                     delivery.updated_at = updated_at.to_string();
-                    side_records.push(serde_json::to_value(delivery)?);
-                } else if transition == "retired"
+                    prepared.side_records.push(serde_json::to_value(delivery)?);
+                } else if transition == CurrentTeamMemberLifecycleTransition::Retire
                     && matches!(
                         delivery.status,
                         WorkDeliveryStatus::Queued | WorkDeliveryStatus::Claimed
@@ -1260,85 +1780,186 @@ impl HarnessStore {
                     delivery.status = WorkDeliveryStatus::Invalidated;
                     delivery.version += 1;
                     delivery.updated_at = updated_at.to_string();
-                    side_records.push(serde_json::to_value(delivery)?);
+                    prepared.side_records.push(serde_json::to_value(delivery)?);
                 }
             }
         }
-        self.commit_trust_projection_unlocked(
-            context,
-            "member_run",
-            member_run_id,
-            transition,
-            serde_json::json!({"coordination_status": next, "updated_at": updated_at}),
-            &run,
-            side_records,
-            Vec::new(),
-        )
-    }
-
-    pub fn resume_trust_native_session(
-        &self,
-        context: &MutationContext,
-        member_run_id: &str,
-        updated_at: &str,
-    ) -> StoreResult<CanonicalMutationResult<MemberRun>> {
-        self.init()?;
-        let _trust_lock = self.acquire_write_lock()?;
-        let mut run = self
-            .latest_trust_envelopes_unlocked(&context.execution_space_id, "member_run")?
-            .remove(member_run_id)
-            .ok_or_else(|| {
-                trust_error(
-                    TrustErrorCode::InvalidStateTransition,
-                    "MemberRun not found",
-                    "member_run",
-                    member_run_id,
-                    None,
-                )
-            })
-            .and_then(|envelope| event_projection::<MemberRun>(&envelope))?;
-        self.claimable_member_run(
-            &context.execution_space_id,
-            member_run_id,
-            run.runtime_generation,
-        )?;
-        let session = run.native_session.as_ref().ok_or_else(|| {
-            trust_error(
-                TrustErrorCode::NativeSessionMissing,
-                "resume-native-session requires NativeSessionRef",
+        required(&context.execution_space_id, "execution_space_id")?;
+        required(&context.authenticated_actor.id, "authenticated_actor.id")?;
+        required(&context.command_name, "command_name")?;
+        required(&context.idempotency_key, "idempotency_key")?;
+        let payload = current_member_sync_payload(&prepared.projection);
+        let fingerprint = context
+            .request_fingerprint
+            .clone()
+            .unwrap_or_else(|| canonical_json_fingerprint(&payload));
+        if self
+            .replay_trust_projection_unlocked::<MemberRun>(
+                context,
                 "member_run",
                 member_run_id,
-                Some(run.version),
-            )
-        })?;
-        if !session.supports_resume
-            || !matches!(
-                session.availability,
-                firm_core::agentfirm_api::NativeSessionAvailability::Available
-                    | firm_core::agentfirm_api::NativeSessionAvailability::Stale
-            )
+                &fingerprint,
+            )?
+            .is_some()
         {
-            return Err(trust_error(
-                TrustErrorCode::NativeSessionIncompatible,
-                "NativeSessionRef is not safely resumable",
-                "member_run",
-                member_run_id,
-                Some(run.version),
+            return Err(StoreError::Conflict(
+                "MEMBER_RUN_IDEMPOTENT_REPLAY_STATE_MISMATCH: prior lifecycle operation exists but current runtime projection does not match its result"
+                    .to_string(),
             ));
         }
-        run.runtime_status = MemberRuntimeStatus::Starting;
-        run.version += 1;
-        run.last_event_at = Some(updated_at.to_string());
-        self.commit_trust_projection_unlocked(
-            context,
-            "member_run",
-            member_run_id,
-            "native_session_resume_requested",
-            serde_json::json!({"updated_at": updated_at}),
-            &run,
-            Vec::new(),
-            Vec::new(),
+        if context.expected_version != canonical_current.version {
+            return Err(trust_error(
+                TrustErrorCode::VersionConflict,
+                format!(
+                    "expected version {}, current version is {}",
+                    context.expected_version, canonical_current.version
+                ),
+                "member_run",
+                member_run_id,
+                Some(canonical_current.version),
+            ));
+        }
+        serde_json::to_value(&next)?;
+        self.append_jsonl_unlocked("member_runs.jsonl", &next)?;
+        let canonical = self.commit_prepared_current_member_sync_unlocked(prepared)?;
+        Ok(CurrentTeamMemberLifecycleResult {
+            runtime_projection: next,
+            canonical,
+        })
+    }
+
+    /// Advance one current provider runtime generation while keeping the
+    /// canonical MemberRun and its runtime projection coherent under the same
+    /// Store write lock. Generic projection CAS deliberately cannot change a
+    /// generation: reopen/recovery must use this combined authority boundary.
+    ///
+    /// The two physical ledgers are validated and serialized before the first
+    /// write. They are not backed by a cross-file crash journal; a storage
+    /// failure between the Legacy JSONL append and canonical atomic replace is
+    /// therefore detected as an incomplete current TeamRun on restart and
+    /// fails closed rather than being silently repaired.
+    pub fn compare_and_advance_member_run_generation(
+        &self,
+        expected: &ProviderRuntimeProjection,
+        next: &ProviderRuntimeProjection,
+    ) -> StoreResult<()> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let current = latest_by_id(
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
+            |row| row.id.clone(),
         )
+        .remove(&expected.id)
+        .ok_or_else(|| StoreError::Conflict(format!("member run not found: {}", expected.id)))?;
+        if current != *expected {
+            return Err(StoreError::Conflict(format!(
+                "ProviderRuntimeProjection {} changed concurrently; retry the generation transition",
+                expected.id
+            )));
+        }
+        let execution_space_id = self.require_current_member_mutation_scope_unlocked(&current)?;
+        ensure_member_provenance_unchanged(&current, next)?;
+        ensure_member_lifecycle_revision(&current, next)?;
+        ensure_provider_compatibility_cause_unchanged(&current, next)?;
+        if next.runtime_generation != current.runtime_generation.saturating_add(1) {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_GENERATION_TRANSITION_REQUIRED: ProviderRuntimeProjection {} must advance runtime_generation exactly once through combined Store authority",
+                current.id
+            )));
+        }
+        next.validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+
+        let canonical_envelope = self
+            .latest_trust_envelopes_unlocked(&execution_space_id, "member_run")?
+            .remove(&current.id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "MEMBER_RUN_MATERIALIZATION_INCOMPLETE: TeamRun {} declares MemberRun {} but no canonical MemberRun exists",
+                    current.team_run_id, current.id
+                ))
+            })?;
+        let mut canonical = event_projection::<MemberRun>(&canonical_envelope)?;
+        if canonical.team_run_id != current.team_run_id
+            || canonical.agent_member_id != current.agent_member_id
+            || canonical.role_snapshot != current.role
+            || canonical.runtime_generation != current.runtime_generation
+        {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_RUN_MATERIALIZATION_MISMATCH: TeamRun {} MemberRun {} cannot advance a mismatched canonical generation in Execution Space {}",
+                current.team_run_id, current.id, execution_space_id
+            )));
+        }
+
+        canonical.coordination_status = match next.coordination_status {
+            LegacyMemberCoordinationStatus::Active => MemberCoordinationStatus::Active,
+            LegacyMemberCoordinationStatus::Closed => MemberCoordinationStatus::Closed,
+            LegacyMemberCoordinationStatus::Retired => MemberCoordinationStatus::Retired,
+        };
+        canonical.runtime_status = match next.status {
+            MemberRunStatus::Starting => MemberRuntimeStatus::Starting,
+            MemberRunStatus::Idle => MemberRuntimeStatus::Idle,
+            MemberRunStatus::Queued => MemberRuntimeStatus::Queued,
+            MemberRunStatus::Running => MemberRuntimeStatus::Running,
+            MemberRunStatus::Waiting => MemberRuntimeStatus::Waiting,
+            MemberRunStatus::Disconnected => MemberRuntimeStatus::Disconnected,
+            MemberRunStatus::Reviewing => MemberRuntimeStatus::Reviewing,
+            MemberRunStatus::Blocked => MemberRuntimeStatus::Blocked,
+            MemberRunStatus::Completed => MemberRuntimeStatus::Completed,
+            MemberRunStatus::Failed => MemberRuntimeStatus::Failed,
+            MemberRunStatus::Stopped => MemberRuntimeStatus::Stopped,
+        };
+        canonical.runtime_generation = next.runtime_generation;
+        canonical.native_session = next
+            .native_session
+            .as_ref()
+            .map(canonical_native_session)
+            .transpose()?;
+        canonical.version = canonical.version.saturating_add(1);
+        canonical.started_at = next.started_at.clone();
+        canonical.last_event_at = next.last_event_at.clone();
+        canonical.finished_at = next.finished_at.clone();
+
+        let context = MutationContext {
+            execution_space_id,
+            authenticated_actor: ActorRef {
+                kind: ActorKind::Service,
+                id: "node-daemon:member-generation".to_string(),
+            },
+            authority_actor: Some(ActorRef {
+                kind: ActorKind::AgentMember,
+                id: current.agent_member_id.clone(),
+            }),
+            command_name: "team_run.advance_member_generation".to_string(),
+            idempotency_key: format!(
+                "team-run-member-generation:{}:{}",
+                current.id, next.runtime_generation
+            ),
+            expected_version: canonical.version.saturating_sub(1),
+            request_fingerprint: None,
+        };
+        let payload = serde_json::json!({
+            "member_run_id": current.id,
+            "team_run_id": current.team_run_id,
+            "runtime_generation": next.runtime_generation,
+            "coordination_status": canonical.coordination_status,
+            "runtime_status": canonical.runtime_status,
+        });
+        // Prove both rows serialize before the first durable mutation.
+        serde_json::to_value(next)?;
+        serde_json::to_value(&canonical)?;
+        self.append_jsonl_unlocked("member_runs.jsonl", next)?;
+        self.commit_trust_projection_unlocked(
+            &context,
+            "member_run",
+            &canonical.id,
+            "generation_advanced",
+            payload,
+            &canonical,
+            Vec::new(),
+            Vec::new(),
+        )?;
+        Ok(())
     }
 
     /// Write the settled provider-native Session binding onto a trust MemberRun.
@@ -7351,7 +7972,7 @@ mod tests {
                         context: String::new(),
                         desired_outcome: None,
                         status: firm_core::MissionStatus::Running,
-                        wave_ids: Vec::new(),
+                        legacy_wave_ids: Vec::new(),
                         outcome_summary: None,
                         completed_by: None,
                         created_at: "t1".into(),
@@ -7379,7 +8000,7 @@ mod tests {
                 .unwrap();
         }
         store
-            .append_team_run(&firm_core::AgentTeamRun {
+            .legacy_import_append_team_run_projection(&firm_core::AgentTeamRun {
                 id: run_id.into(),
                 agent_team_id: team_id.into(),
                 execution_node_id: "11111111-1111-4111-8111-111111111111".into(),
@@ -7492,7 +8113,7 @@ mod tests {
 
     fn seed_membership_scope(store: &HarnessStore) {
         store
-            .append_team_run(&firm_core::AgentTeamRun {
+            .legacy_import_append_team_run_projection(&firm_core::AgentTeamRun {
                 id: "team-run-membership-test".into(),
                 agent_team_id: "team-membership-test".into(),
                 execution_node_id: "11111111-1111-4111-8111-111111111111".into(),
@@ -7731,7 +8352,7 @@ mod tests {
             finished_at: None,
         };
         store
-            .create_trust_member_run(
+            .legacy_import_create_trust_member_run_projection(
                 &context("host", "member_run.create", "member-run-bind-native", 0),
                 run,
             )

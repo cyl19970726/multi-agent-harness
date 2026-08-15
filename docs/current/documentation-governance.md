@@ -20,7 +20,7 @@ not seven independent sources of product truth.
 | --- | --- | --- | --- |
 | Product | `docs/current/product/prd.md`, `docs/current/company-os/` | product mission, system ownership, object meaning, governance and UX contracts | yes, through a small context pack |
 | Architecture | `docs/current/architecture/architecture*.md`, `docs/current/architecture/concept-model.md`, `docs/current/architecture/data-model.md`, `docs/decisions/` | implemented boundaries, durable decisions, source-of-truth and migration rules | selected files only |
-| Execution | `docs/current/dashboard/`, `docs/current/integration/`, runtime/workflow docs | Mission/Wave, executors, providers, operator surfaces and runbooks | only for execution work |
+| Execution | `docs/current/dashboard/`, `docs/current/integration/`, runtime/workflow docs | Mission and Mission Log, executors, providers, operator surfaces and runbooks | only for execution work |
 | Design evidence | `design/<workstream>/` (git history) | versioned Expected, Actual, prompts, specs, overlays, comparisons and reviews | only for the selected workstream |
 | Operations | `docs/current/operations/getting-started.md`, `docs/current/operations/operations.md`, `docs/current/architecture/schemas.md`, `docs/current/operations/governance-engine.md` | commands, release and governance gates | only for implementation/operations |
 | Research | `research/` (git history) | unresolved evidence, comparisons and bounded proposals attached to an active decision or TeamWork | never default context |
@@ -34,7 +34,7 @@ Within Company OS, product contracts divide by truth-owning system:
 - **Finance**: monetary records, controls and evidence;
 - **cross-system governance**: Approval, module/organization evolution and the
   optional role-agent decision contracts;
-- **execution foundation**: Mission/Wave and the selected executor, linked as
+- **execution foundation**: Mission and Mission Log plus the selected executor, linked as
   evidence rather than company structure.
 
 Business domains such as Trademark Management are `BusinessModule`s. They link
@@ -75,7 +75,8 @@ answer the current decision.
 
 1. `AGENTS.md`
 2. `docs/current/architecture/architecture-map.md`
-3. ADR 0026 and the selected executor contract;
+3. ADR 0051, ADR 0056 when Message is in scope, and the selected executor
+   contract; ADR 0026 is historical Wave evidence only;
 4. the specific page, provider or runtime reference being changed.
 
 ### Module-design pack
@@ -258,6 +259,15 @@ The governance gate must prevent broken links, missing registered authorities,
 stale review dates and retired product vocabulary in active authority. Explicit
 compatibility, migration and historical contexts may mention retired terms, but
 must label them as such.
+
+For the Message fabric, current execution documentation uses identity-first
+`Message`, `MessageSubscription` and one `CanonicalMessageDelivery` per
+recipient. `TeamMessage`, `TeamMessageProjection`, `team_messages.jsonl`,
+`manual_ack` and legacy ACK commands may appear only inside an explicitly
+labelled historical/read-export boundary. A current page must never teach them
+as a writer, inbox source, provider-dispatch fallback or acceptance signal.
+Work/WorkDelivery and RuntimeCommand remain independent planes and must not be
+described as Message kinds.
 
 ## Definition of healthy documentation
 

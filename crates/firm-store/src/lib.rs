@@ -2,30 +2,30 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use firm_core::{
-    content_hash_hex16, provider_interaction_response_id, AgentTeam, AgentTeamRun, Decision,
-    DelegationRun, Evidence, ExecutionNode, ExecutionNodeStatus, Gap, GitHubLink, HostAttention,
-    HostAttentionInbox, HostAttentionKind, HostAttentionStatus, HostBindingLease,
-    HostBindingLeaseOwnerKind, HostBindingLeaseStatus, MemberAction, MessageTerminalSource,
+    content_hash_hex16, AgentTeam, AgentTeamRun, Decision, DelegationRun, Evidence, ExecutionNode,
+    ExecutionNodeStatus, Gap, GitHubLink, HostAttention, HostAttentionInbox, HostAttentionKind,
+    HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind, HostBindingLeaseStatus,
+    LegacyWave, LegacyWaveGateStatus, LegacyWaveStatus, MemberAction, MessageTerminalSource,
     Mission, MissionLogEntry, MissionStatus, NodeDaemonLease, NodeDaemonLeaseStatus,
-    NodeProjectRegistration, NodeProjectRegistrationStatus, PendingInteraction, Proposal,
-    ProviderChildThread, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
+    NodeProjectRegistration, NodeProjectRegistrationStatus, Proposal, ProviderChildThread,
+    ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
     ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
-    ProviderCompatibilityStatus, ProviderDispatchIntent, ProviderExecutionStatus,
-    ProviderIntegrationProfile, ProviderInteractionRequestBody, ProviderInteractionResponseBody,
+    ProviderCompatibilityStatus, ProviderExecutionStatus, ProviderIntegrationProfile,
     ProviderLaunchProfile, ProviderProcess, ProviderRuntimeProjection, ProviderWorkDispatch,
     ProviderWorkDispatchStatus, ProviderWorkDispatchUpdate, RegistryDeliveryAttempt,
-    RegistryDeliveryStatus, RegistryMessage, Review, TeamActorKind, TeamDeliveryPolicy,
-    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection,
-    TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision,
-    Wave, WaveGateStatus, WaveStatus, Work, WorkClaimMode, WorkCommandContext, WorkCondition,
-    WorkConditionRecord, WorkDelegation, WorkDelegationEvent, WorkDelegationRevision,
-    WorkDelegationState, WorkDelegationTransition, WorkEvent, WorkEventKind, WorkEvidence,
-    WorkOperation, WorkOperationalDecision, WorkPhase, WorkRef, WorkReport, WorkResolution,
-    WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
+    RegistryDeliveryStatus, RegistryMessage, Review, TeamActorKind, TeamMemberCloseRequest,
+    TeamMemberCloseStatus, TeamMessageProjection, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
+    TeamSupervisorLeaseStatus, Validate, Vision, Work, WorkClaimMode, WorkCommandContext,
+    WorkCondition, WorkConditionRecord, WorkDelegation, WorkDelegationEvent,
+    WorkDelegationRevision, WorkDelegationState, WorkDelegationTransition, WorkEvent,
+    WorkEventKind, WorkEvidence, WorkOperation, WorkOperationalDecision, WorkPhase, WorkRef,
+    WorkReport, WorkResolution, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
@@ -311,82 +311,6 @@ pub enum TeamMessageDeliveryClaimResult {
     NotQueued,
 }
 
-#[allow(dead_code)]
-fn reject_raw_provider_interaction_append(value: &TeamMessageProjection) -> StoreResult<()> {
-    if matches!(
-        value.kind,
-        ProviderDispatchIntent::ProviderInteractionRequest
-            | ProviderDispatchIntent::ProviderInteractionResponse
-    ) {
-        return Err(StoreError::Conflict(
-            "PROVIDER_INTERACTION_RAW_APPEND_FORBIDDEN: use append_team_message_checked for requests or record_provider_interaction_response for responses"
-                .to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn same_provider_interaction_response(
-    existing: &TeamMessageProjection,
-    retry: &TeamMessageProjection,
-) -> bool {
-    existing.team_run_id == retry.team_run_id
-        && existing.work_id == retry.work_id
-        && existing.source_plan_ref == retry.source_plan_ref
-        && existing.sender == retry.sender
-        && existing.sender_runtime_id == retry.sender_runtime_id
-        && existing.recipients == retry.recipients
-        && existing.recipient_runtime_ids == retry.recipient_runtime_ids
-        && existing.kind == retry.kind
-        && existing.body == retry.body
-        && existing.correlation_id == retry.correlation_id
-        && existing.causation_id == retry.causation_id
-        && existing.response_intent == retry.response_intent
-        && existing.evidence_refs == retry.evidence_refs
-        && existing.deliveries.len() == retry.deliveries.len()
-        && existing
-            .deliveries
-            .iter()
-            .zip(&retry.deliveries)
-            .all(|(existing, retry)| {
-                existing.member_id == retry.member_id && existing.policy == retry.policy
-            })
-}
-
-/// Returns true when the request row changed and must be appended.
-fn acknowledge_provider_interaction_request(
-    request: &mut TeamMessageProjection,
-    acknowledged_at: &str,
-) -> StoreResult<bool> {
-    let host_deliveries = request
-        .deliveries
-        .iter_mut()
-        .filter(|delivery| delivery.member_id == "host")
-        .collect::<Vec<_>>();
-    if host_deliveries.len() != 1 {
-        return Err(StoreError::Conflict(
-            "provider interaction request requires exactly one Host delivery".to_string(),
-        ));
-    }
-    let delivery = host_deliveries.into_iter().next().expect("one delivery");
-    if delivery.policy != TeamDeliveryPolicy::ManualAck {
-        return Err(StoreError::Conflict(
-            "provider interaction request Host delivery must use manual_ack".to_string(),
-        ));
-    }
-    match delivery.status {
-        TeamDeliveryStatus::Acknowledged => Ok(false),
-        TeamDeliveryStatus::Delivered => {
-            delivery.status = TeamDeliveryStatus::Acknowledged;
-            delivery.updated_at = acknowledged_at.to_string();
-            Ok(true)
-        }
-        status => Err(StoreError::Conflict(format!(
-            "provider interaction request Host delivery cannot be acknowledged from {status:?}"
-        ))),
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkDeliveryClaimResult {
     Claimed(Box<ProviderWorkDispatch>),
@@ -403,12 +327,15 @@ pub enum HostAttentionClaimResult {
 pub struct HarnessStore {
     root: PathBuf,
     provider_compatibility_scope: Option<(String, String)>,
+    process_write_lock: Arc<AtomicBool>,
 }
 
 impl HarnessStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
         Self {
-            root: root.into(),
+            process_write_lock: process_write_lock_for(&root),
+            root,
             provider_compatibility_scope: None,
         }
     }
@@ -466,6 +393,9 @@ impl HarnessStore {
         })
     }
 
+    /// Raw append retained for verified migration/import and append-only
+    /// history reconstruction. Current Mission creation must use
+    /// [`Self::insert_mission`], which rejects Legacy Wave membership.
     pub fn append_mission(&self, value: &Mission) -> StoreResult<()> {
         self.append_jsonl("missions.jsonl", value)
     }
@@ -492,10 +422,10 @@ impl HarnessStore {
         }
         if next.id != current.id
             || next.created_at != current.created_at
-            || next.wave_ids != current.wave_ids
+            || next.legacy_wave_ids != current.legacy_wave_ids
         {
             return Err(StoreError::Conflict(
-                "mission revision must preserve identity, creation time, and Wave membership"
+                "mission revision must preserve identity, creation time, and Legacy Wave membership"
                     .to_string(),
             ));
         }
@@ -522,6 +452,12 @@ impl HarnessStore {
     pub fn insert_mission(&self, value: &Mission) -> StoreResult<()> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        if !value.legacy_wave_ids.is_empty() {
+            return Err(StoreError::Conflict(
+                "NEW_MISSION_CANNOT_REFERENCE_LEGACY_WAVE: create the Mission with an empty legacy_wave_ids compatibility field"
+                    .to_string(),
+            ));
+        }
         let missions = latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
             mission.id.clone()
         });
@@ -534,19 +470,23 @@ impl HarnessStore {
         self.append_jsonl_unlocked("missions.jsonl", value)
     }
 
-    pub fn append_wave(&self, value: &Wave) -> StoreResult<()> {
+    /// Test-only seed helper for ADR 0051 pre-cutover rows. Production has no
+    /// Legacy Wave writer; historical rows are read-only compatibility data.
+    #[cfg(test)]
+    fn append_legacy_wave_for_test(&self, value: &LegacyWave) -> StoreResult<()> {
         self.append_jsonl("waves.jsonl", value)
     }
 
-    /// Atomically allocate/validate one Wave index, append the Wave, and update
-    /// its Mission's ordered membership. This prevents concurrent creates from
-    /// duplicating an index or losing one `wave_ids` update.
-    pub fn insert_wave_and_update_mission(
+    /// Test-only reconstruction of the pre-ADR 0051 writer. It exists solely
+    /// to prove historical concurrency and overflow behavior; no production
+    /// code can create or attach another Legacy Wave row.
+    #[cfg(test)]
+    fn insert_legacy_wave_and_update_mission_for_test(
         &self,
-        mut wave: Wave,
+        mut wave: LegacyWave,
         requested_index: Option<u32>,
         mission_updated_at: &str,
-    ) -> StoreResult<Wave> {
+    ) -> StoreResult<LegacyWave> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let mut missions = latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
@@ -560,11 +500,11 @@ impl HarnessStore {
             MissionStatus::Completed | MissionStatus::Cancelled
         ) {
             return Err(StoreError::Conflict(format!(
-                "mission {} is {:?} and cannot accept another Wave",
+                "mission {} is {:?} and cannot accept another Legacy Wave",
                 mission.id, mission.status
             )));
         }
-        let waves = latest_by_id(self.read_jsonl::<Wave>("waves.jsonl")?, |row| {
+        let waves = latest_by_id(self.read_jsonl::<LegacyWave>("waves.jsonl")?, |row| {
             row.id.clone()
         })
         .into_values()
@@ -613,7 +553,7 @@ impl HarnessStore {
             .collect::<Vec<_>>();
         ordered.push((wave.index, wave.id.clone()));
         ordered.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
-        mission.wave_ids = ordered.into_iter().map(|(_, id)| id).collect();
+        mission.legacy_wave_ids = ordered.into_iter().map(|(_, id)| id).collect();
         mission.updated_at = mission_updated_at.to_string();
 
         self.append_jsonl_unlocked("waves.jsonl", &wave)?;
@@ -623,10 +563,10 @@ impl HarnessStore {
 
     /// Append one [`MissionLogEntry`] under the store lock, atomically
     /// allocating its monotonic `revision` the same way
-    /// `insert_wave_and_update_mission` allocates a Wave index: read the
+    /// the retired Legacy Wave writer allocated an index: read the
     /// current max for this `mission_id`, then `+ 1` (starting at 1). This
     /// is the Mission Log's ONLY write operation (ADR 0051) — there is no
-    /// update or delete, so unlike Wave there is no compare-and-append
+    /// update or delete, so unlike Legacy Wave there is no compare-and-append
     /// variant to race against.
     pub fn append_mission_log_entry(
         &self,
@@ -678,19 +618,18 @@ impl HarnessStore {
     }
 
     /// Atomically close one Mission. Prior to ADR 0051 this required every
-    /// ordered Wave to have an accepted, completed gate; Wave write commands
+    /// ordered Legacy Wave to have an accepted, completed gate; Legacy Wave write commands
     /// (including the gate) are now retired, so a native post-cutover
-    /// Mission always has empty `wave_ids` and closes on its own outcome —
+    /// Mission always has empty `legacy_wave_ids` and closes on its own outcome —
     /// the Host records `kind = closeout_evidence` in the Mission Log
     /// beforehand by convention, not as a store-enforced precondition (ADR
     /// 0051 "Mission closeout evidence becomes a ... Log entry instead of a
-    /// separate Wave-outcome convention"). A legacy Mission that already
-    /// accumulated `wave_ids` before the cutover keeps the original
-    /// Wave-gate requirement so its in-flight contract does not change
-    /// underneath it; no NEW Mission can reach that branch since Wave create
-    /// no longer populates membership. The Wave set is still checked under
-    /// the same store lock as the Mission CAS so a concurrent Wave create
-    /// (of a legacy, still-populated Mission) cannot race closeout.
+    /// separate Legacy-Wave-outcome convention"). A legacy Mission that already
+    /// accumulated `legacy_wave_ids` before the cutover keeps the original
+    /// Legacy-Wave-gate requirement so its in-flight contract does not change
+    /// underneath it; no NEW Mission can reach that branch because
+    /// `insert_mission` rejects Legacy Wave membership. The historical set is
+    /// still checked under the same store lock as the Mission CAS.
     pub fn compare_and_close_mission(&self, expected: &Mission, next: &Mission) -> StoreResult<()> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
@@ -705,39 +644,40 @@ impl HarnessStore {
                 expected.id
             )));
         }
-        if !current.wave_ids.is_empty() {
-            let waves = latest_by_id(self.read_jsonl::<Wave>("waves.jsonl")?, |wave| {
+        if !current.legacy_wave_ids.is_empty() {
+            let waves = latest_by_id(self.read_jsonl::<LegacyWave>("waves.jsonl")?, |wave| {
                 wave.id.clone()
             });
-            let mut actual_wave_ids = waves
+            let mut actual_legacy_wave_ids = waves
                 .values()
                 .filter(|wave| wave.mission_id == current.id)
                 .map(|wave| (wave.index, wave.id.clone()))
                 .collect::<Vec<_>>();
-            actual_wave_ids.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
-            let actual_wave_ids = actual_wave_ids
+            actual_legacy_wave_ids
+                .sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+            let actual_legacy_wave_ids = actual_legacy_wave_ids
                 .into_iter()
                 .map(|(_, id)| id)
                 .collect::<Vec<_>>();
-            if actual_wave_ids != current.wave_ids {
+            if actual_legacy_wave_ids != current.legacy_wave_ids {
                 return Err(StoreError::Conflict(format!(
-                    "mission {} Wave membership changed or is inconsistent; retry closeout",
+                    "mission {} Legacy Wave membership changed or is inconsistent; retry closeout",
                     current.id
                 )));
             }
-            for wave_id in &current.wave_ids {
+            for wave_id in &current.legacy_wave_ids {
                 let wave = waves.get(wave_id).ok_or_else(|| {
                     StoreError::Conflict(format!(
-                        "mission {} references missing Wave {wave_id}",
+                        "mission {} references missing Legacy Wave {wave_id}",
                         current.id
                     ))
                 })?;
                 if wave.mission_id != current.id
-                    || wave.status != WaveStatus::Completed
-                    || wave.gate_status != WaveGateStatus::Accepted
+                    || wave.status != LegacyWaveStatus::Completed
+                    || wave.gate_status != LegacyWaveGateStatus::Accepted
                 {
                     return Err(StoreError::Conflict(format!(
-                        "mission {} cannot close: Wave {} is status {:?} with gate {:?}",
+                        "mission {} cannot close: Legacy Wave {} is status {:?} with gate {:?}",
                         current.id, wave.id, wave.status, wave.gate_status
                     )));
                 }
@@ -1140,7 +1080,16 @@ impl HarnessStore {
         self.append_jsonl("workflow_artifact_manifests.jsonl", value)
     }
 
-    pub fn append_team_run(&self, value: &AgentTeamRun) -> StoreResult<()> {
+    /// Reconstruct one raw historical TeamRun projection during an explicit
+    /// Legacy import. Current callers must use the combined TeamRun/member
+    /// admission APIs so a non-empty run is never published without its
+    /// canonical MemberRuns.
+    #[cfg(test)]
+    #[doc(hidden)]
+    pub(crate) fn legacy_import_append_team_run_projection(
+        &self,
+        value: &AgentTeamRun,
+    ) -> StoreResult<()> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         if let Some(current) =
@@ -1184,6 +1133,7 @@ impl HarnessStore {
                 expected.id
             )));
         }
+        self.current_team_run_execution_space_unlocked(&current)?;
         if next.member_run_ids != current.member_run_ids {
             return Err(StoreError::Conflict(
                 "TEAM_MEMBERSHIP_REQUIRES_ADMISSION: Host binding revision cannot change member_run_ids"
@@ -1771,19 +1721,11 @@ impl HarnessStore {
         Ok(eligible)
     }
 
-    /// Create one TeamRun from its durable AgentTeam. Mission and Node cannot
-    /// be supplied independently: they are derived and validated from Team.
-    pub fn create_team_run_from_agent_team(
+    fn validate_new_team_run_from_agent_team_unlocked(
         &self,
         value: &AgentTeamRun,
         execution_space_id: &str,
     ) -> StoreResult<()> {
-        value
-            .validate()
-            .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        require_non_empty_store(execution_space_id, "Execution Space id")?;
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
         let runs = latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
             run.id.clone()
         });
@@ -1873,16 +1815,40 @@ impl HarnessStore {
                 )));
             }
         }
+        Ok(())
+    }
+
+    /// Compatibility-only projection writer for fixtures/imports that have no
+    /// current MemberRuns. Current runtime creation must use
+    /// [`Self::create_team_run_with_member_runs_from_agent_team`] so TeamRun and
+    /// canonical MemberRun authority share one validation boundary.
+    #[cfg(test)]
+    pub(crate) fn legacy_create_team_run_projection_for_test(
+        &self,
+        value: &AgentTeamRun,
+        execution_space_id: &str,
+    ) -> StoreResult<()> {
+        value
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        require_non_empty_store(execution_space_id, "Execution Space id")?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.validate_new_team_run_from_agent_team_unlocked(value, execution_space_id)?;
         self.append_jsonl_unlocked("team_runs.jsonl", value)
     }
 
-    /// Compare-and-append one Wave row. Used only for historical Wave reads and
-    /// legacy maintenance; TeamRun lifecycle no longer writes Wave/Mission.
-    /// concurrent attempt registration or gate cannot be silently overwritten.
-    pub fn compare_and_append_wave(&self, expected: &Wave, next: &Wave) -> StoreResult<()> {
+    /// Test-only reconstruction of the pre-ADR 0051 compare-and-append path.
+    /// Production exposes historical reads but no Legacy Wave maintenance writer.
+    #[cfg(test)]
+    fn compare_and_append_legacy_wave_for_test(
+        &self,
+        expected: &LegacyWave,
+        next: &LegacyWave,
+    ) -> StoreResult<()> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        let current = latest_by_id(self.read_jsonl::<Wave>("waves.jsonl")?, |wave| {
+        let current = latest_by_id(self.read_jsonl::<LegacyWave>("waves.jsonl")?, |wave| {
             wave.id.clone()
         })
         .remove(&expected.id)
@@ -1904,22 +1870,29 @@ impl HarnessStore {
             MissionStatus::Completed | MissionStatus::Cancelled
         ) {
             return Err(StoreError::Conflict(format!(
-                "mission {} is {:?} and its Waves are immutable",
+                "mission {} is {:?} and its Legacy Waves are immutable",
                 mission.id, mission.status
             )));
         }
         mission.status = match next.gate_status {
-            WaveGateStatus::Blocked => MissionStatus::Blocked,
-            WaveGateStatus::Accepted | WaveGateStatus::Revise | WaveGateStatus::Pending => {
-                MissionStatus::Running
-            }
+            LegacyWaveGateStatus::Blocked => MissionStatus::Blocked,
+            LegacyWaveGateStatus::Accepted
+            | LegacyWaveGateStatus::Revise
+            | LegacyWaveGateStatus::Pending => MissionStatus::Running,
         };
         mission.updated_at = next.updated_at.clone();
         self.append_jsonl_unlocked("waves.jsonl", next)?;
         self.append_jsonl_unlocked("missions.jsonl", &mission)
     }
 
-    pub fn append_member_run(&self, value: &ProviderRuntimeProjection) -> StoreResult<()> {
+    /// Reconstruct one raw historical ProviderRuntimeProjection during an
+    /// explicit Legacy import. It is intentionally not a current admission
+    /// path and never materializes the canonical MemberRun.
+    #[cfg(test)]
+    pub(crate) fn legacy_import_append_member_run_projection(
+        &self,
+        value: &ProviderRuntimeProjection,
+    ) -> StoreResult<()> {
         value
             .validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
@@ -1987,12 +1960,27 @@ impl HarnessStore {
                 expected.id
             )));
         }
+        self.require_current_member_mutation_scope_unlocked(&current)?;
+        if next.runtime_generation != current.runtime_generation {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_GENERATION_TRANSITION_AUTHORITY_REQUIRED: ProviderRuntimeProjection {} generation changes must use compare_and_advance_member_run_generation",
+                current.id
+            )));
+        }
         ensure_member_provenance_unchanged(&current, next)?;
         ensure_member_lifecycle_revision(&current, next)?;
         ensure_provider_compatibility_cause_unchanged(&current, next)?;
         next.validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        self.append_jsonl_unlocked("member_runs.jsonl", next)
+        let execution_space_id = self.require_current_member_mutation_scope_unlocked(&current)?;
+        let canonical =
+            self.prepare_current_member_runtime_sync_unlocked(&execution_space_id, next)?;
+        serde_json::to_value(next)?;
+        self.append_jsonl_unlocked("member_runs.jsonl", next)?;
+        if let Some(canonical) = canonical {
+            self.commit_prepared_current_member_sync_unlocked(canonical)?;
+        }
+        Ok(())
     }
 
     /// Atomically enter a compatibility-owned Blocked state. This is the only
@@ -2021,6 +2009,7 @@ impl HarnessStore {
                 expected.id
             )));
         }
+        self.require_current_member_mutation_scope_unlocked(&current)?;
         current
             .validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
@@ -2059,7 +2048,13 @@ impl HarnessStore {
         next.last_event_at = Some(last_event_at.to_string());
         next.validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        let execution_space_id = self.require_current_member_mutation_scope_unlocked(&current)?;
+        let canonical =
+            self.prepare_current_member_runtime_sync_unlocked(&execution_space_id, &next)?;
         self.append_jsonl_unlocked("member_runs.jsonl", &next)?;
+        if let Some(canonical) = canonical {
+            self.commit_prepared_current_member_sync_unlocked(canonical)?;
+        }
         Ok(next)
     }
 
@@ -2087,6 +2082,7 @@ impl HarnessStore {
                 expected.id
             )));
         }
+        self.require_current_member_mutation_scope_unlocked(&current)?;
         current
             .validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
@@ -2188,65 +2184,319 @@ impl HarnessStore {
         next.last_event_at = Some(last_event_at.to_string());
         next.validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        let execution_space_id = self.require_current_member_mutation_scope_unlocked(&current)?;
+        let canonical =
+            self.prepare_current_member_runtime_sync_unlocked(&execution_space_id, &next)?;
         self.append_jsonl_unlocked("member_runs.jsonl", &next)?;
+        if let Some(canonical) = canonical {
+            self.commit_prepared_current_member_sync_unlocked(canonical)?;
+        }
         Ok(next)
     }
 
-    /// Materialize one ProviderRuntimeProjection already declared by the immutable first
-    /// TeamRun row. This is the compatibility path for initial team creation;
-    /// later membership changes must use [`Self::admit_member_run`].
-    pub fn materialize_initial_member_run(
+    /// Resolve the exact Execution Space for one *current* TeamRun and reject
+    /// any partially materialized or cross-space member set. Legacy JSONL
+    /// rows remain readable for diagnostics, but they cannot authorize current
+    /// mutations or controls unless every declared member has one matching
+    /// canonical MemberRun in the same Execution Space.
+    fn current_team_run_execution_space_unlocked(&self, run: &AgentTeamRun) -> StoreResult<String> {
+        if run.member_run_ids.is_empty() {
+            let registrations = latest_by_id(
+                self.read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?,
+                node_project_registration_identity,
+            )
+            .values()
+            .filter(|registration| {
+                registration.node_id == run.execution_node_id
+                    && registration.project_binding_id == run.project_binding_id
+                    && registration.status == NodeProjectRegistrationStatus::Active
+            })
+            .map(|registration| registration.execution_space_id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+            return match registrations.len() {
+                1 => Ok(registrations
+                    .into_iter()
+                    .next()
+                    .expect("one active registration")),
+                count => Err(StoreError::Conflict(format!(
+                    "EXECUTION_SPACE_SCOPE_MISMATCH: empty TeamRun {} resolves to {count} active Execution Spaces",
+                    run.id
+                ))),
+            };
+        }
+
+        let legacy_by_id = latest_by_id(
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
+            |member| member.id.clone(),
+        );
+        let declared_ids = run
+            .member_run_ids
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut canonical_by_id = std::collections::BTreeMap::<
+            String,
+            Vec<(String, firm_core::agentfirm_api::MemberRun)>,
+        >::new();
+        for scope in self.canonical_execution_space_ids()? {
+            for member in self.trust_member_runs(&scope)? {
+                if declared_ids.contains(&member.id) {
+                    canonical_by_id
+                        .entry(member.id.clone())
+                        .or_default()
+                        .push((scope.clone(), member));
+                }
+            }
+        }
+
+        let mut resolved_scope = None::<String>;
+        for member_run_id in &run.member_run_ids {
+            let legacy = legacy_by_id.get(member_run_id).ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "MEMBER_RUN_MATERIALIZATION_INCOMPLETE: TeamRun {} declares MemberRun {} but has no latest ProviderRuntimeProjection",
+                    run.id, member_run_id
+                ))
+            })?;
+            if legacy.team_run_id != run.id {
+                return Err(StoreError::Conflict(format!(
+                    "MEMBER_RUN_MATERIALIZATION_MISMATCH: TeamRun {} declares MemberRun {} whose ProviderRuntimeProjection belongs to TeamRun {}",
+                    run.id, member_run_id, legacy.team_run_id
+                )));
+            }
+            let rows = canonical_by_id
+                .get(member_run_id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let (scope, canonical) = match rows {
+                [row] => row,
+                [] => {
+                    return Err(StoreError::Conflict(format!(
+                        "MEMBER_RUN_MATERIALIZATION_INCOMPLETE: TeamRun {} declares MemberRun {} but no canonical MemberRun exists",
+                        run.id, member_run_id
+                    )))
+                }
+                rows => {
+                    return Err(StoreError::Conflict(format!(
+                        "MEMBER_RUN_MATERIALIZATION_MISMATCH: TeamRun {} declares MemberRun {} with {} canonical Execution Space projections",
+                        run.id,
+                        member_run_id,
+                        rows.len()
+                    )))
+                }
+            };
+            let mismatch_fields = current_member_lifecycle_mismatch_fields(canonical, legacy)?;
+            if !mismatch_fields.is_empty() {
+                return Err(StoreError::Conflict(format!(
+                    "MEMBER_RUN_MATERIALIZATION_MISMATCH: TeamRun {} MemberRun {} legacy/canonical projection differs in Execution Space {} for fields {}; legacy_status={:?} canonical_status={:?} legacy_last_event_at={:?} canonical_last_event_at={:?}",
+                    run.id,
+                    member_run_id,
+                    scope,
+                    mismatch_fields.join(","),
+                    legacy.status,
+                    canonical.runtime_status,
+                    legacy.last_event_at,
+                    canonical.last_event_at
+                )));
+            }
+            if let Some(expected) = resolved_scope.as_deref() {
+                if expected != scope {
+                    return Err(StoreError::Conflict(format!(
+                        "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} MemberRun {} belongs to Execution Space {}, not {}",
+                        run.id, member_run_id, scope, expected
+                    )));
+                }
+            } else {
+                resolved_scope = Some(scope.clone());
+            }
+        }
+        resolved_scope.ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "MEMBER_RUN_MATERIALIZATION_INCOMPLETE: TeamRun {} has no resolvable current MemberRuns",
+                run.id
+            ))
+        })
+    }
+
+    /// Public current-path resolver. The consistent fast path stays read-only.
+    /// If it observes an incomplete/mismatched dual projection, it retries
+    /// under the cross-process Store lock: this distinguishes a bounded
+    /// legacy-append -> canonical-replace writer window from durable corrupt
+    /// state without making healthy status reads contend with writers.
+    pub fn current_team_run_execution_space(&self, run: &AgentTeamRun) -> StoreResult<String> {
+        self.init()?;
+        for _ in 0..20 {
+            let current = self.require_team_run_unlocked(&run.id)?;
+            if current != *run {
+                return Err(StoreError::Conflict(format!(
+                    "TEAM_RUN_CHANGED: TeamRun {} changed concurrently; retry scope resolution",
+                    run.id
+                )));
+            }
+            match self.current_team_run_execution_space_unlocked(&current) {
+                Ok(scope) => return Ok(scope),
+                Err(StoreError::Conflict(message))
+                    if message.starts_with("MEMBER_RUN_MATERIALIZATION_INCOMPLETE:")
+                        || message.starts_with("MEMBER_RUN_MATERIALIZATION_MISMATCH:") =>
+                {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        // A current read that observed the narrow Legacy-append -> canonical-
+        // replace window waits for that writer independently of the mutation
+        // timeout override. Tests and operators may intentionally reduce the
+        // mutation timeout to surface a retryable 503; that must not make an
+        // otherwise healthy concurrent status read report durable corruption.
+        // Coherent reads still take the lock-free fast path above.
+        let _lock =
+            self.acquire_write_lock_with_policy(Duration::from_secs(2), Duration::from_millis(1))?;
+        let locked_current = self.require_team_run_unlocked(&run.id)?;
+        if locked_current != *run {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_RUN_CHANGED: TeamRun {} changed concurrently; retry scope resolution",
+                run.id
+            )));
+        }
+        self.current_team_run_execution_space_unlocked(&locked_current)
+    }
+
+    /// Fence a current MemberRun mutation against the complete owning
+    /// TeamRun while the caller holds the Store write lock.
+    fn require_current_member_mutation_scope_unlocked(
         &self,
-        value: &ProviderRuntimeProjection,
+        member: &ProviderRuntimeProjection,
+    ) -> StoreResult<String> {
+        let run = self.require_team_run_unlocked(&member.team_run_id)?;
+        if !run.member_run_ids.iter().any(|id| id == &member.id) {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_RUN_SCOPE_MISMATCH: ProviderRuntimeProjection {} is not declared by TeamRun {}",
+                member.id, run.id
+            )));
+        }
+        self.current_team_run_execution_space_unlocked(&run)
+    }
+
+    fn validate_member_run_admission_rows_unlocked(
+        &self,
+        team_run: &AgentTeamRun,
+        runtimes: &[ProviderRuntimeProjection],
+        canonical: &[CanonicalMemberRunAdmission],
+    ) -> StoreResult<()> {
+        if runtimes.len() != canonical.len() || runtimes.len() != team_run.member_run_ids.len() {
+            return Err(StoreError::Conflict(
+                "MEMBER_ADMISSION_SET_MISMATCH: TeamRun, runtime, and canonical member counts differ"
+                    .to_string(),
+            ));
+        }
+        let declared_ids = team_run
+            .member_run_ids
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let existing_ids = self
+            .read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?
+            .into_iter()
+            .map(|row| row.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut runtime_ids = std::collections::BTreeSet::new();
+        let mut identities = std::collections::BTreeSet::new();
+        let canonical_by_id = canonical
+            .iter()
+            .map(|admission| (admission.run.id.as_str(), admission))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        for runtime in runtimes {
+            runtime
+                .validate()
+                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+            if runtime.provider_compatibility_block_cause.is_some() {
+                return Err(StoreError::Conflict(
+                    "PROVIDER_COMPATIBILITY_BLOCK_AUTHORITY_REQUIRED: member admission cannot set a typed compatibility cause"
+                        .to_string(),
+                ));
+            }
+            if runtime.team_run_id != team_run.id || !declared_ids.contains(&runtime.id) {
+                return Err(StoreError::Conflict(format!(
+                    "MEMBER_ADMISSION_SET_MISMATCH: ProviderRuntimeProjection {} is not declared by TeamRun {}",
+                    runtime.id, team_run.id
+                )));
+            }
+            if existing_ids.contains(&runtime.id) || !runtime_ids.insert(runtime.id.clone()) {
+                return Err(StoreError::Conflict(format!(
+                    "member run already exists or is duplicated: {}",
+                    runtime.id
+                )));
+            }
+            if !identities.insert(member_identity(runtime)) {
+                return Err(StoreError::Conflict(format!(
+                    "MEMBER_IDENTITY_CONFLICT: TeamRun {} proposes duplicate stable member identity",
+                    team_run.id
+                )));
+            }
+            let canonical = canonical_by_id.get(runtime.id.as_str()).ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "MEMBER_ADMISSION_SET_MISMATCH: missing canonical MemberRun {}",
+                    runtime.id
+                ))
+            })?;
+            if canonical.run.team_run_id != runtime.team_run_id
+                || canonical.run.agent_member_id != runtime.agent_member_id
+                || canonical.run.role_snapshot != runtime.role
+                || canonical.run.runtime_generation != runtime.runtime_generation
+            {
+                return Err(StoreError::Conflict(format!(
+                    "MEMBER_ADMISSION_SET_MISMATCH: canonical MemberRun {} does not match its runtime projection",
+                    runtime.id
+                )));
+            }
+        }
+        if runtime_ids != declared_ids {
+            return Err(StoreError::Conflict(
+                "MEMBER_ADMISSION_SET_MISMATCH: TeamRun member ids do not match runtime projections"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Create a TeamRun and all of its initial current MemberRuns through one
+    /// same-lock semantic admission boundary. Every legacy and canonical row is
+    /// validated before the first durable append; the canonical rows are then
+    /// published as one atomic trust-ledger replacement.
+    pub fn create_team_run_with_member_runs_from_agent_team(
+        &self,
+        value: &AgentTeamRun,
+        execution_space_id: &str,
+        runtimes: &[ProviderRuntimeProjection],
+        canonical: &[CanonicalMemberRunAdmission],
     ) -> StoreResult<()> {
         value
             .validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        if value.provider_compatibility_block_cause.is_some() {
-            return Err(StoreError::Conflict(
-                "PROVIDER_COMPATIBILITY_BLOCK_AUTHORITY_REQUIRED: materialization cannot set a typed compatibility cause"
-                    .to_string(),
-            ));
-        }
+        require_non_empty_store(execution_space_id, "Execution Space id")?;
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        if self
-            .read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?
-            .iter()
-            .any(|row| row.id == value.id)
-        {
-            return Err(StoreError::Conflict(format!(
-                "member run already exists: {}",
-                value.id
-            )));
+        self.validate_new_team_run_from_agent_team_unlocked(value, execution_space_id)?;
+        self.validate_member_run_admission_rows_unlocked(value, runtimes, canonical)?;
+        self.validate_new_trust_member_runs_unlocked(execution_space_id, value, canonical)?;
+        self.append_jsonl_unlocked("team_runs.jsonl", value)?;
+        for runtime in runtimes {
+            self.append_jsonl_unlocked("member_runs.jsonl", runtime)?;
         }
-        let first_run = self
-            .read_jsonl::<AgentTeamRun>("team_runs.jsonl")?
-            .into_iter()
-            .find(|run| run.id == value.team_run_id)
-            .ok_or_else(|| {
-                StoreError::Conflict(format!("team run not found: {}", value.team_run_id))
-            })?;
-        if !first_run.member_run_ids.iter().any(|id| id == &value.id) {
-            return Err(StoreError::Conflict(format!(
-                "MEMBER_ADMISSION_REQUIRED: ProviderRuntimeProjection {} was not declared by initial TeamRun {}",
-                value.id, value.team_run_id
-            )));
-        }
-        let latest_run = self.require_team_run_unlocked(&value.team_run_id)?;
-        self.ensure_unique_member_identity_unlocked(&latest_run, value)?;
-        self.append_jsonl_unlocked("member_runs.jsonl", value)
+        self.commit_new_trust_member_runs_unlocked(canonical)?;
+        Ok(())
     }
 
-    /// Atomically admit exactly one new ProviderRuntimeProjection and publish the matching
-    /// TeamRun membership revision. This Store API is an in-process authority
-    /// boundary; callers at HTTP/MCP/provider transports must authenticate
-    /// before invoking it.
-    pub fn admit_member_run(
+    /// Admit one new current MemberRun through a same-lock semantic boundary.
+    /// Legacy TeamRun/runtime CAS and exact-space canonical authority are both
+    /// validated before the first durable append.
+    pub fn admit_member_run_with_canonical(
         &self,
         expected: &AgentTeamRun,
         next: &AgentTeamRun,
         member: &ProviderRuntimeProjection,
+        execution_space_id: &str,
+        canonical: &CanonicalMemberRunAdmission,
     ) -> StoreResult<()> {
         member
             .validate()
@@ -2257,6 +2507,7 @@ impl HarnessStore {
                     .to_string(),
             ));
         }
+        require_non_empty_store(execution_space_id, "Execution Space id")?;
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let current = latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
@@ -2282,8 +2533,34 @@ impl HarnessStore {
             )));
         }
         self.ensure_member_admission_identity_unlocked(&current, member)?;
+        let current_execution_space_id =
+            self.current_team_run_execution_space_unlocked(&current)?;
+        if current_execution_space_id != execution_space_id {
+            return Err(StoreError::Conflict(format!(
+                "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {} belongs to Execution Space {}, not {}",
+                current.id, current_execution_space_id, execution_space_id
+            )));
+        }
+        if canonical.run.id != member.id
+            || canonical.run.team_run_id != member.team_run_id
+            || canonical.run.agent_member_id != member.agent_member_id
+            || canonical.run.role_snapshot != member.role
+            || canonical.run.runtime_generation != member.runtime_generation
+        {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_ADMISSION_SET_MISMATCH: canonical MemberRun {} does not match its runtime projection",
+                canonical.run.id
+            )));
+        }
+        self.validate_new_trust_member_runs_unlocked(
+            execution_space_id,
+            next,
+            std::slice::from_ref(canonical),
+        )?;
         self.append_jsonl_unlocked("team_runs.jsonl", next)?;
-        self.append_jsonl_unlocked("member_runs.jsonl", member)
+        self.append_jsonl_unlocked("member_runs.jsonl", member)?;
+        self.commit_new_trust_member_runs_unlocked(std::slice::from_ref(canonical))?;
+        Ok(())
     }
 
     /// Insert a Work and its authoritative creation event/outbox as one
@@ -2293,7 +2570,6 @@ impl HarnessStore {
     pub fn insert_work(&self, mut work: Work, context: WorkCommandContext) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             &work.id,
@@ -2468,7 +2744,6 @@ impl HarnessStore {
     ) -> StoreResult<(WorkDelegation, Work)> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
 
         let request_fingerprint =
             work_delegation_request_fingerprint(&delegation, &target_work, &context);
@@ -2743,7 +3018,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -2794,7 +3068,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -2916,7 +3189,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -2980,7 +3252,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -3122,7 +3393,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -3196,7 +3466,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -3599,7 +3868,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -3774,7 +4042,6 @@ impl HarnessStore {
         }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -3818,7 +4085,6 @@ impl HarnessStore {
         }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -3861,7 +4127,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) =
             self.idempotent_work_operation_unlocked(&context.idempotency_key, work_id, kind)?
         {
@@ -3923,7 +4188,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) =
             self.idempotent_work_operation_unlocked(&context.idempotency_key, work_id, kind)?
         {
@@ -3969,7 +4233,6 @@ impl HarnessStore {
     ) -> StoreResult<Work> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
@@ -4238,14 +4501,6 @@ impl HarnessStore {
         }
         self.ensure_host_attention_for_work_operation_unlocked(&operation)?;
         Ok(next)
-    }
-
-    fn ensure_work_store_compatible_unlocked(&self) -> StoreResult<()> {
-        // `assignment` is no longer a ProviderDispatchIntent, so a legacy row fails
-        // deserialization before any Work mutation can be accepted. We do not
-        // migrate or reinterpret that history: use a fresh Execution Space.
-        let _ = self.read_jsonl::<TeamMessageProjection>("team_messages.jsonl")?;
-        Ok(())
     }
 
     fn require_team_run_unlocked(&self, team_run_id: &str) -> StoreResult<AgentTeamRun> {
@@ -4720,6 +4975,7 @@ impl HarnessStore {
     /// member. A same-team ProviderRuntimeProjection row is not membership authority: the
     /// append-only ledger can contain stale or forged rows that were never
     /// admitted to the TeamRun.
+    #[cfg(test)]
     fn ensure_unique_member_identity_unlocked(
         &self,
         team_run: &AgentTeamRun,
@@ -5536,318 +5792,15 @@ impl HarnessStore {
         ))
     }
 
-    /// Append a manually-authored TeamMessageProjection under the global lock.
-    #[allow(unreachable_code, unused_variables)]
-    pub fn append_team_message_checked(&self, value: &TeamMessageProjection) -> StoreResult<()> {
-        return Err(StoreError::Conflict(
-            "RETIRED_RUNTIME_WRITER: use NodeDaemon-authored canonical Message".into(),
-        ));
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        value
-            .validate_provider_interaction_contract()
-            .map_err(StoreError::Conflict)?;
-        if value.kind == ProviderDispatchIntent::ProviderInteractionResponse {
-            return Err(StoreError::Conflict(
-                "PROVIDER_INTERACTION_RESPONSE_REQUIRES_ATOMIC_RECORD: use record_provider_interaction_response"
-                    .to_string(),
-            ));
-        }
-        let messages = latest_by_id(
-            self.read_jsonl::<TeamMessageProjection>("team_messages.jsonl")?,
-            |message| message.id.clone(),
-        );
-        if messages.contains_key(&value.id) {
-            return Err(StoreError::Conflict(format!(
-                "team message already exists: {}",
-                value.id
-            )));
-        }
-        if value.kind == ProviderDispatchIntent::ProviderInteractionRequest {
-            let body = ProviderInteractionRequestBody::parse_canonical_json(&value.body)
-                .map_err(StoreError::Conflict)?;
-            let member = self.require_member_run_unlocked(&body.member, &value.team_run_id)?;
-            if !member.coordination_is_active() || member.runtime_generation != body.generation {
-                return Err(StoreError::Conflict(format!(
-                    "provider interaction request generation {} is not active on ProviderRuntimeProjection {} generation {}",
-                    body.generation, body.member, member.runtime_generation,
-                )));
-            }
-            let native_session = member.native_session.as_ref().ok_or_else(|| {
-                StoreError::Conflict(format!(
-                    "provider interaction request ProviderRuntimeProjection {} has no native session",
-                    body.member
-                ))
-            })?;
-            if member.provider != body.provider
-                || native_session.provider != body.provider
-                || native_session.native_session_id != body.session
-            {
-                return Err(StoreError::Conflict(format!(
-                    "provider interaction request does not match ProviderRuntimeProjection {} provider/native session",
-                    body.member
-                )));
-            }
-            let host_deliveries = value
-                .deliveries
-                .iter()
-                .filter(|delivery| delivery.member_id == "host")
-                .collect::<Vec<_>>();
-            if host_deliveries.len() != 1 {
-                return Err(StoreError::Conflict(
-                    "provider interaction request requires exactly one Host delivery".to_string(),
-                ));
-            }
-            let host_delivery = host_deliveries[0];
-            if host_delivery.policy != TeamDeliveryPolicy::ManualAck
-                || host_delivery.status != TeamDeliveryStatus::Delivered
-            {
-                return Err(StoreError::Conflict(
-                    "new provider interaction request Host delivery must be delivered manual_ack"
-                        .to_string(),
-                ));
-            }
-        }
-        if let Some(work_id) = value.work_id.as_deref() {
-            let work = self
-                .latest_works_unlocked()?
-                .remove(work_id)
-                .ok_or_else(|| StoreError::Conflict(format!("Work not found: {work_id}")))?;
-            if work.team_run_id != value.team_run_id {
-                return Err(StoreError::Conflict(format!(
-                    "Work {work_id} belongs to TeamRun {}, not {}",
-                    work.team_run_id, value.team_run_id
-                )));
-            }
-        }
-        self.append_jsonl_unlocked("team_messages.jsonl", value)
-    }
-
-    /// Record one provider-interaction response and consume/acknowledge its
-    /// request under the Store write lock. Causation is the idempotency key:
-    /// an exact semantic retry returns the existing response, while a second
-    /// answer or changed actor/routing conflicts.
+    /// Retired TeamMessageProjection write seam.
     ///
-    /// The response row is appended before the request ACK. If a process dies
-    /// between those two JSONL writes, an exact retry observes the response and
-    /// completes the ACK; it can never append a second semantic answer.
-    pub fn record_provider_interaction_response(
-        &self,
-        response: &TeamMessageProjection,
-        acknowledged_at: &str,
-    ) -> StoreResult<TeamMessageProjection> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        response
-            .validate_provider_interaction_contract()
-            .map_err(StoreError::Conflict)?;
-        if response.kind != ProviderDispatchIntent::ProviderInteractionResponse {
-            return Err(StoreError::Conflict(
-                "provider interaction atomic response boundary requires provider_interaction_response"
-                    .to_string(),
-            ));
-        }
-        let response_body = ProviderInteractionResponseBody::parse_canonical_json(&response.body)
-            .map_err(StoreError::Conflict)?;
-        let request_id = response.causation_id.as_deref().ok_or_else(|| {
-            StoreError::Conflict(
-                "provider interaction response requires request causation_id".to_string(),
-            )
-        })?;
-        let messages = latest_by_id(
-            self.read_jsonl::<TeamMessageProjection>("team_messages.jsonl")?,
-            |message| message.id.clone(),
-        );
-        let mut request = messages.get(request_id).cloned().ok_or_else(|| {
-            StoreError::Conflict(format!(
-                "provider interaction request not found: {request_id}"
-            ))
-        })?;
-        let stable_response_id =
-            provider_interaction_response_id(request_id).map_err(StoreError::Conflict)?;
-        if response.id != stable_response_id {
-            return Err(StoreError::Conflict(format!(
-                "provider interaction response id must be stable `{stable_response_id}`, got `{}`",
-                response.id
-            )));
-        }
-        if request.kind != ProviderDispatchIntent::ProviderInteractionRequest {
-            return Err(StoreError::Conflict(format!(
-                "provider interaction response causation {request_id} is not a request"
-            )));
-        }
-        request
-            .validate_provider_interaction_contract()
-            .map_err(StoreError::Conflict)?;
-        let request_body = ProviderInteractionRequestBody::parse_canonical_json(&request.body)
-            .map_err(StoreError::Conflict)?;
-        self.validate_provider_interaction_response_pair(
-            &request,
-            &request_body,
-            response,
-            &response_body,
-        )?;
-        let request_ack_changed =
-            acknowledge_provider_interaction_request(&mut request, acknowledged_at)?;
-
-        let prior_response = messages
-            .values()
-            .find(|message| {
-                message.kind == ProviderDispatchIntent::ProviderInteractionResponse
-                    && message.causation_id.as_deref() == Some(request_id)
-            })
-            .cloned();
-        if let Some(existing) = prior_response {
-            if !same_provider_interaction_response(&existing, response) {
-                return Err(StoreError::Conflict(format!(
-                    "PROVIDER_INTERACTION_RESPONSE_CONFLICT: request {request_id} already has a different response"
-                )));
-            }
-            if request_ack_changed {
-                self.append_jsonl_unlocked("team_messages.jsonl", &request)?;
-            }
-            return Ok(existing);
-        }
-        self.validate_provider_interaction_live_member(&request, &request_body)?;
-        if messages.contains_key(&response.id) {
-            return Err(StoreError::Conflict(format!(
-                "team message already exists: {}",
-                response.id
-            )));
-        }
-
-        // Response-first makes a torn two-row append recoverable by the exact
-        // retry path above. The global lock makes concurrent responders choose
-        // one winner.
-        self.append_jsonl_unlocked("team_messages.jsonl", response)?;
-        if request_ack_changed {
-            self.append_jsonl_unlocked("team_messages.jsonl", &request)?;
-        }
-        Ok(response.clone())
-    }
-
-    fn validate_provider_interaction_response_pair(
-        &self,
-        request: &TeamMessageProjection,
-        request_body: &ProviderInteractionRequestBody,
-        response: &TeamMessageProjection,
-        response_body: &ProviderInteractionResponseBody,
-    ) -> StoreResult<()> {
-        if response.team_run_id != request.team_run_id
-            || response.correlation_id != request.correlation_id
-        {
-            return Err(StoreError::Conflict(
-                "provider interaction response must preserve request TeamRun and correlation_id"
-                    .to_string(),
-            ));
-        }
-        if response_body.interaction_type != request_body.interaction_type
-            || response_body.session != request_body.session
-            || response_body.member != request_body.member
-            || response_body.generation != request_body.generation
-        {
-            return Err(StoreError::Conflict(
-                "provider interaction response type/session/member/generation does not match request"
-                    .to_string(),
-            ));
-        }
-        if let Some(choice) = response_body.choice.as_deref() {
-            if !request_body
-                .options
-                .iter()
-                .any(|option| option.id == choice)
-            {
-                return Err(StoreError::Conflict(format!(
-                    "provider interaction response choice `{choice}` is not a request option"
-                )));
-            }
-        }
-        if response_body.text.is_some() && canonical_surface(&request_body.provider) != "codex" {
-            return Err(StoreError::Conflict(
-                "free-text provider interaction responses are supported only for Codex requests"
-                    .to_string(),
-            ));
-        }
-        let target_deliveries = response
-            .deliveries
-            .iter()
-            .filter(|delivery| delivery.member_id == request_body.member)
-            .collect::<Vec<_>>();
-        if !response
-            .recipient_runtime_ids
-            .iter()
-            .any(|member| member == &request_body.member)
-            || target_deliveries.len() != 1
-        {
-            return Err(StoreError::Conflict(format!(
-                "provider interaction response requires exactly one delivery to ProviderRuntimeProjection {}",
-                request_body.member
-            )));
-        }
-        let target_delivery = target_deliveries[0];
-        if target_delivery.policy != TeamDeliveryPolicy::Inject
-            || target_delivery.status != TeamDeliveryStatus::Queued
-            || target_delivery.attempt != 0
-            || target_delivery.claim_id.is_some()
-            || target_delivery.provider_receipt_id.is_some()
-        {
-            return Err(StoreError::Conflict(
-                "new provider interaction response delivery must be unclaimed Inject+Queued"
-                    .to_string(),
-            ));
-        }
-        let run = self.require_team_run_unlocked(&request.team_run_id)?;
-        let coordination_sender =
-            response
-                .sender
-                .as_ref()
-                .is_some_and(|sender| match sender.kind {
-                    TeamActorKind::Host => {
-                        response.sender_runtime_id == "host"
-                            && (sender.id == "host"
-                                || run
-                                    .host_actor
-                                    .as_ref()
-                                    .is_some_and(|actor| actor.id == sender.id))
-                    }
-                    TeamActorKind::Operator => {
-                        response.sender_runtime_id == format!("operator:{}", sender.id)
-                    }
-                    TeamActorKind::Service => {
-                        response.sender_runtime_id == format!("service:{}", sender.id)
-                    }
-                    TeamActorKind::ProviderRuntimeProjection | TeamActorKind::AgentMember => false,
-                });
-        if !coordination_sender {
-            return Err(StoreError::Conflict(
-                "provider interaction response requires Host, Operator, or Service authorship"
-                    .to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn validate_provider_interaction_live_member(
-        &self,
-        request: &TeamMessageProjection,
-        request_body: &ProviderInteractionRequestBody,
-    ) -> StoreResult<()> {
-        let member =
-            self.require_member_run_unlocked(&request_body.member, &request.team_run_id)?;
-        let same_live_generation = member.coordination_is_active()
-            && member.runtime_generation == request_body.generation
-            && member.provider == request_body.provider
-            && member.native_session.as_ref().is_some_and(|native| {
-                native.provider == request_body.provider
-                    && native.native_session_id == request_body.session
-            });
-        if !same_live_generation {
-            return Err(StoreError::Conflict(format!(
-                "provider interaction request is stale for ProviderRuntimeProjection {} generation/session",
-                request_body.member
-            )));
-        }
-        Ok(())
+    /// Historical rows remain readable, but new runtime messages must use the
+    /// identity-first canonical Message path owned by the NodeDaemon.
+    pub fn append_team_message_checked(&self, value: &TeamMessageProjection) -> StoreResult<()> {
+        let _ = value;
+        Err(StoreError::Conflict(
+            "RETIRED_RUNTIME_WRITER: use NodeDaemon-authored canonical Message".into(),
+        ))
     }
 
     pub fn insert_execution_node(&self, value: &ExecutionNode) -> StoreResult<()> {
@@ -6116,6 +6069,29 @@ impl HarnessStore {
                 run.execution_node_id, run.project_binding_id
             )));
         }
+        let resolved_execution_space_id = self.current_team_run_execution_space_unlocked(&run)?;
+        if resolved_execution_space_id != execution_space_id {
+            return Err(StoreError::Conflict(format!(
+                "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {team_run_id} belongs to Execution Space {resolved_execution_space_id}, not {execution_space_id}"
+            )));
+        }
+        let registrations = latest_by_id(
+            self.read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?,
+            node_project_registration_identity,
+        )
+        .into_values()
+        .filter(|registration| {
+            registration.node_id == node_id
+                && registration.project_binding_id == project_binding_id
+                && registration.execution_space_id == execution_space_id
+                && registration.status == NodeProjectRegistrationStatus::Active
+        })
+        .count();
+        if registrations != 1 {
+            return Err(StoreError::Conflict(format!(
+                "PROJECT_NOT_REGISTERED_ON_NODE: expected one active registration for TeamRun {team_run_id} in Execution Space {execution_space_id}, found {registrations}"
+            )));
+        }
         let parent = latest_by_id(
             self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
             |lease| lease.node_id.clone(),
@@ -6294,6 +6270,7 @@ impl HarnessStore {
                 value.member_run_id, member.team_run_id, value.team_run_id
             )));
         }
+        self.require_current_member_mutation_scope_unlocked(&member)?;
         if let Some(current) = latest_by_id(
             self.read_jsonl::<TeamMemberCloseRequest>("team_member_close_requests.jsonl")?,
             |request| request.member_run_id.clone(),
@@ -6381,6 +6358,7 @@ impl HarnessStore {
                 value.member_run_id, member.team_run_id, value.team_run_id
             )));
         }
+        self.require_current_member_mutation_scope_unlocked(&member)?;
         if let Some(current) = latest_by_id(
             self.read_jsonl::<TeamMemberCloseRequest>("team_member_close_requests.jsonl")?,
             |request| request.member_run_id.clone(),
@@ -6442,6 +6420,7 @@ impl HarnessStore {
                 value.member_run_id, member.team_run_id, value.team_run_id
             )));
         }
+        self.require_current_member_mutation_scope_unlocked(&member)?;
         if let Some(current) = latest_by_id(
             self.read_jsonl::<TeamMemberCloseRequest>("team_member_close_requests.jsonl")?,
             |request| request.member_run_id.clone(),
@@ -6481,6 +6460,8 @@ impl HarnessStore {
                 "Close request {request_id} does not own ProviderRuntimeProjection {member_run_id} in TeamRun {team_run_id}"
             )));
         }
+        let run = self.require_team_run_unlocked(team_run_id)?;
+        self.current_team_run_execution_space_unlocked(&run)?;
         if request.status == TeamMemberCloseStatus::Applied {
             return Ok(request);
         }
@@ -6493,6 +6474,7 @@ impl HarnessStore {
     /// Claim one queued TeamMessageProjection delivery under the same durable lock used
     /// for the Supervisor lease. A claim must be completed with a real provider
     /// receipt or explicitly reconciled; it is never auto-requeued on expiry.
+    #[cfg(any())]
     #[allow(clippy::too_many_arguments, unreachable_code, unused_variables)]
     pub fn claim_team_message_delivery(
         &self,
@@ -6579,6 +6561,7 @@ impl HarnessStore {
         Ok(TeamMessageDeliveryClaimResult::Claimed(Box::new(message)))
     }
 
+    #[cfg(any())]
     #[allow(clippy::too_many_arguments, unreachable_code, unused_variables)]
     pub fn complete_team_message_delivery_claim(
         &self,
@@ -6669,12 +6652,14 @@ impl HarnessStore {
         Ok(message)
     }
 
-    /// Atomically acknowledge one already-delivered TeamMessageProjection recipient.
+    /// Retired compatibility seam for the historical `team_messages.jsonl`
+    /// delivery projection.
     ///
-    /// ACK does not require a live Supervisor because the Host or operator may
-    /// read and acknowledge mail while the provider runtime is idle or down.
-    /// It does require a real delivered receipt and never advances a queued or
-    /// uncertain claim.
+    /// Current callers must acknowledge the identity-first canonical Delivery
+    /// through [`HarnessStore::acknowledge_message_delivery`]. Historical
+    /// `TeamMessageProjection` rows remain readable, but this method must never
+    /// append a compatibility mutation or bypass canonical actor authority.
+    #[allow(unused_variables)]
     pub fn acknowledge_team_message_delivery(
         &self,
         team_run_id: &str,
@@ -6682,54 +6667,19 @@ impl HarnessStore {
         member_run_id: &str,
         updated_at: &str,
     ) -> StoreResult<TeamMessageProjection> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        let mut message = latest_by_id(
-            self.read_jsonl::<TeamMessageProjection>("team_messages.jsonl")?,
-            |message| message.id.clone(),
-        )
-        .remove(message_id)
-        .ok_or_else(|| StoreError::Conflict(format!("team message not found: {message_id}")))?;
-        if message.team_run_id != team_run_id {
-            return Err(StoreError::Conflict(format!(
-                "message {message_id} belongs to {}, not {team_run_id}",
-                message.team_run_id
-            )));
-        }
-        let delivery = message
-            .deliveries
-            .iter_mut()
-            .find(|delivery| delivery.member_id == member_run_id)
-            .ok_or_else(|| {
-                StoreError::Conflict(format!(
-                    "message {message_id} has no delivery for {member_run_id}"
-                ))
-            })?;
-        match delivery.status {
-            TeamDeliveryStatus::Acknowledged => return Ok(message),
-            TeamDeliveryStatus::Delivered => {}
-            TeamDeliveryStatus::Queued | TeamDeliveryStatus::Claimed => {
-                return Err(StoreError::Conflict(format!(
-                    "message {message_id} has not been delivered to {member_run_id}"
-                )));
-            }
-            TeamDeliveryStatus::Failed | TeamDeliveryStatus::Expired => {
-                return Err(StoreError::Conflict(format!(
-                    "message {message_id} delivery to {member_run_id} cannot be acknowledged from {:?}",
-                    delivery.status
-                )));
-            }
-        }
-        delivery.status = TeamDeliveryStatus::Acknowledged;
-        delivery.updated_at = updated_at.to_string();
-        self.append_jsonl_unlocked("team_messages.jsonl", &message)?;
-        Ok(message)
+        Err(StoreError::Conflict(
+            "RETIRED_RUNTIME_WRITER: use identity-first canonical Delivery acknowledgement".into(),
+        ))
     }
 
-    /// Resolve a claimed delivery after a crash. `provider_accepted=true`
-    /// records a reviewed native receipt; false explicitly returns it to the
-    /// queue. No automatic timeout path calls this method.
-    #[allow(clippy::too_many_arguments)]
+    /// Retired compatibility seam for reconciling the historical
+    /// `team_messages.jsonl` delivery projection.
+    ///
+    /// Current operator recovery must route through
+    /// [`HarnessStore::reconcile_canonical_message_delivery`], which fences the
+    /// exact NodeDaemon and canonical delivery generation before mutation.
+    /// Historical rows are read-only and are never dual-written.
+    #[allow(clippy::too_many_arguments, unused_variables)]
     pub fn reconcile_team_message_delivery_claim(
         &self,
         team_run_id: &str,
@@ -6740,56 +6690,10 @@ impl HarnessStore {
         provider_receipt_id: Option<&str>,
         updated_at: &str,
     ) -> StoreResult<TeamMessageProjection> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        let mut message = latest_by_id(
-            self.read_jsonl::<TeamMessageProjection>("team_messages.jsonl")?,
-            |message| message.id.clone(),
-        )
-        .remove(message_id)
-        .ok_or_else(|| StoreError::Conflict(format!("team message not found: {message_id}")))?;
-        if message.team_run_id != team_run_id {
-            return Err(StoreError::Conflict(format!(
-                "message {message_id} belongs to {}, not {team_run_id}",
-                message.team_run_id
-            )));
-        }
-        let delivery = message
-            .deliveries
-            .iter_mut()
-            .find(|delivery| delivery.member_id == member_run_id)
-            .ok_or_else(|| {
-                StoreError::Conflict(format!(
-                    "message {message_id} has no delivery for {member_run_id}"
-                ))
-            })?;
-        if delivery.status != TeamDeliveryStatus::Claimed
-            || delivery.claim_id.as_deref() != Some(claim_id)
-        {
-            return Err(StoreError::Conflict(format!(
-                "message {message_id} does not have active claim {claim_id} for {member_run_id}"
-            )));
-        }
-        if provider_accepted {
-            let receipt = provider_receipt_id.ok_or_else(|| {
-                StoreError::Conflict(
-                    "provider-accepted reconciliation requires a native receipt id".to_string(),
-                )
-            })?;
-            delivery.status = TeamDeliveryStatus::Delivered;
-            delivery.provider_receipt_id = Some(receipt.to_string());
-        } else {
-            delivery.status = TeamDeliveryStatus::Queued;
-            delivery.claim_id = None;
-            delivery.claimed_by_supervisor_id = None;
-            delivery.claimed_generation = None;
-            delivery.claimed_unix_ms = None;
-            delivery.claim_expires_unix_ms = None;
-            delivery.provider_receipt_id = None;
-        }
-        delivery.updated_at = updated_at.to_string();
-        self.append_jsonl_unlocked("team_messages.jsonl", &message)?;
-        Ok(message)
+        Err(StoreError::Conflict(
+            "RETIRED_RUNTIME_WRITER: use canonical Delivery reconciliation under exact NodeDaemon authority"
+                .into(),
+        ))
     }
 
     /// Fail a TeamMessageProjection delivery that can never be completed because the
@@ -6798,6 +6702,7 @@ impl HarnessStore {
     /// Transitions from `Queued` (pre-bind failure) or `Claimed` (transport
     /// disconnect) to `Failed`. A delivery already at `Failed` with the same
     /// reason is idempotent.
+    #[cfg(any())]
     #[allow(clippy::too_many_arguments, unreachable_code, unused_variables)]
     pub fn fail_team_message_delivery(
         &self,
@@ -6915,7 +6820,11 @@ impl HarnessStore {
                     .to_string(),
             ));
         }
-        self.append_jsonl("member_actions.jsonl", value)
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let run = self.require_team_run_unlocked(&value.team_run_id)?;
+        self.current_team_run_execution_space_unlocked(&run)?;
+        self.append_jsonl_unlocked("member_actions.jsonl", value)
     }
 
     /// Append a provider/control receipt only while the exact ProviderRuntimeProjection
@@ -6959,6 +6868,7 @@ impl HarnessStore {
             )));
         }
         let run = self.require_team_run_unlocked(&current.team_run_id)?;
+        self.current_team_run_execution_space_unlocked(&run)?;
         if !run
             .member_run_ids
             .iter()
@@ -6998,15 +6908,18 @@ impl HarnessStore {
         Ok(true)
     }
 
-    pub fn append_pending_interaction(&self, value: &PendingInteraction) -> StoreResult<()> {
-        self.append_jsonl("pending_interactions.jsonl", value)
-    }
-
     pub fn append_delegation_run(&self, value: &DelegationRun) -> StoreResult<()> {
         self.append_jsonl("delegation_runs.jsonl", value)
     }
 
-    pub fn append_team_run_event(&self, value: &TeamRunEvent) -> StoreResult<()> {
+    /// Reconstruct a raw historical TeamRun event during explicit Legacy
+    /// import. Current event writers must use the guarded next-sequence APIs.
+    #[cfg(test)]
+    #[doc(hidden)]
+    pub(crate) fn legacy_import_append_team_run_event(
+        &self,
+        value: &TeamRunEvent,
+    ) -> StoreResult<()> {
         self.append_jsonl("team_run_events.jsonl", value)
     }
 
@@ -7015,6 +6928,8 @@ impl HarnessStore {
     pub fn append_team_run_event_next(&self, mut value: TeamRunEvent) -> StoreResult<TeamRunEvent> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        let run = self.require_team_run_unlocked(&value.team_run_id)?;
+        self.current_team_run_execution_space_unlocked(&run)?;
         value.seq = self
             .read_jsonl::<TeamRunEvent>("team_run_events.jsonl")?
             .into_iter()
@@ -7036,6 +6951,8 @@ impl HarnessStore {
         require_non_empty_store(stable_key, "TeamRun event stable key")?;
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        let run = self.require_team_run_unlocked(&value.team_run_id)?;
+        self.current_team_run_execution_space_unlocked(&run)?;
         value.id = format!("trev-stable-{}", content_hash_hex16(stable_key));
         let events = self.read_jsonl::<TeamRunEvent>("team_run_events.jsonl")?;
         if let Some(existing) = events.iter().find(|event| event.id == value.id) {
@@ -7079,6 +6996,7 @@ impl HarnessStore {
                 expected.id
             )));
         }
+        self.current_team_run_execution_space_unlocked(&current)?;
         if next.member_run_ids != current.member_run_ids {
             return Err(StoreError::Conflict(
                 "TEAM_MEMBERSHIP_REQUIRES_ADMISSION: lifecycle revision cannot change member_run_ids; use admit_member_run"
@@ -7186,16 +7104,16 @@ impl HarnessStore {
             .collect())
     }
 
-    /// Raw append-only Wave ledger rows, in append order.
-    pub fn waves(&self) -> StoreResult<Vec<Wave>> {
+    /// Raw append-only Legacy Wave ledger rows, in append order.
+    pub fn legacy_waves(&self) -> StoreResult<Vec<LegacyWave>> {
         self.read_jsonl("waves.jsonl")
     }
 
-    /// Latest-row-wins Wave projection, ordered by Mission then Wave index for
-    /// deterministic product reads. The id is a final tie-breaker for corrupt
-    /// legacy rows; native authoring rejects duplicate Mission/index pairs.
-    pub fn latest_waves(&self) -> StoreResult<Vec<Wave>> {
-        let mut waves = latest_by_id(self.waves()?, |wave| wave.id.clone())
+    /// Latest-row-wins Legacy Wave projection, ordered by Mission then legacy
+    /// index for deterministic historical reads. The id is a final tie-breaker
+    /// for corrupt rows.
+    pub fn latest_legacy_waves(&self) -> StoreResult<Vec<LegacyWave>> {
+        let mut waves = latest_by_id(self.legacy_waves()?, |wave| wave.id.clone())
             .into_values()
             .collect::<Vec<_>>();
         waves.sort_by(|left, right| {
@@ -7209,13 +7127,13 @@ impl HarnessStore {
 
     /// Raw append-only Mission Log rows across every Mission, in append
     /// order. Prefer [`Self::mission_log_entries`] when scoping to one
-    /// Mission; this is here for parity with `waves()`/`missions()`.
+    /// Mission; this is here for parity with `legacy_waves()`/`missions()`.
     pub fn mission_log(&self) -> StoreResult<Vec<MissionLogEntry>> {
         self.read_jsonl("mission_log.jsonl")
     }
 
     /// Every [`MissionLogEntry`] for one Mission, ordered by `revision`
-    /// ascending. There is no latest-wins collapse: unlike Wave/Mission the
+    /// ascending. There is no latest-wins collapse: unlike Legacy Wave/Mission the
     /// Log has no mutable identity, every row is a permanent entry.
     pub fn mission_log_entries(&self, mission_id: &str) -> StoreResult<Vec<MissionLogEntry>> {
         let mut entries = self
@@ -7444,7 +7362,12 @@ impl HarnessStore {
         Ok(rows)
     }
 
-    pub fn team_messages(&self) -> StoreResult<Vec<TeamMessageProjection>> {
+    /// Read the append-only pre-canonical message projection for explicit
+    /// migration, export, and historical inspection only.
+    ///
+    /// Current runtime, delivery, reply lineage, and status projections must
+    /// use the identity-first canonical Message fabric instead.
+    pub fn legacy_team_messages(&self) -> StoreResult<Vec<TeamMessageProjection>> {
         self.read_jsonl("team_messages.jsonl")
     }
 
@@ -8196,16 +8119,27 @@ impl HarnessStore {
         self.read_jsonl("member_actions.jsonl")
     }
 
-    pub fn pending_interactions(&self) -> StoreResult<Vec<PendingInteraction>> {
-        self.read_jsonl("pending_interactions.jsonl")
-    }
-
     pub fn delegation_runs(&self) -> StoreResult<Vec<DelegationRun>> {
         self.read_jsonl("delegation_runs.jsonl")
     }
 
-    pub fn team_run_events(&self) -> StoreResult<Vec<TeamRunEvent>> {
+    /// Raw historical event rows for explicit Legacy diagnostics/export.
+    /// Current product projections must use `current_team_run_events`.
+    pub fn legacy_team_run_events(&self) -> StoreResult<Vec<TeamRunEvent>> {
         self.read_jsonl("team_run_events.jsonl")
+    }
+
+    /// Read the current event projection only after the whole TeamRun has one
+    /// coherent canonical Execution Space.
+    pub fn current_team_run_events(&self, team_run_id: &str) -> StoreResult<Vec<TeamRunEvent>> {
+        self.init()?;
+        let run = self.require_team_run_unlocked(team_run_id)?;
+        self.current_team_run_execution_space(&run)?;
+        Ok(self
+            .read_jsonl("team_run_events.jsonl")?
+            .into_iter()
+            .filter(|event: &TeamRunEvent| event.team_run_id == team_run_id)
+            .collect())
     }
 
     fn append_jsonl<T: Serialize>(&self, file_name: &str, value: &T) -> StoreResult<()> {
@@ -8218,7 +8152,6 @@ impl HarnessStore {
         let mut row = Vec::new();
         serde_json::to_writer(&mut row, value)?;
         row.push(b'\n');
-
         let path = self.root.join(file_name);
         let creates_ledger = !path.exists();
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
@@ -8377,25 +8310,54 @@ impl HarnessStore {
         poll_interval: Duration,
     ) -> StoreResult<StoreWriteLock> {
         let lock_path = self.root.join(".store.lock");
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self
+                .process_write_lock
+                .compare_exchange(
+                    false,
+                    true,
+                    AtomicOrdering::Acquire,
+                    AtomicOrdering::Relaxed,
+                )
+                .is_ok()
+            {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(StoreError::LockTimeout(lock_path.display().to_string()));
+            }
+            thread::sleep(poll_interval.min(deadline.saturating_duration_since(Instant::now())));
+        }
+        let process_write_lock = self.process_write_lock.clone();
         let file = OpenOptions::new()
             .create(true)
             .read(true)
             .truncate(false)
             .write(true)
-            .open(&lock_path)?;
-        let deadline = Instant::now() + timeout;
+            .open(&lock_path)
+            .inspect_err(|_| process_write_lock.store(false, AtomicOrdering::Release))?;
         loop {
             match lock_file_exclusive(&file) {
-                Ok(()) => return Ok(StoreWriteLock { file }),
+                Ok(()) => {
+                    return Ok(StoreWriteLock {
+                        file,
+                        process_write_lock,
+                    })
+                }
                 Err(error) if would_block_lock(&error) => {
                     if Instant::now() >= deadline {
+                        process_write_lock.store(false, AtomicOrdering::Release);
                         return Err(StoreError::LockTimeout(lock_path.display().to_string()));
                     }
                     thread::sleep(
                         poll_interval.min(deadline.saturating_duration_since(Instant::now())),
                     );
                 }
-                Err(error) => return Err(StoreError::Io(error)),
+                Err(error) => {
+                    process_write_lock.store(false, AtomicOrdering::Release);
+                    return Err(StoreError::Io(error));
+                }
             }
         }
     }
@@ -8750,13 +8712,32 @@ fn would_block_lock(error: &std::io::Error) -> bool {
         || error.kind() == std::io::ErrorKind::WouldBlock
 }
 
+fn process_write_lock_for(root: &Path) -> Arc<AtomicBool> {
+    static LOCKS: OnceLock<Mutex<std::collections::HashMap<PathBuf, Weak<AtomicBool>>>> =
+        OnceLock::new();
+    let locks = LOCKS.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    let mut locks = locks
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(lock) = locks.get(root).and_then(Weak::upgrade) {
+        return lock;
+    }
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    let lock = Arc::new(AtomicBool::new(false));
+    locks.insert(root.to_path_buf(), Arc::downgrade(&lock));
+    lock
+}
+
 struct StoreWriteLock {
     file: File,
+    process_write_lock: Arc<AtomicBool>,
 }
 
 impl Drop for StoreWriteLock {
     fn drop(&mut self) {
         unlock_file(&self.file);
+        self.process_write_lock
+            .store(false, AtomicOrdering::Release);
     }
 }
 
@@ -8776,15 +8757,15 @@ mod tests {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use firm_core::{
-        DelegationMode, DelegationStatus, HostAttentionKind, MemberActionStatus,
-        MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot, Mission, MissionLogEntry,
-        MissionLogEntryKind, MissionStatus, OrdinaryMessageBoundary,
-        ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockSource,
-        ProviderDispatchAttempt, ProviderDispatchIntent, ProviderEventFidelity,
-        ProviderFeatureMode, ProviderInteractionMode, ProviderResponseIntent,
-        RegistryMessageIntent, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
-        TeamDeliveryStatus, TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind,
-        WaveGateStatus, WaveStatus, WorkPriority,
+        DelegationMode, DelegationStatus, HostAttentionKind, LegacyWave, LegacyWaveExecutorKind,
+        LegacyWaveGateStatus, LegacyWaveStatus, MemberActionStatus, MemberExecutionDriver,
+        MemberRunStatus, MemberWorkspaceSnapshot, Mission, MissionLogEntry, MissionLogEntryKind,
+        MissionStatus, OrdinaryMessageBoundary, ProviderCompatibilityBlockBoundary,
+        ProviderCompatibilityBlockSource, ProviderDispatchAttempt, ProviderDispatchIntent,
+        ProviderEventFidelity, ProviderFeatureMode, ProviderInteractionMode,
+        ProviderResponseIntent, RegistryMessageIntent, SenderKind, TeamActorKind, TeamActorRef,
+        TeamDeliveryPolicy, TeamDeliveryStatus, TeamRunEventSourceKind, TeamRunStatus,
+        WorkPriority,
     };
 
     use super::*;
@@ -8813,6 +8794,147 @@ mod tests {
             .expect("open store lock");
         lock_file_exclusive(&file).expect("hold store lock");
         file
+    }
+
+    #[test]
+    fn retired_provider_interaction_response_writer_cannot_reenter_the_store_api() {
+        let source = include_str!("lib.rs");
+        let retired_writer = ["fn record_provider_", "interaction_response"].concat();
+        assert!(
+            !source.contains(&retired_writer),
+            "retired provider-interaction response writer must not be compiled into the Store"
+        );
+
+        let checked_writer = source
+            .split("pub fn append_team_message_checked")
+            .nth(1)
+            .and_then(|tail| tail.split("pub fn insert_execution_node").next())
+            .expect("retired checked writer remains an explicit fail-closed API");
+        assert!(
+            checked_writer.contains("RETIRED_RUNTIME_WRITER"),
+            "retired checked writer must fail closed"
+        );
+        assert!(
+            !checked_writer.contains("append_jsonl_unlocked")
+                && !checked_writer.contains("team_messages.jsonl")
+                && !checked_writer.contains("Acknowledged"),
+            "retired checked writer must not retain a hidden ledger mutation or ACK path"
+        );
+    }
+
+    #[test]
+    fn legacy_team_message_delivery_mutators_are_explicit_read_only_seams() {
+        let source = include_str!("lib.rs");
+        let ambiguous_reader = ["pub fn team_", "messages("].concat();
+        assert!(
+            !source.contains(&ambiguous_reader),
+            "historical TeamMessageProjection reads must be explicitly Legacy-named"
+        );
+        assert!(
+            source.contains("pub fn legacy_team_messages("),
+            "the explicit Legacy history reader must remain available"
+        );
+        let retired_work_gate = ["ensure_work_store_", "compatible_unlocked"].concat();
+        assert!(
+            !source.contains(&retired_work_gate),
+            "retired TeamMessage history must never gate current Work mutations"
+        );
+        for retired_function in [
+            "pub fn claim_team_message_delivery(",
+            "pub fn complete_team_message_delivery_claim(",
+            "pub fn fail_team_message_delivery(",
+        ] {
+            let function_offset = source
+                .find(retired_function)
+                .unwrap_or_else(|| panic!("retired seam missing: {retired_function}"));
+            let attribute_window = &source[function_offset.saturating_sub(180)..function_offset];
+            assert!(
+                attribute_window.contains("#[cfg(any())]"),
+                "{retired_function} must not compile into the production Store API"
+            );
+        }
+        let acknowledge_writer = source
+            .split("pub fn acknowledge_team_message_delivery")
+            .nth(1)
+            .and_then(|tail| {
+                tail.split("pub fn reconcile_team_message_delivery_claim")
+                    .next()
+            })
+            .expect("legacy acknowledgement seam remains explicit");
+        let reconcile_writer = source
+            .split("pub fn reconcile_team_message_delivery_claim")
+            .nth(1)
+            .and_then(|tail| tail.split("pub fn fail_team_message_delivery").next())
+            .expect("legacy reconciliation seam remains explicit");
+
+        for retired_writer in [acknowledge_writer, reconcile_writer] {
+            assert!(
+                retired_writer.contains("RETIRED_RUNTIME_WRITER"),
+                "legacy delivery mutators must fail closed"
+            );
+            assert!(
+                !retired_writer.contains("append_jsonl_unlocked")
+                    && !retired_writer.contains("acquire_write_lock"),
+                "legacy delivery mutators must not retain a hidden ledger write path"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_team_message_delivery_mutators_reject_with_zero_store_side_effects() {
+        let root = team_test_root("retired-team-message-delivery-writers");
+        let store = HarnessStore::new(&root);
+        store.init().expect("init legacy-history store");
+        append_sparse_row(
+            &root,
+            "team_messages.jsonl",
+            r#"{"id":"tm-history","team_run_id":"tr-history","sender_runtime_id":"host","kind":"message","body":"history","correlation_id":"corr-history","created_at":"unix-ms:1"}"#,
+        );
+        let ledger_path = root.join("team_messages.jsonl");
+        let before = std::fs::read(&ledger_path).expect("read historical ledger before rejection");
+
+        let acknowledge_error = store
+            .acknowledge_team_message_delivery(
+                "tr-history",
+                "tm-history",
+                "member-history",
+                "unix-ms:2",
+            )
+            .expect_err("legacy acknowledgement must fail closed");
+        assert!(acknowledge_error
+            .to_string()
+            .contains("RETIRED_RUNTIME_WRITER"));
+        assert_eq!(
+            std::fs::read(&ledger_path).expect("read ledger after acknowledgement rejection"),
+            before,
+            "rejected legacy acknowledgement must not append or rewrite history"
+        );
+
+        let reconcile_error = store
+            .reconcile_team_message_delivery_claim(
+                "tr-history",
+                "tm-history",
+                "member-history",
+                "claim-history",
+                true,
+                Some("provider-receipt-history"),
+                "unix-ms:3",
+            )
+            .expect_err("legacy reconciliation must fail closed");
+        assert!(reconcile_error
+            .to_string()
+            .contains("RETIRED_RUNTIME_WRITER"));
+        assert_eq!(
+            std::fs::read(&ledger_path).expect("read ledger after reconciliation rejection"),
+            before,
+            "rejected legacy reconciliation must not append or rewrite history"
+        );
+
+        assert!(
+            !root.join(".store.lock").exists(),
+            "retired seams must reject before acquiring a writer lock"
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
     #[test]
@@ -9857,7 +9979,7 @@ mod tests {
                 context: String::new(),
                 desired_outcome: None,
                 status: MissionStatus::Planned,
-                wave_ids: Vec::new(),
+                legacy_wave_ids: Vec::new(),
                 outcome_summary: None,
                 completed_by: None,
                 created_at: "unix-ms:1".into(),
@@ -9888,7 +10010,7 @@ mod tests {
     }
 
     #[test]
-    fn mission_and_wave_ledgers_keep_history_and_project_latest_rows() {
+    fn mission_and_legacy_wave_ledgers_keep_history_and_project_latest_rows() {
         let root = std::env::temp_dir().join(format!(
             "firm-store-mission-wave-test-{}",
             SystemTime::now()
@@ -9899,12 +10021,12 @@ mod tests {
         let store = HarnessStore::new(&root);
         let mission = Mission {
             id: "mission-1".into(),
-            title: "Ship Mission/Wave".into(),
+            title: "Import a Mission with Legacy Wave history".into(),
             objective: "Add the migration foundation".into(),
             context: String::new(),
             desired_outcome: Some("A compatible, durable contract".into()),
             status: MissionStatus::Planned,
-            wave_ids: vec!["wave-1".into()],
+            legacy_wave_ids: vec!["wave-1".into()],
             outcome_summary: None,
             completed_by: None,
             created_at: "unix-ms:1".into(),
@@ -9919,7 +10041,7 @@ mod tests {
             .append_mission(&updated_mission)
             .expect("append updated mission");
 
-        let wave = Wave {
+        let wave = LegacyWave {
             id: "wave-1".into(),
             mission_id: "mission-1".into(),
             index: 1,
@@ -9929,14 +10051,14 @@ mod tests {
             revision: 1,
             updated_by: Some("host".into()),
             exit_criteria: Some("Schema and store rows validate".into()),
-            status: WaveStatus::Running,
-            executor_kind: WaveExecutorKind::AgentTeam,
+            status: LegacyWaveStatus::Running,
+            executor_kind: LegacyWaveExecutorKind::AgentTeam,
             executor_run_ids: vec!["team-run-1".into()],
             accepted_run_id: None,
             plan_note: None,
             outcome_summary: None,
             artifact_refs: vec!["schemas/mission.schema.json".into()],
-            gate_status: WaveGateStatus::Pending,
+            gate_status: LegacyWaveGateStatus::Pending,
             gate_note: None,
             accepted_by: None,
             accepted_at: None,
@@ -9944,37 +10066,75 @@ mod tests {
             updated_at: "unix-ms:1".into(),
         };
         let mut accepted_wave = wave.clone();
-        accepted_wave.status = WaveStatus::Completed;
+        accepted_wave.status = LegacyWaveStatus::Completed;
         accepted_wave.accepted_run_id = Some("team-run-1".into());
-        accepted_wave.gate_status = WaveGateStatus::Accepted;
+        accepted_wave.gate_status = LegacyWaveGateStatus::Accepted;
         accepted_wave.accepted_by = Some("host".into());
         accepted_wave.accepted_at = Some("unix-ms:2".into());
         accepted_wave.updated_at = "unix-ms:2".into();
-        store.append_wave(&wave).expect("append wave");
         store
-            .append_wave(&accepted_wave)
-            .expect("append accepted wave");
+            .append_legacy_wave_for_test(&wave)
+            .expect("append legacy wave");
+        store
+            .append_legacy_wave_for_test(&accepted_wave)
+            .expect("append accepted legacy wave");
 
         assert_eq!(store.missions().expect("raw missions").len(), 2);
-        assert_eq!(store.waves().expect("raw waves").len(), 2);
+        assert_eq!(store.legacy_waves().expect("raw waves").len(), 2);
         assert_eq!(
             store.latest_missions().expect("latest missions"),
             vec![updated_mission]
         );
         assert_eq!(
-            store.latest_waves().expect("latest waves"),
+            store.latest_legacy_waves().expect("latest waves"),
             vec![accepted_wave]
         );
 
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
-    /// ADR 0051 changed `compare_and_close_mission` to skip the Wave-gate
-    /// check entirely for a Mission whose `wave_ids` is empty (the only
-    /// shape a NEW Mission can have now, since Wave create is retired). This
+    #[test]
+    fn current_mission_insert_rejects_legacy_wave_membership() {
+        let root = std::env::temp_dir().join(format!(
+            "firm-store-current-mission-no-legacy-wave-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_millis()
+        ));
+        let store = HarnessStore::new(&root);
+        let error = store
+            .insert_mission(&Mission {
+                id: "mission-new".into(),
+                title: "Current Mission".into(),
+                objective: "Use Mission Log rather than Legacy Wave".into(),
+                context: String::new(),
+                desired_outcome: None,
+                status: MissionStatus::Planned,
+                legacy_wave_ids: vec!["wave-forged".into()],
+                outcome_summary: None,
+                completed_by: None,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+                completed_at: None,
+            })
+            .expect_err("new Mission must not attach Legacy Wave history");
+        assert!(
+            error
+                .to_string()
+                .contains("NEW_MISSION_CANNOT_REFERENCE_LEGACY_WAVE"),
+            "error: {error}"
+        );
+        assert!(store.missions().expect("missions").is_empty());
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    /// ADR 0051 changed `compare_and_close_mission` to skip the Legacy-Wave gate
+    /// check entirely for a Mission whose `legacy_wave_ids` is empty (the only
+    /// shape a NEW Mission can have now, since Legacy Wave create is retired). This
     /// proves the OTHER branch is untouched: a Mission that already
-    /// accumulated `wave_ids` before the cutover still requires every one
-    /// of them to be an accepted, completed Wave -- its in-flight contract
+    /// accumulated `legacy_wave_ids` before the cutover still requires every one
+    /// of them to be an accepted, completed Legacy Wave -- its in-flight contract
     /// does not silently change underneath it.
     #[test]
     fn mission_close_with_legacy_wave_ids_still_requires_accepted_gate() {
@@ -9989,11 +10149,11 @@ mod tests {
         let mission = Mission {
             id: "mission-legacy".into(),
             title: "Pre-cutover Mission".into(),
-            objective: "Already has Wave membership from before ADR 0051".into(),
+            objective: "Already has Legacy Wave membership from before ADR 0051".into(),
             context: String::new(),
             desired_outcome: None,
             status: MissionStatus::Running,
-            wave_ids: vec!["wave-legacy".into()],
+            legacy_wave_ids: vec!["wave-legacy".into()],
             outcome_summary: None,
             completed_by: None,
             created_at: "unix-ms:1".into(),
@@ -10001,7 +10161,7 @@ mod tests {
             completed_at: None,
         };
         store.append_mission(&mission).expect("append mission");
-        let pending_wave = Wave {
+        let pending_wave = LegacyWave {
             id: "wave-legacy".into(),
             mission_id: "mission-legacy".into(),
             index: 1,
@@ -10011,21 +10171,23 @@ mod tests {
             revision: 1,
             updated_by: Some("host".into()),
             exit_criteria: None,
-            status: WaveStatus::Running,
-            executor_kind: WaveExecutorKind::Host,
+            status: LegacyWaveStatus::Running,
+            executor_kind: LegacyWaveExecutorKind::Host,
             executor_run_ids: Vec::new(),
             accepted_run_id: None,
             plan_note: None,
             outcome_summary: None,
             artifact_refs: Vec::new(),
-            gate_status: WaveGateStatus::Pending,
+            gate_status: LegacyWaveGateStatus::Pending,
             gate_note: None,
             accepted_by: None,
             accepted_at: None,
             created_at: "unix-ms:1".into(),
             updated_at: "unix-ms:1".into(),
         };
-        store.append_wave(&pending_wave).expect("append wave");
+        store
+            .append_legacy_wave_for_test(&pending_wave)
+            .expect("append legacy wave");
 
         let mut closed = mission.clone();
         closed.status = MissionStatus::Completed;
@@ -10037,21 +10199,21 @@ mod tests {
             .compare_and_close_mission(&mission, &closed)
             .expect_err("a pending legacy Wave must still block closeout");
         assert!(
-            error.to_string().contains("cannot close: Wave"),
+            error.to_string().contains("cannot close: Legacy Wave"),
             "error: {error}"
         );
 
         let mut accepted_wave = pending_wave.clone();
-        accepted_wave.status = WaveStatus::Completed;
-        accepted_wave.gate_status = WaveGateStatus::Accepted;
+        accepted_wave.status = LegacyWaveStatus::Completed;
+        accepted_wave.gate_status = LegacyWaveGateStatus::Accepted;
         accepted_wave.accepted_by = Some("host".into());
         accepted_wave.accepted_at = Some("unix-ms:2".into());
         accepted_wave.updated_at = "unix-ms:2".into();
         store
-            .compare_and_append_wave(&pending_wave, &accepted_wave)
+            .compare_and_append_legacy_wave_for_test(&pending_wave, &accepted_wave)
             .expect("accept the legacy wave");
 
-        // compare_and_append_wave folds the gate outcome into Mission.phase
+        // The test-only Legacy Wave CAS folds the gate outcome into Mission.phase
         // as a side effect (line ~754 above), so the CAS baseline for close
         // must be the freshly stored row, not the pre-gate local `mission`.
         let after_gate = store
@@ -10084,7 +10246,7 @@ mod tests {
     }
 
     #[test]
-    fn native_wave_attempt_and_event_updates_are_concurrency_safe() {
+    fn legacy_wave_import_and_event_updates_are_concurrency_safe() {
         let root = std::env::temp_dir().join(format!(
             "firm-store-native-concurrency-test-{}",
             SystemTime::now()
@@ -10101,7 +10263,7 @@ mod tests {
                 context: String::new(),
                 desired_outcome: None,
                 status: MissionStatus::Planned,
-                wave_ids: Vec::new(),
+                legacy_wave_ids: Vec::new(),
                 outcome_summary: None,
                 completed_by: None,
                 created_at: "unix-ms:1".into(),
@@ -10116,8 +10278,8 @@ mod tests {
             let barrier = Arc::clone(&wave_barrier);
             std::thread::spawn(move || {
                 barrier.wait();
-                store.insert_wave_and_update_mission(
-                    Wave {
+                store.insert_legacy_wave_and_update_mission_for_test(
+                    LegacyWave {
                         id: id.into(),
                         mission_id: "mission-concurrent".into(),
                         index: 0,
@@ -10127,14 +10289,14 @@ mod tests {
                         revision: 1,
                         updated_by: Some("host".into()),
                         exit_criteria: None,
-                        status: WaveStatus::Planned,
-                        executor_kind: WaveExecutorKind::AgentTeam,
+                        status: LegacyWaveStatus::Planned,
+                        executor_kind: LegacyWaveExecutorKind::AgentTeam,
                         executor_run_ids: Vec::new(),
                         accepted_run_id: None,
                         plan_note: None,
                         outcome_summary: None,
                         artifact_refs: Vec::new(),
-                        gate_status: WaveGateStatus::Pending,
+                        gate_status: LegacyWaveGateStatus::Pending,
                         gate_note: None,
                         accepted_by: None,
                         accepted_at: None,
@@ -10149,14 +10311,14 @@ mod tests {
         for handle in wave_handles {
             handle.join().expect("wave thread").expect("insert wave");
         }
-        let waves = store.latest_waves().expect("latest waves");
+        let waves = store.latest_legacy_waves().expect("latest waves");
         assert_eq!(
             waves.iter().map(|wave| wave.index).collect::<Vec<_>>(),
             vec![1, 2]
         );
         let mission = store.latest_missions().expect("latest missions").remove(0);
         assert_eq!(
-            mission.wave_ids,
+            mission.legacy_wave_ids,
             vec![waves[0].id.clone(), waves[1].id.clone()]
         );
 
@@ -10165,12 +10327,16 @@ mod tests {
         max_index_wave.index = u32::MAX;
         max_index_wave.executor_run_ids.clear();
         store
-            .insert_wave_and_update_mission(max_index_wave.clone(), Some(u32::MAX), "unix-ms:2")
+            .insert_legacy_wave_and_update_mission_for_test(
+                max_index_wave.clone(),
+                Some(u32::MAX),
+                "unix-ms:2",
+            )
             .expect("insert maximum explicit wave index");
         let mut overflow_wave = max_index_wave;
         overflow_wave.id = "wave-overflow".into();
         let error = store
-            .insert_wave_and_update_mission(overflow_wave, None, "unix-ms:2")
+            .insert_legacy_wave_and_update_mission_for_test(overflow_wave, None, "unix-ms:2")
             .expect_err("implicit wave index must not overflow");
         assert!(
             error.to_string().contains("index space is exhausted"),
@@ -10178,6 +10344,29 @@ mod tests {
         );
 
         let event_run_id = "team-run-concurrent-events".to_string();
+        seed_current_team_run_fixture(
+            &store,
+            &AgentTeamRun {
+                id: event_run_id.clone(),
+                agent_team_id: "team-concurrent-events".into(),
+                execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
+                project_binding_id: "project-test".into(),
+                previous_run_id: None,
+                host_surface: "test".into(),
+                host_thread_id: None,
+                host_actor: None,
+                host_control_mode: Default::default(),
+                objective: "concurrent current-event sequence".into(),
+                execution_root: None,
+                status: TeamRunStatus::Running,
+                member_run_ids: Vec::new(),
+                budget_limit_usd: None,
+                created_at: "unix-ms:3".into(),
+                updated_at: "unix-ms:3".into(),
+                completed_at: None,
+            },
+            &[],
+        );
 
         let event_barrier = Arc::new(Barrier::new(8));
         let event_handles = (0..8)
@@ -10207,7 +10396,7 @@ mod tests {
             handle.join().expect("event thread").expect("append event");
         }
         let mut seqs = store
-            .team_run_events()
+            .legacy_team_run_events()
             .expect("events")
             .into_iter()
             .map(|event| event.seq)
@@ -10227,7 +10416,7 @@ mod tests {
             context: String::new(),
             desired_outcome: None,
             status: MissionStatus::Planned,
-            wave_ids: Vec::new(),
+            legacy_wave_ids: Vec::new(),
             outcome_summary: None,
             completed_by: None,
             created_at: "unix-ms:1".into(),
@@ -10494,7 +10683,7 @@ mod tests {
                         context: String::new(),
                         desired_outcome: None,
                         status: MissionStatus::Running,
-                        wave_ids: Vec::new(),
+                        legacy_wave_ids: Vec::new(),
                         outcome_summary: None,
                         completed_by: None,
                         created_at: "2026-05-26T00:00:00Z".into(),
@@ -10541,7 +10730,7 @@ mod tests {
             context: String::new(),
             desired_outcome: None,
             status: MissionStatus::Running,
-            wave_ids: Vec::new(),
+            legacy_wave_ids: Vec::new(),
             outcome_summary: None,
             completed_by: None,
             created_at: "2026-05-26T00:00:00Z".into(),
@@ -10682,6 +10871,224 @@ mod tests {
         ))
     }
 
+    fn canonical_member_admission_for_test(
+        execution_space_id: &str,
+        runtime: &ProviderRuntimeProjection,
+    ) -> CanonicalMemberRunAdmission {
+        CanonicalMemberRunAdmission {
+            context: firm_core::agentfirm_api::MutationContext {
+                execution_space_id: execution_space_id.into(),
+                authenticated_actor: firm_core::agentfirm_api::ActorRef {
+                    kind: firm_core::agentfirm_api::ActorKind::Service,
+                    id: "test-node-daemon".into(),
+                },
+                authority_actor: Some(firm_core::agentfirm_api::ActorRef {
+                    kind: firm_core::agentfirm_api::ActorKind::AgentMember,
+                    id: runtime.agent_member_id.clone(),
+                }),
+                command_name: "team_run.materialize_member_run".into(),
+                idempotency_key: format!("test-member-run:{}", runtime.id),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            run: firm_core::agentfirm_api::MemberRun {
+                id: runtime.id.clone(),
+                agent_member_id: runtime.agent_member_id.clone(),
+                team_run_id: runtime.team_run_id.clone(),
+                role_snapshot: runtime.role.clone(),
+                provider_profile_snapshot: None,
+                requested_controls: serde_json::json!({}),
+                effective_controls: serde_json::json!({}),
+                coordination_status: match runtime.coordination_status {
+                    firm_core::MemberCoordinationStatus::Active => {
+                        firm_core::agentfirm_api::MemberCoordinationStatus::Active
+                    }
+                    firm_core::MemberCoordinationStatus::Closed => {
+                        firm_core::agentfirm_api::MemberCoordinationStatus::Closed
+                    }
+                    firm_core::MemberCoordinationStatus::Retired => {
+                        firm_core::agentfirm_api::MemberCoordinationStatus::Retired
+                    }
+                },
+                runtime_status: match runtime.status {
+                    MemberRunStatus::Starting => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Starting
+                    }
+                    MemberRunStatus::Idle => firm_core::agentfirm_api::MemberRuntimeStatus::Idle,
+                    MemberRunStatus::Queued => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Queued
+                    }
+                    MemberRunStatus::Running => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Running
+                    }
+                    MemberRunStatus::Waiting => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Waiting
+                    }
+                    MemberRunStatus::Disconnected => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Disconnected
+                    }
+                    MemberRunStatus::Reviewing => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Reviewing
+                    }
+                    MemberRunStatus::Blocked => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Blocked
+                    }
+                    MemberRunStatus::Completed => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Completed
+                    }
+                    MemberRunStatus::Failed => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Failed
+                    }
+                    MemberRunStatus::Stopped => {
+                        firm_core::agentfirm_api::MemberRuntimeStatus::Stopped
+                    }
+                },
+                runtime_generation: runtime.runtime_generation,
+                workspace_binding_id: None,
+                native_session: runtime.native_session.as_ref().map(|session| {
+                    serde_json::from_value(
+                        serde_json::to_value(session).expect("serialize native session"),
+                    )
+                    .expect("map native session")
+                }),
+                version: 1,
+                started_at: runtime.started_at.clone(),
+                last_event_at: runtime.last_event_at.clone(),
+                finished_at: runtime.finished_at.clone(),
+            },
+        }
+    }
+
+    fn seed_current_team_run_fixture(
+        store: &HarnessStore,
+        run: &AgentTeamRun,
+        members: &[ProviderRuntimeProjection],
+    ) {
+        use firm_core::agentfirm_api::{
+            ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus, MutationContext,
+            PermissionCeiling,
+        };
+
+        const SPACE: &str = "unit-test-space";
+        store.init().expect("initialize current TeamRun fixture");
+        if !store
+            .latest_execution_nodes()
+            .expect("read Nodes")
+            .iter()
+            .any(|node| node.id == run.execution_node_id)
+        {
+            store
+                .insert_execution_node(&ExecutionNode {
+                    id: run.execution_node_id.clone(),
+                    display_name: "test-node".into(),
+                    status: ExecutionNodeStatus::Active,
+                    created_at: "unix-ms:1".into(),
+                    updated_at: "unix-ms:1".into(),
+                })
+                .expect("insert Node");
+        }
+        store
+            .register_node_project(
+                &NodeProjectRegistration {
+                    node_id: run.execution_node_id.clone(),
+                    execution_space_id: SPACE.into(),
+                    project_binding_id: run.project_binding_id.clone(),
+                    status: NodeProjectRegistrationStatus::Active,
+                    created_at: "unix-ms:1".into(),
+                    updated_at: "unix-ms:1".into(),
+                },
+                SPACE,
+            )
+            .expect("register fixture project");
+        let mission_id = format!("mission-{}", run.id);
+        store
+            .insert_mission(&Mission {
+                id: mission_id.clone(),
+                title: mission_id.clone(),
+                objective: run.objective.clone(),
+                context: String::new(),
+                desired_outcome: None,
+                status: MissionStatus::Running,
+                legacy_wave_ids: Vec::new(),
+                outcome_summary: None,
+                completed_by: None,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+                completed_at: None,
+            })
+            .expect("insert fixture Mission");
+        let identities = members
+            .iter()
+            .map(|member| member.agent_member_id.clone())
+            .collect::<Vec<_>>();
+        for member in members {
+            if !store
+                .trust_agent_members(SPACE)
+                .expect("read AgentMembers")
+                .iter()
+                .any(|candidate| candidate.id == member.agent_member_id)
+            {
+                store
+                    .create_trust_agent_member(
+                        &MutationContext {
+                            execution_space_id: SPACE.into(),
+                            authenticated_actor: ActorRef {
+                                kind: ActorKind::Human,
+                                id: "fixture-host".into(),
+                            },
+                            authority_actor: None,
+                            command_name: "agent_member.create".into(),
+                            idempotency_key: format!("fixture-agent:{}", member.agent_member_id),
+                            expected_version: 0,
+                            request_fingerprint: None,
+                        },
+                        AgentMember {
+                            id: member.agent_member_id.clone(),
+                            name: member.name.clone(),
+                            description: "current TeamRun fixture".into(),
+                            role: member.role.clone(),
+                            capabilities: Vec::new(),
+                            skill_refs: Vec::new(),
+                            provider_profile_ref: None,
+                            model_preference: None,
+                            workspace_policy: "test".into(),
+                            permission_ceiling: PermissionCeiling::WorkspaceWrite,
+                            organization_status: AgentMemberOrganizationStatus::Active,
+                            version: 1,
+                            created_by: ActorRef {
+                                kind: ActorKind::Human,
+                                id: "fixture-host".into(),
+                            },
+                            created_at: "unix-ms:1".into(),
+                            updated_at: "unix-ms:1".into(),
+                        },
+                    )
+                    .expect("create fixture AgentMember");
+            }
+        }
+        store
+            .insert_agent_team_with_unique_mission(&AgentTeam {
+                id: run.agent_team_id.clone(),
+                name: run.agent_team_id.clone(),
+                description: "current TeamRun fixture".into(),
+                mission_id,
+                host_agent_id: identities.first().cloned().unwrap_or_else(|| "host".into()),
+                node_id: run.execution_node_id.clone(),
+                status: firm_core::AgentTeamStatus::Active,
+                member_ids: identities,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            })
+            .expect("insert fixture AgentTeam");
+        let canonical = members
+            .iter()
+            .map(|member| canonical_member_admission_for_test(SPACE, member))
+            .collect::<Vec<_>>();
+        store
+            .create_team_run_with_member_runs_from_agent_team(run, SPACE, members, &canonical)
+            .expect("create coherent current TeamRun fixture");
+    }
+
     fn seed_host_attention_fixture(
         store: &HarnessStore,
         run_id: &str,
@@ -10706,7 +11113,6 @@ mod tests {
             updated_at: "unix-ms:1".into(),
             completed_at: None,
         };
-        store.append_team_run(&run).expect("seed TeamRun");
         let member = ProviderRuntimeProjection {
             id: format!("member-{run_id}"),
             team_run_id: run_id.into(),
@@ -10733,9 +11139,7 @@ mod tests {
             zero_output_streak: 0,
             last_consumed_work_version: None,
         };
-        store
-            .append_member_run(&member)
-            .expect("seed ProviderRuntimeProjection");
+        seed_current_team_run_fixture(store, &run, std::slice::from_ref(&member));
         let work = store
             .insert_work(
                 Work {
@@ -11104,7 +11508,7 @@ mod tests {
             .ensure_host_attention(&attention)
             .expect("append attention");
         assert!(
-            store.team_messages().expect("messages").is_empty(),
+            store.legacy_team_messages().expect("messages").is_empty(),
             "Work state attention must not fabricate TeamMessageProjection conversation"
         );
         let unbound = store
@@ -11300,7 +11704,10 @@ mod tests {
         assert_eq!(blocked_attention.kind, HostAttentionKind::WorkBlocked);
         assert_eq!(blocked_attention.work_version, blocked.version);
         assert!(
-            store.team_messages().expect("TeamMessages").is_empty(),
+            store
+                .legacy_team_messages()
+                .expect("Legacy TeamMessages")
+                .is_empty(),
             "Work-state attention must not fabricate conversation"
         );
 
@@ -11372,11 +11779,41 @@ mod tests {
     }
 
     fn seed_lease_run(store: &HarnessStore, id: &str) {
+        let node_id = "00000000-0000-4000-8000-000000000001";
+        if !store
+            .latest_execution_nodes()
+            .expect("read Nodes")
+            .iter()
+            .any(|node| node.id == node_id)
+        {
+            store
+                .insert_execution_node(&ExecutionNode {
+                    id: node_id.into(),
+                    display_name: "test-node".into(),
+                    status: ExecutionNodeStatus::Active,
+                    created_at: "unix-ms:1".into(),
+                    updated_at: "unix-ms:1".into(),
+                })
+                .expect("seed Node");
+        }
         store
-            .append_team_run(&AgentTeamRun {
+            .register_node_project(
+                &NodeProjectRegistration {
+                    node_id: node_id.into(),
+                    execution_space_id: "space-test".into(),
+                    project_binding_id: "project-test".into(),
+                    status: NodeProjectRegistrationStatus::Active,
+                    created_at: "unix-ms:1".into(),
+                    updated_at: "unix-ms:1".into(),
+                },
+                "space-test",
+            )
+            .expect("seed project registration");
+        store
+            .legacy_import_append_team_run_projection(&AgentTeamRun {
                 id: id.into(),
                 agent_team_id: format!("team-{id}"),
-                execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
+                execution_node_id: node_id.into(),
                 project_binding_id: "project-test".into(),
                 previous_run_id: None,
                 host_surface: "codex-app".into(),
@@ -11595,6 +12032,48 @@ mod tests {
         assert_eq!(live.generation, 2);
     }
 
+    #[test]
+    fn supervisor_lease_rejects_caller_selected_foreign_execution_space_without_write() {
+        let root = team_test_root("lease-space-fence");
+        let store = HarnessStore::new(&root);
+        seed_lease_run(&store, "run-a");
+        let parent = store
+            .acquire_node_daemon_lease(
+                "00000000-0000-4000-8000-000000000001",
+                "daemon-test",
+                "instance-test",
+                1_000,
+                60_000,
+            )
+            .expect("parent lease");
+        let before = store
+            .team_supervisor_leases()
+            .expect("read Supervisor leases");
+        let error = store
+            .acquire_team_supervisor_under_node_lease(
+                "run-a",
+                "00000000-0000-4000-8000-000000000001",
+                &parent.daemon_id,
+                parent.generation,
+                "foreign-space",
+                "project-test",
+                "supervisor-hostile",
+                1,
+                "tcp://127.0.0.1:1",
+                1_001,
+                60_000,
+            )
+            .expect_err("caller-selected foreign Execution Space must fail closed");
+        assert!(error.to_string().contains("EXECUTION_SPACE_SCOPE_MISMATCH"));
+        assert_eq!(
+            store
+                .team_supervisor_leases()
+                .expect("read Supervisor leases after rejection"),
+            before
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
     fn append_sparse_row(root: &Path, file_name: &str, row: &str) {
         let mut file = OpenOptions::new()
             .create(true)
@@ -11629,7 +12108,9 @@ mod tests {
             completed_at: None,
         };
 
-        store.append_team_run(&run).expect("append team run");
+        store
+            .legacy_import_append_team_run_projection(&run)
+            .expect("append team run");
         // Required Team/Node/Project authority makes legacy sparse rows unreadable
         // after the clean cutover.
         append_sparse_row(
@@ -11686,7 +12167,7 @@ mod tests {
         };
 
         store
-            .append_team_run(&AgentTeamRun {
+            .legacy_import_append_team_run_projection(&AgentTeamRun {
                 id: "tr-1".into(),
                 agent_team_id: "team-tr-1".into(),
                 execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
@@ -11708,7 +12189,7 @@ mod tests {
             .expect("declare initial TeamRun membership");
 
         store
-            .append_member_run(&member_run)
+            .legacy_import_append_member_run_projection(&member_run)
             .expect("append member run");
         append_sparse_row(
             &root,
@@ -11773,7 +12254,9 @@ mod tests {
             r#"{"id":"tm-sparse","team_run_id":"tr-1","sender_runtime_id":"host","kind":"message","body":"hi","correlation_id":"corr-2","created_at":"unix-ms:3"}"#,
         );
 
-        let messages = store.team_messages().expect("read team messages");
+        let messages = store
+            .legacy_team_messages()
+            .expect("read legacy team messages");
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0], message);
         let sparse = &messages[1];
@@ -11795,7 +12278,7 @@ mod tests {
         let member_id = format!("member-{run_id}");
         let session_id = format!("session-{run_id}");
         store
-            .append_team_run(&AgentTeamRun {
+            .legacy_import_append_team_run_projection(&AgentTeamRun {
                 id: run_id.to_string(),
                 agent_team_id: format!("team-{run_id}"),
                 execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
@@ -11816,7 +12299,7 @@ mod tests {
             })
             .expect("seed TeamRun");
         store
-            .append_member_run(&ProviderRuntimeProjection {
+            .legacy_import_append_member_run_projection(&ProviderRuntimeProjection {
                 id: member_id.clone(),
                 team_run_id: run_id.to_string(),
                 slot_id: None,
@@ -11995,9 +12478,10 @@ mod tests {
             .expect("same stable id and semantic reply returns existing");
         assert_eq!(retried.id, response.id);
 
-        let messages = latest_by_id(store.team_messages().expect("messages"), |message| {
-            message.id.clone()
-        });
+        let messages = latest_by_id(
+            store.legacy_team_messages().expect("legacy messages"),
+            |message| message.id.clone(),
+        );
         let request_after = messages.get(&request.id).expect("request remains");
         assert_eq!(
             request_after.deliveries[0].status,
@@ -12167,7 +12651,7 @@ mod tests {
             .contains("cannot be acknowledged"));
         assert_eq!(
             store
-                .team_messages()
+                .legacy_team_messages()
                 .expect("messages")
                 .iter()
                 .filter(
@@ -12248,7 +12732,7 @@ mod tests {
         assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
         assert_eq!(
             store
-                .team_messages()
+                .legacy_team_messages()
                 .expect("messages")
                 .iter()
                 .filter(
@@ -12772,7 +13256,7 @@ mod tests {
         assert!(conflict.to_string().contains("already handed off"));
         assert_eq!(
             store
-                .team_messages()
+                .legacy_team_messages()
                 .expect("messages")
                 .into_iter()
                 .filter(|message| message.kind == ProviderDispatchIntent::Message)
@@ -12807,7 +13291,9 @@ mod tests {
             updated_at: "unix-ms:1".into(),
             completed_at: None,
         };
-        store.append_team_run(&run).expect("append run");
+        store
+            .legacy_import_append_team_run_projection(&run)
+            .expect("append run");
 
         let first = store
             .acquire_test_supervisor_lease(&run.id, "supervisor-a", 101, "test:a", 100, 1_000)
@@ -13012,7 +13498,9 @@ mod tests {
             updated_at: "unix-ms:1".into(),
             completed_at: None,
         };
-        store.append_team_run(&run).expect("append run");
+        store
+            .legacy_import_append_team_run_projection(&run)
+            .expect("append run");
 
         let lease = store
             .acquire_test_supervisor_lease(
@@ -13061,7 +13549,7 @@ mod tests {
             .expect("append queued message");
 
         // Pre-bind failure: member never bound, delivery is still Queued.
-        let msgs = store.team_messages().expect("read messages");
+        let msgs = store.legacy_team_messages().expect("read legacy messages");
         let queued = msgs
             .iter()
             .find(|m| m.id == "tm-orphan")
@@ -13128,7 +13616,9 @@ mod tests {
         // RegistryMessage survives store reopen.
         drop(store);
         let reopened = HarnessStore::new(&root);
-        let msgs_after = reopened.team_messages().expect("read after reopen");
+        let msgs_after = reopened
+            .legacy_team_messages()
+            .expect("read legacy messages after reopen");
         let reloaded = latest_by_id(msgs_after, |m| m.id.clone())
             .remove("tm-orphan")
             .expect("tm-orphan survived reopen");
@@ -13190,8 +13680,7 @@ mod tests {
             zero_output_streak: 0,
             last_consumed_work_version: None,
         };
-        store.append_team_run(&run).expect("append run");
-        store.append_member_run(&member).expect("append member");
+        seed_current_team_run_fixture(&store, &run, std::slice::from_ref(&member));
 
         let request = TeamMemberCloseRequest {
             id: "close-1".into(),
@@ -13255,9 +13744,11 @@ mod tests {
             completed_at: Some("unix-ms:2".into()),
         };
 
+        // Raw serialization compatibility is a Legacy diagnostic fixture, not
+        // a current MemberAction authorization path.
         store
-            .append_member_action(&action)
-            .expect("append member action");
+            .append_jsonl("member_actions.jsonl", &action)
+            .expect("append legacy member action fixture");
         append_sparse_row(
             &root,
             "member_actions.jsonl",
@@ -13340,7 +13831,7 @@ mod tests {
         };
 
         store
-            .append_team_run_event(&event)
+            .legacy_import_append_team_run_event(&event)
             .expect("append team run event");
         append_sparse_row(
             &root,
@@ -13348,7 +13839,9 @@ mod tests {
             r#"{"id":"tre-sparse","seq":4,"team_run_id":"tr-1","source_kind":"host","entity_type":"team_run","entity_id":"tr-1","operation":"created","summary":"run started","occurred_at":"unix-ms:3"}"#,
         );
 
-        let events = store.team_run_events().expect("read team run events");
+        let events = store
+            .legacy_team_run_events()
+            .expect("read team run events");
         assert_eq!(events.len(), 2);
         assert_eq!(events[0], event);
         let sparse = &events[1];
@@ -13364,6 +13857,29 @@ mod tests {
     fn ensure_team_run_event_is_idempotent_and_rejects_semantic_mismatch() {
         let root = team_test_root("ensure-team-run-event");
         let store = HarnessStore::new(&root);
+        seed_current_team_run_fixture(
+            &store,
+            &AgentTeamRun {
+                id: "tr-1".into(),
+                agent_team_id: "team-event-idempotency".into(),
+                execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
+                project_binding_id: "project-test".into(),
+                previous_run_id: None,
+                host_surface: "test".into(),
+                host_thread_id: None,
+                host_actor: None,
+                host_control_mode: Default::default(),
+                objective: "event idempotency".into(),
+                execution_root: None,
+                status: TeamRunStatus::Running,
+                member_run_ids: Vec::new(),
+                budget_limit_usd: None,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+                completed_at: None,
+            },
+            &[],
+        );
         let event = TeamRunEvent {
             id: "caller-id-is-ignored".into(),
             seq: 0,
@@ -13386,7 +13902,7 @@ mod tests {
             .ensure_team_run_event_next("tr-1:attention-1:actionable:0", retry)
             .expect("same causal transition");
         assert_eq!(first, second);
-        assert_eq!(store.team_run_events().unwrap().len(), 1);
+        assert_eq!(store.legacy_team_run_events().unwrap().len(), 1);
 
         let mut mismatch = event;
         mismatch.summary = "different causal meaning".into();
@@ -13455,10 +13971,66 @@ mod tests {
         };
         let member_a = member("a");
         let member_b = member("b");
-        store.append_team_run(&run).expect("append team run");
-        store.append_member_run(&member_a).expect("append member a");
-        store.append_member_run(&member_b).expect("append member b");
+        seed_current_team_run_fixture(&store, &run, &[member_a.clone(), member_b.clone()]);
         (root, store, run, member_a, member_b)
+    }
+
+    #[test]
+    fn current_member_generation_advances_only_through_combined_canonical_cas() {
+        let (root, store, run, member, _) = work_test_fixture("member-generation-combined");
+        let mut next = member.clone();
+        next.runtime_generation = 2;
+        next.status = MemberRunStatus::Queued;
+        next.started_at = "unix-ms:2".into();
+        next.last_event_at = Some("unix-ms:2".into());
+
+        let legacy_before = std::fs::read(root.join("member_runs.jsonl")).unwrap();
+        let canonical_before =
+            std::fs::read(root.join("agentfirm_trust_operations.jsonl")).unwrap();
+        let rejected = store
+            .compare_and_append_member_run(&member, &next)
+            .expect_err("generic projection CAS cannot advance generation");
+        assert!(rejected
+            .to_string()
+            .contains("MEMBER_GENERATION_TRANSITION_AUTHORITY_REQUIRED"));
+        assert_eq!(
+            std::fs::read(root.join("member_runs.jsonl")).unwrap(),
+            legacy_before
+        );
+        assert_eq!(
+            std::fs::read(root.join("agentfirm_trust_operations.jsonl")).unwrap(),
+            canonical_before
+        );
+
+        store
+            .compare_and_advance_member_run_generation(&member, &next)
+            .expect("combined Store authority advances both projections");
+        assert_eq!(
+            store
+                .trust_member_runs("unit-test-space")
+                .unwrap()
+                .into_iter()
+                .find(|candidate| candidate.id == member.id)
+                .unwrap()
+                .runtime_generation,
+            2
+        );
+        assert_eq!(
+            store
+                .member_runs()
+                .unwrap()
+                .into_iter()
+                .rev()
+                .find(|candidate| candidate.id == member.id)
+                .unwrap()
+                .runtime_generation,
+            2
+        );
+        assert_eq!(
+            store.current_team_run_execution_space(&run).unwrap(),
+            "unit-test-space"
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
     fn host_work_context(id: &str, key: &str, at: &str) -> WorkCommandContext {
@@ -13512,8 +14084,11 @@ mod tests {
         next.member_run_ids.push(member.id.clone());
         next.updated_at = member.started_at.clone();
         store
-            .admit_member_run(&current, &next, member)
-            .expect("atomically admit replacement runtime");
+            .append_jsonl("team_runs.jsonl", &next)
+            .expect("append replacement TeamRun fixture row");
+        store
+            .append_jsonl("member_runs.jsonl", member)
+            .expect("append replacement runtime fixture row");
     }
 
     fn unassigned_test_work(run_id: &str, id: &str) -> Work {
@@ -13625,7 +14200,7 @@ mod tests {
                     context: String::new(),
                     desired_outcome: None,
                     status: MissionStatus::Running,
-                    wave_ids: Vec::new(),
+                    legacy_wave_ids: Vec::new(),
                     outcome_summary: None,
                     completed_by: None,
                     created_at: "unix-ms:1".into(),
@@ -13667,10 +14242,10 @@ mod tests {
                 completed_at: None,
             };
             store
-                .create_team_run_from_agent_team(&run, "delegation-test-space")
+                .legacy_create_team_run_projection_for_test(&run, "delegation-test-space")
                 .expect("create TeamRun");
             store
-                .append_member_run(&member)
+                .legacy_import_append_member_run_projection(&member)
                 .expect("append ProviderRuntimeProjection");
             rows.push((run, member));
         }
@@ -15179,7 +15754,7 @@ mod tests {
         replacement.started_at = "unix-ms:5".into();
         replacement.finished_at = None;
         store
-            .compare_and_append_member_run(&failed, &replacement)
+            .compare_and_advance_member_run_generation(&failed, &replacement)
             .expect("append same-id replacement generation");
 
         let rebound = store
@@ -15543,7 +16118,7 @@ mod tests {
         reopened_member.status = MemberRunStatus::Idle;
         reopened_member.runtime_generation += 1;
         store
-            .compare_and_append_member_run(&closed_member, &reopened_member)
+            .compare_and_advance_member_run_generation(&closed_member, &reopened_member)
             .expect("record reopened member");
         let submitted = store
             .submit_work(
@@ -15755,7 +16330,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_assignment_message_is_not_readable_by_works_store() {
+    fn legacy_assignment_message_is_ignored_by_current_work_store() {
         let (root, store, run, _, _) = work_test_fixture("legacy-work-store");
         append_sparse_row(
             &root,
@@ -15765,13 +16340,20 @@ mod tests {
                 run.id
             ),
         );
-        let error = store
+        let legacy_path = root.join("team_messages.jsonl");
+        let legacy_before = std::fs::read(&legacy_path).expect("read legacy message history");
+        let created = store
             .insert_work(
-                unassigned_test_work(&run.id, "work-rejected"),
-                host_work_context("we-rejected", "create-rejected", "unix-ms:2"),
+                unassigned_test_work(&run.id, "work-current"),
+                host_work_context("we-current", "create-current", "unix-ms:2"),
             )
-            .expect_err("legacy store must be rejected");
-        assert!(error.to_string().contains("assignment"));
+            .expect("retired TeamMessage history must not gate current Work");
+        assert_eq!(created.id, "work-current");
+        assert_eq!(
+            std::fs::read(&legacy_path).expect("re-read legacy message history"),
+            legacy_before,
+            "current Work mutation must not reinterpret or rewrite legacy TeamMessage rows"
+        );
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
@@ -16466,7 +17048,9 @@ mod tests {
             updated_at: "unix-ms:1".into(),
             completed_at: None,
         };
-        store.append_team_run(&run).expect("append unbound run");
+        store
+            .legacy_import_append_team_run_projection(&run)
+            .expect("append unbound run");
         let member = ProviderRuntimeProjection {
             id: "mr-work-unbound-ha".into(),
             team_run_id: run.id.clone(),
@@ -16493,7 +17077,9 @@ mod tests {
             zero_output_streak: 0,
             last_consumed_work_version: None,
         };
-        store.append_member_run(&member).expect("append member");
+        store
+            .legacy_import_append_member_run_projection(&member)
+            .expect("append member");
         let work = store
             .insert_work(
                 unassigned_test_work(&run.id, "work-unbound-ha-1"),

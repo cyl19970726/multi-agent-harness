@@ -298,7 +298,7 @@ owning execution space, mutate native TeamWork, or manage Milestone refs.
 Native Work owns identity, revision, lifecycle, reports, gates, evidence, and
 operational decisions. Company Work owns no executable row or assignment
 ledger. The skill does not own Docs structure, Organization membership,
-Finance state, or Mission/Wave execution lifecycle.
+Finance state, or Mission/Mission Log execution coordination.
 
 ### Required input
 
@@ -457,18 +457,22 @@ cannot self-accept its own authority.
 
 ## `orchestrate-mission-waves`
 
+The skill basename is retained for compatibility. “Waves” in that installed
+name does not reinstate a product `Wave` object; current behavior uses Mission
+plus append-only Mission Log entries.
+
 ### Job
 
 Use this skill when a Host Agent must create, resume, or re-plan a long-running
-Mission, coordinate one or more persistent Agent Teams through shared Works,
-preserve provider-native sessions across re-plans, review submitted Work, or
-close the Mission. Use for Mission context, Mission Log judgment, Works
-allocation, Team composition, blocker handling, carry-over, and explicit Host
-acceptance.
+Mission, coordinate the Mission's one persistent flat AgentTeam through shared
+Works, preserve provider-native sessions across re-plans, review submitted
+Work, or close the Mission. Use for Mission context, Mission Log judgment,
+Works allocation, Team composition, blocker handling, carry-over, and explicit
+Host acceptance.
 
 This is a **team coordination skill**, not a Company OS operator skill. It
 operates on execution-plane objects (Mission, AgentTeam, AgentTeamRun, Work,
-TeamMessage) rather than company-plane objects (Document, TeamWork,
+Message, CanonicalMessageDelivery) rather than company-plane objects (Document, TeamWork,
 Organization, Finance). Do not use it to operate Docs, manage Organization
 membership, approve spending, or create governed Company OS records.
 
@@ -477,7 +481,7 @@ membership, approve spending, or create governed Company OS records.
 | Input | Requirement |
 | --- | --- |
 | Mission intent | Durable objective, completion criteria, constraints, and success standard. |
-| Current state | Mission Log, its Mission-owned Team, Works board, messages, pending interactions, Member/Supervisor health, and native-session bindings. |
+| Current state | Mission Log, its Mission-owned Team, Works board, correlated messages, Member/Supervisor health, and native-session bindings. |
 | Execution Space and Project Binding | Explicit `HARNESS_SPACE` and `HARNESS_PROJECT` selection. |
 | Decision boundary | Work to assign, Members to compose, and acceptance authority for submitted Work. |
 
@@ -490,8 +494,9 @@ or requested changes for each reviewed Work.
 
 ### Completion rule
 
-The skill is complete only when the Mission Log, Works board, TeamMessages, and
-WorkDelivery facts are reconstructable from durable store state. A conversation
+The skill is complete only when the Mission Log, Works board, current Messages,
+per-recipient CanonicalMessageDeliveries, and WorkDelivery facts are
+reconstructable from durable store state. A conversation
 handoff or visual page alone is not a completed Host cycle. No Work is `done`
 without explicit Host acceptance.
 
@@ -505,7 +510,8 @@ Inbox; coordinates with the Host or peers; uses provider-native subagents; or
 survives review and runtime restart.
 
 This is a **team coordination skill**, not a Company OS operator skill. It
-operates on execution-plane objects (Works board, TeamMessage, native session)
+operates on execution-plane objects (Works board, Message,
+CanonicalMessageDelivery, native session)
 rather than company-plane objects (Document, TeamWork, Organization, Finance).
 A Member may create follow-up Work but does not create Company OS TeamWorks,
 manage Organization membership, or approve spending.

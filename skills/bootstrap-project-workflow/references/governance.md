@@ -106,9 +106,9 @@ Do not create deep directories for one file unless a tool consumes that path.
 Documentation governance belongs in the delivery path whenever docs are an
 acceptance-critical artifact. The selected executor should report the changed
 or generated document paths, run the repository's documented governance checks,
-and attach both to its outcome. A Mission/Wave host can then make those artifacts
-and checks part of the Host's Wave decision without inventing a second internal
-plan.
+and attach both to its outcome. A Mission Host can then cite those artifacts
+and checks in the append-only Mission Log without inventing a second internal
+plan or lifecycle.
 
 The integration must remain honest about scope: a focused check proves only the
 declared outputs it inspected. Run the broad repository check when the change can

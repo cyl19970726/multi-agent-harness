@@ -2,7 +2,7 @@
 
 This is the canonical product-level architecture map. Detailed object contracts
 live under [company-os](../company-os/README.md). Implemented execution details
-remain documented by the Mission/Wave, Workflow, Agent Team, runtime, and
+remain documented by the Mission/Mission Log, Workflow, Agent Team, runtime, and
 provider specifications.
 
 ```mermaid
@@ -16,16 +16,17 @@ flowchart TB
   Actions["Scoped Queries + Action Commands"]
   Policy["Policy · Approval · Audit"]
   Org["Organization\nhumans · agent memberships · external · services"]
-  Collab["Collaboration spine\nconversation · activity · artifacts"]
+  Collab["Collaboration spine\nidentity-first Message · activity · artifacts"]
+  Delivery["CanonicalMessageDelivery\nper-recipient queue · receipt · ACK"]
   TeamWork["Agent Team Works\nownership · readiness · Kanban · review"]
   Work["Company Work\nTeamWorks · Milestones · business relations"]
   Approval["Approvals and Needs You"]
   Gov["Governance Agents\nDocs · Work · Finance · Org / HR"]
   Finance["Finance and Metrics"]
   Exec["Execution selection"]
-  Mission["Mission context / ordered Host-plan Waves"]
+  Mission["Mission context / append-only Mission Log"]
   Team["Independent AgentTeam / AgentTeamRun / MemberRun"]
-  Supervisor["Durable Team Supervisor\nlease · typed mail · claims · controls"]
+  Supervisor["Durable Team Supervisor\nlease · canonical delivery claims · controls"]
   Workflow["Dynamic Workflow"]
   Direct["Human / Agent Membership direct work"]
   Runtime["Providers · sessions · plugins · MCP"]
@@ -37,6 +38,7 @@ flowchart TB
   Home --> Org
   Org --> Collab
   Docs --> Collab
+  Collab --> Delivery
   Collab --> Work
   Docs --> Blocks
   Docs --> Views
@@ -61,6 +63,7 @@ flowchart TB
   TeamWork --> Supervisor
   TeamWork -.->|shared WorkCore| Work
   Supervisor --> Runtime
+  Delivery --> Supervisor
   Supervisor --> Fabric
   Fabric --> Runtime
   Workflow --> Runtime
@@ -83,17 +86,17 @@ flowchart TB
 | --- | --- | --- |
 | Docs and Modules | business structure, content, record types, relations, views, templates | provider execution lifecycle |
 | Organization | Actor identity, Human Owner → Lead Agent, optional role agents, role, authority, permissions, availability, capacity | one TeamRun attempt or work-routing inference |
-| Collaboration | cross-actor messages, interaction routing, artifacts, explicit outcomes, and provider-native session links | Work ownership, approval, finance truth, copied provider transcripts, or raw thinking |
+| Collaboration | identity-first Message, subscriptions, per-recipient CanonicalMessageDelivery, interaction routing, artifacts, explicit outcomes, and provider-native session links | Work ownership, RuntimeCommand authority, approval, finance truth, copied provider transcripts, or raw thinking |
 | Agent Team Works | TeamRun-scoped Work ownership, assigned/unassigned readiness, atomic claim, review, child delegation, and Kanban projection | authored conversation, company approval/finance, or provider transcript |
 | Company Work and Approval | WorkCore extension with Milestones, TeamWork responsibility, source/result provenance, policy gates, and execution reference | provider runtime or a second Agent Team scheduler |
 | Finance and Metrics | typed values, observations, audit, business relations | copied document display values |
-| Execution | Mission context/Host-plan Waves, one flat Mission-owned AgentTeam, durable NodeDaemon-fenced Team Supervisors, typed mail, Workflow, direct delivery | company organization or document truth; nested/reusable Teams or Wave runtime containment |
+| Execution | Mission context/append-only Mission Log, one flat Mission-owned AgentTeam, durable NodeDaemon-fenced Team Supervisors, canonical Message delivery, Workflow, direct delivery | company organization or document truth; nested/reusable Teams or Mission Log runtime containment |
 | Runtime | provider processes, native sessions, native activity readers/resume, plugins, MCP, and ephemeral projections | business approval, assignment inference, or a second provider history |
 | Remote Node Fabric | cross-machine RoutedOperation/Attempt/Receipt, mTLS gateway generations, reconcile, and bounded artifacts | a second Node identity, Message/Work/RuntimeCommand truth, or application-effect inference from transport |
 
 For persistent Agent Team members, Work ownership and continuous native
-execution are separate. Harness owns Work, WorkEvent, WorkDelivery, and the
-conversation mailbox; one
+execution are separate. Harness owns Work, WorkEvent, WorkDelivery, immutable
+Message, subscriptions, and per-recipient CanonicalMessageDelivery; one
 current `TeamSupervisorLease` generation owns delivery claims and live controls,
 while one selected execution driver owns provider cycles for a
 MemberRun/native session/writable Workspace. A provider receipt proves
@@ -121,6 +124,7 @@ same canonical records. Custom HTML/React receives scoped Queries and named
 Action Commands only; it cannot directly mutate company truth or bypass Policy,
 Approval, and Audit. Every Custom Page has a standard Document/View fallback.
 
-The obsolete coordination stack is retired by ADR 0028. ADR 0026 continues to
-define Mission/Wave execution, while ADR 0029 defines the programmable document
-runtime.
+The obsolete coordination stack is retired by ADR 0028. ADR 0051 defines the
+current Mission plus append-only Mission Log contract and retires Wave
+authoring; ADR 0026 is historical context. ADR 0029 defines the programmable
+document runtime.

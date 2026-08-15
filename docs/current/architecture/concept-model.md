@@ -15,10 +15,10 @@ The accepted product vision is:
 
 ```text
 Turn a project objective into agent-operable work:
-Mission -> ordered Host-plan Wave
+Mission -> append-only Mission Log
 Mission -> one flat AgentTeam -> TeamRun -> MemberRun
   -> Harness coordination / native session refs / artifacts
-  -> explicit Host advance -> Mission outcome
+  -> explicit Host judgment and closeout -> Mission outcome
 ```
 
 The harness is the coordination and evidence system. Project-specific tools are
@@ -26,8 +26,10 @@ connected through adapters.
 
 ## Active Vocabulary
 
-Mission/Wave is the only active coordination vocabulary and native contract
-for new work. The superseded coordination stack is governed by
+Mission plus its append-only Mission Log is the active coordination vocabulary
+and native contract for new work. Wave authoring and gates are retired under
+ADR 0051; pre-cutover Wave rows remain read/export-only historical context.
+The older superseded coordination stack is governed by
 [ADR 0028](../../decisions/0028-retire-goal-phase-task-graph.md) and is not exposed
 through product projections or authoring paths. Optional review and evaluation
 records may strengthen a high-risk gate, but they do not replace Mission
@@ -39,18 +41,18 @@ closeout or become mandatory hierarchy levels.
 flowchart TD
   Vision[Product Vision]
   Mission[Mission]
-  Wave[Native Wave]
+  MissionLog[Mission Log entry]
   Team[AgentTeam]
   TeamRun[AgentTeamRun]
   WorkflowRun[WorkflowRun]
   HostExec[Host execution]
   Message[Message]
-  TeamMessage[TeamMessage]
+  Delivery[CanonicalMessageDelivery]
   Member[AgentMember or MemberRun]
   Provider[NativeSessionRef / provider-owned execution]
   Event[Durable event stream]
   Evidence[Artifacts / optional Evidence]
-  Gate[Host Wave advance]
+  Judgment[Host judgment / closeout]
   Outcome[Mission outcome]
   Proposal[Proposal]
   Review[Review / Critic]
@@ -59,25 +61,23 @@ flowchart TD
   Case[reusable learning note]
 
   Vision --> Mission
-  Mission --> Wave
+  Mission --> MissionLog
   Mission --> Team
   Team --> TeamRun
-  Wave -. plan explains .-> TeamRun
-  Wave -. plan explains .-> WorkflowRun
-  Wave -. plan explains .-> HostExec
-  TeamRun --> TeamMessage
+  MissionLog -. judgment explains .-> TeamRun
+  MissionLog -. judgment explains .-> WorkflowRun
+  MissionLog -. judgment explains .-> HostExec
   TeamRun --> Member
   WorkflowRun --> Event
   HostExec --> Event
-  Message --> Member
-  TeamMessage --> Member
+  Message --> Delivery
+  Delivery --> Member
   Member --> Provider
   Provider --> Event
   Event --> Evidence
   Message --> Evidence
-  TeamMessage --> Evidence
-  Evidence --> Gate
-  Gate --> Outcome
+  Evidence --> Judgment
+  Judgment --> Outcome
   Mission --> Outcome
   Outcome -. optional governance .-> Eval
   Evidence -. repository governance .-> Proposal
@@ -87,11 +87,12 @@ flowchart TD
   Eval --> Case
 ```
 
-## Mission And Wave
+## Mission And Mission Log
 
 A `Mission` is the durable objective and one-Team ownership boundary.
-A `Wave` is a lightweight, versioned Markdown record of the Host's current
-plan and judgment.
+A `MissionLogEntry` is a lightweight append-only Markdown record of the Host's
+judgment, replan, recovery, or closeout evidence. It is part of the Mission's
+history, not another lifecycle object.
 
 Rules:
 
@@ -99,11 +100,13 @@ Rules:
   standard;
 - a Mission owns exactly one flat AgentTeam, and a Team belongs to exactly one
   Mission;
-- a Wave records changed facts, Work/member composition changes, blockers,
-  carry-over, evidence, and the Host's advance outcome;
-- a Wave does not require or expose a legacy dependency graph as a product concept;
-- a Wave is not an executor container, task graph, session boundary, or barrier;
-- replanning is an explicit Wave update/advance, not a hidden side effect;
+- a Mission Log entry records changed facts, Work/member composition changes,
+  blockers, carry-over, evidence, and the Host's judgment;
+- a Mission Log entry does not require or expose a dependency graph;
+- a Mission Log entry is not an executor container, task graph, session
+  boundary, gate, revision lifecycle, or barrier;
+- replanning appends a `replan` entry; it does not mutate or replace prior Host
+  judgment;
 - a Mission is not complete because activity happened; it is complete when its
   Host decisions and explicit closeout summary support the desired outcome. Stricter
   evidence or evaluation may be layered on when the domain or risk requires it.
@@ -115,12 +118,13 @@ alone.
 ## Execution Capabilities
 
 The Host may use an Agent Team, Dynamic Workflow, direct Host work, or a
-combination. Wave context explains the choice without owning the runtime.
+combination. Mission context and Mission Log judgment explain the choice
+without owning the runtime.
 
 ### `agent_team`
 
 Agent Team is for living collaborators with persistent session state, explicit
-Work ownership, review, and responsibility that may span Waves.
+Work ownership, review, and responsibility that spans the Mission as needed.
 
 A Member is the accountable end-to-end lane owner. Provider-native subagents
 are bounded internal helpers whose results, permissions, evidence, and review
@@ -134,7 +138,7 @@ Work assignment/claim -> WorkOperation(WorkEvent + resulting Work + deliveries)
   -> WorkDelivery
   -> MemberRun + Workspace + NativeSessionRef
   -> Work block / submission / review / acceptance
-  -> linked TeamMessage / PendingInteraction where needed
+  -> linked correlated Message/reply where needed
   -> explicit outcome + artifacts/check refs
 ```
 
@@ -161,7 +165,7 @@ targets, not canonical child records unless the harness actually controls them.
 
 ## Messages And Ownership
 
-Messages remain runtime facts, but a Wave does not contain a task graph. Agent
+Messages remain runtime facts, but a Mission Log does not contain a task graph. Agent
 Team ownership lives in Work; Dynamic Workflow owns its steps; Host execution
 records its observable outcome. Residual Assignment-message fields are removal
 debt and cannot define another ownership path.
@@ -170,12 +174,12 @@ debt and cannot define another ownership path.
 
 `AgentTeamRun` is one execution attempt of its required Mission-owned flat
 AgentTeam. It is not standalone, is not a standing organization, and is not
-owned by one historical Wave.
+owned by a Mission Log entry or one historical Wave.
 
 | Object | Meaning | Rule |
 | --- | --- | --- |
 | `AgentTeam` | One Mission's flat execution agency with Host and immutable Node placement. | One Team equals one Mission; there is no parent/child Team topology. |
-| `AgentTeamRun` | One Team execution with frozen Team, Node, and Project Binding. | May span Waves; every terminal run remains read-only history. |
+| `AgentTeamRun` | One Team execution with frozen Team, Node, and Project Binding. | May span many Mission Log judgments; every terminal run remains read-only history. |
 | `AgentIdentity` | Durable addressable agent identity and organization status. | It is not a provider process, Team membership, Work owner, or native transcript. |
 | `AgentSession` | One machine-local provider session owned by an exact NodeDaemon generation. | It has no Team identity and cannot outlive or bypass its NodeDaemon authority. |
 | `TeamMembership` | The collaboration overlay joining an AgentIdentity to one flat Team on the Team's immutable Node. | It does not own the provider session or Work result. |
@@ -184,7 +188,7 @@ owned by one historical Wave.
 | `Work` | TeamRun-scoped responsibility, owner, readiness, state, criteria and result. | Assignment, claim, block, submission and acceptance are Work operations governed by ADR 0050. |
 | `WorkOperation` | Crash-atomic Store replay row containing one WorkEvent, its complete resulting Work, delivery creates/updates, and target-caused WorkDelegation revisions. | It prevents Work, delivery, and cross-Team roll-up projections from becoming independently visible; Hosts still act on Work, not WorkOperation. |
 | `WorkDelivery` | Reliable delivery of one Work version to a Member runtime. | It reuses delivery machinery but is not authored conversation or Work ownership. |
-| `Message` | Immutable source-NodeDaemon-authored conversation envelope, addressed through canonical subscriptions. | It cannot carry Work ownership or runtime-control authority. |
+| `Message` | Immutable identity-authored, source-NodeDaemon-attested conversation envelope addressed through canonical subscriptions. | It cannot carry Work ownership or runtime-control authority. |
 | `MessageSubscription` / `SubscriptionCursor` | Recipient policy and exact delivery/ACK progress. | The browser and Control Plane cannot fabricate recipient state. |
 | `ExecutionNode` / `NodeDaemonLease` | Stable machine identity and its one active daemon generation. | One NodeDaemon owns all local Teams and registered Project Bindings. |
 | `TeamSupervisorLease` | Latest-wins cross-process authority for one active TeamRun generation. | Parent-fenced by NodeDaemon generation; owns this run's transports, claims, reconnect, and real controls. |
@@ -216,16 +220,25 @@ Relationship rules:
 - every message carries typed sender and recipient provenance; UI or MCP callers
   cannot impersonate a Member unless they are explicitly bound to that
   MemberRun;
-- the current Supervisor atomically claims delivery only after its provider
-  transport is healthy and records the native receipt. TeamMessage ACK is a
-  separate idempotent intake state; WorkDelivery has no ACK state and a Work
+- the current Supervisor atomically claims `CanonicalMessageDelivery` only
+  after its provider transport is healthy and records the native receipt.
+  Recipient acknowledgement/cursor progress is a separate idempotent delivery
+  fact; WorkDelivery has no ACK state and a Work
   claim/start records responsibility acknowledgement;
-- `Work`, `TeamMessage`, explicit outcomes, and Harness control facts may reference
+- `Work`, `Message`, explicit outcomes, and Harness control facts may reference
   artifacts or `Evidence`; the
-  Host Wave advance needs an explicit outcome but does not require
+  Host Mission closeout needs an explicit outcome but does not require
   Proposal/Review/Decision objects;
 - residual task-named runtime fields are removal debt, not the product model or
   a supported ownership path.
+
+`TeamMessage`, `TeamMessageProjection`, embedded delivery rows,
+`team_messages.jsonl`, and manual/legacy ACK APIs are pre-cutover compatibility
+records. They may be read or exported only through explicitly Legacy surfaces;
+they are never current authoring, delivery, inbox, interaction, or acceptance
+authority. Provider questions and answers use correlated current `Message`
+kinds and the same per-recipient `CanonicalMessageDelivery` path as ordinary
+conversation.
 
 ## Generic Object Model
 
@@ -284,17 +297,17 @@ define current product state and are not projected as active activity.
 The product contract and this repository's current self-hosting governance are
 deliberately different:
 
-- a Wave decision records the Host's `accepted | revise | blocked` judgment,
-  actor/time, outcome summary, a short note, and useful artifact refs;
+- Mission Log entries record Host judgment, replanning, recovery, and closeout
+  evidence with actor/time, a short note, and useful artifact refs;
 - AgentTeamRun and WorkflowRun remain distinct execution record types; a
   historical Wave does not need or own an `accepted_run_id`. That field is
   legacy direct-executor compatibility only;
 - a Mission outcome is based on accepted Work evidence and an explicit
   Mission-level closeout summary; historical Wave gates are read-only context;
-- this repository may layer review, evidence, or evaluation on high-risk Waves,
+- this repository may layer review, evidence, or evaluation on high-risk Missions,
   but those objects are not mandatory for every self-hosting change.
 
-The legacy governance chain must not leak into every Agent Team product Wave as
+The legacy governance chain must not leak into every Agent Team Mission as
 a mandatory object graph.
 
 ## Open-Enum Vocabularies

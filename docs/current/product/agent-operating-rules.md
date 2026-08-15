@@ -21,16 +21,18 @@ TeamWorks and Approvals; accountable actors execute them; results, evidence,
 metrics, and financial effects return to the originating records
 ([prd.md](prd.md), [company-os/README.md](../company-os/README.md)).
 
-Mission/Wave, Agent Team, Dynamic Workflow, Host execution, providers, plugins,
+Mission, Agent Team, Dynamic Workflow, Host execution, providers, plugins,
 and MCP are the shared execution foundation. `Mission` is durable intent and
-owns exactly one flat AgentTeam. `Wave` is a lightweight, versioned Markdown
-record of the Host's current plan and judgment; it is not an executor container
-or synchronization barrier. An AgentTeamRun may span multiple Waves while its
-MemberRuns and native sessions continue. ADR 0050 defines Work as member
+owns exactly one flat AgentTeam. Its append-only Mission Log records Host
+judgment, re-planning, recovery, and closeout evidence; it is part of Mission
+memory, not a lifecycle, executor container, gate, or synchronization barrier.
+An AgentTeamRun and its MemberRuns/native sessions continue across Mission Log
+entries. ADR 0050 defines Work as member
 responsibility and removes Assignment-message ownership. `WorkOperation`
-atomically preserves the resulting Work, its `WorkEvent`, and delivery deltas;
-`WorkDelivery` wakes or updates a Member runtime, and
-`TeamMessage` is authored conversation only. Dynamic Workflow owns its workflow steps; Host execution may use
+atomically preserves the resulting Work, its `WorkEvent`, and `WorkDelivery`
+deltas. Identity-first `Message` is authored conversation only;
+`MessageSubscription` selects authorized sources and each recipient has an
+independent `CanonicalMessageDelivery`. Dynamic Workflow owns its workflow steps; Host execution may use
 provider-native subagents as an implementation detail, with optional hooks for
 honest observation. The target contract allows thinking only as sanitized
 transient live state: it must not be persisted, replayed, treated as evidence,
@@ -83,7 +85,11 @@ evaluation, and operational decision are implemented authority; Company Work
 is only their read projection. Keep that distinction explicit. See
 concept-model.md.
 
-`Mission` and `Wave` are the only native coordination objects for new work. The
+`Mission` is the native coordination object for new work. Its append-only
+Mission Log is part of that Mission, not a second coordination object. `Wave`,
+its status/gate types, `Mission.wave_ids`, and `waves.jsonl` are pre-ADR-0051
+Legacy read/export compatibility only; no current path creates, updates,
+advances, or gates a Wave. The
 superseded coordination stack is being removed under
 [ADR 0028](../../decisions/0028-retire-goal-phase-task-graph.md): do not load it into
 normal planning context, create new records, use its commands, or add new
@@ -92,9 +98,19 @@ ledgers or code are deleted.
 
 For Agent Team execution, Harness owns the coordination records: `AgentTeam`,
 Mission relation, `AgentTeamRun`, `MemberRun` plus its native-session binding,
-`Work`, `WorkEvent`, `WorkDelivery`, `TeamMessage`, `PendingInteraction`,
-explicit outcome and artifact/check references, and control acknowledgements.
-Work owner and state prove responsibility; TeamMessage is authored conversation.
+`Work`, `WorkEvent`, `WorkDelivery`, identity-first `Message`,
+`MessageSubscription`, per-recipient `CanonicalMessageDelivery`, explicit
+outcome and artifact/check references, and control acknowledgements. Work owner
+and state prove responsibility; Message is authored conversation. The source
+NodeDaemon freezes author identity and source authority; display names and
+caller-selected fields never define authorship. Subscription policy determines
+authorized routing, while the target NodeDaemon owns each recipient's delivery
+state. `WorkDelivery`, `CanonicalMessageDelivery`, and `RuntimeCommand` are
+separate planes: no Message assigns Work or authorizes a provider effect, and
+no delivery receipt is semantic acceptance. `TeamMessage`,
+`TeamMessageProjection`, `team_messages.jsonl`, and their ACK/manual-ACK
+writers are retained only for explicitly named Legacy read/export. No current
+writer or acceptance path may depend on them.
 There is no Assignment Message compatibility path; stores using the retired
 Company task model must be reset. Those rows are disposable and are never
 migrated or dual-read into Unified Work.
@@ -106,9 +122,11 @@ streams into Harness ledgers
 
 Each MemberRun snapshots its concrete `ProviderIntegrationProfile`; platform
 capability, execution-mode capability, adapter coverage, and product permission
-are separate claims. Provider-native questions, approvals, or plan reviews that
-actually pause a turn must be routed as PendingInteraction records. Ordinary
-Host/Member planning remains correlated TeamMessage conversation. A provider
+are separate claims. Provider-native questions that pause a turn are
+`provider_interaction_request` Messages; answers are correlated
+`provider_interaction_response` Messages. AgentSession permissions are frozen
+before provider start; there is no second permission lifecycle. Ordinary
+Host/Member planning remains correlated Message conversation. A provider
 `completed` status is not by itself proof of semantic success, answer, or
 approval.
 
@@ -127,9 +145,9 @@ New Agent Team members use only their persistent bidirectional mode:
 `codex_exec`/`claude_cli` paths belong to Dynamic Workflow and historical
 reads; they are not Team fallbacks. The Host explicitly creates, messages,
 inspects, interrupts, closes, and resumes members. Interrupt stops one current
-turn; Close ends the member runtime; Wave or TeamRun completion never implies
-Close. Physical live control handles remain process-local to the machine
-NodeDaemon. Its durable lease owns all local Team contexts; each Team
+turn; Close ends the member runtime; Mission closeout, a Mission Log entry, or
+TeamRun completion never implies Close. Physical live control handles remain
+process-local to the machine NodeDaemon. Its durable lease owns all local Team contexts; each Team
 Supervisor lease is parent-fenced by the daemon generation and contains a
 loopback service locator. Dashboard, CLI, and MCP clients route controls to
 that owner; it revalidates both generations, status, and expiry immediately
@@ -164,7 +182,8 @@ the harness must not claim lifecycle control it does not have.
 Do not claim that Mission-scoped Agent Team work was accepted unless the store
 shows:
 
-- a native Mission, its linked `AgentTeam`, and the relevant Host-plan Wave;
+- a native Mission, its linked `AgentTeam`, and the relevant Mission Log
+  judgment entries;
 - one or more Mission-scoped `AgentTeamRun` records;
 - role-specific MemberRuns and owned or claimed Works for actual members;
 - ordered WorkOperations preserving append-only WorkEvents, resulting Work
@@ -173,8 +192,8 @@ shows:
 - Work-linked conversation where questions, explanation, or peer coordination
   occurred;
 - submitted results and explicit Host acceptance, plus artifact/check refs;
-- an explicit Host Wave advance decision. Active unrelated Works may
-  continue into the next Wave.
+- an explicit Host closeout/advance judgment. Active unrelated Works may
+  continue across the next Mission Log entry.
 
 Execution claims must also resolve to the provider-native session when the
 member used a provider. Missing or incompatible native sessions are reported
@@ -191,17 +210,18 @@ without inventing controlled child objects.
 The Lead Agent should use this sequence for non-trivial new work:
 
 1. Inspect relevant code/docs and native state with `firm mission list`,
-   `firm wave list`, and the Agent Team/Dynamic Workflow surfaces needed.
-2. Create or select the Mission and its one flat AgentTeam, then write the
-   current ordered Wave as Markdown plan and judgment.
-3. Let each executor own its internal plan. A Wave records what changed, what
-   the Host decided, which work carries forward, and why it can advance.
+   `firm mission show`, and the Agent Team/Dynamic Workflow surfaces needed.
+   Use `firm wave list/show/history` only when reconstructing Legacy records.
+2. Create or select the Mission and its one flat AgentTeam, then append the
+   current Host judgment to the Mission Log before the material action.
+3. Let each executor own its internal plan. A Mission Log entry records what
+   changed, what the Host decided, which work carries forward, and why.
 4. For Agent Team work, create one Team/Node/Project-fenced TeamRun and put every lane on
    its shared Works board. Assign bounded responsibility directly or expose
    eligible unassigned Work for atomic claim. Give concurrent members
    disjoint owned paths or explicit conflict boundaries. Let each Member decide
    whether to create its own same-repository worktree and surface shared-file
-   conflicts to the Host. Do not pass a Wave id on the primary path.
+   conflicts to the Host. A current path has no Wave id.
 5. Keep Harness-owned WorkOperations/WorkEvents, WorkDelivery, checks, artifact references,
    blockers, submissions, Host acceptance, control acknowledgements, and
    outcomes durable. Keep provider chat, tool,
@@ -210,17 +230,18 @@ The Lead Agent should use this sequence for non-trivial new work:
 6. Apply review proportional to risk. A reviewer member or stricter repository
    governance may be added when useful, but Proposal/Decision/outcome
    evaluation is not a universal product chain.
-7. Advance the Wave from an explicit Host outcome. Do not wait for unrelated
-   member work; carry its same Work, MemberRun, and native session into
-   the next Wave.
-8. Re-plan the next Wave from plan-vs-actual deviation and close the Mission
-   with an explicit outcome summary. Closing never archives or deletes a team.
+7. Append an explicit Host outcome/next judgment to the Mission Log. Do not
+   wait for unrelated member work; carry its same Work, MemberRun, and native
+   session across entries.
+8. Re-plan with another append-only entry from plan-vs-actual deviation and
+   close the Mission with an explicit outcome summary. Closing never archives
+   or deletes a team.
 
 When the work is a Harness dogfood run, follow
 [product/agent-team-dogfood-loop.md](agent-team-dogfood-loop.md). A
-discovered defect is not the end of dogfood: the Host classifies it, opens a
-Repair Wave or tracked issue, fixes it on a clean lane, reruns the original
-scenario, and only then expands the pressure matrix. Do not weaken the scenario
+discovered defect is not the end of dogfood: the Host classifies it, appends a
+repair judgment and opens tracked Work/issue, fixes it on a clean lane, reruns
+the original scenario, and only then expands the pressure matrix. Do not weaken the scenario
 or manually edit store evidence to make a run appear green.
 
 Useful local commands:
@@ -245,10 +266,11 @@ target/debug/firm serve --addr 127.0.0.1:8787
 npx pnpm@9.15.4 acceptance:mission-wave
 ```
 
-`acceptance:mission-wave` proves the deterministic Mission/Wave, Agent Team,
-MCP, Kimi ACP adapter, and Dashboard contracts. A real-provider claim still
-requires a separately recorded native live run; the deterministic gate is not
-live-provider evidence.
+`acceptance:mission-wave` is a retained compatibility command name. It proves
+the deterministic current Mission/Mission Log, Agent Team, MCP, Kimi ACP
+adapter, and Dashboard contracts plus Legacy Wave read-only behavior. A
+real-provider claim still requires a separately recorded native live run; the
+deterministic gate is not live-provider evidence.
 
 ## Execution Space And Project Binding
 
@@ -259,7 +281,7 @@ The operator rules are:
 
 One `serve` / dashboard manages independent Execution Spaces and Project
 Bindings. Execution Spaces under `~/.firm/execution-spaces/<id>/` own
-Mission/Wave, Agent Team, and Workflow coordination. Project Bindings identify
+Mission, Agent Team, and Workflow coordination. Project Bindings identify
 the registered Git repository/directory where providers execute and discover
 instructions, Skills, plugins, and MCP configuration. Selecting `--project`
 never switches the coordination store.
@@ -289,7 +311,7 @@ are valid. Treat cwd as an explicit execution and permission boundary.
 `ProjectContext` is compatibility infrastructure. Do not infer that a Git
 repository owns execution or Company OS truth. An Agent Company Workspace /
 Company Store may contain multiple operating areas while external repositories
-remain Project Bindings or source/delivery mappings. Mission/Wave, Agent Team,
+remain Project Bindings or source/delivery mappings. Mission, Agent Team,
 Dynamic Workflow, and Host execution remain usable with no Company Store.
 
 ## Skills Are Optional Capabilities
@@ -311,24 +333,25 @@ skills; the generic harness core must stay domain-neutral.
 
 ## Self-Hosting Rules
 
-This repository should dogfood native Mission/Wave and the executor it is
-changing once that slice is capable of running the work. A bootstrap change
+This repository should dogfood native Mission and Mission Log behavior plus the
+executor it is changing once that slice is capable of running the work. A bootstrap change
 that creates or repairs the native path may use the current host/subagent
 mechanism, but must say so and add focused acceptance for the path it creates.
 
 - For meaningful product, schema, CLI, dashboard, provider, adapter, or skill
-  changes, prefer a native Mission/Wave run when the needed executor path
+  changes, prefer a native Mission run when the needed executor path
   works.
 - A small typo or single-line doc fix may be Lead-local, but the final summary
   must say that it was a Lead-local exception.
 - Any feature claim about Agent Team behavior must be backed by linked
   team/run, member/native-session binding, owned or claimed Work, WorkEvent and
   WorkDelivery lineage, explicit submission/Host acceptance, useful
-  artifact/check references, Host Wave decisions, and
+  artifact/check references, Host Mission Log judgments, and
   resolvable native provider records for claims about the member's own
   execution.
-- When the current workflow feels slow or manual, record a follow-up Wave or
-  issue instead of normalizing hidden local reasoning.
+- When the current workflow feels slow or manual, append the judgment and
+  record follow-up Work or an issue instead of normalizing hidden local
+  reasoning.
 - Prefer the progression `doc -> skill -> schema -> CLI/API -> dashboard ->
   plugin`. A plugin is justified only after the object contracts and commands
   are stable enough to reduce variance.
@@ -380,16 +403,16 @@ companion.
 | Former AGENTS.md content | Now lives in | Notes |
 | --- | --- | --- |
 | Product We Are Building — two primary systems | Root §Product Identity | Canonical: [prd.md](prd.md), [company-os/README.md](../company-os/README.md) |
-| Product We Are Building — Mission/Wave relations diagram and semantics | Root §Product Identity; here §Product Context | Full prose kept here |
+| Product We Are Building — Mission/Mission Log relations diagram and semantics | Root §Product Identity; here §Product Context | Full prose kept here |
 | Product We Are Building — Work responsibility, Work-linked conversation, thinking-as-transient contract | Here §Product Context | Thinking stays non-persisted; live display channel still pending |
 | Product We Are Building — shared substrate, capability claims, interactive controls | Root invariant 5 (gate); here §Product Context | Substrate contract: agent-runtime.md |
 | Product We Are Building — provider release discovery and version maintenance | Root invariant 5; here §Product Context | Full procedure kept here |
 | Product We Are Building — flat AgentTeams + Docs direction, honesty about planned objects | Root invariant 10; here §Product Context | ADR 0052 |
 | Product We Are Building — Trademark scenario, module placement | Here §Product Context | Canonical scenario: [prd.md](prd.md) |
 | Native Product And Execution Objects — object inventory | Here §Native Product And Execution Objects | concept-model.md |
-| Native Product And Execution Objects — Mission/Wave only, ADR 0028 retirement | Root invariant 3; here §Native Product And Execution Objects | — |
+| Native Product And Execution Objects — Mission current authority, Legacy Wave and ADR 0028 retirement | Root invariant 3; here §Native Product And Execution Objects | — |
 | Agent Team execution records, Work responsibility/delivery proof, native-session boundary | Root invariants 1–2; here §Native Product And Execution Objects and §Acceptance Evidence | ADR 0032; the exact phrases `provider's native`, `streams into Harness ledgers`, and `Resume must use the provider-native session id` must stay in root AGENTS.md — `scripts/check-native-session-boundary.mjs` greps for them |
-| MemberRun ProviderIntegrationProfile, PendingInteraction, `completed` ≠ success | Root invariants 1–2; here §Native Product And Execution Objects | — |
+| MemberRun ProviderIntegrationProfile, correlated questions, `completed` ≠ success | Root invariants 1–2; here §Native Product And Execution Objects | — |
 | Trusted-development Team policy and worktree norms | Root invariant 6; here §Native Product And Execution Objects | — |
 | Member modes, interrupt/close, Team Supervisor lease, reconciliation | Root invariant 7; here §Agent Team Member Lifecycle And Control | — |
 | No Plan Mode / Plan Gate | Root invariant 9; here §Agent Team Member Lifecycle And Control | — |

@@ -10,9 +10,9 @@ Agent executes:
 
 ```text
 Execution Space                    Project Binding
-Mission / Wave                     provider cwd
+Mission / Mission Log              provider cwd
 Agent Team / TeamRun / MemberRun   AGENTS.md / CLAUDE.md / config
-TeamMessage / PendingInteraction   project-local Skills
+Message / correlated reply        project-local Skills
 WorkflowRun / WorkflowStep         Git / worktree / permission boundary
 ```
 
@@ -23,15 +23,16 @@ Finance, and governance. Execution does not require a Company.
 
 1. `--space` selects coordination storage.
 2. `--project` selects provider execution context.
-3. Selecting a Project Binding never moves or switches Mission/Wave, Agent
+3. Selecting a Project Binding never moves or switches Mission/Mission Log, Agent
    Team, or Workflow rows.
 4. Selecting an Execution Space never changes Company truth.
 5. Provider cwd is never a Company Store or Execution Space directory.
 6. Provider-native sessions remain the sole transcript/tool/turn truth and are
    referenced rather than copied.
-7. The latest Team Supervisor generation and typed mailbox route records live
-   in the Execution Space; Project Binding changes never transfer live control
-   ownership or message provenance.
+7. The latest Team Supervisor generation, MessageSubscription policies and
+   per-recipient CanonicalMessageDelivery records live in the Execution Space;
+   Project Binding changes never transfer live control ownership or Message
+   provenance.
 
 ## Physical layout
 
@@ -42,14 +43,15 @@ Finance, and governance. Execution does not require a Company.
 │   └── <space-id>/
 │       ├── metadata.json
 │       ├── missions.jsonl
-│       ├── waves.jsonl
+│       ├── waves.jsonl            # ADR-0051-predecessor Legacy read/export only
 │       ├── teams.jsonl
 │       ├── team_runs.jsonl
 │       ├── member_runs.jsonl
 │       ├── works.jsonl
 │       ├── work_events.jsonl
 │       ├── work_deliveries.jsonl
-│       ├── team_messages.jsonl
+│       ├── agentfirm_trust_operations.jsonl  # current Message fabric projections
+│       ├── team_messages.jsonl                # Legacy read/export only
 │       ├── team_supervisor_leases.jsonl
 │       ├── workflow_runs.jsonl
 │       └── workflow_steps.jsonl
@@ -169,7 +171,7 @@ HARNESS_BIN
 
 `HARNESS_PROJECT_ID` is the stable binding id. `HARNESS_PROJECT` is an
 executable selector, normally the canonical project root.
-Conversation correlation belongs to an actual TeamMessage envelope; it is not
+Conversation correlation belongs to an actual immutable Message envelope; it is not
 a process-wide responsibility variable.
 
 ## Selection precedence
@@ -284,7 +286,7 @@ The deterministic suite uses isolated HOME directories and fake providers:
 ```bash
 pnpm test:multi-project
 cargo test -p firm-cli --test execution_space_cli
-cargo test -p firm-cli --test team_run_start
+cargo test -p firm-cli --test team_run_api --test team_run_daemon
 cargo test -p firm-cli --test workflow_cwd
 pnpm check:dashboard
 ```

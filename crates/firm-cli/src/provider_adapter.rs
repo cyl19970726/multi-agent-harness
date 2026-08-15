@@ -315,8 +315,8 @@ pub(crate) fn open_node_session(
                     member_name: display_name,
                     collaboration_env: &[],
                     plan_mode: false,
-                    sandbox: Some(permission_mapping.native_sandbox.as_str()),
-                    approval_policy: Some(permission_mapping.native_approval.as_str()),
+                    sandbox: permission_mapping.native_sandbox.as_str(),
+                    approval_policy: permission_mapping.native_approval.as_str(),
                 },
             )
             .map_err(|error| format!("PROVIDER_SESSION_START_FAILED: {error}"))?;
@@ -588,16 +588,30 @@ pub(crate) fn map_permission(
         return Err(format!("PROVIDER_CAPABILITY_UNPROVABLE: {provider}"));
     }
     let (native_sandbox, native_approval) = match (provider, requested) {
-        ("codex", PermissionCeiling::ReadOnly) => ("read-only", "on-request"),
-        ("codex", PermissionCeiling::WorkspaceWrite) => ("workspace-write", "on-request"),
-        ("codex", PermissionCeiling::FullAccess) => ("danger-full-access", "on-request"),
+        // The AgentSession freezes its effective ceiling before provider start.
+        // Codex therefore receives a native sandbox plus `never`: operations
+        // inside the sandbox proceed directly and operations outside it fail
+        // closed instead of opening a second permission lifecycle.
+        ("codex", PermissionCeiling::ReadOnly) => ("read-only", "never"),
+        ("codex", PermissionCeiling::WorkspaceWrite) => ("workspace-write", "never"),
+        ("codex", PermissionCeiling::FullAccess) => ("danger-full-access", "never"),
         ("claude", PermissionCeiling::ReadOnly) => ("plan", "default"),
         ("claude", PermissionCeiling::WorkspaceWrite) => ("acceptEdits", "default"),
-        ("kimi" | "pi", PermissionCeiling::ReadOnly) => ("read-only", "default"),
-        ("kimi" | "pi", PermissionCeiling::WorkspaceWrite) => ("workspace-write", "default"),
+        ("pi", PermissionCeiling::ReadOnly) => ("read-only", "default"),
+        ("pi", PermissionCeiling::WorkspaceWrite) => ("workspace-write", "default"),
+        // Kimi ACP exposes permission callbacks but no provider-native
+        // read-only/workspace sandbox that Harness can prove. It is therefore
+        // admissible only when the frozen Session itself is full access; exact
+        // allow intents cannot widen that ceiling.
+        ("kimi", PermissionCeiling::FullAccess) => ("provider-native-full-access", "exact_allow"),
+        ("kimi", PermissionCeiling::ReadOnly | PermissionCeiling::WorkspaceWrite) => {
+            return Err(format!(
+                "PROVIDER_PERMISSION_MISMATCH: {provider} cannot prove {requested:?}"
+            ))
+        }
         // These adapters cannot prove a native ceiling equivalent to explicit
         // full access. Failing closed is safer than silently widening.
-        ("claude" | "kimi" | "pi", PermissionCeiling::FullAccess) => {
+        ("claude" | "pi", PermissionCeiling::FullAccess) => {
             return Err(format!(
                 "PROVIDER_PERMISSION_MISMATCH: {provider} cannot prove full_access"
             ))
@@ -644,7 +658,7 @@ mod tests {
 
     #[test]
     fn four_provider_conformance_matrix_is_closed_and_fail_closed() {
-        for provider in ["codex", "claude", "kimi", "pi"] {
+        for provider in ["codex", "claude", "pi"] {
             let capabilities = team_loop_capabilities(provider).expect("known provider");
             assert!(capabilities.create_attach_resume);
             assert!(capabilities.queue_next_turn);
@@ -662,12 +676,15 @@ mod tests {
             }
         }
         assert!(map_permission("unknown", PermissionCeiling::ReadOnly).is_err());
-        for provider in ["claude", "kimi", "pi"] {
+        for provider in ["claude", "pi"] {
             assert!(map_permission(provider, PermissionCeiling::FullAccess).is_err());
         }
+        assert!(map_permission("kimi", PermissionCeiling::ReadOnly).is_err());
+        assert!(map_permission("kimi", PermissionCeiling::WorkspaceWrite).is_err());
+        let kimi = map_permission("kimi", PermissionCeiling::FullAccess).unwrap();
+        assert_eq!(kimi.native_approval, "exact_allow");
         let codex = map_permission("codex", PermissionCeiling::FullAccess).unwrap();
-        assert_eq!(codex.native_approval, "on-request");
-        assert_ne!(codex.native_approval, "never");
+        assert_eq!(codex.native_approval, "never");
         assert!(control_plan("unknown", ProviderControlAction::CancelProviderTurn).is_err());
     }
 

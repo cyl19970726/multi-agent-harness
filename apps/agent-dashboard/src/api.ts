@@ -12,14 +12,12 @@ import type {
   Message,
   Mission,
   NativeActivityProjection,
-  PendingInteraction,
   Project,
   TeamMessageProjection,
   TeamMemberCloseRequest,
   TeamSupervisorLease,
   TeamRun,
   TeamRunEvent,
-  Wave,
   WorkflowDef,
   WorkflowRun,
   WorkflowStep,
@@ -311,7 +309,7 @@ export async function fetchNativeWorkflowStepActivity(
 
 /**
  * Enumerate Project Bindings. These entries define execution/source boundaries
- * and do not own Mission/Wave/Team/Workflow storage.
+ * and do not own Mission/Team/Workflow storage.
  */
 export async function fetchProjects(
   baseUrl: string,
@@ -489,14 +487,12 @@ export type SseFrame =
   // latest-wins by id so a replayed frame self-heals.
   | { kind: "team_run_event"; event: TeamRunEvent }
   | { kind: "mission"; mission: Mission }
-  | { kind: "wave"; wave: Wave }
   | { kind: "agent_team_run"; run: TeamRun }
   | { kind: "member_run"; member: MemberRun }
   | { kind: "team_message"; message: TeamMessageProjection }
   | { kind: "team_supervisor_lease"; lease: TeamSupervisorLease }
   | { kind: "team_member_close_request"; request: TeamMemberCloseRequest }
   | { kind: "member_action"; action: MemberAction }
-  | { kind: "pending_interaction"; interaction: PendingInteraction }
   | { kind: "member_activity"; activity: LiveMemberActivity };
 
 export type ProjectionScope = "execution_space" | "company";
@@ -607,10 +603,6 @@ export function openEventStream(
     const data = parse<Mission>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "mission", mission: data });
   });
-  source.addEventListener("wave", (event) => {
-    const data = parse<Wave>(event as MessageEvent);
-    if (data) handlers.onFrame({ kind: "wave", wave: data });
-  });
   source.addEventListener("agent_team_run", (event) => {
     const data = parse<TeamRun>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "agent_team_run", run: data });
@@ -634,10 +626,6 @@ export function openEventStream(
   source.addEventListener("member_action", (event) => {
     const data = parse<MemberAction>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "member_action", action: data });
-  });
-  source.addEventListener("pending_interaction", (event) => {
-    const data = parse<PendingInteraction>(event as MessageEvent);
-    if (data) handlers.onFrame({ kind: "pending_interaction", interaction: data });
   });
   source.addEventListener("member_activity", (event) => {
     const data = parse<LiveMemberActivity>(event as MessageEvent);
@@ -665,14 +653,12 @@ export function applyFrame(snapshot: DashboardSnapshot, frame: SseFrame): Dashbo
     case "workflow_step":
     case "team_run_event":
     case "mission":
-    case "wave":
     case "agent_team_run":
     case "member_run":
     case "team_message":
     case "team_supervisor_lease":
     case "team_member_close_request":
     case "member_action":
-    case "pending_interaction":
       return snapshot;
     case "member_activity": {
       const current = snapshot.live_member_activity ?? {};

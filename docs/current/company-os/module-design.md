@@ -132,7 +132,7 @@ an application status or fee amount.
 ## Relationship to the Document System
 
 This is the change-management contract for the [Document System](document-system.md).
-It does not replace the canonical execution contracts of Mission/Wave, Agent
+It does not replace the canonical execution contracts of Mission/Mission Log, Agent
 Team, Dynamic Workflow, or host execution. A module may invoke those tools,
 but it remains responsible for retaining business context, authority, results,
 and relations in the Company OS.

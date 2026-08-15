@@ -24,7 +24,7 @@ import { TEAM_MEMBER_PROVIDER_MODES } from "@/lib/provider";
 import { createTeam, createTeamRun, startTeamRun, type TeamRunMemberSpec } from "../api/actions";
 import type { SelectionState } from "../app/selection";
 import type { WorkbenchModel } from "../model/readModel";
-import type { AgentTeam, MemberRun, Mission, ProviderLaunchProfile, TeamRun, Wave } from "../types";
+import type { AgentTeam, MemberRun, Mission, ProviderLaunchProfile, TeamRun } from "../types";
 
 interface AgentTeamsHomeProps {
   model: WorkbenchModel;
@@ -37,7 +37,6 @@ interface NativeAttempt {
   run: TeamRun;
   team?: AgentTeam;
   mission?: Mission;
-  legacyWave?: Wave;
   members: MemberRun[];
 }
 
@@ -46,7 +45,6 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
   const snapshot = model.snapshot;
   const [teamOpen, setTeamOpen] = useState(false);
   const [runDialogTeam, setRunDialogTeam] = useState<AgentTeam | undefined>();
-  const waves = new Map((snapshot.waves ?? []).map((wave) => [wave.id, wave]));
   const missions = new Map((snapshot.missions ?? []).map((mission) => [mission.id, mission]));
   const teams = new Map((snapshot.teams ?? []).map((team) => [team.id, team]));
   const membersByRun = groupBy(snapshot.member_runs ?? [], (member) => member.team_run_id);
@@ -56,11 +54,7 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
       if (!team) return [];
       const mission = missions.get(team.mission_id);
       if (!mission) return [];
-      const legacyWave = [...waves.values()].find((candidate) =>
-        (candidate.executor_run_ids ?? []).includes(run.id),
-      );
-      if (legacyWave && legacyWave.mission_id !== team.mission_id) return [];
-      return [{ run, team, mission, legacyWave, members: membersByRun.get(run.id) ?? [] }];
+      return [{ run, team, mission, members: membersByRun.get(run.id) ?? [] }];
     })
     .sort((left, right) => timestamp(right.run.updated_at ?? right.run.created_at) - timestamp(left.run.updated_at ?? left.run.created_at));
 
@@ -124,7 +118,7 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
           </Button>
           <button
             type="button"
-            onClick={() => onSelectionChange({ surface: "missions", missionId: undefined, waveId: undefined, teamId: undefined })}
+            onClick={() => onSelectionChange({ surface: "missions", missionId: undefined, teamId: undefined })}
             className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-2 text-xs font-medium text-foreground transition-colors hover:border-primary/30 hover:bg-primary/[0.035]"
           >
             Open Missions <ArrowRight className="size-3.5" />
@@ -172,7 +166,7 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
       ) : (
         <section className="pt-5" aria-label="Agent Team attempts">
           <div className="grid gap-3 lg:grid-cols-2">
-            {attempts.map(({ run, team, mission, legacyWave, members }) => {
+            {attempts.map(({ run, team, mission, members }) => {
               const tone = runTone(run.status);
               const pressure = members.filter((member) => ["blocked", "failed", "waiting", "reviewing", "disconnected"].includes(member.status ?? ""));
               const attemptTotal = team ? attemptTotalByTeam.get(team.id) : undefined;
@@ -215,7 +209,6 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
                         {mission
                           ? `${mission.title} · Mission-scoped`
                           : "Mission relation unavailable"}
-                        {legacyWave ? ` · Legacy Wave ${legacyWave.index}` : ""}
                       </span>
                       <span className="mt-1 block truncate text-[11px] text-muted-foreground">
                         Host Agent · {teamLeadLabel(team?.host_agent_id)}
@@ -467,7 +460,6 @@ function RunDialog({
   onClose: () => void;
 }) {
   const durableMembers = model.snapshot.members ?? [];
-  const missions = model.snapshot.missions ?? [];
   const resolvedMembers = (team.member_ids ?? [])
     .map((id) => durableMembers.find((member) => member.id === id))
     .filter((member): member is ProviderLaunchProfile => Boolean(member));
@@ -481,7 +473,6 @@ function RunDialog({
     ),
   );
   const [objective, setObjective] = useState("");
-  const [missionId, setMissionId] = useState("");
   const [executionRoot, setExecutionRoot] = useState("");
   const [budget, setBudget] = useState("");
   const [providerOverrides, setProviderOverrides] = useState<Record<string, string>>({});
@@ -526,7 +517,6 @@ function RunDialog({
     const descriptor = createTeamRun({
       objective: objective.trim(),
       agentTeamId: team.id,
-      missionId: missionId || undefined,
       executionRoot: executionRoot.trim() || undefined,
       budgetLimitUsd: Number.isFinite(budgetValue) && budgetValue > 0 ? budgetValue : undefined,
       members,
@@ -599,16 +589,6 @@ function RunDialog({
                 </div>
               )
             }
-          </Field>
-          <Field label="Mission" hint="Optional Mission scope; standalone runs stay independent.">
-            {(id) => (
-              <Select id={id} value={missionId} onChange={(event) => setMissionId(event.target.value)}>
-                <option value="">Standalone run</option>
-                {missions.map((mission) => (
-                  <option key={mission.id} value={mission.id}>{mission.title}</option>
-                ))}
-              </Select>
-            )}
           </Field>
           <Field label="Execution root" hint="Optional workspace path; defaults to the selected project binding.">
             {(id) => <TextInput id={id} value={executionRoot} onChange={(event) => setExecutionRoot(event.target.value)} />}
