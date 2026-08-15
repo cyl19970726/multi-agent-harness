@@ -15,20 +15,20 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
     build_launch_spec, content_hash_hex16, provider_interaction_response_id, AgentTeam,
-    AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence, ExecutionNode, ExecutionNodeStatus,
-    ExecutionSpace, GitHubLink, GitHubLinkKind, HostAttention, HostAttentionStatus,
-    HostBindingLease, HostBindingLeaseOwnerKind, HostControlMode, HostDispatchConfig, LaunchMcp,
-    LaunchPermission, LaunchSpec, LegacyWave, MemberAction, MemberActionStatus,
-    MemberCoordinationStatus, MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot,
-    MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind, MissionStatus,
-    NativeSessionAvailability, NativeSessionRef, NodeDaemonLeaseStatus, NodeProjectRegistration,
-    NodeProjectRegistrationStatus, OrdinaryMessageBoundary, ProjectContext, ProjectKind,
-    ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
-    ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityAdmission,
-    ProviderCompatibilityAdmissionLifecycle, ProviderCompatibilityAdmissionPolicy,
-    ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
-    ProviderCompatibilityBlockSource, ProviderCompatibilityStatus, ProviderControlValue,
-    ProviderDispatchAttempt, ProviderDispatchIntent, ProviderEventFidelity,
+    AgentTeamRun, AgentTeamStatus, ControlTopology, DelegationRun, Evidence, ExecutionNode,
+    ExecutionNodeStatus, ExecutionSpace, GitHubLink, GitHubLinkKind, HostAttention,
+    HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind, HostControlMode,
+    HostDispatchConfig, LaunchMcp, LaunchPermission, LaunchSpec, LegacyWave, MemberAction,
+    MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver, MemberRunStatus,
+    MemberWorkspaceSnapshot, MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind,
+    MissionStatus, NativeSessionAvailability, NativeSessionRef, NodeDaemonLeaseStatus,
+    NodeProjectRegistration, NodeProjectRegistrationStatus, OrdinaryMessageBoundary,
+    ProjectContext, ProjectKind, ProviderAccountRef, ProviderCapabilities,
+    ProviderCapacityConfidence, ProviderCapacityEvidence, ProviderCapacitySnapshot,
+    ProviderCapacityState, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
+    ProviderCompatibilityAdmissionPolicy, ProviderCompatibilityBlockBoundary,
+    ProviderCompatibilityBlockCause, ProviderCompatibilityBlockSource, ProviderCompatibilityStatus,
+    ProviderControlValue, ProviderDispatchAttempt, ProviderDispatchIntent, ProviderEventFidelity,
     ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
     ProviderIntegrationProfile, ProviderInteractionMessageOption, ProviderInteractionMode,
     ProviderInteractionRequestBody, ProviderInteractionResponseBody, ProviderInteractionType,
@@ -36,14 +36,15 @@ use harness_core::{
     ProviderProcessHealth, ProviderProcessStatus, ProviderResponseIntent,
     ProviderRuntimeContextFact, ProviderRuntimeProjection, ProviderWorkDispatch,
     ProviderWorkDispatchStatus, RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage,
-    RegistryMessageIntent, Review, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
-    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection,
-    TeamRecipientKind, TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus,
-    TeamSupervisorLease, Validate, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext,
-    WorkCondition, WorkDelegation, WorkDelegationState, WorkPhase, WorkPriority, WorkRef,
-    WorkResolution, WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus,
-    WorkflowPatch, WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep,
-    WorkflowStepStatus, WorkflowTerminalReason, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
+    RegistryMessageIntent, Review, SecurityEnforcementLocus, SecurityEnforcementLocusKind,
+    SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus,
+    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection, TeamRecipientKind,
+    TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease,
+    Validate, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition,
+    WorkDelegation, WorkDelegationState, WorkPhase, WorkPriority, WorkRef, WorkResolution,
+    WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch,
+    WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    WorkflowTerminalReason, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
     canonical_surface, CanonicalMemberRunAdmission, HarnessStore, HostAttentionClaimResult,
@@ -73,6 +74,8 @@ mod remote_fabric;
 mod resident;
 mod role_actions_api;
 mod role_views_api;
+mod runtime_adapter;
+mod runtime_adapter_contract;
 mod sse;
 #[cfg(unix)]
 mod supervisor_daemon;
@@ -7986,6 +7989,10 @@ fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                         "team_member_profile": profile,
                         "operational_compatibility": resolution.ok(),
                         "version_probe_error": detected.err(),
+                        // Executable per-intent capability report (DOC-89):
+                        // null until the provider's binding migrates to the
+                        // provider-neutral adapter.
+                        "runtime_capability_bindings": crate::runtime_adapter::capability_bindings_for(adapter.name()),
                     })
                 })
                 .collect();
@@ -8987,6 +8994,280 @@ fn validate_team_member_identity(store: &HarnessStore, member: &TeamMemberSpec) 
     Ok(())
 }
 
+/// Resolved-composition fingerprint for a ProviderIntegrationProfile
+/// (DOC-89 §11.1): pins provider + execution mode + adapter contract/bridge
+/// revision. External-protocol adapters have no plugin tree to resolve yet;
+/// when a native bridge exists, its resolved composition joins this input.
+fn profile_composition_fingerprint(
+    provider: &str,
+    execution_mode: &str,
+    adapter_contract_version: Option<&str>,
+) -> Option<String> {
+    adapter_contract_version.map(|contract| {
+        harness_store::canonical_json_fingerprint(&serde_json::json!({
+            "fingerprint_kind": "agentfirm.runtime_composition.v1",
+            "provider": provider,
+            "execution_mode": execution_mode,
+            "adapter_contract_version": contract,
+        }))
+    })
+}
+
+fn profile_capability_fingerprint(profile: &ProviderIntegrationProfile) -> Option<String> {
+    Some(harness_store::canonical_json_fingerprint(
+        &serde_json::json!({
+            "fingerprint_kind": "agentfirm.provider_capabilities.v1",
+            "agent_runtime_provider": profile
+                .agent_runtime_provider
+                .as_ref()
+                .map(|provider| provider.0.as_str())
+                .unwrap_or(profile.provider.as_str()),
+            "execution_mode": profile.execution_mode,
+            "provider_version": profile.provider_version,
+            "adapter_contract_version": profile.adapter_contract_version,
+            "adapter_bridge_revision": profile.adapter_bridge_revision,
+            "security_enforcement_locus": profile.security_enforcement_locus,
+            "binding_admission": profile.binding_admission,
+            "capability_bindings": profile.capability_bindings,
+        }),
+    ))
+}
+
+/// Commit to the exact executable runtime composition, not merely the brand
+/// and transport name. This is recomputed after every version, permission
+/// locus, model-route, or capability refresh; commands carrying the old hash
+/// are rejected before crossing the provider boundary.
+fn resolved_profile_composition_fingerprint(
+    profile: &ProviderIntegrationProfile,
+) -> Option<String> {
+    profile.adapter_contract_version.as_ref()?;
+    Some(harness_store::canonical_json_fingerprint(
+        &serde_json::json!({
+            "fingerprint_kind": "agentfirm.runtime_composition.v2",
+            "agent_runtime_provider": profile
+                .agent_runtime_provider
+                .as_ref()
+                .map(|provider| provider.0.as_str())
+                .unwrap_or(profile.provider.as_str()),
+            "execution_mode": profile.execution_mode,
+            "provider_version": profile.provider_version,
+            "adapter_contract_version": profile.adapter_contract_version,
+            "adapter_bridge_revision": profile.adapter_bridge_revision,
+            "control_topology": profile.control_topology,
+            "execution_driver": profile.execution_driver,
+            "model_route": profile.model_route,
+            "interaction_mode": profile.interaction_mode,
+            "ordinary_message_boundary": profile.ordinary_message_boundary,
+            "plan_mode": profile.plan_mode,
+            "goal_mode": profile.goal_mode,
+            "security_enforcement_locus": profile.security_enforcement_locus,
+            "capability_fingerprint": profile.capability_fingerprint,
+        }),
+    ))
+}
+
+fn finalize_provider_integration_profile(profile: &mut ProviderIntegrationProfile) {
+    if profile.agent_runtime_provider.is_none() {
+        profile.agent_runtime_provider =
+            Some(harness_core::AgentRuntimeProvider(profile.provider.clone()));
+    }
+    if profile.provider == "pi" && profile.execution_mode == "pi_rpc" {
+        if let Some(bindings) = crate::runtime_adapter::capability_bindings_for("pi") {
+            let adapter_revision = profile
+                .adapter_bridge_revision
+                .clone()
+                .or_else(|| profile.adapter_contract_version.clone());
+            profile.capability_bindings = bindings
+                .into_iter()
+                .map(|binding| {
+                    let (status, admission) = match binding.status {
+                        crate::runtime_adapter::CapabilityStatus::Supported => (
+                            harness_core::ProviderCapabilityStatus::Verified,
+                            harness_core::ProviderBindingAdmission::Active,
+                        ),
+                        crate::runtime_adapter::CapabilityStatus::Degraded => (
+                            harness_core::ProviderCapabilityStatus::Degraded,
+                            harness_core::ProviderBindingAdmission::Degraded,
+                        ),
+                        crate::runtime_adapter::CapabilityStatus::Experimental => (
+                            harness_core::ProviderCapabilityStatus::ReviewRequired,
+                            harness_core::ProviderBindingAdmission::PendingDependency,
+                        ),
+                        crate::runtime_adapter::CapabilityStatus::Unsupported => (
+                            harness_core::ProviderCapabilityStatus::Unsupported,
+                            harness_core::ProviderBindingAdmission::Failed,
+                        ),
+                    };
+                    let feature_fingerprint =
+                        harness_store::canonical_json_fingerprint(&serde_json::json!({
+                            "provider": profile.provider,
+                            "execution_mode": profile.execution_mode,
+                            "provider_version": profile.provider_version,
+                            "adapter_revision": adapter_revision,
+                            "capability": binding.capability,
+                            "status": status,
+                            "admission": admission,
+                            "evidence": binding.evidence,
+                            "security_enforcement_locus": binding.security_enforcement_locus,
+                        }));
+                    let required_dependencies = match binding.capability {
+                        "start_cycle" => vec!["open_or_resume", "observe"],
+                        "inject_current_cycle"
+                        | "queue_at_native_boundary"
+                        | "interrupt_current_cycle" => vec!["observe"],
+                        "quiesce" => vec!["interrupt_current_cycle", "observe"],
+                        "release" => vec!["quiesce"],
+                        _ => Vec::new(),
+                    }
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect();
+                    let mut evidence = vec![harness_core::ProviderCapabilityEvidence {
+                        kind: harness_core::ProviderCapabilityEvidenceKind::SourceReview,
+                        evidence_ref: binding.evidence,
+                        observed_at: profile.adapter_reviewed_at.clone(),
+                        note: binding.security_enforcement_locus,
+                    }];
+                    if admission == harness_core::ProviderBindingAdmission::Active {
+                        evidence.push(harness_core::ProviderCapabilityEvidence {
+                            kind: harness_core::ProviderCapabilityEvidenceKind::DeterministicAcceptance,
+                            evidence_ref: format!(
+                                "test:pi_runtime_adapter:{}",
+                                binding.capability
+                            ),
+                            observed_at: profile.adapter_reviewed_at.clone(),
+                            note: Some(
+                                "provider-neutral conformance and Pi fake-RPC journeys exercise the semantic binding"
+                                    .to_string(),
+                            ),
+                        });
+                        evidence.push(harness_core::ProviderCapabilityEvidence {
+                            kind: harness_core::ProviderCapabilityEvidenceKind::LiveCanary,
+                            evidence_ref: "test:pi_rpc_handshake_and_basic_prompt@0.84.2"
+                                .to_string(),
+                            observed_at: profile.adapter_reviewed_at.clone(),
+                            note: Some(
+                                "exact-version live RPC transport baseline; capability semantics remain bound to their deterministic test"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                    harness_core::ProviderCapabilityBinding {
+                        capability: binding.capability.to_string(),
+                        status,
+                        admission,
+                        provider_version: profile.provider_version.clone(),
+                        adapter_revision: adapter_revision.clone(),
+                        feature_fingerprint: Some(feature_fingerprint),
+                        required_dependencies,
+                        evidence,
+                    }
+                })
+                .collect();
+            profile.binding_admission =
+                if profile.capability_bindings.iter().any(|binding| {
+                    binding.admission != harness_core::ProviderBindingAdmission::Active
+                }) {
+                    harness_core::ProviderBindingAdmission::Degraded
+                } else {
+                    harness_core::ProviderBindingAdmission::Active
+                };
+        }
+    }
+    profile.capability_fingerprint = profile_capability_fingerprint(profile);
+    profile.composition_fingerprint = resolved_profile_composition_fingerprint(profile);
+}
+
+fn finalized_provider_integration_profile(
+    mut profile: ProviderIntegrationProfile,
+) -> ProviderIntegrationProfile {
+    finalize_provider_integration_profile(&mut profile);
+    profile
+}
+
+fn apply_permission_enforcement_to_profile(
+    profile: &mut ProviderIntegrationProfile,
+    ceiling: harness_core::agentfirm_api::PermissionCeiling,
+) -> CliResult<()> {
+    if profile.provider == "pi" && profile.execution_mode == "pi_rpc" {
+        // This is both an argv compilation check and an admission gate:
+        // WorkspaceWrite cannot be represented by Pi without an external
+        // filesystem boundary, while ReadOnly and explicit FullAccess can.
+        let _ = crate::runtime_adapter::pi_tools_allowlist_for_ceiling(ceiling)?;
+        profile.security_enforcement_locus =
+            crate::runtime_adapter::pi_security_enforcement_locus(ceiling);
+    }
+    finalize_provider_integration_profile(profile);
+    if profile.provider == "pi"
+        && profile.execution_mode == "pi_rpc"
+        && ceiling == harness_core::agentfirm_api::PermissionCeiling::FullAccess
+    {
+        for binding in profile
+            .capability_bindings
+            .iter_mut()
+            .filter(|binding| matches!(binding.capability.as_str(), "quiesce" | "release"))
+        {
+            binding.status = harness_core::ProviderCapabilityStatus::ReviewRequired;
+            binding.admission = harness_core::ProviderBindingAdmission::PendingDependency;
+            binding.evidence.retain(|evidence| {
+                evidence.kind == harness_core::ProviderCapabilityEvidenceKind::SourceReview
+            });
+            binding.evidence.push(harness_core::ProviderCapabilityEvidence {
+                kind: harness_core::ProviderCapabilityEvidenceKind::SourceReview,
+                evidence_ref:
+                    "gap:pi_full_access_requires_native_job_inventory_or_os_containment"
+                        .to_string(),
+                observed_at: profile.adapter_reviewed_at.clone(),
+                note: Some(
+                    "Pi RPC cannot prove that FullAccess background writers are drained; quiesce/release are denied before provider effect"
+                        .to_string(),
+                ),
+            });
+            binding.feature_fingerprint = Some(harness_store::canonical_json_fingerprint(
+                &serde_json::json!({
+                    "provider": profile.provider,
+                    "execution_mode": profile.execution_mode,
+                    "provider_version": profile.provider_version,
+                    "adapter_revision": profile.adapter_bridge_revision,
+                    "capability": binding.capability,
+                    "status": binding.status,
+                    "admission": binding.admission,
+                    "evidence": binding.evidence,
+                    "security_enforcement_locus": profile.security_enforcement_locus,
+                }),
+            ));
+        }
+        profile.binding_admission = harness_core::ProviderBindingAdmission::Degraded;
+        profile.capability_fingerprint = profile_capability_fingerprint(profile);
+        profile.composition_fingerprint = resolved_profile_composition_fingerprint(profile);
+    }
+    Ok(())
+}
+
+fn agent_session_control_state_for_profile(
+    profile: Option<&ProviderIntegrationProfile>,
+    daemon_id: &str,
+    daemon_generation: u64,
+    runtime_generation: u64,
+) -> harness_core::agentfirm_api::AgentSessionControlState {
+    harness_core::agentfirm_api::AgentSessionControlState {
+        runtime_residency: harness_core::agentfirm_api::RuntimeResidency::Detached,
+        activity: harness_core::agentfirm_api::RuntimeActivity::Idle,
+        execution_driver: profile
+            .map(|profile| profile.execution_driver)
+            .unwrap_or(MemberExecutionDriver::HostDriven),
+        driver_generation: runtime_generation.max(1),
+        driver_ref: harness_core::agentfirm_api::RuntimeDriverRef::NodeDaemon {
+            node_daemon_id: daemon_id.to_string(),
+            node_daemon_generation: daemon_generation,
+        },
+        composition_fingerprint: profile
+            .and_then(|profile| profile.composition_fingerprint.clone()),
+        capability_fingerprint: profile.and_then(|profile| profile.capability_fingerprint.clone()),
+        ..Default::default()
+    }
+}
+
 fn team_member_provider_profile_for_mode(
     provider: &str,
     requested_mode: Option<&str>,
@@ -8998,7 +9279,9 @@ fn team_member_provider_profile_for_mode(
     // contract and no provider-native session record, so no Harness-side
     // capability claim is made.
     if requested_mode == Some(EXECUTION_MODE_EXTERNAL_INTERACTIVE) {
-        return ProviderIntegrationProfile {
+        return finalized_provider_integration_profile(ProviderIntegrationProfile {
+            agent_runtime_provider: Some(harness_core::AgentRuntimeProvider(provider.to_string())),
+            model_route: None,
             provider: provider.to_string(),
             execution_mode: EXECUTION_MODE_EXTERNAL_INTERACTIVE.to_string(),
             execution_driver: MemberExecutionDriver::UserDriven,
@@ -9023,13 +9306,25 @@ fn team_member_provider_profile_for_mode(
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
-        };
+            control_topology: ControlTopology::Unknown,
+            composition_fingerprint: None,
+            capability_fingerprint: None,
+            capability_bindings: Vec::new(),
+            binding_admission: harness_core::ProviderBindingAdmission::Failed,
+            adapter_bridge_revision: None,
+            security_enforcement_locus: SecurityEnforcementLocus {
+                kind: SecurityEnforcementLocusKind::NoneVerified,
+                note: Some("user-driven external session; Harness enforces nothing".to_string()),
+            },
+        });
     }
     // Agent Team Claude members are persistent Agent SDK sessions. `claude -p`
     // remains available to bounded Dynamic Workflow adapters and historical
     // records, but is not a second Team Member mode.
     if provider == "claude" && matches!(requested_mode, Some("claude_agent_sdk") | None) {
-        return ProviderIntegrationProfile {
+        return finalized_provider_integration_profile(ProviderIntegrationProfile {
+            agent_runtime_provider: Some(harness_core::AgentRuntimeProvider(provider.to_string())),
+            model_route: None,
             provider: provider.to_string(),
             execution_mode: "claude_agent_sdk".to_string(),
             execution_driver: MemberExecutionDriver::HostDriven,
@@ -9056,13 +9351,33 @@ fn team_member_provider_profile_for_mode(
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
-        };
+            control_topology: ControlTopology::EmbeddedSdk,
+            composition_fingerprint: profile_composition_fingerprint(
+                "claude",
+                "claude_agent_sdk",
+                Some("claude-agent-sdk-v1"),
+            ),
+            capability_fingerprint: None,
+            capability_bindings: Vec::new(),
+            binding_admission: harness_core::ProviderBindingAdmission::Failed,
+            adapter_bridge_revision: Some("claude-agent-sdk-v1".to_string()),
+            security_enforcement_locus: SecurityEnforcementLocus {
+                kind: SecurityEnforcementLocusKind::ProviderNativePolicy,
+                note: Some(
+                    "SDK permissionMode plus runner allowedTools (bypassPermissions under \
+                     trusted-development)"
+                        .to_string(),
+                ),
+            },
+        });
     }
     // Agent Team Codex members are interactive by definition. `codex exec`
     // remains the bounded substrate for Dynamic Workflow and legacy one-shot
     // delivery paths; it is not a second Team Member product mode.
     if provider == "codex" && matches!(requested_mode, Some("codex_app_server") | None) {
-        return ProviderIntegrationProfile {
+        return finalized_provider_integration_profile(ProviderIntegrationProfile {
+            agent_runtime_provider: Some(harness_core::AgentRuntimeProvider(provider.to_string())),
+            model_route: None,
             provider: provider.to_string(),
             execution_mode: "codex_app_server".to_string(),
             execution_driver: MemberExecutionDriver::HostDriven,
@@ -9088,28 +9403,50 @@ fn team_member_provider_profile_for_mode(
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
-        };
+            control_topology: ControlTopology::ExternalProtocol,
+            composition_fingerprint: profile_composition_fingerprint(
+                "codex",
+                "codex_app_server",
+                Some("codex-app-server-v1"),
+            ),
+            capability_fingerprint: None,
+            capability_bindings: Vec::new(),
+            binding_admission: harness_core::ProviderBindingAdmission::Failed,
+            adapter_bridge_revision: Some("codex-app-server-v1".to_string()),
+            security_enforcement_locus: SecurityEnforcementLocus {
+                kind: SecurityEnforcementLocusKind::ProviderNativePolicy,
+                note: Some("app-server thread params sandbox / approvalPolicy".to_string()),
+            },
+        });
     }
     // Agent Team Pi members use RPC mode (`pi --mode rpc`), a persistent
     // bidirectional JSONL-over-stdio protocol. `pi -p` (print mode) remains
     // available to bounded Dynamic Workflow adapters, but is not a second
     // Team Member product mode.
     if provider == "pi" && matches!(requested_mode, Some("pi_rpc") | None) {
-        return ProviderIntegrationProfile {
+        return finalized_provider_integration_profile(ProviderIntegrationProfile {
+            agent_runtime_provider: Some(harness_core::AgentRuntimeProvider(provider.to_string())),
+            model_route: None,
             provider: provider.to_string(),
             execution_mode: "pi_rpc".to_string(),
             execution_driver: MemberExecutionDriver::HostDriven,
             provider_version: None,
             adapter_contract_version: Some("pi-rpc-v1".to_string()),
-            reviewed_provider_versions: vec!["0.83.0".to_string()],
+            reviewed_provider_versions: vec!["0.84.2".to_string()],
             compatibility_status: ProviderCompatibilityStatus::Unknown,
-            adapter_reviewed_at: Some("2026-08-05".to_string()),
+            adapter_reviewed_at: Some("2026-08-15".to_string()),
             compatibility_note: Some(
                 "Pi RPC-mode persistent Agent Team member. Session is a JSONL file; \
                  resume via --session <path> after a fail-closed thinking scan. \
-                 Persistent Team sessions force --thinking off. Built-in tools: \
-                 read, write, edit, bash, grep, find, ls. Agent_settled is the \
-                 turn-completion signal."
+                 Persistent Team sessions force --thinking off. ReadOnly uses \
+                 a read/grep/find/ls allowlist; WorkspaceWrite is unavailable \
+                 because Pi does not contain paths; FullAccess is admitted only \
+                 by explicit trusted policy. Prompt response proves input \
+                 acceptance; agent_settled plus get_state proves the cycle boundary. \
+                 Quiesce proves native-session flush with file/directory sync and \
+                 proves writable-child non-creation only for the reviewed ReadOnly \
+                 argv; FullAccess quiesce/release remain PendingDependency until a native job \
+                 inventory or OS containment can prove child drain."
                     .to_string(),
             ),
             interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
@@ -9123,10 +9460,31 @@ fn team_member_provider_profile_for_mode(
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
-        };
+            control_topology: ControlTopology::ExternalProtocol,
+            composition_fingerprint: profile_composition_fingerprint(
+                "pi",
+                "pi_rpc",
+                Some("pi-rpc-v1"),
+            ),
+            capability_fingerprint: None,
+            capability_bindings: Vec::new(),
+            binding_admission: harness_core::ProviderBindingAdmission::Failed,
+            adapter_bridge_revision: Some("pi-rpc-v1".to_string()),
+            security_enforcement_locus: SecurityEnforcementLocus {
+                kind: SecurityEnforcementLocusKind::AdapterToolAllowlist,
+                note: Some(
+                    "read_only compiles to a --tools allowlist; workspace_write \
+                     fails closed without filesystem containment; trusted \
+                     full_access records none_verified at prepare"
+                        .to_string(),
+                ),
+            },
+        });
     }
-    match provider {
+    let mut profile = match provider {
         "kimi" => ProviderIntegrationProfile {
+            agent_runtime_provider: Some(harness_core::AgentRuntimeProvider(provider.to_string())),
+            model_route: None,
             provider: provider.to_string(),
             execution_mode: "kimi_acp".to_string(),
             execution_driver: MemberExecutionDriver::HostDriven,
@@ -9159,8 +9517,27 @@ fn team_member_provider_profile_for_mode(
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
+            control_topology: ControlTopology::ExternalProtocol,
+            composition_fingerprint: profile_composition_fingerprint(
+                "kimi",
+                "kimi_acp",
+                Some("kimi-acp-v1"),
+            ),
+            capability_fingerprint: None,
+            capability_bindings: Vec::new(),
+            binding_admission: harness_core::ProviderBindingAdmission::Failed,
+            adapter_bridge_revision: Some("kimi-acp-v1".to_string()),
+            security_enforcement_locus: SecurityEnforcementLocus {
+                kind: SecurityEnforcementLocusKind::AdapterAutoApproval,
+                note: Some(
+                    "ACP session/request_permission auto-allow with a one-shot durable receipt"
+                        .to_string(),
+                ),
+            },
         },
         "codex" => ProviderIntegrationProfile {
+            agent_runtime_provider: Some(harness_core::AgentRuntimeProvider(provider.to_string())),
+            model_route: None,
             provider: provider.to_string(),
             execution_mode: "codex_exec".to_string(),
             execution_driver: MemberExecutionDriver::HostDriven,
@@ -9184,8 +9561,27 @@ fn team_member_provider_profile_for_mode(
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
+            control_topology: ControlTopology::ExternalProtocol,
+            composition_fingerprint: profile_composition_fingerprint(
+                "codex",
+                "codex_exec",
+                Some("codex-exec-v1"),
+            ),
+            capability_fingerprint: None,
+            capability_bindings: Vec::new(),
+            binding_admission: harness_core::ProviderBindingAdmission::Failed,
+            adapter_bridge_revision: Some("codex-exec-v1".to_string()),
+            security_enforcement_locus: SecurityEnforcementLocus {
+                kind: SecurityEnforcementLocusKind::ProviderNativePolicy,
+                note: Some(
+                    "--sandbox and --ask-for-approval CLI flags on the workflow launch path"
+                        .to_string(),
+                ),
+            },
         },
         "claude" => ProviderIntegrationProfile {
+            agent_runtime_provider: Some(harness_core::AgentRuntimeProvider(provider.to_string())),
+            model_route: None,
             provider: provider.to_string(),
             execution_mode: "claude_cli".to_string(),
             execution_driver: MemberExecutionDriver::HostDriven,
@@ -9209,8 +9605,26 @@ fn team_member_provider_profile_for_mode(
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
+            control_topology: ControlTopology::ExternalProtocol,
+            composition_fingerprint: profile_composition_fingerprint(
+                "claude",
+                "claude_cli",
+                Some("claude-cli-native-v1"),
+            ),
+            capability_fingerprint: None,
+            capability_bindings: Vec::new(),
+            binding_admission: harness_core::ProviderBindingAdmission::Failed,
+            adapter_bridge_revision: Some("claude-cli-native-v1".to_string()),
+            security_enforcement_locus: SecurityEnforcementLocus {
+                kind: SecurityEnforcementLocusKind::ProviderNativePolicy,
+                note: Some(
+                    "--permission-mode and --allowedTools on the workflow launch path".to_string(),
+                ),
+            },
         },
         _ => ProviderIntegrationProfile {
+            agent_runtime_provider: Some(harness_core::AgentRuntimeProvider(provider.to_string())),
+            model_route: None,
             provider: provider.to_string(),
             execution_mode: "unsupported_team_member".to_string(),
             execution_driver: MemberExecutionDriver::HostDriven,
@@ -9231,8 +9645,20 @@ fn team_member_provider_profile_for_mode(
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
+            control_topology: ControlTopology::Unknown,
+            composition_fingerprint: None,
+            capability_fingerprint: None,
+            capability_bindings: Vec::new(),
+            binding_admission: harness_core::ProviderBindingAdmission::Failed,
+            adapter_bridge_revision: None,
+            security_enforcement_locus: SecurityEnforcementLocus {
+                kind: SecurityEnforcementLocusKind::Unknown,
+                note: None,
+            },
         },
-    }
+    };
+    finalize_provider_integration_profile(&mut profile);
+    profile
 }
 
 fn apply_provider_version(
@@ -9294,6 +9720,7 @@ fn apply_provider_version(
         (_, _, ProviderCompatibilityStatus::Incompatible) => "Provider version is known to be incompatible with this adapter contract.".to_string(),
         (_, _, ProviderCompatibilityStatus::Unknown) => "No reviewed provider version is registered for this execution mode.".to_string(),
     });
+    finalize_provider_integration_profile(profile);
 }
 
 /// Probe the executable that backs a persistent Agent Team member and refresh
@@ -11672,7 +12099,11 @@ fn ensure_unit_test_canonical_members(
                 provider_profile_ref: Some(member.provider.clone()),
                 model_preference: member.model.clone(),
                 workspace_policy: "managed-worktree".into(),
-                permission_ceiling: if member.provider == "kimi" {
+                permission_ceiling: if matches!(member.provider.as_str(), "kimi" | "pi") {
+                    // Pi RPC has no filesystem containment for write/edit.
+                    // Unit-test Team fixtures mirror the explicit trusted
+                    // development policy; Kimi's callback bridge likewise
+                    // admits only an exact full-access ceiling.
                     harness_core::agentfirm_api::PermissionCeiling::FullAccess
                 } else {
                     harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite
@@ -12759,6 +13190,9 @@ fn publish_team_message(
         idempotency_key: message.id.clone(),
         expected_version: 0,
         expires_unix_ms: current_unix_ms_u64().saturating_add(30_000),
+        binding: Default::default(),
+        precondition: Default::default(),
+        postcondition: runtime_command_postcondition_for(RuntimeCommandKind::AuthorMessage),
         payload_fingerprint: harness_store::canonical_json_fingerprint(&payload),
         payload,
         issued_at: now_string(),
@@ -13568,7 +14002,19 @@ fn team_run_recover(
             continue;
         }
         let expected = member.clone();
-        let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
+        let (mut profile, probe_error) = refreshed_team_member_provider_profile(member)?;
+        let permission_ceiling = store
+            .all_trust_agent_members()?
+            .into_iter()
+            .find(|candidate| candidate.id == member.agent_member_id)
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "AGENT_IDENTITY_NOT_FOUND: MemberRun {} references missing AgentMember {}",
+                    member.id, member.agent_member_id
+                ))
+            })?
+            .permission_ceiling;
+        apply_permission_enforcement_to_profile(&mut profile, permission_ceiling)?;
         let resolution = resolve_provider_compatibility(store, &profile, probe_error.as_deref())?;
         let refusal = provider_compatibility_block_reason(
             member,
@@ -17401,6 +17847,82 @@ struct ProviderEffectAdmission {
     command_id: String,
     settle_context: harness_core::agentfirm_api::MutationContext,
     control_plan: Option<crate::provider_adapter::ProviderControlPlan>,
+    target_session: harness_core::agentfirm_api::AgentSession,
+}
+
+fn runtime_command_binding_for_session(
+    session: &harness_core::agentfirm_api::AgentSession,
+) -> harness_core::agentfirm_api::RuntimeCommandBinding {
+    harness_core::agentfirm_api::RuntimeCommandBinding {
+        target_session_id: Some(session.id.clone()),
+        target_runtime_generation: Some(session.runtime_generation),
+        target_driver_generation: Some(session.control_state.driver_generation),
+        target_driver: session.control_state.driver_ref.clone(),
+        native_session_ref: session.native_session_ref.clone(),
+        composition_fingerprint: session.control_state.composition_fingerprint.clone(),
+        capability_fingerprint: session.control_state.capability_fingerprint.clone(),
+        permission_envelope_ref: Some(session.permission_envelope_ref.clone()),
+        ..Default::default()
+    }
+}
+
+fn runtime_command_postcondition_for(
+    kind: harness_core::agentfirm_api::RuntimeCommandKind,
+) -> harness_core::agentfirm_api::RuntimeCommandPostcondition {
+    use harness_core::agentfirm_api::{
+        RuntimeAcknowledgementLevel, RuntimeCommandKind, RuntimeDesiredPostcondition,
+    };
+    let desired_postcondition = match kind {
+        RuntimeCommandKind::StartSession
+        | RuntimeCommandKind::ResumeSession
+        | RuntimeCommandKind::OpenRuntime
+        | RuntimeCommandKind::ResumeNativeSession
+        | RuntimeCommandKind::ReattachLiveRuntime
+        | RuntimeCommandKind::ReopenMember => RuntimeDesiredPostcondition::RuntimeAttached,
+        RuntimeCommandKind::DispatchProvider | RuntimeCommandKind::StartCycle => {
+            RuntimeDesiredPostcondition::CycleStarted
+        }
+        RuntimeCommandKind::CancelProviderTurn | RuntimeCommandKind::InterruptCurrentCycle => {
+            RuntimeDesiredPostcondition::CurrentCycleTerminal
+        }
+        RuntimeCommandKind::ReleaseRuntime | RuntimeCommandKind::CloseMember => {
+            RuntimeDesiredPostcondition::RuntimeReleased
+        }
+        RuntimeCommandKind::QuiesceExecutionLane | RuntimeCommandKind::DrainRuntime => {
+            RuntimeDesiredPostcondition::ExecutionLaneQuiesced
+        }
+        RuntimeCommandKind::ActivateContinuation | RuntimeCommandKind::ResumeContinuation => {
+            RuntimeDesiredPostcondition::ContinuationActivated
+        }
+        RuntimeCommandKind::InhibitContinuation | RuntimeCommandKind::ClearContinuation => {
+            RuntimeDesiredPostcondition::ContinuationInhibited
+        }
+        RuntimeCommandKind::TransferExecutionDriver => {
+            RuntimeDesiredPostcondition::DriverTransferred
+        }
+        RuntimeCommandKind::InspectCommandEffect
+        | RuntimeCommandKind::ReconcileUnknownEffect
+        | RuntimeCommandKind::AbortIfNotApplied => RuntimeDesiredPostcondition::StateReconciled,
+        RuntimeCommandKind::CancelPendingInput => {
+            RuntimeDesiredPostcondition::PendingInputCancelled
+        }
+        RuntimeCommandKind::AuthorMessage
+        | RuntimeCommandKind::StopSession
+        | RuntimeCommandKind::RetireMember
+        | RuntimeCommandKind::DeleteNativeSession
+        | RuntimeCommandKind::InjectCurrentCycle
+        | RuntimeCommandKind::QueueAtNativeBoundary
+        | RuntimeCommandKind::InspectContinuation
+        | RuntimeCommandKind::ReplaceContinuationCondition
+        | RuntimeCommandKind::StopBackgroundTask => {
+            RuntimeDesiredPostcondition::ProviderAcknowledged
+        }
+    };
+    harness_core::agentfirm_api::RuntimeCommandPostcondition {
+        desired_ack_level: RuntimeAcknowledgementLevel::ProviderReceipt,
+        desired_postcondition,
+        ..Default::default()
+    }
 }
 
 /// Durably admit one real provider turn before crossing the provider boundary.
@@ -17425,9 +17947,23 @@ fn prepare_provider_effect_kind(
     let (execution_space_id, session) = provider_session_for_member(ledger, member)?;
     let lifecycle_is_eligible = match command_kind {
         harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider
-        | harness_core::agentfirm_api::RuntimeCommandKind::CancelProviderTurn => {
+        | harness_core::agentfirm_api::RuntimeCommandKind::StartCycle
+        | harness_core::agentfirm_api::RuntimeCommandKind::InjectCurrentCycle
+        | harness_core::agentfirm_api::RuntimeCommandKind::QueueAtNativeBoundary
+        | harness_core::agentfirm_api::RuntimeCommandKind::CancelProviderTurn
+        | harness_core::agentfirm_api::RuntimeCommandKind::InterruptCurrentCycle
+        | harness_core::agentfirm_api::RuntimeCommandKind::CancelPendingInput => {
             session.lifecycle == AgentSessionStatus::Active
         }
+        harness_core::agentfirm_api::RuntimeCommandKind::QuiesceExecutionLane
+        | harness_core::agentfirm_api::RuntimeCommandKind::ReleaseRuntime => matches!(
+            session.lifecycle,
+            AgentSessionStatus::Cold
+                | AgentSessionStatus::Active
+                | AgentSessionStatus::Idle
+                | AgentSessionStatus::Waiting
+                | AgentSessionStatus::Interrupted
+        ),
         harness_core::agentfirm_api::RuntimeCommandKind::StopSession => matches!(
             session.lifecycle,
             AgentSessionStatus::Cold
@@ -17467,6 +18003,7 @@ fn prepare_provider_effect_kind(
         "session_generation": session.runtime_generation,
         "delivery_id": source_record_id,
         "provider": session.provider_kind,
+        "command_kind": command_kind,
         "permission_ceiling": session.effective_permission_ceiling,
         "content_fingerprint": content_fingerprint,
     });
@@ -17475,7 +18012,7 @@ fn prepare_provider_effect_kind(
         &serde_json::json!({"source_record_id": source_record_id}),
     );
     let idempotency_key = format!(
-        "provider-effect:{}:{}:{}:{}",
+        "provider-effect:{}:{}:{command_kind:?}:{}:{}",
         session.id, session.runtime_generation, source_fingerprint, content_fingerprint
     );
     let command_id = format!("runtime-command:{idempotency_key}");
@@ -17498,6 +18035,15 @@ fn prepare_provider_effect_kind(
         // the already-frozen daemon lease and use an idempotency-derived
         // observation marker instead of sampling a new wall clock.
         expires_unix_ms: lease.expires_unix_ms,
+        binding: runtime_command_binding_for_session(&session),
+        precondition: harness_core::agentfirm_api::RuntimeCommandPrecondition {
+            expected_session_version: Some(session.version),
+            expected_residency: Some(session.control_state.runtime_residency),
+            expected_activity: Some(session.control_state.activity),
+            expected_execution_driver: Some(session.control_state.execution_driver),
+            ..Default::default()
+        },
+        postcondition: runtime_command_postcondition_for(command_kind),
         payload,
         payload_fingerprint: payload_fingerprint.clone(),
         issued_at: format!("runtime-command:{idempotency_key}"),
@@ -17539,6 +18085,7 @@ fn prepare_provider_effect_kind(
     Ok(ProviderEffectAdmission {
         command_id,
         control_plan: None,
+        target_session: session,
         settle_context: harness_core::agentfirm_api::MutationContext {
             execution_space_id: admission_context.execution_space_id,
             authenticated_actor: daemon_actor,
@@ -17562,8 +18109,8 @@ fn prepare_provider_effect(
         member,
         source_record_id,
         content,
-        harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider,
-        "provider.dispatch",
+        harness_core::agentfirm_api::RuntimeCommandKind::StartCycle,
+        "cycle.start",
     )
 }
 
@@ -17574,8 +18121,10 @@ fn settle_provider_effect(
     result: Option<serde_json::Value>,
     failure_code: Option<String>,
 ) -> CliResult<()> {
-    use harness_core::agentfirm_api::{RuntimeCommandStatus, RuntimeEffectCertainty};
-    ledger.store.settle_runtime_command(
+    use harness_core::agentfirm_api::{
+        RuntimeCommandStatus, RuntimeEffectCertainty, RuntimePostconditionStatus,
+    };
+    ledger.store.settle_runtime_command_with_postcondition(
         &admission.settle_context,
         &admission.command_id,
         if applied {
@@ -17587,6 +18136,11 @@ fn settle_provider_effect(
             RuntimeEffectCertainty::Applied
         } else {
             RuntimeEffectCertainty::Unknown
+        },
+        if applied {
+            RuntimePostconditionStatus::Satisfied
+        } else {
+            RuntimePostconditionStatus::Unknown
         },
         result,
         failure_code,
@@ -17600,11 +18154,12 @@ fn settle_provider_effect_not_applied(
     admission: &ProviderEffectAdmission,
     failure_code: String,
 ) -> CliResult<()> {
-    ledger.store.settle_runtime_command(
+    ledger.store.settle_runtime_command_with_postcondition(
         &admission.settle_context,
         &admission.command_id,
         harness_core::agentfirm_api::RuntimeCommandStatus::Failed,
         harness_core::agentfirm_api::RuntimeEffectCertainty::NotApplied,
+        harness_core::agentfirm_api::RuntimePostconditionStatus::Unsatisfied,
         None,
         Some(failure_code),
         &now_string(),
@@ -17636,9 +18191,9 @@ fn prepare_provider_process_effect(
     )
     .map_err(CliError::Usage)?;
     let kind = if member.native_session.is_some() {
-        RuntimeCommandKind::ResumeSession
+        RuntimeCommandKind::ResumeNativeSession
     } else {
-        RuntimeCommandKind::StartSession
+        RuntimeCommandKind::OpenRuntime
     };
     let payload = serde_json::json!({
         "session_id": session.id,
@@ -17660,20 +18215,29 @@ fn prepare_provider_process_effect(
     let command = ControlCommandEnvelope {
         id: command_id.clone(),
         execution_space_id: execution_space_id.clone(),
-        target_node_id: session.node_id,
-        target_node_daemon_id: lease.daemon_id,
+        target_node_id: session.node_id.clone(),
+        target_node_daemon_id: lease.daemon_id.clone(),
         target_node_daemon_generation: lease.generation,
         authenticated_actor: daemon_actor.clone(),
         command: kind,
-        required_capability: if kind == RuntimeCommandKind::StartSession {
-            "agent_session.start"
+        required_capability: if kind == RuntimeCommandKind::OpenRuntime {
+            "runtime.open"
         } else {
-            "agent_session.resume"
+            "runtime.native_session.resume"
         }
         .into(),
         idempotency_key: idempotency_key.clone(),
         expected_version: 0,
         expires_unix_ms: current_unix_ms_u64().saturating_add(30_000),
+        binding: runtime_command_binding_for_session(&session),
+        precondition: harness_core::agentfirm_api::RuntimeCommandPrecondition {
+            expected_session_version: Some(session.version),
+            expected_residency: Some(session.control_state.runtime_residency),
+            expected_activity: Some(session.control_state.activity),
+            expected_execution_driver: Some(session.control_state.execution_driver),
+            ..Default::default()
+        },
+        postcondition: runtime_command_postcondition_for(kind),
         payload,
         payload_fingerprint: fingerprint.clone(),
         issued_at: now_string(),
@@ -17705,6 +18269,7 @@ fn prepare_provider_process_effect(
     Ok(ProviderEffectAdmission {
         command_id,
         control_plan: None,
+        target_session: session,
         settle_context: harness_core::agentfirm_api::MutationContext {
             execution_space_id: context.execution_space_id,
             authenticated_actor: daemon_actor,
@@ -17943,6 +18508,75 @@ fn provider_session_for_member(
         )));
     }
     Ok((execution_space_id, session))
+}
+
+/// Persist the bounded live-runtime projection used by driver/composition
+/// handoff admission. This is not a provider event ledger: it records only
+/// whether the exact current handle is attached and whether its execution
+/// lane is running. Callers must settle the provider RuntimeCommand first;
+/// the Store refuses this update while an effect remains ambiguous.
+pub(crate) fn transition_provider_session_runtime_control(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    residency: harness_core::agentfirm_api::RuntimeResidency,
+    activity: harness_core::agentfirm_api::RuntimeActivity,
+) -> CliResult<()> {
+    use harness_core::agentfirm_api::{ActorKind, ActorRef, AgentSessionStatus, MutationContext};
+
+    let mut matches = Vec::new();
+    for execution_space_id in ledger.store.canonical_execution_space_ids()? {
+        for session in ledger
+            .store
+            .fabric_agent_sessions(&execution_space_id)?
+            .into_iter()
+            .filter(|session| {
+                session.agent_identity_id == member.agent_member_id
+                    && session.lifecycle != AgentSessionStatus::Closed
+            })
+        {
+            matches.push((execution_space_id.clone(), session));
+        }
+    }
+    if matches.len() != 1 {
+        return Err(CliError::Usage(format!(
+            "AGENT_SESSION_AMBIGUOUS: runtime observation for {} requires one current session, found {}",
+            member.agent_member_id,
+            matches.len()
+        )));
+    }
+    let (execution_space_id, session) = matches.pop().expect("one current session");
+    if session.control_state.runtime_residency == residency
+        && session.control_state.activity == activity
+    {
+        return Ok(());
+    }
+    let mut next = session.control_state.clone();
+    next.runtime_residency = residency;
+    next.activity = activity;
+    next.last_reconciled_at = Some(now_string());
+    let daemon_actor = ActorRef {
+        kind: ActorKind::Service,
+        id: session.node_daemon_id.clone(),
+    };
+    ledger.store.bind_agent_session_control_state(
+        &MutationContext {
+            execution_space_id,
+            authenticated_actor: daemon_actor,
+            authority_actor: None,
+            command_name: "node_daemon.runtime_control.observe".into(),
+            idempotency_key: format!(
+                "runtime-control-observation:{}:{}:{}:{residency:?}:{activity:?}",
+                session.id, session.runtime_generation, session.version
+            ),
+            expected_version: session.version,
+            request_fingerprint: None,
+        },
+        &session.id,
+        session.runtime_generation,
+        next,
+        &now_string(),
+    )?;
+    Ok(())
 }
 
 fn require_provider_session_authority(
@@ -18558,8 +19192,17 @@ fn register_live_member_control(
                 execution_mode: profile
                     .map(|profile| profile.execution_mode.clone())
                     .unwrap_or_else(|| "unknown".to_string()),
-                supports_steer: profile
-                    .is_some_and(|profile| profile.execution_mode == "codex_app_server"),
+                // Steer requires a real current-cycle injection channel:
+                // codex app-server `turn/steer`, or pi RPC `steer` compiled at
+                // the cycle control boundary (proven by
+                // tests/pi_team_member.rs steer conformance). Everything else
+                // keeps failing closed here.
+                supports_steer: profile.is_some_and(|profile| {
+                    matches!(
+                        profile.execution_mode.as_str(),
+                        "codex_app_server" | "pi_rpc"
+                    )
+                }),
                 supports_interrupt: profile.is_some_and(|profile| profile.supports_cancel),
                 supports_close: true,
                 sender,
@@ -21169,6 +21812,12 @@ pub(crate) fn ensure_team_runtime_fabric(
                     effective_permission_ceiling: durable.permission_ceiling,
                     lifecycle: AgentSessionStatus::Cold,
                     runtime_generation: member.runtime_generation,
+                    control_state: agent_session_control_state_for_profile(
+                        member.provider_profile.as_ref(),
+                        daemon_id,
+                        daemon_generation,
+                        member.runtime_generation,
+                    ),
                     native_session_ref,
                     current_turn_id: None,
                     queued_input_count: 0,
@@ -21340,6 +21989,12 @@ pub(crate) fn ensure_team_runtime_fabric(
                 effective_permission_ceiling: host.permission_ceiling,
                 lifecycle: AgentSessionStatus::Cold,
                 runtime_generation: 1,
+                control_state: agent_session_control_state_for_profile(
+                    Some(&team_member_provider_profile(host_provider)),
+                    daemon_id,
+                    daemon_generation,
+                    1,
+                ),
                 native_session_ref: host_native_session_ref,
                 current_turn_id: None,
                 queued_input_count: 0,
@@ -21383,6 +22038,111 @@ pub(crate) fn ensure_team_runtime_fabric(
                 joined_at: timestamp,
                 left_at: None,
             },
+        )?;
+    }
+    Ok(())
+}
+
+/// Bind every managed member Session to the exact TeamSupervisor generation
+/// after its durable lease exists and before any provider handle is opened.
+/// The Store performs the quiescence and successor checks under its writer
+/// lock; this helper only supplies the desired bounded projection.
+#[cfg(unix)]
+pub(crate) fn bind_team_runtime_supervisor(
+    store: &HarnessStore,
+    body: &PreparedTeamRunBody,
+    execution_space_id: &str,
+    daemon_id: &str,
+    supervisor_id: &str,
+    supervisor_generation: u64,
+) -> CliResult<()> {
+    use harness_core::agentfirm_api::{
+        ActorKind, ActorRef, AgentSessionStatus, DriverHandoffState, MutationContext,
+        NativeContinuationActivation, RuntimeActivity, RuntimeDriverRef, RuntimeResidency,
+    };
+
+    let daemon_actor = ActorRef {
+        kind: ActorKind::Service,
+        id: daemon_id.to_string(),
+    };
+    for member in body
+        .members
+        .iter()
+        .filter(|member| !member.is_external_interactive())
+    {
+        let mut sessions = store
+            .fabric_agent_sessions(execution_space_id)?
+            .into_iter()
+            .filter(|session| {
+                session.agent_identity_id == member.agent_member_id
+                    && session.lifecycle != AgentSessionStatus::Closed
+            })
+            .collect::<Vec<_>>();
+        if sessions.len() != 1 {
+            return Err(CliError::Usage(format!(
+                "AGENT_SESSION_AMBIGUOUS: supervisor binding for {} requires one current session, found {}",
+                member.agent_member_id,
+                sessions.len()
+            )));
+        }
+        let session = sessions.pop().expect("one session");
+        let target_driver = RuntimeDriverRef::TeamSupervisor {
+            team_run_id: body.run.id.clone(),
+            team_supervisor_id: supervisor_id.to_string(),
+            team_supervisor_generation: supervisor_generation,
+        };
+        let already_bound = session.control_state.driver_ref == target_driver
+            && session.control_state.execution_driver
+                == member
+                    .provider_profile
+                    .as_ref()
+                    .map(|profile| profile.execution_driver)
+                    .unwrap_or(MemberExecutionDriver::HostDriven);
+        let mut next = session.control_state.clone();
+        next.runtime_residency = RuntimeResidency::Detached;
+        next.activity = RuntimeActivity::Idle;
+        next.execution_driver = member
+            .provider_profile
+            .as_ref()
+            .map(|profile| profile.execution_driver)
+            .unwrap_or(MemberExecutionDriver::HostDriven);
+        next.driver_generation = if already_bound {
+            session.control_state.driver_generation.max(1)
+        } else {
+            session
+                .control_state
+                .driver_generation
+                .saturating_add(1)
+                .max(1)
+        };
+        next.driver_ref = target_driver;
+        next.handoff_state = DriverHandoffState::None;
+        next.continuation.activation = NativeContinuationActivation::Disarmed;
+        next.composition_fingerprint = member
+            .provider_profile
+            .as_ref()
+            .and_then(|profile| profile.composition_fingerprint.clone());
+        next.capability_fingerprint = member
+            .provider_profile
+            .as_ref()
+            .and_then(|profile| profile.capability_fingerprint.clone());
+        store.bind_agent_session_control_state(
+            &MutationContext {
+                execution_space_id: execution_space_id.to_string(),
+                authenticated_actor: daemon_actor.clone(),
+                authority_actor: None,
+                command_name: "node_daemon.team_supervisor.bind_session".into(),
+                idempotency_key: format!(
+                    "session-control:{}:{}:{}",
+                    session.id, supervisor_id, supervisor_generation
+                ),
+                expected_version: session.version,
+                request_fingerprint: None,
+            },
+            &session.id,
+            session.runtime_generation,
+            next,
+            &now_string(),
         )?;
     }
     Ok(())
@@ -21449,7 +22209,23 @@ pub(crate) fn prepare_team_run_start_body(
             continue;
         }
         let expected = member.clone();
-        let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
+        let (mut profile, probe_error) = refreshed_team_member_provider_profile(member)?;
+        let permission_ceiling = store
+            .all_trust_agent_members()?
+            .into_iter()
+            .find(|candidate| candidate.id == member.agent_member_id)
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "AGENT_IDENTITY_NOT_FOUND: MemberRun {} references missing AgentMember {}",
+                    member.id, member.agent_member_id
+                ))
+            })?
+            .permission_ceiling;
+        // Freeze the permission mapping into the persisted profile before
+        // AgentSession materialization. Recomputing it only after the runtime
+        // has spawned would make the profile and exact session composition
+        // fences disagree for the first provider effect.
+        apply_permission_enforcement_to_profile(&mut profile, permission_ceiling)?;
         let resolution = resolve_provider_compatibility(store, &profile, probe_error.as_deref())?;
         let refusal = provider_compatibility_block_reason(
             member,
@@ -22110,6 +22886,11 @@ fn member_runtime_anchor_matches(
         && candidate.provider == anchor.provider
         && candidate.model == anchor.model
         && member_requested_controls_match(anchor, candidate)
+        // Provider identity alone is not a runtime authority boundary. A
+        // permission locus, adapter revision, capability set, or execution
+        // driver change resolves to a different composition and must lose the
+        // start CAS rather than opening a handle from the stale snapshot.
+        && candidate.provider_profile == anchor.provider_profile
         && candidate.runtime_generation == anchor.runtime_generation
         && candidate.provider_cwd_hint == anchor.provider_cwd_hint
         && candidate.owned_paths == anchor.owned_paths
@@ -22490,6 +23271,7 @@ fn run_member_orchestration(
             }
             Err(error) => {
                 let reason = error.to_string();
+                eprintln!("[member-runtime-error] {}: {reason}", current.id);
                 let mut latest = ledger
                     .latest_member_run(&current.id)
                     .ok()
@@ -22886,6 +23668,7 @@ fn run_codex_member(
             .unwrap_or_else(|| format!("continuation:{}:{round}", member_row.id));
         let source_record_id = format!("{source_record_id}:turn:{round}");
         let effect = prepare_provider_effect(ledger, &member_row, &source_record_id, &prompt_text)?;
+        let mut provider_effect_started = false;
         let turn_result = {
             let _turn_lease = turn_leases.acquire();
             run_codex_app_server_turn(
@@ -22899,6 +23682,8 @@ fn run_codex_member(
                     controls: &live_control,
                     accepted_messages: &accepted_messages,
                     active_work: active_work.as_ref(),
+                    effect: &effect,
+                    provider_effect_started: &mut provider_effect_started,
                     lineage: MemberTurnLineage {
                         assignment_correlation_id: active_assignment
                             .as_ref()
@@ -22912,22 +23697,20 @@ fn run_codex_member(
             )
         };
         let turn = match turn_result {
-            Ok(turn) => {
-                settle_provider_effect(
-                    ledger,
-                    &effect,
-                    true,
-                    Some(serde_json::json!({
-                        "provider": "codex",
-                        "thread_id": turn.thread_id,
-                        "round": round,
-                    })),
-                    None,
-                )?;
-                turn
+            Ok(turn) if provider_effect_started => turn,
+            Ok(_) => {
+                return Err(CliError::Usage(
+                    "RUNTIME_COMMAND_RECOVERY_REQUIRED: Codex completed a turn without a turn/start receipt"
+                        .to_string(),
+                ));
             }
             Err(error) => {
-                settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
+                if provider_effect_started {
+                    return Err(CliError::Usage(format!(
+                        "RUNTIME_COMMAND_RECOVERY_REQUIRED: Codex turn failed after turn/start acceptance: {error}"
+                    )));
+                }
+                settle_provider_effect_not_applied(ledger, &effect, error.to_string())?;
                 return Err(error);
             }
         };
@@ -23164,6 +23947,8 @@ struct CodexTeamTurnContext<'a> {
     /// Its provider receipt is recorded at turn/start acceptance (the earliest
     /// honest evidence), never at end of turn.
     active_work: Option<&'a ClaimedWork>,
+    effect: &'a ProviderEffectAdmission,
+    provider_effect_started: &'a mut bool,
     lineage: MemberTurnLineage<'a>,
 }
 
@@ -23271,12 +24056,30 @@ fn run_codex_app_server_turn(
         controls,
         accepted_messages,
         active_work,
+        effect,
+        provider_effect_started,
         lineage,
     } = context;
     let _live_turn_guard =
         LiveProviderTurnGuard::new(live_sink.clone(), ledger.run_id.clone(), member.id.clone());
     require_provider_session_authority(ledger, &member.agent_member_id, true)?;
     let mut turn_id = client.start_turn(prompt)?;
+    // The correlated turn/start response satisfies StartCycle immediately.
+    // Terminal status belongs to the cycle outcome and cannot retroactively
+    // make this already-observed effect unknown.
+    *provider_effect_started = true;
+    settle_provider_effect(
+        ledger,
+        effect,
+        true,
+        Some(serde_json::json!({
+            "provider": "codex",
+            "phase": "turn_started",
+            "thread_id": client.thread_id(),
+            "turn_id": &turn_id,
+        })),
+        None,
+    )?;
     // The turn/start response is the earliest honest evidence that the
     // provider accepted this turn, so the Work receipt lands here — beside
     // the message receipts — not after the whole turn. A mid-turn crash then
@@ -23922,52 +24725,59 @@ fn run_claude_agent_sdk_team_member(
         )?;
         inflight_effects.insert(input_id, effect);
         active_work_continuation_inflight = true;
-    } else if let Some(claimed) = ledger.claim_canonical_work_for(&member.id)? {
-        let work_envelope = member_work_collaboration_envelope(
-            ledger,
-            context.execution_space_id.as_deref(),
-            project_id,
-            project_selector,
-            &member_row,
-            Some(&claimed.work),
-        )?;
-        turn_lease = Some(turn_leases.acquire());
-        let effect = send_claude_provider_input(
-            ledger,
-            &member_row,
-            &mut send,
-            &claimed.delivery.id,
-            "work",
-            "host",
-            &claimed.work.id,
-            work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope),
-        )?;
-        inflight_effects.insert(claimed.delivery.id.clone(), effect);
-        inflight_works.insert(claimed.delivery.id.clone(), claimed);
-    } else if claude_agent_sdk_idle_grace().is_none() {
-        if let Some(work) = ledger.active_work_continuation_for(&member.id)? {
+    } else if member_row.native_session.is_some() {
+        // A fresh SDK runtime must publish `session_bound` before any
+        // StartCycle is prepared. Otherwise the durable command would bind
+        // native_session=None and correctly fail its exact fence after the
+        // provider reports the real native session id. Resume already has an
+        // exact binding and may deliver immediately.
+        if let Some(claimed) = ledger.claim_canonical_work_for(&member.id)? {
             let work_envelope = member_work_collaboration_envelope(
                 ledger,
                 context.execution_space_id.as_deref(),
                 project_id,
                 project_selector,
                 &member_row,
-                Some(&work),
+                Some(&claimed.work),
             )?;
             turn_lease = Some(turn_leases.acquire());
-            let input_id = format!("work-continuation:{}:{}", work.id, work.version);
             let effect = send_claude_provider_input(
                 ledger,
                 &member_row,
                 &mut send,
-                &input_id,
-                "work_continuation",
+                &claimed.delivery.id,
+                "work",
                 "host",
-                &work.id,
-                active_work_continuation_prompt(objective, &member_row, &work, &work_envelope),
+                &claimed.work.id,
+                work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope),
             )?;
-            inflight_effects.insert(input_id, effect);
-            active_work_continuation_inflight = true;
+            inflight_effects.insert(claimed.delivery.id.clone(), effect);
+            inflight_works.insert(claimed.delivery.id.clone(), claimed);
+        } else if claude_agent_sdk_idle_grace().is_none() {
+            if let Some(work) = ledger.active_work_continuation_for(&member.id)? {
+                let work_envelope = member_work_collaboration_envelope(
+                    ledger,
+                    context.execution_space_id.as_deref(),
+                    project_id,
+                    project_selector,
+                    &member_row,
+                    Some(&work),
+                )?;
+                turn_lease = Some(turn_leases.acquire());
+                let input_id = format!("work-continuation:{}:{}", work.id, work.version);
+                let effect = send_claude_provider_input(
+                    ledger,
+                    &member_row,
+                    &mut send,
+                    &input_id,
+                    "work_continuation",
+                    "host",
+                    &work.id,
+                    active_work_continuation_prompt(objective, &member_row, &work, &work_envelope),
+                )?;
+                inflight_effects.insert(input_id, effect);
+                active_work_continuation_inflight = true;
+            }
         }
     }
 
@@ -24218,14 +25028,28 @@ fn run_claude_agent_sdk_team_member(
                 }
                 "consumed" => {
                     if let Some(message_id) = data.get("id").and_then(|v| v.as_str()) {
+                        let receipt = data
+                            .get("sessionId")
+                            .and_then(|value| value.as_str())
+                            .map(|session_id| {
+                                format!("claude-sdk-session:{session_id}:{message_id}")
+                            })
+                            .unwrap_or_else(|| format!("claude-sdk-consumed:{message_id}"));
+                        if let Some(effect) = inflight_effects.remove(message_id) {
+                            settle_provider_effect(
+                                ledger,
+                                &effect,
+                                true,
+                                Some(serde_json::json!({
+                                    "provider": "claude",
+                                    "phase": "input_consumed",
+                                    "trigger_id": message_id,
+                                    "provider_receipt": &receipt,
+                                })),
+                                None,
+                            )?;
+                        }
                         if let Some(message) = delivered_messages.get(message_id) {
-                            let receipt = data
-                                .get("sessionId")
-                                .and_then(|value| value.as_str())
-                                .map(|session_id| {
-                                    format!("claude-sdk-session:{session_id}:{message_id}")
-                                })
-                                .unwrap_or_else(|| format!("claude-sdk-consumed:{message_id}"));
                             mark_message_delivered(
                                 ledger,
                                 message,
@@ -24235,13 +25059,6 @@ fn run_claude_agent_sdk_team_member(
                             )?;
                             delivered_message_ids.insert(message_id.to_string());
                         } else if let Some(work) = delivered_works.get(message_id) {
-                            let receipt = data
-                                .get("sessionId")
-                                .and_then(|value| value.as_str())
-                                .map(|session_id| {
-                                    format!("claude-sdk-session:{session_id}:{message_id}")
-                                })
-                                .unwrap_or_else(|| format!("claude-sdk-consumed:{message_id}"));
                             ledger.complete_work_delivery(work, &receipt)?;
                         }
                     }
@@ -24469,7 +25286,10 @@ fn run_claude_agent_sdk_team_member(
         // The response-intent gate (ADR 0046 §4) keeps informational-only mail
         // queued until response-required mail triggers a round, then batches it.
         let mut delivered_any = false;
-        if inflight_works.is_empty() && delivered_works.is_empty() {
+        if member_row.native_session.is_some()
+            && inflight_works.is_empty()
+            && delivered_works.is_empty()
+        {
             if let Some(claimed) = ledger.claim_canonical_work_for(&member.id)? {
                 if turn_lease.is_none() {
                     turn_lease = Some(turn_leases.acquire());
@@ -24531,7 +25351,11 @@ fn run_claude_agent_sdk_team_member(
                 }
             }
         }
-        let queued = ledger.claim_canonical_round_messages_for(&member.id)?;
+        let queued = if member_row.native_session.is_some() {
+            ledger.claim_canonical_round_messages_for(&member.id)?
+        } else {
+            Vec::new()
+        };
         for message in queued {
             if inflight_messages.contains_key(&message.id)
                 || delivered_message_ids.contains(&message.id)
@@ -25287,6 +26111,23 @@ fn run_kimi_member(
                 &prompt_text,
                 idle_timeout,
                 |receipt| {
+                    // A correlated ACP prompt receipt satisfies StartCycle:
+                    // the provider accepted the input and created the native
+                    // cycle. Later terminal/provider failure is cycle-outcome
+                    // uncertainty; it must not retroactively rewrite this
+                    // already-observed effect as unknown.
+                    settle_provider_effect(
+                        ledger,
+                        &effect,
+                        true,
+                        Some(serde_json::json!({
+                            "provider": "kimi",
+                            "round": round,
+                            "phase": "input_accepted",
+                            "provider_receipt": receipt,
+                        })),
+                        None,
+                    )?;
                     provider_effect_started = true;
                     if let Some(claimed) = active_work.as_ref() {
                         ledger.complete_work_delivery(claimed, receipt)?;
@@ -25431,13 +26272,6 @@ fn run_kimi_member(
                             ledger,
                             &mut pending_control_effect,
                         )?;
-                        settle_provider_effect(
-                            ledger,
-                            &effect,
-                            false,
-                            None,
-                            Some(provider_error.to_string()),
-                        )?;
                         return Err(CliError::Usage(format!(
                             "RUNTIME_COMMAND_RECOVERY_REQUIRED: Kimi reported a provider error after accepting the turn: {provider_error}"
                         )));
@@ -25447,18 +26281,28 @@ fn run_kimi_member(
                         &effect,
                         provider_error.to_string(),
                     )?;
-                } else {
-                    settle_provider_effect(
-                        ledger,
-                        &effect,
-                        true,
-                        Some(serde_json::json!({
-                            "provider": "kimi",
-                            "round": round,
-                            "stop_reason": outcome.stop_reason,
-                        })),
-                        None,
-                    )?;
+                } else if !provider_effect_started {
+                    if close_requested && outcome.stop_reason == "harness_runtime_closed" {
+                        // The Host intentionally disposed the owned runtime
+                        // before ACP produced a prompt receipt. Preserve the
+                        // unresolved StartCycle honestly; Close can still
+                        // settle its independently authorized control effect.
+                        settle_provider_effect(
+                            ledger,
+                            &effect,
+                            false,
+                            None,
+                            Some(
+                                "Host closed the runtime before Kimi emitted an input-acceptance receipt"
+                                    .to_string(),
+                            ),
+                        )?;
+                    } else {
+                        return Err(CliError::Usage(
+                            "RUNTIME_COMMAND_RECOVERY_REQUIRED: Kimi completed a cycle without a correlated input-acceptance receipt"
+                                .to_string(),
+                        ));
+                    }
                 }
                 outcome
             }
@@ -25468,7 +26312,6 @@ fn run_kimi_member(
                         ledger,
                         &mut pending_control_effect,
                     )?;
-                    settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
                     return Err(CliError::Usage(format!(
                         "RUNTIME_COMMAND_RECOVERY_REQUIRED: Kimi transport failed after the provider accepted the turn: {error}"
                     )));
@@ -25816,13 +26659,12 @@ fn run_pi_team_member(
     member: &ProviderRuntimeProjection,
     context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
+    use crate::runtime_adapter::TeamRuntimeAdapter as _;
+
     ledger.require_supervisor_lease()?;
     let project_id = context.project_id.as_deref();
     let project_selector = context.project_selector.as_deref();
     let cwd = &context.cwd;
-    let idle_timeout = context.idle_timeout;
-    let live_sink = context.live_sink.clone();
-    let turn_leases = &context.turn_leases;
 
     let mut member_row = member.clone();
     if let Some(profile) = member_row.provider_profile.as_mut() {
@@ -25892,490 +26734,144 @@ fn run_pi_team_member(
             );
     }
 
+    // Permission ceiling → compiled tool allowlist. The ceiling comes from
+    // the canonical AgentMember trust record; the allowlist is actually
+    // passed to the spawned process (a mapped-but-unlaunched string is not
+    // enforcement). Full access intentionally compiles to no flag and the
+    // profile records `none_verified` instead of pretending otherwise.
+    let ceiling = ledger
+        .store
+        .all_trust_agent_members()?
+        .into_iter()
+        .find(|candidate| candidate.id == member_row.agent_member_id)
+        .map(|record| record.permission_ceiling)
+        .unwrap_or(harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite);
+    let tools = crate::runtime_adapter::pi_tools_allowlist_for_ceiling(ceiling)?;
+    if let Some(profile) = member_row.provider_profile.as_mut() {
+        // Reuse the exact permission-aware resolution that was persisted
+        // before AgentSession materialization. A generic re-finalize here
+        // would resurrect FullAccess quiesce/release capabilities that the
+        // durable profile intentionally marks pending, drifting the live
+        // adapter composition away from the session fence.
+        apply_permission_enforcement_to_profile(profile, ceiling)?;
+    }
+
     let pi_bin = resolve_pi_bin();
+    let resume_session_file = match member.native_session.as_ref() {
+        Some(session) if Path::new(&session.native_session_id).is_file() => {
+            Some(session.native_session_id.as_str())
+        }
+        Some(session) => {
+            return Err(CliError::Usage(format!(
+                "PI_NATIVE_SESSION_MISSING: refusing to replace missing resume session {} with a fresh session",
+                session.native_session_id
+            )))
+        }
+        None => None,
+    };
 
     // Fence immediately before pi process start/resume.
     let process_effect = prepare_provider_process_effect(ledger, &member_row)?;
+    let profile = member_row.provider_profile.as_ref().ok_or_else(|| {
+        CliError::Usage(format!(
+            "RUNTIME_ADAPTER_PROFILE_MISSING: {} has no persisted provider profile",
+            member_row.id
+        ))
+    })?;
+    if let Err(error) = crate::runtime_adapter::preflight_profile_effect(
+        profile,
+        &process_effect.target_session,
+        crate::runtime_adapter_contract::SemanticCapability::OpenOrResume,
+    ) {
+        settle_provider_effect_not_applied(ledger, &process_effect, error.to_string())?;
+        return Err(error);
+    }
     let pi_client_result = pi_rpc::PiRpcClient::spawn(
         &pi_bin,
         pi_rpc::PiSpawnOptions {
             cwd,
             model: member.model.as_deref(),
-            resume_session_file: member.native_session.as_ref().and_then(|session| {
-                let path = &session.native_session_id;
-                if Path::new(path).is_file() {
-                    Some(path.as_str())
-                } else {
-                    None
-                }
-            }),
+            resume_session_file,
             session_dir: &session_dir,
             member_name: &member.name,
             collaboration_env: &collaboration_env,
+            tools,
+            permission_ceiling: ceiling,
         },
     );
-    let mut pi_client = match pi_client_result {
-        Ok(client) => {
-            settle_provider_effect(
-                ledger,
-                &process_effect,
-                true,
-                Some(serde_json::json!({"provider": "pi", "process": "ready"})),
-                None,
-            )?;
-            client
-        }
+    let pi_client = match pi_client_result {
+        Ok(client) => client,
         Err(error) => {
             settle_provider_effect_not_applied(ledger, &process_effect, error.to_string())?;
             return Err(error);
         }
     };
+    let mut adapter = pi_rpc::PiTeamRuntime::new(pi_client);
+    adapter.bind_authority_session(process_effect.target_session.clone(), profile)?;
+    let process_binding = runtime_command_binding_for_session(&process_effect.target_session);
+    let open_observation = match crate::runtime_adapter_contract::RuntimeAdapter::open_or_resume(
+        &mut adapter,
+        crate::runtime_adapter_contract::RuntimeFence {
+            binding: &process_binding,
+            target_node_daemon_id: &process_effect.target_session.node_daemon_id,
+            target_node_daemon_generation: process_effect.target_session.node_daemon_generation,
+        },
+        resume_session_file,
+    ) {
+        Ok(observation) => observation,
+        Err(error) => {
+            settle_provider_effect(
+                ledger,
+                &process_effect,
+                false,
+                None,
+                Some(error.to_string()),
+            )?;
+            return Err(CliError::Usage(format!(
+                "RUNTIME_COMMAND_RECOVERY_REQUIRED: Pi open/resume could not be verified after spawn: {error}"
+            )));
+        }
+    };
+    settle_provider_effect(
+        ledger,
+        &process_effect,
+        true,
+        Some(serde_json::json!({
+            "provider": "pi",
+            "phase": "runtime_attached",
+            "observation": open_observation,
+        })),
+        None,
+    )?;
+    transition_provider_session_runtime_control(
+        ledger,
+        &member_row,
+        harness_core::agentfirm_api::RuntimeResidency::Attached,
+        harness_core::agentfirm_api::RuntimeActivity::Idle,
+    )?;
 
     member_row.native_session = Some(native_session_ref(
         &member_row,
-        pi_client.session_file(),
-        "pi_session",
+        adapter.native_session_locator(),
+        adapter.native_locator_kind(),
     ));
 
     let (live_control, registration) = register_live_member_control(&member_row, 16);
-    let mut live_control_registration = Some(registration);
 
     member_row.status = MemberRunStatus::Idle;
     member_row.last_event_at = Some(now_string());
     ledger.save_member_run(&expected, &member_row)?;
 
-    let mut round = 0u32;
-    let mut prompt_text;
-    let mut accepted_messages = Vec::new();
-    let mut active_work: Option<ClaimedWork> = None;
-    // Pi joined the persistent Team surface after the shared supervisor wake
-    // policy landed. Keep it on the same predicate/backoff contract as Codex
-    // and Kimi instead of retaining the superseded fixed-poll call shape.
-    let wake_policy = supervisor_wake::WakePolicy::default();
-    let mut wake_backoff = supervisor_wake::WakeBackoff::new();
-    let mut zero_output_streak = member_row.zero_output_streak;
-    let mut last_consumed_work_version = member_row.last_consumed_work_version;
-
-    match wait_for_idle_member_wake(
+    // The generic provider-neutral loop owns wake → claim → cycle → settle.
+    crate::runtime_adapter::run_team_member_with_adapter(
         ledger,
+        objective,
         &mut member_row,
+        context,
+        &mut adapter,
         &live_control,
-        || {
-            require_provider_session_authority(ledger, &member.agent_member_id, false)?;
-            pi_client.ensure_transport_alive()
-        },
-        zero_output_streak,
-        last_consumed_work_version,
-        &wake_policy,
-        &mut wake_backoff,
-    )? {
-        IdleMemberWake::Work(claimed) => {
-            wake_backoff.reset();
-            last_consumed_work_version = Some(claimed.work.version);
-            let work_envelope = member_work_collaboration_envelope(
-                ledger,
-                context.execution_space_id.as_deref(),
-                project_id,
-                project_selector,
-                &member_row,
-                Some(&claimed.work),
-            )?;
-            prompt_text =
-                work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope);
-            active_work = Some(*claimed);
-        }
-        IdleMemberWake::ActiveWorkContinuation(work) => {
-            last_consumed_work_version = Some(work.version);
-            let work_envelope = member_work_collaboration_envelope(
-                ledger,
-                context.execution_space_id.as_deref(),
-                project_id,
-                project_selector,
-                &member_row,
-                Some(&work),
-            )?;
-            prompt_text =
-                active_work_continuation_prompt(objective, &member_row, &work, &work_envelope);
-            active_work = None;
-        }
-        IdleMemberWake::Messages(messages) => {
-            prompt_text = String::from(
-                "TEAM MESSAGES arrived. They are conversation, not Work ownership. \
-                 Address the question or coordination request, and use the Works \
-                 board for any durable responsibility.\n\n",
-            );
-            for message in &messages {
-                prompt_text.push_str(&format!(
-                    "--- {} ({}, correlation_id={}) ---\n{}\n\n",
-                    message.sender_runtime_id,
-                    team_message_kind_label(&message.kind),
-                    message.correlation_id,
-                    message.body
-                ));
-            }
-            accepted_messages = messages;
-        }
-        IdleMemberWake::Closed => {
-            return Ok(MemberOutcome::new(
-                &member_row,
-                MemberRunStatus::Stopped,
-                "Pi member runtime closed by Host".to_string(),
-            ));
-        }
-        IdleMemberWake::TestRetired => {
-            return Ok(MemberOutcome::new(
-                &member_row,
-                MemberRunStatus::Idle,
-                "Pi member test runtime retired while idle".to_string(),
-            ));
-        }
-        IdleMemberWake::Degraded(reason) => {
-            return Ok(MemberOutcome::new(
-                &member_row,
-                MemberRunStatus::Blocked,
-                format!("Pi member degraded: {reason}"),
-            ));
-        }
-    }
-
-    loop {
-        round += 1;
-        let prompt = prompt_text.clone();
-        let source_record_id = active_work
-            .as_ref()
-            .map(|claimed| claimed.delivery.id.as_str())
-            .or_else(|| accepted_messages.last().map(|message| message.id.as_str()))
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("continuation:{}:{round}", member_row.id));
-        let source_record_id = format!("{source_record_id}:turn:{round}");
-        let effect = prepare_provider_effect(ledger, &member_row, &source_record_id, &prompt)?;
-        let mut pending_control_effect: Option<
-            Box<crate::provider_adapter::PendingProviderControl>,
-        > = None;
-        let mut control_prepare_error: Option<String> = None;
-
-        let turn_result = {
-            let _turn_lease = turn_leases.acquire();
-            let _live_turn_guard = LiveProviderTurnGuard::new(
-                live_sink.clone(),
-                ledger.run_id.clone(),
-                member.id.clone(),
-            );
-            pi_client.prompt(
-                &prompt,
-                idle_timeout,
-                |event| {
-                    if let Some((kind, preview)) = pi_rpc::PiRpcClient::project_live(event) {
-                        if let Some(sink) = &live_sink {
-                            emit_live_provider_activity(sink, ledger, member, kind, preview);
-                        }
-                    }
-                },
-                || {
-                    while let Ok(command) = live_control.try_recv() {
-                        match command {
-                            MemberControlCommand::Close { reason, .. } => {
-                                let mut close = false;
-                                let mut interrupt = false;
-                                let mut adapter = crate::provider_adapter::PiNativeControl {
-                                    close: &mut close,
-                                    interrupt: &mut interrupt,
-                                };
-                                match crate::provider_adapter::execute_team_control(
-                                    ledger,
-                                    &member_row,
-                                    &format!("pi-close:{}:{round}", member.id),
-                                    &reason,
-                                    true,
-                                    &mut adapter,
-                                ) {
-                                    Ok(
-                                        crate::provider_adapter::ProviderControlDispatch::Pending(
-                                            pending,
-                                        ),
-                                    ) => pending_control_effect = Some(pending),
-                                    Ok(
-                                        crate::provider_adapter::ProviderControlDispatch::Replayed,
-                                    ) => {}
-                                    Err(error) => control_prepare_error = Some(error.to_string()),
-                                }
-                                return (close, interrupt);
-                            }
-                            MemberControlCommand::Interrupt { reason, .. } => {
-                                let mut close = false;
-                                let mut interrupt = false;
-                                let mut adapter = crate::provider_adapter::PiNativeControl {
-                                    close: &mut close,
-                                    interrupt: &mut interrupt,
-                                };
-                                match crate::provider_adapter::execute_team_control(
-                                    ledger,
-                                    &member_row,
-                                    &format!("pi-interrupt:{}:{round}", member.id),
-                                    &reason,
-                                    false,
-                                    &mut adapter,
-                                ) {
-                                    Ok(
-                                        crate::provider_adapter::ProviderControlDispatch::Pending(
-                                            pending,
-                                        ),
-                                    ) => pending_control_effect = Some(pending),
-                                    Ok(
-                                        crate::provider_adapter::ProviderControlDispatch::Replayed,
-                                    ) => {}
-                                    Err(error) => control_prepare_error = Some(error.to_string()),
-                                }
-                                return (close, interrupt);
-                            }
-                            _ => {}
-                        }
-                    }
-                    (false, false)
-                },
-            )
-        };
-        let turn = match turn_result {
-            Ok(turn) => {
-                settle_provider_effect(
-                    ledger,
-                    &effect,
-                    true,
-                    Some(serde_json::json!({
-                        "provider": "pi",
-                        "round": round,
-                        "session_file": pi_client.session_file(),
-                    })),
-                    None,
-                )?;
-                turn
-            }
-            Err(error) => {
-                crate::provider_adapter::settle_optional_team_control_without_terminal_ack(
-                    ledger,
-                    &mut pending_control_effect,
-                )?;
-                settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
-                return Err(error);
-            }
-        };
-        if let Some(error) = control_prepare_error {
-            crate::provider_adapter::settle_optional_team_control_without_terminal_ack(
-                ledger,
-                &mut pending_control_effect,
-            )?;
-            return Err(CliError::Usage(error));
-        }
-        if let Some(pending) = pending_control_effect.take() {
-            crate::provider_adapter::settle_team_control(
-                ledger,
-                &pending,
-                turn.interrupted.then_some("interrupted"),
-            )?;
-        }
-
-        require_provider_session_authority(ledger, &member.agent_member_id, true)?;
-        // Update native session ref with current session file.
-        let expected = member_row.clone();
-        member_row.native_session = Some(native_session_ref(
-            &member_row,
-            pi_client.session_file(),
-            "pi_session",
-        ));
-        ledger.save_member_run(&expected, &member_row)?;
-
-        let receipt = format!("pi:{}:round-{round}", pi_client.session_file());
-        if let Some(claimed) = active_work.as_ref() {
-            ledger.complete_work_delivery(claimed, &receipt)?;
-        }
-        drop(active_work.take());
-        for message in &accepted_messages {
-            mark_message_delivered(ledger, message, &member.id, &member.name, &receipt)?;
-        }
-        accepted_messages.clear();
-
-        if turn.interrupted {
-            let expected = member_row.clone();
-            let interruption_summary = if turn.close_requested_by_harness {
-                "The Host explicitly closed the Pi member runtime."
-            } else {
-                "The operator or Lead interrupted the active Pi turn."
-            };
-            if turn.close_requested_by_harness {
-                transition_provider_session_for_member(
-                    ledger,
-                    &member_row,
-                    harness_core::agentfirm_api::AgentSessionStatus::Idle,
-                )?;
-                member_row.coordination_status = MemberCoordinationStatus::Closed;
-            }
-            member_row.status = if turn.close_requested_by_harness {
-                MemberRunStatus::Stopped
-            } else {
-                MemberRunStatus::Idle
-            };
-            member_row.finished_at = turn.close_requested_by_harness.then(now_string);
-            member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(&expected, &member_row)?;
-            ledger.append_action(
-                &member.id,
-                if turn.close_requested_by_harness {
-                    "closed"
-                } else {
-                    "interrupted"
-                },
-                MemberActionStatus::Cancelled,
-                if turn.close_requested_by_harness {
-                    "member runtime closed"
-                } else {
-                    "provider turn interrupted"
-                },
-                interruption_summary,
-            )?;
-            if turn.close_requested_by_harness {
-                drop(live_control_registration.take());
-                return Ok(MemberOutcome::new(
-                    &member_row,
-                    MemberRunStatus::Stopped,
-                    "Pi member runtime closed by Host".to_string(),
-                ));
-            }
-        } else {
-            let final_text = turn.final_text;
-            let is_zero_output = final_text.trim().is_empty() && turn.tool_call_count == 0;
-            if is_zero_output {
-                zero_output_streak += 1;
-            } else {
-                zero_output_streak = 0;
-            }
-            let action_status = if is_zero_output {
-                MemberActionStatus::Failed
-            } else {
-                let result = parse_round_result(&final_text);
-                if result == MemberRoundResult::Done {
-                    MemberActionStatus::Succeeded
-                } else {
-                    MemberActionStatus::Failed
-                }
-            };
-            let round_summary =
-                provider_turn_coordination_summary("Pi", round, !final_text.trim().is_empty());
-            let action = ledger.append_action(
-                &member.id,
-                "turn_completed",
-                action_status,
-                &format!("Pi provider round {round} completed"),
-                &round_summary,
-            )?;
-            ledger.fold_event(
-                TeamRunEventSourceKind::Member,
-                Some(member.id.clone()),
-                "action",
-                &action.id,
-                "created",
-                &format!("{} completed provider round {round}", member.name),
-            )?;
-
-            let expected = member_row.clone();
-            member_row.zero_output_streak = zero_output_streak;
-            member_row.last_consumed_work_version = last_consumed_work_version;
-            member_row.status = MemberRunStatus::Idle;
-            member_row.finished_at = None;
-            member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(&expected, &member_row)?;
-            ledger.fold_event(
-                TeamRunEventSourceKind::Member,
-                Some(member.id.clone()),
-                "member_run",
-                &member.id,
-                "updated",
-                &format!("member {} idle after round {round}", member.name),
-            )?;
-        }
-
-        match wait_for_idle_member_wake(
-            ledger,
-            &mut member_row,
-            &live_control,
-            || {
-                require_provider_session_authority(ledger, &member.agent_member_id, false)?;
-                pi_client.ensure_transport_alive()
-            },
-            zero_output_streak,
-            last_consumed_work_version,
-            &wake_policy,
-            &mut wake_backoff,
-        )? {
-            IdleMemberWake::Work(claimed) => {
-                wake_backoff.reset();
-                last_consumed_work_version = Some(claimed.work.version);
-                let work_envelope = member_work_collaboration_envelope(
-                    ledger,
-                    context.execution_space_id.as_deref(),
-                    project_id,
-                    project_selector,
-                    &member_row,
-                    Some(&claimed.work),
-                )?;
-                prompt_text =
-                    work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope);
-                active_work = Some(*claimed);
-            }
-            IdleMemberWake::ActiveWorkContinuation(work) => {
-                last_consumed_work_version = Some(work.version);
-                let work_envelope = member_work_collaboration_envelope(
-                    ledger,
-                    context.execution_space_id.as_deref(),
-                    project_id,
-                    project_selector,
-                    &member_row,
-                    Some(&work),
-                )?;
-                prompt_text =
-                    active_work_continuation_prompt(objective, &member_row, &work, &work_envelope);
-                active_work = None;
-            }
-            IdleMemberWake::Messages(messages) => {
-                prompt_text = String::from(
-                    "TEAM MESSAGES arrived. They are conversation, not Work ownership. \
-                     Address the question or coordination request, and use the Works \
-                     board for any durable responsibility.\n\n",
-                );
-                for message in &messages {
-                    prompt_text.push_str(&format!(
-                        "--- {} ({}, correlation_id={}) ---\n{}\n\n",
-                        message.sender_runtime_id,
-                        team_message_kind_label(&message.kind),
-                        message.correlation_id,
-                        message.body
-                    ));
-                }
-                accepted_messages = messages;
-                active_work = None;
-            }
-            IdleMemberWake::Closed => {
-                return Ok(MemberOutcome::new(
-                    &member_row,
-                    MemberRunStatus::Stopped,
-                    "Pi member runtime closed by Host".to_string(),
-                ));
-            }
-            IdleMemberWake::TestRetired => {
-                return Ok(MemberOutcome::new(
-                    &member_row,
-                    MemberRunStatus::Idle,
-                    "Pi member test runtime retired while idle".to_string(),
-                ));
-            }
-            IdleMemberWake::Degraded(reason) => {
-                return Ok(MemberOutcome::new(
-                    &member_row,
-                    MemberRunStatus::Blocked,
-                    format!("Pi member degraded: {reason}"),
-                ));
-            }
-        }
-    }
+        Some(registration),
+    )
 }
 
 /// Journal a member failure on any error path (best-effort: we are already on
@@ -29315,6 +29811,32 @@ fn runtime_command_capability(
         RuntimeCommandKind::ResumeSession => "agent_session.resume",
         RuntimeCommandKind::DispatchProvider => "provider.dispatch",
         RuntimeCommandKind::CancelProviderTurn => "provider.cancel",
+        RuntimeCommandKind::OpenRuntime => "runtime.open",
+        RuntimeCommandKind::ResumeNativeSession => "runtime.native_session.resume",
+        RuntimeCommandKind::ReleaseRuntime => "runtime.release",
+        RuntimeCommandKind::CloseMember => "member.close",
+        RuntimeCommandKind::ReopenMember => "member.reopen",
+        RuntimeCommandKind::RetireMember => "member.retire",
+        RuntimeCommandKind::DeleteNativeSession => "runtime.native_session.delete",
+        RuntimeCommandKind::StartCycle => "cycle.start",
+        RuntimeCommandKind::InjectCurrentCycle => "cycle.inject_current",
+        RuntimeCommandKind::QueueAtNativeBoundary => "cycle.queue_native_boundary",
+        RuntimeCommandKind::InterruptCurrentCycle => "cycle.interrupt_current",
+        RuntimeCommandKind::CancelPendingInput => "cycle.pending_input.cancel",
+        RuntimeCommandKind::InspectContinuation => "continuation.inspect",
+        RuntimeCommandKind::ActivateContinuation => "continuation.activate",
+        RuntimeCommandKind::InhibitContinuation => "continuation.inhibit",
+        RuntimeCommandKind::ResumeContinuation => "continuation.resume",
+        RuntimeCommandKind::ReplaceContinuationCondition => "continuation.condition.replace",
+        RuntimeCommandKind::ClearContinuation => "continuation.clear",
+        RuntimeCommandKind::QuiesceExecutionLane => "execution_lane.quiesce",
+        RuntimeCommandKind::DrainRuntime => "runtime.drain",
+        RuntimeCommandKind::StopBackgroundTask => "background_task.stop",
+        RuntimeCommandKind::TransferExecutionDriver => "driver.transfer",
+        RuntimeCommandKind::InspectCommandEffect => "command_effect.inspect",
+        RuntimeCommandKind::ReconcileUnknownEffect => "command_effect.reconcile",
+        RuntimeCommandKind::ReattachLiveRuntime => "runtime.reattach",
+        RuntimeCommandKind::AbortIfNotApplied => "command_effect.abort_if_not_applied",
     }
 }
 
@@ -29833,7 +30355,7 @@ fn handle_http_connection(
                             .find(|run| run.id == run_id)
                             .map(|run| run.execution_node_id)
                     })
-                    .or(request.target_node_id)
+                    .or(request.target_node_id.clone())
                     .ok_or_else(|| {
                         CliError::Usage(
                             "INVALID_RUNTIME_COMMAND: Message target Node cannot be resolved"
@@ -29908,9 +30430,10 @@ fn handle_http_connection(
                     .ok_or_else(|| {
                         CliError::Usage(
                             "SERVER_PROVIDER_PROFILE_UNAVAILABLE: provider profile is not a closed supported provider"
-                                .into(),
+                            .into(),
                         )
                     })?;
+                let provider_profile = team_member_provider_profile(provider_kind);
                 let availability = crate::provider_adapter::provider_availability(provider_kind)
                     .map_err(CliError::Usage)?;
                 if !availability.available {
@@ -29949,6 +30472,12 @@ fn handle_http_connection(
                     effective_permission_ceiling: identity.permission_ceiling,
                     lifecycle: AgentSessionStatus::Cold,
                     runtime_generation: 1,
+                    control_state: agent_session_control_state_for_profile(
+                        Some(&provider_profile),
+                        "",
+                        0,
+                        1,
+                    ),
                     native_session_ref: None,
                     current_turn_id: None,
                     queued_input_count: 0,
@@ -30025,6 +30554,14 @@ fn handle_http_connection(
                     }),
                 )
             }
+            other => {
+                write_http_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &serde_json::json!({"ok":false,"error":{"code":"RUNTIME_COMMAND_UNSUPPORTED","message":format!("runtime command {other:?} has no reviewed HTTP intent schema")}}),
+                )?;
+                return Ok(());
+            }
         };
         let registered = store_owned
             .latest_node_project_registrations()?
@@ -30085,11 +30622,165 @@ fn handle_http_connection(
                     "node_daemon_generation".into(),
                     serde_json::json!(lease.generation),
                 );
+                let provider = session
+                    .get("provider_kind")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("codex");
+                let runtime_generation = session
+                    .get("runtime_generation")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(1);
+                let profile = team_member_provider_profile(provider);
+                session.insert(
+                    "control_state".into(),
+                    serde_json::to_value(agent_session_control_state_for_profile(
+                        Some(&profile),
+                        &lease.daemon_id,
+                        lease.generation,
+                        runtime_generation,
+                    ))?,
+                );
             }
             payload
         } else {
             server_payload
         };
+        // Resolve an exact replay from the immutable accepted envelope before
+        // rebuilding a fence from mutable session state. Open/Stop/Reopen are
+        // expected to change native-session or residency fields; deriving a
+        // second envelope after that postcondition would turn an identical
+        // caller retry into a false idempotency conflict. Hostile reuse still
+        // fails because every caller-authored semantic field must match the
+        // original accepted envelope byte-for-byte.
+        if request.command != RuntimeCommandKind::AuthorMessage {
+            let command_id = format!("runtime-command:{idempotency_key}");
+            let original = store_owned
+                .canonical_operations_for_space(&project_id)?
+                .into_iter()
+                .find(|operation| {
+                    operation.event.aggregate_kind == "runtime_command"
+                        && operation.event.aggregate_id == command_id
+                        && operation.event.transition == "accepted"
+                })
+                .map(|operation| {
+                    serde_json::from_value::<harness_core::agentfirm_api::ControlCommandEnvelope>(
+                        operation.event.payload,
+                    )
+                    .map_err(CliError::Json)
+                })
+                .transpose()?;
+            if let Some(original) = original {
+                let exact_intent = original.command == request.command
+                    && original.expires_unix_ms == request.expires_unix_ms
+                    && original.payload == server_payload
+                    && original.expected_version == expected_version
+                    && original.authenticated_actor == authenticated_actor
+                    && original.idempotency_key == idempotency_key
+                    && request
+                        .target_node_id
+                        .as_deref()
+                        .is_none_or(|node_id| node_id == original.target_node_id);
+                if !exact_intent {
+                    write_http_json(
+                        &mut stream,
+                        "409 Conflict",
+                        &serde_json::json!({
+                            "ok": false,
+                            "error": "IDEMPOTENCY_KEY_REUSED: RuntimeCommand key was reused with different caller semantics",
+                        }),
+                    )?;
+                    return Ok(());
+                }
+                let record = store_owned
+                    .runtime_commands(&project_id)?
+                    .into_iter()
+                    .find(|record| record.id == command_id)
+                    .ok_or_else(|| {
+                        CliError::Usage(format!(
+                            "RUNTIME_COMMAND_RECOVERY_REQUIRED: accepted command {command_id} has no readable projection"
+                        ))
+                    })?;
+                if record.status == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+                    && record.effect_certainty
+                        == harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
+                {
+                    write_http_json(
+                        &mut stream,
+                        "200 OK",
+                        &serde_json::json!({
+                            "ok": true,
+                            "result": record.result,
+                            "replayed": true,
+                        }),
+                    )?;
+                } else {
+                    write_http_json(
+                        &mut stream,
+                        "409 Conflict",
+                        &serde_json::json!({
+                            "ok": false,
+                            "error": format!(
+                                "RUNTIME_COMMAND_RECOVERY_REQUIRED: exact replay is {:?}/{:?}/{:?}",
+                                record.status,
+                                record.effect_certainty,
+                                record.postcondition_status,
+                            ),
+                            "replayed": true,
+                        }),
+                    )?;
+                }
+                return Ok(());
+            }
+        }
+        let command_target_session = if request.command == RuntimeCommandKind::AuthorMessage {
+            None
+        } else if request.command == RuntimeCommandKind::StartSession {
+            Some(
+                serde_json::from_value::<AgentSession>(
+                    server_payload
+                        .get("session")
+                        .cloned()
+                        .ok_or_else(|| CliError::Usage("INVALID_RUNTIME_COMMAND: StartSession payload lost server-bound session".into()))?,
+                )
+                .map_err(|error| {
+                    CliError::Usage(format!(
+                        "INVALID_RUNTIME_COMMAND: server-bound StartSession session is invalid: {error}"
+                    ))
+                })?,
+            )
+        } else {
+            let session_id = server_payload
+                .get("session_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "INVALID_RUNTIME_COMMAND: runtime control lacks session_id".into(),
+                    )
+                })?;
+            Some(
+                store_owned
+                    .fabric_agent_sessions(&project_id)?
+                    .into_iter()
+                    .find(|session| session.id == session_id)
+                    .ok_or_else(|| CliError::Usage("AGENT_SESSION_NOT_FOUND".into()))?,
+            )
+        };
+        let command_binding = command_target_session
+            .as_ref()
+            .map(runtime_command_binding_for_session)
+            .unwrap_or_default();
+        let command_precondition = command_target_session
+            .as_ref()
+            .map(
+                |session| harness_core::agentfirm_api::RuntimeCommandPrecondition {
+                    expected_session_version: Some(session.version),
+                    expected_residency: Some(session.control_state.runtime_residency),
+                    expected_activity: Some(session.control_state.activity),
+                    expected_execution_driver: Some(session.control_state.execution_driver),
+                    ..Default::default()
+                },
+            )
+            .unwrap_or_default();
         let envelope = harness_core::agentfirm_api::ControlCommandEnvelope {
             id: format!("runtime-command:{}", idempotency_key),
             execution_space_id: project_id.clone(),
@@ -30102,6 +30793,9 @@ fn handle_http_connection(
             idempotency_key,
             expected_version,
             expires_unix_ms: request.expires_unix_ms,
+            binding: command_binding,
+            precondition: command_precondition,
+            postcondition: runtime_command_postcondition_for(request.command),
             payload_fingerprint: harness_store::canonical_json_fingerprint(&server_payload),
             payload: server_payload,
             issued_at: now,
@@ -46277,6 +46971,115 @@ mod tests {
         );
     }
 
+    #[test]
+    fn pi_profile_persists_the_canonical_capability_dependency_closure() {
+        let profile = team_member_provider_profile_for_mode("pi", Some("pi_rpc"));
+        let binding = |name: &str| {
+            profile
+                .capability_bindings
+                .iter()
+                .find(|binding| binding.capability == name)
+                .unwrap_or_else(|| panic!("missing Pi capability binding {name}"))
+        };
+        assert_eq!(
+            binding("start_cycle").required_dependencies,
+            vec!["open_or_resume", "observe"]
+        );
+        assert_eq!(
+            binding("inject_current_cycle").required_dependencies,
+            vec!["observe"]
+        );
+        assert_eq!(
+            binding("quiesce").required_dependencies,
+            vec!["interrupt_current_cycle", "observe"]
+        );
+        assert_eq!(binding("release").required_dependencies, vec!["quiesce"]);
+    }
+
+    #[test]
+    fn pi_full_access_profile_denies_quiesce_without_child_inventory() {
+        let mut read_only = team_member_provider_profile_for_mode("pi", Some("pi_rpc"));
+        apply_permission_enforcement_to_profile(
+            &mut read_only,
+            harness_core::agentfirm_api::PermissionCeiling::ReadOnly,
+        )
+        .unwrap();
+        assert_eq!(
+            read_only
+                .capability_bindings
+                .iter()
+                .find(|binding| binding.capability == "quiesce")
+                .unwrap()
+                .admission,
+            harness_core::ProviderBindingAdmission::Active
+        );
+
+        let mut full_access = team_member_provider_profile_for_mode("pi", Some("pi_rpc"));
+        apply_permission_enforcement_to_profile(
+            &mut full_access,
+            harness_core::agentfirm_api::PermissionCeiling::FullAccess,
+        )
+        .unwrap();
+        for capability in ["quiesce", "release"] {
+            let binding = full_access
+                .capability_bindings
+                .iter()
+                .find(|binding| binding.capability == capability)
+                .unwrap();
+            assert_eq!(
+                binding.admission,
+                harness_core::ProviderBindingAdmission::PendingDependency
+            );
+            assert!(binding.evidence.iter().any(|evidence| {
+                evidence
+                    .evidence_ref
+                    .contains("requires_native_job_inventory_or_os_containment")
+            }));
+        }
+        assert_ne!(
+            full_access.capability_fingerprint,
+            read_only.capability_fingerprint
+        );
+        assert_ne!(
+            full_access.composition_fingerprint,
+            read_only.composition_fingerprint
+        );
+    }
+
+    #[test]
+    fn runtime_composition_fingerprint_commits_to_security_and_capabilities() {
+        let baseline = team_member_provider_profile_for_mode("pi", Some("pi_rpc"));
+        let baseline_fingerprint = baseline
+            .composition_fingerprint
+            .clone()
+            .expect("Pi composition fingerprint");
+
+        let mut security_changed = baseline.clone();
+        security_changed.security_enforcement_locus.note =
+            Some("different reviewed enforcement mapping".into());
+        finalize_provider_integration_profile(&mut security_changed);
+        assert_ne!(
+            security_changed.composition_fingerprint.as_deref(),
+            Some(baseline_fingerprint.as_str())
+        );
+
+        let mut capability_changed = baseline;
+        capability_changed
+            .capability_bindings
+            .iter_mut()
+            .find(|binding| binding.capability == "start_cycle")
+            .expect("start_cycle binding")
+            .status = harness_core::ProviderCapabilityStatus::ReviewRequired;
+        capability_changed.capability_fingerprint =
+            profile_capability_fingerprint(&capability_changed);
+        capability_changed.composition_fingerprint =
+            resolved_profile_composition_fingerprint(&capability_changed);
+        assert_ne!(
+            capability_changed.composition_fingerprint.as_deref(),
+            Some(baseline_fingerprint.as_str())
+        );
+    }
+
     trait TestSupervisorLeaseExt {
         fn acquire_test_supervisor_lease(
             &self,
@@ -51858,7 +52661,7 @@ package:com.tencent.mm
     fn four_provider_native_control_seam_is_durable_replay_safe_and_fail_closed() {
         use harness_core::agentfirm_api::{
             AgentSessionStatus, PermissionCeiling, RuntimeCommandStatus, RuntimeDispatchMode,
-            RuntimeEffectCertainty,
+            RuntimeEffectCertainty, RuntimePostconditionStatus,
         };
 
         let cases = [
@@ -51905,7 +52708,11 @@ package:com.tencent.mm
             transition_provider_session_for_member(&ledger, &member, AgentSessionStatus::Active)
                 .expect("activate provider session");
 
-            let requested_ceiling = if provider == "kimi" {
+            let requested_ceiling = if matches!(provider, "kimi" | "pi") {
+                // Pi's tool allowlist cannot enforce a workspace path
+                // boundary. The production adapter admits either read-only
+                // or explicit trusted full access; Kimi is likewise admitted
+                // only under its exact full-access callback mapping.
                 PermissionCeiling::FullAccess
             } else {
                 PermissionCeiling::WorkspaceWrite
@@ -51962,6 +52769,10 @@ package:com.tencent.mm
                 .expect("durable provider control command");
             assert_eq!(applied.status, RuntimeCommandStatus::Applied);
             assert_eq!(applied.effect_certainty, RuntimeEffectCertainty::Applied);
+            assert_eq!(
+                applied.postcondition_status,
+                RuntimePostconditionStatus::Satisfied
+            );
 
             assert!(matches!(
                 crate::provider_adapter::execute_team_control(
@@ -51997,6 +52808,10 @@ package:com.tencent.mm
                         && command.effect_certainty == RuntimeEffectCertainty::Unknown
                 })
                 .expect("uncertain provider control enters recovery inventory");
+            assert_eq!(
+                uncertain.postcondition_status,
+                RuntimePostconditionStatus::Unknown
+            );
             assert!(uncertain.failure_code.as_deref().is_some_and(|failure| {
                 failure.contains("faithful shim transport lost after native dispatch")
             }));
@@ -56382,6 +57197,10 @@ mod tests_team_run_recover {
             provider_controls: Default::default(),
             provider_profile: if has_session || is_external {
                 Some(ProviderIntegrationProfile {
+                    agent_runtime_provider: Some(harness_core::AgentRuntimeProvider(
+                        "codex".into(),
+                    )),
+                    model_route: None,
                     provider: "codex".into(),
                     execution_mode: execution_mode.clone(),
                     execution_driver: if is_external {
@@ -56406,6 +57225,13 @@ mod tests_team_run_recover {
                     observes_native_subagents: false,
                     observes_background_tasks: false,
                     thinking_transient_only: true,
+                    control_topology: ControlTopology::default(),
+                    composition_fingerprint: None,
+                    capability_fingerprint: None,
+                    capability_bindings: Vec::new(),
+                    binding_admission: harness_core::ProviderBindingAdmission::Failed,
+                    adapter_bridge_revision: None,
+                    security_enforcement_locus: SecurityEnforcementLocus::default(),
                 })
             } else {
                 None

@@ -711,7 +711,7 @@ pub fn install_pi_rpc_shim(
 import sys, json, os, subprocess
 
 if '--version' in sys.argv[1:]:
-    print('0.83.0')
+    print('0.84.2')
     raise SystemExit(0)
 
 RESULT = os.environ.get('FAKE_PI_RESULT', 'DONE')
@@ -727,6 +727,19 @@ if args_marker:
 os.makedirs(os.path.dirname('{session_file_path}'), exist_ok=True)
 with open('{session_file_path}', 'w') as f:
     f.write(json.dumps({{"type":"agent_start"}}) + '\n')
+
+# A FullAccess conformance fixture may deliberately leave a writable child
+# alive after the provider reports idle. It stays in the owned process group
+# so test teardown is recoverable, but Pi RPC itself exposes no inventory or
+# acknowledgement for this job.
+background_writer = os.environ.get('FAKE_PI_BACKGROUND_WRITER')
+if background_writer:
+    subprocess.Popen([
+        sys.executable,
+        '-c',
+        'import sys,time\np=sys.argv[1]\nfor _ in range(300):\n open(p,"a").write("tick\\n")\n time.sleep(0.05)',
+        background_writer,
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 TEXT = '## RESULT\n' + RESULT + '\n## SUMMARY\nFake pi done.'
 prompt_count = 0
@@ -761,6 +774,62 @@ for line in sys.stdin:
         resp = {{'id': cid, 'type': 'response', 'command': 'set_auto_compaction', 'success': True}}
     elif t == 'prompt':
         prompt_count += 1
+        count_marker = os.environ.get('FAKE_PI_PROMPT_COUNT_MARKER')
+        if count_marker:
+            with open(count_marker, 'a') as f:
+                f.write(str(prompt_count) + '\n')
+        if os.environ.get('FAKE_PI_DISCONNECT_AFTER_PROMPT_ACCEPT') == '1':
+            resp = {{'id': cid, 'type': 'response', 'command': 'prompt', 'success': True}}
+            print(json.dumps(resp), flush=True)
+            raise SystemExit(0)
+        if os.environ.get('FAKE_PI_WAIT_FOR_STEER') == '1' and prompt_count == 1:
+            pm = os.environ.get('FAKE_PI_PROMPT_MARKER')
+            if pm:
+                with open(pm, 'a') as f:
+                    f.write('prompt\n')
+            resp = {{'id': cid, 'type': 'response', 'command': 'prompt', 'success': True}}
+            print(json.dumps(resp), flush=True)
+            print(json.dumps({{"type": "agent_start"}}), flush=True)
+            print(json.dumps({{"type": "turn_start"}}), flush=True)
+            # Hold the cycle open until an explicit steer (or abort) arrives.
+            while True:
+                line2 = sys.stdin.readline()
+                if not line2:
+                    break
+                try:
+                    cmd2 = json.loads(line2.strip())
+                except json.JSONDecodeError:
+                    continue
+                t2 = cmd2.get('type', '')
+                if t2 == 'steer':
+                    sm = os.environ.get('FAKE_PI_STEER_MARKER')
+                    if sm:
+                        with open(sm, 'a') as f:
+                            f.write(cmd2.get('message', '') + '\n')
+                    delay_ms = int(os.environ.get('FAKE_PI_STEER_RESPONSE_DELAY_MS', '0'))
+                    if delay_ms:
+                        import time
+                        time.sleep(delay_ms / 1000.0)
+                    if cmd2.get('id'):
+                        print(json.dumps({{'id': cmd2['id'], 'type': 'response',
+                            'command': 'steer', 'success': True}}), flush=True)
+                    break
+                if t2 == 'abort':
+                    if cmd2.get('id'):
+                        print(json.dumps({{'id': cmd2['id'], 'type': 'response',
+                            'command': 'abort', 'success': True}}), flush=True)
+                    break
+            for event in [
+                {{"type": "turn_end", "message": {{"role": "assistant",
+                    "content": [{{"type": "text", "text": TEXT}}],
+                    "toolResults": []}}}},
+                {{"type": "agent_end"}},
+                {{"type": "agent_settled"}},
+            ]:
+                print(json.dumps(event), flush=True)
+            continue
+        resp = {{'id': cid, 'type': 'response', 'command': 'prompt', 'success': True}}
+        print(json.dumps(resp), flush=True)
         if prompt_count == 1 and os.environ.get('FAKE_PI_SUBMIT_WORK') == '1':
             harness = os.environ['FIRM_BIN']
             team_run = os.environ['FIRM_TEAM_RUN_ID']
@@ -783,8 +852,6 @@ for line in sys.stdin:
                 '--result', 'Fake Pi submitted the initial Work',
                 '--check-ref', 'check:fake-pi-round-1',
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        resp = {{'id': cid, 'type': 'response', 'command': 'prompt', 'success': True}}
-        print(json.dumps(resp), flush=True)
         for event in [
             {{"type": "agent_start"}},
             {{"type": "turn_start"}},
@@ -805,6 +872,14 @@ for line in sys.stdin:
         ]:
             print(json.dumps(event), flush=True)
         continue
+    elif t == 'steer':
+        sm = os.environ.get('FAKE_PI_STEER_MARKER')
+        if sm:
+            with open(sm, 'a') as f:
+                f.write(cmd.get('message', '') + '\n')
+        resp = {{'id': cid, 'type': 'response', 'command': 'steer', 'success': True}}
+    elif t == 'follow_up':
+        resp = {{'id': cid, 'type': 'response', 'command': 'follow_up', 'success': True}}
     else:
         resp = {{'id': cid, 'type': 'response', 'command': t,
                  'success': False, 'error': 'unknown command'}}

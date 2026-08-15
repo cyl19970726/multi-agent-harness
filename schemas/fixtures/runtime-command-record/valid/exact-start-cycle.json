@@ -1,0 +1,44 @@
+{
+  "id": "command-2",
+  "execution_space_id": "space-1",
+  "target_node_id": "11111111-1111-4111-8111-111111111111",
+  "target_node_daemon_id": "daemon-1",
+  "target_node_daemon_generation": 2,
+  "authenticated_actor": {"kind": "service", "id": "daemon-1"},
+  "command": "start_cycle",
+  "required_capability": "runtime.start_cycle",
+  "idempotency_key": "start-cycle-1",
+  "request_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+  "status": "accepted",
+  "phase": "prepared",
+  "effect_certainty": "unknown",
+  "postcondition_status": "unknown",
+  "binding": {
+    "target_session_id": "session-1",
+    "target_runtime_generation": 3,
+    "target_driver_generation": 4,
+    "target_driver": {"kind": "team_supervisor", "team_run_id": "team-run-1", "team_supervisor_id": "supervisor-1", "team_supervisor_generation": 5},
+    "composition_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "capability_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "capability_profile_version": "profile-v2",
+    "permission_envelope_ref": "permission-1"
+  },
+  "precondition": {
+    "expected_session_version": 5,
+    "expected_residency": "attached",
+    "expected_activity": "idle",
+    "expected_execution_driver": "host_driven",
+    "safe_point": "runtime_idle"
+  },
+  "postcondition": {
+    "desired_ack_level": "target_native_state_observed",
+    "desired_postcondition": "cycle_started",
+    "status": "unknown",
+    "evidence_refs": []
+  },
+  "target_session_id": "session-1",
+  "target_session_generation": 3,
+  "version": 1,
+  "created_at": "unix-ms:1",
+  "updated_at": "unix-ms:1"
+}

@@ -9,8 +9,9 @@ use firm_env::{
 };
 use harness_core::agentfirm_api::{
     ActorKind, ActorRef, AgentIdentity, AgentMemberOrganizationStatus, AgentSession,
-    AgentSessionStatus, DeliveryClaim, MutationContext, NativeSessionAvailability,
-    NativeSessionRef, PermissionCeiling, RuntimeDispatchMode,
+    AgentSessionControlState, AgentSessionStatus, DeliveryClaim, MutationContext,
+    NativeSessionAvailability, NativeSessionRef, PermissionCeiling, RuntimeCommandBinding,
+    RuntimeDispatchMode, RuntimeDriverRef,
 };
 use harness_core::{
     ExecutionNode, ExecutionNodeStatus, MemberRunStatus, NodeProjectRegistration,
@@ -377,6 +378,16 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
                 effective_permission_ceiling: PermissionCeiling::WorkspaceWrite,
                 lifecycle: AgentSessionStatus::Idle,
                 runtime_generation: 1,
+                control_state: AgentSessionControlState {
+                    driver_generation: 1,
+                    driver_ref: RuntimeDriverRef::NodeDaemon {
+                        node_daemon_id: daemon.daemon_id.clone(),
+                        node_daemon_generation: daemon.generation,
+                    },
+                    composition_fingerprint: Some("role-view:composition".into()),
+                    capability_fingerprint: Some("role-view:capability".into()),
+                    ..Default::default()
+                },
                 native_session_ref: Some(NativeSessionRef {
                     provider: "codex".into(),
                     execution_mode: "codex_app_server".into(),
@@ -2520,6 +2531,36 @@ fn standalone_codex_session_runs_through_node_daemon_and_replays_without_team_me
             .expect("operations after stop replay"),
         operations_after_stop
     );
+
+    let mut hostile_reuse = stop_intent.clone();
+    hostile_reuse["expires_unix_ms"] = serde_json::json!(unix_ms() + 40_000);
+    let (status, hostile) = serve.post_json_with_headers(
+        "/v1/agentfirm/runtime-commands",
+        &hostile_reuse,
+        &stop_headers,
+    );
+    assert_eq!(
+        status, 409,
+        "changed replay semantics must conflict: {hostile}"
+    );
+    assert!(
+        hostile.to_string().contains("IDEMPOTENCY_KEY_REUSED"),
+        "hostile replay must name the immutable-key conflict: {hostile}"
+    );
+    assert_eq!(
+        store
+            .runtime_commands(&space_id)
+            .expect("commands after hostile replay"),
+        commands_after_stop,
+        "hostile replay has zero RuntimeCommand side effects"
+    );
+    assert_eq!(
+        store
+            .canonical_operations()
+            .expect("operations after hostile replay"),
+        operations_after_stop,
+        "hostile replay has zero canonical operation side effects"
+    );
 }
 
 #[test]
@@ -2747,6 +2788,19 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         idempotency_key: "runtime-command-role-view-recovery".into(),
         expected_version: 0,
         expires_unix_ms: unix_ms() + 30_000,
+        binding: RuntimeCommandBinding {
+            target_session_id: Some(member_session.id.clone()),
+            target_runtime_generation: Some(member_session.runtime_generation),
+            target_driver_generation: Some(member_session.control_state.driver_generation),
+            target_driver: member_session.control_state.driver_ref.clone(),
+            native_session_ref: member_session.native_session_ref.clone(),
+            composition_fingerprint: member_session.control_state.composition_fingerprint.clone(),
+            capability_fingerprint: member_session.control_state.capability_fingerprint.clone(),
+            permission_envelope_ref: Some(member_session.permission_envelope_ref.clone()),
+            ..Default::default()
+        },
+        precondition: Default::default(),
+        postcondition: Default::default(),
         payload_fingerprint: harness_store::canonical_json_fingerprint(&recovery_payload),
         payload: recovery_payload,
         issued_at: "2026-08-11T00:00:00Z".into(),

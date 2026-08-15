@@ -1,0 +1,18 @@
+{
+  "id": "command-invalid",
+  "execution_space_id": "space-1",
+  "target_node_id": "11111111-1111-4111-8111-111111111111",
+  "target_node_daemon_id": "daemon-1",
+  "target_node_daemon_generation": 1,
+  "authenticated_actor": {"kind": "service", "id": "daemon-1"},
+  "command": "start_cycle",
+  "required_capability": "runtime.start_cycle",
+  "idempotency_key": "bad-start",
+  "request_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "status": "requested",
+  "effect_certainty": "none",
+  "binding": {"target_session_id": "session-1", "target_runtime_generation": 1, "target_driver_generation": 0},
+  "version": 1,
+  "created_at": "unix-ms:1",
+  "updated_at": "unix-ms:1"
+}

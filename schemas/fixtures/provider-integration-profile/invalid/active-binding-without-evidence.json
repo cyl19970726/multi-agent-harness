@@ -1,0 +1,15 @@
+{
+  "agent_runtime_provider": "pi",
+  "provider": "pi",
+  "execution_mode": "pi_rpc",
+  "interaction_mode": "end_round_and_follow_up",
+  "tool_event_fidelity": "structured",
+  "artifact_event_fidelity": "structured",
+  "supports_cancel": true,
+  "supports_resume": true,
+  "observes_native_subagents": false,
+  "observes_background_tasks": false,
+  "thinking_transient_only": true,
+  "binding_admission": "active",
+  "capability_bindings": [{"capability": "runtime.start_cycle", "status": "verified", "admission": "active", "evidence": []}]
+}

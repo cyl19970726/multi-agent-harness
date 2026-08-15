@@ -313,12 +313,26 @@ side effects").
 ### 2. The native session projector
 
 The adapter maps platform-native records to an ephemeral neutral projection
-and promotes only explicit coordination boundaries:
+and promotes only explicit coordination boundaries. The provider-neutral
+runtime model has six layers:
+
+1. `AgentSession` and `NativeSessionRef` are durable identity/binding.
+2. The live runtime handle is process-local and disposable.
+3. An `ExecutionCycle` is one accepted input driven to the provider's settled
+   boundary.
+4. `NativeContinuation` is a bounded provider projection, not a CompanyOS Goal.
+5. `ExecutionDriver` selects exactly one top-level cycle owner.
+6. `RuntimeSupervisor`/NodeDaemon owns durable command authority and recovery.
+
+These layers sit on five separate planes: Message, Work, RuntimeCommand,
+ProviderObservation, and Company Approval. They may reference each other by id,
+but they do not impersonate each other or create a second ledger.
 
 ```text
 provider event
   -> NativeActivityProjection   (not persisted)
   -> correlated Message         (when a question/reply crosses systems)
+  -> existing Approval          (only for a protected project action)
   -> outcome / artifact ref     (only on explicit promotion)
 ```
 
@@ -384,7 +398,10 @@ native session through its claimed `CanonicalMessageDelivery`. Permission is
 not a message workflow: the
 AgentSession freezes one effective ceiling before provider start, and the
 adapter fails closed if the provider requests authority outside that ceiling.
-Ordinary provider tool lifecycle remains in the native session.
+Protected project actions continue to use the existing Company Approval
+object/state machine. Ordinary provider tool lifecycle remains in the native
+session. The shipped cutover adds no generic `PendingInteraction`,
+`PermissionRequest`, or `PermissionDecision` object.
 
 See [ADR 0030](../../decisions/0030-provider-interaction-contract.md) and
 [ADR 0032](../../decisions/0032-provider-native-session-is-execution-truth.md). New provider

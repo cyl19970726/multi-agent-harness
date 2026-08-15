@@ -16,9 +16,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::{
-    current_unix_ms_u64, drive_prepared_team_run, ensure_team_message_fabric,
-    ensure_team_runtime_fabric, prepare_team_run_start_body, CliError, CliResult, HarnessStore,
-    LiveProviderActivityUpdate, PreparedTeamRunStart, TeamRunLedger, TeamSupervisorRegistration,
+    bind_team_runtime_supervisor, current_unix_ms_u64, drive_prepared_team_run,
+    ensure_team_message_fabric, ensure_team_runtime_fabric, prepare_team_run_start_body, CliError,
+    CliResult, HarnessStore, LiveProviderActivityUpdate, PreparedTeamRunStart, TeamRunLedger,
+    TeamSupervisorRegistration,
 };
 
 // ---------------------------------------------------------------------------
@@ -560,6 +561,14 @@ impl MultiTeamDaemon {
             .generation;
         ensure_team_runtime_fabric(&store, &body, &space.id, &self.daemon_id, daemon_generation)?;
         let registration = TeamSupervisorRegistration::start(&store, &run_id, Some(&space.id))?;
+        bind_team_runtime_supervisor(
+            &store,
+            &body,
+            &space.id,
+            &self.daemon_id,
+            &registration.supervisor_id,
+            registration.generation,
+        )?;
         let heartbeat_valid = Arc::clone(&registration.heartbeat_valid);
 
         // Transition Planning→Running when the child supervisor is admitted.
@@ -1395,6 +1404,9 @@ impl MultiTeamDaemon {
                                 .into(),
                         ))
                     }
+                    command => Err(CliError::Usage(format!(
+                        "RUNTIME_COMMAND_UNSUPPORTED: semantic command {command:?} is admitted only when an executable runtime adapter binding implements it"
+                    ))),
                 }
                 })();
                 let settled_at = format!("unix-ms:{}", current_unix_ms_u64());

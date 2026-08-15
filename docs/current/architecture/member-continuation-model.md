@@ -62,6 +62,13 @@ One MemberRun must have exactly one active execution driver. Setting a native
 Goal and also issuing an independent Harness `turn/start` violates this
 contract.
 
+Implementation note: DEV-31 stores this as `AgentSession.control_state`, not as
+a new Goal object. The exact fence includes `execution_driver`,
+`driver_generation`, `driver_ref`, runtime generation, NativeSessionRef,
+composition fingerprint, and capability fingerprint. A provider-driven native
+continuation may be defined without being armed; activation requires the exact
+runtime and driver generations.
+
 ### Completion Policy
 
 `completion_policy` answers who decides that work may stop:
@@ -116,16 +123,14 @@ bounded current projection:
 
 ```text
 NativeContinuationProjection
-  driver: host_driven | provider_driven
-  state: inactive | active | evaluating | waiting | blocked | satisfied |
-         interrupted | unknown
-  condition_summary
-  native_ref
-  cycle_count?
-  resource_usage?
-  latest_reason?
+  definition:
+    continuation_ref?
+    revision?
+    phase: inactive | active | paused | blocked | satisfied | unknown
+    budget?
+  activation:
+    armed(runtime_generation, driver_generation) | disarmed | unknown
   observed_at
-  capability_confidence: verified | review_required | unavailable | unknown
 ```
 
 The provider-native store remains authoritative. Harness may keep the selected
@@ -146,6 +151,7 @@ Harness remains the communication authority in both driver modes:
 | Provider continuation active | Inject only through a verified safe provider operation or cycle boundary; otherwise leave mail queued. |
 | Host chooses Steer | Use the selected mode's real current-activity injection and terminal acknowledgement. |
 | Provider asks a question | Create a correlated Message and wait for its correlated reply. |
+| Provider asks for a protected project action | Use the existing Approval ledger; do not create a generic interaction object or infer approval from tool completion. |
 | Native continuation satisfies its condition | Record/project the provider fact, then await explicit Work submission/Host acceptance as required. |
 | Host explicitly closes Member | Latch Close before teardown, release the managed runtime, and freeze delivery without deleting the MemberRun or native-session binding. |
 | Host explicitly reopens Member | Increment `runtime_generation`; a managed adapter resumes the exact recorded native session and frozen mail becomes actionable. |
@@ -169,6 +175,10 @@ Self-activation is allowed only when observable. If a Member activates native
 continuation through natural language or a provider command, the Adapter must
 observe the provider-native state transition before treating the execution
 driver as `provider_driven`. Prompt text alone is not proof.
+
+Providers without reviewed native continuation capability remain first-class
+`host_driven` members. DeepSeek currently belongs here as a conformance shim
+only; it is not admitted as a provider-driven managed runtime by this model.
 
 ## Provider Adapter Contract
 

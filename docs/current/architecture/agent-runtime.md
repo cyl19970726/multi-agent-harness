@@ -47,6 +47,14 @@ The objects are intentionally independent:
 | `RuntimeCommand` | crash-recoverable prepare/settle journal for provider/process effects | conversation or Work state |
 | `ProviderInvocation` | target-NodeDaemon-built provider input derived from a claimed delivery | public mutation authority |
 
+Current DEV-31 schema work adds bounded runtime-control facts to
+`AgentSession.control_state`: runtime residency, runtime activity,
+execution-driver class, driver generation/ref, handoff state, native
+continuation projection/activation, composition fingerprint, capability
+fingerprint, and last reconciliation time. These fields are control fences and
+projections only; they do not mirror native turns, tool calls, commands,
+files, transcript, or provider reasoning.
+
 `TeamRun` and `MemberRun` may remain as coordination and historical
 projections. They are not provider runtime authority. No CLI, HTTP, MCP,
 Dashboard, adapter, or mutable Store seam may dispatch, resume, interrupt, or
@@ -102,6 +110,15 @@ authenticate and resolve authority
   -> persist Applied, Failed/NotApplied, or RecoveryRequired/Unknown
 ```
 
+DEV-31 tightens this into an exact binding fence for every provider/process
+effect: the prepared command records the target AgentSession id, runtime
+generation, execution-driver generation/ref, NativeSessionRef, permission
+envelope, composition fingerprint, capability fingerprint, preconditions, and
+postconditions. A command whose binding cannot be proven is rejected before the
+provider boundary. A provider ACK proves only transport acceptance; terminal,
+quiesce, release, and semantic postconditions require adapter observation
+evidence and are tracked separately from provider effect certainty.
+
 Exact replay returns the original durable result and never repeats the effect.
 The same key with a changed provider, mode, payload, permission, Node, Space,
 Session, or generation fails with an idempotency conflict. Authorization and
@@ -131,6 +148,13 @@ bindings from this or another Team.
 | socket loss, timeout, callback race, or torn state after the boundary | `RecoveryRequired / Unknown` | no automatic repeat; reconcile first |
 | stale NodeDaemon or AgentSession generation | typed fenced error | zero side effects |
 
+`effect_certainty` and semantic `postcondition_status` are distinct. For
+example, a native interrupt frame may be sent (`Applied`) while terminal
+settlement is still `Unknown` until the adapter observes the provider's settled
+boundary. RuntimeCommand is the only durable provider-effect journal; DEV-31
+does not introduce a second event ledger, PermissionRequest object, or
+PermissionDecision object.
+
 Canonical operation rows are recovered atomically. A torn prepared or settled
 tail must yield the last complete operation, never an unreadable ledger or a
 fabricated completion. A successor NodeDaemon or AgentSession cannot settle an
@@ -150,7 +174,10 @@ or remains unknown; resolution never blindly repeats the native effect.
 Codex, Claude, Kimi, and Pi expose separate, closed capability tuples:
 
 - requested permission must fit both the AgentIdentity ceiling and provider
-  adapter capability;
+  adapter capability, and the ceiling must be verifiably enforced — the
+  adapter names its `security_enforcement_locus` in the provider profile
+  (provider-native policy, adapter tool allowlist, adapter auto-approval, OS
+  sandbox, network/credential boundary, or honestly `none_verified`);
 - safe current-turn injection requires both adapter support and an observed
   safe point;
 - unsupported or unprovable permission, queue, interrupt, resume, or stop
@@ -164,6 +191,18 @@ Codex, Claude, Kimi, and Pi expose separate, closed capability tuples:
   Claude, Kimi, and Pi, including permission mapping, safe-injection downgrade,
   terminal acknowledgement, replay, and recovery. It is contract evidence,
   not a claim that an unavailable provider passed a live run;
+- the persistent Team member loop is provider-neutral
+  (`crates/firm-cli/src/runtime_adapter.rs`): wake → claim → ExecutionCycle →
+  settle is shared, and each binding compiles the semantic intents
+  (open/resume, start cycle, inject current cycle, queue at native boundary,
+  interrupt, continuation inspection, release) into provider primitives with
+  an executable per-intent capability report. Pi is the first migrated
+  binding; Codex, Claude, and Kimi still run branded loops until their
+  migration proves the same contract;
+- DeepSeek is not a managed production provider in this contract. Any current
+  DeepSeek harness work is treated as a faithful conformance shim/table-driven
+  test surface until a reviewed native adapter, exact version, capability
+  evidence, and live acceptance exist;
 - Codex has a proven NodeDaemon-owned app-server start/resume/stop path;
   standalone cancel remains disabled until a native turn is bound;
 - Claude, Kimi, and Pi remain disabled for standalone AgentSession lifecycle

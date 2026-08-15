@@ -6,6 +6,7 @@ pub mod agentfirm_api;
 pub mod collaboration;
 pub mod company_os;
 pub mod docs_v2;
+pub use agentfirm_api::MemberExecutionDriver;
 pub use collaboration::*;
 pub use company_os::*;
 
@@ -3009,8 +3010,108 @@ pub const EXECUTION_MODE_EXTERNAL_INTERACTIVE: &str = "external_interactive";
 /// How one provider member is executed by Harness. Capability claims are
 /// mode-specific: `codex_exec` and `kimi_acp` are different products even when
 /// their user-facing provider names are simply Codex and Kimi.
+///
+/// Coding-agent runtime and model routing are deliberately orthogonal. For
+/// example, Pi using a DeepSeek model remains the Pi runtime provider.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AgentRuntimeProvider(pub String);
+
+/// Optional model route selected inside the coding-agent runtime.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelRoute {
+    pub model_provider: String,
+    #[serde(default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub route_id: Option<String>,
+    #[serde(default)]
+    pub route_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCapabilityStatus {
+    Verified,
+    ReviewRequired,
+    Degraded,
+    #[default]
+    Unsupported,
+}
+
+/// Dependency admission of an exact resolved capability binding.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderBindingAdmission {
+    Active,
+    PendingDependency,
+    Degraded,
+    #[default]
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCapabilityEvidenceKind {
+    SourceReview,
+    ProtocolProbe,
+    DeterministicAcceptance,
+    LiveCanary,
+    ProviderDocumentation,
+    #[default]
+    Unknown,
+}
+
+/// Evidence for one exact semantic capability. Evidence references provider
+/// native or external records; they never copy a provider transcript into a
+/// Harness ledger.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderCapabilityEvidence {
+    #[serde(default)]
+    pub kind: ProviderCapabilityEvidenceKind,
+    pub evidence_ref: String,
+    #[serde(default)]
+    pub observed_at: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// Version-scoped binding from one provider-neutral semantic capability to an
+/// adapter implementation. The profile-level capability fingerprint commits
+/// to the ordered resolved collection of these bindings.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderCapabilityBinding {
+    pub capability: String,
+    #[serde(default)]
+    pub status: ProviderCapabilityStatus,
+    #[serde(default)]
+    pub admission: ProviderBindingAdmission,
+    #[serde(default)]
+    pub provider_version: Option<String>,
+    #[serde(default)]
+    pub adapter_revision: Option<String>,
+    #[serde(default)]
+    pub feature_fingerprint: Option<String>,
+    #[serde(default)]
+    pub required_dependencies: Vec<String>,
+    #[serde(default)]
+    pub evidence: Vec<ProviderCapabilityEvidence>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderIntegrationProfile {
+    /// Canonical runtime identity. `provider` remains as the legacy wire field
+    /// while existing records and callers migrate.
+    #[serde(default)]
+    pub agent_runtime_provider: Option<AgentRuntimeProvider>,
+    /// Model provider/route used inside the runtime, if known. This never
+    /// changes which AgentRuntimeAdapter owns the native session.
+    #[serde(default)]
+    pub model_route: Option<ModelRoute>,
     pub provider: String,
     pub execution_mode: String,
     /// The exclusive owner allowed to start top-level provider execution
@@ -3052,6 +3153,166 @@ pub struct ProviderIntegrationProfile {
     /// Product policy, not a provider claim. Thinking may only appear through
     /// the sanitized transient live channel and is never durable or replayed.
     pub thinking_transient_only: bool,
+    /// How the adapter talks to the runtime: external wire protocol, embedded
+    /// SDK, or a native in-process bridge (AgentFirm architecture review
+    /// DOC-89 §11.1).
+    #[serde(default)]
+    pub control_topology: ControlTopology,
+    /// Fingerprint of the exact resolved composition this profile claims:
+    /// adapter contract + provider version + execution mode + permission
+    /// mapping. A RuntimeCommand bound to a different fingerprint must not
+    /// take effect against this runtime.
+    #[serde(default)]
+    pub composition_fingerprint: Option<String>,
+    /// Fingerprint of the exact resolved capability bindings and evidence.
+    #[serde(default)]
+    pub capability_fingerprint: Option<String>,
+    #[serde(default)]
+    pub capability_bindings: Vec<ProviderCapabilityBinding>,
+    /// Aggregate admission of the resolved binding set. The fail-closed
+    /// default is `failed`; absent legacy data must never enable a capability.
+    #[serde(default)]
+    pub binding_admission: ProviderBindingAdmission,
+    /// Exact adapter bridge revision this profile was reviewed against
+    /// (contract version for external protocols; bridge commit for native
+    /// bridges).
+    #[serde(default)]
+    pub adapter_bridge_revision: Option<String>,
+    /// Where the permission ceiling is actually enforced. `none_verified`
+    /// declares that no enforcement was proven; requesting a restricted
+    /// ceiling against it must fail closed.
+    #[serde(default)]
+    pub security_enforcement_locus: SecurityEnforcementLocus,
+}
+
+impl Validate for ProviderIntegrationProfile {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.provider, "ProviderIntegrationProfile.provider")?;
+        require_non_empty(
+            &self.execution_mode,
+            "ProviderIntegrationProfile.execution_mode",
+        )?;
+        if let Some(AgentRuntimeProvider(provider)) = &self.agent_runtime_provider {
+            require_non_empty(
+                provider,
+                "ProviderIntegrationProfile.agent_runtime_provider",
+            )?;
+        }
+        if let Some(route) = &self.model_route {
+            require_non_empty(
+                &route.model_provider,
+                "ProviderIntegrationProfile.model_route.model_provider",
+            )?;
+        }
+        if !self.capability_bindings.is_empty() && self.capability_fingerprint.is_none() {
+            return Err(ValidationError::Invalid {
+                field: "ProviderIntegrationProfile.capability_fingerprint",
+                reason: "resolved capability bindings require an exact fingerprint",
+            });
+        }
+        if self.binding_admission == ProviderBindingAdmission::Active
+            && (self.capability_bindings.is_empty()
+                || self
+                    .capability_bindings
+                    .iter()
+                    .any(|binding| binding.admission != ProviderBindingAdmission::Active))
+        {
+            return Err(ValidationError::Invalid {
+                field: "ProviderIntegrationProfile.binding_admission",
+                reason: "active aggregate admission requires a non-empty all-active binding set",
+            });
+        }
+        for binding in &self.capability_bindings {
+            require_non_empty(
+                &binding.capability,
+                "ProviderIntegrationProfile.capability_bindings.capability",
+            )?;
+            if binding.admission == ProviderBindingAdmission::Active {
+                if binding.status != ProviderCapabilityStatus::Verified {
+                    return Err(ValidationError::Invalid {
+                        field: "ProviderIntegrationProfile.capability_bindings.status",
+                        reason: "active capability bindings must be verified",
+                    });
+                }
+                for (value, field) in [
+                    (
+                        binding.provider_version.as_deref(),
+                        "ProviderIntegrationProfile.capability_bindings.provider_version",
+                    ),
+                    (
+                        binding.adapter_revision.as_deref(),
+                        "ProviderIntegrationProfile.capability_bindings.adapter_revision",
+                    ),
+                    (
+                        binding.feature_fingerprint.as_deref(),
+                        "ProviderIntegrationProfile.capability_bindings.feature_fingerprint",
+                    ),
+                ] {
+                    let value = value.ok_or(ValidationError::Invalid {
+                        field,
+                        reason: "active capability bindings require an exact versioned value",
+                    })?;
+                    require_non_empty(value, field)?;
+                }
+                let has_deterministic = binding.evidence.iter().any(|evidence| {
+                    evidence.kind == ProviderCapabilityEvidenceKind::DeterministicAcceptance
+                });
+                let has_live_canary = binding
+                    .evidence
+                    .iter()
+                    .any(|evidence| evidence.kind == ProviderCapabilityEvidenceKind::LiveCanary);
+                if !has_deterministic || !has_live_canary {
+                    return Err(ValidationError::Invalid {
+                        field: "ProviderIntegrationProfile.capability_bindings.evidence",
+                        reason: "active capability bindings require deterministic acceptance and live canary evidence",
+                    });
+                }
+            }
+            for evidence in &binding.evidence {
+                require_non_empty(
+                    &evidence.evidence_ref,
+                    "ProviderIntegrationProfile.capability_bindings.evidence.evidence_ref",
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlTopology {
+    ExternalProtocol,
+    EmbeddedSdk,
+    NativeBridge,
+    #[default]
+    Unknown,
+}
+
+/// Where a ProviderRuntimeProjection's effective permission ceiling is enforced.
+/// "Generated a mapping string" is not enforcement; the locus names the real
+/// mechanism or honestly reports that none was verified.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecurityEnforcementLocus {
+    #[serde(default)]
+    pub kind: SecurityEnforcementLocusKind,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecurityEnforcementLocusKind {
+    ProviderNativePolicy,
+    AdapterToolAllowlist,
+    /// The adapter answers the provider's permission requests (e.g. ACP
+    /// auto-allow with a one-shot durable receipt).
+    AdapterAutoApproval,
+    OsSandbox,
+    NetworkCredentialBoundary,
+    NoneVerified,
+    #[default]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -3062,18 +3323,6 @@ pub enum OrdinaryMessageBoundary {
     NextRoundBatched,
     #[default]
     Unknown,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MemberExecutionDriver {
-    #[default]
-    HostDriven,
-    ProviderDriven,
-    /// Declared external interactive members only: the human drives their own
-    /// already-open provider session out-of-band. Harness never starts a
-    /// provider cycle for this member and no native continuation loop exists.
-    UserDriven,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -6307,6 +6556,8 @@ fn capacity_is_independent_of_adapter_compatibility_and_round_trips_json() {
     // A reviewed-current adapter says nothing about runtime availability:
     // this is the Wave 2 evidence (`current` adapter, 403 at request time).
     let profile = ProviderIntegrationProfile {
+        agent_runtime_provider: Some(AgentRuntimeProvider("claude".to_string())),
+        model_route: None,
         provider: "claude".to_string(),
         execution_mode: "claude_agent_sdk".to_string(),
         execution_driver: MemberExecutionDriver::HostDriven,
@@ -6327,6 +6578,13 @@ fn capacity_is_independent_of_adapter_compatibility_and_round_trips_json() {
         observes_native_subagents: false,
         observes_background_tasks: false,
         thinking_transient_only: true,
+        control_topology: ControlTopology::default(),
+        composition_fingerprint: None,
+        capability_fingerprint: None,
+        capability_bindings: Vec::new(),
+        binding_admission: ProviderBindingAdmission::Failed,
+        adapter_bridge_revision: None,
+        security_enforcement_locus: SecurityEnforcementLocus::default(),
     };
     let mut snapshot = capacity_snapshot(ProviderCapacityState::Unauthorized, 1_000);
     snapshot.provider = "claude".to_string();
@@ -6352,6 +6610,39 @@ fn capacity_is_independent_of_adapter_compatibility_and_round_trips_json() {
         !encoded.contains("compatibility"),
         "capacity JSON must not carry adapter compatibility: {encoded}"
     );
+}
+
+#[test]
+fn provider_integration_profile_fixtures_preserve_legacy_defaults_and_exact_bindings() {
+    let legacy: ProviderIntegrationProfile = serde_json::from_str(include_str!(
+        "../../../schemas/fixtures/provider-integration-profile/valid/minimal.json"
+    ))
+    .expect("legacy ProviderIntegrationProfile fixture");
+    assert!(legacy.agent_runtime_provider.is_none());
+    assert!(legacy.model_route.is_none());
+    assert!(legacy.capability_bindings.is_empty());
+    assert_eq!(legacy.binding_admission, ProviderBindingAdmission::Failed);
+    legacy
+        .validate()
+        .expect("legacy fail-closed profile validates");
+
+    let exact: ProviderIntegrationProfile = serde_json::from_str(include_str!(
+        "../../../schemas/fixtures/provider-integration-profile/valid/pi-rpc.json"
+    ))
+    .expect("exact ProviderIntegrationProfile fixture");
+    assert_eq!(
+        exact.agent_runtime_provider,
+        Some(AgentRuntimeProvider("pi".to_string()))
+    );
+    assert_eq!(exact.binding_admission, ProviderBindingAdmission::Active);
+    assert_eq!(exact.capability_bindings.len(), 3);
+    exact.validate().expect("exact active profile validates");
+
+    let invalid: ProviderIntegrationProfile = serde_json::from_str(include_str!(
+        "../../../schemas/fixtures/provider-integration-profile/invalid/active-binding-without-evidence.json"
+    ))
+    .expect("invalid admission fixture is syntactically valid JSON");
+    assert!(invalid.validate().is_err());
 }
 
 #[cfg(test)]

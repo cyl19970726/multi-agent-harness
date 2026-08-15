@@ -97,6 +97,188 @@ pub enum AgentSessionStatus {
     Closed,
 }
 
+/// Whether this process generation currently owns a live provider runtime.
+///
+/// This is deliberately independent from [`AgentSessionStatus`]: a durable
+/// session may remain open while its process-local runtime is detached.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeResidency {
+    Detached,
+    Attaching,
+    Attached,
+    Releasing,
+    #[default]
+    Unknown,
+}
+
+/// Observable activity of the current execution cycle, if one exists.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeActivity {
+    Idle,
+    Running,
+    WaitingInput,
+    Interrupting,
+    #[default]
+    Unknown,
+}
+
+/// The one party allowed to schedule the next top-level execution cycle.
+/// NodeDaemon remains the Runtime Supervisor in every variant.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberExecutionDriver {
+    #[default]
+    HostDriven,
+    ProviderDriven,
+    /// The user drives an already-open external interactive runtime which
+    /// Harness neither spawned nor owns.
+    UserDriven,
+}
+
+/// Exact current owner of the next-cycle authority. The broad
+/// [`MemberExecutionDriver`] answers *which class* of driver is active; this
+/// reference identifies the concrete generation which commands must fence.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RuntimeDriverRef {
+    NodeDaemon {
+        node_daemon_id: String,
+        node_daemon_generation: u64,
+    },
+    TeamSupervisor {
+        team_run_id: String,
+        team_supervisor_id: String,
+        team_supervisor_generation: u64,
+    },
+    ProviderContinuation {
+        provider: String,
+        continuation_id: String,
+        #[serde(default)]
+        continuation_revision: Option<u64>,
+        runtime_generation: u64,
+    },
+    #[default]
+    Unknown,
+}
+
+/// A driver transfer fences both parties until its postconditions are proven.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DriverHandoffState {
+    #[default]
+    None,
+    PreparingHostToProvider,
+    PreparingProviderToHost,
+    RecoveryRequired,
+    Unknown,
+}
+
+/// Durable provider-native continuation phase. It does not say whether this
+/// runtime generation is currently authorized to schedule another cycle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeContinuationPhase {
+    Inactive,
+    Active,
+    Paused,
+    Blocked,
+    Satisfied,
+    #[default]
+    Unknown,
+}
+
+/// Process-local continuation authorization. `Armed` is valid only for the
+/// exact runtime and execution-driver generations carried by the variant.
+/// Old records deserialize to `Disarmed`, so resume never silently inherits
+/// provider-driven execution authority.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NativeContinuationActivation {
+    Armed {
+        runtime_generation: u64,
+        driver_generation: u64,
+    },
+    #[default]
+    Disarmed,
+    Unknown,
+}
+
+/// Provider-native continuation budget projection. Providers may expose only a
+/// subset; missing fields remain unknown rather than being synthesized.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeContinuationBudget {
+    #[serde(default)]
+    pub remaining_cycles: Option<u64>,
+    #[serde(default)]
+    pub remaining_tokens: Option<u64>,
+    #[serde(default)]
+    pub deadline: Option<String>,
+    #[serde(default)]
+    pub provider_budget_ref: Option<String>,
+}
+
+/// Durable provider-native continuation definition projection. This remains a
+/// reference/snapshot of provider truth, not a CompanyOS Goal or Work object.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeContinuationDefinition {
+    #[serde(default)]
+    pub continuation_ref: Option<String>,
+    #[serde(default)]
+    pub revision: Option<u64>,
+    #[serde(default)]
+    pub phase: NativeContinuationPhase,
+    #[serde(default)]
+    pub budget: Option<NativeContinuationBudget>,
+}
+
+/// Bounded control projection of a provider-native continuation. Durable
+/// definition and process-local activation are separate so a resume/fork can
+/// preserve phase while defaulting activation to disarmed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeContinuationProjection {
+    #[serde(default)]
+    pub definition: NativeContinuationDefinition,
+    #[serde(default)]
+    pub activation: NativeContinuationActivation,
+    #[serde(default)]
+    pub observed_at: Option<String>,
+}
+
+/// Non-ledger runtime-control state attached to an AgentSession.
+///
+/// Its default intentionally preserves readable legacy records while failing
+/// closed: live state is unknown, Host remains the only possible driver, no
+/// driver generation is admitted, and continuation activation is disarmed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSessionControlState {
+    #[serde(default)]
+    pub runtime_residency: RuntimeResidency,
+    #[serde(default)]
+    pub activity: RuntimeActivity,
+    #[serde(default)]
+    pub execution_driver: MemberExecutionDriver,
+    #[serde(default)]
+    pub driver_generation: u64,
+    #[serde(default)]
+    pub driver_ref: RuntimeDriverRef,
+    #[serde(default)]
+    pub handoff_state: DriverHandoffState,
+    #[serde(default)]
+    pub continuation: NativeContinuationProjection,
+    #[serde(default)]
+    pub composition_fingerprint: Option<String>,
+    #[serde(default)]
+    pub capability_fingerprint: Option<String>,
+    #[serde(default)]
+    pub last_reconciled_at: Option<String>,
+}
+
 /// One machine-local provider session owned by an exact NodeDaemon generation.
 /// Team membership is deliberately absent: a session can outlive or move
 /// between collaboration overlays without changing its identity.
@@ -115,6 +297,10 @@ pub struct AgentSession {
     pub effective_permission_ceiling: PermissionCeiling,
     pub lifecycle: AgentSessionStatus,
     pub runtime_generation: u64,
+    /// Orthogonal, bounded control facts. This does not mirror provider-native
+    /// turns, tools, commands, transcript, or file history.
+    #[serde(default)]
+    pub control_state: AgentSessionControlState,
     #[serde(default)]
     pub native_session_ref: Option<NativeSessionRef>,
     #[serde(default)]
@@ -580,6 +766,165 @@ pub enum RuntimeCommandKind {
     ResumeSession,
     DispatchProvider,
     CancelProviderTurn,
+    OpenRuntime,
+    ResumeNativeSession,
+    ReleaseRuntime,
+    CloseMember,
+    ReopenMember,
+    RetireMember,
+    DeleteNativeSession,
+    StartCycle,
+    InjectCurrentCycle,
+    QueueAtNativeBoundary,
+    InterruptCurrentCycle,
+    CancelPendingInput,
+    InspectContinuation,
+    ActivateContinuation,
+    InhibitContinuation,
+    ResumeContinuation,
+    ReplaceContinuationCondition,
+    ClearContinuation,
+    QuiesceExecutionLane,
+    DrainRuntime,
+    StopBackgroundTask,
+    TransferExecutionDriver,
+    InspectCommandEffect,
+    ReconcileUnknownEffect,
+    ReattachLiveRuntime,
+    AbortIfNotApplied,
+}
+
+/// Exact immutable target identity resolved before a provider effect is
+/// driven. An empty/default binding is readable for legacy records but is not
+/// sufficient to admit a new provider-facing command.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeCommandBinding {
+    #[serde(default)]
+    pub target_session_id: Option<String>,
+    #[serde(default)]
+    pub target_runtime_generation: Option<u64>,
+    #[serde(default)]
+    pub target_driver_generation: Option<u64>,
+    #[serde(default)]
+    pub target_driver: RuntimeDriverRef,
+    #[serde(default)]
+    pub native_session_ref: Option<NativeSessionRef>,
+    #[serde(default)]
+    pub composition_fingerprint: Option<String>,
+    #[serde(default)]
+    pub capability_fingerprint: Option<String>,
+    #[serde(default)]
+    pub capability_profile_version: Option<String>,
+    #[serde(default)]
+    pub permission_envelope_ref: Option<String>,
+}
+
+/// Stable reference to a provider-native cycle or continuation observation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeNativeObjectRef {
+    pub id: String,
+    #[serde(default)]
+    pub revision: Option<u64>,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+}
+
+/// The provider boundary at which an effect is allowed to happen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSafePointRequirement {
+    Immediate,
+    CurrentCycle,
+    CycleBoundary,
+    RuntimeIdle,
+    ExecutionLaneQuiesced,
+    #[default]
+    Unknown,
+}
+
+/// Preconditions are intentionally semantic rather than provider API names.
+/// Adapters compile them into versioned native checks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeCommandPrecondition {
+    #[serde(default)]
+    pub expected_session_version: Option<u64>,
+    #[serde(default)]
+    pub expected_residency: Option<RuntimeResidency>,
+    #[serde(default)]
+    pub expected_activity: Option<RuntimeActivity>,
+    #[serde(default)]
+    pub expected_execution_driver: Option<MemberExecutionDriver>,
+    #[serde(default)]
+    pub expected_cycle_ref: Option<RuntimeNativeObjectRef>,
+    #[serde(default)]
+    pub expected_continuation_ref: Option<RuntimeNativeObjectRef>,
+    #[serde(default)]
+    pub expected_continuation_phase: Option<NativeContinuationPhase>,
+    #[serde(default)]
+    pub safe_point: RuntimeSafePointRequirement,
+}
+
+/// Strongest acknowledgement the caller asks the Runtime Supervisor to prove.
+/// Higher levels must never be inferred from lower-level provider receipts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeAcknowledgementLevel {
+    CommandAdmitted,
+    ProviderReceipt,
+    TargetNativeStateObserved,
+    CurrentCycleTerminalObserved,
+    ContinuationInhibitedObserved,
+    ExecutionLaneQuiesced,
+    StateReconciled,
+    SemanticWorkOutcomeRecorded,
+    #[default]
+    Unknown,
+}
+
+/// Semantic runtime postcondition requested by the command.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeDesiredPostcondition {
+    ProviderAcknowledged,
+    CycleStarted,
+    CurrentCycleTerminal,
+    PendingInputCancelled,
+    ContinuationActivated,
+    ContinuationInhibited,
+    ExecutionLaneQuiesced,
+    RuntimeAttached,
+    RuntimeReleased,
+    DriverTransferred,
+    StateReconciled,
+    #[default]
+    Unknown,
+}
+
+/// Postcondition satisfaction is orthogonal to command transport phase and
+/// effect certainty.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimePostconditionStatus {
+    Satisfied,
+    Unsatisfied,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeCommandPostcondition {
+    #[serde(default)]
+    pub desired_ack_level: RuntimeAcknowledgementLevel,
+    #[serde(default)]
+    pub desired_postcondition: RuntimeDesiredPostcondition,
+    #[serde(default)]
+    pub status: RuntimePostconditionStatus,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -604,6 +949,12 @@ pub struct ControlCommandEnvelope {
     pub idempotency_key: String,
     pub expected_version: u64,
     pub expires_unix_ms: u64,
+    #[serde(default)]
+    pub binding: RuntimeCommandBinding,
+    #[serde(default)]
+    pub precondition: RuntimeCommandPrecondition,
+    #[serde(default)]
+    pub postcondition: RuntimeCommandPostcondition,
     pub payload: serde_json::Value,
     pub payload_fingerprint: String,
     pub issued_at: String,
@@ -626,6 +977,11 @@ pub struct ProviderInvocation {
     pub node_daemon_generation: u64,
     pub provider: String,
     pub dispatch_mode: RuntimeDispatchMode,
+    /// Immutable command/session/composition fence captured at derivation.
+    /// Provider drivers must reject an invocation whose binding no longer
+    /// matches the under-lock AgentSession and supervisor facts.
+    #[serde(default)]
+    pub binding: RuntimeCommandBinding,
     pub permission_ceiling: PermissionCeiling,
     pub content: String,
     pub content_fingerprint: String,
@@ -641,6 +997,23 @@ pub enum RuntimeCommandStatus {
     Applied,
     Failed,
     RecoveryRequired,
+}
+
+/// Durable transport/effect phase. The legacy [`RuntimeCommandStatus`] remains
+/// a compatibility projection only and must not carry effect certainty or
+/// postcondition satisfaction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeCommandPhase {
+    Prepared,
+    Dispatched,
+    ProviderAcknowledged,
+    Observed,
+    Settled,
+    Rejected,
+    RecoveryRequired,
+    #[default]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -667,8 +1040,20 @@ pub struct RuntimeCommandRecord {
     pub required_capability: String,
     pub idempotency_key: String,
     pub request_fingerprint: String,
+    /// Compatibility projection for existing callers. New control logic must
+    /// use `phase`, `effect_certainty`, and `postcondition_status` separately.
     pub status: RuntimeCommandStatus,
+    #[serde(default)]
+    pub phase: RuntimeCommandPhase,
     pub effect_certainty: RuntimeEffectCertainty,
+    #[serde(default)]
+    pub postcondition_status: RuntimePostconditionStatus,
+    #[serde(default)]
+    pub binding: RuntimeCommandBinding,
+    #[serde(default)]
+    pub precondition: RuntimeCommandPrecondition,
+    #[serde(default)]
+    pub postcondition: RuntimeCommandPostcondition,
     #[serde(default)]
     pub target_session_id: Option<String>,
     #[serde(default)]
@@ -1275,4 +1660,100 @@ pub struct TrustError {
     pub resource_id: String,
     #[serde(default)]
     pub current_version: Option<u64>,
+}
+
+#[cfg(test)]
+mod runtime_control_contract_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_agent_session_defaults_fail_closed_without_enabling_provider_driver() {
+        let session: AgentSession = serde_json::from_value(serde_json::json!({
+            "id": "session-1",
+            "agent_identity_id": "agent-1",
+            "node_id": "node-1",
+            "execution_space_id": "space-1",
+            "node_daemon_id": "daemon-1",
+            "node_daemon_generation": 1,
+            "provider_kind": "codex",
+            "provider_profile_ref": "profile-1",
+            "permission_envelope_ref": "permission-1",
+            "effective_permission_ceiling": "workspace_write",
+            "lifecycle": "idle",
+            "runtime_generation": 1,
+            "queued_input_count": 0,
+            "version": 1,
+            "opened_at": "unix-ms:1",
+            "last_active_at": "unix-ms:1"
+        }))
+        .expect("legacy AgentSession remains readable");
+
+        assert_eq!(
+            session.control_state.execution_driver,
+            MemberExecutionDriver::HostDriven
+        );
+        assert_eq!(session.control_state.driver_generation, 0);
+        assert_eq!(session.control_state.driver_ref, RuntimeDriverRef::Unknown);
+        assert_eq!(
+            session.control_state.continuation.activation,
+            NativeContinuationActivation::Disarmed
+        );
+        assert_eq!(
+            session.control_state.runtime_residency,
+            RuntimeResidency::Unknown
+        );
+    }
+
+    #[test]
+    fn legacy_runtime_command_keeps_phase_and_postcondition_unknown() {
+        let command: RuntimeCommandRecord = serde_json::from_value(serde_json::json!({
+            "id": "command-1",
+            "execution_space_id": "space-1",
+            "target_node_id": "node-1",
+            "target_node_daemon_id": "daemon-1",
+            "target_node_daemon_generation": 1,
+            "authenticated_actor": {"kind": "service", "id": "daemon-1"},
+            "command": "start_session",
+            "required_capability": "agent_session.start",
+            "idempotency_key": "start-session-1",
+            "request_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "status": "requested",
+            "effect_certainty": "none",
+            "version": 1,
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1"
+        }))
+        .expect("legacy RuntimeCommandRecord remains readable");
+
+        assert_eq!(command.phase, RuntimeCommandPhase::Unknown);
+        assert_eq!(
+            command.postcondition_status,
+            RuntimePostconditionStatus::Unknown
+        );
+        assert_eq!(command.binding.target_driver, RuntimeDriverRef::Unknown);
+        assert_eq!(
+            command.postcondition.desired_ack_level,
+            RuntimeAcknowledgementLevel::Unknown
+        );
+    }
+
+    #[test]
+    fn checked_in_runtime_control_fixtures_match_rust_serde() {
+        let _: AgentSession = serde_json::from_str(include_str!(
+            "../../../schemas/fixtures/agent-session/valid/provider-driven-armed.json"
+        ))
+        .expect("AgentSession fixture");
+        let _: RuntimeCommandRecord = serde_json::from_str(include_str!(
+            "../../../schemas/fixtures/runtime-command-record/valid/exact-start-cycle.json"
+        ))
+        .expect("RuntimeCommandRecord fixture");
+        let _: ControlCommandEnvelope = serde_json::from_str(include_str!(
+            "../../../schemas/fixtures/control-command-envelope/valid/exact-interrupt.json"
+        ))
+        .expect("ControlCommandEnvelope fixture");
+        let _: ProviderInvocation = serde_json::from_str(include_str!(
+            "../../../schemas/fixtures/provider-invocation/valid/exact-binding.json"
+        ))
+        .expect("ProviderInvocation fixture");
+    }
 }
