@@ -198,6 +198,10 @@ export interface MemberCapacitySummary {
   display_name:string; provider:string|null; model:string|null; coordination_status:string|null;
   runtime_state:string|null; runtime_generation:number|null; native_session_health:string|null;
   capacity:"available"|"busy"|"paused"|"unknown";
+  /** Adapter review state of the run's provider tuple; separate from runtime availability. */
+  provider_compatibility?:"current"|"review_required"|"incompatible"|"unavailable"|"unknown"|null;
+  provider_compatibility_note?:string|null;
+  provider_version?:string|null;
   queued_work_count:number; active_work_count:number; review_work_count:number; blocked_work_count:number;
   latest_action:RoleRecordSummary|null;
 }

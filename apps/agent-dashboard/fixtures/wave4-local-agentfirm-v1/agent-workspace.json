@@ -8,15 +8,111 @@
   "freshness":"current",
   "data":{
     "projection_scope":"member_self_private",
-    "team":{"team_id":"team-1","display_name":"Fixture Team","team_revision":1,"mission_id":"mission-1","host_agent_id":"agent-host-1","viewer_role":"host","status":"active","latest_run_id":"run-1"},
-    "selected_agent":{"agent_member_ref":{"kind":"agent_member","id":"agent-member-1"},"display_name":"Mira Chen","role":"Implementation Engineer","organization_status":"active","is_host":false,"current_member_run_ref":"member-run-1","provider":"codex","execution_mode":"codex_app_server","runtime_status":"running","host_session_mode":null},
-    "roster":[{"agent_member_ref":{"kind":"agent_member","id":"agent-host-1"},"display_name":"Host Agent","role":"Host","organization_status":"active","coordination_status":"active","capacity":"unknown","active_work_count":0,"queued_work_count":0,"review_work_count":0,"blocked_work_count":0,"is_host":true},{"agent_member_ref":{"kind":"agent_member","id":"agent-member-1"},"display_name":"Mira Chen","role":"Implementation Engineer","organization_status":"active","coordination_status":"active","capacity":"busy","runtime_state":"running","active_work_count":0,"queued_work_count":0,"review_work_count":0,"blocked_work_count":0,"is_host":false}],
-    "session_event_projection":{"schema_version":"agentfirm.provider_observation.v1","agent_session_id":null,"agent_session_generation":null,"source_snapshot_fingerprint":null,"episodes":[],"truncated":false,"disabled_reason":"Provider-native Session source is unavailable in this deterministic fixture."},
+    "team":{
+      "team_id":"team-1",
+      "display_name":"Fixture Team",
+      "team_revision":1,
+      "mission_id":"mission-1",
+      "host_agent_id":"agent-host-1",
+      "viewer_role":"host",
+      "status":"active",
+      "latest_run_id":"run-1"
+    },
+    "selected_agent":{
+      "agent_member_ref":{
+        "kind":"agent_member",
+        "id":"agent-member-1"
+      },
+      "display_name":"Mira Chen",
+      "role":"Implementation Engineer",
+      "organization_status":"active",
+      "is_host":false,
+      "current_member_run_ref":"member-run-1",
+      "provider":"codex",
+      "execution_mode":"codex_app_server",
+      "runtime_status":"running",
+      "host_session_mode":null
+    },
+    "roster":[
+      {
+        "agent_member_ref":{
+          "kind":"agent_member",
+          "id":"agent-host-1"
+        },
+        "display_name":"Host Agent",
+        "role":"Host",
+        "organization_status":"active",
+        "coordination_status":"active",
+        "capacity":"unknown",
+        "active_work_count":0,
+        "queued_work_count":0,
+        "review_work_count":0,
+        "blocked_work_count":0,
+        "is_host":true,
+        "provider_compatibility":null,
+        "provider_compatibility_note":null,
+        "provider_version":null
+      },
+      {
+        "agent_member_ref":{
+          "kind":"agent_member",
+          "id":"agent-member-1"
+        },
+        "display_name":"Mira Chen",
+        "role":"Implementation Engineer",
+        "organization_status":"active",
+        "coordination_status":"active",
+        "capacity":"busy",
+        "runtime_state":"running",
+        "active_work_count":0,
+        "queued_work_count":0,
+        "review_work_count":0,
+        "blocked_work_count":0,
+        "is_host":false,
+        "provider_compatibility":null,
+        "provider_compatibility_note":null,
+        "provider_version":null
+      }
+    ],
+    "session_event_projection":{
+      "schema_version":"agentfirm.provider_observation.v1",
+      "agent_session_id":null,
+      "agent_session_generation":null,
+      "source_snapshot_fingerprint":null,
+      "episodes":[],
+      "truncated":false,
+      "disabled_reason":"Provider-native Session source is unavailable in this deterministic fixture."
+    },
     "live_provider_activity":null,
     "messages":[],
     "works":[],
-    "configuration":{"description":"Builds the selected product slice.","prompt_ref":null,"prompt_projection":"not_modeled","skill_refs":["harness-frontend-product-design"],"capabilities":["workspace_write"],"tool_refs":[],"tools_projection":"not_modeled_by_agent_member","provider_profile_ref":"codex-app-server-v1","model_preference":null,"workspace_policy":"isolated_worktree","permission_ceiling":"full_access","forbidden_actions":[],"forbidden_actions_projection":"not_modeled","workspace_binding":null},
-    "context_summary":{"current_work_id":null,"message_count":0,"unread_count":0,"last_activity_at":"2026-08-12T00:01:00Z","authorization_count":0}
+    "configuration":{
+      "description":"Builds the selected product slice.",
+      "prompt_ref":null,
+      "prompt_projection":"not_modeled",
+      "skill_refs":[
+        "harness-frontend-product-design"
+      ],
+      "capabilities":[
+        "workspace_write"
+      ],
+      "tool_refs":[],
+      "tools_projection":"not_modeled_by_agent_member",
+      "provider_profile_ref":"codex-app-server-v1",
+      "model_preference":null,
+      "workspace_policy":"isolated_worktree",
+      "permission_ceiling":"full_access",
+      "forbidden_actions":[],
+      "forbidden_actions_projection":"not_modeled",
+      "workspace_binding":null
+    },
+    "context_summary":{
+      "current_work_id":null,
+      "message_count":0,
+      "unread_count":0,
+      "last_activity_at":"2026-08-12T00:01:00Z",
+      "authorization_count":0
+    }
   },
   "attention":[],
   "allowed_actions":[]

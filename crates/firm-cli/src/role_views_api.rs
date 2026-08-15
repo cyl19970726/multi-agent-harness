@@ -121,6 +121,7 @@ struct Facts {
     works: Vec<Work>,
     members: Vec<Value>,
     member_runs: Vec<Value>,
+    provider_runtime_projections: Vec<Value>,
     messages: Vec<Value>,
     message_deliveries: Vec<Value>,
     agent_identities: Vec<Value>,
@@ -326,6 +327,12 @@ impl Facts {
                 .collect(),
             member_runs: store
                 .trust_member_runs(space_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
+                .collect(),
+            provider_runtime_projections: store
+                .member_runs()
                 .map_err(|error| error.to_string())?
                 .into_iter()
                 .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
@@ -1358,6 +1365,7 @@ fn company_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult 
         works: vec![],
         members: vec![],
         member_runs: vec![],
+        provider_runtime_projections: vec![],
         messages: vec![],
         message_deliveries: vec![],
         agent_identities: vec![],
@@ -1620,6 +1628,12 @@ fn team_view(
         let assigned=works.iter().filter(|work|work["owner_actor_ref"]["id"]==member_id).collect::<Vec<_>>();
         let count_phase=|phase:&str|assigned.iter().filter(|work|work["phase"]==phase).count();
         let latest_action_summary=current.and_then(|run|run["native_session"]["native_session_id"].as_str()).and_then(|session_id|facts.runtime_commands.iter().filter(|command|command["target_session_id"]==session_id).max_by(|a,b|a["updated_at"].as_str().cmp(&b["updated_at"].as_str())).map(|command|record_summary("runtime_command",command)));
+        // Adapter review state is a separate fact from runtime availability:
+        // an idle member on an unreviewed provider tuple is *not* Ready. The
+        // trust MemberRun carries only a profile ref, so the concrete tuple is
+        // joined from the runtime-layer projection of the same run.
+        let runtime_profile=current.and_then(|r|facts.provider_runtime_projections.iter().filter(|projection|projection["id"]==r["id"]).max_by_key(|projection|projection["runtime_generation"].as_u64().unwrap_or_default())).map(|projection|&projection["provider_profile"]);
+        let provider_compatibility=runtime_profile.and_then(|profile|profile["compatibility_status"].as_str());
         json!({
             "agent_member_ref":{"kind":"agent_member","id":member_id},
             "display_name":member["name"],
@@ -1633,6 +1647,9 @@ fn team_view(
             "runtime_state":current.and_then(|r|r["runtime_status"].as_str()),
             "runtime_generation":current.and_then(|r|r["runtime_generation"].as_u64()),
             "capacity":match current.and_then(|r|r["runtime_status"].as_str()){Some("running")|Some("queued")=>"busy",Some("idle")|Some("waiting")=>"available",_=>"unknown"},
+            "provider_compatibility":provider_compatibility,
+            "provider_compatibility_note":runtime_profile.and_then(|profile|profile["compatibility_note"].as_str()),
+            "provider_version":runtime_profile.and_then(|profile|profile["provider_version"].as_str()),
             "active_work_count":count_phase("active"),
             "queued_work_count":count_phase("open"),
             "review_work_count":count_phase("review"),
@@ -1648,7 +1665,7 @@ fn team_view(
         .collect::<Vec<_>>();
     let pressure_summary = json!({
         "active_turns": members.iter().filter(|member| member["runtime_state"] == "running").count(),
-        "ready_members": members.iter().filter(|member| member["capacity"] == "available").count(),
+        "ready_members": members.iter().filter(|member| member["capacity"] == "available" && !matches!(member["provider_compatibility"].as_str(), Some("review_required") | Some("incompatible") | Some("unavailable"))).count(),
         "total_members": members.len(),
         "ready_work": works.iter().filter(|work| work["phase"] == "open" && work["condition"] == "normal").count(),
         "review_work": works.iter().filter(|work| work["phase"] == "review").count(),
