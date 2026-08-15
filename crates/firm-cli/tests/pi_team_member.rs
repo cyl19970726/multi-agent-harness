@@ -820,10 +820,10 @@ fn pi_workspace_write_without_containment_fails_before_spawn() {
 }
 
 #[test]
-fn pi_busy_close_waits_for_terminal_observation_and_releases_runtime() {
+fn pi_read_only_busy_close_proves_quiescence_and_releases_runtime() {
     let home = TempHome::new("pi-busy-close");
     let project_id = init_pi_project(&home, "pi-busy-close");
-    create_pi_identity_with_ceiling(&home, &project_id, "agent-pi-close-full", "full_access");
+    create_pi_identity_with_ceiling(&home, &project_id, "agent-pi-close-read", "read_only");
     let session_file = home.base().join("pi-sessions/close-session.jsonl");
     let prompt_marker = home.base().join("pi-close-prompt.txt");
     let fake_bin = fake_provider::install_pi_rpc_shim(
@@ -849,7 +849,7 @@ fn pi_busy_close_waits_for_terminal_observation_and_releases_runtime() {
         &serde_json::json!({
             "objective": "Pi busy close conformance",
             "members": [{
-                "agent_member_id": "agent-pi-close-full",
+                "agent_member_id": "agent-pi-close-read",
                 "name": "pi-worker",
                 "role": "reviewer",
                 "provider": "pi",
@@ -928,6 +928,107 @@ fn pi_busy_close_waits_for_terminal_observation_and_releases_runtime() {
         }),
         "Pi Close must not fall back to the legacy overloaded cancel command: {commands:?}"
     );
+}
+
+#[test]
+fn pi_full_access_background_writer_denies_quiesce_before_effect() {
+    let home = TempHome::new("pi-full-access-quiesce");
+    let project_id = init_pi_project(&home, "pi-full-access-quiesce");
+    create_pi_identity_with_ceiling(&home, &project_id, "agent-pi-quiesce-full", "full_access");
+    let session_file = home.base().join("pi-sessions/full-access-session.jsonl");
+    let prompt_marker = home.base().join("pi-full-access-prompt.txt");
+    let writer_marker = home.base().join("pi-full-access-background-writer.txt");
+    let fake_bin = fake_provider::install_pi_rpc_shim(
+        home.base(),
+        &home.base().join("pi-full-access-cwd.txt"),
+        &session_file,
+        "DONE",
+    );
+    let fake_pi = fake_bin.join("pi").display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("PI_BIN", fake_pi.as_str()),
+            ("FAKE_PI_RESULT", "DONE"),
+            ("FAKE_PI_WAIT_FOR_STEER", "1"),
+            ("FAKE_PI_PROMPT_MARKER", prompt_marker.to_str().unwrap()),
+            ("FAKE_PI_BACKGROUND_WRITER", writer_marker.to_str().unwrap()),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Pi FullAccess quiesce must fail closed",
+            "members": [{
+                "agent_member_id": "agent-pi-quiesce-full",
+                "name": "pi-worker",
+                "role": "reviewer",
+                "provider": "pi",
+                "initial_work": "Wait while a writable child remains alive"
+            }]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .expect("member id")
+        .to_string();
+    let (status, body) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "start scheduling failed: {body}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !prompt_marker.exists() || !writer_marker.exists() {
+        if std::time::Instant::now() >= deadline {
+            let (_, snapshot) = serve.get_json("/v1/snapshot");
+            let store = harness_store::HarnessStore::new(home.spaces_dir().join(&project_id));
+            let space_id = firm_env::current_space_id(&home);
+            panic!(
+                "Pi or its background writer never became active; snapshot={snapshot}; commands={:?}",
+                store.runtime_commands(&space_id).unwrap_or_default()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    let (status, close) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
+        &serde_json::json!({
+            "reason": "prove FullAccess cannot overclaim quiescence",
+            "requested_by": "host"
+        }),
+    );
+    assert_ne!(
+        status, 200,
+        "unproven quiescence must not report Close: {close}"
+    );
+    assert!(
+        close.to_string().contains("PendingDependency"),
+        "FullAccess must expose the missing child-inventory dependency: {close}"
+    );
+
+    let store = harness_store::HarnessStore::new(home.spaces_dir().join(&project_id));
+    let space_id = firm_env::current_space_id(&home);
+    let commands = store
+        .runtime_commands(&space_id)
+        .expect("Pi quiesce RuntimeCommand evidence");
+    assert!(commands.iter().any(|command| {
+        command.command == harness_core::agentfirm_api::RuntimeCommandKind::QuiesceExecutionLane
+            && command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Failed
+            && command.effect_certainty
+                == harness_core::agentfirm_api::RuntimeEffectCertainty::NotApplied
+            && command.postcondition_status
+                == harness_core::agentfirm_api::RuntimePostconditionStatus::Unsatisfied
+    }));
+    assert!(commands.iter().all(|command| {
+        command.command != harness_core::agentfirm_api::RuntimeCommandKind::ReleaseRuntime
+    }));
 }
 
 #[test]

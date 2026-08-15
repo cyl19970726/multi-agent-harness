@@ -18,7 +18,7 @@
 //! session's JSONL file. The file path is the `native_session_id`.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
@@ -46,6 +46,10 @@ pub(crate) struct PiRpcClient {
     stderr_tail: Arc<Mutex<String>>,
     /// Absolute path to the pi session JSONL file (native_session_id).
     session_file: String,
+    /// Actual spawn policy, retained as process-local evidence for conditional
+    /// quiescence claims. Durable permission intent alone cannot prove argv.
+    permission_ceiling: PermissionCeiling,
+    tools_allowlist: Option<String>,
     last_observation: Option<crate::runtime_adapter::RuntimeObservation>,
     released: bool,
 }
@@ -96,6 +100,80 @@ fn stderr_suffix(tail: &Arc<Mutex<String>>) -> String {
                 .collect::<String>()
         )
     }
+}
+
+/// Pi 0.84.2 persists each native session entry with synchronous
+/// `appendFileSync` / `writeFileSync`, but those calls do not establish a
+/// durable-storage acknowledgement.  After the provider has reported
+/// `agent_settled` and a subsequent `get_state` reports idle, explicitly sync
+/// both the JSONL inode and its parent directory.  Merely finding the path is
+/// never accepted as flush evidence.
+fn confirm_pi_session_flush(path: &Path) -> Result<String, String> {
+    if !path.is_absolute() {
+        return Err(format!(
+            "Pi native session path is not absolute: {}",
+            path.display()
+        ));
+    }
+    let link_metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        format!(
+            "Pi native session metadata is unavailable at {}: {error}",
+            path.display()
+        )
+    })?;
+    if link_metadata.file_type().is_symlink() || !link_metadata.is_file() {
+        return Err(format!(
+            "Pi native session flush requires a regular non-symlink file: {}",
+            path.display()
+        ));
+    }
+    if link_metadata.len() == 0 {
+        return Err(format!(
+            "Pi native session JSONL is empty at {}",
+            path.display()
+        ));
+    }
+
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|error| format!("failed to open Pi native session for sync: {error}"))?;
+    file.sync_all()
+        .map_err(|error| format!("failed to sync Pi native session bytes: {error}"))?;
+    file.seek(SeekFrom::End(-1))
+        .map_err(|error| format!("failed to inspect Pi native session line boundary: {error}"))?;
+    let mut final_byte = [0_u8; 1];
+    file.read_exact(&mut final_byte)
+        .map_err(|error| format!("failed to read Pi native session line boundary: {error}"))?;
+    if final_byte[0] != b'\n' {
+        return Err(format!(
+            "Pi native session has an incomplete final JSONL record at {}",
+            path.display()
+        ));
+    }
+
+    let parent = path.parent().ok_or_else(|| {
+        format!(
+            "Pi native session has no parent directory: {}",
+            path.display()
+        )
+    })?;
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("failed to sync Pi native session directory: {error}"))?;
+    let after = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("failed to restat Pi native session after sync: {error}"))?;
+    if after.len() != link_metadata.len() || !after.is_file() {
+        return Err(format!(
+            "Pi native session changed while flush was being confirmed: {}",
+            path.display()
+        ));
+    }
+    Ok(format!(
+        "Pi 0.84.2 synchronous JSONL boundary observed; file+directory sync_all confirmed {} bytes at {}",
+        after.len(),
+        path.display()
+    ))
 }
 
 impl PiRpcClient {
@@ -224,6 +302,8 @@ impl PiRpcClient {
             reader: Some(reader),
             stderr_tail,
             session_file: String::new(),
+            permission_ceiling: options.permission_ceiling,
+            tools_allowlist: options.tools.map(str::to_string),
             last_observation: None,
             released: false,
         };
@@ -458,6 +538,39 @@ impl PiRpcClient {
             },
             observation,
         })
+    }
+
+    fn writable_children_drain_proof(
+        &self,
+    ) -> (
+        harness_core::agentfirm_api::RuntimePostconditionStatus,
+        String,
+    ) {
+        use harness_core::agentfirm_api::RuntimePostconditionStatus;
+
+        match (self.permission_ceiling, self.tools_allowlist.as_deref()) {
+            (PermissionCeiling::ReadOnly, Some("read,grep,find,ls")) => (
+                RuntimePostconditionStatus::Satisfied,
+                "actual Pi spawn argv is the reviewed read/grep/find/ls-only allowlist with extensions disabled; no shell/write/edit tool can create a writable child"
+                    .to_string(),
+            ),
+            (PermissionCeiling::FullAccess, _) => (
+                RuntimePostconditionStatus::Unknown,
+                "Pi FullAccess exposes shell/process creation, while Pi RPC has no background-job inventory and a child may escape the owned process group; writable-child drain is unprovable"
+                    .to_string(),
+            ),
+            (PermissionCeiling::WorkspaceWrite, _) => (
+                RuntimePostconditionStatus::Unknown,
+                "Pi WorkspaceWrite should have failed spawn admission because no filesystem/process containment proves writable-child drain"
+                    .to_string(),
+            ),
+            (PermissionCeiling::ReadOnly, actual) => (
+                RuntimePostconditionStatus::Unknown,
+                format!(
+                    "Pi ReadOnly runtime argv did not retain the exact reviewed allowlist: {actual:?}"
+                ),
+            ),
+        }
     }
 
     fn release(&mut self) -> CliResult<crate::runtime_adapter::RuntimeObservation> {
@@ -924,7 +1037,7 @@ impl crate::runtime_adapter::TeamRuntimeAdapter for PiTeamRuntime {
             CapabilityBinding {
                 capability: "quiesce",
                 status: CapabilityStatus::Supported,
-                evidence: "get_state must prove isStreaming=false and pendingMessageCount=0"
+                evidence: "get_state proves only cycle/queue idle; reviewed ReadOnly argv proves writable-child non-creation; Pi 0.84.2 synchronous JSONL plus file/directory sync proves flush. FullAccess returns Unknown and fails closed"
                     .into(),
                 security_enforcement_locus: None,
             },
@@ -1328,11 +1441,13 @@ impl crate::runtime_adapter_contract::RuntimeAdapter for PiTeamRuntime {
         } else {
             RuntimePostconditionStatus::Unknown
         };
-        let flush = if Path::new(self.client.session_file()).is_file() {
-            RuntimePostconditionStatus::Satisfied
-        } else {
-            RuntimePostconditionStatus::Unknown
-        };
+        let (writable_children, writable_children_evidence) =
+            self.client.writable_children_drain_proof();
+        let (flush, flush_evidence) =
+            match confirm_pi_session_flush(Path::new(self.client.session_file())) {
+                Ok(evidence) => (RuntimePostconditionStatus::Satisfied, evidence),
+                Err(evidence) => (RuntimePostconditionStatus::Unknown, evidence),
+            };
         let mut builder = QuiesceReceiptBuilder::new();
         builder.record(
             QuiesceStep::FenceAdmission,
@@ -1359,18 +1474,11 @@ impl crate::runtime_adapter_contract::RuntimeAdapter for PiTeamRuntime {
         )?;
         builder.record(
             QuiesceStep::DrainWritableChildren,
-            drained,
-            "agent_settled/get_state idle boundary observed",
+            writable_children,
+            writable_children_evidence,
         )?;
         builder.record(QuiesceStep::ObserveIdle, drained, outcome.evidence)?;
-        builder.record(
-            QuiesceStep::ConfirmFlush,
-            flush,
-            format!(
-                "native session JSONL retained at {}",
-                self.client.session_file()
-            ),
-        )?;
+        builder.record(QuiesceStep::ConfirmFlush, flush, flush_evidence)?;
         let receipt = builder.finish();
         receipt.verify()?;
         self.canonical_quiesced = true;
@@ -1405,10 +1513,9 @@ impl crate::runtime_adapter_contract::RuntimeAdapter for PiTeamRuntime {
         } else {
             RuntimePostconditionStatus::Unknown
         };
-        let flush = if Path::new(&session_file).is_file() {
-            RuntimePostconditionStatus::Satisfied
-        } else {
-            RuntimePostconditionStatus::Unknown
+        let (flush, flush_evidence) = match confirm_pi_session_flush(Path::new(&session_file)) {
+            Ok(evidence) => (RuntimePostconditionStatus::Satisfied, evidence),
+            Err(evidence) => (RuntimePostconditionStatus::Unknown, evidence),
         };
         let receipt = crate::runtime_adapter_contract::ReleaseReceipt {
             native_runtime_released: released,
@@ -1417,7 +1524,7 @@ impl crate::runtime_adapter_contract::RuntimeAdapter for PiTeamRuntime {
             flush_confirmed: flush,
             evidence: vec![
                 format!("process_alive={}", observation.process_alive),
-                format!("native session JSONL retained at {session_file}"),
+                flush_evidence,
             ],
         };
         if released != RuntimePostconditionStatus::Satisfied
@@ -1496,8 +1603,8 @@ impl Drop for PiRpcClient {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_session_has_no_persisted_thinking, value_contains_persisted_thinking,
-        PermissionCeiling, PiRpcClient,
+        confirm_pi_session_flush, ensure_session_has_no_persisted_thinking,
+        value_contains_persisted_thinking, PermissionCeiling, PiRpcClient,
     };
 
     /// Spawn a minimal fake `pi --mode rpc` shim and exercise the RPC-level
@@ -1592,8 +1699,73 @@ for line in sys.stdin:
         );
         assert_eq!(snapshot["steering_mode"].as_str(), Some("one-at-a-time"));
 
+        let (children, children_evidence) = client.writable_children_drain_proof();
+        assert_eq!(
+            children,
+            harness_core::agentfirm_api::RuntimePostconditionStatus::Satisfied,
+            "reviewed ReadOnly argv proves writable-child non-creation: {children_evidence}"
+        );
+        let flush = confirm_pi_session_flush(&session_file)
+            .expect("a complete JSONL line must receive file+directory sync evidence");
+        assert!(flush.contains("sync_all confirmed"), "{flush}");
+
         drop(client);
+
+        let full_access = PiRpcClient::spawn(
+            shim.to_str().unwrap(),
+            super::PiSpawnOptions {
+                cwd: &dir,
+                model: None,
+                resume_session_file: None,
+                session_dir: &dir,
+                member_name: "rpc-full-access-test",
+                collaboration_env: &[],
+                tools: None,
+                permission_ceiling: PermissionCeiling::FullAccess,
+            },
+        )
+        .expect("spawn FullAccess shim");
+        let (children, children_evidence) = full_access.writable_children_drain_proof();
+        assert_eq!(
+            children,
+            harness_core::agentfirm_api::RuntimePostconditionStatus::Unknown,
+            "FullAccess cannot claim child drain without a native job inventory: {children_evidence}"
+        );
+        assert!(children_evidence.contains("may escape the owned process group"));
+        drop(full_access);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flush_evidence_requires_a_complete_regular_jsonl_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "pi-rpc-flush-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session_file = dir.join("session.jsonl");
+        std::fs::write(&session_file, "{\"type\":\"session\"}").expect("write incomplete session");
+        let error = confirm_pi_session_flush(&session_file)
+            .expect_err("path existence without a complete record is not flush proof");
+        assert!(error.contains("incomplete final JSONL record"));
+
+        std::fs::write(&session_file, "{\"type\":\"session\"}\n").expect("complete session");
+        confirm_pi_session_flush(&session_file).expect("complete file can be durably synced");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let linked = dir.join("linked-session.jsonl");
+            symlink(&session_file, &linked).expect("create symlink fixture");
+            let error = confirm_pi_session_flush(&linked)
+                .expect_err("a symlink must not be promoted to native flush evidence");
+            assert!(error.contains("regular non-symlink"));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

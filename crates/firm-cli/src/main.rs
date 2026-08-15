@@ -9198,6 +9198,49 @@ fn apply_permission_enforcement_to_profile(
             crate::runtime_adapter::pi_security_enforcement_locus(ceiling);
     }
     finalize_provider_integration_profile(profile);
+    if profile.provider == "pi"
+        && profile.execution_mode == "pi_rpc"
+        && ceiling == harness_core::agentfirm_api::PermissionCeiling::FullAccess
+    {
+        for binding in profile
+            .capability_bindings
+            .iter_mut()
+            .filter(|binding| matches!(binding.capability.as_str(), "quiesce" | "release"))
+        {
+            binding.status = harness_core::ProviderCapabilityStatus::ReviewRequired;
+            binding.admission = harness_core::ProviderBindingAdmission::PendingDependency;
+            binding.evidence.retain(|evidence| {
+                evidence.kind == harness_core::ProviderCapabilityEvidenceKind::SourceReview
+            });
+            binding.evidence.push(harness_core::ProviderCapabilityEvidence {
+                kind: harness_core::ProviderCapabilityEvidenceKind::SourceReview,
+                evidence_ref:
+                    "gap:pi_full_access_requires_native_job_inventory_or_os_containment"
+                        .to_string(),
+                observed_at: profile.adapter_reviewed_at.clone(),
+                note: Some(
+                    "Pi RPC cannot prove that FullAccess background writers are drained; quiesce/release are denied before provider effect"
+                        .to_string(),
+                ),
+            });
+            binding.feature_fingerprint = Some(harness_store::canonical_json_fingerprint(
+                &serde_json::json!({
+                    "provider": profile.provider,
+                    "execution_mode": profile.execution_mode,
+                    "provider_version": profile.provider_version,
+                    "adapter_revision": profile.adapter_bridge_revision,
+                    "capability": binding.capability,
+                    "status": binding.status,
+                    "admission": binding.admission,
+                    "evidence": binding.evidence,
+                    "security_enforcement_locus": profile.security_enforcement_locus,
+                }),
+            ));
+        }
+        profile.binding_admission = harness_core::ProviderBindingAdmission::Degraded;
+        profile.capability_fingerprint = profile_capability_fingerprint(profile);
+        profile.composition_fingerprint = resolved_profile_composition_fingerprint(profile);
+    }
     Ok(())
 }
 
@@ -9399,7 +9442,11 @@ fn team_member_provider_profile_for_mode(
                  a read/grep/find/ls allowlist; WorkspaceWrite is unavailable \
                  because Pi does not contain paths; FullAccess is admitted only \
                  by explicit trusted policy. Prompt response proves input \
-                 acceptance; agent_settled plus get_state proves the cycle boundary."
+                 acceptance; agent_settled plus get_state proves the cycle boundary. \
+                 Quiesce proves native-session flush with file/directory sync and \
+                 proves writable-child non-creation only for the reviewed ReadOnly \
+                 argv; FullAccess quiesce/release remain PendingDependency until a native job \
+                 inventory or OS containment can prove child drain."
                     .to_string(),
             ),
             interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
@@ -26701,9 +26748,12 @@ fn run_pi_team_member(
         .unwrap_or(harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite);
     let tools = crate::runtime_adapter::pi_tools_allowlist_for_ceiling(ceiling)?;
     if let Some(profile) = member_row.provider_profile.as_mut() {
-        profile.security_enforcement_locus =
-            crate::runtime_adapter::pi_security_enforcement_locus(ceiling);
-        finalize_provider_integration_profile(profile);
+        // Reuse the exact permission-aware resolution that was persisted
+        // before AgentSession materialization. A generic re-finalize here
+        // would resurrect FullAccess quiesce/release capabilities that the
+        // durable profile intentionally marks pending, drifting the live
+        // adapter composition away from the session fence.
+        apply_permission_enforcement_to_profile(profile, ceiling)?;
     }
 
     let pi_bin = resolve_pi_bin();
@@ -46944,6 +46994,56 @@ mod tests {
             vec!["interrupt_current_cycle", "observe"]
         );
         assert_eq!(binding("release").required_dependencies, vec!["quiesce"]);
+    }
+
+    #[test]
+    fn pi_full_access_profile_denies_quiesce_without_child_inventory() {
+        let mut read_only = team_member_provider_profile_for_mode("pi", Some("pi_rpc"));
+        apply_permission_enforcement_to_profile(
+            &mut read_only,
+            harness_core::agentfirm_api::PermissionCeiling::ReadOnly,
+        )
+        .unwrap();
+        assert_eq!(
+            read_only
+                .capability_bindings
+                .iter()
+                .find(|binding| binding.capability == "quiesce")
+                .unwrap()
+                .admission,
+            harness_core::ProviderBindingAdmission::Active
+        );
+
+        let mut full_access = team_member_provider_profile_for_mode("pi", Some("pi_rpc"));
+        apply_permission_enforcement_to_profile(
+            &mut full_access,
+            harness_core::agentfirm_api::PermissionCeiling::FullAccess,
+        )
+        .unwrap();
+        for capability in ["quiesce", "release"] {
+            let binding = full_access
+                .capability_bindings
+                .iter()
+                .find(|binding| binding.capability == capability)
+                .unwrap();
+            assert_eq!(
+                binding.admission,
+                harness_core::ProviderBindingAdmission::PendingDependency
+            );
+            assert!(binding.evidence.iter().any(|evidence| {
+                evidence
+                    .evidence_ref
+                    .contains("requires_native_job_inventory_or_os_containment")
+            }));
+        }
+        assert_ne!(
+            full_access.capability_fingerprint,
+            read_only.capability_fingerprint
+        );
+        assert_ne!(
+            full_access.composition_fingerprint,
+            read_only.composition_fingerprint
+        );
     }
 
     #[test]

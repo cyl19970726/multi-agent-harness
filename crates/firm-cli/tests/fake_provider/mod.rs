@@ -728,6 +728,19 @@ os.makedirs(os.path.dirname('{session_file_path}'), exist_ok=True)
 with open('{session_file_path}', 'w') as f:
     f.write(json.dumps({{"type":"agent_start"}}) + '\n')
 
+# A FullAccess conformance fixture may deliberately leave a writable child
+# alive after the provider reports idle. It stays in the owned process group
+# so test teardown is recoverable, but Pi RPC itself exposes no inventory or
+# acknowledgement for this job.
+background_writer = os.environ.get('FAKE_PI_BACKGROUND_WRITER')
+if background_writer:
+    subprocess.Popen([
+        sys.executable,
+        '-c',
+        'import sys,time\np=sys.argv[1]\nfor _ in range(300):\n open(p,"a").write("tick\\n")\n time.sleep(0.05)',
+        background_writer,
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
 TEXT = '## RESULT\n' + RESULT + '\n## SUMMARY\nFake pi done.'
 prompt_count = 0
 

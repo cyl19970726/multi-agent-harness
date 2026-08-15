@@ -14,11 +14,12 @@ use firm_core::agentfirm_api::{
     MessageRecipientKind, MessageSubscription, MessageSubscriptionKind, MessageSubscriptionStatus,
     MutationContext, NativeContinuationActivation, NativeContinuationPhase, NativeSessionRef,
     ProviderInvocation, ProviderReceipt, RuntimeActivity, RuntimeCommandKind, RuntimeCommandPhase,
-    RuntimeCommandRecord, RuntimeCommandStatus, RuntimeDriverRef, RuntimeEffectCertainty,
-    RuntimePostconditionStatus, RuntimeRecoveryResolution, RuntimeResidency, SubscriptionCursor,
-    TeamMembership, TeamMembershipRole, TeamMembershipStatus, TrustError, TrustErrorCode,
-    WorkDelivery, WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
-    WorkFinding, WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
+    RuntimeCommandPrecondition, RuntimeCommandRecord, RuntimeCommandStatus, RuntimeDriverRef,
+    RuntimeEffectCertainty, RuntimePostconditionStatus, RuntimeRecoveryResolution,
+    RuntimeResidency, RuntimeSafePointRequirement, SubscriptionCursor, TeamMembership,
+    TeamMembershipRole, TeamMembershipStatus, TrustError, TrustErrorCode, WorkDelivery,
+    WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus, WorkFinding,
+    WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
     WorkspaceOwnership, WorkspaceSafetyProof,
 };
 use firm_core::collaboration::CollaborationMessageAuthority;
@@ -4967,6 +4968,165 @@ impl HarnessStore {
         Ok(())
     }
 
+    /// Evaluate the semantic predicate carried by a RuntimeCommand against the
+    /// same AgentSession snapshot used for driver fencing.  A predicate is not
+    /// documentation: if the Store cannot prove it from canonical control
+    /// state, the provider effect is rejected before crossing the boundary.
+    fn require_runtime_command_precondition_unlocked(
+        session: &AgentSession,
+        command: RuntimeCommandKind,
+        precondition: &RuntimeCommandPrecondition,
+        allow_command_poststate: bool,
+        resource_kind: &str,
+        resource_id: &str,
+        current_version: Option<u64>,
+    ) -> StoreResult<()> {
+        let fenced = |message: &str| {
+            trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                message,
+                resource_kind,
+                resource_id,
+                current_version,
+            )
+        };
+
+        let expected_version_advanced_by_this_command = allow_command_poststate
+            && precondition
+                .expected_session_version
+                .is_some_and(|expected| {
+                    session.version == expected.saturating_add(1)
+                        && matches!(
+                            (command, session.lifecycle),
+                            (RuntimeCommandKind::StopSession, AgentSessionStatus::Closed)
+                                | (RuntimeCommandKind::ResumeSession, AgentSessionStatus::Cold)
+                        )
+                });
+        if precondition
+            .expected_session_version
+            .is_some_and(|expected| expected != session.version)
+            && !expected_version_advanced_by_this_command
+        {
+            return Err(fenced(
+                "RuntimeCommand expected_session_version no longer matches the canonical AgentSession",
+            ));
+        }
+        if precondition
+            .expected_residency
+            .is_some_and(|expected| expected != session.control_state.runtime_residency)
+        {
+            return Err(fenced(
+                "RuntimeCommand expected_residency no longer matches the canonical AgentSession",
+            ));
+        }
+        if precondition
+            .expected_activity
+            .is_some_and(|expected| expected != session.control_state.activity)
+        {
+            return Err(fenced(
+                "RuntimeCommand expected_activity no longer matches the canonical AgentSession",
+            ));
+        }
+        if precondition
+            .expected_execution_driver
+            .is_some_and(|expected| expected != session.control_state.execution_driver)
+        {
+            return Err(fenced(
+                "RuntimeCommand expected_execution_driver no longer matches the canonical AgentSession",
+            ));
+        }
+
+        if let Some(expected) = precondition.expected_cycle_ref.as_ref() {
+            if expected.revision.is_some() || expected.fingerprint.is_some() {
+                return Err(fenced(
+                    "RuntimeCommand cycle revision/fingerprint cannot be proven from canonical AgentSession control state",
+                ));
+            }
+            if session.current_turn_id.as_deref() != Some(expected.id.as_str()) {
+                return Err(fenced(
+                    "RuntimeCommand expected_cycle_ref no longer matches the current provider cycle",
+                ));
+            }
+        }
+
+        if let Some(expected) = precondition.expected_continuation_ref.as_ref() {
+            let definition = &session.control_state.continuation.definition;
+            if expected.fingerprint.is_some()
+                || definition.continuation_ref.as_deref() != Some(expected.id.as_str())
+                || expected
+                    .revision
+                    .is_some_and(|revision| definition.revision != Some(revision))
+            {
+                return Err(fenced(
+                    "RuntimeCommand expected_continuation_ref cannot be proven against the current continuation definition",
+                ));
+            }
+        }
+        if precondition
+            .expected_continuation_phase
+            .is_some_and(|expected| expected != session.control_state.continuation.definition.phase)
+        {
+            return Err(fenced(
+                "RuntimeCommand expected_continuation_phase no longer matches the canonical continuation definition",
+            ));
+        }
+
+        let safe_point_satisfied = match precondition.safe_point {
+            // Unknown is the serde-default for legacy callers. It makes no
+            // claim and therefore contributes no positive proof.
+            RuntimeSafePointRequirement::Unknown | RuntimeSafePointRequirement::Immediate => true,
+            RuntimeSafePointRequirement::CurrentCycle => {
+                session.lifecycle == AgentSessionStatus::Active
+                    && session.current_turn_id.is_some()
+                    && matches!(
+                        session.control_state.activity,
+                        RuntimeActivity::Running
+                            | RuntimeActivity::WaitingInput
+                            | RuntimeActivity::Interrupting
+                    )
+            }
+            RuntimeSafePointRequirement::CycleBoundary => {
+                session.control_state.activity == RuntimeActivity::Idle
+                    && !matches!(
+                        session.lifecycle,
+                        AgentSessionStatus::Closed | AgentSessionStatus::RecoveryRequired
+                    )
+            }
+            RuntimeSafePointRequirement::RuntimeIdle => {
+                session.control_state.runtime_residency == RuntimeResidency::Attached
+                    && session.control_state.activity == RuntimeActivity::Idle
+                    && !matches!(
+                        session.lifecycle,
+                        AgentSessionStatus::Closed | AgentSessionStatus::RecoveryRequired
+                    )
+            }
+            // AgentSession intentionally does not mirror provider child/job
+            // or durable-flush state. Only a verified adapter receipt can
+            // prove full execution-lane quiescence.
+            RuntimeSafePointRequirement::ExecutionLaneQuiesced => false,
+        };
+        if !safe_point_satisfied {
+            return Err(fenced(
+                "RuntimeCommand safe_point is not proven by the current canonical AgentSession state",
+            ));
+        }
+
+        // One-driver authority is independent from a syntactically exact
+        // RuntimeDriverRef. A provider continuation may be the live driver,
+        // but that never authorizes Harness to start a second top-level cycle.
+        if matches!(
+            command,
+            RuntimeCommandKind::DispatchProvider | RuntimeCommandKind::StartCycle
+        ) && session.control_state.execution_driver != MemberExecutionDriver::HostDriven
+        {
+            return Err(fenced(
+                "Harness cannot start a provider cycle while the AgentSession is provider-driven or user-driven",
+            ));
+        }
+
+        Ok(())
+    }
+
     pub fn fabric_agent_identities(
         &self,
         execution_space_id: &str,
@@ -7742,6 +7902,15 @@ impl HarnessStore {
                     Some(session.version),
                 )?;
             }
+            Self::require_runtime_command_precondition_unlocked(
+                &session,
+                command.command,
+                &command.precondition,
+                false,
+                "runtime_command",
+                &command.id,
+                Some(session.version),
+            )?;
             let actor = &command.authenticated_actor;
             let exact_self =
                 actor.kind == ActorKind::AgentMember && actor.id == session.agent_identity_id;
@@ -8094,6 +8263,63 @@ impl HarnessStore {
         }
         match resolution {
             RuntimeRecoveryResolution::ConfirmApplied => {
+                if runtime_command_requires_exact_binding(record.command) {
+                    let session_id = record.target_session_id.as_deref().ok_or_else(|| {
+                        trust_error(
+                            TrustErrorCode::MemberRunGenerationFenced,
+                            "provider-facing RuntimeCommand recovery has no exact target AgentSession",
+                            "runtime_command",
+                            command_id,
+                            Some(record.version),
+                        )
+                    })?;
+                    let session = self
+                        .fabric_agent_sessions(&context.execution_space_id)?
+                        .into_iter()
+                        .find(|session| session.id == session_id)
+                        .ok_or_else(|| {
+                            trust_error(
+                                TrustErrorCode::MemberRunGenerationFenced,
+                                "RuntimeCommand target AgentSession disappeared before recovery resolution",
+                                "runtime_command",
+                                command_id,
+                                Some(record.version),
+                            )
+                        })?;
+                    if record.target_session_generation != Some(session.runtime_generation)
+                        || session.node_id != record.target_node_id
+                        || session.node_daemon_id != record.target_node_daemon_id
+                        || session.node_daemon_generation != record.target_node_daemon_generation
+                    {
+                        return Err(trust_error(
+                            TrustErrorCode::MemberRunGenerationFenced,
+                            "RuntimeCommand recovery no longer owns the exact AgentSession/NodeDaemon generation",
+                            "runtime_command",
+                            command_id,
+                            Some(record.version),
+                        ));
+                    }
+                    self.require_live_runtime_binding_unlocked(
+                        &session,
+                        &record.binding,
+                        matches!(
+                            record.command,
+                            RuntimeCommandKind::StartSession | RuntimeCommandKind::OpenRuntime
+                        ),
+                        "runtime_command",
+                        command_id,
+                        Some(record.version),
+                    )?;
+                    Self::require_runtime_command_precondition_unlocked(
+                        &session,
+                        record.command,
+                        &record.precondition,
+                        true,
+                        "runtime_command",
+                        command_id,
+                        Some(record.version),
+                    )?;
+                }
                 record.status = RuntimeCommandStatus::Applied;
                 record.phase = RuntimeCommandPhase::Settled;
                 record.effect_certainty = RuntimeEffectCertainty::Applied;
@@ -8263,6 +8489,15 @@ impl HarnessStore {
                     record.command,
                     RuntimeCommandKind::StartSession | RuntimeCommandKind::OpenRuntime
                 ),
+                "runtime_command",
+                command_id,
+                Some(record.version),
+            )?;
+            Self::require_runtime_command_precondition_unlocked(
+                &session,
+                record.command,
+                &record.precondition,
+                true,
                 "runtime_command",
                 command_id,
                 Some(record.version),
@@ -11584,6 +11819,30 @@ mod tests {
                     target.clone(),
                 )
                 .unwrap();
+            if case == "exact" {
+                let (start_cycle, start_admission) = runtime_command_fixture(
+                    "continuation-must-not-host-start",
+                    RuntimeCommandKind::StartCycle,
+                    &target,
+                    "start_cycle",
+                );
+                let before_start = store.canonical_operations().unwrap();
+                let error = store
+                    .prepare_runtime_command(
+                        &start_admission,
+                        &start_cycle,
+                        current_unix_ms(),
+                        "t-start-rejected",
+                    )
+                    .expect_err(
+                        "an armed provider continuation must remain the only next-cycle driver",
+                    );
+                assert!(error.to_string().contains(
+                    "cannot start a provider cycle while the AgentSession is provider-driven"
+                ));
+                assert_eq!(store.canonical_operations().unwrap(), before_start);
+                assert!(store.runtime_commands("space-test").unwrap().is_empty());
+            }
             let (command, admission) = runtime_command_fixture(
                 &format!("continuation-command-{case}"),
                 RuntimeCommandKind::InspectContinuation,
@@ -11605,6 +11864,262 @@ mod tests {
             }
             fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    #[test]
+    fn runtime_command_semantic_preconditions_are_lock_checked_with_zero_side_effects() {
+        for case in [
+            "session_version",
+            "residency",
+            "activity",
+            "execution_driver",
+            "cycle_ref",
+            "continuation_ref",
+            "continuation_phase",
+            "runtime_idle",
+            "execution_lane_quiesced",
+        ] {
+            let (store, root) = fabric_store();
+            let identity_id = format!("precondition-{case}");
+            let session_id = format!("session-precondition-{case}");
+            store
+                .create_agent_identity(
+                    &context("host", "identity.create", &identity_id, 0),
+                    identity(&identity_id),
+                )
+                .unwrap();
+            let target = session(&session_id, &identity_id);
+            store
+                .create_agent_session(
+                    &service_context("session.create", &session_id, 0),
+                    target.clone(),
+                )
+                .unwrap();
+            let (mut command, mut admission) = runtime_command_fixture(
+                &format!("precondition-{case}"),
+                RuntimeCommandKind::OpenRuntime,
+                &target,
+                "open_runtime",
+            );
+            match case {
+                "session_version" => command.precondition.expected_session_version = Some(2),
+                "residency" => {
+                    command.precondition.expected_residency = Some(RuntimeResidency::Attached)
+                }
+                "activity" => {
+                    command.precondition.expected_activity = Some(RuntimeActivity::Running)
+                }
+                "execution_driver" => {
+                    command.precondition.expected_execution_driver =
+                        Some(MemberExecutionDriver::ProviderDriven)
+                }
+                "cycle_ref" => {
+                    command.precondition.expected_cycle_ref =
+                        Some(firm_core::agentfirm_api::RuntimeNativeObjectRef {
+                            id: "missing-cycle".into(),
+                            revision: None,
+                            fingerprint: None,
+                        })
+                }
+                "continuation_ref" => {
+                    command.precondition.expected_continuation_ref =
+                        Some(firm_core::agentfirm_api::RuntimeNativeObjectRef {
+                            id: "missing-continuation".into(),
+                            revision: None,
+                            fingerprint: None,
+                        })
+                }
+                "continuation_phase" => {
+                    command.precondition.expected_continuation_phase =
+                        Some(NativeContinuationPhase::Active)
+                }
+                "runtime_idle" => {
+                    command.precondition.safe_point = RuntimeSafePointRequirement::RuntimeIdle
+                }
+                "execution_lane_quiesced" => {
+                    command.precondition.safe_point =
+                        RuntimeSafePointRequirement::ExecutionLaneQuiesced
+                }
+                _ => unreachable!(),
+            }
+            admission.request_fingerprint =
+                Some(runtime_command_envelope_fingerprint(&command).unwrap());
+            let before = store.canonical_operations().unwrap();
+            let error = store
+                .prepare_runtime_command(&admission, &command, current_unix_ms(), "t-rejected")
+                .expect_err("an unproven semantic precondition must reject before admission");
+            assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
+            assert_eq!(store.canonical_operations().unwrap(), before, "{case}");
+            assert!(store.runtime_commands("space-test").unwrap().is_empty());
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn runtime_command_settlement_rechecks_the_prepared_semantic_snapshot() {
+        let (store, root) = fabric_store();
+        store
+            .create_agent_identity(
+                &context("host", "identity.create", "settle-precondition", 0),
+                identity("settle-precondition"),
+            )
+            .unwrap();
+        let target = session("session-settle-precondition", "settle-precondition");
+        store
+            .create_agent_session(
+                &service_context("session.create", "session-settle-precondition", 0),
+                target.clone(),
+            )
+            .unwrap();
+        let (mut command, mut admission) = runtime_command_fixture(
+            "settle-precondition-command",
+            RuntimeCommandKind::OpenRuntime,
+            &target,
+            "open_runtime",
+        );
+        command.precondition.expected_session_version = Some(target.version);
+        admission.request_fingerprint =
+            Some(runtime_command_envelope_fingerprint(&command).unwrap());
+        let accepted = store
+            .prepare_runtime_command(&admission, &command, current_unix_ms(), "t-accepted")
+            .unwrap();
+        store
+            .transition_agent_session(
+                &service_context("session.activate", "settle-precondition:activate", 1),
+                &target.id,
+                AgentSessionStatus::Active,
+                "t-active",
+            )
+            .unwrap();
+        let before_settle = store.canonical_operations().unwrap();
+        let error = store
+            .settle_runtime_command(
+                &service_context(
+                    "node_daemon.runtime.settle",
+                    "settle-precondition:settle",
+                    accepted.projection.version,
+                ),
+                &command.id,
+                RuntimeCommandStatus::Applied,
+                RuntimeEffectCertainty::Applied,
+                Some(serde_json::json!({"provider_receipt": "stale"})),
+                None,
+                "t-settle",
+            )
+            .expect_err("settlement must not bless a command whose semantic snapshot drifted");
+        assert!(error.to_string().contains("expected_session_version"));
+        assert_eq!(store.canonical_operations().unwrap(), before_settle);
+        assert_eq!(
+            store.runtime_commands("space-test").unwrap()[0].status,
+            RuntimeCommandStatus::Accepted
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_cannot_confirm_applied_after_semantic_precondition_drift() {
+        let (store, root) = fabric_store();
+        store
+            .create_agent_identity(
+                &context("host", "identity.create", "recovery-precondition", 0),
+                identity("recovery-precondition"),
+            )
+            .unwrap();
+        let target = session("session-recovery-precondition", "recovery-precondition");
+        store
+            .create_agent_session(
+                &service_context("session.create", "session-recovery-precondition", 0),
+                target.clone(),
+            )
+            .unwrap();
+        let (mut command, mut admission) = runtime_command_fixture(
+            "recovery-precondition-command",
+            RuntimeCommandKind::StopSession,
+            &target,
+            "stop_session",
+        );
+        command.precondition.expected_session_version = Some(target.version);
+        admission.request_fingerprint =
+            Some(runtime_command_envelope_fingerprint(&command).unwrap());
+        store
+            .prepare_runtime_command(&admission, &command, current_unix_ms(), "t-accepted")
+            .unwrap();
+        store
+            .settle_runtime_command(
+                &service_context(
+                    "node_daemon.runtime.settle",
+                    "recovery-precondition:settle",
+                    1,
+                ),
+                &command.id,
+                RuntimeCommandStatus::RecoveryRequired,
+                RuntimeEffectCertainty::Unknown,
+                None,
+                Some("PROVIDER_EFFECT_AMBIGUOUS".into()),
+                "t-recovery",
+            )
+            .unwrap();
+        store
+            .transition_agent_session(
+                &service_context("session.activate", "recovery-precondition:activate", 1),
+                &target.id,
+                AgentSessionStatus::Active,
+                "t-active",
+            )
+            .unwrap();
+
+        let mut confirm_applied = service_context(
+            "operator.runtime.resolve",
+            "recovery-precondition:confirm-applied",
+            2,
+        );
+        confirm_applied.authority_actor = Some(ActorRef {
+            kind: ActorKind::Service,
+            id: target.node_id.clone(),
+        });
+        let before = store.canonical_operations().unwrap();
+        let error = store
+            .resolve_runtime_command_recovery(
+                &confirm_applied,
+                &command.id,
+                &target.node_id,
+                &target.node_daemon_id,
+                target.node_daemon_generation,
+                RuntimeRecoveryResolution::ConfirmApplied,
+                "evidence:provider-claimed-applied",
+                "t-confirm-applied",
+            )
+            .expect_err("stale semantics cannot be promoted to Applied during recovery");
+        assert!(error.to_string().contains("expected_session_version"));
+        assert_eq!(store.canonical_operations().unwrap(), before);
+
+        let mut confirm_not_applied = service_context(
+            "operator.runtime.resolve",
+            "recovery-precondition:confirm-not-applied",
+            2,
+        );
+        confirm_not_applied.authority_actor = Some(ActorRef {
+            kind: ActorKind::Service,
+            id: target.node_id.clone(),
+        });
+        let resolved = store
+            .resolve_runtime_command_recovery(
+                &confirm_not_applied,
+                &command.id,
+                &target.node_id,
+                &target.node_daemon_id,
+                target.node_daemon_generation,
+                RuntimeRecoveryResolution::ConfirmNotApplied,
+                "evidence:provider-absent",
+                "t-confirm-not-applied",
+            )
+            .expect("stale work must remain safely resolvable as NotApplied");
+        assert_eq!(resolved.projection.status, RuntimeCommandStatus::Failed);
+        assert_eq!(
+            resolved.projection.effect_certainty,
+            RuntimeEffectCertainty::NotApplied
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
