@@ -1,12 +1,14 @@
 {
+  "agent_runtime_provider": "pi",
+  "model_route": {"model_provider": "anthropic", "model_id": "claude-sonnet-4-5"},
   "provider": "pi",
   "execution_mode": "pi_rpc",
   "execution_driver": "host_driven",
   "provider_version": "0.84.2",
   "adapter_contract_version": "pi-rpc-v1",
-  "reviewed_provider_versions": ["0.83.0"],
-  "compatibility_status": "review_required",
-  "adapter_reviewed_at": "2026-08-05",
+  "reviewed_provider_versions": ["0.84.2"],
+  "compatibility_status": "current",
+  "adapter_reviewed_at": "2026-08-15",
   "compatibility_note": "Pi RPC-mode persistent Agent Team member.",
   "interaction_mode": "end_round_and_follow_up",
   "ordinary_message_boundary": "next_round",
@@ -21,9 +23,53 @@
   "thinking_transient_only": true,
   "control_topology": "external_protocol",
   "composition_fingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "capability_fingerprint": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+  "binding_admission": "active",
+  "capability_bindings": [
+    {
+      "capability": "open_or_resume",
+      "status": "verified",
+      "admission": "active",
+      "provider_version": "0.84.2",
+      "adapter_revision": "pi-rpc-v1",
+      "feature_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "required_dependencies": [],
+      "evidence": [
+        {"kind": "deterministic_acceptance", "evidence_ref": "test:pi_open_or_resume"},
+        {"kind": "live_canary", "evidence_ref": "test:pi_rpc_handshake_and_basic_prompt", "observed_at": "2026-08-15"}
+      ]
+    },
+    {
+      "capability": "observe",
+      "status": "verified",
+      "admission": "active",
+      "provider_version": "0.84.2",
+      "adapter_revision": "pi-rpc-v1",
+      "feature_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "required_dependencies": [],
+      "evidence": [
+        {"kind": "deterministic_acceptance", "evidence_ref": "test:pi_get_state"},
+        {"kind": "live_canary", "evidence_ref": "test:pi_rpc_handshake_and_basic_prompt", "observed_at": "2026-08-15"}
+      ]
+    },
+    {
+      "capability": "start_cycle",
+      "status": "verified",
+      "admission": "active",
+      "provider_version": "0.84.2",
+      "adapter_revision": "pi-rpc-v1",
+      "feature_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "required_dependencies": ["open_or_resume", "observe"],
+      "evidence": [
+        {"kind": "source_review", "evidence_ref": "pi@0.84.2:rpc-contract"},
+        {"kind": "deterministic_acceptance", "evidence_ref": "test:pi_two_round_journey"},
+        {"kind": "live_canary", "evidence_ref": "test:pi_rpc_handshake_and_basic_prompt", "observed_at": "2026-08-15"}
+      ]
+    }
+  ],
   "adapter_bridge_revision": "pi-rpc-v1",
   "security_enforcement_locus": {
     "kind": "adapter_tool_allowlist",
-    "note": "restricted ceilings compile to --tools allowlist at spawn"
+    "note": "read_only compiles to --tools; workspace_write fails closed without filesystem containment"
   }
 }

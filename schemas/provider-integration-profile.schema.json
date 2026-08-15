@@ -7,6 +7,13 @@
   "additionalProperties": false,
   "required": ["provider", "execution_mode", "interaction_mode", "tool_event_fidelity", "artifact_event_fidelity", "supports_cancel", "supports_resume", "observes_native_subagents", "observes_background_tasks", "thinking_transient_only"],
   "properties": {
+    "agent_runtime_provider": {"type": ["string", "null"], "minLength": 1},
+    "model_route": {
+      "anyOf": [
+        {"type": "null"},
+        {"type": "object", "additionalProperties": false, "required": ["model_provider"], "properties": {"model_provider": {"type": "string", "minLength": 1}, "model_id": {"type": ["string", "null"]}, "route_id": {"type": ["string", "null"]}, "route_fingerprint": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"}}}
+      ]
+    },
     "provider": {"type": "string", "minLength": 1},
     "execution_mode": {"type": "string", "minLength": 1},
     "execution_driver": {"enum": ["host_driven", "provider_driven", "user_driven"]},
@@ -28,7 +35,10 @@
     "observes_background_tasks": {"type": "boolean"},
     "thinking_transient_only": {"type": "boolean"},
     "control_topology": {"enum": ["external_protocol", "embedded_sdk", "native_bridge", "unknown"]},
-    "composition_fingerprint": {"type": ["string", "null"]},
+    "composition_fingerprint": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+    "capability_fingerprint": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+    "capability_bindings": {"type": "array", "items": {"$ref": "#/$defs/capability_binding"}},
+    "binding_admission": {"enum": ["active", "pending_dependency", "degraded", "failed"]},
     "adapter_bridge_revision": {"type": ["string", "null"]},
     "security_enforcement_locus": {
       "type": "object",
@@ -36,6 +46,61 @@
       "required": ["kind"],
       "properties": {
         "kind": {"enum": ["provider_native_policy", "adapter_tool_allowlist", "adapter_auto_approval", "os_sandbox", "network_credential_boundary", "none_verified", "unknown"]},
+        "note": {"type": ["string", "null"]}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"required": ["binding_admission"], "properties": {"binding_admission": {"const": "active"}}},
+      "then": {"required": ["agent_runtime_provider", "capability_fingerprint", "capability_bindings"], "properties": {"agent_runtime_provider": {"type": "string", "minLength": 1}, "capability_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "capability_bindings": {"minItems": 1, "items": {"required": ["admission"], "properties": {"admission": {"const": "active"}}}}}}
+    }
+  ],
+  "$defs": {
+    "capability_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability"],
+      "properties": {
+        "capability": {"type": "string", "minLength": 1},
+        "status": {"enum": ["verified", "review_required", "degraded", "unsupported"]},
+        "admission": {"enum": ["active", "pending_dependency", "degraded", "failed"]},
+        "provider_version": {"type": ["string", "null"]},
+        "adapter_revision": {"type": ["string", "null"]},
+        "feature_fingerprint": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+        "required_dependencies": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/capability_evidence"}}
+      },
+      "allOf": [
+        {
+          "if": {"required": ["admission"], "properties": {"admission": {"const": "active"}}},
+          "then": {
+            "required": ["status", "provider_version", "adapter_revision", "feature_fingerprint", "evidence"],
+            "properties": {
+              "status": {"const": "verified"},
+              "provider_version": {"type": "string", "minLength": 1},
+              "adapter_revision": {"type": "string", "minLength": 1},
+              "feature_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+              "evidence": {
+                "minItems": 2,
+                "allOf": [
+                  {"contains": {"required": ["kind"], "properties": {"kind": {"const": "deterministic_acceptance"}}}},
+                  {"contains": {"required": ["kind"], "properties": {"kind": {"const": "live_canary"}}}}
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "capability_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_ref"],
+      "properties": {
+        "kind": {"enum": ["source_review", "protocol_probe", "deterministic_acceptance", "live_canary", "provider_documentation", "unknown"]},
+        "evidence_ref": {"type": "string", "minLength": 1},
+        "observed_at": {"type": ["string", "null"]},
         "note": {"type": ["string", "null"]}
       }
     }

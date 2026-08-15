@@ -329,8 +329,12 @@ impl ServeHandle {
                 .current_dir(cwd)
                 .envs(home.envs())
                 .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
+                .stdout(Stdio::null());
+            if std::env::var_os("FIRM_TEST_NODE_DAEMON_STDERR").is_some() {
+                daemon.stderr(Stdio::inherit());
+            } else {
+                daemon.stderr(Stdio::null());
+            }
             clear_inherited_native_firm_env(&mut daemon);
             for (key, value) in extra_env {
                 daemon.env(key, value);

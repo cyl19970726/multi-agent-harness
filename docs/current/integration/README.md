@@ -141,7 +141,8 @@ Provider
 | Codex message delivery | [codex-message-delivery.md](codex-message-delivery.md) | implemented | Identity-first Message, subscription expansion, per-recipient CanonicalMessageDelivery, NodeDaemon/AgentSession fencing, queue policy and delivery proof. |
 | Claude Code | [claude.md](claude.md) | adapter implemented; locked SDK 0.3.220 reports Claude Code 2.1.220 current | `claude_agent_sdk` is the only new Claude Team mode and 2.1.220 is adapter-reviewed; `claude_cli` remains Workflow/historical only. |
 | Kimi (Moonshot) | [kimi.md](kimi.md) · [ACP Team runtime](kimi-agent-team.md) | adapter implemented; installed 0.31.1 current for reviewed slices | `kimi_acp` is the Team mode. Prompt delivery, K3/max controls, generation-crossing same-session resume, bounded full-access receipts, next-round batched mail, and the ACP `session/cancel` notification are reviewed. |
-| Pi | [pi.md](pi.md) | adapter implemented; 0.83.0 reviewed | `pi_rpc` is the persistent Team mode. Work and ordinary mail use distinct next-round receipts; persistent sessions force thinking off and resume fails closed if native JSONL contains thinking. |
+| Pi | [pi.md](pi.md) | adapter implemented; 0.84.2 reviewed | `pi_rpc` is the persistent Team mode. Work and ordinary mail use distinct next-round receipts; persistent sessions force thinking off, `read_only` maps to Pi's read-only `--tools`, `workspace_write` fails closed because `--tools` is not a workspace sandbox, and `full_access` records no verified adapter boundary. |
+| DeepSeek Harness | not yet created | conformance shim only | Current DeepSeek work may exercise provider-neutral adapter contracts, but it is not a reviewed managed production provider until a native adapter, exact version, capability evidence, and live acceptance exist. |
 | Provider live acceptance | [live-agent-team-acceptance-2026-07-21.md](live-agent-team-acceptance-2026-07-21.md) | accepted + blocked live evidence | Historical acceptance plus the 2026-07-30 two-pass Codex/Claude/Kimi persistent-Team matrix: Host/Peer mail, real Codex Steer/Interrupt, Kimi next-round receipts, Supervisor restart on the same native sessions, Organization projection, and explicit Close. |
 | OpenClaw / cloud agent | not yet created | idea | Future remote or cloud-hosted provider implementation. |
 | Permission Agent | not yet created | idea | Future approval/safety specialist or provider-side permission service. |
@@ -166,7 +167,10 @@ README until they need their own file.
    capabilities and must never be inferred from each other.
 7. Each MemberRun snapshots a mode-specific `ProviderIntegrationProfile`.
 8. Provider questions and answers become durable correlated Messages. Session
-   permission is frozen before start and never becomes a second object.
+   permission is frozen before start and never becomes a second object;
+   protected project actions use the existing Approval ledger. There is no
+   generic `PendingInteraction`, `PermissionRequest`, or `PermissionDecision`
+   object. Thinking never promotes.
 9. Unknown reverse-RPC methods fail closed and surface as adapter gaps; they
    must not be translated into successful tool completion.
 10. A provider adapter must document native-store discovery, availability,

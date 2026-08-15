@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 use std::os::unix::process::CommandExt;
 
 use crate::{kill_worker_tree, CliError, CliResult};
+use harness_core::agentfirm_api::PermissionCeiling;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -45,6 +46,8 @@ pub(crate) struct PiRpcClient {
     stderr_tail: Arc<Mutex<String>>,
     /// Absolute path to the pi session JSONL file (native_session_id).
     session_file: String,
+    last_observation: Option<crate::runtime_adapter::RuntimeObservation>,
+    released: bool,
 }
 
 pub(crate) struct PiSpawnOptions<'a> {
@@ -59,6 +62,10 @@ pub(crate) struct PiSpawnOptions<'a> {
     /// default toolset and the profile must record
     /// `security_enforcement_locus = none_verified`.
     pub tools: Option<&'a str>,
+    /// Canonical requested ceiling. Spawn admission validates this against
+    /// the actual argv; a restricted ceiling can never degrade to an
+    /// unrestricted Pi launch.
+    pub permission_ceiling: PermissionCeiling,
 }
 
 pub(crate) struct PiTurnOutcome {
@@ -66,6 +73,9 @@ pub(crate) struct PiTurnOutcome {
     pub interrupted: bool,
     pub close_requested_by_harness: bool,
     pub tool_call_count: u32,
+    pub input_acceptance_receipt: crate::runtime_adapter::ControlTransportReceipt,
+    pub control_receipts: Vec<crate::runtime_adapter::ControlTransportReceipt>,
+    pub terminal_observation: crate::runtime_adapter::RuntimeObservation,
 }
 
 fn stderr_suffix(tail: &Arc<Mutex<String>>) -> String {
@@ -90,7 +100,16 @@ fn stderr_suffix(tail: &Arc<Mutex<String>>) -> String {
 
 impl PiRpcClient {
     pub(crate) fn spawn(pi_bin: &str, options: PiSpawnOptions<'_>) -> CliResult<Self> {
+        crate::runtime_adapter::admit_pi_permission_ceiling(
+            options.permission_ceiling,
+            options.tools,
+        )?;
         if let Some(session_file) = options.resume_session_file {
+            if !Path::new(session_file).is_file() {
+                return Err(CliError::Usage(format!(
+                    "PI_NATIVE_SESSION_MISSING: refusing to replace missing resume session {session_file} with a fresh session"
+                )));
+            }
             ensure_session_has_no_persisted_thinking(Path::new(session_file))?;
         }
         let mut command = Command::new(pi_bin);
@@ -205,6 +224,8 @@ impl PiRpcClient {
             reader: Some(reader),
             stderr_tail,
             session_file: String::new(),
+            last_observation: None,
+            released: false,
         };
 
         // Handshake: get_state to discover session file.
@@ -226,6 +247,7 @@ impl PiRpcClient {
                     stderr_suffix(&client.stderr_tail)
                 ))
             })?;
+        client.last_observation = Some(Self::observation_from_state(data, true, false));
 
         // Disable auto-compaction immediately so long prompts aren't
         // interrupted by unexpected compactions.
@@ -242,6 +264,30 @@ impl PiRpcClient {
         }
 
         Ok(client)
+    }
+
+    fn observation_from_state(
+        data: &serde_json::Value,
+        process_alive: bool,
+        settled_boundary_observed: bool,
+    ) -> crate::runtime_adapter::RuntimeObservation {
+        crate::runtime_adapter::RuntimeObservation {
+            transport_alive: process_alive,
+            process_alive,
+            is_streaming: data.get("isStreaming").and_then(|value| value.as_bool()),
+            pending_message_count: data
+                .get("pendingMessageCount")
+                .and_then(|value| value.as_u64()),
+            steering_mode: data
+                .get("steeringMode")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            follow_up_mode: data
+                .get("followUpMode")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            settled_boundary_observed,
+        }
     }
 
     pub(crate) fn session_file(&self) -> &str {
@@ -262,23 +308,96 @@ impl PiRpcClient {
         Ok(())
     }
 
-    /// Compile one cycle's control intents into Pi RPC frames. Steer bodies
-    /// become `steer` frames (current-cycle injection at Pi's tool-call
-    /// boundary); close/interrupt become `abort`. Both are fire-and-forget:
-    /// acceptance is observable in the native session, and the Harness-side
-    /// control reply already acknowledged compilation at this boundary.
-    fn apply_cycle_control(&mut self, control: &crate::runtime_adapter::CycleControl) {
-        for inject in &control.injects {
-            let _ = self.write_frame(&serde_json::json!({
-                "type": "steer",
-                "message": inject,
-            }));
+    /// Compile one cycle's control intents into Pi request/response commands.
+    /// Pi 0.84 steer and abort responses are transport receipts only. A
+    /// Steer caller is answered after its matching response succeeds; abort
+    /// still needs `agent_settled` plus a post-abort state observation before
+    /// the durable RuntimeCommand can settle.
+    fn apply_cycle_control(
+        &mut self,
+        control: &mut crate::runtime_adapter::CycleControl,
+        on_steer_result: &mut dyn FnMut(
+            &crate::runtime_adapter::PendingSteer,
+            &crate::runtime_adapter::SteerProviderResult,
+        ) -> CliResult<()>,
+    ) -> CliResult<Vec<crate::runtime_adapter::ControlTransportReceipt>> {
+        if let Some(error) = control.fatal_error.take() {
+            return Err(CliError::Usage(error));
+        }
+        let mut receipts = Vec::new();
+        let mut injects = std::mem::take(&mut control.injects).into_iter();
+        while let Some(pending) = injects.next() {
+            match self.request_blocking(
+                "steer",
+                serde_json::json!({"message": pending.content.clone()}),
+                HANDSHAKE_TIMEOUT,
+            ) {
+                Ok(response) => {
+                    let response_id = response
+                        .get("id")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string);
+                    let response_id = response_id.ok_or_else(|| {
+                        CliError::Usage(
+                            "PI_STEER_RECEIPT_UNKNOWN: successful steer response had no id"
+                                .to_string(),
+                        )
+                    })?;
+                    let receipt = crate::runtime_adapter::ControlTransportReceipt {
+                        command: "steer".to_string(),
+                        response_id: Some(response_id.clone()),
+                        success: true,
+                    };
+                    // Durable settlement happens before the API caller sees
+                    // success. A provider transport receipt without a settled
+                    // RuntimeCommand must never escape as `steer_accepted`.
+                    on_steer_result(
+                        &pending,
+                        &crate::runtime_adapter::SteerProviderResult::Acknowledged(receipt.clone()),
+                    )?;
+                    let mut reply = pending.success_reply;
+                    reply["provider_response_id"] = response_id.into();
+                    let _ = pending.reply.send(Ok(reply));
+                    receipts.push(receipt);
+                }
+                Err(error) => {
+                    let detail = format!(
+                        "PI_STEER_RECEIPT_UNKNOWN: provider did not acknowledge steer: {error}"
+                    );
+                    on_steer_result(
+                        &pending,
+                        &crate::runtime_adapter::SteerProviderResult::Unknown(detail.clone()),
+                    )?;
+                    let _ = pending.reply.send(Err(CliError::Usage(detail.clone())));
+                    for undispatched in injects {
+                        let not_applied = format!(
+                            "PI_STEER_NOT_DISPATCHED: an earlier steer failed before this command: {detail}"
+                        );
+                        on_steer_result(
+                            &undispatched,
+                            &crate::runtime_adapter::SteerProviderResult::NotApplied(
+                                not_applied.clone(),
+                            ),
+                        )?;
+                        let _ = undispatched.reply.send(Err(CliError::Usage(not_applied)));
+                    }
+                    return Err(CliError::Usage(detail));
+                }
+            }
         }
         if control.close || control.interrupt {
-            let _ = self.write_frame(&serde_json::json!({
-                "type": "abort"
-            }));
+            let response =
+                self.request_blocking("abort", serde_json::json!({}), HANDSHAKE_TIMEOUT)?;
+            receipts.push(crate::runtime_adapter::ControlTransportReceipt {
+                command: "abort".to_string(),
+                response_id: response
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                success: true,
+            });
         }
+        Ok(receipts)
     }
 
     /// Queue input at Pi's native session boundary (`follow_up`): consumed by
@@ -300,17 +419,84 @@ impl PiRpcClient {
     /// durable Harness fact. Consumed by the RPC-level unit test today.
     #[allow(dead_code)]
     pub(crate) fn queue_snapshot(&mut self) -> CliResult<serde_json::Value> {
-        let state = self.request_blocking("get_state", serde_json::json!({}), HANDSHAKE_TIMEOUT)?;
-        let data = state
-            .get("data")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({}));
+        let observation = self.observe_runtime(false)?;
         Ok(serde_json::json!({
-            "steering_mode": data.get("steeringMode"),
-            "follow_up_mode": data.get("followUpMode"),
-            "pending_message_count": data.get("pendingMessageCount"),
-            "is_streaming": data.get("isStreaming"),
+            "steering_mode": observation.steering_mode,
+            "follow_up_mode": observation.follow_up_mode,
+            "pending_message_count": observation.pending_message_count,
+            "is_streaming": observation.is_streaming,
         }))
+    }
+
+    fn observe_runtime(
+        &mut self,
+        settled_boundary_observed: bool,
+    ) -> CliResult<crate::runtime_adapter::RuntimeObservation> {
+        self.ensure_transport_alive()?;
+        let state = self.request_blocking("get_state", serde_json::json!({}), HANDSHAKE_TIMEOUT)?;
+        let data = state.get("data").ok_or_else(|| {
+            CliError::Usage("pi get_state response missing data during observation".to_string())
+        })?;
+        let observation = Self::observation_from_state(data, true, settled_boundary_observed);
+        self.last_observation = Some(observation.clone());
+        Ok(observation)
+    }
+
+    fn quiesce_runtime(&mut self) -> CliResult<crate::runtime_adapter::QuiesceOutcome> {
+        let observation = self.observe_runtime(true)?;
+        let drained =
+            observation.is_streaming == Some(false) && observation.pending_message_count == Some(0);
+        Ok(crate::runtime_adapter::QuiesceOutcome {
+            drained,
+            evidence: if drained {
+                "Pi get_state observed isStreaming=false and pendingMessageCount=0".to_string()
+            } else {
+                format!(
+                    "Pi get_state did not prove a drained runtime: isStreaming={:?}, pendingMessageCount={:?}",
+                    observation.is_streaming, observation.pending_message_count
+                )
+            },
+            observation,
+        })
+    }
+
+    fn release(&mut self) -> CliResult<crate::runtime_adapter::RuntimeObservation> {
+        if !self.released {
+            self.released = true;
+            kill_worker_tree(&mut self.child);
+            if self
+                .child
+                .try_wait()
+                .map_err(|error| {
+                    CliError::Usage(format!("failed to verify pi process release: {error}"))
+                })?
+                .is_none()
+            {
+                return Err(CliError::Usage(
+                    "PI_RUNTIME_RELEASE_UNKNOWN: disposer returned while process was alive"
+                        .to_string(),
+                ));
+            }
+        }
+        let mut observation =
+            self.last_observation
+                .clone()
+                .unwrap_or(crate::runtime_adapter::RuntimeObservation {
+                    transport_alive: false,
+                    process_alive: false,
+                    is_streaming: Some(false),
+                    pending_message_count: None,
+                    steering_mode: None,
+                    follow_up_mode: None,
+                    settled_boundary_observed: false,
+                });
+        observation.transport_alive = false;
+        observation.process_alive = false;
+        // A successful quiesce is the prerequisite for a successful Close;
+        // release itself only proves process death and does not invent queue
+        // drain evidence.
+        self.last_observation = Some(observation.clone());
+        Ok(observation)
     }
 
     /// Send a prompt and block until `agent_settled`.
@@ -324,28 +510,50 @@ impl PiRpcClient {
     ///
     /// Returns `PiTurnOutcome` with `final_text` extracted from the last
     /// `turn_end.message` content blocks.
-    pub(crate) fn prompt<F, C>(
+    pub(crate) fn prompt<A, S, F, C>(
         &mut self,
         text: &str,
         idle_timeout: Duration,
+        mut on_input_accepted: A,
+        mut on_steer_result: S,
         mut on_event: F,
         mut poll_control: C,
     ) -> CliResult<PiTurnOutcome>
     where
+        A: FnMut(&crate::runtime_adapter::ControlTransportReceipt) -> CliResult<()>,
+        S: FnMut(
+            &crate::runtime_adapter::PendingSteer,
+            &crate::runtime_adapter::SteerProviderResult,
+        ) -> CliResult<()>,
         F: FnMut(&serde_json::Value),
         C: FnMut() -> crate::runtime_adapter::CycleControl,
     {
-        self.request_blocking(
+        let prompt_response = self.request_blocking(
             "prompt",
             serde_json::json!({"message": text}),
             HANDSHAKE_TIMEOUT,
         )?;
+        let input_acceptance_receipt = crate::runtime_adapter::ControlTransportReceipt {
+            command: "prompt".to_string(),
+            response_id: prompt_response
+                .get("id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            success: true,
+        };
+        if input_acceptance_receipt.response_id.is_none() {
+            return Err(CliError::Usage(
+                "PI_PROMPT_RECEIPT_UNKNOWN: successful prompt response had no id".to_string(),
+            ));
+        }
+        on_input_accepted(&input_acceptance_receipt)?;
 
         let mut last_idle = Instant::now();
         let mut interrupted = false;
         let mut close_requested = false;
         let mut tool_call_count: u32 = 0;
         let mut final_text = String::new();
+        let mut control_receipts = Vec::new();
 
         loop {
             match self.incoming.recv_timeout(Duration::from_millis(500)) {
@@ -353,16 +561,23 @@ impl PiRpcClient {
                     last_idle = Instant::now();
                     let event_type = frame.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
+                    // A control observed after agent_settled would target no
+                    // current cycle. Leave it queued for the idle/next-cycle
+                    // control path instead of fabricating a late abort/steer.
+                    if event_type == "agent_settled" {
+                        break;
+                    }
+
                     // Check for control intents (close/interrupt/steer).
-                    let control = poll_control();
+                    let mut control = poll_control();
                     if control.close || control.interrupt {
                         interrupted = true;
                         close_requested = control.close;
                     }
-                    self.apply_cycle_control(&control);
+                    control_receipts
+                        .extend(self.apply_cycle_control(&mut control, &mut on_steer_result)?);
 
                     match event_type {
-                        "agent_settled" => break,
                         "tool_execution_start" => {
                             tool_call_count = tool_call_count.saturating_add(1);
                             on_event(&frame);
@@ -381,8 +596,9 @@ impl PiRpcClient {
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     // Poll control intents even during idle.
-                    let control = poll_control();
-                    self.apply_cycle_control(&control);
+                    let mut control = poll_control();
+                    control_receipts
+                        .extend(self.apply_cycle_control(&mut control, &mut on_steer_result)?);
                     if control.close || control.interrupt {
                         interrupted = true;
                         close_requested = control.close;
@@ -433,11 +649,20 @@ impl PiRpcClient {
                 on_event(&frame);
             }
         }
+        let terminal_observation = self.observe_runtime(true)?;
+        if terminal_observation.is_streaming != Some(false) {
+            return Err(CliError::Usage(format!(
+                "PI_CYCLE_SETTLEMENT_UNKNOWN: agent_settled was not confirmed by get_state isStreaming=false: {terminal_observation:?}"
+            )));
+        }
         Ok(PiTurnOutcome {
             final_text,
             interrupted,
             close_requested_by_harness: close_requested,
             tool_call_count,
+            input_acceptance_receipt,
+            control_receipts,
+            terminal_observation,
         })
     }
 
@@ -578,11 +803,49 @@ impl PiRpcClient {
 /// disposable and never an authority.
 pub(crate) struct PiTeamRuntime {
     client: PiRpcClient,
+    description: crate::runtime_adapter_contract::RuntimeDescription,
+    authority_session: Option<harness_core::agentfirm_api::AgentSession>,
+    canonical_quiesced: bool,
+    canonical_released: bool,
 }
 
 impl PiTeamRuntime {
     pub(crate) fn new(client: PiRpcClient) -> Self {
-        Self { client }
+        Self {
+            client,
+            description: crate::runtime_adapter_contract::RuntimeDescription {
+                binding_id: "pi-rpc-0.84.2".to_string(),
+                native_protocol: "pi-jsonl-rpc".to_string(),
+                composition_fingerprint: String::new(),
+                capability_fingerprint: String::new(),
+                capability_bindings: Vec::new(),
+            },
+            authority_session: None,
+            canonical_quiesced: false,
+            canonical_released: false,
+        }
+    }
+
+    fn contract_preflight(
+        &self,
+        fence: crate::runtime_adapter_contract::RuntimeFence<'_>,
+        capability: crate::runtime_adapter_contract::SemanticCapability,
+    ) -> Result<
+        crate::runtime_adapter_contract::AdmissionDecision,
+        crate::runtime_adapter_contract::RuntimeContractError,
+    > {
+        let session = self.authority_session.as_ref().ok_or_else(|| {
+            crate::runtime_adapter_contract::RuntimeContractError::FenceMismatch {
+                fields: vec!["authority_session".to_string()],
+            }
+        })?;
+        crate::runtime_adapter_contract::preflight_effect(
+            &self.description,
+            session,
+            fence,
+            capability,
+            &[],
+        )
     }
 }
 
@@ -599,7 +862,7 @@ impl crate::runtime_adapter::TeamRuntimeAdapter for PiTeamRuntime {
         use crate::runtime_adapter::{CapabilityBinding, CapabilityStatus};
         vec![
             CapabilityBinding {
-                capability: "open_or_resume_native_session",
+                capability: "open_or_resume",
                 status: CapabilityStatus::Supported,
                 evidence: "pi --mode rpc --session <file>; tests/pi_team_member.rs".into(),
                 security_enforcement_locus: None,
@@ -607,7 +870,7 @@ impl crate::runtime_adapter::TeamRuntimeAdapter for PiTeamRuntime {
             CapabilityBinding {
                 capability: "start_cycle",
                 status: CapabilityStatus::Supported,
-                evidence: "prompt RPC → agent_settled; tests/pi_team_member.rs journey".into(),
+                evidence: "correlated prompt response proves input acceptance; agent_settled + get_state prove the later cycle boundary; tests/pi_team_member.rs journey".into(),
                 security_enforcement_locus: None,
             },
             CapabilityBinding {
@@ -653,6 +916,26 @@ impl crate::runtime_adapter::TeamRuntimeAdapter for PiTeamRuntime {
                 security_enforcement_locus: None,
             },
             CapabilityBinding {
+                capability: "observe",
+                status: CapabilityStatus::Supported,
+                evidence: "non-invasive get_state plus owned-process liveness".into(),
+                security_enforcement_locus: None,
+            },
+            CapabilityBinding {
+                capability: "quiesce",
+                status: CapabilityStatus::Supported,
+                evidence: "get_state must prove isStreaming=false and pendingMessageCount=0"
+                    .into(),
+                security_enforcement_locus: None,
+            },
+            CapabilityBinding {
+                capability: "release",
+                status: CapabilityStatus::Supported,
+                evidence: "owned process-group disposer waits for process exit and preserves session JSONL"
+                    .into(),
+                security_enforcement_locus: None,
+            },
+            CapabilityBinding {
                 capability: "inspect_effect",
                 status: CapabilityStatus::Degraded,
                 evidence: "native JSONL entry observation only; no semantic effect proof".into(),
@@ -666,11 +949,9 @@ impl crate::runtime_adapter::TeamRuntimeAdapter for PiTeamRuntime {
             },
             CapabilityBinding {
                 capability: "permission_enforcement",
-                status: CapabilityStatus::Supported,
-                evidence: "ceiling compiled to --tools allowlist at spawn".into(),
-                security_enforcement_locus: Some(
-                    "adapter tool allowlist (restricted) / none_verified (full access)".into(),
-                ),
+                status: CapabilityStatus::Degraded,
+                evidence: "read_only is enforced by --tools; workspace_write is refused without filesystem containment; trusted full_access is explicitly none_verified".into(),
+                security_enforcement_locus: None,
             },
         ]
     }
@@ -687,21 +968,79 @@ impl crate::runtime_adapter::TeamRuntimeAdapter for PiTeamRuntime {
         "pi_session"
     }
 
+    fn bind_authority_session(
+        &mut self,
+        session: harness_core::agentfirm_api::AgentSession,
+        profile: &harness_core::ProviderIntegrationProfile,
+    ) -> CliResult<()> {
+        if session.provider_kind != "pi" || profile.provider != "pi" {
+            return Err(CliError::Usage(format!(
+                "RUNTIME_ADAPTER_PROVIDER_MISMATCH: Pi adapter cannot bind session={} profile={}",
+                session.provider_kind, profile.provider
+            )));
+        }
+        let composition = profile
+            .composition_fingerprint
+            .clone()
+            .filter(|value| {
+                session.control_state.composition_fingerprint.as_deref()
+                    == Some(value.as_str())
+            })
+            .ok_or_else(|| {
+                CliError::Usage(
+                    "RUNTIME_ADAPTER_FENCE_INCOMPLETE: persisted profile/session composition fingerprint mismatch"
+                        .to_string(),
+                )
+            })?;
+        let capabilities = profile
+            .capability_fingerprint
+            .clone()
+            .filter(|value| {
+                session.control_state.capability_fingerprint.as_deref() == Some(value.as_str())
+            })
+            .ok_or_else(|| {
+                CliError::Usage(
+                    "RUNTIME_ADAPTER_FENCE_INCOMPLETE: persisted profile/session capability fingerprint mismatch"
+                        .to_string(),
+                )
+            })?;
+        self.description.composition_fingerprint = composition;
+        self.description.capability_fingerprint = capabilities;
+        self.description.capability_bindings = profile.capability_bindings.clone();
+        self.authority_session = Some(session);
+        Ok(())
+    }
+
     fn run_cycle(
         &mut self,
         input: &str,
         idle_timeout: Duration,
+        on_input_accepted: &mut dyn FnMut(
+            &crate::runtime_adapter::ControlTransportReceipt,
+        ) -> CliResult<()>,
+        on_steer_result: &mut dyn FnMut(
+            &crate::runtime_adapter::PendingSteer,
+            &crate::runtime_adapter::SteerProviderResult,
+        ) -> CliResult<()>,
         on_event: &mut dyn FnMut(&serde_json::Value),
         poll_control: &mut dyn FnMut() -> crate::runtime_adapter::CycleControl,
     ) -> CliResult<crate::runtime_adapter::ExecutionCycleOutcome> {
-        let outcome =
-            self.client
-                .prompt(input, idle_timeout, &mut *on_event, &mut *poll_control)?;
+        let outcome = self.client.prompt(
+            input,
+            idle_timeout,
+            &mut *on_input_accepted,
+            &mut *on_steer_result,
+            &mut *on_event,
+            &mut *poll_control,
+        )?;
         Ok(crate::runtime_adapter::ExecutionCycleOutcome {
             final_text: outcome.final_text,
             interrupted: outcome.interrupted,
             close_requested_by_harness: outcome.close_requested_by_harness,
             tool_call_count: outcome.tool_call_count,
+            input_acceptance_receipt: outcome.input_acceptance_receipt,
+            control_receipts: outcome.control_receipts,
+            terminal_observation: outcome.terminal_observation,
         })
     }
 
@@ -724,6 +1063,371 @@ impl crate::runtime_adapter::TeamRuntimeAdapter for PiTeamRuntime {
 
     fn supports_native_boundary_queue(&self) -> bool {
         true
+    }
+}
+
+fn pi_contract_bridge_error(
+    error: impl std::fmt::Display,
+) -> crate::runtime_adapter_contract::RuntimeContractError {
+    crate::runtime_adapter_contract::RuntimeContractError::InvalidCapabilityBindings(format!(
+        "Pi native bridge operation failed: {error}"
+    ))
+}
+
+impl crate::runtime_adapter_contract::RuntimeAdapter for PiTeamRuntime {
+    fn describe(&self) -> &crate::runtime_adapter_contract::RuntimeDescription {
+        &self.description
+    }
+
+    fn open_or_resume(
+        &mut self,
+        fence: crate::runtime_adapter_contract::RuntimeFence<'_>,
+        native_session_ref: Option<&str>,
+    ) -> Result<
+        crate::runtime_adapter_contract::RuntimeObservation,
+        crate::runtime_adapter_contract::RuntimeContractError,
+    > {
+        self.contract_preflight(
+            fence,
+            crate::runtime_adapter_contract::SemanticCapability::OpenOrResume,
+        )?;
+        self.client
+            .ensure_transport_alive()
+            .map_err(pi_contract_bridge_error)?;
+        if native_session_ref.is_some_and(|expected| expected != self.client.session_file()) {
+            return Err(
+                crate::runtime_adapter_contract::RuntimeContractError::FenceMismatch {
+                    fields: vec!["native_session_ref.native_session_id".to_string()],
+                },
+            );
+        }
+        let session = self
+            .authority_session
+            .as_ref()
+            .expect("preflight bound session");
+        Ok(crate::runtime_adapter_contract::RuntimeObservation {
+            native_session_ref: Some(self.client.session_file().to_string()),
+            active_effect_id: None,
+            continuation: session.control_state.continuation.clone(),
+            observed_at: crate::now_string(),
+        })
+    }
+
+    fn execute_control(
+        &mut self,
+        fence: crate::runtime_adapter_contract::RuntimeFence<'_>,
+        request: crate::runtime_adapter_contract::ControlRequest,
+    ) -> Result<
+        crate::runtime_adapter_contract::EffectReceipt,
+        crate::runtime_adapter_contract::RuntimeContractError,
+    > {
+        use crate::runtime_adapter_contract::{ControlIntent, SemanticCapability};
+        use harness_core::agentfirm_api::{RuntimeEffectCertainty, RuntimePostconditionStatus};
+
+        let capability = match &request.intent {
+            ControlIntent::StartCycle { .. } => SemanticCapability::StartCycle,
+            ControlIntent::InjectCurrentCycle { .. } => SemanticCapability::InjectCurrentCycle,
+            ControlIntent::QueueNativeBoundary { .. } => SemanticCapability::QueueNativeBoundary,
+            ControlIntent::Interrupt => SemanticCapability::Interrupt,
+            ControlIntent::InhibitContinuation { .. } => SemanticCapability::InhibitContinuation,
+            ControlIntent::ResumeContinuation { .. } => SemanticCapability::ResumeContinuation,
+        };
+        let admission = self.contract_preflight(fence, capability)?;
+        self.canonical_quiesced = false;
+
+        let (certainty, postcondition, native_evidence) = match request.intent {
+            ControlIntent::StartCycle { input } => {
+                let mut input_receipt = None;
+                let outcome = self
+                    .client
+                    .prompt(
+                        &input,
+                        Duration::from_secs(30 * 60),
+                        |receipt| {
+                            input_receipt = receipt.response_id.clone();
+                            Ok(())
+                        },
+                        |_pending, _result| Ok(()),
+                        |_event| {},
+                        crate::runtime_adapter::CycleControl::default,
+                    )
+                    .map_err(pi_contract_bridge_error)?;
+                let receipt = input_receipt.ok_or_else(|| {
+                    pi_contract_bridge_error("prompt success lacked a provider response id")
+                })?;
+                (
+                    RuntimeEffectCertainty::Applied,
+                    RuntimePostconditionStatus::Satisfied,
+                    vec![
+                        format!("pi.prompt.response:{receipt}"),
+                        format!(
+                            "pi.agent_settled:is_streaming={:?}:pending={:?}",
+                            outcome.terminal_observation.is_streaming,
+                            outcome.terminal_observation.pending_message_count
+                        ),
+                    ],
+                )
+            }
+            ControlIntent::InjectCurrentCycle { input } => {
+                let response = self
+                    .client
+                    .request_blocking(
+                        "steer",
+                        serde_json::json!({"message": input}),
+                        HANDSHAKE_TIMEOUT,
+                    )
+                    .map_err(pi_contract_bridge_error)?;
+                let id = response
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| pi_contract_bridge_error("steer response lacked id"))?;
+                (
+                    RuntimeEffectCertainty::Applied,
+                    RuntimePostconditionStatus::Satisfied,
+                    vec![format!("pi.steer.response:{id}")],
+                )
+            }
+            ControlIntent::QueueNativeBoundary { input } => {
+                let response = self
+                    .client
+                    .follow_up(&input)
+                    .map_err(pi_contract_bridge_error)?;
+                let id = response
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| pi_contract_bridge_error("follow_up response lacked id"))?;
+                (
+                    RuntimeEffectCertainty::Applied,
+                    RuntimePostconditionStatus::Satisfied,
+                    vec![format!("pi.follow_up.response:{id}")],
+                )
+            }
+            ControlIntent::Interrupt => {
+                let response = self
+                    .client
+                    .request_blocking("abort", serde_json::json!({}), HANDSHAKE_TIMEOUT)
+                    .map_err(pi_contract_bridge_error)?;
+                let id = response
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| pi_contract_bridge_error("abort response lacked id"))?;
+                // Abort success is only a transport receipt. The caller must
+                // observe agent_settled plus get_state before the terminal
+                // postcondition can become Satisfied.
+                (
+                    RuntimeEffectCertainty::Applied,
+                    RuntimePostconditionStatus::Unknown,
+                    vec![format!("pi.abort.response:{id}")],
+                )
+            }
+            ControlIntent::InhibitContinuation { .. }
+            | ControlIntent::ResumeContinuation { .. } => {
+                unreachable!("unsupported Pi continuation operation must fail canonical preflight")
+            }
+        };
+
+        Ok(crate::runtime_adapter_contract::EffectReceipt {
+            effect_id: request.effect_id,
+            certainty,
+            postcondition,
+            admission: admission.admission,
+            native_evidence,
+        })
+    }
+
+    fn observe(
+        &mut self,
+        fence: crate::runtime_adapter_contract::RuntimeFence<'_>,
+    ) -> Result<
+        crate::runtime_adapter_contract::RuntimeObservation,
+        crate::runtime_adapter_contract::RuntimeContractError,
+    > {
+        self.contract_preflight(
+            fence,
+            crate::runtime_adapter_contract::SemanticCapability::Observe,
+        )?;
+        self.client
+            .observe_runtime(false)
+            .map_err(pi_contract_bridge_error)?;
+        let session = self
+            .authority_session
+            .as_ref()
+            .expect("preflight bound session");
+        Ok(crate::runtime_adapter_contract::RuntimeObservation {
+            native_session_ref: Some(self.client.session_file().to_string()),
+            active_effect_id: None,
+            continuation: session.control_state.continuation.clone(),
+            observed_at: crate::now_string(),
+        })
+    }
+
+    fn inspect_effect(
+        &mut self,
+        fence: crate::runtime_adapter_contract::RuntimeFence<'_>,
+        _effect_id: &str,
+    ) -> Result<
+        crate::runtime_adapter_contract::EffectInspection,
+        crate::runtime_adapter_contract::RuntimeContractError,
+    > {
+        self.contract_preflight(
+            fence,
+            crate::runtime_adapter_contract::SemanticCapability::InspectEffect,
+        )?;
+        unreachable!("Pi inspect_effect is not admitted")
+    }
+
+    fn reconcile(
+        &mut self,
+        fence: crate::runtime_adapter_contract::RuntimeFence<'_>,
+        _inspection: &crate::runtime_adapter_contract::EffectInspection,
+    ) -> Result<
+        crate::runtime_adapter_contract::ReconcileReceipt,
+        crate::runtime_adapter_contract::RuntimeContractError,
+    > {
+        self.contract_preflight(
+            fence,
+            crate::runtime_adapter_contract::SemanticCapability::Reconcile,
+        )?;
+        unreachable!("Pi reconcile is not admitted")
+    }
+
+    fn quiesce(
+        &mut self,
+        fence: crate::runtime_adapter_contract::RuntimeFence<'_>,
+    ) -> Result<
+        crate::runtime_adapter_contract::QuiesceReceipt,
+        crate::runtime_adapter_contract::RuntimeContractError,
+    > {
+        use crate::runtime_adapter_contract::{QuiesceReceiptBuilder, QuiesceStep};
+        use harness_core::agentfirm_api::{
+            NativeContinuationActivation, RuntimePostconditionStatus,
+        };
+
+        self.contract_preflight(
+            fence,
+            crate::runtime_adapter_contract::SemanticCapability::Quiesce,
+        )?;
+        let outcome = self
+            .client
+            .quiesce_runtime()
+            .map_err(pi_contract_bridge_error)?;
+        let session = self
+            .authority_session
+            .as_ref()
+            .expect("preflight bound session");
+        let drained = if outcome.drained {
+            RuntimePostconditionStatus::Satisfied
+        } else {
+            RuntimePostconditionStatus::Unsatisfied
+        };
+        let continuation = if matches!(
+            session.control_state.continuation.activation,
+            NativeContinuationActivation::Disarmed
+        ) {
+            RuntimePostconditionStatus::Satisfied
+        } else {
+            RuntimePostconditionStatus::Unknown
+        };
+        let flush = if Path::new(self.client.session_file()).is_file() {
+            RuntimePostconditionStatus::Satisfied
+        } else {
+            RuntimePostconditionStatus::Unknown
+        };
+        let mut builder = QuiesceReceiptBuilder::new();
+        builder.record(
+            QuiesceStep::FenceAdmission,
+            RuntimePostconditionStatus::Satisfied,
+            "exact RuntimeFence admitted",
+        )?;
+        builder.record(
+            QuiesceStep::InhibitContinuation,
+            continuation,
+            "Pi has no native continuation and activation is durably disarmed",
+        )?;
+        builder.record(
+            QuiesceStep::SettleActiveCycle,
+            drained,
+            format!("isStreaming={:?}", outcome.observation.is_streaming),
+        )?;
+        builder.record(
+            QuiesceStep::DrainNativeQueue,
+            drained,
+            format!(
+                "pendingMessageCount={:?}",
+                outcome.observation.pending_message_count
+            ),
+        )?;
+        builder.record(
+            QuiesceStep::DrainWritableChildren,
+            drained,
+            "agent_settled/get_state idle boundary observed",
+        )?;
+        builder.record(QuiesceStep::ObserveIdle, drained, outcome.evidence)?;
+        builder.record(
+            QuiesceStep::ConfirmFlush,
+            flush,
+            format!(
+                "native session JSONL retained at {}",
+                self.client.session_file()
+            ),
+        )?;
+        let receipt = builder.finish();
+        receipt.verify()?;
+        self.canonical_quiesced = true;
+        Ok(receipt)
+    }
+
+    fn release(
+        &mut self,
+        fence: crate::runtime_adapter_contract::RuntimeFence<'_>,
+    ) -> Result<
+        crate::runtime_adapter_contract::ReleaseReceipt,
+        crate::runtime_adapter_contract::RuntimeContractError,
+    > {
+        use harness_core::agentfirm_api::RuntimePostconditionStatus;
+
+        if self.canonical_released {
+            return Err(crate::runtime_adapter_contract::RuntimeContractError::AlreadyReleased);
+        }
+        self.contract_preflight(
+            fence,
+            crate::runtime_adapter_contract::SemanticCapability::Release,
+        )?;
+        if !self.canonical_quiesced {
+            return Err(
+                crate::runtime_adapter_contract::RuntimeContractError::CompositionSwapRequiresQuiesce,
+            );
+        }
+        let session_file = self.client.session_file().to_string();
+        let observation = self.client.release().map_err(pi_contract_bridge_error)?;
+        let released = if !observation.transport_alive && !observation.process_alive {
+            RuntimePostconditionStatus::Satisfied
+        } else {
+            RuntimePostconditionStatus::Unknown
+        };
+        let flush = if Path::new(&session_file).is_file() {
+            RuntimePostconditionStatus::Satisfied
+        } else {
+            RuntimePostconditionStatus::Unknown
+        };
+        let receipt = crate::runtime_adapter_contract::ReleaseReceipt {
+            native_runtime_released: released,
+            live_handle_disposed: released,
+            authority_detached: RuntimePostconditionStatus::Satisfied,
+            flush_confirmed: flush,
+            evidence: vec![
+                format!("process_alive={}", observation.process_alive),
+                format!("native session JSONL retained at {session_file}"),
+            ],
+        };
+        if released != RuntimePostconditionStatus::Satisfied
+            || flush != RuntimePostconditionStatus::Satisfied
+        {
+            return Err(crate::runtime_adapter_contract::RuntimeContractError::ReleaseIncomplete);
+        }
+        self.authority_session = None;
+        self.canonical_released = true;
+        Ok(receipt)
     }
 }
 
@@ -773,8 +1477,9 @@ fn value_contains_persisted_thinking(value: &serde_json::Value) -> bool {
 
 impl Drop for PiRpcClient {
     fn drop(&mut self) {
-        // Kill the process group, then join reader.
-        kill_worker_tree(&mut self.child);
+        // The explicit disposer and Drop share one idempotent release path.
+        // This makes Close observable while retaining a leak-safe fallback.
+        let _ = self.release();
         // Give the reader thread a moment to notice EOF and exit.
         if let Some(handle) = self.reader.take() {
             // Don't block indefinitely; the process kill above should make
@@ -791,7 +1496,8 @@ impl Drop for PiRpcClient {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_session_has_no_persisted_thinking, value_contains_persisted_thinking, PiRpcClient,
+        ensure_session_has_no_persisted_thinking, value_contains_persisted_thinking,
+        PermissionCeiling, PiRpcClient,
     };
 
     /// Spawn a minimal fake `pi --mode rpc` shim and exercise the RPC-level
@@ -860,6 +1566,7 @@ for line in sys.stdin:
                 member_name: "rpc-test",
                 collaboration_env: &[],
                 tools: Some("read,grep,find,ls"),
+                permission_ceiling: PermissionCeiling::ReadOnly,
             },
         )
         .expect("spawn shim");

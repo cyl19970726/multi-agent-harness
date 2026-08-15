@@ -5142,17 +5142,22 @@ fn crashed_kimi_transport_requires_recovery_without_replaying_provider_effect() 
     let dispatches = commands
         .iter()
         .filter(|command| {
-            command.command == harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider
+            command.command == harness_core::agentfirm_api::RuntimeCommandKind::StartCycle
         })
         .collect::<Vec<_>>();
     assert_eq!(dispatches.len(), 1, "no provider replay is permitted");
     assert_eq!(
         dispatches[0].status,
-        harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired
+        harness_core::agentfirm_api::RuntimeCommandStatus::Applied
     );
     assert_eq!(
         dispatches[0].effect_certainty,
-        harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown
+        harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
+    );
+    assert_eq!(
+        dispatches[0].postcondition_status,
+        harness_core::agentfirm_api::RuntimePostconditionStatus::Satisfied,
+        "the prompt receipt proves StartCycle even though the later cycle outcome needs recovery"
     );
     let delivery = store
         .fabric_work_deliveries(&current_space_id(&home))
@@ -6516,17 +6521,22 @@ fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
         .expect("canonical RuntimeCommands")
         .into_iter()
         .filter(|command| {
-            command.command == harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider
+            command.command == harness_core::agentfirm_api::RuntimeCommandKind::StartCycle
         })
         .collect::<Vec<_>>();
     assert_eq!(dispatches.len(), 1, "the failed effect must not replay");
     assert_eq!(
         dispatches[0].status,
-        harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired
+        harness_core::agentfirm_api::RuntimeCommandStatus::Applied
     );
     assert_eq!(
         dispatches[0].effect_certainty,
-        harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown
+        harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
+    );
+    assert_eq!(
+        dispatches[0].postcondition_status,
+        harness_core::agentfirm_api::RuntimePostconditionStatus::Satisfied,
+        "the prompt receipt proves StartCycle independently of terminal provider failure"
     );
 }
 
@@ -6652,7 +6662,7 @@ fn kimi_prompt_rejected_before_any_prompt_update_never_burns_the_work() {
     let dispatch = commands
         .iter()
         .find(|command| {
-            command.command == harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider
+            command.command == harness_core::agentfirm_api::RuntimeCommandKind::StartCycle
                 && command
                     .source_record_id
                     .as_deref()
@@ -6869,13 +6879,18 @@ fn kimi_incomplete_stop_reason_requires_recovery_without_replay() {
             .expect("canonical RuntimeCommands")
             .into_iter()
             .filter(|command| {
-                command.command == harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider
+                command.command == harness_core::agentfirm_api::RuntimeCommandKind::StartCycle
             })
             .collect::<Vec<_>>();
         assert_eq!(dispatches.len(), 1, "{stop_reason} must not replay");
         assert_eq!(
             dispatches[0].status,
-            harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired
+            harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+        );
+        assert_eq!(
+            dispatches[0].postcondition_status,
+            harness_core::agentfirm_api::RuntimePostconditionStatus::Satisfied,
+            "the accepted StartCycle is distinct from the incomplete terminal outcome"
         );
     }
 }
@@ -7060,7 +7075,7 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
         .expect("canonical RuntimeCommands")
         .into_iter()
         .filter(|command| {
-            command.command == harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider
+            command.command == harness_core::agentfirm_api::RuntimeCommandKind::StartCycle
                 && command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
                 && command.effect_certainty
                     == harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
@@ -7192,13 +7207,18 @@ fn kimi_quota_like_failure_requires_recovery_without_fabricating_capacity() {
         .expect("canonical RuntimeCommands")
         .into_iter()
         .filter(|command| {
-            command.command == harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider
+            command.command == harness_core::agentfirm_api::RuntimeCommandKind::StartCycle
         })
         .collect::<Vec<_>>();
     assert_eq!(dispatches.len(), 1);
     assert_eq!(
         dispatches[0].status,
-        harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired
+        harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+    );
+    assert_eq!(
+        dispatches[0].postcondition_status,
+        harness_core::agentfirm_api::RuntimePostconditionStatus::Satisfied,
+        "quota-like terminal failure does not erase the earlier StartCycle receipt"
     );
 }
 

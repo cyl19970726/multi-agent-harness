@@ -8,8 +8,9 @@
 //!   - initial Work completes with the first-round receipt; a canonical Host
 //!     follow-up completes on the SAME native session with the second-round
 //!     receipt; exactly two `turn_completed`, no disconnect;
-//!   - the permission ceiling is compiled into the spawn argv (`--tools`),
-//!     and thinking is forced off;
+//!   - trusted full access is launched without a false enforcement claim,
+//!     uncontained workspace-write fails before spawn, and thinking is forced
+//!     off;
 //!   - an ordinary Message stays in the Harness queue while the member is
 //!     busy (never compiled to steer), and only an explicit Steer control
 //!     command compiles into native current-cycle injection (DOC-89 §13.1).
@@ -148,10 +149,83 @@ fn init_pi_project(home: &TempHome, name: &str) -> String {
     project_id
 }
 
+fn create_pi_identity_with_ceiling(home: &TempHome, project_id: &str, id: &str, ceiling: &str) {
+    let payload = serde_json::json!({
+        "command": "create_agent_member",
+        "member": {
+            "id": id,
+            "name": id,
+            "description": "Pi integration-test AgentMember",
+            "role": "reviewer",
+            "capabilities": [],
+            "skill_refs": [],
+            "provider_profile_ref": "pi",
+            "model_preference": null,
+            "workspace_policy": "managed-worktree",
+            "permission_ceiling": ceiling,
+            "organization_status": "active",
+            "version": 1,
+            "created_by": { "kind": "service", "id": "integration-test" },
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1"
+        }
+    })
+    .to_string();
+    let output = run_firm_with_env(
+        home,
+        home.base(),
+        &[
+            "--project",
+            project_id,
+            "member-trust",
+            "mutate",
+            "--actor-kind",
+            "service",
+            "--actor-id",
+            "integration-test",
+            "--idempotency-key",
+            &format!("pi-test-member:{id}"),
+            "--expected-version",
+            "0",
+            "--json",
+            &payload,
+        ],
+        &[],
+    );
+    assert!(
+        output.status.success(),
+        "create Pi identity failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = run_firm_with_env(
+        home,
+        home.base(),
+        &[
+            "--project",
+            project_id,
+            "team",
+            "add-member",
+            "--id",
+            "team-pi-fixture",
+            "--member",
+            id,
+        ],
+        &[],
+    );
+    assert!(
+        output.status.success(),
+        "add Pi identity to fixture team failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::Value> {
     let path = home.spaces_dir().join(project_id).join(file);
-    let text =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => panic!("read {}: {error}", path.display()),
+    };
     let mut ids: Vec<String> = Vec::new();
     let mut by_id: std::collections::HashMap<String, serde_json::Value> =
         std::collections::HashMap::new();
@@ -189,7 +263,7 @@ where
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "timed out waiting for {what}"
+            "timed out waiting for {what}; last snapshot: {snapshot}"
         );
         std::thread::sleep(Duration::from_millis(25));
     }
@@ -226,6 +300,7 @@ fn member_snapshot<'a>(
 fn pi_rpc_member_two_round_journey_via_canonical_message() {
     let home = TempHome::new("pi-two-round-journey");
     let project_id = init_pi_project(&home, "pi-journey");
+    create_pi_identity_with_ceiling(&home, &project_id, "agent-pi-worker-full", "full_access");
     let session_file = home.base().join("pi-sessions/fake-session.jsonl");
     let fake_bin = fake_provider::install_pi_rpc_shim(
         home.base(),
@@ -251,7 +326,7 @@ fn pi_rpc_member_two_round_journey_via_canonical_message() {
         "/v1/team-runs",
         &serde_json::json!({
             "objective": "Pi two-round canonical journey",
-            "members": [{"name": "pi-worker", "role": "reviewer", "provider": "pi", "initial_work": "Review the work and report"}]
+            "members": [{"agent_member_id": "agent-pi-worker-full", "name": "pi-worker", "role": "reviewer", "provider": "pi", "initial_work": "Review the work and report"}]
         }),
     );
     let run_id = created["result"]["team_run"]["id"]
@@ -262,7 +337,7 @@ fn pi_rpc_member_two_round_journey_via_canonical_message() {
         .as_str()
         .unwrap()
         .to_string();
-    let (status, _) = serve.post_json(
+    let (status, _start_body) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/start"),
         &serde_json::json!({}),
     );
@@ -283,6 +358,12 @@ fn pi_rpc_member_two_round_journey_via_canonical_message() {
         .and_then(|member| member["native_session"]["native_session_id"].as_str())
         .map(str::to_string)
         .expect("first-round native session");
+    assert!(
+        member_snapshot(&snapshot, &member_id)
+            .and_then(|member| member["last_consumed_work_version"].as_u64())
+            .is_some(),
+        "the first await_next_cycle Work revision must be persisted when round 1 settles"
+    );
 
     // Canonical Host follow-up (response_required by sender-aware default).
     let (status, sent) = serve.post_json(
@@ -361,12 +442,11 @@ fn pi_rpc_member_two_round_journey_via_canonical_message() {
             delivery["status"] == serde_json::Value::String("provider_received".into())
         })
         .expect("a provider_received canonical WorkDelivery");
-    assert!(
-        canonical["provider_receipt_id"]
-            .as_str()
-            .is_some_and(|receipt| receipt.ends_with(":round-1")),
-        "initial Work must receive exactly the first-round receipt: {canonical:?}"
-    );
+    let round_one_receipt = canonical["provider_receipt_id"]
+        .as_str()
+        .filter(|receipt| receipt.starts_with("pi-rpc-"))
+        .expect("initial Work must carry Pi's real prompt response id")
+        .to_string();
 
     let canonical_messages = store
         .fabric_messages(&space_id)
@@ -382,16 +462,19 @@ fn pi_rpc_member_two_round_journey_via_canonical_message() {
         .iter()
         .find(|delivery| delivery.message_id == canonical_message.id)
         .expect("canonical follow-up delivery");
-    assert!(
-        follow_up_delivery
-            .provider_receipt_id
-            .as_deref()
-            .is_some_and(|receipt| receipt.ends_with(":round-2")),
-        "queued Host mail must receive the second-round provider receipt: {follow_up_delivery:?}"
+    let round_two_receipt = follow_up_delivery
+        .provider_receipt_id
+        .as_deref()
+        .filter(|receipt| receipt.starts_with("pi-rpc-"))
+        .expect("queued Host mail must carry Pi's real prompt response id");
+    assert_ne!(
+        round_two_receipt, round_one_receipt,
+        "each accepted input must retain its own provider receipt"
     );
 
-    // Launch contract: thinking forced off AND the workspace_write ceiling is
-    // really compiled into the process argv (no bash under workspace-write).
+    // Launch contract: thinking is forced off. This journey deliberately uses
+    // trusted-development full_access, so Pi receives no --tools flag and the
+    // profile must remain explicit that no adapter enforcement was verified.
     let args: Vec<String> =
         serde_json::from_str(&std::fs::read_to_string(&args_marker).expect("read Pi args marker"))
             .expect("Pi args JSON");
@@ -401,12 +484,8 @@ fn pi_rpc_member_two_round_journey_via_canonical_message() {
         "persistent Pi launch must force thinking off: {args:?}"
     );
     assert!(
-        args.windows(2).any(|pair| pair
-            == [
-                "--tools".to_string(),
-                "read,grep,find,ls,write,edit".to_string()
-            ]),
-        "workspace_write ceiling must compile to a --tools allowlist without bash: {args:?}"
+        !args.iter().any(|arg| arg == "--tools"),
+        "trusted full_access must not be mislabeled as a restricted --tools policy: {args:?}"
     );
 
     // Native session binding.
@@ -420,6 +499,32 @@ fn pi_rpc_member_two_round_journey_via_canonical_message() {
         member["native_session"]["native_session_id"],
         session_file.to_string_lossy().as_ref()
     );
+    assert_eq!(
+        member["provider_profile"]["security_enforcement_locus"]["kind"],
+        "none_verified"
+    );
+
+    let commands = store
+        .runtime_commands(&space_id)
+        .expect("Pi runtime command evidence");
+    let applied = |kind| {
+        commands.iter().filter(move |command| {
+            command.command == kind
+                && command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+                && command.postcondition_status
+                    == harness_core::agentfirm_api::RuntimePostconditionStatus::Satisfied
+        })
+    };
+    assert_eq!(
+        applied(harness_core::agentfirm_api::RuntimeCommandKind::OpenRuntime).count(),
+        1,
+        "one persistent Pi handle must have one durable OpenRuntime effect: {commands:?}"
+    );
+    assert_eq!(
+        applied(harness_core::agentfirm_api::RuntimeCommandKind::StartCycle).count(),
+        2,
+        "the two accepted Pi inputs must be two distinct StartCycle effects: {commands:?}"
+    );
 }
 
 /// DOC-89 §13.1 both arms: while the member is busy, an ordinary Message
@@ -429,7 +534,8 @@ fn pi_rpc_member_two_round_journey_via_canonical_message() {
 #[test]
 fn pi_member_busy_queue_and_explicit_steer_conformance() {
     let home = TempHome::new("pi-steer-conformance");
-    init_pi_project(&home, "pi-steer");
+    let project_id = init_pi_project(&home, "pi-steer");
+    create_pi_identity_with_ceiling(&home, &project_id, "agent-pi-steer-full", "full_access");
     let session_file = home.base().join("pi-sessions/fake-session.jsonl");
     let fake_bin = fake_provider::install_pi_rpc_shim(
         home.base(),
@@ -450,6 +556,7 @@ fn pi_member_busy_queue_and_explicit_steer_conformance() {
             ("FAKE_PI_WAIT_FOR_STEER", "1"),
             ("FAKE_PI_PROMPT_MARKER", prompt_marker.to_str().unwrap()),
             ("FAKE_PI_STEER_MARKER", steer_marker.to_str().unwrap()),
+            ("FAKE_PI_STEER_RESPONSE_DELAY_MS", "350"),
         ],
     );
 
@@ -457,7 +564,7 @@ fn pi_member_busy_queue_and_explicit_steer_conformance() {
         "/v1/team-runs",
         &serde_json::json!({
             "objective": "Pi steer conformance",
-            "members": [{"name": "pi-worker", "role": "reviewer", "provider": "pi", "initial_work": "Hold the first cycle open"}]
+            "members": [{"agent_member_id": "agent-pi-steer-full", "name": "pi-worker", "role": "reviewer", "provider": "pi", "initial_work": "Hold the first cycle open"}]
         }),
     );
     let run_id = created["result"]["team_run"]["id"]
@@ -505,12 +612,17 @@ fn pi_member_busy_queue_and_explicit_steer_conformance() {
 
     // Arm 2: the explicit Steer control command compiles into native
     // current-cycle injection and is acknowledged.
+    let steer_started = std::time::Instant::now();
     let (status, steer) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/steer"),
         &serde_json::json!({
             "content": "Steer: also check the tests before you settle",
             "requested_by": "host",
         }),
+    );
+    assert!(
+        steer_started.elapsed() >= Duration::from_millis(300),
+        "HTTP steer must wait for Pi's matching command response, not acknowledge a local append"
     );
     assert_eq!(status, 200, "steer dispatch failed: {steer}");
     assert!(
@@ -549,6 +661,348 @@ fn pi_member_busy_queue_and_explicit_steer_conformance() {
                 && member_turn_count(snapshot, &member_id) >= 2
         },
     );
+}
+
+#[test]
+fn pi_prompt_receipt_survives_disconnect_without_redelivery() {
+    let home = TempHome::new("pi-accepted-then-disconnected");
+    let project_id = init_pi_project(&home, "pi-accepted-then-disconnected");
+    create_pi_identity_with_ceiling(
+        &home,
+        &project_id,
+        "agent-pi-disconnect-full",
+        "full_access",
+    );
+    let prompt_marker = home.base().join("pi-disconnect-prompts.txt");
+    let fake_bin = fake_provider::install_pi_rpc_shim(
+        home.base(),
+        &home.base().join("pi-disconnect-cwd.txt"),
+        &home.base().join("pi-sessions/disconnect-session.jsonl"),
+        "DONE",
+    );
+    let fake_pi = fake_bin.join("pi").display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("PI_BIN", fake_pi.as_str()),
+            ("FAKE_PI_DISCONNECT_AFTER_PROMPT_ACCEPT", "1"),
+            (
+                "FAKE_PI_PROMPT_COUNT_MARKER",
+                prompt_marker.to_str().unwrap(),
+            ),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Pi accepted input survives later transport loss",
+            "members": [{
+                "agent_member_id": "agent-pi-disconnect-full",
+                "name": "pi-worker",
+                "role": "reviewer",
+                "provider": "pi",
+                "initial_work": "Accept this input then disconnect"
+            }]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    let (status, body) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "start scheduling failed: {body}");
+
+    let store = harness_store::HarnessStore::new(home.spaces_dir().join(&project_id));
+    let space_id = firm_env::current_space_id(&home);
+    poll_snapshot(&serve, "durable input receipt after Pi disconnect", |_| {
+        let commands = store.runtime_commands(&space_id).unwrap_or_default();
+        let deliveries = store.fabric_work_deliveries(&space_id).unwrap_or_default();
+        commands.iter().any(|command| {
+            command.command == harness_core::agentfirm_api::RuntimeCommandKind::StartCycle
+                && command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+                && command.effect_certainty
+                    == harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
+        }) && deliveries.iter().any(|delivery| {
+            delivery.status == harness_core::agentfirm_api::WorkDeliveryStatus::ProviderReceived
+                && delivery
+                    .provider_receipt_id
+                    .as_deref()
+                    .is_some_and(|receipt| receipt.starts_with("pi-rpc-"))
+        })
+    });
+
+    let prompts = std::fs::read_to_string(&prompt_marker).expect("prompt marker");
+    assert_eq!(
+        prompts.lines().count(),
+        1,
+        "accepted input must not be blindly replayed after transport loss: {prompts:?}"
+    );
+    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
+    assert!(
+        actions
+            .iter()
+            .all(|action| action["action_type"] != "turn_completed"),
+        "provider input acceptance must not be mistaken for cycle settlement: {actions:?}"
+    );
+}
+
+#[test]
+fn pi_workspace_write_without_containment_fails_before_spawn() {
+    let home = TempHome::new("pi-workspace-write-admission");
+    let project_id = init_pi_project(&home, "pi-workspace-write-admission");
+    create_pi_identity_with_ceiling(
+        &home,
+        &project_id,
+        "agent-pi-workspace-write",
+        "workspace_write",
+    );
+    let cwd_marker = home.base().join("pi-workspace-write-spawned.txt");
+    let fake_bin = fake_provider::install_pi_rpc_shim(
+        home.base(),
+        &cwd_marker,
+        &home.base().join("pi-sessions/workspace-write.jsonl"),
+        "DONE",
+    );
+    let fake_pi = fake_bin.join("pi").display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[("PI_BIN", fake_pi.as_str()), ("FAKE_PI_RESULT", "DONE")],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Pi workspace_write fail-closed admission",
+            "members": [{
+                "agent_member_id": "agent-pi-workspace-write",
+                "name": "pi-worker",
+                "role": "reviewer",
+                "provider": "pi",
+                "initial_work": "Must not reach provider"
+            }]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    let (status, body) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 400, "workspace_write must fail admission: {body}");
+    assert!(
+        body.to_string().contains("PI_PERMISSION_ADMISSION_FAILED"),
+        "admission failure must identify the uncontained Pi ceiling: {body}"
+    );
+    assert!(
+        !cwd_marker.exists(),
+        "workspace_write admission must fail before the Pi process starts"
+    );
+
+    let store = harness_store::HarnessStore::new(home.spaces_dir().join(&project_id));
+    let space_id = firm_env::current_space_id(&home);
+    let commands = store
+        .runtime_commands(&space_id)
+        .expect("runtime command evidence");
+    assert!(
+        commands.iter().all(|command| {
+            command.effect_certainty != harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
+        }),
+        "permission refusal must cause zero provider/process effects: {commands:?}"
+    );
+}
+
+#[test]
+fn pi_busy_close_waits_for_terminal_observation_and_releases_runtime() {
+    let home = TempHome::new("pi-busy-close");
+    let project_id = init_pi_project(&home, "pi-busy-close");
+    create_pi_identity_with_ceiling(&home, &project_id, "agent-pi-close-full", "full_access");
+    let session_file = home.base().join("pi-sessions/close-session.jsonl");
+    let prompt_marker = home.base().join("pi-close-prompt.txt");
+    let fake_bin = fake_provider::install_pi_rpc_shim(
+        home.base(),
+        &home.base().join("pi-close-cwd.txt"),
+        &session_file,
+        "DONE",
+    );
+    let fake_pi = fake_bin.join("pi").display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("PI_BIN", fake_pi.as_str()),
+            ("FAKE_PI_RESULT", "DONE"),
+            ("FAKE_PI_WAIT_FOR_STEER", "1"),
+            ("FAKE_PI_PROMPT_MARKER", prompt_marker.to_str().unwrap()),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Pi busy close conformance",
+            "members": [{
+                "agent_member_id": "agent-pi-close-full",
+                "name": "pi-worker",
+                "role": "reviewer",
+                "provider": "pi",
+                "initial_work": "Wait for explicit close"
+            }]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .expect("member id")
+        .to_string();
+    let (status, body) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "start scheduling failed: {body}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !prompt_marker.exists() {
+        assert!(std::time::Instant::now() < deadline, "Pi never became busy");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    let (status, closed) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
+        &serde_json::json!({
+            "reason": "terminal close conformance",
+            "requested_by": "host"
+        }),
+    );
+    assert_eq!(status, 200, "busy close failed: {closed}");
+    assert_eq!(closed["result"]["status"], "closed");
+    let evidence = &closed["result"]["provider_terminal_evidence"];
+    assert_eq!(evidence["provider_terminal_event"], "agent_settled");
+    assert_eq!(evidence["post_abort_observation"]["is_streaming"], false);
+    assert_eq!(
+        evidence["post_abort_observation"]["pending_message_count"],
+        0
+    );
+    assert_eq!(evidence["post_release_observation"]["process_alive"], false);
+    assert!(
+        session_file.is_file(),
+        "Close must preserve the provider-native JSONL session"
+    );
+    poll_snapshot(&serve, "Pi member stopped after close", |snapshot| {
+        member_snapshot(snapshot, &member_id)
+            .is_some_and(|member| member["status"].as_str() == Some("stopped"))
+    });
+
+    let store = harness_store::HarnessStore::new(home.spaces_dir().join(&project_id));
+    let space_id = firm_env::current_space_id(&home);
+    let commands = store
+        .runtime_commands(&space_id)
+        .expect("Pi Close runtime command evidence");
+    for kind in [
+        harness_core::agentfirm_api::RuntimeCommandKind::InterruptCurrentCycle,
+        harness_core::agentfirm_api::RuntimeCommandKind::QuiesceExecutionLane,
+        harness_core::agentfirm_api::RuntimeCommandKind::ReleaseRuntime,
+    ] {
+        assert!(
+            commands.iter().any(|command| {
+                command.command == kind
+                    && command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+                    && command.postcondition_status
+                        == harness_core::agentfirm_api::RuntimePostconditionStatus::Satisfied
+            }),
+            "Close must durably settle the ordered {kind:?} effect: {commands:?}"
+        );
+    }
+    assert!(
+        commands.iter().all(|command| {
+            command.command != harness_core::agentfirm_api::RuntimeCommandKind::CancelProviderTurn
+        }),
+        "Pi Close must not fall back to the legacy overloaded cancel command: {commands:?}"
+    );
+}
+
+#[test]
+fn pi_busy_interrupt_waits_for_abort_receipt_and_agent_settled() {
+    let home = TempHome::new("pi-busy-interrupt");
+    let project_id = init_pi_project(&home, "pi-busy-interrupt");
+    create_pi_identity_with_ceiling(&home, &project_id, "agent-pi-interrupt-full", "full_access");
+    let prompt_marker = home.base().join("pi-interrupt-prompt.txt");
+    let fake_bin = fake_provider::install_pi_rpc_shim(
+        home.base(),
+        &home.base().join("pi-interrupt-cwd.txt"),
+        &home.base().join("pi-sessions/interrupt-session.jsonl"),
+        "DONE",
+    );
+    let fake_pi = fake_bin.join("pi").display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("PI_BIN", fake_pi.as_str()),
+            ("FAKE_PI_RESULT", "DONE"),
+            ("FAKE_PI_WAIT_FOR_STEER", "1"),
+            ("FAKE_PI_PROMPT_MARKER", prompt_marker.to_str().unwrap()),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Pi busy interrupt conformance",
+            "members": [{
+                "agent_member_id": "agent-pi-interrupt-full",
+                "name": "pi-worker",
+                "role": "reviewer",
+                "provider": "pi",
+                "initial_work": "Wait for explicit interrupt"
+            }]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .expect("member id")
+        .to_string();
+    let (status, body) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "start scheduling failed: {body}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !prompt_marker.exists() {
+        assert!(std::time::Instant::now() < deadline, "Pi never became busy");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    let (status, interrupted) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/interrupt"),
+        &serde_json::json!({
+            "reason": "terminal interrupt conformance",
+            "requested_by": "host"
+        }),
+    );
+    assert_eq!(status, 200, "busy interrupt failed: {interrupted}");
+    assert_eq!(interrupted["result"]["status"], "interrupted");
+    let evidence = &interrupted["result"]["provider_terminal_evidence"];
+    assert_eq!(evidence["provider_terminal_event"], "agent_settled");
+    assert_eq!(evidence["post_abort_observation"]["is_streaming"], false);
+    assert_eq!(evidence["post_abort_observation"]["process_alive"], true);
+    poll_snapshot(&serve, "Pi member idle after interrupt", |snapshot| {
+        member_snapshot(snapshot, &member_id)
+            .is_some_and(|member| member["status"].as_str() == Some("idle"))
+    });
 }
 
 #[test]

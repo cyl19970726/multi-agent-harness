@@ -77,11 +77,15 @@ scenario is rerun before the matrix expands. Finding a bug is evidence, not
 Mission closeout.
 
 When a live Member appears stuck, inspect MemberRun/Supervisor health, Inbox
-delivery and unresolved `provider_interaction_request` Messages first, then use bounded provider-native session
-forensics through its `NativeSessionRef`. Compare tool/process evidence with the
-Member narrative; never read an entire large JSONL into the Host context or
-copy the transcript into Harness. The output is a diagnosis and next control
-action, not a replacement execution history.
+delivery, unresolved `provider_interaction_request` Messages, WorkDelivery,
+RuntimeCommand status, AgentSession control state, and provider
+capability/profile admission first. There is no generic PendingInteraction
+object; inspect the existing Approval ledger only when a protected project
+action required approval. Then use bounded provider-native session forensics
+through its `NativeSessionRef`. Compare tool/process evidence with the Member
+narrative; never read an entire large JSONL into the Host context or copy the
+transcript into Harness. The output is a diagnosis and next control action,
+not a replacement execution history.
 
 Use focused Rust tests while iterating on one slice:
 
@@ -99,6 +103,13 @@ ids/versions, WorkDelivery, linked conversation, submissions/Host
 acceptance, artifacts, and
 Host judgment from the live run. Do not present deterministic provider-shim
 tests as live proof.
+
+For DEV-31 runtime-control work, also record the exact RuntimeCommand binding
+and settlement evidence: target AgentSession/runtime generation, execution
+driver generation/ref, NativeSessionRef, permission envelope, composition and
+capability fingerprints, provider effect certainty, semantic postcondition
+status, and adapter observations for terminal/quiesce/release claims. A
+provider ACK alone is not sufficient evidence for semantic completion.
 
 ## Harness And Provider Update Windows
 

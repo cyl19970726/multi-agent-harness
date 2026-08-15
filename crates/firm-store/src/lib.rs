@@ -9004,6 +9004,8 @@ mod tests {
 
     fn provider_compatibility_test_profile() -> ProviderIntegrationProfile {
         ProviderIntegrationProfile {
+            agent_runtime_provider: Some(firm_core::AgentRuntimeProvider("kimi".into())),
+            model_route: None,
             provider: "kimi".into(),
             execution_mode: "kimi_acp".into(),
             execution_driver: MemberExecutionDriver::HostDriven,
@@ -9026,6 +9028,9 @@ mod tests {
             thinking_transient_only: true,
             control_topology: firm_core::ControlTopology::default(),
             composition_fingerprint: None,
+            capability_fingerprint: None,
+            capability_bindings: Vec::new(),
+            binding_admission: firm_core::ProviderBindingAdmission::Failed,
             adapter_bridge_revision: None,
             security_enforcement_locus: firm_core::SecurityEnforcementLocus::default(),
         }

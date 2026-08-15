@@ -2,9 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agent-harness.local/schemas/agent-session.schema.json",
   "title": "AgentSession",
+  "description": "NodeDaemon-owned durable control identity. control_state is a bounded projection, never a provider transcript or event ledger.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "agent_identity_id", "node_id", "execution_space_id", "node_daemon_id", "node_daemon_generation", "provider", "provider_profile_ref", "effective_permission_ceiling", "status", "generation", "version", "created_at", "updated_at"],
+  "required": ["id", "agent_identity_id", "node_id", "execution_space_id", "node_daemon_id", "node_daemon_generation", "provider_kind", "provider_profile_ref", "permission_envelope_ref", "effective_permission_ceiling", "lifecycle", "runtime_generation", "queued_input_count", "version", "opened_at", "last_active_at"],
   "properties": {
     "id": {"type": "string", "minLength": 1},
     "agent_identity_id": {"type": "string", "minLength": 1},
@@ -12,14 +13,76 @@
     "execution_space_id": {"type": "string", "minLength": 1},
     "node_daemon_id": {"type": "string", "minLength": 1},
     "node_daemon_generation": {"type": "integer", "minimum": 1},
-    "provider": {"type": "string", "minLength": 1},
+    "provider_kind": {"type": "string", "minLength": 1},
     "provider_profile_ref": {"type": "string", "minLength": 1},
+    "permission_envelope_ref": {"type": "string", "minLength": 1},
     "effective_permission_ceiling": {"enum": ["read_only", "workspace_write", "full_access"]},
-    "status": {"enum": ["starting", "idle", "running", "waiting", "disconnected", "stopped", "failed"]},
-    "generation": {"type": "integer", "minimum": 1},
-    "native_session": {"anyOf": [{"$ref": "native-session-ref.schema.json"}, {"type": "null"}]},
+    "lifecycle": {"enum": ["cold", "idle", "active", "waiting", "interrupted", "recovery_required", "closed"]},
+    "runtime_generation": {"type": "integer", "minimum": 1},
+    "control_state": {"$ref": "#/$defs/control_state"},
+    "native_session_ref": {"anyOf": [{"$ref": "native-session-ref.schema.json"}, {"type": "null"}]},
+    "current_turn_id": {"type": ["string", "null"]},
+    "queued_input_count": {"type": "integer", "minimum": 0},
     "version": {"type": "integer", "minimum": 1},
-    "created_at": {"type": "string", "minLength": 1},
-    "updated_at": {"type": "string", "minLength": 1}
+    "opened_at": {"type": "string", "minLength": 1},
+    "last_active_at": {"type": "string", "minLength": 1},
+    "closed_at": {"type": ["string", "null"]}
+  },
+  "$defs": {
+    "control_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runtime_residency": {"enum": ["detached", "attaching", "attached", "releasing", "unknown"]},
+        "activity": {"enum": ["idle", "running", "waiting_input", "interrupting", "unknown"]},
+        "execution_driver": {"enum": ["host_driven", "provider_driven", "user_driven"]},
+        "driver_generation": {"type": "integer", "minimum": 0},
+        "driver_ref": {"$ref": "#/$defs/driver_ref"},
+        "handoff_state": {"enum": ["none", "preparing_host_to_provider", "preparing_provider_to_host", "recovery_required", "unknown"]},
+        "continuation": {"$ref": "#/$defs/continuation"},
+        "composition_fingerprint": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+        "capability_fingerprint": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+        "last_reconciled_at": {"type": ["string", "null"]}
+      }
+    },
+    "continuation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "definition": {"$ref": "#/$defs/continuation_definition"},
+        "activation": {"$ref": "#/$defs/continuation_activation"},
+        "observed_at": {"type": ["string", "null"]}
+      }
+    },
+    "continuation_definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "continuation_ref": {"type": ["string", "null"]},
+        "revision": {"type": ["integer", "null"], "minimum": 0},
+        "phase": {"enum": ["inactive", "active", "paused", "blocked", "satisfied", "unknown"]},
+        "budget": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "object", "additionalProperties": false, "properties": {"remaining_cycles": {"type": ["integer", "null"], "minimum": 0}, "remaining_tokens": {"type": ["integer", "null"], "minimum": 0}, "deadline": {"type": ["string", "null"]}, "provider_budget_ref": {"type": ["string", "null"]}}}
+          ]
+        }
+      }
+    },
+    "continuation_activation": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "required": ["state", "runtime_generation", "driver_generation"], "properties": {"state": {"const": "armed"}, "runtime_generation": {"type": "integer", "minimum": 1}, "driver_generation": {"type": "integer", "minimum": 1}}},
+        {"type": "object", "additionalProperties": false, "required": ["state"], "properties": {"state": {"const": "disarmed"}}},
+        {"type": "object", "additionalProperties": false, "required": ["state"], "properties": {"state": {"const": "unknown"}}}
+      ]
+    },
+    "driver_ref": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "required": ["kind", "node_daemon_id", "node_daemon_generation"], "properties": {"kind": {"const": "node_daemon"}, "node_daemon_id": {"type": "string", "minLength": 1}, "node_daemon_generation": {"type": "integer", "minimum": 1}}},
+        {"type": "object", "additionalProperties": false, "required": ["kind", "team_run_id", "team_supervisor_id", "team_supervisor_generation"], "properties": {"kind": {"const": "team_supervisor"}, "team_run_id": {"type": "string", "minLength": 1}, "team_supervisor_id": {"type": "string", "minLength": 1}, "team_supervisor_generation": {"type": "integer", "minimum": 1}}},
+        {"type": "object", "additionalProperties": false, "required": ["kind", "provider", "continuation_id", "runtime_generation"], "properties": {"kind": {"const": "provider_continuation"}, "provider": {"type": "string", "minLength": 1}, "continuation_id": {"type": "string", "minLength": 1}, "continuation_revision": {"type": ["integer", "null"], "minimum": 0}, "runtime_generation": {"type": "integer", "minimum": 1}}},
+        {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "unknown"}}}
+      ]
+    }
   }
 }

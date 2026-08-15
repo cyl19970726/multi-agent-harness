@@ -5,15 +5,17 @@ use crate::{
 };
 use firm_core::agentfirm_api::{
     integration_plan_module_v1, ActorKind, ActorRef, AgentIdentity, AgentMember,
-    AgentMemberOrganizationStatus, AgentSession, AgentSessionStatus, CanonicalMessageDelivery,
-    CanonicalMessageDeliveryStatus, CanonicalMutationEvent, CanonicalOperation,
-    CanonicalWorkDelivery, ControlCommandEnvelope, DeliveryClaim, DeliveryReconcileOutcome,
-    FailureAnalysis, GateEvaluation, GateRequirement, GateRequirementSource, GateVerdict,
-    GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberRun, MemberRuntimeStatus,
-    MemberWorkspaceBinding, Message, MessageRecipientKind, MessageSubscription,
-    MessageSubscriptionKind, MessageSubscriptionStatus, MutationContext, NativeSessionRef,
-    ProviderInvocation, ProviderReceipt, RuntimeCommandKind, RuntimeCommandRecord,
-    RuntimeCommandStatus, RuntimeEffectCertainty, RuntimeRecoveryResolution, SubscriptionCursor,
+    AgentMemberOrganizationStatus, AgentSession, AgentSessionControlState, AgentSessionStatus,
+    CanonicalMessageDelivery, CanonicalMessageDeliveryStatus, CanonicalMutationEvent,
+    CanonicalOperation, CanonicalWorkDelivery, ControlCommandEnvelope, DeliveryClaim,
+    DeliveryReconcileOutcome, FailureAnalysis, GateEvaluation, GateRequirement,
+    GateRequirementSource, GateVerdict, GateWaiver, GateWaiverState, MemberCoordinationStatus,
+    MemberExecutionDriver, MemberRun, MemberRuntimeStatus, MemberWorkspaceBinding, Message,
+    MessageRecipientKind, MessageSubscription, MessageSubscriptionKind, MessageSubscriptionStatus,
+    MutationContext, NativeContinuationActivation, NativeContinuationPhase, NativeSessionRef,
+    ProviderInvocation, ProviderReceipt, RuntimeActivity, RuntimeCommandKind, RuntimeCommandPhase,
+    RuntimeCommandRecord, RuntimeCommandStatus, RuntimeDriverRef, RuntimeEffectCertainty,
+    RuntimePostconditionStatus, RuntimeRecoveryResolution, RuntimeResidency, SubscriptionCursor,
     TeamMembership, TeamMembershipRole, TeamMembershipStatus, TrustError, TrustErrorCode,
     WorkDelivery, WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
     WorkFinding, WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
@@ -232,6 +234,63 @@ pub fn runtime_command_envelope_fingerprint(
         object.remove("issued_at");
     }
     Ok(crate::canonical_json_fingerprint(&value))
+}
+
+fn runtime_command_capability(kind: RuntimeCommandKind) -> &'static str {
+    match kind {
+        RuntimeCommandKind::AuthorMessage => "message.author",
+        RuntimeCommandKind::StartSession => "agent_session.start",
+        RuntimeCommandKind::StopSession => "agent_session.stop",
+        RuntimeCommandKind::ResumeSession => "agent_session.resume",
+        RuntimeCommandKind::DispatchProvider => "provider.dispatch",
+        RuntimeCommandKind::CancelProviderTurn => "provider.cancel",
+        RuntimeCommandKind::OpenRuntime => "runtime.open",
+        RuntimeCommandKind::ResumeNativeSession => "runtime.native_session.resume",
+        RuntimeCommandKind::ReleaseRuntime => "runtime.release",
+        RuntimeCommandKind::CloseMember => "member.close",
+        RuntimeCommandKind::ReopenMember => "member.reopen",
+        RuntimeCommandKind::RetireMember => "member.retire",
+        RuntimeCommandKind::DeleteNativeSession => "runtime.native_session.delete",
+        RuntimeCommandKind::StartCycle => "cycle.start",
+        RuntimeCommandKind::InjectCurrentCycle => "cycle.inject_current",
+        RuntimeCommandKind::QueueAtNativeBoundary => "cycle.queue_native_boundary",
+        RuntimeCommandKind::InterruptCurrentCycle => "cycle.interrupt_current",
+        RuntimeCommandKind::CancelPendingInput => "cycle.pending_input.cancel",
+        RuntimeCommandKind::InspectContinuation => "continuation.inspect",
+        RuntimeCommandKind::ActivateContinuation => "continuation.activate",
+        RuntimeCommandKind::InhibitContinuation => "continuation.inhibit",
+        RuntimeCommandKind::ResumeContinuation => "continuation.resume",
+        RuntimeCommandKind::ReplaceContinuationCondition => "continuation.condition.replace",
+        RuntimeCommandKind::ClearContinuation => "continuation.clear",
+        RuntimeCommandKind::QuiesceExecutionLane => "execution_lane.quiesce",
+        RuntimeCommandKind::DrainRuntime => "runtime.drain",
+        RuntimeCommandKind::StopBackgroundTask => "background_task.stop",
+        RuntimeCommandKind::TransferExecutionDriver => "driver.transfer",
+        RuntimeCommandKind::InspectCommandEffect => "command_effect.inspect",
+        RuntimeCommandKind::ReconcileUnknownEffect => "command_effect.reconcile",
+        RuntimeCommandKind::ReattachLiveRuntime => "runtime.reattach",
+        RuntimeCommandKind::AbortIfNotApplied => "command_effect.abort_if_not_applied",
+    }
+}
+
+fn runtime_command_requires_exact_binding(kind: RuntimeCommandKind) -> bool {
+    !matches!(kind, RuntimeCommandKind::AuthorMessage)
+}
+
+fn runtime_binding_for_session(
+    session: &AgentSession,
+) -> firm_core::agentfirm_api::RuntimeCommandBinding {
+    firm_core::agentfirm_api::RuntimeCommandBinding {
+        target_session_id: Some(session.id.clone()),
+        target_runtime_generation: Some(session.runtime_generation),
+        target_driver_generation: Some(session.control_state.driver_generation),
+        target_driver: session.control_state.driver_ref.clone(),
+        native_session_ref: session.native_session_ref.clone(),
+        composition_fingerprint: session.control_state.composition_fingerprint.clone(),
+        capability_fingerprint: session.control_state.capability_fingerprint.clone(),
+        permission_envelope_ref: Some(session.permission_envelope_ref.clone()),
+        ..Default::default()
+    }
 }
 
 #[derive(Debug)]
@@ -4706,6 +4765,208 @@ impl HarnessStore {
         Ok(())
     }
 
+    /// Prove that a provider-facing effect still targets the one live
+    /// execution driver for this exact AgentSession generation.  This is a
+    /// read performed while the caller holds the Store write lock; admission
+    /// and the fence observation therefore cannot race another canonical
+    /// control-state mutation.
+    fn require_live_runtime_binding_unlocked(
+        &self,
+        session: &AgentSession,
+        binding: &firm_core::agentfirm_api::RuntimeCommandBinding,
+        allow_native_session_attachment: bool,
+        resource_kind: &str,
+        resource_id: &str,
+        current_version: Option<u64>,
+    ) -> StoreResult<()> {
+        let composition_matches = session
+            .control_state
+            .composition_fingerprint
+            .as_deref()
+            .is_some_and(|current| {
+                !current.trim().is_empty()
+                    && binding.composition_fingerprint.as_deref() == Some(current)
+            });
+        let capability_matches = session
+            .control_state
+            .capability_fingerprint
+            .as_deref()
+            .is_some_and(|current| {
+                !current.trim().is_empty()
+                    && binding.capability_fingerprint.as_deref() == Some(current)
+            });
+        let native_session_matches = binding.native_session_ref == session.native_session_ref
+            || (allow_native_session_attachment
+                && binding.native_session_ref.is_none()
+                && session.native_session_ref.as_ref().is_some_and(|native| {
+                    native.provider == session.provider_kind
+                        && !native.native_session_id.trim().is_empty()
+                }));
+        if binding.target_session_id.as_deref() != Some(session.id.as_str())
+            || binding.target_runtime_generation != Some(session.runtime_generation)
+            || session.control_state.driver_generation == 0
+            || binding.target_driver_generation != Some(session.control_state.driver_generation)
+            || binding.target_driver != session.control_state.driver_ref
+            || !native_session_matches
+            || binding.permission_envelope_ref.as_deref()
+                != Some(session.permission_envelope_ref.as_str())
+            || !composition_matches
+            || !capability_matches
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "provider effect does not bind the exact current session/runtime/driver/native-session/composition/capability/permission state",
+                resource_kind,
+                resource_id,
+                current_version,
+            ));
+        }
+
+        // NodeDaemon is always the Runtime Supervisor, even when the current
+        // next-cycle driver is a TeamSupervisor or provider continuation.
+        self.require_current_node_daemon_unlocked(
+            &session.execution_space_id,
+            &session.node_id,
+            &session.node_daemon_id,
+            session.node_daemon_generation,
+            &ActorRef {
+                kind: ActorKind::Service,
+                id: session.node_daemon_id.clone(),
+            },
+            resource_kind,
+            resource_id,
+        )?;
+
+        match (
+            &session.control_state.execution_driver,
+            &binding.target_driver,
+        ) {
+            (
+                MemberExecutionDriver::HostDriven,
+                RuntimeDriverRef::NodeDaemon {
+                    node_daemon_id,
+                    node_daemon_generation,
+                },
+            ) if node_daemon_id == &session.node_daemon_id
+                && *node_daemon_generation == session.node_daemon_generation
+                && !matches!(
+                    session.control_state.continuation.activation,
+                    NativeContinuationActivation::Armed { .. }
+                ) => {}
+            (
+                MemberExecutionDriver::HostDriven,
+                RuntimeDriverRef::TeamSupervisor {
+                    team_run_id,
+                    team_supervisor_id,
+                    team_supervisor_generation,
+                },
+            ) => {
+                let lease = self
+                    .latest_team_supervisor_lease(team_run_id)?
+                    .ok_or_else(|| {
+                        trust_error(
+                            TrustErrorCode::SupervisorGenerationFenced,
+                            "runtime driver TeamSupervisor lease is missing",
+                            resource_kind,
+                            resource_id,
+                            current_version,
+                        )
+                    })?;
+                let team_run = self
+                    .team_runs()?
+                    .into_iter()
+                    .rev()
+                    .find(|run| run.id == *team_run_id)
+                    .ok_or_else(|| {
+                        trust_error(
+                            TrustErrorCode::SupervisorGenerationFenced,
+                            "runtime driver TeamRun is missing",
+                            resource_kind,
+                            resource_id,
+                            current_version,
+                        )
+                    })?;
+                if lease.supervisor_id != *team_supervisor_id
+                    || lease.generation != *team_supervisor_generation
+                    || lease.status != firm_core::TeamSupervisorLeaseStatus::Active
+                    || lease.expires_unix_ms <= current_unix_ms()
+                    || lease.execution_space_id != session.execution_space_id
+                    || lease.node_id != session.node_id
+                    || lease.node_daemon_id != session.node_daemon_id
+                    || lease.node_daemon_generation != session.node_daemon_generation
+                    || team_run.execution_node_id != session.node_id
+                    || team_run.project_binding_id != lease.project_binding_id
+                    || matches!(
+                        session.control_state.continuation.activation,
+                        NativeContinuationActivation::Armed { .. }
+                    )
+                {
+                    return Err(trust_error(
+                        TrustErrorCode::SupervisorGenerationFenced,
+                        "runtime effect used a stale, foreign, expired, or parent-fenced TeamSupervisor generation",
+                        resource_kind,
+                        resource_id,
+                        current_version,
+                    ));
+                }
+            }
+            (
+                MemberExecutionDriver::ProviderDriven,
+                RuntimeDriverRef::ProviderContinuation {
+                    provider,
+                    continuation_id,
+                    continuation_revision,
+                    runtime_generation,
+                },
+            ) => {
+                let continuation = &session.control_state.continuation;
+                let activation_matches = matches!(
+                    continuation.activation,
+                    NativeContinuationActivation::Armed {
+                        runtime_generation: armed_runtime_generation,
+                        driver_generation: armed_driver_generation,
+                    } if armed_runtime_generation == session.runtime_generation
+                        && armed_driver_generation == session.control_state.driver_generation
+                );
+                if provider != &session.provider_kind
+                    || *runtime_generation != session.runtime_generation
+                    || continuation.definition.continuation_ref.as_deref()
+                        != Some(continuation_id.as_str())
+                    || continuation.definition.revision != *continuation_revision
+                    || continuation.definition.phase != NativeContinuationPhase::Active
+                    || !activation_matches
+                {
+                    return Err(trust_error(
+                        TrustErrorCode::MemberRunGenerationFenced,
+                        "provider continuation is not the exact active and armed continuation for this runtime/driver generation",
+                        resource_kind,
+                        resource_id,
+                        current_version,
+                    ));
+                }
+            }
+            (MemberExecutionDriver::UserDriven, _) => {
+                return Err(trust_error(
+                    TrustErrorCode::UnauthorizedActor,
+                    "Harness cannot drive provider effects for a user-driven external runtime",
+                    resource_kind,
+                    resource_id,
+                    current_version,
+                ));
+            }
+            _ => {
+                return Err(trust_error(
+                    TrustErrorCode::MemberRunGenerationFenced,
+                    "runtime driver reference is unknown or incompatible with the declared execution driver",
+                    resource_kind,
+                    resource_id,
+                    current_version,
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn fabric_agent_identities(
         &self,
         execution_space_id: &str,
@@ -5373,6 +5634,185 @@ impl HarnessStore {
         )
     }
 
+    /// Replace the bounded runtime-control projection for one exact session
+    /// generation.  This is not a runtime event stream: it is the current
+    /// fencing state used to decide whether a later provider effect is still
+    /// authorized. Driver or composition changes require a provably quiet
+    /// lane and advance the driver generation exactly once.
+    pub fn bind_agent_session_control_state(
+        &self,
+        context: &MutationContext,
+        session_id: &str,
+        expected_runtime_generation: u64,
+        next_control_state: AgentSessionControlState,
+        updated_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<AgentSession>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let request_payload = serde_json::json!({
+            "session_id": session_id,
+            "expected_runtime_generation": expected_runtime_generation,
+            "next_control_state": next_control_state,
+            "updated_at": updated_at,
+        });
+        let request_fingerprint = canonical_json_fingerprint(&request_payload);
+        let mut commit_context = context.clone();
+        commit_context.request_fingerprint = Some(request_fingerprint.clone());
+        if let Some(replay) = self.replay_trust_projection_unlocked(
+            &commit_context,
+            "agent_session",
+            session_id,
+            &request_fingerprint,
+        )? {
+            return Ok(replay);
+        }
+
+        let mut session = self
+            .latest_trust_envelopes_unlocked(&context.execution_space_id, "agent_session")?
+            .remove(session_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "AgentSession not found",
+                    "agent_session",
+                    session_id,
+                    None,
+                )
+            })
+            .and_then(|envelope| event_projection::<AgentSession>(&envelope))?;
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            &session.node_id,
+            &session.node_daemon_id,
+            session.node_daemon_generation,
+            &context.authenticated_actor,
+            "agent_session",
+            session_id,
+        )?;
+        if session.runtime_generation != expected_runtime_generation {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "control-state mutation used a stale AgentSession runtime generation",
+                "agent_session",
+                session_id,
+                Some(session.version),
+            ));
+        }
+        let ambiguous = self
+            .runtime_commands(&context.execution_space_id)?
+            .into_iter()
+            .any(|command| {
+                command.target_session_id.as_deref() == Some(session.id.as_str())
+                    && command.target_session_generation == Some(session.runtime_generation)
+                    && command.effect_certainty == RuntimeEffectCertainty::Unknown
+                    && matches!(
+                        command.status,
+                        RuntimeCommandStatus::Accepted
+                            | RuntimeCommandStatus::Quiesced
+                            | RuntimeCommandStatus::RecoveryRequired
+                    )
+            });
+        if ambiguous {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "control-state mutation requires reconciliation of every ambiguous RuntimeCommand",
+                "agent_session",
+                session_id,
+                Some(session.version),
+            ));
+        }
+
+        let driver_changed = session.control_state.execution_driver
+            != next_control_state.execution_driver
+            || session.control_state.driver_ref != next_control_state.driver_ref
+            || session.control_state.driver_generation != next_control_state.driver_generation;
+        let composition_changed = session.control_state.composition_fingerprint
+            != next_control_state.composition_fingerprint
+            || session.control_state.capability_fingerprint
+                != next_control_state.capability_fingerprint;
+        if driver_changed || composition_changed {
+            let lane_is_quiet = session.current_turn_id.is_none()
+                && (session.control_state.runtime_residency == RuntimeResidency::Detached
+                    || session.control_state.activity == RuntimeActivity::Idle);
+            if !lane_is_quiet {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "driver/composition transfer requires a provably Detached or Idle execution lane",
+                    "agent_session",
+                    session_id,
+                    Some(session.version),
+                ));
+            }
+            if next_control_state.driver_generation
+                != session.control_state.driver_generation.saturating_add(1)
+                || next_control_state.handoff_state
+                    != firm_core::agentfirm_api::DriverHandoffState::None
+            {
+                return Err(trust_error(
+                    TrustErrorCode::MemberRunGenerationFenced,
+                    "driver/composition transfer must advance the driver generation exactly once and finish the handoff",
+                    "agent_session",
+                    session_id,
+                    Some(session.version),
+                ));
+            }
+        } else if next_control_state.driver_generation == 0 {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "an active control-state binding requires a non-zero driver generation",
+                "agent_session",
+                session_id,
+                Some(session.version),
+            ));
+        }
+
+        let mut candidate = session.clone();
+        candidate.control_state = next_control_state.clone();
+        match candidate.control_state.execution_driver {
+            MemberExecutionDriver::UserDriven => {
+                if candidate.control_state.driver_generation == 0
+                    || candidate.control_state.driver_ref != RuntimeDriverRef::Unknown
+                    || matches!(
+                        candidate.control_state.continuation.activation,
+                        NativeContinuationActivation::Armed { .. }
+                    )
+                {
+                    return Err(trust_error(
+                        TrustErrorCode::MemberRunGenerationFenced,
+                        "user-driven runtimes must remain non-driven by Harness and continuation-disarmed",
+                        "agent_session",
+                        session_id,
+                        Some(session.version),
+                    ));
+                }
+            }
+            MemberExecutionDriver::HostDriven | MemberExecutionDriver::ProviderDriven => {
+                let candidate_binding = runtime_binding_for_session(&candidate);
+                self.require_live_runtime_binding_unlocked(
+                    &candidate,
+                    &candidate_binding,
+                    false,
+                    "agent_session",
+                    session_id,
+                    Some(session.version),
+                )?;
+            }
+        }
+
+        session.control_state = next_control_state;
+        session.version += 1;
+        self.commit_trust_projection_unlocked(
+            &commit_context,
+            "agent_session",
+            session_id,
+            "control_state_bound",
+            request_payload,
+            &session,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
     pub fn fabric_work_execution_bindings(
         &self,
         execution_space_id: &str,
@@ -5408,12 +5848,67 @@ impl HarnessStore {
         execution_space_id: &str,
     ) -> StoreResult<Vec<CanonicalWorkDelivery>> {
         Ok(self
-            .latest_fabric_side_records_unlocked(
-                execution_space_id,
-                |row: &CanonicalWorkDelivery| row.id.clone(),
-            )?
+            .materialized_fabric_work_deliveries_unlocked(execution_space_id)?
             .into_values()
             .collect())
+    }
+
+    fn materialized_fabric_work_deliveries_unlocked(
+        &self,
+        execution_space_id: &str,
+    ) -> StoreResult<BTreeMap<String, CanonicalWorkDelivery>> {
+        let mut latest = self.latest_fabric_side_records_unlocked(
+            execution_space_id,
+            |row: &CanonicalWorkDelivery| row.id.clone(),
+        )?;
+        let works = self.latest_works_unlocked()?;
+        let sessions = self.fabric_agent_sessions(execution_space_id)?;
+        for binding in self.fabric_work_execution_bindings(execution_space_id)? {
+            if binding.status != WorkExecutionBindingStatus::Active
+                || latest.contains_key(&binding.delivery_id)
+            {
+                continue;
+            }
+            let Some(work) = works.get(&binding.work_id) else {
+                continue;
+            };
+            let Some(session) = sessions
+                .iter()
+                .find(|session| session.id == binding.agent_session_id)
+            else {
+                continue;
+            };
+            if work.version != binding.work_revision
+                || session.agent_identity_id != binding.agent_identity_id
+                || session.runtime_generation != binding.agent_session_generation
+                || session.lifecycle == AgentSessionStatus::Closed
+            {
+                continue;
+            }
+            latest.insert(
+                binding.delivery_id.clone(),
+                CanonicalWorkDelivery {
+                    id: binding.delivery_id.clone(),
+                    work_id: binding.work_id.clone(),
+                    work_revision: binding.work_revision,
+                    work_execution_binding_id: binding.id.clone(),
+                    recipient_identity_id: binding.agent_identity_id.clone(),
+                    recipient_session_id: binding.agent_session_id.clone(),
+                    recipient_session_generation: binding.agent_session_generation,
+                    target_node_id: session.node_id.clone(),
+                    status: WorkDeliveryStatus::Queued,
+                    attempt: 1,
+                    claim_id: None,
+                    claimed_node_daemon_generation: None,
+                    provider_receipt_id: None,
+                    failure_code: None,
+                    version: 1,
+                    created_at: binding.bound_at.clone(),
+                    updated_at: binding.bound_at.clone(),
+                },
+            );
+        }
+        Ok(latest)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5440,10 +5935,7 @@ impl HarnessStore {
             delivery_id,
         )?;
         let mut delivery = self
-            .latest_fabric_side_records_unlocked(
-                &context.execution_space_id,
-                |row: &CanonicalWorkDelivery| row.id.clone(),
-            )?
+            .materialized_fabric_work_deliveries_unlocked(&context.execution_space_id)?
             .remove(delivery_id)
             .ok_or_else(|| {
                 trust_error(
@@ -5511,6 +6003,15 @@ impl HarnessStore {
                 Some(delivery.version),
             ));
         }
+        let invocation_binding = runtime_binding_for_session(&session);
+        self.require_live_runtime_binding_unlocked(
+            &session,
+            &invocation_binding,
+            false,
+            "work_delivery",
+            delivery_id,
+            Some(delivery.version),
+        )?;
         delivery.status = WorkDeliveryStatus::Claimed;
         delivery.claim_id = Some(claim_id.to_string());
         delivery.claimed_node_daemon_generation = Some(daemon_generation);
@@ -5533,8 +6034,9 @@ impl HarnessStore {
             node_id: node_id.to_string(),
             node_daemon_id: daemon_id.to_string(),
             node_daemon_generation: daemon_generation,
-            provider: session.provider_kind,
+            provider: session.provider_kind.clone(),
             dispatch_mode,
+            binding: invocation_binding,
             permission_ceiling: session.effective_permission_ceiling,
             content_fingerprint: canonical_json_fingerprint(
                 &serde_json::json!({"content": content}),
@@ -6595,6 +7097,15 @@ impl HarnessStore {
             ));
         }
         let session = &current[0];
+        let invocation_binding = runtime_binding_for_session(session);
+        self.require_live_runtime_binding_unlocked(
+            session,
+            &invocation_binding,
+            false,
+            "message_delivery",
+            delivery_id,
+            Some(delivery.version),
+        )?;
         let message = self
             .latest_trust_envelopes_unlocked(&context.execution_space_id, "message")?
             .remove(&delivery.message_id)
@@ -6627,6 +7138,7 @@ impl HarnessStore {
             node_daemon_generation: daemon_generation,
             provider: session.provider_kind.clone(),
             dispatch_mode,
+            binding: invocation_binding,
             permission_ceiling: session.effective_permission_ceiling,
             content: message.body,
             content_fingerprint: message.content_fingerprint,
@@ -7008,6 +7520,15 @@ impl HarnessStore {
                 None,
             ));
         }
+        if command.postcondition.status != RuntimePostconditionStatus::Unknown {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "a RuntimeCommand may request a postcondition but cannot claim it satisfied before provider observation",
+                "runtime_command",
+                &command.id,
+                None,
+            ));
+        }
         if command.authenticated_actor.kind == ActorKind::External {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,
@@ -7130,14 +7651,7 @@ impl HarnessStore {
                 None,
             ));
         }
-        let expected_capability = match command.command {
-            RuntimeCommandKind::AuthorMessage => "message.author",
-            RuntimeCommandKind::StartSession => "agent_session.start",
-            RuntimeCommandKind::StopSession => "agent_session.stop",
-            RuntimeCommandKind::ResumeSession => "agent_session.resume",
-            RuntimeCommandKind::DispatchProvider => "provider.dispatch",
-            RuntimeCommandKind::CancelProviderTurn => "provider.cancel",
-        };
+        let expected_capability = runtime_command_capability(command.command);
         if command.required_capability != expected_capability {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,
@@ -7218,6 +7732,16 @@ impl HarnessStore {
                     Some(session.version),
                 ));
             }
+            if runtime_command_requires_exact_binding(command.command) {
+                self.require_live_runtime_binding_unlocked(
+                    &session,
+                    &command.binding,
+                    false,
+                    "runtime_command",
+                    &command.id,
+                    Some(session.version),
+                )?;
+            }
             let actor = &command.authenticated_actor;
             let exact_self =
                 actor.kind == ActorKind::AgentMember && actor.id == session.agent_identity_id;
@@ -7266,7 +7790,10 @@ impl HarnessStore {
                 })
                 .collect::<Vec<_>>();
             match command.command {
-                RuntimeCommandKind::DispatchProvider => {
+                RuntimeCommandKind::DispatchProvider
+                | RuntimeCommandKind::StartCycle
+                | RuntimeCommandKind::InjectCurrentCycle
+                | RuntimeCommandKind::QueueAtNativeBoundary => {
                     if session.lifecycle != AgentSessionStatus::Active {
                         return Err(trust_error(
                             TrustErrorCode::InvalidStateTransition,
@@ -7277,7 +7804,9 @@ impl HarnessStore {
                         ));
                     }
                 }
-                RuntimeCommandKind::CancelProviderTurn => {
+                RuntimeCommandKind::CancelProviderTurn
+                | RuntimeCommandKind::InterruptCurrentCycle
+                | RuntimeCommandKind::CancelPendingInput => {
                     if session.lifecycle != AgentSessionStatus::Active
                         || session.current_turn_id.is_none()
                     {
@@ -7324,7 +7853,34 @@ impl HarnessStore {
                         ));
                     }
                 }
-                RuntimeCommandKind::StartSession | RuntimeCommandKind::ResumeSession => {
+                RuntimeCommandKind::ReleaseRuntime
+                | RuntimeCommandKind::CloseMember
+                | RuntimeCommandKind::QuiesceExecutionLane
+                | RuntimeCommandKind::DrainRuntime
+                | RuntimeCommandKind::InhibitContinuation => {
+                    if !matches!(
+                        session.lifecycle,
+                        AgentSessionStatus::Cold
+                            | AgentSessionStatus::Active
+                            | AgentSessionStatus::Idle
+                            | AgentSessionStatus::Waiting
+                            | AgentSessionStatus::Interrupted
+                    ) {
+                        return Err(trust_error(
+                            TrustErrorCode::InvalidStateTransition,
+                            "AgentSession stop cannot target a terminal session",
+                            "runtime_command",
+                            &command.id,
+                            Some(session.version),
+                        ));
+                    }
+                }
+                RuntimeCommandKind::StartSession
+                | RuntimeCommandKind::ResumeSession
+                | RuntimeCommandKind::OpenRuntime
+                | RuntimeCommandKind::ResumeNativeSession
+                | RuntimeCommandKind::ReopenMember
+                | RuntimeCommandKind::ReattachLiveRuntime => {
                     if matches!(
                         session.lifecycle,
                         AgentSessionStatus::Closed | AgentSessionStatus::RecoveryRequired
@@ -7338,7 +7894,19 @@ impl HarnessStore {
                         ));
                     }
                 }
-                RuntimeCommandKind::AuthorMessage => {}
+                RuntimeCommandKind::RetireMember
+                | RuntimeCommandKind::DeleteNativeSession
+                | RuntimeCommandKind::InspectContinuation
+                | RuntimeCommandKind::ActivateContinuation
+                | RuntimeCommandKind::ResumeContinuation
+                | RuntimeCommandKind::ReplaceContinuationCondition
+                | RuntimeCommandKind::ClearContinuation
+                | RuntimeCommandKind::StopBackgroundTask
+                | RuntimeCommandKind::TransferExecutionDriver
+                | RuntimeCommandKind::InspectCommandEffect
+                | RuntimeCommandKind::ReconcileUnknownEffect
+                | RuntimeCommandKind::AbortIfNotApplied
+                | RuntimeCommandKind::AuthorMessage => {}
             }
             let ambiguous = self
                 .runtime_commands(&context.execution_space_id)?
@@ -7357,8 +7925,10 @@ impl HarnessStore {
                             (command.command, prior.command),
                             (
                                 RuntimeCommandKind::CancelProviderTurn
+                                    | RuntimeCommandKind::InterruptCurrentCycle
                                     | RuntimeCommandKind::StopSession,
                                 RuntimeCommandKind::DispatchProvider
+                                    | RuntimeCommandKind::StartCycle
                             )
                         )
                 });
@@ -7382,9 +7952,14 @@ impl HarnessStore {
             command: command.command,
             required_capability: command.required_capability.clone(),
             idempotency_key: command.idempotency_key.clone(),
-            request_fingerprint: command.payload_fingerprint.clone(),
+            request_fingerprint: command_fingerprint,
             status: RuntimeCommandStatus::Accepted,
+            phase: RuntimeCommandPhase::Prepared,
             effect_certainty: RuntimeEffectCertainty::Unknown,
+            postcondition_status: RuntimePostconditionStatus::Unknown,
+            binding: command.binding.clone(),
+            precondition: command.precondition.clone(),
+            postcondition: command.postcondition.clone(),
             target_session_id,
             target_session_generation,
             source_record_id: command.payload["delivery_id"].as_str().map(str::to_string),
@@ -7520,15 +8095,20 @@ impl HarnessStore {
         match resolution {
             RuntimeRecoveryResolution::ConfirmApplied => {
                 record.status = RuntimeCommandStatus::Applied;
+                record.phase = RuntimeCommandPhase::Settled;
                 record.effect_certainty = RuntimeEffectCertainty::Applied;
+                record.postcondition_status = RuntimePostconditionStatus::Unknown;
                 record.failure_code = None;
             }
             RuntimeRecoveryResolution::ConfirmNotApplied => {
                 record.status = RuntimeCommandStatus::Failed;
+                record.phase = RuntimeCommandPhase::Rejected;
                 record.effect_certainty = RuntimeEffectCertainty::NotApplied;
+                record.postcondition_status = RuntimePostconditionStatus::Unsatisfied;
                 record.failure_code = Some("RECOVERY_CONFIRMED_NOT_APPLIED".into());
             }
             RuntimeRecoveryResolution::KeepRecoveryRequired => {
+                record.phase = RuntimeCommandPhase::RecoveryRequired;
                 record.failure_code = Some("RECOVERY_EVIDENCE_INSUFFICIENT".into());
             }
         }
@@ -7579,6 +8159,34 @@ impl HarnessStore {
         failure_code: Option<String>,
         now: &str,
     ) -> StoreResult<CanonicalMutationResult<RuntimeCommandRecord>> {
+        self.settle_runtime_command_with_postcondition(
+            context,
+            command_id,
+            status,
+            effect_certainty,
+            RuntimePostconditionStatus::Unknown,
+            result,
+            failure_code,
+            now,
+        )
+    }
+
+    /// Settle a provider effect and, when the adapter has separately observed
+    /// it, the semantic postcondition requested by the durable command.
+    /// Keeping this explicit prevents a transport ACK from being silently
+    /// promoted to proof of quiescence, release, or cycle termination.
+    #[allow(clippy::too_many_arguments)]
+    pub fn settle_runtime_command_with_postcondition(
+        &self,
+        context: &MutationContext,
+        command_id: &str,
+        status: RuntimeCommandStatus,
+        effect_certainty: RuntimeEffectCertainty,
+        postcondition_status: RuntimePostconditionStatus,
+        result: Option<Value>,
+        failure_code: Option<String>,
+        now: &str,
+    ) -> StoreResult<CanonicalMutationResult<RuntimeCommandRecord>> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let mut record = self
@@ -7603,10 +8211,25 @@ impl HarnessStore {
             "runtime_command",
             command_id,
         )?;
-        if let (Some(session_id), Some(session_generation)) = (
-            record.target_session_id.as_deref(),
-            record.target_session_generation,
-        ) {
+        if runtime_command_requires_exact_binding(record.command) {
+            let session_id = record.target_session_id.as_deref().ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::MemberRunGenerationFenced,
+                    "provider-facing RuntimeCommand has no exact target AgentSession binding",
+                    "runtime_command",
+                    command_id,
+                    Some(record.version),
+                )
+            })?;
+            let session_generation = record.target_session_generation.ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::MemberRunGenerationFenced,
+                    "provider-facing RuntimeCommand has no exact target runtime generation",
+                    "runtime_command",
+                    command_id,
+                    Some(record.version),
+                )
+            })?;
             let session = self
                 .fabric_agent_sessions(&context.execution_space_id)?
                 .into_iter()
@@ -7633,6 +8256,17 @@ impl HarnessStore {
                     Some(record.version),
                 ));
             }
+            self.require_live_runtime_binding_unlocked(
+                &session,
+                &record.binding,
+                matches!(
+                    record.command,
+                    RuntimeCommandKind::StartSession | RuntimeCommandKind::OpenRuntime
+                ),
+                "runtime_command",
+                command_id,
+                Some(record.version),
+            )?;
         }
         if record.target_node_daemon_id != context.authenticated_actor.id
             || context.authenticated_actor.kind != ActorKind::Service
@@ -7666,8 +8300,39 @@ impl HarnessStore {
                 Some(record.version),
             ));
         }
+        let postcondition_combination_is_valid = match postcondition_status {
+            RuntimePostconditionStatus::Satisfied => {
+                status == RuntimeCommandStatus::Applied
+                    && effect_certainty == RuntimeEffectCertainty::Applied
+                    && result.is_some()
+            }
+            RuntimePostconditionStatus::Unsatisfied => {
+                status == RuntimeCommandStatus::Failed
+                    && effect_certainty == RuntimeEffectCertainty::NotApplied
+            }
+            RuntimePostconditionStatus::Unknown => true,
+        };
+        if !postcondition_combination_is_valid {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "RuntimeCommand postcondition status is not proven by this settlement",
+                "runtime_command",
+                command_id,
+                Some(record.version),
+            ));
+        }
         record.status = status;
+        record.phase = match status {
+            RuntimeCommandStatus::Applied => RuntimeCommandPhase::Settled,
+            RuntimeCommandStatus::Failed => RuntimeCommandPhase::Rejected,
+            RuntimeCommandStatus::Quiesced => RuntimeCommandPhase::Observed,
+            RuntimeCommandStatus::RecoveryRequired => RuntimeCommandPhase::RecoveryRequired,
+            RuntimeCommandStatus::Requested | RuntimeCommandStatus::Accepted => {
+                RuntimeCommandPhase::Prepared
+            }
+        };
         record.effect_certainty = effect_certainty;
+        record.postcondition_status = postcondition_status;
         record.result = result;
         record.failure_code = failure_code;
         record.version += 1;
@@ -7825,6 +8490,16 @@ mod tests {
             effective_permission_ceiling: PermissionCeiling::WorkspaceWrite,
             lifecycle: AgentSessionStatus::Idle,
             runtime_generation: 1,
+            control_state: firm_core::agentfirm_api::AgentSessionControlState {
+                driver_generation: 1,
+                driver_ref: firm_core::agentfirm_api::RuntimeDriverRef::NodeDaemon {
+                    node_daemon_id: "daemon-1".into(),
+                    node_daemon_generation: 1,
+                },
+                composition_fingerprint: Some("composition:test".into()),
+                capability_fingerprint: Some("capability:test".into()),
+                ..Default::default()
+            },
             native_session_ref: None,
             current_turn_id: None,
             queued_input_count: 0,
@@ -7847,14 +8522,7 @@ mod tests {
             "operation": operation,
             "delivery_id": format!("delivery-{id}"),
         });
-        let required_capability = match kind {
-            RuntimeCommandKind::AuthorMessage => "message.author",
-            RuntimeCommandKind::StartSession => "agent_session.start",
-            RuntimeCommandKind::StopSession => "agent_session.stop",
-            RuntimeCommandKind::ResumeSession => "agent_session.resume",
-            RuntimeCommandKind::DispatchProvider => "provider.dispatch",
-            RuntimeCommandKind::CancelProviderTurn => "provider.cancel",
-        };
+        let required_capability = runtime_command_capability(kind);
         let command = ControlCommandEnvelope {
             id: id.into(),
             execution_space_id: session.execution_space_id.clone(),
@@ -7870,6 +8538,19 @@ mod tests {
             idempotency_key: id.into(),
             expected_version: 0,
             expires_unix_ms: current_unix_ms() + 60_000,
+            binding: firm_core::agentfirm_api::RuntimeCommandBinding {
+                target_session_id: Some(session.id.clone()),
+                target_runtime_generation: Some(session.runtime_generation),
+                target_driver_generation: Some(session.control_state.driver_generation),
+                target_driver: session.control_state.driver_ref.clone(),
+                native_session_ref: session.native_session_ref.clone(),
+                composition_fingerprint: session.control_state.composition_fingerprint.clone(),
+                capability_fingerprint: session.control_state.capability_fingerprint.clone(),
+                permission_envelope_ref: Some(session.permission_envelope_ref.clone()),
+                ..Default::default()
+            },
+            precondition: Default::default(),
+            postcondition: Default::default(),
             payload_fingerprint: canonical_json_fingerprint(&payload),
             payload,
             issued_at: "t-command".into(),
@@ -7878,6 +8559,22 @@ mod tests {
         context.authority_actor = Some(command.authenticated_actor.clone());
         context.request_fingerprint = Some(runtime_command_envelope_fingerprint(&command).unwrap());
         (command, context)
+    }
+
+    fn test_runtime_binding(session_id: &str) -> firm_core::agentfirm_api::RuntimeCommandBinding {
+        firm_core::agentfirm_api::RuntimeCommandBinding {
+            target_session_id: Some(session_id.to_string()),
+            target_runtime_generation: Some(1),
+            target_driver_generation: Some(1),
+            target_driver: firm_core::agentfirm_api::RuntimeDriverRef::NodeDaemon {
+                node_daemon_id: "daemon-1".into(),
+                node_daemon_generation: 1,
+            },
+            composition_fingerprint: Some("composition:test".into()),
+            capability_fingerprint: Some("capability:test".into()),
+            permission_envelope_ref: Some("permission-default".into()),
+            ..Default::default()
+        }
     }
 
     fn fabric_store() -> (HarnessStore, PathBuf) {
@@ -9329,6 +10026,9 @@ mod tests {
             idempotency_key: "runtime-command-1".into(),
             expected_version: 0,
             expires_unix_ms: current_unix_ms() + 60_000,
+            binding: test_runtime_binding("session-runtime"),
+            precondition: Default::default(),
+            postcondition: Default::default(),
             payload,
             payload_fingerprint: fingerprint.clone(),
             issued_at: "t2".into(),
@@ -9398,6 +10098,75 @@ mod tests {
     }
 
     #[test]
+    fn interrupt_is_the_only_successor_admitted_while_start_cycle_is_in_flight() {
+        let (store, root) = fabric_store();
+        store
+            .create_agent_identity(
+                &context(
+                    "host",
+                    "identity.create",
+                    "identity-compensating-control",
+                    0,
+                ),
+                identity("compensating-control"),
+            )
+            .unwrap();
+        let session = session("session-compensating-control", "compensating-control");
+        store
+            .create_agent_session(
+                &service_context("session.create", "session-compensating-control", 0),
+                session.clone(),
+            )
+            .unwrap();
+        store
+            .transition_agent_session(
+                &service_context("session.activate", "session-compensating-active", 1),
+                &session.id,
+                AgentSessionStatus::Active,
+                "t-active",
+            )
+            .unwrap();
+
+        let (start, start_context) = runtime_command_fixture(
+            "runtime-compensating-start",
+            RuntimeCommandKind::StartCycle,
+            &session,
+            "start_cycle",
+        );
+        store
+            .prepare_runtime_command(&start_context, &start, current_unix_ms(), "t-start")
+            .expect("StartCycle admission");
+
+        let (interrupt, interrupt_context) = runtime_command_fixture(
+            "runtime-compensating-interrupt",
+            RuntimeCommandKind::InterruptCurrentCycle,
+            &session,
+            "interrupt_current_cycle",
+        );
+        let admitted = store
+            .prepare_runtime_command(
+                &interrupt_context,
+                &interrupt,
+                current_unix_ms(),
+                "t-interrupt",
+            )
+            .expect("an exact interrupt must be able to compensate an in-flight StartCycle");
+        assert_eq!(admitted.projection.status, RuntimeCommandStatus::Accepted);
+
+        let (quiesce, quiesce_context) = runtime_command_fixture(
+            "runtime-compensating-quiesce",
+            RuntimeCommandKind::QuiesceExecutionLane,
+            &session,
+            "quiesce_execution_lane",
+        );
+        let error = store
+            .prepare_runtime_command(&quiesce_context, &quiesce, current_unix_ms(), "t-quiesce")
+            .expect_err("quiesce still requires the cycle and interrupt to become terminal");
+        assert!(error.to_string().contains("reconciliation is required"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn runtime_command_replay_precedes_successor_fence_but_stale_settlement_is_zero_effect() {
         let (store, root) = fabric_store();
         store
@@ -9440,6 +10209,9 @@ mod tests {
             idempotency_key: "runtime-command-fence".into(),
             expected_version: 0,
             expires_unix_ms: current_unix_ms() + 120_000,
+            binding: test_runtime_binding("session-runtime-fence"),
+            precondition: Default::default(),
+            postcondition: Default::default(),
             payload_fingerprint: canonical_json_fingerprint(&payload),
             payload,
             issued_at: "t2".into(),
@@ -9535,6 +10307,9 @@ mod tests {
             idempotency_key: "runtime-control-cancel".into(),
             expected_version: 0,
             expires_unix_ms: current_unix_ms() + 60_000,
+            binding: test_runtime_binding("session-runtime-control"),
+            precondition: Default::default(),
+            postcondition: Default::default(),
             payload_fingerprint: canonical_json_fingerprint(&cancel_payload),
             payload: cancel_payload,
             issued_at: "t2".into(),
@@ -9606,6 +10381,9 @@ mod tests {
             idempotency_key: "runtime-control-stop".into(),
             expected_version: 0,
             expires_unix_ms: current_unix_ms() + 60_000,
+            binding: test_runtime_binding("session-runtime-control"),
+            precondition: Default::default(),
+            postcondition: Default::default(),
             payload_fingerprint: canonical_json_fingerprint(&stop_payload),
             payload: stop_payload,
             issued_at: "t3".into(),
@@ -9700,6 +10478,9 @@ mod tests {
             idempotency_key: "runtime-stop-once".into(),
             expected_version: 0,
             expires_unix_ms: current_unix_ms() + 60_000,
+            binding: test_runtime_binding("session-runtime-stop"),
+            precondition: Default::default(),
+            postcondition: Default::default(),
             payload_fingerprint: canonical_json_fingerprint(&payload),
             payload,
             issued_at: "t2".into(),
@@ -10208,6 +10989,9 @@ mod tests {
             idempotency_key: "runtime-permission-widening".into(),
             expected_version: 0,
             expires_unix_ms: current_unix_ms() + 60_000,
+            binding: test_runtime_binding("session-runtime-widened"),
+            precondition: Default::default(),
+            postcondition: Default::default(),
             payload_fingerprint: canonical_json_fingerprint(&payload),
             payload,
             issued_at: "t-widening".into(),
@@ -10282,6 +11066,9 @@ mod tests {
             idempotency_key: "runtime-start-standalone".into(),
             expected_version: 0,
             expires_unix_ms: current_unix_ms() + 60_000,
+            binding: test_runtime_binding("session-standalone"),
+            precondition: Default::default(),
+            postcondition: Default::default(),
             payload_fingerprint: canonical_json_fingerprint(&payload),
             payload,
             issued_at: "t-start".into(),
@@ -10528,6 +11315,354 @@ mod tests {
             .unwrap()
             .iter()
             .all(|binding| binding.status == WorkExecutionBindingStatus::Released));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_command_exact_binding_rejects_stale_fields_before_acceptance() {
+        for field in ["driver", "composition", "capability"] {
+            let (store, root) = fabric_store();
+            let identity_id = format!("binding-{field}");
+            let session_id = format!("session-binding-{field}");
+            store
+                .create_agent_identity(
+                    &context("host", "identity.create", &identity_id, 0),
+                    identity(&identity_id),
+                )
+                .unwrap();
+            let target = session(&session_id, &identity_id);
+            store
+                .create_agent_session(
+                    &service_context("session.create", &session_id, 0),
+                    target.clone(),
+                )
+                .unwrap();
+            let (mut command, mut admission) = runtime_command_fixture(
+                &format!("binding-command-{field}"),
+                RuntimeCommandKind::OpenRuntime,
+                &target,
+                "open_runtime",
+            );
+            match field {
+                "driver" => command.binding.target_driver_generation = Some(2),
+                "composition" => {
+                    command.binding.composition_fingerprint = Some("composition:stale".into())
+                }
+                "capability" => {
+                    command.binding.capability_fingerprint = Some("capability:stale".into())
+                }
+                _ => unreachable!(),
+            }
+            admission.request_fingerprint =
+                Some(runtime_command_envelope_fingerprint(&command).unwrap());
+            let before = store.canonical_operations().unwrap();
+            let error = store
+                .prepare_runtime_command(&admission, &command, current_unix_ms(), "t-rejected")
+                .expect_err("a stale exact-binding field must be fenced before Accepted");
+            assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
+            assert_eq!(store.canonical_operations().unwrap(), before, "{field}");
+            assert!(store.runtime_commands("space-test").unwrap().is_empty());
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn runtime_command_team_supervisor_generation_is_live_fenced_at_prepare_and_settle() {
+        let (store, root) = fabric_store();
+        append_runtime_team(&store, "team-supervisor", "run-supervisor");
+        let lease = store
+            .acquire_team_supervisor_under_node_lease(
+                "run-supervisor",
+                "11111111-1111-4111-8111-111111111111",
+                "daemon-1",
+                1,
+                "space-test",
+                "project-1",
+                "supervisor-1",
+                std::process::id(),
+                "loopback://supervisor-1",
+                current_unix_ms(),
+                60_000,
+            )
+            .unwrap();
+        store
+            .create_agent_identity(
+                &context("host", "identity.create", "supervised-agent", 0),
+                identity("supervised-agent"),
+            )
+            .unwrap();
+        let mut target = session("session-supervised", "supervised-agent");
+        target.control_state.driver_ref = RuntimeDriverRef::TeamSupervisor {
+            team_run_id: "run-supervisor".into(),
+            team_supervisor_id: lease.supervisor_id.clone(),
+            team_supervisor_generation: lease.generation,
+        };
+        store
+            .create_agent_session(
+                &service_context("session.create", "session-supervised", 0),
+                target.clone(),
+            )
+            .unwrap();
+
+        let (command, admission) = runtime_command_fixture(
+            "supervisor-live-command",
+            RuntimeCommandKind::OpenRuntime,
+            &target,
+            "open_runtime",
+        );
+        let accepted = store
+            .prepare_runtime_command(&admission, &command, current_unix_ms(), "t-accepted")
+            .unwrap();
+        assert_eq!(
+            accepted.projection.request_fingerprint,
+            runtime_command_envelope_fingerprint(&command).unwrap(),
+            "RuntimeCommandRecord must snapshot the full command, not only payload"
+        );
+        store
+            .release_team_supervisor_lease(
+                "run-supervisor",
+                &lease.supervisor_id,
+                lease.generation,
+                current_unix_ms(),
+            )
+            .unwrap();
+        let before_settle = store.canonical_operations().unwrap();
+        let error = store
+            .settle_runtime_command(
+                &service_context(
+                    "node_daemon.runtime.settle",
+                    "supervisor-live-command:settle",
+                    accepted.projection.version,
+                ),
+                &command.id,
+                RuntimeCommandStatus::Applied,
+                RuntimeEffectCertainty::Applied,
+                Some(serde_json::json!({"provider_receipt": "must-not-land"})),
+                None,
+                "t-settle",
+            )
+            .expect_err("a released Supervisor cannot settle Applied");
+        assert!(error.to_string().contains("SUPERVISOR_GENERATION_FENCED"));
+        assert_eq!(store.canonical_operations().unwrap(), before_settle);
+
+        let successor = store
+            .acquire_team_supervisor_under_node_lease(
+                "run-supervisor",
+                "11111111-1111-4111-8111-111111111111",
+                "daemon-1",
+                1,
+                "space-test",
+                "project-1",
+                "supervisor-2",
+                std::process::id(),
+                "loopback://supervisor-2",
+                current_unix_ms(),
+                60_000,
+            )
+            .unwrap();
+
+        let mut stale = session("session-stale-supervisor", "supervised-agent");
+        stale.id = "session-stale-supervisor".into();
+        stale.agent_identity_id = "another-supervised-agent".into();
+        stale.control_state.driver_ref = RuntimeDriverRef::TeamSupervisor {
+            team_run_id: "run-supervisor".into(),
+            team_supervisor_id: successor.supervisor_id,
+            team_supervisor_generation: successor.generation.saturating_add(1),
+        };
+        store
+            .create_agent_identity(
+                &context("host", "identity.create", "another-supervised-agent", 0),
+                identity("another-supervised-agent"),
+            )
+            .unwrap();
+        store
+            .create_agent_session(
+                &service_context("session.create", "session-stale-supervisor", 0),
+                stale.clone(),
+            )
+            .unwrap();
+        let (stale_command, stale_admission) = runtime_command_fixture(
+            "supervisor-stale-command",
+            RuntimeCommandKind::OpenRuntime,
+            &stale,
+            "open_runtime",
+        );
+        let before_prepare = store.canonical_operations().unwrap();
+        let error = store
+            .prepare_runtime_command(
+                &stale_admission,
+                &stale_command,
+                current_unix_ms(),
+                "t-stale",
+            )
+            .expect_err("a stale Supervisor generation must not reach Accepted");
+        assert!(error.to_string().contains("SUPERVISOR_GENERATION_FENCED"));
+        assert_eq!(store.canonical_operations().unwrap(), before_prepare);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_session_json_is_readable_but_cannot_admit_an_unbound_new_effect() {
+        let (store, root) = fabric_store();
+        let mut legacy_json =
+            serde_json::to_value(session("legacy-session", "legacy-agent")).unwrap();
+        legacy_json.as_object_mut().unwrap().remove("control_state");
+        let legacy: AgentSession = serde_json::from_value(legacy_json).unwrap();
+        assert_eq!(legacy.control_state.driver_generation, 0);
+        assert_eq!(legacy.control_state.driver_ref, RuntimeDriverRef::Unknown);
+        store
+            .create_agent_identity(
+                &context("host", "identity.create", "legacy-agent", 0),
+                identity("legacy-agent"),
+            )
+            .unwrap();
+        store
+            .create_agent_session(
+                &service_context("session.create", "legacy-session", 0),
+                legacy.clone(),
+            )
+            .unwrap();
+        let (mut command, mut admission) = runtime_command_fixture(
+            "legacy-unbound-command",
+            RuntimeCommandKind::OpenRuntime,
+            &legacy,
+            "open_runtime",
+        );
+        command.binding = Default::default();
+        admission.request_fingerprint =
+            Some(runtime_command_envelope_fingerprint(&command).unwrap());
+        let before = store.canonical_operations().unwrap();
+        let error = store
+            .prepare_runtime_command(&admission, &command, current_unix_ms(), "t-rejected")
+            .expect_err("legacy readability must not become new effect authority");
+        assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
+        assert_eq!(store.canonical_operations().unwrap(), before);
+        assert!(store.runtime_commands("space-test").unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn provider_continuation_driver_requires_exact_active_armed_generation() {
+        for case in ["exact", "disarmed", "revision"] {
+            let (store, root) = fabric_store();
+            let identity_id = format!("continuation-{case}");
+            let session_id = format!("session-continuation-{case}");
+            store
+                .create_agent_identity(
+                    &context("host", "identity.create", &identity_id, 0),
+                    identity(&identity_id),
+                )
+                .unwrap();
+            let mut target = session(&session_id, &identity_id);
+            target.control_state.execution_driver = MemberExecutionDriver::ProviderDriven;
+            target.control_state.driver_generation = 7;
+            target.control_state.driver_ref = RuntimeDriverRef::ProviderContinuation {
+                provider: "codex".into(),
+                continuation_id: "native-goal-1".into(),
+                continuation_revision: Some(3),
+                runtime_generation: 1,
+            };
+            target
+                .control_state
+                .continuation
+                .definition
+                .continuation_ref = Some("native-goal-1".into());
+            target.control_state.continuation.definition.revision =
+                Some(if case == "revision" { 4 } else { 3 });
+            target.control_state.continuation.definition.phase = NativeContinuationPhase::Active;
+            target.control_state.continuation.activation = if case == "disarmed" {
+                NativeContinuationActivation::Disarmed
+            } else {
+                NativeContinuationActivation::Armed {
+                    runtime_generation: 1,
+                    driver_generation: 7,
+                }
+            };
+            store
+                .create_agent_session(
+                    &service_context("session.create", &session_id, 0),
+                    target.clone(),
+                )
+                .unwrap();
+            let (command, admission) = runtime_command_fixture(
+                &format!("continuation-command-{case}"),
+                RuntimeCommandKind::InspectContinuation,
+                &target,
+                "inspect_continuation",
+            );
+            let before = store.canonical_operations().unwrap();
+            let result =
+                store.prepare_runtime_command(&admission, &command, current_unix_ms(), "t");
+            if case == "exact" {
+                assert_eq!(
+                    result.unwrap().projection.status,
+                    RuntimeCommandStatus::Accepted
+                );
+            } else {
+                let error = result.expect_err("continuation fence must reject mismatch");
+                assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
+                assert_eq!(store.canonical_operations().unwrap(), before);
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn control_state_binding_is_quiescent_generation_fenced_and_exactly_replayable() {
+        let (store, root) = fabric_store();
+        store
+            .create_agent_identity(
+                &context("host", "identity.create", "control-bind-agent", 0),
+                identity("control-bind-agent"),
+            )
+            .unwrap();
+        let mut target = session("session-control-bind", "control-bind-agent");
+        target.control_state.runtime_residency = RuntimeResidency::Detached;
+        target.control_state.activity = RuntimeActivity::Idle;
+        store
+            .create_agent_session(
+                &service_context("session.create", "session-control-bind", 0),
+                target.clone(),
+            )
+            .unwrap();
+        let mut next = target.control_state.clone();
+        next.driver_generation = 2;
+        next.composition_fingerprint = Some("composition:v2".into());
+        let mutation = service_context("session.control.bind", "control-bind", 1);
+        let first = store
+            .bind_agent_session_control_state(
+                &mutation,
+                &target.id,
+                target.runtime_generation,
+                next.clone(),
+                "t2",
+            )
+            .unwrap();
+        assert_eq!(first.projection.control_state.driver_generation, 2);
+        let before_replay = store.canonical_operations().unwrap();
+        let replay = store
+            .bind_agent_session_control_state(
+                &mutation,
+                &target.id,
+                target.runtime_generation,
+                next,
+                "t2",
+            )
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(store.canonical_operations().unwrap(), before_replay);
+
+        let error = store
+            .bind_agent_session_control_state(
+                &service_context("session.control.bind", "control-bind-stale", 2),
+                &target.id,
+                target.runtime_generation.saturating_add(1),
+                first.projection.control_state,
+                "t3",
+            )
+            .expect_err("stale runtime generation must not mutate control state");
+        assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
+        assert_eq!(store.canonical_operations().unwrap(), before_replay);
         fs::remove_dir_all(root).unwrap();
     }
 

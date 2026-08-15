@@ -2,9 +2,9 @@
 
 ```text
 status: implementation reference; persistent Agent Team mode implemented
-provider version reviewed: 0.83.0
+provider version reviewed: 0.84.2
 adapter contract: pi-rpc-v1
-adapter reviewed at: 2026-08-05
+adapter reviewed at: 2026-08-15
 ```
 
 This document defines how Star Harness integrates Pi as a persistent Agent
@@ -59,9 +59,12 @@ reconstructed from Harness events and does not become a synthetic transcript.
 ## Turn And Delivery Semantics
 
 Pi RPC accepts a `prompt` command and emits structured lifecycle, message, and
-tool events. Harness treats `agent_settled` as the terminal acknowledgement for
-one provider round. A successful prompt response alone is not semantic
-completion.
+tool events. A successful, correlated `prompt` response is the provider's
+input-acceptance receipt. Harness records that receipt immediately and may
+complete the corresponding WorkDelivery or MessageDelivery, so a disconnect
+after acceptance cannot cause blind redelivery. That response is not cycle
+completion, Work submission, or Host acceptance. `agent_settled` plus the
+post-cycle `get_state` observation proves the later ExecutionCycle boundary.
 
 Ordinary Host and peer mail has a `NextRound` boundary. Messages queued while
 Pi is busy remain durable in the Harness queue and wake a later provider
@@ -75,12 +78,13 @@ interaction_mode: EndRoundAndFollowUp
 ordinary_message_boundary: NextRound
 ```
 
-Every completed round gets a provider receipt of the form
-`pi:<native-session-path>:round-<n>`. The WorkDelivery active for that prompt
-is completed exactly once. Each Message accepted into that prompt records the
-same round receipt on its exact CanonicalMessageDelivery as
-`provider_received`. A later Host follow-up creates a new round and never
-rewrites the already-completed WorkDelivery receipt.
+Every accepted input stores the correlated Pi RPC response id as its provider
+receipt; Harness does not synthesize a receipt from a native-session path or a
+local round counter. The WorkDelivery active for that prompt is completed
+exactly once at input acceptance. Each Message accepted into that prompt
+records the same receipt on its exact `CanonicalMessageDelivery` as
+`provider_received`. A later Host follow-up creates a new prompt and never
+rewrites the already-completed delivery receipt.
 
 An agent message must include an explicit result report. Provider completion
 does not itself prove Host acceptance, artifact validity, or review approval.
@@ -106,8 +110,9 @@ The member's canonical permission ceiling is compiled into the spawned
 process — a mapped string that never reaches launch is not enforcement:
 
 - `read_only` → `pi --tools read,grep,find,ls`
-- `workspace_write` → `pi --tools read,grep,find,ls,write,edit` — no `bash`:
-  a shell escapes the workspace boundary and the adapter cannot verify it.
+- `workspace_write` → rejected before spawn. Pi's `--tools` constrains tool
+  kinds; it is not a workspace filesystem sandbox, so the adapter cannot claim
+  verified containment.
 - `full_access` → no `--tools` flag (Pi default toolset). The profile records
   `security_enforcement_locus: none_verified` for this case instead of
   pretending an adapter boundary exists.
@@ -118,7 +123,7 @@ The MemberRun's profile snapshot carries the resolved
 ## Thinking Privacy Contract
 
 Harness product policy permits thinking only as sanitized transient live
-state; it cannot be persisted or replayed as evidence. Pi 0.83.0 can persist
+state; it cannot be persisted or replayed as evidence. Pi 0.84.2 can persist
 thinking content in its native session, so persistent Team sessions always
 launch with:
 
@@ -181,7 +186,7 @@ Deterministic acceptance covers:
   `--tools` allowlist for the member's permission ceiling;
 - Work completion followed by a queued Host follow-up on the same runtime
   over the canonical Message/Delivery path;
-- two distinct round receipts without WorkDelivery conflict or disconnect,
+- two distinct provider input-acceptance receipts without WorkDelivery conflict or disconnect,
   read from the canonical per-binding delivery records;
 - TeamMessage delivery proof on the second round;
 - both halves of the busy-turn contract: an ordinary Message stays in the
@@ -192,9 +197,9 @@ Deterministic acceptance covers:
 - native-session binding and profile truth;
 - rejection of sessions containing persisted thinking.
 
-The opt-in live canary runs real Pi 0.83.0, performs the RPC handshake and a
-tool-writing prompt, waits for `agent_settled`, and verifies the native session
-contains no persisted thinking. Run it with:
+The opt-in live canary runs real Pi 0.84.2 exactly, performs the RPC handshake
+and a prompt, waits for `agent_settled`, verifies idle/pending native state,
+and verifies the native session contains no persisted thinking. Run it with:
 
 ```bash
 cargo test -p firm-cli --test pi_canary --features pi-canary -- --nocapture

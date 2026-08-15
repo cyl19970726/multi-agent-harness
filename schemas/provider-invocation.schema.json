@@ -18,6 +18,7 @@
     "node_daemon_generation": {"type": "integer", "minimum": 1},
     "provider": {"type": "string", "minLength": 1},
     "dispatch_mode": {"enum": ["queue_only", "start_if_idle", "inject_if_safe"]},
+    "binding": {"$ref": "https://agent-harness.local/schemas/runtime-command-record.schema.json#/$defs/binding"},
     "permission_ceiling": {"enum": ["read_only", "workspace_write", "full_access"]},
     "content": {"type": "string", "minLength": 1},
     "content_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},

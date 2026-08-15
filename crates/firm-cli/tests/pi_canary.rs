@@ -1,7 +1,7 @@
 //! Live canary: Pi RPC protocol integration verification.
 //!
 //! This test spawns pi --mode rpc with a real pi binary and exercises the
-//! full protocol round-trip: get_state → set_auto_compaction → prompt → tagent_settled.
+//! full protocol round-trip: get_state → set_auto_compaction → prompt → agent_settled.
 //! The prompt asks pi to write a small file to a temp dir, proving tool
 //! execution works through the RPC interface.
 //!
@@ -10,16 +10,31 @@
 
 #![cfg(feature = "pi-canary")]
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 #[test]
 fn pi_rpc_handshake_and_basic_prompt() {
+    let version = Command::new("pi")
+        .arg("--version")
+        .output()
+        .expect("probe pi version");
+    assert!(version.status.success(), "pi --version must succeed");
+    let exact_version = String::from_utf8_lossy(&version.stdout).trim().to_string();
+    assert_eq!(
+        exact_version, "0.84.2",
+        "this canary is evidence only for the reviewed Pi 0.84.2 RPC contract"
+    );
+
     let tmp = unique_temp_dir();
     std::fs::create_dir_all(&tmp).expect("create temp dir");
 
+    // The file-writing canary exercises the production trusted-FullAccess
+    // composition, whose honest mapping passes no --tools restriction. The
+    // separate deterministic tests cover ReadOnly argv and WorkspaceWrite
+    // fail-closed admission.
     let mut child = Command::new("pi")
         .args([
             "--mode",
@@ -38,13 +53,15 @@ fn pi_rpc_handshake_and_basic_prompt() {
         .expect("spawn pi --mode rpc");
 
     let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
 
     // 1. get_state handshake
     writeln!(stdin, r#"{{"id":"t1","type":"get_state"}}"#).unwrap();
     stdin.flush().unwrap();
 
     let state_response =
-        read_response(&mut child, "t1", Duration::from_secs(10)).expect("get_state response");
+        read_response(&mut stdout, "t1", Duration::from_secs(10)).expect("get_state response");
 
     let data = state_response.get("data").expect("get_state data field");
     let session_file = data
@@ -68,7 +85,7 @@ fn pi_rpc_handshake_and_basic_prompt() {
     )
     .unwrap();
     stdin.flush().unwrap();
-    let compaction_response = read_response(&mut child, "t2", Duration::from_secs(5))
+    let compaction_response = read_response(&mut stdout, "t2", Duration::from_secs(5))
         .expect("set_auto_compaction response");
     assert!(
         compaction_response
@@ -96,8 +113,7 @@ fn pi_rpc_handshake_and_basic_prompt() {
     // 4. Read events until agent_settled
     let mut found_settled = false;
     let mut final_text = String::new();
-    let stdout = child.stdout.take().expect("stdout");
-    for line in BufReader::new(stdout).lines() {
+    for line in stdout.by_ref().lines() {
         let line = line.expect("read line");
         let frame: serde_json::Value = serde_json::from_str(&line).expect("parse JSON frame");
         let event_type = frame.get("type").and_then(|v| v.as_str());
@@ -144,14 +160,43 @@ fn pi_rpc_handshake_and_basic_prompt() {
 
     assert_native_session_has_no_thinking(Path::new(session_file));
 
-    // 7. Clean shutdown
+    // 7. Observe the exact settled postcondition. `prompt success` only means
+    // admission; `agent_settled` plus this passive state read proves this
+    // execution cycle has no queued continuation left.
+    writeln!(stdin, r#"{{"id":"t4","type":"get_state"}}"#).unwrap();
+    stdin.flush().unwrap();
+    let settled_state = read_response(&mut stdout, "t4", Duration::from_secs(5))
+        .expect("settled get_state response");
+    let settled_data = settled_state.get("data").expect("settled state data");
+    assert_eq!(
+        settled_data
+            .get("isStreaming")
+            .and_then(|value| value.as_bool()),
+        Some(false),
+        "agent_settled must be followed by an observed idle runtime"
+    );
+    assert_eq!(
+        settled_data
+            .get("pendingMessageCount")
+            .and_then(|value| value.as_u64()),
+        Some(0),
+        "the canary must not leave native steering/follow-up input queued"
+    );
+
+    // 8. Release the live runtime. The native JSONL is provider-owned memory:
+    // releasing the process must retain it until this isolated test fixture is
+    // explicitly cleaned up.
     drop(stdin);
-    // Kill pi process
     let _ = child.kill();
     let _ = child.wait();
+    assert!(
+        Path::new(session_file).is_file(),
+        "releasing Pi must retain the native session JSONL"
+    );
     std::fs::remove_dir_all(&tmp).expect("remove temp dir");
 
     eprintln!("✅ Pi RPC live canary passed");
+    eprintln!("   provider_version: {exact_version}");
     eprintln!("   session_file: {session_file}");
     eprintln!("   final_text: {final_text}");
 }
@@ -192,23 +237,24 @@ fn contains_persisted_thinking(value: &serde_json::Value) -> bool {
     }
 }
 
-/// Read one response frame with a specific id from child's stdout.
-fn read_response(
-    child: &mut Child,
+/// Read one response frame with a specific id from an already-buffered RPC
+/// stream. Reusing one reader is required: constructing a new `BufReader` for
+/// every response can drop frames that were read ahead from the child.
+fn read_response<R: BufRead>(
+    reader: &mut R,
     expected_id: &str,
     timeout: Duration,
 ) -> Option<serde_json::Value> {
-    let stdout = child.stdout.as_mut()?;
-    let reader = BufReader::new(stdout);
-    let mut lines = reader.lines();
     let start = std::time::Instant::now();
+    let mut line = String::new();
 
     while start.elapsed() < timeout {
-        let line = match lines.next() {
-            Some(Ok(l)) => l,
-            _ => return None,
-        };
-        let frame: serde_json::Value = match serde_json::from_str(&line) {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => return None,
+            Ok(_) => {}
+        }
+        let frame: serde_json::Value = match serde_json::from_str(line.trim_end()) {
             Ok(f) => f,
             Err(_) => continue,
         };
