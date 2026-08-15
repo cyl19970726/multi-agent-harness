@@ -24678,52 +24678,59 @@ fn run_claude_agent_sdk_team_member(
         )?;
         inflight_effects.insert(input_id, effect);
         active_work_continuation_inflight = true;
-    } else if let Some(claimed) = ledger.claim_canonical_work_for(&member.id)? {
-        let work_envelope = member_work_collaboration_envelope(
-            ledger,
-            context.execution_space_id.as_deref(),
-            project_id,
-            project_selector,
-            &member_row,
-            Some(&claimed.work),
-        )?;
-        turn_lease = Some(turn_leases.acquire());
-        let effect = send_claude_provider_input(
-            ledger,
-            &member_row,
-            &mut send,
-            &claimed.delivery.id,
-            "work",
-            "host",
-            &claimed.work.id,
-            work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope),
-        )?;
-        inflight_effects.insert(claimed.delivery.id.clone(), effect);
-        inflight_works.insert(claimed.delivery.id.clone(), claimed);
-    } else if claude_agent_sdk_idle_grace().is_none() {
-        if let Some(work) = ledger.active_work_continuation_for(&member.id)? {
+    } else if member_row.native_session.is_some() {
+        // A fresh SDK runtime must publish `session_bound` before any
+        // StartCycle is prepared. Otherwise the durable command would bind
+        // native_session=None and correctly fail its exact fence after the
+        // provider reports the real native session id. Resume already has an
+        // exact binding and may deliver immediately.
+        if let Some(claimed) = ledger.claim_canonical_work_for(&member.id)? {
             let work_envelope = member_work_collaboration_envelope(
                 ledger,
                 context.execution_space_id.as_deref(),
                 project_id,
                 project_selector,
                 &member_row,
-                Some(&work),
+                Some(&claimed.work),
             )?;
             turn_lease = Some(turn_leases.acquire());
-            let input_id = format!("work-continuation:{}:{}", work.id, work.version);
             let effect = send_claude_provider_input(
                 ledger,
                 &member_row,
                 &mut send,
-                &input_id,
-                "work_continuation",
+                &claimed.delivery.id,
+                "work",
                 "host",
-                &work.id,
-                active_work_continuation_prompt(objective, &member_row, &work, &work_envelope),
+                &claimed.work.id,
+                work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope),
             )?;
-            inflight_effects.insert(input_id, effect);
-            active_work_continuation_inflight = true;
+            inflight_effects.insert(claimed.delivery.id.clone(), effect);
+            inflight_works.insert(claimed.delivery.id.clone(), claimed);
+        } else if claude_agent_sdk_idle_grace().is_none() {
+            if let Some(work) = ledger.active_work_continuation_for(&member.id)? {
+                let work_envelope = member_work_collaboration_envelope(
+                    ledger,
+                    context.execution_space_id.as_deref(),
+                    project_id,
+                    project_selector,
+                    &member_row,
+                    Some(&work),
+                )?;
+                turn_lease = Some(turn_leases.acquire());
+                let input_id = format!("work-continuation:{}:{}", work.id, work.version);
+                let effect = send_claude_provider_input(
+                    ledger,
+                    &member_row,
+                    &mut send,
+                    &input_id,
+                    "work_continuation",
+                    "host",
+                    &work.id,
+                    active_work_continuation_prompt(objective, &member_row, &work, &work_envelope),
+                )?;
+                inflight_effects.insert(input_id, effect);
+                active_work_continuation_inflight = true;
+            }
         }
     }
 
@@ -25232,7 +25239,10 @@ fn run_claude_agent_sdk_team_member(
         // The response-intent gate (ADR 0046 §4) keeps informational-only mail
         // queued until response-required mail triggers a round, then batches it.
         let mut delivered_any = false;
-        if inflight_works.is_empty() && delivered_works.is_empty() {
+        if member_row.native_session.is_some()
+            && inflight_works.is_empty()
+            && delivered_works.is_empty()
+        {
             if let Some(claimed) = ledger.claim_canonical_work_for(&member.id)? {
                 if turn_lease.is_none() {
                     turn_lease = Some(turn_leases.acquire());
@@ -25294,7 +25304,11 @@ fn run_claude_agent_sdk_team_member(
                 }
             }
         }
-        let queued = ledger.claim_canonical_round_messages_for(&member.id)?;
+        let queued = if member_row.native_session.is_some() {
+            ledger.claim_canonical_round_messages_for(&member.id)?
+        } else {
+            Vec::new()
+        };
         for message in queued {
             if inflight_messages.contains_key(&message.id)
                 || delivered_message_ids.contains(&message.id)
