@@ -34,7 +34,13 @@ function stripCfgItems(source, cfgName) {
 }
 
 function productionRust(path) {
-  return stripCfgItems(stripCfgItems(readFileSync(path, "utf8"), "any()"), "test");
+  return stripCfgItems(
+    stripCfgItems(
+      stripCfgItems(readFileSync(path, "utf8"), "any()"),
+      "test",
+    ),
+    'any(test, feature = "test-support")',
+  );
 }
 
 const requiredSchemas = [
@@ -264,6 +270,27 @@ for (const retiredLifecycleCall of [
     failures.push(`current Member lifecycle transport retains canonical-only mutation: ${retiredLifecycleCall}`);
   }
 }
+const trustKernelProduction = productionRust("crates/firm-store/src/trust_kernel.rs");
+const runtimeStoreProduction = productionRust("crates/firm-store/src/lib.rs");
+const firmStoreCargo = readFileSync("crates/firm-store/Cargo.toml", "utf8");
+const firmCliCargo = readFileSync("crates/firm-cli/Cargo.toml", "utf8");
+const firmCliProductionDependencies = firmCliCargo.split("[dev-dependencies]")[0];
+if (/default\s*=.*test-support/.test(firmStoreCargo)
+    || firmCliProductionDependencies.includes('features = ["test-support"]')) {
+  failures.push("firm-store test-support reconstruction seam is enabled by a production/default feature");
+}
+for (const productionOnlyTestSeam of [
+  "legacy_import_create_trust_member_run_projection",
+  "transition_trust_member_run",
+  "resume_trust_native_session",
+]) {
+  if (trustKernelProduction.includes(`fn ${productionOnlyTestSeam}(`)) {
+    failures.push(`firm-store production surface still compiles retired/test-only lifecycle writer: ${productionOnlyTestSeam}`);
+  }
+}
+if (runtimeStoreProduction.includes("fn legacy_import_append_member_run_projection(")) {
+  failures.push("firm-store production surface still compiles the Legacy raw MemberRun reconstruction writer");
+}
 if (!mcp.includes("const MCP_MEMBER_TRUST_COMMANDS")
     || mcp.includes('"create_member_run"')
     || !mcp.includes("MemberRun creation is available only through team_run_create or team_run_add_member")) {
@@ -329,6 +356,8 @@ const roleViewTransport = productionRust("crates/firm-cli/src/role_views_api.rs"
 for (const roleViewScopeToken of [
   "current_team_run_execution_space(&run)",
   "resolved_space == space_id",
+  'member_run["coordination_status"] == "active"',
+  'Some("disconnected" | "failed" | "stopped")',
 ]) {
   if (!roleViewTransport.includes(roleViewScopeToken)) {
     failures.push(`RoleView current TeamRun projection bypasses strict exact-space authority: ${roleViewScopeToken}`);

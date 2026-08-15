@@ -1902,10 +1902,12 @@ fn team_view(
                     disabled,
                 ));
             }
-            if matches!(
-                member_run["runtime_status"].as_str(),
-                Some("disconnected" | "failed" | "stopped")
-            ) {
+            if member_run["coordination_status"] == "active"
+                && matches!(
+                    member_run["runtime_status"].as_str(),
+                    Some("disconnected" | "failed" | "stopped")
+                )
+            {
                 actions.push(action(
                     "resume_native_session",
                     "member_run",

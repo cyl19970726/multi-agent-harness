@@ -1888,8 +1888,8 @@ impl HarnessStore {
     /// Reconstruct one raw historical ProviderRuntimeProjection during an
     /// explicit Legacy import. It is intentionally not a current admission
     /// path and never materializes the canonical MemberRun.
-    #[doc(hidden)]
-    pub fn legacy_import_append_member_run_projection(
+    #[cfg(test)]
+    pub(crate) fn legacy_import_append_member_run_projection(
         &self,
         value: &ProviderRuntimeProjection,
     ) -> StoreResult<()> {
@@ -4975,6 +4975,7 @@ impl HarnessStore {
     /// member. A same-team ProviderRuntimeProjection row is not membership authority: the
     /// append-only ledger can contain stale or forged rows that were never
     /// admitted to the TeamRun.
+    #[cfg(test)]
     fn ensure_unique_member_identity_unlocked(
         &self,
         team_run: &AgentTeamRun,

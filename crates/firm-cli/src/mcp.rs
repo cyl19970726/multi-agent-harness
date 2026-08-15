@@ -1484,7 +1484,7 @@ fn tool_definitions() -> Value {
     json!([
         {
             "name": "agentfirm_member_trust_mutate",
-            "description": "Execute one advertised canonical Member Execution Trust lifecycle or Work command. MemberRun creation is available only through team_run_create or team_run_add_member. Actor identity comes only from the MCP process transport environment.",
+            "description": "Execute one advertised Member Execution Trust lifecycle or Work command. MemberRun creation is available only through team_run_create or team_run_add_member. Close requires Active; Reopen requires Closed; ResumeNativeSession requires Active plus a Disconnected, Failed, or Stopped runtime. Lifecycle changes use the combined TeamRun authority and never mutate only one projection. Actor identity comes only from the MCP process transport environment.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,

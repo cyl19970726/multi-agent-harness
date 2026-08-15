@@ -1470,6 +1470,7 @@ impl HarnessStore {
 
     /// Explicit reconstruction seam for Legacy/import tests. Current Team
     /// Member admission must use the combined TeamRun admission APIs.
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn legacy_import_create_trust_member_run_projection(
         &self,
@@ -1582,11 +1583,16 @@ impl HarnessStore {
                     && current.last_event_at.as_deref() == Some(updated_at)
                     && current.finished_at.as_deref() == Some(updated_at)
             }
-            CurrentTeamMemberLifecycleTransition::Reopen
-            | CurrentTeamMemberLifecycleTransition::ResumeNativeSession => {
+            CurrentTeamMemberLifecycleTransition::Reopen => {
                 current.coordination_status == LegacyMemberCoordinationStatus::Active
                     && current.status == MemberRunStatus::Queued
                     && current.started_at == updated_at
+                    && current.last_event_at.as_deref() == Some(updated_at)
+                    && current.finished_at.is_none()
+            }
+            CurrentTeamMemberLifecycleTransition::ResumeNativeSession => {
+                current.coordination_status == LegacyMemberCoordinationStatus::Active
+                    && current.status == MemberRunStatus::Starting
                     && current.last_event_at.as_deref() == Some(updated_at)
                     && current.finished_at.is_none()
             }
@@ -1642,12 +1648,11 @@ impl HarnessStore {
                 next.finished_at = Some(updated_at.to_string());
                 "retired"
             }
-            CurrentTeamMemberLifecycleTransition::Reopen
-            | CurrentTeamMemberLifecycleTransition::ResumeNativeSession => {
+            CurrentTeamMemberLifecycleTransition::Reopen => {
                 if current.coordination_status != LegacyMemberCoordinationStatus::Closed {
                     return Err(trust_error(
                         TrustErrorCode::InvalidStateTransition,
-                        "Reopen/resume requires a closed MemberRun",
+                        "Reopen requires a closed MemberRun",
                         "member_run",
                         member_run_id,
                         Some(canonical_current.version),
@@ -1682,21 +1687,63 @@ impl HarnessStore {
                 next.status = MemberRunStatus::Queued;
                 next.started_at = updated_at.to_string();
                 next.finished_at = None;
-                if transition == CurrentTeamMemberLifecycleTransition::ResumeNativeSession {
-                    "native_session_resume_requested"
-                } else {
-                    "reopened"
+                "reopened"
+            }
+            CurrentTeamMemberLifecycleTransition::ResumeNativeSession => {
+                if current.coordination_status != LegacyMemberCoordinationStatus::Active
+                    || !matches!(
+                        current.status,
+                        MemberRunStatus::Disconnected
+                            | MemberRunStatus::Failed
+                            | MemberRunStatus::Stopped
+                    )
+                {
+                    return Err(trust_error(
+                        TrustErrorCode::InvalidStateTransition,
+                        "Resume native session requires an active, disconnected, failed, or stopped MemberRun",
+                        "member_run",
+                        member_run_id,
+                        Some(canonical_current.version),
+                    ));
                 }
+                let session = current.native_session.as_ref().ok_or_else(|| {
+                    trust_error(
+                        TrustErrorCode::NativeSessionMissing,
+                        "resume native session requires a resumable NativeSessionRef",
+                        "member_run",
+                        member_run_id,
+                        Some(canonical_current.version),
+                    )
+                })?;
+                if !session.supports_resume
+                    || matches!(
+                        session.availability,
+                        firm_core::NativeSessionAvailability::Missing
+                            | firm_core::NativeSessionAvailability::Incompatible
+                    )
+                {
+                    return Err(trust_error(
+                        TrustErrorCode::NativeSessionIncompatible,
+                        "NativeSessionRef is not safely resumable",
+                        "member_run",
+                        member_run_id,
+                        Some(canonical_current.version),
+                    ));
+                }
+                // Resuming a still-active MemberRun reattaches its exact
+                // frozen provider-native session. It is not a coordination
+                // reopen and therefore does not mint a new runtime
+                // generation.
+                next.status = MemberRunStatus::Starting;
+                next.finished_at = None;
+                "native_session_resume_requested"
             }
         };
         next.last_event_at = Some(updated_at.to_string());
         next.validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        let allow_reopen_generation_advance = matches!(
-            transition,
-            CurrentTeamMemberLifecycleTransition::Reopen
-                | CurrentTeamMemberLifecycleTransition::ResumeNativeSession
-        );
+        let allow_reopen_generation_advance =
+            transition == CurrentTeamMemberLifecycleTransition::Reopen;
         let mut prepared = self
             .prepare_current_member_runtime_sync_with_generation_unlocked(
                 &execution_space_id,
@@ -1779,191 +1826,6 @@ impl HarnessStore {
             runtime_projection: next,
             canonical,
         })
-    }
-
-    #[allow(unreachable_code)]
-    pub fn transition_trust_member_run(
-        &self,
-        context: &MutationContext,
-        member_run_id: &str,
-        next: MemberCoordinationStatus,
-        updated_at: &str,
-    ) -> StoreResult<CanonicalMutationResult<MemberRun>> {
-        let transition = match next {
-            MemberCoordinationStatus::Closed => CurrentTeamMemberLifecycleTransition::Close,
-            MemberCoordinationStatus::Active => CurrentTeamMemberLifecycleTransition::Reopen,
-            MemberCoordinationStatus::Retired => CurrentTeamMemberLifecycleTransition::Retire,
-        };
-        return self
-            .transition_current_team_member_lifecycle(
-                context,
-                member_run_id,
-                transition,
-                updated_at,
-            )
-            .map(|result| result.canonical);
-        self.init()?;
-        let _trust_lock = self.acquire_write_lock()?;
-        let mut run = self
-            .latest_trust_envelopes_unlocked(&context.execution_space_id, "member_run")?
-            .remove(member_run_id)
-            .ok_or_else(|| {
-                trust_error(
-                    TrustErrorCode::InvalidStateTransition,
-                    "MemberRun not found",
-                    "member_run",
-                    member_run_id,
-                    None,
-                )
-            })
-            .and_then(|envelope| event_projection::<MemberRun>(&envelope))?;
-        let transition = match (run.coordination_status, next) {
-            (MemberCoordinationStatus::Active, MemberCoordinationStatus::Closed) => "closed",
-            (MemberCoordinationStatus::Closed, MemberCoordinationStatus::Active) => "reopened",
-            (MemberCoordinationStatus::Active, MemberCoordinationStatus::Retired)
-            | (MemberCoordinationStatus::Closed, MemberCoordinationStatus::Retired) => "retired",
-            _ => {
-                return Err(trust_error(
-                    TrustErrorCode::InvalidStateTransition,
-                    "MemberRun coordination transition is not allowed",
-                    "member_run",
-                    member_run_id,
-                    Some(run.version),
-                ))
-            }
-        };
-        if transition == "reopened" {
-            let session = run.native_session.as_ref().ok_or_else(|| {
-                trust_error(
-                    TrustErrorCode::NativeSessionMissing,
-                    "reopen requires a resumable NativeSessionRef",
-                    "member_run",
-                    member_run_id,
-                    Some(run.version),
-                )
-            })?;
-            if !session.supports_resume
-                || !matches!(
-                    session.availability,
-                    firm_core::agentfirm_api::NativeSessionAvailability::Available
-                        | firm_core::agentfirm_api::NativeSessionAvailability::Stale
-                )
-            {
-                return Err(trust_error(
-                    TrustErrorCode::NativeSessionIncompatible,
-                    "NativeSessionRef is not safely resumable",
-                    "member_run",
-                    member_run_id,
-                    Some(run.version),
-                ));
-            }
-            run.runtime_generation += 1;
-            run.runtime_status = MemberRuntimeStatus::Idle;
-        } else if transition == "closed" {
-            run.runtime_status = MemberRuntimeStatus::Stopped;
-        } else {
-            run.runtime_status = MemberRuntimeStatus::Stopped;
-            run.finished_at = Some(updated_at.to_string());
-        }
-        run.coordination_status = next;
-        run.version += 1;
-        run.last_event_at = Some(updated_at.to_string());
-
-        let mut side_records = Vec::new();
-        if transition == "reopened" {
-            if let Some(binding_id) = run.workspace_binding_id.as_deref() {
-                let mut binding = self
-                    .trust_workspace_bindings(&context.execution_space_id)?
-                    .into_iter()
-                    .find(|binding| binding.id == binding_id)
-                    .ok_or_else(|| {
-                        trust_error(
-                            TrustErrorCode::WorkspacePathUnsafe,
-                            "reopen requires the bound workspace projection",
-                            "workspace_binding",
-                            binding_id,
-                            None,
-                        )
-                    })?;
-                if matches!(
-                    binding.lifecycle,
-                    WorkspaceLifecycle::Missing
-                        | WorkspaceLifecycle::CleanupBlocked
-                        | WorkspaceLifecycle::Removed
-                ) {
-                    return Err(trust_error(
-                        TrustErrorCode::WorkspaceCleanupBlocked,
-                        "reopen cannot reattach an unavailable workspace",
-                        "workspace_binding",
-                        binding_id,
-                        Some(binding.version),
-                    ));
-                }
-                let observed = observe_workspace_safety(Path::new(&binding.canonical_root))?;
-                if !observed.link_escape_free {
-                    return Err(trust_error(
-                        TrustErrorCode::WorkspaceLinkEscape,
-                        "reopen workspace contains a symbolic-link escape",
-                        "workspace_binding",
-                        binding_id,
-                        Some(binding.version),
-                    ));
-                }
-                if observed.conflicted || observed.dirty {
-                    return Err(trust_error(
-                        if observed.conflicted {
-                            TrustErrorCode::WorkspaceConflicted
-                        } else {
-                            TrustErrorCode::WorkspaceDirty
-                        },
-                        "reopen requires a clean conflict-free workspace",
-                        "workspace_binding",
-                        binding_id,
-                        Some(binding.version),
-                    ));
-                }
-                binding.lifecycle = WorkspaceLifecycle::Attached;
-                binding.attached_member_generation = Some(run.runtime_generation);
-                binding.dirty_fingerprint = None;
-                binding.blocked_reason = None;
-                binding.version += 1;
-                binding.updated_at = updated_at.to_string();
-                side_records.push(serde_json::to_value(binding)?);
-            }
-        }
-        if transition == "closed" || transition == "retired" {
-            for mut delivery in self.trust_work_deliveries(&context.execution_space_id)? {
-                if delivery.recipient_member_run_id != member_run_id {
-                    continue;
-                }
-                if transition == "closed" && delivery.status == WorkDeliveryStatus::Queued {
-                    delivery.freeze_generation = Some(run.runtime_generation);
-                    delivery.version += 1;
-                    delivery.updated_at = updated_at.to_string();
-                    side_records.push(serde_json::to_value(delivery)?);
-                } else if transition == "retired"
-                    && matches!(
-                        delivery.status,
-                        WorkDeliveryStatus::Queued | WorkDeliveryStatus::Claimed
-                    )
-                {
-                    delivery.status = WorkDeliveryStatus::Invalidated;
-                    delivery.version += 1;
-                    delivery.updated_at = updated_at.to_string();
-                    side_records.push(serde_json::to_value(delivery)?);
-                }
-            }
-        }
-        self.commit_trust_projection_unlocked(
-            context,
-            "member_run",
-            member_run_id,
-            transition,
-            serde_json::json!({"coordination_status": next, "updated_at": updated_at}),
-            &run,
-            side_records,
-            Vec::new(),
-        )
     }
 
     /// Advance one current provider runtime generation while keeping the
@@ -2098,80 +1960,6 @@ impl HarnessStore {
             Vec::new(),
         )?;
         Ok(())
-    }
-
-    #[allow(unreachable_code)]
-    pub fn resume_trust_native_session(
-        &self,
-        context: &MutationContext,
-        member_run_id: &str,
-        updated_at: &str,
-    ) -> StoreResult<CanonicalMutationResult<MemberRun>> {
-        return self
-            .transition_current_team_member_lifecycle(
-                context,
-                member_run_id,
-                CurrentTeamMemberLifecycleTransition::ResumeNativeSession,
-                updated_at,
-            )
-            .map(|result| result.canonical);
-        self.init()?;
-        let _trust_lock = self.acquire_write_lock()?;
-        let mut run = self
-            .latest_trust_envelopes_unlocked(&context.execution_space_id, "member_run")?
-            .remove(member_run_id)
-            .ok_or_else(|| {
-                trust_error(
-                    TrustErrorCode::InvalidStateTransition,
-                    "MemberRun not found",
-                    "member_run",
-                    member_run_id,
-                    None,
-                )
-            })
-            .and_then(|envelope| event_projection::<MemberRun>(&envelope))?;
-        self.claimable_member_run(
-            &context.execution_space_id,
-            member_run_id,
-            run.runtime_generation,
-        )?;
-        let session = run.native_session.as_ref().ok_or_else(|| {
-            trust_error(
-                TrustErrorCode::NativeSessionMissing,
-                "resume-native-session requires NativeSessionRef",
-                "member_run",
-                member_run_id,
-                Some(run.version),
-            )
-        })?;
-        if !session.supports_resume
-            || !matches!(
-                session.availability,
-                firm_core::agentfirm_api::NativeSessionAvailability::Available
-                    | firm_core::agentfirm_api::NativeSessionAvailability::Stale
-            )
-        {
-            return Err(trust_error(
-                TrustErrorCode::NativeSessionIncompatible,
-                "NativeSessionRef is not safely resumable",
-                "member_run",
-                member_run_id,
-                Some(run.version),
-            ));
-        }
-        run.runtime_status = MemberRuntimeStatus::Starting;
-        run.version += 1;
-        run.last_event_at = Some(updated_at.to_string());
-        self.commit_trust_projection_unlocked(
-            context,
-            "member_run",
-            member_run_id,
-            "native_session_resume_requested",
-            serde_json::json!({"updated_at": updated_at}),
-            &run,
-            Vec::new(),
-            Vec::new(),
-        )
     }
 
     /// Write the settled provider-native Session binding onto a trust MemberRun.

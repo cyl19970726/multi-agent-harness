@@ -704,6 +704,20 @@ fn retired_mcp_standalone_member_run_create_is_unadvertised_and_byte_zero() {
         !member_trust_tool.to_string().contains("create_member_run"),
         "standalone MemberRun create must not be advertised: {member_trust_tool}"
     );
+    let lifecycle_description = member_trust_tool["description"]
+        .as_str()
+        .expect("Member Trust tool description");
+    for contract in [
+        "Close requires Active",
+        "Reopen requires Closed",
+        "ResumeNativeSession requires Active plus a Disconnected, Failed, or Stopped runtime",
+        "combined TeamRun authority",
+    ] {
+        assert!(
+            lifecycle_description.contains(contract),
+            "MCP lifecycle contract is not honestly advertised ({contract}): {lifecycle_description}"
+        );
+    }
 
     let store = HarnessStore::new(home.spaces_dir().join(execution_space_id));
     let authority_counts = || {
@@ -2814,6 +2828,37 @@ fn mcp_stdio_work_list_brief_since_and_board_summary() {
         .rev()
         .find(|run| run.id == team_run_id)
         .expect("current TeamRun");
+    let mut lifecycle_mcp = McpClient::spawn(
+        &home,
+        &project_id,
+        &[
+            ("AGENTFIRM_MCP_ACTOR_KIND", "agent_member"),
+            ("AGENTFIRM_MCP_ACTOR_ID", "mcp-host-board-reads"),
+        ],
+    );
+    let before_invalid_resume = directory_snapshot(&home.spaces_dir());
+    let invalid_resume = lifecycle_mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "agentfirm_member_trust_mutate",
+            "arguments": {
+                "command": {"command": "resume_native_session", "member_run_id": alice_id, "updated_at": "unix-ms:invalid-active-idle-resume"},
+                "idempotency_key": "invalid-active-idle-resume",
+                "expected_version": 1
+            }
+        }),
+    );
+    assert!(
+        call_error_text(&invalid_resume).contains(
+            "Resume native session requires an active, disconnected, failed, or stopped MemberRun"
+        ),
+        "Active+Idle Resume must fail closed: {invalid_resume}"
+    );
+    assert_eq!(
+        directory_snapshot(&home.spaces_dir()),
+        before_invalid_resume,
+        "invalid MCP Resume must produce a byte-zero Store delta"
+    );
     let dangling_id = "member-run-mcp-dangling";
     let mut partial = run.clone();
     partial.member_run_ids.push(dangling_id.to_string());
@@ -2844,14 +2889,6 @@ fn mcp_stdio_work_list_brief_since_and_board_summary() {
             "{tool}: {response}"
         );
     }
-    let mut lifecycle_mcp = McpClient::spawn(
-        &home,
-        &project_id,
-        &[
-            ("AGENTFIRM_MCP_ACTOR_KIND", "agent_member"),
-            ("AGENTFIRM_MCP_ACTOR_ID", "mcp-host-board-reads"),
-        ],
-    );
     let partial_close = lifecycle_mcp.request(
         "tools/call",
         serde_json::json!({

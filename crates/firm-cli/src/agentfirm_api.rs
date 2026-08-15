@@ -82,18 +82,22 @@ pub enum TrustCommand {
         member_id: String,
         updated_at: String,
     },
+    /// Close an Active MemberRun and stop its current runtime projection.
     CloseMemberRun {
         member_run_id: String,
         updated_at: String,
     },
+    /// Reopen a Closed MemberRun with its resumable native Session.
     ReopenMemberRun {
         member_run_id: String,
         updated_at: String,
     },
+    /// Permanently retire any non-retired MemberRun.
     RetireMemberRun {
         member_run_id: String,
         updated_at: String,
     },
+    /// Resume an Active MemberRun whose runtime is Disconnected, Failed, or Stopped.
     ResumeNativeSession {
         member_run_id: String,
         updated_at: String,
