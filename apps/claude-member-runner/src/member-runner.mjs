@@ -282,16 +282,15 @@ export function createMemberRunner({ sdk, config, emit }) {
       // The interrupted turn did not finish consuming its durable input. Do
       // not let that input id become the trigger of a later resumed turn.
       const abandonedTriggerMessageIds = consumedMessageIds.splice(0);
-      // Retire this query's consumer, then end its iterator, so `start()`
+      // Retire this query's consumer, then close the SDK query, so `start()`
       // leaves the for-await and opens a fresh query on the same session.
-      // Without this the member hangs: the stream stops yielding but never
-      // ends, so nothing detects that the query is spent.
+      // Do not await `query.return()`: AsyncGenerator return is queued behind
+      // the already-pending `next()` used by the for-await loop, while an
+      // interrupted Claude 2.1.220 query stops yielding without settling that
+      // read. The SDK's synchronous `close()` is the documented abort/cleanup
+      // primitive for a query that is still running.
       mailbox.supersede();
-      try {
-        await query.return?.();
-      } catch {
-        // already torn down
-      }
+      query.close();
       emit("interrupted", {
         stillQueued: receipt?.still_queued ?? null,
         abandonedTriggerMessageIds,

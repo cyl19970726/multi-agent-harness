@@ -21,7 +21,13 @@ export function createFakeSdk({
   // truth (live probe, issue #293).
   apiErrorStatus = null,
 } = {}) {
-  const calls = { tagSession: [], renameSession: [], permissionModes: [], interrupts: 0 };
+  const calls = {
+    tagSession: [],
+    renameSession: [],
+    permissionModes: [],
+    interrupts: 0,
+    queryCloses: 0,
+  };
   let lastOptions = null;
 
   function query({ prompt, options }) {
@@ -100,6 +106,12 @@ export function createFakeSdk({
       },
       async setPermissionMode(mode) {
         calls.permissionModes.push(mode);
+      },
+      async return() {
+        throw new Error("runner must use query.close(), not await query.return() after interrupt");
+      },
+      close() {
+        calls.queryCloses += 1;
       },
     };
   }

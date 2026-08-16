@@ -9360,6 +9360,9 @@ fn finalize_provider_integration_profile(profile: &mut ProviderIntegrationProfil
                         ("claude", "start_cycle", Some("2.1.220")) =>
                             Some("live:2026-07-28:claude_agent_sdk@2.1.220:team-run-1785230417407-p72711-0:member-run-1785230417407-p72711-1:session-ec91628d-a514-4d40-ae9c-7f73ecf3c40f:two-host-rounds+matching-completion"
                                 .to_string()),
+                        ("claude", "interrupt_current_cycle", Some("2.1.220")) =>
+                            Some("live:DEV-26:2026-08-16:claude_agent_sdk@2.1.220:sdk@0.3.220:session-3590068d-b58c-4a90-852c-8c38b7de0250:query-interrupt+query-close+same-session-resume"
+                                .to_string()),
                         ("claude", "close_runtime", Some("2.1.220")) =>
                             Some("live:2026-07-28:claude_agent_sdk@2.1.220:team-run-1785230417407-p72711-0:member-run-1785230417407-p72711-1:session-ec91628d-a514-4d40-ae9c-7f73ecf3c40f:explicit-host-close+session-retained"
                                 .to_string()),
@@ -54697,6 +54700,7 @@ package:com.tencent.mm
             claude_live_capabilities,
             std::collections::BTreeSet::from([
                 "close_runtime",
+                "interrupt_current_cycle",
                 "observe",
                 "open_or_resume",
                 "start_cycle",
@@ -54709,16 +54713,22 @@ package:com.tencent.mm
             .expect("Claude interrupt binding");
         assert_eq!(
             claude_interrupt.status,
-            harness_core::ProviderCapabilityStatus::ReviewRequired
+            harness_core::ProviderCapabilityStatus::Verified
         );
         assert_eq!(
             claude_interrupt.admission,
-            harness_core::ProviderBindingAdmission::PendingDependency
+            harness_core::ProviderBindingAdmission::Active
         );
         assert!(claude_interrupt.evidence.iter().any(|evidence| {
             evidence.kind == harness_core::ProviderCapabilityEvidenceKind::DeterministicAcceptance
         }));
-        assert!(!claude.supports_cancel);
+        assert!(claude_interrupt.evidence.iter().any(|evidence| {
+            evidence.kind == harness_core::ProviderCapabilityEvidenceKind::LiveCanary
+                && evidence
+                    .evidence_ref
+                    .contains("3590068d-b58c-4a90-852c-8c38b7de0250")
+        }));
+        assert!(claude.supports_cancel);
         assert!(claude.supports_resume);
 
         let mut codex = team_member_provider_profile_for_mode("codex", Some("codex_app_server"));

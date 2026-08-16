@@ -299,6 +299,18 @@ explicit Host close.
 That session is enumerable by SDK `listSessions`; Desktop visibility requires
 the explicit provider-owned import described above.
 
+The missing live Interrupt slice was accepted on 2026-08-16 against Claude
+Code `2.1.220` and Agent SDK `0.3.220`, using provider-native session
+`3590068d-b58c-4a90-852c-8c38b7de0250`. The native JSONL records the first
+completed round, the second request interrupted by the operator, and the later
+`CLAUDE-LIVE-RESUMED` response on that exact session. The canary also exposed a
+real runner defect: awaiting `AsyncGenerator.return()` behind the for-await
+loop's pending `next()` never retired the interrupted query. The runner now
+uses the SDK's documented synchronous `query.close()` abort/cleanup primitive,
+then opens a new query with `resume` bound to the retained native session.
+Deterministic runner tests assert the spent query is closed, the Member remains
+open, and the next delivery lands on the same session.
+
 Claude Code and Agent SDK maintenance follows ADR 0031's Agent-managed,
 one-Provider-at-a-time update loop. Do not hot-replace an active
 MemberRun/native session. After a change:
