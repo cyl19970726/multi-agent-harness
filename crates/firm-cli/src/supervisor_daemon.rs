@@ -1693,6 +1693,35 @@ impl MultiTeamDaemon {
                         Self::write_control_response(stream, &response)?;
                     }
                     Err(e) => {
+                        // Recovery discovery and an explicit Start request run
+                        // concurrently. The scanner may finish adopting this
+                        // exact TeamRun after the fast `already_managed` check
+                        // above but before `start_supervising` acquires the
+                        // context lock. In that case the requested effect is
+                        // already true under this daemon generation, so report
+                        // an idempotent reuse instead of turning a successful
+                        // recovery into a client-visible rejection.
+                        let concurrently_managed = self
+                            .contexts
+                            .lock()
+                            .map_err(|error| {
+                                CliError::Usage(format!("context lock poisoned: {error}"))
+                            })?
+                            .iter()
+                            .any(|context| {
+                                context.execution_space_id == execution_space_id
+                                    && context.run_id == run_id
+                            });
+                        if concurrently_managed {
+                            let response = serde_json::json!({
+                                "ok": true,
+                                "execution_space_id": execution_space_id,
+                                "run_id": run_id,
+                                "reused": true,
+                            });
+                            Self::write_control_response(stream, &response)?;
+                            return Ok(());
+                        }
                         let response = serde_json::json!({
                             "ok": false,
                             "execution_space_id": execution_space_id,
