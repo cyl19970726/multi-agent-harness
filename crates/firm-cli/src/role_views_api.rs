@@ -1025,6 +1025,85 @@ fn action(
     json!({"kind":kind,"target_ref":{"kind":target_kind,"id":target_id},"required_version":version,"disabled_reason":disabled})
 }
 
+fn member_run_has_active_provider_capability(
+    provider_runtime_projections: &[Value],
+    member_run: &Value,
+    capability: &str,
+) -> bool {
+    let Some(member_run_id) = member_run["id"].as_str() else {
+        return false;
+    };
+    let Some(runtime_generation) = member_run["runtime_generation"].as_u64() else {
+        return false;
+    };
+    provider_runtime_projections
+        .iter()
+        .rev()
+        .find(|projection| {
+            projection["id"] == member_run_id
+                && projection["runtime_generation"].as_u64() == Some(runtime_generation)
+        })
+        .and_then(|projection| projection["provider_profile"]["capability_bindings"].as_array())
+        .is_some_and(|bindings| {
+            bindings.iter().any(|binding| {
+                binding["capability"] == capability
+                    && binding["status"] == "verified"
+                    && binding["admission"] == "active"
+            })
+        })
+}
+
+fn provider_core_capability_admission(profile: Option<&Value>) -> (&'static str, Option<String>) {
+    const REQUIRED: [&str; 3] = ["open_or_resume", "start_cycle", "observe"];
+    let Some(bindings) = profile.and_then(|profile| profile["capability_bindings"].as_array())
+    else {
+        return (
+            "unknown",
+            Some("no exact provider capability snapshot is available".to_string()),
+        );
+    };
+    let mut review_required = Vec::new();
+    let mut unavailable = Vec::new();
+    for capability in REQUIRED {
+        let Some(binding) = bindings
+            .iter()
+            .find(|binding| binding["capability"] == capability)
+        else {
+            unavailable.push(capability);
+            continue;
+        };
+        match (binding["status"].as_str(), binding["admission"].as_str()) {
+            (Some("verified"), Some("active")) => {}
+            (Some("review_required"), Some("pending_dependency")) => {
+                review_required.push(capability)
+            }
+            _ => unavailable.push(capability),
+        }
+    }
+    if !unavailable.is_empty() {
+        return (
+            "unavailable",
+            Some(format!(
+                "required provider capabilities are unavailable: {}",
+                unavailable.join(", ")
+            )),
+        );
+    }
+    if !review_required.is_empty() {
+        return (
+            "review_required",
+            Some(format!(
+                "required provider capabilities still need exact live evidence: {}",
+                review_required.join(", ")
+            )),
+        );
+    }
+    (
+        "active",
+        Some("open/resume, start-cycle, and observe bindings are active and verified".to_string()),
+    )
+}
+
 fn message_fabric_disabled(
     facts: &Facts,
     store: &HarnessStore,
@@ -1645,6 +1724,7 @@ fn team_view(
         // joined from the runtime-layer projection of the same run.
         let runtime_profile=current.and_then(|r|facts.provider_runtime_projections.iter().filter(|projection|projection["id"]==r["id"]).max_by_key(|projection|projection["runtime_generation"].as_u64().unwrap_or_default())).map(|projection|&projection["provider_profile"]);
         let provider_compatibility=runtime_profile.and_then(|profile|profile["compatibility_status"].as_str());
+        let (provider_capability_admission,provider_capability_note)=provider_core_capability_admission(runtime_profile);
         json!({
             "agent_member_ref":{"kind":"agent_member","id":member_id},
             "display_name":member["name"],
@@ -1661,6 +1741,8 @@ fn team_view(
             "provider_compatibility":provider_compatibility,
             "provider_compatibility_note":runtime_profile.and_then(|profile|profile["compatibility_note"].as_str()),
             "provider_version":runtime_profile.and_then(|profile|profile["provider_version"].as_str()),
+            "provider_capability_admission":provider_capability_admission,
+            "provider_capability_note":provider_capability_note,
             "active_work_count":count_phase("active"),
             "queued_work_count":count_phase("open"),
             "review_work_count":count_phase("review"),
@@ -1676,7 +1758,7 @@ fn team_view(
         .collect::<Vec<_>>();
     let pressure_summary = json!({
         "active_turns": members.iter().filter(|member| member["runtime_state"] == "running").count(),
-        "ready_members": members.iter().filter(|member| member["capacity"] == "available" && !matches!(member["provider_compatibility"].as_str(), Some("review_required") | Some("incompatible") | Some("unavailable"))).count(),
+        "ready_members": members.iter().filter(|member| member["capacity"] == "available" && member["provider_compatibility"] == "current" && member["provider_capability_admission"] == "active").count(),
         "total_members": members.len(),
         "ready_work": works.iter().filter(|work| work["phase"] == "open" && work["condition"] == "normal").count(),
         "review_work": works.iter().filter(|work| work["phase"] == "review").count(),
@@ -1894,13 +1976,35 @@ fn team_view(
                 continue;
             };
             match member_run["coordination_status"].as_str() {
-                Some("active") => actions.push(action(
-                    "close_member_run",
-                    "member_run",
-                    member_run_id,
-                    version,
-                    disabled,
-                )),
+                Some("active") => {
+                    if member_run["runtime_status"] == "running" {
+                        let interrupt_disabled = disabled.map(str::to_string).or_else(|| {
+                            (!member_run_has_active_provider_capability(
+                                &facts.provider_runtime_projections,
+                                member_run,
+                                "interrupt_current_cycle",
+                            ))
+                            .then(|| {
+                                "the exact provider tuple has no active verified interrupt binding"
+                                    .to_string()
+                            })
+                        });
+                        actions.push(action(
+                            "interrupt_member_run",
+                            "member_run",
+                            member_run_id,
+                            version,
+                            interrupt_disabled.as_deref(),
+                        ));
+                    }
+                    actions.push(action(
+                        "close_member_run",
+                        "member_run",
+                        member_run_id,
+                        version,
+                        disabled,
+                    ));
+                }
                 Some("closed") => actions.push(action(
                     "reopen_member_run",
                     "member_run",
@@ -2155,28 +2259,25 @@ fn normalized_provider(provider: &str) -> &str {
 /// Resolve one current canonical AgentSession and return its server-owned
 /// NativeSessionRef. MemberRun/TeamRun values are selectors only; they never
 /// become a replacement source of provider identity or filesystem authority.
+/// MemberRun.runtime_generation is intentionally not an AgentSession fence:
+/// Team Close/Reopen may replace the adapter generation while the machine-owned
+/// AgentSession and provider-native transcript remain continuous.
 fn exact_agent_session_binding<'a>(
-    facts: &'a Facts,
+    agent_sessions: &'a [Value],
     execution_space_id: &str,
     agent_identity_id: &str,
     native_session_id: &str,
     provider: Option<&str>,
-    runtime_generation: Option<u64>,
 ) -> Result<(&'a Value, NativeSessionRef), &'static str> {
     if native_session_id.trim().is_empty() {
         return Err("The selected provider-native Session has no exact native id.");
     }
     let expected_provider = provider.map(normalized_provider);
-    let current = facts
-        .agent_sessions
+    let current = agent_sessions
         .iter()
         .filter(|session| session["execution_space_id"] == execution_space_id)
         .filter(|session| session["agent_identity_id"] == agent_identity_id)
         .filter(|session| session["lifecycle"] != "closed")
-        .filter(|session| {
-            runtime_generation
-                .is_none_or(|generation| session["runtime_generation"].as_u64() == Some(generation))
-        })
         .filter_map(|session| {
             let native = serde_json::from_value::<NativeSessionRef>(
                 session.get("native_session_ref")?.clone(),
@@ -2228,11 +2329,7 @@ fn read_session_event_projection(
                 "The selected provider-native Session has no exact native id.",
             );
         };
-        (
-            native_id,
-            native["provider"].as_str(),
-            member_run["runtime_generation"].as_u64(),
-        )
+        (native_id, native["provider"].as_str())
     } else {
         let Some(run) = request.run else {
             return unavailable_session_event_projection(
@@ -2248,7 +2345,7 @@ fn read_session_event_projection(
                 "No provider-native Session is bound to the selected Host run.",
             );
         };
-        (native_id, Some(run.host_surface.as_str()), None)
+        (native_id, Some(run.host_surface.as_str()))
     };
     if request
         .run
@@ -2259,12 +2356,11 @@ fn read_session_event_projection(
         );
     }
     let (session, native_session) = match exact_agent_session_binding(
-        facts,
+        &facts.agent_sessions,
         request.execution_space_id,
         request.selected_agent_id,
         selector.0,
         selector.1,
-        selector.2,
     ) {
         Ok(binding) => binding,
         Err(reason) => return unavailable_session_event_projection(reason),
@@ -2622,8 +2718,9 @@ fn agent_workspace_view(
             },
         )
     });
-    // Only an exact MemberRun + AgentSession generation can receive the
-    // process-local live overlay. Host runs without a MemberRun remain null.
+    // Only an exact MemberRun selector plus its current canonical AgentSession
+    // can receive the process-local live overlay. MemberRun and AgentSession
+    // generations are independent fences; Host runs without a MemberRun stay null.
     let live_provider_activity = if may_read_private_session {
         let project_binding_id = store
             .provider_compatibility_scope()
@@ -2728,6 +2825,7 @@ fn agent_workspace_view(
         "provider":if may_read_private_session {selected_member_run.and_then(|run|run["provider"].as_str())} else {None},
         "execution_mode":if may_read_private_session {selected_member_run.and_then(|run|run["execution_mode"].as_str())} else {None},
         "runtime_status":if may_read_private_session {selected_runtime_status} else {None},
+        "runtime_generation":if may_read_private_session {selected_member_run.and_then(|run|run["runtime_generation"].as_u64())} else {None},
         "host_session_mode":if selected_is_host {Some(host_session_mode(run))} else {None},
     });
     let unread_count = if projection_scope == "host_member_public" {
@@ -3635,5 +3733,120 @@ mod tests {
             "a blank thread id is not a binding"
         );
         assert_eq!(host_session_mode(None), "unbound");
+    }
+
+    #[test]
+    fn exact_session_history_survives_a_member_adapter_generation_change() {
+        let sessions = vec![json!({
+            "id":"agent-session-1",
+            "execution_space_id":"space-1",
+            "agent_identity_id":"member-1",
+            "lifecycle":"idle",
+            "provider_kind":"codex",
+            "runtime_generation":1,
+            "native_session_ref":{
+                "provider":"codex",
+                "execution_mode":"codex_app_server",
+                "native_session_id":"native-thread-1",
+                "native_locator_kind":"codex_rollout",
+                "adapter_contract_version":"codex-app-server-v1",
+                "availability":"available",
+                "supports_resume":true
+            }
+        })];
+
+        // A MemberRun may now be adapter generation 2 after Reopen while this
+        // machine-owned AgentSession remains generation 1. Exact identity,
+        // provider and native-session binding still authorize owner history.
+        let (session, native) = exact_agent_session_binding(
+            &sessions,
+            "space-1",
+            "member-1",
+            "native-thread-1",
+            Some("codex_app_server"),
+        )
+        .expect("same native AgentSession remains the exact history authority");
+        assert_eq!(session["runtime_generation"], 1);
+        assert_eq!(native.native_session_id, "native-thread-1");
+    }
+
+    #[test]
+    fn interrupt_action_requires_the_exact_active_verified_runtime_binding() {
+        let member_run = json!({"id":"member-run-1","runtime_generation":2});
+        let pending = json!({
+            "id":"member-run-1",
+            "runtime_generation":2,
+            "provider_profile":{"capability_bindings":[{
+                "capability":"interrupt_current_cycle",
+                "status":"review_required",
+                "admission":"pending_dependency"
+            }]}
+        });
+        assert!(!member_run_has_active_provider_capability(
+            &[pending],
+            &member_run,
+            "interrupt_current_cycle"
+        ));
+
+        let active = json!({
+            "id":"member-run-1",
+            "runtime_generation":2,
+            "provider_profile":{"capability_bindings":[{
+                "capability":"interrupt_current_cycle",
+                "status":"verified",
+                "admission":"active"
+            }]}
+        });
+        assert!(member_run_has_active_provider_capability(
+            &[active],
+            &member_run,
+            "interrupt_current_cycle"
+        ));
+
+        let stale_generation = json!({
+            "id":"member-run-1",
+            "runtime_generation":1,
+            "provider_profile":{"capability_bindings":[{
+                "capability":"interrupt_current_cycle",
+                "status":"verified",
+                "admission":"active"
+            }]}
+        });
+        assert!(!member_run_has_active_provider_capability(
+            &[stale_generation],
+            &member_run,
+            "interrupt_current_cycle"
+        ));
+    }
+
+    #[test]
+    fn ready_capability_admission_requires_active_core_bindings() {
+        let active_binding = |capability: &str| json!({"capability":capability,"status":"verified","admission":"active"});
+        let active = json!({"capability_bindings":[
+            active_binding("open_or_resume"),
+            active_binding("start_cycle"),
+            active_binding("observe")
+        ]});
+        assert_eq!(
+            provider_core_capability_admission(Some(&active)).0,
+            "active"
+        );
+
+        let pending = json!({"capability_bindings":[
+            active_binding("open_or_resume"),
+            {"capability":"start_cycle","status":"review_required","admission":"pending_dependency"},
+            active_binding("observe")
+        ]});
+        assert_eq!(
+            provider_core_capability_admission(Some(&pending)).0,
+            "review_required"
+        );
+
+        let missing = json!({"capability_bindings":[active_binding("open_or_resume")]});
+        assert_eq!(
+            provider_core_capability_admission(Some(&missing)).0,
+            "unavailable"
+        );
+        assert_eq!(provider_core_capability_admission(None).0, "unknown");
     }
 }

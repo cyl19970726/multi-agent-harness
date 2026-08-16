@@ -33,6 +33,11 @@ pub(crate) enum SemanticCapability {
     InjectCurrentCycle,
     QueueNativeBoundary,
     Interrupt,
+    /// Reversible Team-member runtime shutdown. This closes only the owned
+    /// adapter/process handle and retains the provider-native session for
+    /// Reopen. It is deliberately weaker than Quiesce + Release, which prove
+    /// workspace/queue/flush postconditions for driver or composition change.
+    CloseRuntime,
     Observe,
     InspectEffect,
     Reconcile,
@@ -44,12 +49,13 @@ pub(crate) enum SemanticCapability {
 }
 
 impl SemanticCapability {
-    pub(crate) const ALL: [Self; 13] = [
+    pub(crate) const ALL: [Self; 14] = [
         Self::OpenOrResume,
         Self::StartCycle,
         Self::InjectCurrentCycle,
         Self::QueueNativeBoundary,
         Self::Interrupt,
+        Self::CloseRuntime,
         Self::Observe,
         Self::InspectEffect,
         Self::Reconcile,
@@ -67,6 +73,7 @@ impl SemanticCapability {
             Self::InjectCurrentCycle => "inject_current_cycle",
             Self::QueueNativeBoundary => "queue_at_native_boundary",
             Self::Interrupt => "interrupt_current_cycle",
+            Self::CloseRuntime => "close_runtime",
             Self::Observe => "observe",
             Self::InspectEffect => "inspect_effect",
             Self::Reconcile => "reconcile_effect",
@@ -644,8 +651,45 @@ pub(crate) struct ReleaseReceipt {
     pub evidence: Vec<String>,
 }
 
+/// Receipt for reversible Team-member Close. It does not claim a complete
+/// execution-lane quiesce, writable-workspace drain, or native-store flush;
+/// those stronger facts belong exclusively to [`QuiesceReceipt`] and
+/// [`ReleaseReceipt`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct MemberRuntimeCloseReceipt {
+    pub control_acknowledged: RuntimePostconditionStatus,
+    pub current_cycle_terminal: RuntimePostconditionStatus,
+    pub managed_runtime_released: RuntimePostconditionStatus,
+    pub live_handle_disposed: RuntimePostconditionStatus,
+    pub native_session_retained: RuntimePostconditionStatus,
+    pub evidence: Vec<String>,
+}
+
+impl MemberRuntimeCloseReceipt {
+    pub(crate) fn verify(&self) -> Result<(), RuntimeContractError> {
+        let mut fields = Vec::new();
+        macro_rules! satisfied {
+            ($field:ident) => {
+                if self.$field != RuntimePostconditionStatus::Satisfied {
+                    fields.push(format!("{}={:?}", stringify!($field), self.$field));
+                }
+            };
+        }
+        satisfied!(control_acknowledged);
+        satisfied!(current_cycle_terminal);
+        satisfied!(managed_runtime_released);
+        satisfied!(live_handle_disposed);
+        satisfied!(native_session_retained);
+        if fields.is_empty() {
+            Ok(())
+        } else {
+            Err(RuntimeContractError::MemberCloseIncomplete { fields })
+        }
+    }
+}
+
 impl ReleaseReceipt {
-    fn verify(&self) -> Result<(), RuntimeContractError> {
+    pub(crate) fn verify(&self) -> Result<(), RuntimeContractError> {
         if self.native_runtime_released == RuntimePostconditionStatus::Satisfied
             && self.live_handle_disposed == RuntimePostconditionStatus::Satisfied
             && self.authority_detached == RuntimePostconditionStatus::Satisfied
@@ -691,6 +735,15 @@ pub(crate) trait RuntimeAdapter {
         fence: RuntimeFence<'_>,
         inspection: &EffectInspection,
     ) -> Result<ReconcileReceipt, RuntimeContractError>;
+
+    fn close_runtime(
+        &mut self,
+        _fence: RuntimeFence<'_>,
+    ) -> Result<MemberRuntimeCloseReceipt, RuntimeContractError> {
+        Err(RuntimeContractError::MemberCloseIncomplete {
+            fields: vec!["binding has no close_runtime implementation".to_string()],
+        })
+    }
 
     fn quiesce(&mut self, fence: RuntimeFence<'_>) -> Result<QuiesceReceipt, RuntimeContractError>;
 
@@ -840,6 +893,8 @@ pub(crate) enum RuntimeContractError {
     CompositionSwapRequiresQuiesce,
     #[error("release receipt is incomplete")]
     ReleaseIncomplete,
+    #[error("member runtime close receipt is incomplete: {fields:?}")]
+    MemberCloseIncomplete { fields: Vec<String> },
     #[error("runtime handle has already been explicitly released")]
     AlreadyReleased,
 }

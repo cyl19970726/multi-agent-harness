@@ -136,8 +136,11 @@ export function createMemberRunner({ sdk, config, emit }) {
         // into this runner; forwarding the complete runner environment also
         // preserves PATH, HOME, credentials, and provider configuration.
         env: { ...process.env },
-        allowedTools: config.allowedTools,
-        disallowedTools: config.disallowedTools,
+        // Rust's NDJSON frame represents an omitted optional list as JSON
+        // null. Agent SDK 0.3.220 expects either an array or `undefined` and
+        // dereferences `.length`; forwarding null crashes before session bind.
+        allowedTools: config.allowedTools ?? undefined,
+        disallowedTools: config.disallowedTools ?? undefined,
         model: config.model ?? undefined,
         effort: config.effort ?? undefined,
         // `bypassPermissions`: an interactive permission prompt has nobody to

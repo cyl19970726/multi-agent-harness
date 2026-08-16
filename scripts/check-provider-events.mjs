@@ -57,7 +57,12 @@ for (const provider of manifest.providers) {
   if (!decoder.includes(`fn decode_${provider}(`)) failures.push(`missing ${provider} decoder`);
 }
 const model = readFileSync("crates/firm-provider-events/src/model.rs", "utf8");
-const runtime = readFileSync("crates/firm-cli/src/main.rs", "utf8");
+const runtime = [
+  "crates/firm-cli/src/main.rs",
+  "crates/firm-cli/src/codex_team_runtime.rs",
+  "crates/firm-cli/src/claude_team_runtime.rs",
+  "crates/firm-cli/src/kimi_team_runtime.rs",
+].map((path) => readFileSync(path, "utf8")).join("\n");
 const piRuntime = readFileSync("crates/firm-cli/src/pi_rpc.rs", "utf8");
 const architecture = readFileSync("docs/current/architecture/provider-event-projection.md", "utf8");
 for (const kind of manifest.semantic_kinds) {
@@ -67,9 +72,9 @@ for (const kind of manifest.semantic_kinds) {
 for (const required of ["exact AgentIdentity owner", "TeamRuntimeActivity", "RuntimeCommand"]) {
   if (!architecture.includes(required)) failures.push(`architecture contract missing ${required}`);
 }
-if (!runtime.includes('Some("item/reasoning/summaryTextDelta")')) failures.push("Codex live projection does not consume provider-declared summaryTextDelta");
+if (!runtime.includes('"item/reasoning/summaryTextDelta"')) failures.push("Codex live projection does not consume provider-declared summaryTextDelta");
 if (runtime.includes('item/reasoning/textDelta')) failures.push("Codex raw reasoning textDelta must not enter the live projection");
-for (const required of ["Kimi is thinking", "Kimi is waiting for interaction", "Thinking blocks are provider-private", "emit_live_provider_terminal"]) {
+for (const required of ["Kimi is thinking", "Kimi is waiting for interaction", 'Some("thinking" | "redacted_thinking") => {}', "LiveProviderTurnGuard"]) {
   if (!runtime.includes(required)) failures.push(`runtime privacy contract missing ${required}`);
 }
 if (runtime.includes("tool started · {title}")) failures.push("unreviewed provider tool titles must not enter live display summaries");
@@ -93,6 +98,7 @@ const liveEnvelope = {
   project_id: "project-1",
   team_run_id: "team-run-1",
   member_run_id: "member-run-1",
+  member_run_generation: 3,
   agent_session_id: "session-1",
   agent_session_generation: 7,
   runtime_snapshot_locator: "runtime-snapshot-1",
@@ -103,7 +109,7 @@ if (!ajv.getSchema(liveSchema.$id)(liveEnvelope)) failures.push("generated live 
 const liveEventEnvelope = {
   schema_version: "agentfirm.live_provider_activity_event.v1",
   reason: "updated",
-  scope: {execution_space_id:"space-1",project_id:"project-1",team_run_id:"team-run-1",member_run_id:"member-run-1",agent_session_id:"session-1",agent_session_generation:7},
+  scope: {execution_space_id:"space-1",project_id:"project-1",team_run_id:"team-run-1",member_run_id:"member-run-1",member_run_generation:3,agent_session_id:"session-1",agent_session_generation:7},
   activity: liveEnvelope,
 };
 if (!ajv.getSchema(liveEventSchema.$id)(liveEventEnvelope)) failures.push("generated live activity event violates schema");

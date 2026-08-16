@@ -101,99 +101,6 @@ impl ProviderNativeControl for Box<dyn ProviderNativeControl + '_> {
     }
 }
 
-pub(crate) struct CodexNativeControl<'a> {
-    pub client: &'a mut CodexAppServerClient,
-    pub turn_id: &'a str,
-}
-
-impl ProviderNativeControl for CodexNativeControl<'_> {
-    fn provider(&self) -> &'static str {
-        "codex"
-    }
-
-    fn dispatch(&mut self, plan: &ProviderControlPlan) -> CliResult<()> {
-        if plan.primitive != NativeControlPrimitive::CodexTurnInterrupt {
-            return Err(CliError::Usage(format!(
-                "PROVIDER_CONTROL_UNPROVEN: Codex adapter received {:?}",
-                plan.primitive
-            )));
-        }
-        self.client.interrupt(self.turn_id)
-    }
-}
-
-pub(crate) struct ClaudeNativeControl<'a, F>
-where
-    F: FnMut(serde_json::Value) -> CliResult<()>,
-{
-    pub send: &'a mut F,
-    pub reason: &'a str,
-}
-
-impl<F> ProviderNativeControl for ClaudeNativeControl<'_, F>
-where
-    F: FnMut(serde_json::Value) -> CliResult<()>,
-{
-    fn provider(&self) -> &'static str {
-        "claude"
-    }
-
-    fn dispatch(&mut self, plan: &ProviderControlPlan) -> CliResult<()> {
-        if plan.primitive != NativeControlPrimitive::ClaudeAgentSdkInterrupt {
-            return Err(CliError::Usage(format!(
-                "PROVIDER_CONTROL_UNPROVEN: Claude adapter received {:?}",
-                plan.primitive
-            )));
-        }
-        let command = match plan.action {
-            ProviderControlAction::CancelProviderTurn => {
-                serde_json::json!({"command": "interrupt", "payload": {}})
-            }
-            ProviderControlAction::CloseSession => serde_json::json!({
-                "command": "close",
-                "payload": {"reason": self.reason},
-            }),
-        };
-        (self.send)(command)
-    }
-}
-
-/// Test-idle retirement is not a user RuntimeCommand, but it is still a
-/// provider-native control and therefore stays behind the same closed adapter
-/// module rather than leaking Agent SDK protocol JSON into the Team loop.
-pub(crate) fn retire_idle_claude_runtime(
-    send: &mut impl FnMut(serde_json::Value) -> CliResult<()>,
-) -> CliResult<()> {
-    send(serde_json::json!({
-        "command": "close",
-        "payload": {"reason": "test_idle_timeout"},
-    }))
-}
-
-pub(crate) struct KimiNativeControl<'a> {
-    pub control: &'a mut crate::kimi_acp::PromptControl,
-}
-
-impl ProviderNativeControl for KimiNativeControl<'_> {
-    fn provider(&self) -> &'static str {
-        "kimi"
-    }
-
-    fn dispatch(&mut self, plan: &ProviderControlPlan) -> CliResult<()> {
-        if plan.primitive != NativeControlPrimitive::KimiAcpCancel {
-            return Err(CliError::Usage(format!(
-                "PROVIDER_CONTROL_UNPROVEN: Kimi adapter received {:?}",
-                plan.primitive
-            )));
-        }
-        *self.control = match plan.action {
-            ProviderControlAction::CancelProviderTurn => crate::kimi_acp::PromptControl::Cancel,
-            ProviderControlAction::CloseSession => crate::kimi_acp::PromptControl::TerminateRuntime,
-        };
-        Ok(())
-    }
-}
-
 pub(crate) struct PiNativeControl<'a> {
     pub close: &'a mut bool,
     pub interrupt: &'a mut bool,
@@ -564,16 +471,6 @@ pub(crate) fn settle_team_controls_without_terminal_ack(
     Ok(())
 }
 
-pub(crate) fn settle_optional_team_control_without_terminal_ack(
-    ledger: &TeamRunLedger,
-    pending: &mut Option<Box<PendingProviderControl>>,
-) -> CliResult<()> {
-    if let Some(control) = pending.take() {
-        settle_team_control(ledger, &control, None)?;
-    }
-    Ok(())
-}
-
 pub(crate) fn provider_availability(provider: &str) -> Result<ProviderAvailability, String> {
     let binary = match provider {
         "codex" => "codex",
@@ -617,6 +514,12 @@ pub(crate) fn map_permission(
         ("codex", PermissionCeiling::FullAccess) => ("danger-full-access", "never"),
         ("claude", PermissionCeiling::ReadOnly) => ("plan", "default"),
         ("claude", PermissionCeiling::WorkspaceWrite) => ("acceptEdits", "default"),
+        // FullAccess is the explicit trusted-development policy: it promises
+        // no filesystem containment. Claude Agent SDK represents that exact
+        // absence of a native permission gate with bypassPermissions. This is
+        // not a sandbox capability claim and grants no protected external
+        // authority beyond the frozen AgentSession ceiling.
+        ("claude", PermissionCeiling::FullAccess) => ("unrestricted", "bypassPermissions"),
         // Kimi ACP exposes permission callbacks but no provider-native
         // read-only/workspace sandbox that Harness can prove. It is therefore
         // admissible only when the frozen Session itself is full access; exact
@@ -640,13 +543,6 @@ pub(crate) fn map_permission(
             )
         }
         ("pi", PermissionCeiling::FullAccess) => ("unrestricted", "none"),
-        // Claude cannot prove a native ceiling equivalent to explicit full
-        // access. Failing closed is safer than silently widening.
-        ("claude", PermissionCeiling::FullAccess) => {
-            return Err(format!(
-                "PROVIDER_PERMISSION_MISMATCH: {provider} cannot prove full_access"
-            ))
-        }
         _ => return Err(format!("PROVIDER_CAPABILITY_UNPROVABLE: {provider}")),
     };
     Ok(ProviderPermissionMapping {
@@ -718,7 +614,9 @@ mod tests {
             assert!(capabilities.inspect_state && capabilities.reconcile_effect);
         }
         assert!(map_permission("unknown", PermissionCeiling::ReadOnly).is_err());
-        assert!(map_permission("claude", PermissionCeiling::FullAccess).is_err());
+        let claude_full = map_permission("claude", PermissionCeiling::FullAccess).unwrap();
+        assert_eq!(claude_full.native_sandbox, "unrestricted");
+        assert_eq!(claude_full.native_approval, "bypassPermissions");
         assert!(map_permission("kimi", PermissionCeiling::ReadOnly).is_err());
         assert!(map_permission("kimi", PermissionCeiling::WorkspaceWrite).is_err());
         let kimi = map_permission("kimi", PermissionCeiling::FullAccess).unwrap();

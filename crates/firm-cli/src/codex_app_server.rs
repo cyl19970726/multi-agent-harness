@@ -112,6 +112,31 @@ fn effective_thread_service_tier(response: &serde_json::Value) -> Option<String>
         .map(str::to_string)
 }
 
+fn effective_thread_approval_policy(response: &serde_json::Value) -> Option<String> {
+    response
+        .pointer("/result/approvalPolicy")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn effective_thread_sandbox_mode(response: &serde_json::Value) -> Option<String> {
+    let native_type = response
+        .pointer("/result/sandbox/type")
+        .and_then(|value| value.as_str())?;
+    Some(
+        match native_type {
+            "readOnly" => "read-only",
+            "workspaceWrite" => "workspace-write",
+            "dangerFullAccess" => "danger-full-access",
+            // Preserve an unknown native value so the requested-setting check
+            // reports a mismatch instead of silently treating it as absent.
+            other => other,
+        }
+        .to_string(),
+    )
+}
+
 fn require_requested_setting(
     label: &str,
     requested: Option<&str>,
@@ -128,6 +153,90 @@ fn require_requested_setting(
     Ok(())
 }
 
+fn require_resumed_thread_identity(expected: Option<&str>, observed: &str) -> CliResult<()> {
+    if let Some(expected) = expected {
+        if expected != observed {
+            return Err(CliError::Usage(format!(
+                "codex thread/resume returned a different native thread: expected {expected}, got {observed}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn exact_thread_projection(
+    response: &serde_json::Value,
+    expected_thread_id: &str,
+) -> CliResult<serde_json::Value> {
+    let thread = response.pointer("/result/thread").cloned().ok_or_else(|| {
+        CliError::Usage(format!(
+            "codex thread/read omitted thread projection: {response}"
+        ))
+    })?;
+    let observed_id = thread.get("id").and_then(serde_json::Value::as_str);
+    if observed_id != Some(expected_thread_id) {
+        return Err(CliError::Usage(format!(
+            "codex thread/read returned a different thread id: expected {expected_thread_id}, got {}",
+            observed_id.unwrap_or("<none>")
+        )));
+    }
+    Ok(thread)
+}
+
+fn exact_goal_projection(
+    response: &serde_json::Value,
+    expected_thread_id: &str,
+    expected_status: Option<&str>,
+) -> CliResult<Option<serde_json::Value>> {
+    let Some(goal) = response.pointer("/result/goal") else {
+        if expected_status.is_none() {
+            return Ok(None);
+        }
+        return Err(CliError::Usage(format!(
+            "codex thread/goal/set omitted native Goal receipt: {response}"
+        )));
+    };
+    if goal.is_null() {
+        if expected_status.is_none() {
+            return Ok(None);
+        }
+        return Err(CliError::Usage(
+            "codex thread/goal/set returned a null Goal receipt".to_string(),
+        ));
+    }
+    let observed_id = goal.get("threadId").and_then(serde_json::Value::as_str);
+    let observed_status = goal.get("status").and_then(serde_json::Value::as_str);
+    if observed_id != Some(expected_thread_id)
+        || expected_status.is_some_and(|status| observed_status != Some(status))
+    {
+        return Err(CliError::Usage(format!(
+            "codex native Goal receipt mismatch: expected id={expected_thread_id} status={}, got id={} status={}",
+            expected_status.unwrap_or("<any>"),
+            observed_id.unwrap_or("<none>"),
+            observed_status.unwrap_or("<none>")
+        )));
+    }
+    Ok(Some(goal.clone()))
+}
+
+fn exact_steer_receipt(response: &serde_json::Value, expected_turn_id: &str) -> CliResult<String> {
+    let observed_turn_id = response
+        .pointer("/result/turnId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|turn_id| !turn_id.trim().is_empty())
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "codex turn/steer omitted required turnId receipt: {response}"
+            ))
+        })?;
+    if observed_turn_id != expected_turn_id {
+        return Err(CliError::Usage(format!(
+            "codex turn/steer receipt changed active turn: expected {expected_turn_id}, got {observed_turn_id}"
+        )));
+    }
+    Ok(observed_turn_id.to_string())
+}
+
 pub(crate) struct CodexAppServerClient {
     child: Child,
     stdin: BufWriter<ChildStdin>,
@@ -141,6 +250,23 @@ pub(crate) struct CodexAppServerClient {
     reasoning_effort: Option<String>,
     service_tier: Option<String>,
     collaboration_mode: &'static str,
+    shutdown_attempted: bool,
+    shutdown_receipt: Option<CodexAppServerShutdownReceipt>,
+}
+
+/// Process-local evidence returned by an explicit Team-member Close.
+///
+/// This receipt deliberately says nothing about the native thread being
+/// deleted, a writable workspace being quiesced, or rollout storage being
+/// durably flushed. Close releases only the owned app-server process while
+/// retaining `thread_id` for a later `thread/resume`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CodexAppServerShutdownReceipt {
+    pub(crate) process_was_running: bool,
+    pub(crate) process_reaped: bool,
+    pub(crate) stdout_reader_joined: bool,
+    pub(crate) thread_id_retained: bool,
+    pub(crate) exit_status: String,
 }
 
 pub(crate) struct CodexAppServerSpawnOptions<'a> {
@@ -186,6 +312,7 @@ impl CodexAppServerClient {
                 CliError::Usage(format!("codex {method} omitted thread id: {response}"))
             })?
             .to_string();
+        require_resumed_thread_identity(options.resume_thread_id, &client.thread_id)?;
         client.model = effective_thread_model(&response)
             .ok_or_else(|| {
                 CliError::Usage(format!(
@@ -203,6 +330,18 @@ impl CodexAppServerClient {
             "service tier",
             options.service_tier,
             client.service_tier.as_deref(),
+        )?;
+        let effective_approval = effective_thread_approval_policy(&response);
+        require_requested_setting(
+            "approval policy",
+            Some(options.approval_policy),
+            effective_approval.as_deref(),
+        )?;
+        let effective_sandbox = effective_thread_sandbox_mode(&response);
+        require_requested_setting(
+            "sandbox mode",
+            Some(options.sandbox),
+            effective_sandbox.as_deref(),
         )?;
         client.request_blocking(
             "thread/name/set",
@@ -305,6 +444,8 @@ impl CodexAppServerClient {
             reasoning_effort: None,
             service_tier: None,
             collaboration_mode: "default",
+            shutdown_attempted: false,
+            shutdown_receipt: None,
         };
         client.request_blocking(
             "initialize",
@@ -314,7 +455,10 @@ impl CodexAppServerClient {
                     "title": "Star Harness Agent Team",
                     "version": env!("CARGO_PKG_VERSION")
                 },
-                "capabilities": {"experimentalApi": true}
+                "capabilities": {
+                    "experimentalApi": true,
+                    "requestAttestation": false
+                }
             }),
             HANDSHAKE_TIMEOUT,
         )?;
@@ -428,11 +572,7 @@ impl CodexAppServerClient {
             }),
             HANDSHAKE_TIMEOUT,
         )?;
-        Ok(response
-            .pointer("/result/turnId")
-            .and_then(|value| value.as_str())
-            .unwrap_or(turn_id)
-            .to_string())
+        exact_steer_receipt(&response, turn_id)
     }
 
     pub(crate) fn interrupt(&mut self, turn_id: &str) -> CliResult<()> {
@@ -442,6 +582,111 @@ impl CodexAppServerClient {
             HANDSHAKE_TIMEOUT,
         )?;
         Ok(())
+    }
+
+    /// Read the provider-native thread projection without copying it into a
+    /// Harness ledger. The caller may inspect only the fields needed for a
+    /// control postcondition; Codex rollout/state remains execution truth.
+    pub(crate) fn read_thread(&mut self, include_turns: bool) -> CliResult<serde_json::Value> {
+        let response = self.request_blocking(
+            "thread/read",
+            serde_json::json!({
+                "threadId": self.thread_id,
+                "includeTurns": include_turns,
+            }),
+            HANDSHAKE_TIMEOUT,
+        )?;
+        exact_thread_projection(&response, &self.thread_id)
+    }
+
+    /// Inspect the optional provider-native Goal associated with this thread.
+    pub(crate) fn read_thread_goal(&mut self) -> CliResult<Option<serde_json::Value>> {
+        let response = self.request_blocking(
+            "thread/goal/get",
+            serde_json::json!({"threadId": self.thread_id}),
+            HANDSHAKE_TIMEOUT,
+        )?;
+        exact_goal_projection(&response, &self.thread_id, None)
+    }
+
+    /// Set only the reviewed Goal status field, then require the correlated
+    /// native response to echo that exact state. This is never called by the
+    /// ordinary Host-driven cycle path.
+    pub(crate) fn set_thread_goal_status(&mut self, status: &str) -> CliResult<serde_json::Value> {
+        if !matches!(status, "active" | "paused") {
+            return Err(CliError::Usage(format!(
+                "unsupported codex native Goal status transition: {status}"
+            )));
+        }
+        let response = self.request_blocking(
+            "thread/goal/set",
+            serde_json::json!({"threadId": self.thread_id, "status": status}),
+            HANDSHAKE_TIMEOUT,
+        )?;
+        exact_goal_projection(&response, &self.thread_id, Some(status))?.ok_or_else(|| {
+            CliError::Usage("codex thread/goal/set omitted native Goal receipt".to_string())
+        })
+    }
+
+    /// Dispose the owned app-server process group exactly once and retain the
+    /// native thread id for Reopen. A second call never sends another signal.
+    pub(crate) fn shutdown_with_receipt(&mut self) -> CliResult<CodexAppServerShutdownReceipt> {
+        if self.shutdown_receipt.is_some() {
+            return Err(CliError::Usage(
+                "codex app-server runtime has already been explicitly closed".to_string(),
+            ));
+        }
+        if self.shutdown_attempted {
+            return Err(CliError::Usage(
+                "CODEX_RUNTIME_CLOSE_UNKNOWN: explicit close was already attempted; reconcile before retry"
+                    .to_string(),
+            ));
+        }
+        self.shutdown_attempted = true;
+        let process_was_running = self
+            .child
+            .try_wait()
+            .map_err(|error| {
+                CliError::Usage(format!("failed to inspect codex app-server: {error}"))
+            })?
+            .is_none();
+        if process_was_running {
+            kill_worker_tree(&mut self.child);
+        }
+        let status = self
+            .child
+            .try_wait()
+            .map_err(|error| CliError::Usage(format!("failed to reap codex app-server: {error}")))?
+            .ok_or_else(|| {
+                CliError::Usage(
+                    "CODEX_RUNTIME_CLOSE_UNKNOWN: disposer returned while process was alive"
+                        .to_string(),
+                )
+            })?;
+        let stdout_reader_joined = if let Some(reader) = self.reader.take() {
+            let deadline = Instant::now() + READER_SHUTDOWN_TIMEOUT;
+            while !reader.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            reader.is_finished() && reader.join().is_ok()
+        } else {
+            true
+        };
+        if !stdout_reader_joined {
+            return Err(CliError::Usage(
+                "CODEX_RUNTIME_CLOSE_UNKNOWN: stdout reader did not terminate after process release"
+                    .to_string(),
+            ));
+        }
+        let receipt = CodexAppServerShutdownReceipt {
+            process_was_running,
+            process_reaped: true,
+            stdout_reader_joined,
+            thread_id_retained: !self.thread_id.trim().is_empty(),
+            exit_status: status.to_string(),
+        };
+        self.shutdown_receipt = Some(receipt.clone());
+        Ok(receipt)
     }
 
     pub(crate) fn recv(&self, timeout: Duration) -> Result<serde_json::Value, RecvTimeoutError> {
@@ -831,7 +1076,11 @@ pub(crate) fn codex_capacity_snapshot(
 
 impl Drop for CodexAppServerClient {
     fn drop(&mut self) {
-        kill_worker_tree(&mut self.child);
+        // An explicit Close already reaped the child. Inspect first so a late
+        // Drop can never signal a recycled process-group id.
+        if self.child.try_wait().ok().flatten().is_none() {
+            kill_worker_tree(&mut self.child);
+        }
         if let Some(reader) = self.reader.take() {
             let deadline = Instant::now() + READER_SHUTDOWN_TIMEOUT;
             while !reader.is_finished() && Instant::now() < deadline {
@@ -847,6 +1096,221 @@ impl Drop for CodexAppServerClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn wait_for_live_turn_terminal(
+        client: &CodexAppServerClient,
+        expected_turn_id: &str,
+        timeout: Duration,
+    ) -> serde_json::Value {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "timed out waiting for Codex turn/completed for {expected_turn_id}"
+            );
+            let frame = client
+                .recv(remaining.min(Duration::from_secs(5)))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "Codex app-server disconnected or timed out before turn/completed for {expected_turn_id}: {error}"
+                    )
+                });
+            if frame.get("id").is_some() && frame.get("method").is_some() {
+                panic!("unexpected reverse request during Codex live canary: {frame}");
+            }
+            if frame.get("method").and_then(serde_json::Value::as_str) != Some("turn/completed") {
+                continue;
+            }
+            let turn = frame
+                .pointer("/params/turn")
+                .unwrap_or_else(|| panic!("Codex turn/completed omitted turn projection: {frame}"));
+            if turn.get("id").and_then(serde_json::Value::as_str) != Some(expected_turn_id) {
+                continue;
+            }
+            return turn.clone();
+        }
+    }
+
+    fn assert_live_thread_idle(client: &mut CodexAppServerClient) {
+        let thread = client
+            .read_thread(true)
+            .expect("live Codex thread/read after terminal turn");
+        assert_eq!(
+            thread
+                .pointer("/status/type")
+                .and_then(serde_json::Value::as_str),
+            Some("idle"),
+            "live Codex thread must be idle after the terminal turn: {thread}"
+        );
+    }
+
+    fn wait_for_live_command_start(
+        client: &CodexAppServerClient,
+        expected_turn_id: &str,
+        timeout: Duration,
+    ) {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "timed out waiting for a live Codex command item in {expected_turn_id}"
+            );
+            let frame = client
+                .recv(remaining.min(Duration::from_secs(5)))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "Codex app-server disconnected or timed out before command start in {expected_turn_id}: {error}"
+                    )
+                });
+            if frame.get("id").is_some() && frame.get("method").is_some() {
+                panic!("unexpected reverse request during Codex live canary: {frame}");
+            }
+            let method = frame.get("method").and_then(serde_json::Value::as_str);
+            let frame_turn_id = frame
+                .pointer("/params/turnId")
+                .or_else(|| frame.pointer("/params/turn/id"))
+                .and_then(serde_json::Value::as_str);
+            if frame_turn_id.is_some_and(|turn_id| turn_id != expected_turn_id) {
+                continue;
+            }
+            if method == Some("turn/completed") {
+                panic!(
+                    "Codex interrupt target completed before a command item became active: {frame}"
+                );
+            }
+            if method == Some("item/started")
+                && frame
+                    .pointer("/params/item/type")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("commandExecution")
+            {
+                return;
+            }
+        }
+    }
+
+    /// Exact-version live gate for the provider-neutral Codex Member runtime.
+    ///
+    /// This is intentionally ignored in ordinary CI because it consumes a
+    /// signed-in Codex account. It proves native thread creation, one completed
+    /// cycle, explicit process Close with the thread retained, exact
+    /// thread/resume, current-cycle interrupt, a later completed cycle on that
+    /// same native thread, and a second explicit Close.
+    #[test]
+    #[ignore = "requires RUN_CODEX_0148_LIVE_CANARY=1 and a signed-in codex-cli 0.148.0-alpha.9"]
+    fn live_codex_0148_round_interrupt_close_and_same_thread_resume() {
+        assert_eq!(
+            std::env::var("RUN_CODEX_0148_LIVE_CANARY").as_deref(),
+            Ok("1"),
+            "set RUN_CODEX_0148_LIVE_CANARY=1 to acknowledge this real-provider canary"
+        );
+        let version = Command::new("codex")
+            .arg("--version")
+            .output()
+            .expect("probe codex --version");
+        assert!(version.status.success(), "codex --version must succeed");
+        assert_eq!(
+            String::from_utf8_lossy(&version.stdout).trim(),
+            "codex-cli 0.148.0-alpha.9",
+            "live canary evidence is exact-version only"
+        );
+
+        let canary_root = std::env::temp_dir().join(format!(
+            "star-harness-codex-0148-live-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&canary_root).expect("create isolated Codex canary cwd");
+        let options = |resume_thread_id| CodexAppServerSpawnOptions {
+            model: None,
+            reasoning_effort: None,
+            service_tier: None,
+            resume_thread_id,
+            member_name: "DEV-26 Codex 0.148 runtime canary",
+            collaboration_env: &[],
+            plan_mode: false,
+            sandbox: "danger-full-access",
+            approval_policy: "never",
+        };
+
+        let mut first = CodexAppServerClient::spawn(&canary_root, options(None))
+            .expect("open first live Codex app-server runtime");
+        let native_thread_id = first.thread_id().to_string();
+        assert!(!native_thread_id.trim().is_empty());
+        assert_eq!(
+            first.read_thread_goal().expect("inspect native Goal"),
+            None,
+            "HostDriven canary must not activate a provider-native Goal"
+        );
+        let first_turn = first
+            .start_turn(
+                "Reply with exactly DEV26_CODEX_CANARY_ROUND_ONE. Do not use tools or modify files.",
+            )
+            .expect("start first live Codex turn");
+        let first_terminal =
+            wait_for_live_turn_terminal(&first, &first_turn, Duration::from_secs(180));
+        assert_eq!(
+            first_terminal
+                .get("status")
+                .and_then(serde_json::Value::as_str),
+            Some("completed"),
+            "first live Codex turn must complete: {first_terminal}"
+        );
+        assert_live_thread_idle(&mut first);
+        let first_close = first
+            .shutdown_with_receipt()
+            .expect("close first live Codex runtime");
+        assert!(first_close.process_reaped);
+        assert!(first_close.stdout_reader_joined);
+        assert!(first_close.thread_id_retained);
+
+        let mut resumed =
+            CodexAppServerClient::spawn(&canary_root, options(Some(&native_thread_id)))
+                .expect("resume exact native Codex thread");
+        assert_eq!(resumed.thread_id(), native_thread_id);
+        let interrupted_turn = resumed
+            .start_turn(
+                "Use the shell tool to run exactly `sleep 30`, wait for it to finish, then reply with DEV26_CODEX_INTERRUPT_TARGET. Do not perform any other action.",
+            )
+            .expect("start interrupt target turn");
+        wait_for_live_command_start(&resumed, &interrupted_turn, Duration::from_secs(90));
+        resumed
+            .interrupt(&interrupted_turn)
+            .expect("interrupt current live Codex turn");
+        let interrupted_terminal =
+            wait_for_live_turn_terminal(&resumed, &interrupted_turn, Duration::from_secs(60));
+        assert_eq!(
+            interrupted_terminal
+                .get("status")
+                .and_then(serde_json::Value::as_str),
+            Some("interrupted"),
+            "turn/interrupt must converge to matching terminal evidence: {interrupted_terminal}"
+        );
+        assert_live_thread_idle(&mut resumed);
+
+        let resumed_turn = resumed
+            .start_turn(
+                "Reply with exactly DEV26_CODEX_CANARY_ROUND_TWO. Do not use tools or modify files.",
+            )
+            .expect("start post-interrupt live Codex turn");
+        let resumed_terminal =
+            wait_for_live_turn_terminal(&resumed, &resumed_turn, Duration::from_secs(180));
+        assert_eq!(
+            resumed_terminal
+                .get("status")
+                .and_then(serde_json::Value::as_str),
+            Some("completed"),
+            "same-thread post-interrupt turn must complete: {resumed_terminal}"
+        );
+        assert_live_thread_idle(&mut resumed);
+        let second_close = resumed
+            .shutdown_with_receipt()
+            .expect("close resumed live Codex runtime");
+        assert!(second_close.process_reaped);
+        assert!(second_close.stdout_reader_joined);
+        assert!(second_close.thread_id_retained);
+    }
 
     #[test]
     fn new_thread_uses_the_explicit_frozen_permission_mapping() {
@@ -949,6 +1413,86 @@ mod tests {
         assert!(
             require_requested_setting("service tier", Some("priority"), Some("default")).is_err()
         );
+    }
+
+    #[test]
+    fn requested_permission_controls_require_effective_native_confirmation() {
+        let response = serde_json::json!({
+            "result": {
+                "approvalPolicy": "never",
+                "sandbox": {"type": "workspaceWrite"}
+            }
+        });
+        assert_eq!(
+            effective_thread_approval_policy(&response).as_deref(),
+            Some("never")
+        );
+        assert_eq!(
+            effective_thread_sandbox_mode(&response).as_deref(),
+            Some("workspace-write")
+        );
+        require_requested_setting("approval policy", Some("never"), Some("never"))
+            .expect("matching native approval receipt");
+        require_requested_setting(
+            "sandbox mode",
+            Some("workspace-write"),
+            Some("workspace-write"),
+        )
+        .expect("matching native sandbox receipt");
+        assert!(require_requested_setting("approval policy", Some("never"), None).is_err());
+        assert!(require_requested_setting(
+            "sandbox mode",
+            Some("danger-full-access"),
+            Some("workspace-write")
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn resume_and_steer_receipts_require_exact_native_ids() {
+        require_resumed_thread_identity(Some("thread-1"), "thread-1")
+            .expect("exact resumed thread");
+        require_resumed_thread_identity(None, "thread-new").expect("new thread has no prior id");
+        assert!(require_resumed_thread_identity(Some("thread-1"), "thread-other").is_err());
+
+        let exact = serde_json::json!({"result": {"turnId": "turn-1"}});
+        assert_eq!(exact_steer_receipt(&exact, "turn-1").unwrap(), "turn-1");
+        assert!(exact_steer_receipt(&exact, "turn-other").is_err());
+        assert!(exact_steer_receipt(&serde_json::json!({"result": {}}), "turn-1").is_err());
+    }
+
+    #[test]
+    fn thread_and_goal_receipts_require_the_exact_native_identity_and_status() {
+        let thread = serde_json::json!({
+            "result": {"thread": {"id": "thread-1", "status": {"type": "idle"}}}
+        });
+        assert_eq!(
+            exact_thread_projection(&thread, "thread-1").unwrap()["status"]["type"],
+            "idle"
+        );
+        assert!(exact_thread_projection(&thread, "thread-2").is_err());
+
+        let goal = serde_json::json!({
+            "result": {"goal": {"threadId": "thread-1", "status": "paused", "updatedAt": 7}}
+        });
+        assert_eq!(
+            exact_goal_projection(&goal, "thread-1", Some("paused"))
+                .unwrap()
+                .unwrap()["updatedAt"],
+            7
+        );
+        assert!(exact_goal_projection(&goal, "thread-1", Some("active")).is_err());
+        assert!(exact_goal_projection(&goal, "thread-2", None).is_err());
+    }
+
+    #[test]
+    fn absent_goal_is_valid_for_inspection_but_never_for_a_set_receipt() {
+        let absent = serde_json::json!({"result": {"goal": null}});
+        assert_eq!(
+            exact_goal_projection(&absent, "thread-1", None).unwrap(),
+            None
+        );
+        assert!(exact_goal_projection(&absent, "thread-1", Some("paused")).is_err());
     }
 
     /// Verbatim shape of a live `codex-cli 0.145.0` reply, captured by driving

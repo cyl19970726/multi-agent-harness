@@ -5702,6 +5702,193 @@ impl HarnessStore {
         )
     }
 
+    /// Transfer one quiescent AgentSession to the current NodeDaemon
+    /// generation without changing the provider-native session identity or
+    /// the AgentSession runtime generation. The daemon and driver generations
+    /// are independent fences: advancing them invalidates every old provider
+    /// command while preserving exact WorkExecutionBindings to this session.
+    ///
+    /// A session that may have owned a provider process can move only after
+    /// the predecessor lease was explicitly released. Lease expiry alone is
+    /// not evidence that writable children were drained.
+    pub fn reattach_agent_session_to_node_daemon(
+        &self,
+        context: &MutationContext,
+        session_id: &str,
+        expected_runtime_generation: u64,
+        expected_predecessor_daemon_generation: u64,
+        successor_daemon_id: &str,
+        successor_daemon_generation: u64,
+        updated_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<AgentSession>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let request_payload = serde_json::json!({
+            "session_id": session_id,
+            "expected_runtime_generation": expected_runtime_generation,
+            "expected_predecessor_daemon_generation": expected_predecessor_daemon_generation,
+            "successor_daemon_id": successor_daemon_id,
+            "successor_daemon_generation": successor_daemon_generation,
+            "updated_at": updated_at,
+        });
+        let request_fingerprint = canonical_json_fingerprint(&request_payload);
+        let mut commit_context = context.clone();
+        commit_context.request_fingerprint = Some(request_fingerprint.clone());
+        if let Some(replay) = self.replay_trust_projection_unlocked(
+            &commit_context,
+            "agent_session",
+            session_id,
+            &request_fingerprint,
+        )? {
+            return Ok(replay);
+        }
+
+        let mut session = self
+            .latest_trust_envelopes_unlocked(&context.execution_space_id, "agent_session")?
+            .remove(session_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "AgentSession not found",
+                    "agent_session",
+                    session_id,
+                    None,
+                )
+            })
+            .and_then(|envelope| event_projection::<AgentSession>(&envelope))?;
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            &session.node_id,
+            successor_daemon_id,
+            successor_daemon_generation,
+            &context.authenticated_actor,
+            "agent_session",
+            session_id,
+        )?;
+        if session.runtime_generation != expected_runtime_generation
+            || session.node_daemon_generation != expected_predecessor_daemon_generation
+            || expected_predecessor_daemon_generation >= successor_daemon_generation
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "AgentSession reattach used a stale session or daemon generation",
+                "agent_session",
+                session_id,
+                Some(session.version),
+            ));
+        }
+        let lane_is_quiescent = matches!(
+            session.lifecycle,
+            AgentSessionStatus::Cold | AgentSessionStatus::Idle | AgentSessionStatus::Interrupted
+        ) && session.current_turn_id.is_none()
+            && session.queued_input_count == 0
+            && matches!(
+                session.control_state.runtime_residency,
+                RuntimeResidency::Detached | RuntimeResidency::Attached
+            )
+            && session.control_state.activity == RuntimeActivity::Idle
+            && session.control_state.handoff_state
+                == firm_core::agentfirm_api::DriverHandoffState::None
+            && matches!(
+                session.control_state.continuation.activation,
+                NativeContinuationActivation::Disarmed
+            );
+        if !lane_is_quiescent {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "AgentSession reattach requires a quiescent, continuation-disarmed lane with no queued native input",
+                "agent_session",
+                session_id,
+                Some(session.version),
+            ));
+        }
+        let ambiguous_effect = self
+            .runtime_commands(&context.execution_space_id)?
+            .into_iter()
+            .any(|command| {
+                command.target_session_id.as_deref() == Some(session.id.as_str())
+                    && command.target_session_generation == Some(session.runtime_generation)
+                    && command.target_node_daemon_generation
+                        == expected_predecessor_daemon_generation
+                    && command.effect_certainty == RuntimeEffectCertainty::Unknown
+                    && matches!(
+                        command.status,
+                        RuntimeCommandStatus::Accepted
+                            | RuntimeCommandStatus::Quiesced
+                            | RuntimeCommandStatus::RecoveryRequired
+                    )
+            });
+        if ambiguous_effect {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "AgentSession reattach requires reconciliation of every predecessor RuntimeCommand",
+                "agent_session",
+                session_id,
+                Some(session.version),
+            ));
+        }
+
+        let predecessor_was_released = self
+            .read_jsonl::<firm_core::NodeDaemonLease>("node_daemon_leases.jsonl")?
+            .into_iter()
+            .filter(|lease| {
+                lease.node_id == session.node_id
+                    && lease.daemon_id == session.node_daemon_id
+                    && lease.generation == expected_predecessor_daemon_generation
+            })
+            .last()
+            .is_some_and(|lease| lease.status == firm_core::NodeDaemonLeaseStatus::Released);
+        let predecessor_may_have_owned_runtime = session.native_session_ref.is_some()
+            || session.control_state.runtime_residency != RuntimeResidency::Detached;
+        if predecessor_may_have_owned_runtime && !predecessor_was_released {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "AgentSession reattach requires an explicit predecessor NodeDaemon release; lease expiry is not a provider-drain receipt",
+                "agent_session",
+                session_id,
+                Some(session.version),
+            ));
+        }
+
+        let predecessor_daemon_id = session.node_daemon_id.clone();
+        session.node_daemon_id = successor_daemon_id.to_string();
+        session.node_daemon_generation = successor_daemon_generation;
+        session.control_state.runtime_residency = RuntimeResidency::Detached;
+        session.control_state.activity = RuntimeActivity::Idle;
+        session.control_state.driver_generation = session
+            .control_state
+            .driver_generation
+            .saturating_add(1)
+            .max(1);
+        session.control_state.driver_ref = RuntimeDriverRef::NodeDaemon {
+            node_daemon_id: successor_daemon_id.to_string(),
+            node_daemon_generation: successor_daemon_generation,
+        };
+        session.control_state.handoff_state = firm_core::agentfirm_api::DriverHandoffState::None;
+        session.control_state.continuation.activation = NativeContinuationActivation::Disarmed;
+        session.control_state.last_reconciled_at = Some(updated_at.to_string());
+        session.version += 1;
+        session.last_active_at = updated_at.to_string();
+        self.commit_trust_projection_unlocked(
+            &commit_context,
+            "agent_session",
+            session_id,
+            "node_daemon_reattached",
+            serde_json::json!({
+                "predecessor_daemon_id": predecessor_daemon_id,
+                "predecessor_daemon_generation": expected_predecessor_daemon_generation,
+                "successor_daemon_id": successor_daemon_id,
+                "successor_daemon_generation": successor_daemon_generation,
+                "runtime_generation": session.runtime_generation,
+                "driver_generation": session.control_state.driver_generation,
+                "updated_at": updated_at,
+            }),
+            &session,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
     /// Write the settled provider-native Session binding onto the canonical
     /// AgentSession. A fresh-start session is materialized before the provider
     /// thread exists (`native_session_ref` starts unset), so the settled binding
@@ -8596,6 +8783,9 @@ mod tests {
     use firm_core::agentfirm_api::{ActorRef, AgentMemberOrganizationStatus, PermissionCeiling};
     use std::fs;
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static FABRIC_STORE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
     fn actor(id: &str) -> ActorRef {
         ActorRef {
@@ -8814,12 +9004,13 @@ mod tests {
 
     fn fabric_store() -> (HarnessStore, PathBuf) {
         let root = std::env::temp_dir().join(format!(
-            "firm-runtime-fabric-{}-{}",
+            "firm-runtime-fabric-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            FABRIC_STORE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
         ));
         let store = HarnessStore::new(&root);
         store.init().unwrap();
@@ -10329,6 +10520,177 @@ mod tests {
                 "t4",
             )
             .unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn agent_session_reattach_preserves_native_identity_and_fences_daemon_driver() {
+        let (store, root) = fabric_store();
+        store
+            .create_agent_identity(
+                &context("host", "identity.create", "reattach-agent", 0),
+                identity("reattach-agent"),
+            )
+            .unwrap();
+        let mut target = session("session-reattach", "reattach-agent");
+        target.control_state.runtime_residency = RuntimeResidency::Attached;
+        target.control_state.activity = RuntimeActivity::Idle;
+        target.native_session_ref = Some(NativeSessionRef {
+            provider: "codex".into(),
+            execution_mode: "codex_app_server".into(),
+            native_session_id: "thread-native-1".into(),
+            native_locator_kind: "codex_thread".into(),
+            provider_version: Some("0.148.0-alpha.9".into()),
+            adapter_contract_version: "codex-app-server-v1".into(),
+            availability: firm_core::agentfirm_api::NativeSessionAvailability::Available,
+            supports_resume: true,
+            last_verified_at: Some("t1".into()),
+            parent_native_session_id: None,
+        });
+        store
+            .create_agent_session(
+                &service_context("session.create", "session-reattach", 0),
+                target.clone(),
+            )
+            .unwrap();
+        let now = current_unix_ms();
+        store
+            .drain_node_daemon_lease(&target.node_id, "daemon-1", 1, "instance-1", now, 60_000)
+            .unwrap();
+        store
+            .release_node_daemon_lease(&target.node_id, "daemon-1", 1, "instance-1", now + 1)
+            .unwrap();
+        let successor = store
+            .acquire_node_daemon_lease(&target.node_id, "daemon-2", "instance-2", now + 2, 60_000)
+            .unwrap();
+        let reattach_context = MutationContext {
+            execution_space_id: "space-test".into(),
+            authenticated_actor: ActorRef {
+                kind: ActorKind::Service,
+                id: successor.daemon_id.clone(),
+            },
+            authority_actor: None,
+            command_name: "node_daemon.session.reattach".into(),
+            idempotency_key: "reattach-session-1".into(),
+            expected_version: target.version,
+            request_fingerprint: None,
+        };
+        let moved = store
+            .reattach_agent_session_to_node_daemon(
+                &reattach_context,
+                &target.id,
+                target.runtime_generation,
+                1,
+                &successor.daemon_id,
+                successor.generation,
+                "t2",
+            )
+            .unwrap();
+        assert_eq!(
+            moved.projection.runtime_generation,
+            target.runtime_generation
+        );
+        assert_eq!(
+            moved.projection.native_session_ref,
+            target.native_session_ref
+        );
+        assert_eq!(
+            moved.projection.node_daemon_generation,
+            successor.generation
+        );
+        assert_eq!(moved.projection.control_state.driver_generation, 2);
+        assert_eq!(
+            moved.projection.control_state.runtime_residency,
+            RuntimeResidency::Detached
+        );
+        assert_eq!(
+            moved.projection.control_state.driver_ref,
+            RuntimeDriverRef::NodeDaemon {
+                node_daemon_id: successor.daemon_id,
+                node_daemon_generation: successor.generation,
+            }
+        );
+        let replay = store
+            .reattach_agent_session_to_node_daemon(
+                &reattach_context,
+                &target.id,
+                target.runtime_generation,
+                1,
+                "daemon-2",
+                2,
+                "t2",
+            )
+            .unwrap();
+        assert!(replay.replayed);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn agent_session_reattach_rejects_expiry_without_provider_drain_receipt() {
+        let (store, root) = fabric_store();
+        store
+            .create_agent_identity(
+                &context("host", "identity.create", "expired-agent", 0),
+                identity("expired-agent"),
+            )
+            .unwrap();
+        let mut target = session("session-expired-reattach", "expired-agent");
+        target.control_state.runtime_residency = RuntimeResidency::Attached;
+        target.control_state.activity = RuntimeActivity::Idle;
+        target.native_session_ref = Some(NativeSessionRef {
+            provider: "codex".into(),
+            execution_mode: "codex_app_server".into(),
+            native_session_id: "thread-native-expired".into(),
+            native_locator_kind: "codex_thread".into(),
+            provider_version: Some("0.148.0-alpha.9".into()),
+            adapter_contract_version: "codex-app-server-v1".into(),
+            availability: firm_core::agentfirm_api::NativeSessionAvailability::Available,
+            supports_resume: true,
+            last_verified_at: Some("t1".into()),
+            parent_native_session_id: None,
+        });
+        store
+            .create_agent_session(
+                &service_context("session.create", "session-expired-reattach", 0),
+                target.clone(),
+            )
+            .unwrap();
+        let successor = store
+            .acquire_node_daemon_lease(
+                &target.node_id,
+                "daemon-2",
+                "instance-2",
+                current_unix_ms() + 61_000,
+                60_000,
+            )
+            .unwrap();
+        let before = store.canonical_operations().unwrap();
+        let error = store
+            .reattach_agent_session_to_node_daemon(
+                &MutationContext {
+                    execution_space_id: "space-test".into(),
+                    authenticated_actor: ActorRef {
+                        kind: ActorKind::Service,
+                        id: successor.daemon_id.clone(),
+                    },
+                    authority_actor: None,
+                    command_name: "node_daemon.session.reattach".into(),
+                    idempotency_key: "reattach-expired-session".into(),
+                    expected_version: target.version,
+                    request_fingerprint: None,
+                },
+                &target.id,
+                target.runtime_generation,
+                1,
+                &successor.daemon_id,
+                successor.generation,
+                "t2",
+            )
+            .expect_err("lease expiry is not a provider drain receipt");
+        assert!(error
+            .to_string()
+            .contains("explicit predecessor NodeDaemon release"));
+        assert_eq!(store.canonical_operations().unwrap(), before);
         fs::remove_dir_all(root).unwrap();
     }
 

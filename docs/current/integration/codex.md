@@ -52,14 +52,14 @@ MemberRun + active Work/version
   -> explicit Reopen starts a new adapter generation with thread/resume
 ```
 
-The app-server handshake returns both thread identity and the effective model,
-but the response nesting is version-specific. Reviewed Codex `0.145.0` returns
-the effective model at `result.model`, alongside `result.thread`; earlier
-reviewed fixtures returned `result.thread.model`. The adapter accepts both
-shapes and then the explicitly requested model as a final fallback. It must not
-reject a valid current response merely because the model is not duplicated
-inside the thread object: that effective value is required for the complete
-per-turn `collaborationMode` preset.
+The app-server handshake returns the thread identity and effective execution
+controls, but response nesting is version-specific. Reviewed Codex
+`0.148.0-alpha.9` returns the effective model, reasoning effort, service tier,
+approval policy, and sandbox beside `result.thread`. The adapter validates the
+returned thread id and every requested effective control; omission or mismatch
+fails closed. Historical model fixtures also returned `result.thread.model`,
+which remains readable for old records but is not used to invent a current
+permission or execution-setting receipt.
 
 Ordinary provider turn completion does not destroy the Member. Interrupt and
 Close are different:
@@ -285,10 +285,35 @@ Provider maintenance follows ADR 0031's Agent-managed, one-Provider-at-a-time
 update loop. It must not hot-replace an active MemberRun/native session and
 must retain a rollback path until deterministic and live acceptance pass.
 
-Current local probe at this documentation closure: Codex `0.145.0`,
-compatibility `current`, adapter contract `codex-app-server-v1`, reviewed on
-2026-07-28. This is a point-in-time execution fact; always rerun the provider
-audit instead of assuming it remains current.
+Current local probe at this documentation closure: Codex
+`0.148.0-alpha.9`, compatibility `current`, adapter contract
+`codex-app-server-v1`, reviewed on 2026-08-16. The exact-version DEV-26 live
+canary proved a new native thread, one completed round, explicit process Close
+with the thread retained, exact `thread/resume`, a shell command that became
+active before `turn/interrupt`, matching `turn/completed=interrupted` plus idle
+observation, a later completed round on the same thread, and a second explicit
+Close. The generated 0.148 schemas and deterministic matrix additionally cover
+strict thread/turn identity, effective permission receipts, failed terminal
+projection, and safe `requestUserInput` routing.
+
+The live protocol matrix was not repeated merely to add coordination records.
+Mission `mission-dev26-codex-01480-v1` supplies that missing durable half:
+TeamRun `team-run-1786846271494-p46553-0`, MemberRun
+`member-run-1786846271495-p46553-1`, and accepted Work
+`work-1786846272156-p46553-4` are bound to Codex 0.148.0-alpha.9 native Thread
+`01a00856-e54a-7bb1-8a09-cd6c61b2e61a`. The provider-owned rollout at
+`~/.codex/sessions/2026/08/16/rollout-2026-08-16T10-11-47-01a00856-e54a-7bb1-8a09-cd6c61b2e61a.jsonl`
+contains the exact no-write response and bound Work start/submit commands. Host
+accepted revision 4, explicit Close settled `applied`, an idempotent retry
+reconciled `already_closed` without a second provider effect, the TeamRun
+completed, and the Mission recorded closeout evidence.
+
+That canary did not exercise `turn/steer` or activate a provider-native Goal.
+Those semantic bindings remain `review_required`; strong quiesce/release also
+remains degraded because the app-server cannot prove detached writable-child
+drain and durable rollout flush. This point-in-time evidence must not be
+generalized to a later Codex build; always rerun the provider audit and live
+upgrade gate.
 
 ## Account Capacity
 

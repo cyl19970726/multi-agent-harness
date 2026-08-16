@@ -116,6 +116,9 @@ enum RoleActionIntent {
         #[serde(default)]
         evidence_refs: Vec<String>,
     },
+    InterruptMemberRun {
+        reason: String,
+    },
     CloseMemberRun,
     ReopenMemberRun,
     RetireMemberRun,
@@ -516,7 +519,7 @@ fn parse_canonical_route(path: &str) -> Option<CanonicalRoute<'_>> {
         ["v1", "agentfirm", "member-runs", run, operation]
             if matches!(
                 *operation,
-                "close" | "reopen" | "retire" | "resume-native-session"
+                "interrupt" | "close" | "reopen" | "retire" | "resume-native-session"
             ) =>
         {
             Some(CanonicalRoute::MemberRun {
@@ -585,6 +588,179 @@ fn parse_canonical_route(path: &str) -> Option<CanonicalRoute<'_>> {
         }
         _ => None,
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct AuthorizedMemberInterrupt {
+    pub team_run_id: String,
+    pub member_run_id: String,
+    pub requested_by: String,
+    pub reason: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct AuthorizedMemberClose {
+    pub team_run_id: String,
+    pub member_run_id: String,
+    pub requested_by: String,
+}
+
+/// Authorize reversible Close without mutating MemberRun lifecycle. The
+/// owning Supervisor must first close the provider runtime and settle the
+/// exact CloseMember RuntimeCommand; only then may it project Closed/Stopped.
+pub(crate) fn authorize_member_close(
+    store: &HarnessStore,
+    auth: &AuthenticatedMutation,
+    path: &str,
+    body: &[u8],
+    confirmed_action: Option<&str>,
+) -> Result<AuthorizedMemberClose, StoreError> {
+    let Some(CanonicalRoute::MemberRun {
+        member_run_id,
+        operation: "close",
+    }) = parse_canonical_route(path)
+    else {
+        return Err(encoded_error(
+            "INVALID_STATE_TRANSITION",
+            "semantic Close intent does not match the exact MemberRun route",
+            "route",
+            path,
+            None,
+        ));
+    };
+    let RoleActionIntent::CloseMemberRun = serde_json::from_slice::<RoleActionIntent>(body)
+        .map_err(|error| {
+            encoded_error(
+                "INVALID_STATE_TRANSITION",
+                format!("invalid MemberRun Close intent: {error}"),
+                "member_run",
+                member_run_id,
+                None,
+            )
+        })?
+    else {
+        return Err(encoded_error(
+            "INVALID_STATE_TRANSITION",
+            "semantic action does not match MemberRun Close route",
+            "member_run",
+            member_run_id,
+            None,
+        ));
+    };
+    if confirmed_action != Some("close_member_run") {
+        return Err(encoded_error(
+            "CONFIRMATION_REQUIRED",
+            "server confirmation must exactly confirm close_member_run",
+            "member_run",
+            member_run_id,
+            None,
+        ));
+    }
+    let (run, _) = require_member_or_host(store, auth, member_run_id)?;
+    if auth.expected_version != run.version {
+        return Err(encoded_error(
+            "VERSION_CONFLICT",
+            "MemberRun Close requires its exact current revision",
+            "member_run",
+            member_run_id,
+            Some(run.version),
+        ));
+    }
+    if run.coordination_status == MemberCoordinationStatus::Retired {
+        return Err(encoded_error(
+            "INVALID_STATE_TRANSITION",
+            "a retired MemberRun cannot be closed or reopened",
+            "member_run",
+            member_run_id,
+            Some(run.version),
+        ));
+    }
+    Ok(AuthorizedMemberClose {
+        team_run_id: run.team_run_id,
+        member_run_id: member_run_id.to_string(),
+        requested_by: auth.actor.id.clone(),
+    })
+}
+
+/// Resolve one live-only Interrupt intent against the same authenticated Host
+/// or Member authority and exact MemberRun CAS used by durable Role Actions.
+/// The returned permit is not an effect receipt: the caller must route it to
+/// the owning Supervisor, whose provider-native acknowledgement settles the
+/// durable InterruptCurrentCycle RuntimeCommand.
+pub(crate) fn authorize_member_interrupt(
+    store: &HarnessStore,
+    auth: &AuthenticatedMutation,
+    path: &str,
+    body: &[u8],
+) -> Result<AuthorizedMemberInterrupt, StoreError> {
+    let Some(CanonicalRoute::MemberRun {
+        member_run_id,
+        operation: "interrupt",
+    }) = parse_canonical_route(path)
+    else {
+        return Err(encoded_error(
+            "INVALID_STATE_TRANSITION",
+            "semantic Interrupt intent does not match the exact MemberRun route",
+            "route",
+            path,
+            None,
+        ));
+    };
+    let RoleActionIntent::InterruptMemberRun { reason } =
+        serde_json::from_slice::<RoleActionIntent>(body).map_err(|error| {
+            encoded_error(
+                "INVALID_STATE_TRANSITION",
+                format!("invalid MemberRun Interrupt intent: {error}"),
+                "member_run",
+                member_run_id,
+                None,
+            )
+        })?
+    else {
+        return Err(encoded_error(
+            "INVALID_STATE_TRANSITION",
+            "semantic action does not match MemberRun Interrupt route",
+            "member_run",
+            member_run_id,
+            None,
+        ));
+    };
+    if reason.trim().is_empty() {
+        return Err(encoded_error(
+            "INVALID_STATE_TRANSITION",
+            "Interrupt requires a non-empty reason",
+            "member_run",
+            member_run_id,
+            None,
+        ));
+    }
+    let (run, _) = require_member_or_host(store, auth, member_run_id)?;
+    if auth.expected_version != run.version {
+        return Err(encoded_error(
+            "VERSION_CONFLICT",
+            "MemberRun Interrupt requires its exact current revision",
+            "member_run",
+            member_run_id,
+            Some(run.version),
+        ));
+    }
+    if run.coordination_status != MemberCoordinationStatus::Active
+        || run.runtime_status != harness_core::agentfirm_api::MemberRuntimeStatus::Running
+    {
+        return Err(encoded_error(
+            "INVALID_STATE_TRANSITION",
+            "Interrupt requires an Active MemberRun with one running provider turn",
+            "member_run",
+            member_run_id,
+            Some(run.version),
+        ));
+    }
+    Ok(AuthorizedMemberInterrupt {
+        team_run_id: run.team_run_id,
+        member_run_id: member_run_id.to_string(),
+        requested_by: auth.actor.id.clone(),
+        reason,
+    })
 }
 
 pub fn is_http_mutation_path(path: &str) -> bool {

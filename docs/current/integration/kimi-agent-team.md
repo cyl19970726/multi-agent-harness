@@ -27,11 +27,11 @@ Kimi does not currently have a reviewed native continuation controller in this
 adapter. It uses the provider-neutral `host_driven` path: Harness delivers one
 eligible mailbox envelope at a time and Kimi keeps its native session as
 execution truth. This is not an emulated Goal; no Harness Goal object exists.
-For 0.31.0 and 0.31.1 the capability snapshot truthfully reports
-`goal_mode=native`, while
-the separate execution driver remains `host_driven` because ACP does not yet
-provide the reviewed Goal inspection and control operations Harness would need
-to delegate cycle ownership.
+Historical 0.31.0 and 0.31.1 capability snapshots truthfully reported
+`goal_mode=native`. The current 0.36.1 profile reports `goal_mode=emulated`
+because this exact version has no reviewed Goal inspection and control
+contract. In every case the execution driver remains `host_driven`; Harness
+does not delegate cycle ownership based on a provider feature name.
 Raw ACP plan, thought, and tool streams remain provider-native. Only ordinary
 Host/Member coordination is persisted.
 
@@ -52,16 +52,16 @@ Harness never silently falls back from ACP to one-shot print mode.
 `ProviderCapabilities::kimi_exec()` describes bounded Workflow execution and
 must not be used to infer Team capability.
 
-The installed Kimi Code probe reports `0.31.1`. After the Human-approved
+The installed Kimi Code probe reports `0.36.1`. After the Human-approved
 upgrade, deterministic adapter checks and live ACP canaries reviewed this
 version for prompt delivery, K3/`max` model and reasoning selection, exact
-native-session resume across Supervisor generation 1 → 2, next-round batched
-mail, full-access permission receipt convergence, and cooperative Interrupt.
+native-session resume, attach-time replay draining, next-round batched mail,
+full-access permission receipt convergence, and cooperative Interrupt.
 `kimi-acp-v1` therefore
 reports `current` for those slices. ACP defines `session/cancel` as a JSON-RPC
 notification without a request id. The first live canary incorrectly sent it
 as a request and received `-32601 Method not found`; inspection of the installed
-0.31.x implementation and a corrected notification canary identified the
+0.36.1 implementation and a corrected notification canary identified the
 framing defect in Harness.
 
 ## Model and reasoning controls
@@ -95,7 +95,7 @@ Health is reported separately for process, ACP protocol, native session, and
 mailbox delivery. Provider-native activity stays in the Kimi session; Harness
 retains only the native binding and explicit coordination facts.
 
-## Kimi 0.31 capability adoption
+## Kimi 0.36 capability adoption
 
 The upstream capability inventory is larger than the currently exposed Team
 surface. Harness adopts it in layers:
@@ -109,8 +109,16 @@ surface. Harness adopts it in layers:
 | `session/list` | supported upstream; useful next for recovery diagnostics, never for guessing which session to resume |
 | ACP MCP forwarding | supported upstream; pass only explicitly approved MCP descriptors and never copy credentials into Harness state |
 | native Goals and custom/background/nested agents | usable inside the Kimi Member; remain provider-native execution details until separately reviewed control/observation contracts exist |
-| `session/cancel` | implemented as an ACP notification; reviewed for cooperative Interrupt in installed 0.31.0 and 0.31.1 |
-| `session/close`, audio prompts, terminal reverse-RPC | unsupported upstream; Harness must not advertise them |
+| `session/cancel` | implemented as an ACP notification; reviewed for cooperative Interrupt in installed 0.36.1 |
+| `session/close` | supported by exact Kimi 0.36.1 ACP; Team Close waits for its correlated ACK, then closes stdin and reaps the owned ACP child while retaining the native session id for Reopen |
+| audio prompts, terminal reverse-RPC | unsupported by the reviewed Team adapter; Harness must not advertise them |
+
+`session/close` is the narrow Team **CloseRuntime** primitive, not proof of the
+strong provider-neutral `quiesce` postcondition. Kimi 0.36.1 does not return a
+durable wire-flush receipt or a complete inventory of detached writable child
+processes. The adapter therefore keeps strong `quiesce`/`release` degraded and
+fail-closed instead of promoting an ACP close acknowledgement into evidence it
+does not contain.
 
 This lets Kimi gain native capability without expanding the Harness object
 model. A new feature becomes a product control only after the exact installed
@@ -119,6 +127,27 @@ Explicit Host Close remains available: it durably latches runtime-shutdown
 intent and terminates the Harness-owned ACP process without claiming either a
 native session close or conflating Close with cooperative Interrupt. Explicit
 Reopen starts a higher adapter generation and resumes the recorded ACP session.
+
+### DEV-26 live Close/Reopen evidence
+
+The repaired Kimi 0.36.1 dogfood run
+`team-run-1786844995222-p30994-0` / `member-run-1786844995223-p30994-1`
+used native session
+`session_194a474c-d24e-49be-bb7c-410632d8ac49`. Generation 1 completed and
+submitted `FIRST-LIVE-PASS`; explicit Close received `session/close`, cleanly
+reaped the owned ACP process, and retained that session id. Reopen advanced the
+same MemberRun to runtime generation 2 and resumed the exact same native
+session; the second accepted Work submitted `SECOND-LIVE-PASS`.
+
+The owner-private SSE emitted both `updated` and `terminal` envelopes scoped to
+`member_run_generation=2` while the canonical AgentSession remained generation
+1. The owner RoleView stayed enabled across Reopen and its native history grew
+from one episode to two under the same AgentSession id. This is live evidence
+for the intentionally independent MemberRun/AgentSession generation fences,
+not permission to relax the exact AgentIdentity, native-session, provider,
+Execution Space, Project, NodeDaemon, or privacy checks. Mission
+`mission-dev26-kimi-0361-v2` records the defect, repair judgment, accepted Work
+revisions, runtime close receipt, and closeout.
 
 ## Busy-turn delivery boundary
 

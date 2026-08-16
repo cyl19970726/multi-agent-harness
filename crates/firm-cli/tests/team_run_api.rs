@@ -3621,11 +3621,10 @@ fn codex_app_server_member_interrupt_waits_for_provider_terminal_event() {
     );
 }
 
-// Historical run-addressed Codex Close/Reopen happy path. A live provider
-// callback can make the effect certainty unknowable; current RuntimeCommand
-// tests require an explicit RecoveryRequired result instead of treating that
-// race as an unconditional 200/Stopped transition.
-#[cfg(any())]
+// Provider-neutral Codex Close/Reopen journey. Close is acknowledged only
+// after the active turn is terminal, the owned runtime is reaped, and the
+// retained native thread locator is durably visible. Reopen must bind a
+// higher runtime generation to that exact thread.
 #[test]
 fn host_can_explicitly_close_a_live_codex_member() {
     let home = TempHome::new("team-run-codex-close");
@@ -3695,10 +3694,13 @@ fn host_can_explicitly_close_a_live_codex_member() {
         &serde_json::json!({"requested_by": "host", "reason": "lane accepted"}),
     );
     assert_eq!(status, 200, "body: {result}");
-    assert_eq!(result["result"]["status"].as_str(), Some("close_requested"));
+    assert_eq!(result["result"]["status"].as_str(), Some("closed"));
     assert_eq!(
-        result["result"]["provider_ack"].as_str(),
-        Some("turn_interrupt_accepted")
+        result["result"]["provider_terminal_evidence"]["member_runtime_close"]
+            ["control_acknowledged"]
+            .as_str(),
+        Some("satisfied"),
+        "Close must expose the independent Codex runtime receipt: {result}"
     );
     let mut stopped = false;
     for _ in 0..100 {
@@ -3979,7 +3981,7 @@ fn kimi_acp_member_can_be_cancelled_cooperatively() {
         &[],
         &[
             ("KIMI_CODE_BIN", fake_kimi.as_str()),
-            ("FAKE_KIMI_VERSION", "0.31.0"),
+            ("FAKE_KIMI_VERSION", "0.36.1"),
             ("FAKE_KIMI_WAIT", "1"),
             ("FAKE_KIMI_CANCEL_MARKER", cancel_marker_value.as_str()),
         ],
@@ -4029,7 +4031,7 @@ fn kimi_acp_member_can_be_cancelled_cooperatively() {
     assert_eq!(status, 200, "body: {interrupted}");
     assert_eq!(
         interrupted["result"]["status"].as_str(),
-        Some("cancel_requested")
+        Some("interrupted")
     );
     let mut idle = false;
     for _ in 0..100 {
@@ -4182,7 +4184,7 @@ fn installed_kimi_upgrade_to_unreviewed_blocks_reopen_and_recovery_without_reusi
     let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_kimi = fake_bin.join("kimi").display().to_string();
-    let reviewed_acp_marker = home.base().join("kimi-031-reviewed-acp.log");
+    let reviewed_acp_marker = home.base().join("kimi-0361-reviewed-acp.log");
     let reviewed_acp_marker_value = reviewed_acp_marker.display().to_string();
 
     let reviewed_serve = ServeHandle::spawn_with_env(
@@ -4191,7 +4193,7 @@ fn installed_kimi_upgrade_to_unreviewed_blocks_reopen_and_recovery_without_reusi
         &[],
         &[
             ("KIMI_CODE_BIN", fake_kimi.as_str()),
-            ("FAKE_KIMI_VERSION", "0.31.0"),
+            ("FAKE_KIMI_VERSION", "0.36.1"),
             ("FAKE_KIMI_ENV_MARKER", reviewed_acp_marker_value.as_str()),
         ],
     );
@@ -4550,7 +4552,7 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
             ],
             &[
                 ("KIMI_CODE_BIN", fake_kimi.as_str()),
-                ("FAKE_KIMI_VERSION", "0.31.0"),
+                ("FAKE_KIMI_VERSION", "0.36.1"),
                 ("FAKE_KIMI_ENV_MARKER", acp_marker_value.as_str()),
             ],
         );
@@ -4682,28 +4684,31 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
 }
 
 #[test]
-fn host_close_terminates_kimi_0310_runtime_without_conflating_interrupt() {
-    let home = TempHome::new("team-run-kimi-0310-close");
+fn busy_host_close_interrupts_then_closes_kimi_0361_as_distinct_effects() {
+    let home = TempHome::new("team-run-kimi-0361-close");
     let _project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_kimi = fake_bin.join("kimi").display().to_string();
     let cancel_marker = home.base().join("kimi-close-cancel-marker.log");
     let cancel_marker_value = cancel_marker.display().to_string();
+    let close_marker = home.base().join("kimi-close-runtime-marker.log");
+    let close_marker_value = close_marker.display().to_string();
     let serve = ServeHandle::spawn_with_env(
         &home,
         home.base(),
         &[],
         &[
             ("KIMI_CODE_BIN", fake_kimi.as_str()),
-            ("FAKE_KIMI_VERSION", "0.31.0"),
+            ("FAKE_KIMI_VERSION", "0.36.1"),
             ("FAKE_KIMI_WAIT", "1"),
             ("FAKE_KIMI_CANCEL_MARKER", cancel_marker_value.as_str()),
+            ("FAKE_KIMI_CLOSE_MARKER", close_marker_value.as_str()),
         ],
     );
     let (_, created) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
-            "objective": "Close a Kimi runtime without claiming native cancel",
+            "objective": "Interrupt one active Kimi cycle, then close its runtime",
             "members": [{"name": "kimi-close", "role": "observer", "provider": "kimi", "model": "k2.5", "initial_work": "Exercise Kimi close"}]
         }),
     );
@@ -4736,16 +4741,26 @@ fn host_close_terminates_kimi_0310_runtime_without_conflating_interrupt() {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(running, "Kimi 0.31.0 member never became live");
+    assert!(running, "Kimi 0.36.1 member never became live");
 
     let (status, closed) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
         &serde_json::json!({"requested_by": "host", "reason": "lane accepted"}),
     );
-    assert_eq!(status, 200, "body: {closed}");
+    let (_, close_snapshot) = serve.get_json("/v1/snapshot");
+    assert_eq!(status, 200, "body: {closed}; snapshot: {close_snapshot}");
+    assert_eq!(closed["result"]["status"].as_str(), Some("closed"));
     assert_eq!(
-        closed["result"]["provider_ack"].as_str(),
-        Some("harness_runtime_termination_requested")
+        closed["result"]["provider_terminal_evidence"]["provider_terminal_event"].as_str(),
+        Some("agent_settled"),
+        "Close must expose the correlated current-cycle terminal evidence: {closed}"
+    );
+    assert!(
+        closed["result"]["provider_terminal_evidence"]["member_runtime_close"]
+            ["control_acknowledged"]
+            .as_str()
+            == Some("satisfied"),
+        "Close must expose the independent provider runtime receipt: {closed}"
     );
     let mut stopped = false;
     for _ in 0..100 {
@@ -4763,10 +4778,14 @@ fn host_close_terminates_kimi_0310_runtime_without_conflating_interrupt() {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(stopped, "Host close did not stop Kimi 0.31.0 runtime");
+    assert!(stopped, "Host close did not stop Kimi 0.36.1 runtime");
     assert!(
-        !cancel_marker.exists(),
-        "Host close must terminate the owned runtime directly, not masquerade as Interrupt"
+        cancel_marker.exists(),
+        "busy Close must first interrupt the active Kimi cycle"
+    );
+    assert!(
+        close_marker.exists(),
+        "busy Close must then obtain a distinct Kimi session/close receipt"
     );
 }
 
@@ -5056,7 +5075,7 @@ fn crashed_kimi_transport_requires_recovery_without_replaying_provider_effect() 
         &[],
         &[
             ("KIMI_CODE_BIN", fake_kimi.as_str()),
-            ("FAKE_KIMI_VERSION", "0.31.0"),
+            ("FAKE_KIMI_VERSION", "0.36.1"),
             ("FAKE_KIMI_RESULT", "done"),
             ("FAKE_KIMI_CRASH_ONCE_MARKER", crash_value.as_str()),
             ("FAKE_KIMI_ATTACH_MARKER", attach_value.as_str()),
@@ -5247,7 +5266,12 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let interaction_id = interaction_id.expect("Codex provider interaction request message");
+    let interaction_id = interaction_id.unwrap_or_else(|| {
+        panic!(
+            "Codex provider interaction request message; snapshot={}",
+            serve.get_json("/v1/snapshot").1
+        )
+    });
     let opened = std::fs::read_to_string(&thread_marker).expect("Codex thread/start marker");
     assert!(
         opened.contains("\"sandbox\":\"workspace-write\"")
@@ -5475,7 +5499,7 @@ fn interrupt_cancels_waiting_provider_message_before_kimi_prompt() {
         &[],
         &[
             ("KIMI_CODE_BIN", fake_kimi.as_str()),
-            ("FAKE_KIMI_VERSION", "0.31.0"),
+            ("FAKE_KIMI_VERSION", "0.36.1"),
             ("FAKE_KIMI_ASK", "1"),
         ],
     );
@@ -5578,7 +5602,7 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
         &[],
         &[
             ("KIMI_CODE_BIN", fake_kimi.as_str()),
-            ("FAKE_KIMI_VERSION", "0.31.0"),
+            ("FAKE_KIMI_VERSION", "0.36.1"),
             ("FAKE_KIMI_ASK", "1"),
         ],
     );
@@ -5628,7 +5652,12 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let request_id = request_id.expect("Kimi provider request before close");
+    let request_id = request_id.unwrap_or_else(|| {
+        panic!(
+            "Kimi provider request before close; snapshot={}",
+            serve.get_json("/v1/snapshot").1
+        )
+    });
 
     let (status, closed) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
@@ -6168,7 +6197,7 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
         std::fs::read_to_string(prompts)
             .unwrap_or_default()
             .lines()
-            .filter(|line| line.contains("FOLLOW-UP MESSAGES"))
+            .filter(|line| line.contains("TEAM MESSAGES arrived."))
             .count()
     };
 
@@ -6411,7 +6440,7 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
     let prompt_log = std::fs::read_to_string(&prompts).expect("prompt log");
     let b_round_line = prompt_log
         .lines()
-        .filter(|line| line.contains("FOLLOW-UP MESSAGES"))
+        .filter(|line| line.contains("TEAM MESSAGES arrived."))
         .find(|line| line.contains("Start your reviewed lane now"))
         .expect("peer B follow-up prompt");
     let ack_position = b_round_line

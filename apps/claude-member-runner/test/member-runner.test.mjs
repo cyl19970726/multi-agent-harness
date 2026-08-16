@@ -110,6 +110,19 @@ test("a provider API failure is not reported as an ordinary successful turn", as
   );
 });
 
+test("nullable Rust tool lists are omitted from Agent SDK options", async () => {
+  const { runner, sdk } = harness({ allowedTools: null, disallowedTools: null });
+  const done = runner.start();
+  runner.deliver({ id: "w-null-tools", kind: "work", sender_runtime_id: "host", body: "reply" });
+  await settled();
+
+  assert.equal(sdk.lastOptions.allowedTools, undefined);
+  assert.equal(sdk.lastOptions.disallowedTools, undefined);
+
+  runner.close("test_done");
+  await done;
+});
+
 test("only the Host ends the member, and the reason is recorded", async () => {
   const { runner, of } = harness();
   const done = runner.start();

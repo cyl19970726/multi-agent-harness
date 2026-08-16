@@ -374,7 +374,7 @@ fn team_run_start_delegates_to_node_daemon_and_is_idempotent() {
     let provider_env = [
         ("PATH", fake_path.as_str()),
         ("KIMI_CODE_BIN", kimi_bin.as_str()),
-        ("FAKE_KIMI_VERSION", "0.31.0"),
+        ("FAKE_KIMI_VERSION", "0.36.1"),
         ("FAKE_KIMI_WAIT", "1"),
     ];
     let mut daemon = spawn_daemon(&home, &fixture, &provider_env);
@@ -499,7 +499,7 @@ fn public_team_run_start_cannot_use_test_idle_env_to_bypass_node_daemon() {
     let provider_env = [
         ("PATH", fake_path.as_str()),
         ("KIMI_CODE_BIN", kimi_bin.as_str()),
-        ("FAKE_KIMI_VERSION", "0.31.0"),
+        ("FAKE_KIMI_VERSION", "0.36.1"),
         ("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "100"),
     ];
     let run_id = create_run(&home, &fixture, "worker", &provider_env);
@@ -644,7 +644,7 @@ fn one_node_daemon_adopts_runs_from_two_execution_spaces() {
     let provider_env = [
         ("PATH", fake_path.as_str()),
         ("KIMI_CODE_BIN", kimi_bin.as_str()),
-        ("FAKE_KIMI_VERSION", "0.31.0"),
+        ("FAKE_KIMI_VERSION", "0.36.1"),
         ("FAKE_KIMI_WAIT", "1"),
     ];
     let mut daemon = spawn_daemon(&home, &fixture_a, &provider_env);

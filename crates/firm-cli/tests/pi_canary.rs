@@ -28,7 +28,7 @@ fn pi_rpc_handshake_and_basic_prompt() {
         "this canary is evidence only for the reviewed Pi 0.84.2 RPC contract"
     );
 
-    let tmp = unique_temp_dir();
+    let (tmp, preserve_native_evidence) = canary_session_dir();
     std::fs::create_dir_all(&tmp).expect("create temp dir");
 
     // The file-writing canary exercises the production trusted-FullAccess
@@ -193,20 +193,100 @@ fn pi_rpc_handshake_and_basic_prompt() {
         Path::new(session_file).is_file(),
         "releasing Pi must retain the native session JSONL"
     );
-    std::fs::remove_dir_all(&tmp).expect("remove temp dir");
+    if !preserve_native_evidence {
+        std::fs::remove_dir_all(&tmp).expect("remove temp dir");
+    }
 
     eprintln!("✅ Pi RPC live canary passed");
     eprintln!("   provider_version: {exact_version}");
     eprintln!("   session_file: {session_file}");
+    eprintln!("   native_evidence_retained: {preserve_native_evidence}");
     eprintln!("   final_text: {final_text}");
 }
 
-fn unique_temp_dir() -> PathBuf {
+#[test]
+#[ignore = "requires PI_CANARY_RESUME_SESSION pointing at retained Pi 0.84.2 native evidence"]
+fn pi_rpc_resumes_the_retained_native_session() {
+    let session_file = std::env::var("PI_CANARY_RESUME_SESSION")
+        .expect("PI_CANARY_RESUME_SESSION must name the retained native JSONL");
+    let session_path = Path::new(&session_file);
+    assert!(
+        session_path.is_absolute(),
+        "resume evidence must be absolute"
+    );
+    assert!(session_path.is_file(), "resume evidence must still exist");
+    assert_native_session_has_no_thinking(session_path);
+
+    let version = Command::new("pi")
+        .arg("--version")
+        .output()
+        .expect("probe pi version");
+    assert!(version.status.success(), "pi --version must succeed");
+    assert_eq!(
+        String::from_utf8_lossy(&version.stdout).trim(),
+        "0.84.2",
+        "resume evidence is valid only for exact Pi 0.84.2"
+    );
+
+    let mut child = Command::new("pi")
+        .args([
+            "--mode",
+            "rpc",
+            "--no-context-files",
+            "--no-extensions",
+            "--thinking",
+            "off",
+            "--session",
+        ])
+        .arg(session_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("resume pi --mode rpc against retained native session");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    writeln!(stdin, r#"{{"id":"resume-state","type":"get_state"}}"#).unwrap();
+    stdin.flush().unwrap();
+    let state = read_response(&mut stdout, "resume-state", Duration::from_secs(10))
+        .expect("resumed get_state response");
+    let data = state.get("data").expect("resumed get_state data");
+    assert_eq!(
+        data.get("sessionFile").and_then(serde_json::Value::as_str),
+        Some(session_file.as_str()),
+        "Pi must resume the exact retained native session"
+    );
+    assert_eq!(
+        data.get("isStreaming").and_then(serde_json::Value::as_bool),
+        Some(false),
+        "resumed session must be passively observable as idle"
+    );
+
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        session_path.is_file(),
+        "release must retain resumed evidence"
+    );
+    assert_native_session_has_no_thinking(session_path);
+    eprintln!("✅ Pi RPC retained-session resume canary passed");
+    eprintln!("   provider_version: 0.84.2");
+    eprintln!("   session_file: {session_file}");
+}
+
+fn canary_session_dir() -> (PathBuf, bool) {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock")
         .as_nanos();
-    std::env::temp_dir().join(format!("harness-pi-canary-{}-{nonce}", std::process::id()))
+    let leaf = format!("pi-0.84.2-{}-{nonce}", std::process::id());
+    match std::env::var_os("PI_CANARY_EVIDENCE_DIR") {
+        Some(root) => (PathBuf::from(root).join(leaf), true),
+        None => (std::env::temp_dir().join(format!("harness-{leaf}")), false),
+    }
 }
 
 fn assert_native_session_has_no_thinking(path: &Path) {

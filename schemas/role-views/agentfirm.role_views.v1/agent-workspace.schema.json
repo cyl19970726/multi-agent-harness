@@ -67,11 +67,11 @@
     },
     "selectedAgent":{
       "type":"object","additionalProperties":false,
-      "required":["agent_member_ref","display_name","role","organization_status","is_host","current_member_run_ref","provider","execution_mode","runtime_status","host_session_mode"],
+      "required":["agent_member_ref","display_name","role","organization_status","is_host","current_member_run_ref","provider","execution_mode","runtime_status","runtime_generation","host_session_mode"],
       "properties":{
         "agent_member_ref":{"$ref":"common.schema.json#/$defs/targetRef"},
         "display_name":{"type":"string"},"role":{"type":"string"},"organization_status":{"type":"string"},"is_host":{"type":"boolean"},
-        "current_member_run_ref":{"type":["string","null"]},"provider":{"type":["string","null"]},"execution_mode":{"type":["string","null"]},"runtime_status":{"type":["string","null"]},
+        "current_member_run_ref":{"type":["string","null"]},"provider":{"type":["string","null"]},"execution_mode":{"type":["string","null"]},"runtime_status":{"type":["string","null"]},"runtime_generation":{"type":["integer","null"],"minimum":1},
         "host_session_mode":{"enum":["harness_managed","external_interactive","unbound",null]}
       }
     },
@@ -84,7 +84,8 @@
             "current_member_run_ref":{"type":"null"},
             "provider":{"type":"null"},
             "execution_mode":{"type":"null"},
-            "runtime_status":{"type":"null"}
+            "runtime_status":{"type":"null"},
+            "runtime_generation":{"type":"null"}
           }
         }
       ]
@@ -92,7 +93,7 @@
     "rosterAgent":{
       "type":"object","additionalProperties":false,
       "required":["agent_member_ref","display_name","role","organization_status","coordination_status","capacity","active_work_count","queued_work_count","review_work_count","blocked_work_count","is_host"],
-      "properties":{"agent_member_ref":{"$ref":"common.schema.json#/$defs/targetRef"},"display_name":{"type":"string"},"role":{"type":"string"},"organization_status":{"type":"string"},"coordination_status":{"type":["string","null"]},"capacity":{"type":"string"},"runtime_state":{"type":["string","null"]},"active_work_count":{"type":"integer"},"queued_work_count":{"type":"integer"},"review_work_count":{"type":"integer"},"blocked_work_count":{"type":"integer"},"is_host":{"type":"boolean"},"host_session_mode":{"enum":["harness_managed","external_interactive","unbound"]},"provider_compatibility":{"enum":["current","review_required","incompatible","unavailable","unknown",null]},"provider_compatibility_note":{"type":["string","null"]},"provider_version":{"type":["string","null"]}}
+      "properties":{"agent_member_ref":{"$ref":"common.schema.json#/$defs/targetRef"},"display_name":{"type":"string"},"role":{"type":"string"},"organization_status":{"type":"string"},"coordination_status":{"type":["string","null"]},"capacity":{"type":"string"},"runtime_state":{"type":["string","null"]},"active_work_count":{"type":"integer"},"queued_work_count":{"type":"integer"},"review_work_count":{"type":"integer"},"blocked_work_count":{"type":"integer"},"is_host":{"type":"boolean"},"host_session_mode":{"enum":["harness_managed","external_interactive","unbound"]},"provider_compatibility":{"enum":["current","review_required","incompatible","unavailable","unknown",null]},"provider_compatibility_note":{"type":["string","null"]},"provider_version":{"type":["string","null"]},"provider_capability_admission":{"enum":["active","review_required","unavailable","unknown",null]},"provider_capability_note":{"type":["string","null"]}}
     },
     "configuration":{
       "type":"object","additionalProperties":false,

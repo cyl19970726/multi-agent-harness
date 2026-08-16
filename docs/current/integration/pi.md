@@ -205,6 +205,20 @@ and verifies the native session contains no persisted thinking. Run it with:
 cargo test -p firm-cli --test pi_canary --features pi-canary -- --nocapture
 ```
 
+The DEV-26 run on 2026-08-16 retained its provider-native record at
+`~/.harness/native-evidence/dev26/pi-0.84.2/pi-0.84.2-10443-1786843413813905000/2026-08-16T01-23-34-207Z_01a0082a-bebf-72d6-8a0e-2d8f8afac173.jsonl`.
+That exact 0.84.2 record proves prompt acceptance, `agent_settled`, passive
+idle/empty-queue observation, no persisted thinking, and a later
+`pi --session <that-file>` process resolving the same absolute `sessionFile`.
+It admits only the core `open_or_resume`, `start_cycle`, and `observe`
+bindings. Interrupt, native steer/queue, narrow Close, strong quiesce/release,
+and permission-enforcement claims remain at their deterministic or degraded
+admission until a proportional live run exercises those exact semantics.
+
+Set `PI_CANARY_EVIDENCE_DIR` when the native JSONL must survive the canary.
+The ignored `pi_rpc_resumes_the_retained_native_session` check consumes an
+explicit `PI_CANARY_RESUME_SESSION`; it never guesses a recent Pi session.
+
 The deterministic integration test is:
 
 ```bash
