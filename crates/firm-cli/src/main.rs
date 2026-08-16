@@ -39012,7 +39012,44 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         .collect();
     Ok(serde_json::json!({
         "generated_at": now_string(),
-        "teams": teams.into_values().filter(|team| team.status == AgentTeamStatus::Active).collect::<Vec<_>>(),
+        "teams": teams.into_values().filter(|team| team.status == AgentTeamStatus::Active).map(|team| {
+            // DEV-35 compatibility projection: the dashboard AgentTeam type
+            // still requires mission_id / host_agent_id / member_ids. Derive
+            // them from the durable TeamMembership authority — read-model
+            // compat fields, never stored Team authority.
+            let mut value = serde_json::to_value(&team).unwrap_or_else(|_| serde_json::json!({}));
+            if let Some(object) = value.as_object_mut() {
+                let active_memberships = team_memberships
+                    .iter()
+                    .filter(|membership| {
+                        membership.team_id == team.id
+                            && membership.state
+                                == harness_core::agentfirm_api::TeamMembershipStatus::Active
+                    })
+                    .collect::<Vec<_>>();
+                let host_agent_id = active_memberships
+                    .iter()
+                    .find(|membership| {
+                        membership.role == harness_core::agentfirm_api::TeamMembershipRole::Host
+                    })
+                    .map(|membership| membership.agent_member_id.clone())
+                    .unwrap_or_default();
+                let member_ids = active_memberships
+                    .iter()
+                    .filter(|membership| {
+                        membership.role != harness_core::agentfirm_api::TeamMembershipRole::Host
+                    })
+                    .map(|membership| membership.agent_member_id.clone())
+                    .collect::<Vec<_>>();
+                object.insert(
+                    "mission_id".to_string(),
+                    team.legacy_mission_id.clone().unwrap_or_default().into(),
+                );
+                object.insert("host_agent_id".to_string(), host_agent_id.into());
+                object.insert("member_ids".to_string(), member_ids.into());
+            }
+            value
+        }).collect::<Vec<_>>(),
         "members": member_cards,
         "messages": messages,
         "evidence": evidence,

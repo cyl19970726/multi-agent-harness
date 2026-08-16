@@ -346,6 +346,30 @@ fn mission_log_keeps_one_mission_team_and_member_sessions_alive() {
         Some("agent-review")
     );
     let snapshot = run_json(&home, &project_id, &["dashboard", "snapshot"]);
+    // DEV-35 dashboard compatibility projection: the frontend AgentTeam type
+    // still requires mission_id / host_agent_id / member_ids. The snapshot
+    // derives them from the durable TeamMembership authority; stored Team
+    // authority remains free of them (see the `team show` assertion above).
+    let snapshot_teams = snapshot["teams"].as_array().expect("snapshot teams");
+    let platform_team = snapshot_teams
+        .iter()
+        .find(|team| team["id"].as_str() == Some("team-platform"))
+        .expect("team-platform present in dashboard snapshot teams");
+    assert_eq!(
+        platform_team["mission_id"].as_str(),
+        Some("mission-host-plan"),
+        "compat mission_id derives from legacy provenance"
+    );
+    assert_eq!(
+        platform_team["host_agent_id"].as_str(),
+        Some("agent-build"),
+        "compat host_agent_id derives from the one active Host membership"
+    );
+    assert_eq!(
+        platform_team["member_ids"],
+        serde_json::json!(["agent-review"]),
+        "compat member_ids are the active non-Host memberships"
+    );
     let membership_projections = snapshot["company_os"]["agent_members"]
         .as_array()
         .expect("AgentMember membership projection");
