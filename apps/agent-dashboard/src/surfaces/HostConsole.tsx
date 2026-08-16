@@ -12,7 +12,7 @@ import { fetchRoleView, type AllowedAction, type HostConsoleData, type MessageSu
 import { AttentionStrip, ViewProvenance, ViewState } from "./RoleViewPrimitives";
 import { RoleActionPanel } from "./RoleActionPanel";
 
-export function HostConsole({apiUrl,space,project,company,teamId,teamRunId,selectedWorkId,selectedMemberRunId,refreshKey,onAction,actionsCurrent,onSelectionChange,embedded=false}:{apiUrl:string;space:string;project:string;company?:string;teamId:string;teamRunId?:string;selectedWorkId?:string;selectedMemberRunId?:string;refreshKey?:string;onAction:RoleActionExecutor;actionsCurrent:boolean;onSelectionChange:(next:Record<string,unknown>)=>void;embedded?:boolean}) {
+export function HostConsole({apiUrl,space,project,company,teamId,teamRunId,selectedWorkId,selectedMemberRunId,refreshKey,onAction,onSelectionChange,embedded=false}:{apiUrl:string;space:string;project:string;company?:string;teamId:string;teamRunId?:string;selectedWorkId?:string;selectedMemberRunId?:string;refreshKey?:string;onAction:RoleActionExecutor;onSelectionChange:(next:Record<string,unknown>)=>void;embedded?:boolean}) {
   const [view,setView] = useState<RoleView<HostConsoleData>|null>(null);
   const [error,setError] = useState<string|null>(null);
   const [loading,setLoading] = useState(true);
@@ -36,7 +36,7 @@ export function HostConsole({apiUrl,space,project,company,teamId,teamRunId,selec
   const memberRunActions=view.allowed_actions.filter((action) => action.target_ref.kind === "member_run" && (!selectedMemberRunId || action.target_ref.id === selectedMemberRunId));
   const groupedKeys=new Set([...workActions,...teamRunActions,...memberRunActions].map((action) => `${action.kind}:${action.target_ref.kind}:${action.target_ref.id}`));
   const otherActions=view.allowed_actions.filter((action) => !messageKinds.has(action.kind) && !groupedKeys.has(`${action.kind}:${action.target_ref.kind}:${action.target_ref.id}`));
-  const canMutate = actionsCurrent && view.freshness === "current" && !loading && !error && !runScopeMismatch;
+  const canMutate = view.freshness === "current" && !loading && !error && !runScopeMismatch;
   const supervisor=view.data.team_supervisor;
   // Decision pressure = unsettled Host inbox messages plus the projection's own
   // review/blocked Work queues. Works stay a separate, labeled block; they are

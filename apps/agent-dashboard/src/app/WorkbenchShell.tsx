@@ -1030,19 +1030,19 @@ function SurfaceSwitch({
       );
     case "team":
       return selection.teamConversation && (selection.teamId||selection.memberRunId) ? (
-        <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} routeIdentity={selection.teamId??selection.memberRunId!} selection={selection} refreshKey={snapshotContentRevision} onAction={onRoleAction} actionsEnabled={actionsEnabled} onSelectionChange={onSelectionChange}/>
+        <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} routeIdentity={selection.teamId??selection.memberRunId!} selection={selection} refreshKey={snapshotContentRevision} onAction={onRoleAction} onSelectionChange={onSelectionChange}/>
       ) : selection.teamId ? (
-        <TeamWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} teamId={selection.teamId} refreshKey={snapshotContentRevision} selection={selection} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} agentWorkspaceActionsEnabled={actionsEnabled} onSelectionChange={onSelectionChange} />
+        <TeamWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} teamId={selection.teamId} refreshKey={snapshotContentRevision} selection={selection} onAction={onRoleAction} onSelectionChange={onSelectionChange} />
       ) : selection.memberRunId ? (
-        <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} routeIdentity={selection.memberRunId} selection={selection} refreshKey={snapshotContentRevision} onAction={onRoleAction} actionsEnabled={actionsEnabled} onSelectionChange={onSelectionChange}/>
+        <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} routeIdentity={selection.memberRunId} selection={selection} refreshKey={snapshotContentRevision} onAction={onRoleAction} onSelectionChange={onSelectionChange}/>
       ) : (
-        <AgentTeamsHome {...shared} />
+        <AgentTeamsHome {...shared} loading={isLoading} />
       );
     case "operator": {
       const nodeId = selection.nodeId ?? model.snapshot.execution_nodes?.[0]?.id;
       return nodeId
         ? <OperatorView apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} nodeId={nodeId} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} />
-        : <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">No Execution Node is registered.</div>;
+        : <div role={isLoading ? "status" : undefined} className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">{isLoading ? "Loading Execution Nodes…" : "No Execution Node is registered."}</div>;
     }
     case "debug":
       return <DebugSurface model={model} sourceLabel={sourceLabel} />;

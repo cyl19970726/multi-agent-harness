@@ -135,24 +135,22 @@ async function main() {
     bad("raw member_action became browser truth");
   }
 
-  // Latest-wins applies among overlapping reads only. A late earlier response
-  // cannot overwrite the newer read, and the new response remains exactly the
-  // authoritative payload rather than replaying an in-flight ledger row.
+  // Full snapshot reads are serialized. A retry signal cannot supersede a slow
+  // first response; App retains that signal in one dirty follow-up slot.
   const concurrent = new SnapshotFrameBuffer();
   const earlier = concurrent.beginReadRequest();
-  const newer = concurrent.beginReadRequest();
+  const blockedRetry = concurrent.beginReadRequest();
   concurrent.recordFrame({ kind: "member_action", action: memberAction("action-newer") });
-  const stale = concurrent.resolveResponse(earlier, { member_actions: [memberAction("stale")] });
-  const current = concurrent.resolveResponse(newer, { member_actions: [] });
-  if (stale === null) {
-    ok("an older read response is ignored after a newer read begins");
+  const firstSuccess = concurrent.resolveResponse(earlier, { member_actions: [] });
+  if (blockedRetry === null) {
+    ok("a retry cannot overlap and invalidate the pending full snapshot");
   } else {
-    bad("an older read response was allowed to clobber the newer request");
+    bad("a retry was allowed to overlap the pending full snapshot");
   }
-  if (current?.member_actions?.length === 0) {
-    ok("the newest response does not replay an in-flight durable row");
+  if (firstSuccess?.member_actions?.length === 0) {
+    ok("the first successful response commits without replaying a durable row");
   } else {
-    bad("the newest response folded a raw SSE ledger row");
+    bad("the first successful response lost commit eligibility or replayed a raw row");
   }
 
   // A mutation causally outranks reads. A poll started after an action POST is
@@ -180,9 +178,8 @@ async function main() {
     bad("the action response did not win the mutation/read overlap");
   }
 
-  // Thinking remains explicitly transient. It may arrive before a newer
-  // overlapping read, but the server snapshot can never carry it; the browser
-  // retains only its current in-memory preview during the crossing.
+  // Thinking remains explicitly transient. The server snapshot can never carry
+  // it; the browser retains only its current in-memory preview during the read.
   const activity = new SnapshotFrameBuffer();
   const initialRead = activity.beginReadRequest();
   activity.recordFrame({
@@ -194,18 +191,18 @@ async function main() {
       expires_at: "2026-07-19T00:00:10.000Z",
     },
   });
-  const activityRequest = activity.beginReadRequest();
-  const activityMerged = activity.resolveResponse(activityRequest, {});
+  const blockedActivityRetry = activity.beginReadRequest();
+  const activityMerged = activity.resolveResponse(initialRead, {});
   if (activityMerged?.live_member_activity?.["member-1"]?.preview === "brief in-progress update") {
-    ok("live member activity before an overlapping read survives the snapshot crossing");
+    ok("live member activity survives the serialized snapshot crossing");
   } else {
-    bad("live-only member activity was dropped by the overlapping read");
+    bad("live-only member activity was dropped by the serialized read");
   }
 
-  if (activity.resolveResponse(initialRead, {}) === null) {
-    ok("the older overlapping read remains stale after activity is preserved");
+  if (blockedActivityRetry === null) {
+    ok("member activity does not weaken the one-full-read invariant");
   } else {
-    bad("the older overlapping read unexpectedly committed");
+    bad("member activity allowed a second full read to overlap");
   }
 
   // Leaving the live connection clears the client-only registry before an

@@ -219,12 +219,16 @@ export async function fetchSnapshot(
   project?: string | null,
   company?: string | null,
   space?: string | null,
+  signal?: AbortSignal,
 ): Promise<DashboardSnapshot> {
   const normalized = normalizeBaseUrl(baseUrl);
   if (!normalized) {
     throw new Error("Harness API URL is required");
   }
-  const response = await fetch(`${normalized}${withProjectAndCompany("/v1/snapshot", project, company, space)}`);
+  const response = await fetch(
+    `${normalized}${withProjectAndCompany("/v1/snapshot", project, company, space)}`,
+    { signal },
+  );
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
@@ -237,11 +241,15 @@ export async function fetchTeamRunSnapshot(
   project?: string | null,
   company?: string | null,
   space?: string | null,
+  signal?: AbortSignal,
 ): Promise<DashboardSnapshot> {
   const normalized = normalizeBaseUrl(baseUrl);
   if (!normalized) throw new Error("Harness API URL is required");
   const path = `/v1/team-runs/${encodeURIComponent(teamRunId)}/snapshot`;
-  const response = await fetch(`${normalized}${withProjectAndCompany(path, project, company, space)}`);
+  const response = await fetch(
+    `${normalized}${withProjectAndCompany(path, project, company, space)}`,
+    { signal },
+  );
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return (await response.json()) as DashboardSnapshot;
 }
@@ -770,9 +778,11 @@ export interface SnapshotRequestToken {
  * response is rendered. App reacts by issuing another authoritative GET. This
  * coordinator never replays durable SSE rows into the response.
  *
- * Reads are latest-wins among reads. Mutations take causal priority over reads:
- * a read cannot begin while an action POST is in flight, and all pre-mutation
- * reads are invalidated. `reset` is used at a project boundary to invalidate
+ * Full reads are serialized. A retry/freshness signal that arrives while one is
+ * pending is coalesced by App and cannot invalidate the first response merely
+ * because the server took longer than a retry interval. Mutations still take
+ * causal priority: they invalidate a pre-mutation read and block new reads until
+ * the action settles. `reset` is used at a project boundary to invalidate
  * requests, frames, and transient activity together.
  */
 export class SnapshotFrameBuffer {
@@ -792,10 +802,7 @@ export class SnapshotFrameBuffer {
 
   /** Begin a background/full read, unless an action mutation is in flight. */
   beginReadRequest(): SnapshotRequestToken | null {
-    if (this.activeMutations.size > 0) return null;
-    // Only the newest overlapping read may commit, so an older read no longer
-    // needs to hold a journal claim while its HTTP request winds down.
-    if (this.latestReadId) this.dropPending(this.latestReadId);
+    if (this.activeMutations.size > 0 || this.latestReadId !== 0) return null;
     const request = this.begin("read");
     this.latestReadId = request.id;
     return request;
@@ -887,6 +894,9 @@ export class SnapshotFrameBuffer {
         ...merged,
         live_member_activity: Object.fromEntries(this.liveMemberActivity),
       };
+    }
+    if (request.kind === "read" && request.id === this.latestReadId) {
+      this.latestReadId = 0;
     }
     this.dropPending(request.id);
     return merged;

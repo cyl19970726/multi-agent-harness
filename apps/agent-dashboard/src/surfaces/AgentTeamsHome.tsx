@@ -30,6 +30,7 @@ interface AgentTeamsHomeProps {
   model: WorkbenchModel;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
   actionsEnabled?: boolean;
+  loading?: boolean;
   onAction?: (path: string, body?: unknown) => Promise<boolean>;
 }
 
@@ -41,7 +42,7 @@ interface NativeAttempt {
 }
 
 /** Native entry point for flat, Mission-owned Agent Teams and their attempts. */
-export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = false, onAction }: AgentTeamsHomeProps) {
+export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = false, loading = false, onAction }: AgentTeamsHomeProps) {
   const snapshot = model.snapshot;
   const [teamOpen, setTeamOpen] = useState(false);
   const [runDialogTeam, setRunDialogTeam] = useState<AgentTeam | undefined>();
@@ -151,11 +152,13 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
               </div>
             );
           })}
-          {executionNodes.length === 0 && <p className="rounded-xl border border-dashed border-border px-4 py-3 text-xs text-muted-foreground">No ExecutionNode has been initialized.</p>}
+          {executionNodes.length === 0 && <p role={loading ? "status" : undefined} className="rounded-xl border border-dashed border-border px-4 py-3 text-xs text-muted-foreground">{loading ? "Loading Execution Nodes…" : "No ExecutionNode has been initialized."}</p>}
         </div>
       </section>
 
-      {attempts.length === 0 ? (
+      {attempts.length === 0 && teamsWithoutRuns.length === 0 && loading ? (
+        <p role="status" className="mt-6 rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">Loading Agent Teams…</p>
+      ) : attempts.length === 0 ? (
         <div className="pt-6">
           <EmptyState
             icon={Users}

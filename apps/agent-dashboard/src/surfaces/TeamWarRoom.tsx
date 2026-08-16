@@ -25,5 +25,5 @@ export interface TeamWarRoomProps {
 export function TeamWarRoom({model,teamRunId,onSelectionChange,apiUrl="",projectBindingId="",executionSpaceId="",onAction=async()=>({ok:false,error:{code:"RETIRED_ROUTE",message:"Retired route",status:410}})}:TeamWarRoomProps){
   const teamId=(model.snapshot.team_runs??[]).find(run=>run.id===teamRunId)?.agent_team_id??teamRunId;
   if(!teamId)return <div className="p-8 text-sm text-muted-foreground">Select an Agent Team.</div>;
-  return <TeamWorkspace apiUrl={apiUrl} project={projectBindingId??""} space={executionSpaceId??""} teamId={teamId} teamRunId={teamRunId} selection={{surface:"team",teamId}} onAction={onAction} actionsCurrent={false} onSelectionChange={onSelectionChange}/>;
+  return <TeamWorkspace apiUrl={apiUrl} project={projectBindingId??""} space={executionSpaceId??""} teamId={teamId} teamRunId={teamRunId} selection={{surface:"team",teamId}} onAction={onAction} onSelectionChange={onSelectionChange}/>;
 }
