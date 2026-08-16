@@ -349,7 +349,7 @@ if (realEvidencePath) {
             value.work_id === publication.native_fact_work_ref.work_id &&
             value.work_revision === publication.native_fact_work_ref.work_revision &&
             value.status === "active" &&
-            value.agent_identity_id === publication.created_by.id,
+            value.agent_member_id === publication.created_by.id,
         );
         const sourceWork = sourceWorkObjects.find(
           (value) =>

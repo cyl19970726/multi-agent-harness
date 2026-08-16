@@ -8,10 +8,9 @@ use firm_env::{
     TempHome,
 };
 use harness_core::agentfirm_api::{
-    ActorKind, ActorRef, AgentIdentity, AgentMemberOrganizationStatus, AgentSession,
-    AgentSessionControlState, AgentSessionStatus, DeliveryClaim, MutationContext,
-    NativeSessionAvailability, NativeSessionRef, PermissionCeiling, RuntimeCommandBinding,
-    RuntimeDispatchMode, RuntimeDriverRef,
+    ActorKind, ActorRef, AgentSession, AgentSessionControlState, AgentSessionStatus, DeliveryClaim,
+    MutationContext, NativeSessionAvailability, NativeSessionRef, PermissionCeiling,
+    RuntimeCommandBinding, RuntimeDispatchMode, RuntimeDriverRef,
 };
 use harness_core::{
     ExecutionNode, ExecutionNodeStatus, MemberCoordinationStatus, MemberRunStatus,
@@ -33,7 +32,16 @@ fn ledger_digest(root: &std::path::Path) -> Vec<(String, Vec<u8>)> {
         .flatten()
         .filter_map(|entry| {
             let name = entry.file_name().into_string().ok()?;
-            name.ends_with(".jsonl")
+            // Lease ledgers are autonomous control bookkeeping: the NodeDaemon
+            // and Team Supervisor renew and compact them on their own timers,
+            // independent of any HTTP action under test. Whole-ledger purity
+            // here must cover product state only, or a legitimate background
+            // renewal racing the before/after snapshots fails the comparison.
+            let autonomous_bookkeeping = matches!(
+                name.as_str(),
+                "node_daemon_leases.jsonl" | "team_supervisor_leases.jsonl"
+            );
+            (name.ends_with(".jsonl") && !autonomous_bookkeeping)
                 .then(|| (name, std::fs::read(entry.path()).expect("read ledger")))
         })
         .collect::<Vec<_>>();
@@ -327,31 +335,6 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .expect("NodeDaemon lease")
         .expect("active NodeDaemon lease");
     store
-        .create_agent_identity(
-            &MutationContext {
-                execution_space_id: space_id.clone(),
-                authenticated_actor: ActorRef {
-                    kind: ActorKind::Service,
-                    id: daemon.daemon_id.clone(),
-                },
-                authority_actor: None,
-                command_name: "test.provider_projection.identity".into(),
-                idempotency_key: "test-provider-projection-worker-identity".into(),
-                expected_version: 0,
-                request_fingerprint: None,
-            },
-            AgentIdentity {
-                id: worker_id.into(),
-                display_name: "Role Action Worker".into(),
-                organization_status: AgentMemberOrganizationStatus::Active,
-                permission_ceiling: PermissionCeiling::WorkspaceWrite,
-                version: 1,
-                created_at: "2026-08-13T00:00:00Z".into(),
-                updated_at: "2026-08-13T00:00:00Z".into(),
-            },
-        )
-        .expect("provider projection AgentIdentity");
-    store
         .create_agent_session(
             &MutationContext {
                 execution_space_id: space_id.clone(),
@@ -367,7 +350,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
             },
             AgentSession {
                 id: "agent-session:role-view-owner:1".into(),
-                agent_identity_id: worker_id.into(),
+                agent_member_id: worker_id.into(),
                 node_id: node_id.into(),
                 execution_space_id: space_id.clone(),
                 node_daemon_id: daemon.daemon_id.clone(),
@@ -523,22 +506,22 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
             .and_then(|actions| actions
                 .iter()
                 .find(|action| action["kind"] == "send_message"))
-            .is_some_and(|action| action["disabled_reason"].as_str().is_some()),
-        "Message action must fail closed until canonical membership/subscription fabric exists"
+            .is_some_and(|action| action["disabled_reason"].is_null()),
+        "durable Team membership/subscription fabric must enable canonical Message authoring"
     );
     let message_headers = action_headers(TOKEN, "message-current-team-revision", &team_revision);
-    let before_unroutable_message = ledger_digest(serve.fixture_store_root());
-    let (status, unroutable_message) =
+    let before_message = ledger_digest(serve.fixture_store_root());
+    let (status, published_message) =
         serve.post_json_with_headers(&message_route, &message_intent, &message_headers);
-    assert_eq!(status, 409, "unroutable Team Message: {unroutable_message}");
+    assert_eq!(status, 200, "canonical Team Message: {published_message}");
     assert_eq!(
-        unroutable_message["error"]["code"],
-        "MESSAGE_ROUTE_UNAVAILABLE"
+        published_message["projection"]["body"],
+        message_intent["body"]
     );
-    assert_eq!(
+    assert_ne!(
         ledger_digest(serve.fixture_store_root()),
-        before_unroutable_message,
-        "unroutable Team Message changed durable state"
+        before_message,
+        "canonical Team Message did not change durable state"
     );
 
     let member_runs = created_run["result"]["member_runs"]
@@ -893,8 +876,8 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
                 .iter()
                 .find(|action| action["kind"] == "reply_message")
         })
-        .is_some_and(|action| action["disabled_reason"].as_str().is_some()));
-    let before_unroutable_decision = ledger_digest(serve.fixture_store_root());
+        .is_some_and(|action| action["disabled_reason"].is_null()));
+    let before_decision = ledger_digest(serve.fixture_store_root());
     let (status, decision) = serve.post_json_with_headers(
         &decision_route,
         &serde_json::json!({
@@ -904,15 +887,12 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         }),
         &decision_headers,
     );
-    assert_eq!(
-        status, 409,
-        "unroutable Member request-decision: {decision}"
-    );
-    assert_eq!(decision["error"]["code"], "MESSAGE_ROUTE_UNAVAILABLE");
-    assert_eq!(
+    assert_eq!(status, 200, "canonical Member request-decision: {decision}");
+    assert_eq!(decision["projection"]["kind"], "request_decision");
+    assert_ne!(
         ledger_digest(serve.fixture_store_root()),
-        before_unroutable_decision,
-        "unroutable request-decision changed durable state"
+        before_decision,
+        "canonical request-decision did not change durable state"
     );
     let claim_route = format!(
         "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-1/claim?project={project_id}"
@@ -1410,23 +1390,11 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .expect("append higher-generation replacement runtime");
 
     // Interrupt is a live-only semantic action, not a durable lifecycle
-    // mutation. Prove the authenticated HTTP boundary accepts only the exact
-    // action/reason/current MemberRun revision. Provider acknowledgement is
-    // exercised by provider-adapter journeys; this HTTP test deliberately
-    // stops at authorization so it cannot wait on an unrelated live handle.
-    let mut interrupt_running_run = successor_provider_run.clone();
-    interrupt_running_run.status = MemberRunStatus::Running;
-    interrupt_running_run.last_event_at = Some("unix-ms:matrix-interrupt-running".into());
-    let interrupt_profile = interrupt_running_run
-        .provider_profile
-        .as_mut()
-        .expect("Interrupt provider profile");
-    interrupt_profile.provider_version = Some("0.148.0-alpha.9".into());
-    interrupt_profile.compatibility_status = ProviderCompatibilityStatus::Current;
-    interrupt_profile.supports_cancel = true;
-    store
-        .compare_and_append_member_run(&successor_provider_run, &interrupt_running_run)
-        .expect("project running provider turn for Interrupt fixture");
+    // mutation. Prove malformed and stale HTTP requests fail at authorization
+    // before provider control. Provider acknowledgement and the running-turn
+    // precondition are exercised by provider-adapter journeys; synthesizing a
+    // Running row here would let the independent NodeDaemon legitimately
+    // settle it while this test compares store bytes.
     let interrupt_version = store
         .trust_member_runs(&space_id)
         .expect("Interrupt canonical MemberRun")
@@ -1491,13 +1459,6 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         before_stale_interrupt,
         "stale Interrupt changed durable state"
     );
-    let mut post_interrupt_idle_run = successor_provider_run.clone();
-    post_interrupt_idle_run.last_event_at = Some("unix-ms:matrix-interrupt-idle".into());
-    store
-        .compare_and_append_member_run(&interrupt_running_run, &post_interrupt_idle_run)
-        .expect("restore idle provider projection after Interrupt boundary fixture");
-    let successor_provider_run = post_interrupt_idle_run;
-
     let host_steps = [
         (
             "assign",
@@ -2281,7 +2242,7 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
             .fabric_agent_sessions(&space_id)
             .expect("canonical AgentSessions")
             .into_iter()
-            .filter(|session| session.agent_identity_id == worker_id)
+            .filter(|session| session.agent_member_id == worker_id)
             .collect::<Vec<_>>();
         if sessions.len() == 1
             && sessions[0]
@@ -2424,37 +2385,12 @@ fn standalone_codex_session_runs_through_node_daemon_and_replays_without_team_me
         "AgentIdentity fixture: {created:?}"
     );
     let store = HarnessStore::new(home.spaces_dir().join(&space_id));
-    store
-        .create_agent_identity(
-            &MutationContext {
-                execution_space_id: space_id.clone(),
-                authenticated_actor: ActorRef {
-                    kind: ActorKind::AgentMember,
-                    id: identity_id.into(),
-                },
-                authority_actor: None,
-                command_name: "test.agent_identity.create".into(),
-                idempotency_key: "standalone-codex-identity".into(),
-                expected_version: 0,
-                request_fingerprint: None,
-            },
-            AgentIdentity {
-                id: identity_id.into(),
-                display_name: "Standalone Codex".into(),
-                organization_status: AgentMemberOrganizationStatus::Active,
-                permission_ceiling: PermissionCeiling::WorkspaceWrite,
-                version: 1,
-                created_at: "2026-08-11T00:00:00Z".into(),
-                updated_at: "2026-08-11T00:00:00Z".into(),
-            },
-        )
-        .expect("standalone AgentIdentity");
     assert!(
         store
             .fabric_team_memberships(&space_id)
             .expect("memberships")
             .iter()
-            .all(|membership| membership.agent_identity_id != identity_id),
+            .all(|membership| membership.agent_member_id != identity_id),
         "standalone StartSession precondition must contain no TeamMembership"
     );
 
@@ -2500,17 +2436,14 @@ fn standalone_codex_session_runs_through_node_daemon_and_replays_without_team_me
     let intent = serde_json::json!({
         "command":"start_session",
         "expires_unix_ms":unix_ms()+30_000,
-        "payload":{"agent_identity_id":identity_id}
+        "payload":{"agent_member_id":identity_id}
     });
     let before_commands = store.runtime_commands(&space_id).expect("commands before");
     let (status, started) =
         serve.post_json_with_headers("/v1/agentfirm/runtime-commands", &intent, &headers);
     assert_eq!(status, 200, "standalone StartSession: {started}");
     assert_eq!(started["ok"], true, "NodeDaemon response: {started}");
-    assert_eq!(
-        started["result"]["session"]["agent_identity_id"],
-        identity_id
-    );
+    assert_eq!(started["result"]["session"]["agent_member_id"], identity_id);
     assert_eq!(
         started["result"]["native_session"]["execution_mode"],
         "node_daemon_app_server"
@@ -2849,7 +2782,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         let current = sessions
             .iter()
             .filter(|session| {
-                session.agent_identity_id == identity
+                session.agent_member_id == identity
                     && session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
             })
             .collect::<Vec<_>>();
@@ -2860,7 +2793,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
 
     let host_session = sessions
         .iter()
-        .find(|session| session.agent_identity_id == host_id)
+        .find(|session| session.agent_member_id == host_id)
         .expect("Host AgentSession");
     let space_store_root = home.spaces_dir().join(&space_id);
     let before_hostile_runtime = ledger_digest(&space_store_root);
@@ -2902,7 +2835,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
             "required_capability":"full_control",
             "expires_unix_ms":unix_ms()+30_000,
             "payload":{
-                "agent_identity_id":member_id,
+                "agent_member_id":member_id,
                 "session":{
                     "effective_permission_ceiling":"full_access"
                 }
@@ -2919,7 +2852,7 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
 
     let member_session = sessions
         .iter()
-        .find(|session| session.agent_identity_id == member_id)
+        .find(|session| session.agent_member_id == member_id)
         .expect("Member AgentSession");
     let recovery_payload = serde_json::json!({
         "session_id":member_session.id,
@@ -3212,7 +3145,8 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         .expect("canonical deliveries")
         .into_iter()
         .find(|delivery| {
-            delivery.message_id == host_message_id && delivery.recipient_identity_id == member_id
+            delivery.message_id == host_message_id
+                && delivery.recipient_agent_member_id.as_deref() == Some(member_id)
         })
         .expect("Host to Member delivery");
     let daemon_context = MutationContext {
@@ -3498,7 +3432,8 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
         .expect("canonical deliveries")
         .into_iter()
         .find(|delivery| {
-            delivery.message_id == linked_message_id && delivery.recipient_identity_id == member_id
+            delivery.message_id == linked_message_id
+                && delivery.recipient_agent_member_id.as_deref() == Some(member_id)
         })
         .expect("Work-linked delivery");
     assert_eq!(

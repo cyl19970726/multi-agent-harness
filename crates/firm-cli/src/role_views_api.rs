@@ -447,7 +447,7 @@ fn ensure_active_membership_cardinality(team_memberships: &[Value]) -> Result<()
                 .as_str()
                 .unwrap_or_default()
                 .to_string(),
-            membership["agent_identity_id"]
+            membership["agent_member_id"]
                 .as_str()
                 .unwrap_or_default()
                 .to_string(),
@@ -665,7 +665,7 @@ fn team_activity(
             .and_then(|id| message_work_links.get(id))
             .cloned()
             .unwrap_or(Value::Null);
-        rows.push(json!({"source":"message_delivery","id":delivery["id"],"message_id":delivery["message_id"],"work_id":work_id,"actor_ref":role_actor_ref(facts,&json!({"kind":"agent_member","id":delivery["recipient_identity_id"]})),"status":delivery["status"],"summary":display_text(delivery["failure_detail"].as_str()),"created_at":delivery["updated_at"]}));
+        rows.push(json!({"source":"message_delivery","id":delivery["id"],"message_id":delivery["message_id"],"work_id":work_id,"actor_ref":role_actor_ref(facts,&json!({"kind":"agent_member","id":delivery["recipient_agent_member_id"]})),"status":delivery["status"],"summary":display_text(delivery["failure_detail"].as_str()),"created_at":delivery["updated_at"]}));
     }
     for value in facts.side.iter().filter(|value| {
         value["work_id"]
@@ -781,8 +781,8 @@ fn message_summary(facts: &Facts, value: &Value) -> Value {
         "deliveries":deliveries.iter().map(|delivery|json!({
             "id":delivery["id"],
             "recipient_member_run_id":delivery["recipient_member_run_id"],
-            "recipient_identity_id":delivery["recipient_identity_id"],
-            "recipient_display_name":delivery["recipient_identity_id"].as_str().and_then(|id|facts.members.iter().find(|member|member["id"].as_str()==Some(id))).and_then(|member|member["name"].as_str()),
+            "recipient_identity_id":delivery["recipient_agent_member_id"],
+            "recipient_display_name":delivery["recipient_agent_member_id"].as_str().and_then(|id|facts.members.iter().find(|member|member["id"].as_str()==Some(id))).and_then(|member|member["name"].as_str()),
             "status":delivery["status"],
             "version":delivery["version"],
             "provider_receipt_id":delivery["provider_receipt_id"],
@@ -1133,14 +1133,15 @@ fn message_fabric_disabled(
             .iter()
             .filter(|membership| {
                 membership["team_id"] == team.id
-                    && membership["agent_identity_id"] == identity_id.as_str()
+                    && membership["agent_member_id"] == identity_id.as_str()
                     && membership["node_id"] == team.node_id
                     && membership["state"] == "active"
             })
             .collect::<Vec<_>>();
         memberships.len() == 1
             && facts.message_subscriptions.iter().any(|subscription| {
-                subscription["subscriber_agent_id"] == identity_id.as_str()
+                subscription["subscriber_kind"] == "agent_member"
+                    && subscription["subscriber_ref"] == identity_id.as_str()
                     && subscription["membership_ref"] == memberships[0]["id"]
                     && subscription["status"] == "active"
             })
@@ -2265,7 +2266,7 @@ fn normalized_provider(provider: &str) -> &str {
 fn exact_agent_session_binding<'a>(
     agent_sessions: &'a [Value],
     execution_space_id: &str,
-    agent_identity_id: &str,
+    agent_member_id: &str,
     native_session_id: &str,
     provider: Option<&str>,
 ) -> Result<(&'a Value, NativeSessionRef), &'static str> {
@@ -2276,7 +2277,7 @@ fn exact_agent_session_binding<'a>(
     let current = agent_sessions
         .iter()
         .filter(|session| session["execution_space_id"] == execution_space_id)
-        .filter(|session| session["agent_identity_id"] == agent_identity_id)
+        .filter(|session| session["agent_member_id"] == agent_member_id)
         .filter(|session| session["lifecycle"] != "closed")
         .filter_map(|session| {
             let native = serde_json::from_value::<NativeSessionRef>(
@@ -2386,7 +2387,7 @@ fn read_session_event_projection(
             execution_space_id: request.execution_space_id,
             project_id: request.project_id,
             team_id: request.team_id,
-            agent_identity_id: request.selected_agent_id,
+            agent_member_id: request.selected_agent_id,
             agent_session_id: session["id"].as_str().unwrap_or_default(),
             agent_session_generation: session["runtime_generation"].as_u64().unwrap_or(0),
             node_daemon_id: &lease.daemon_id,
@@ -3010,7 +3011,7 @@ fn member_view(
     let queued = facts
         .message_deliveries
         .iter()
-        .filter(|d| d["recipient_identity_id"] == member_id && d["status"] == "queued")
+        .filter(|d| d["recipient_agent_member_id"] == member_id && d["status"] == "queued")
         .cloned()
         .collect::<Vec<_>>();
     let message_ids = queued
@@ -3556,8 +3557,8 @@ mod tests {
     #[test]
     fn historical_duplicate_active_membership_fails_role_view_closed() {
         let duplicate = vec![
-            json!({"id":"membership-1","team_id":"team-1","agent_identity_id":"agent-1","state":"active","membership_generation":1}),
-            json!({"id":"membership-2","team_id":"team-1","agent_identity_id":"agent-1","state":"active","membership_generation":2}),
+            json!({"id":"membership-1","team_id":"team-1","agent_member_id":"agent-1","state":"active","membership_generation":1}),
+            json!({"id":"membership-2","team_id":"team-1","agent_member_id":"agent-1","state":"active","membership_generation":2}),
         ];
         let error = ensure_active_membership_cardinality(&duplicate)
             .expect_err("ambiguous historical authority must fail closed");
@@ -3740,7 +3741,7 @@ mod tests {
         let sessions = vec![json!({
             "id":"agent-session-1",
             "execution_space_id":"space-1",
-            "agent_identity_id":"member-1",
+            "agent_member_id":"member-1",
             "lifecycle":"idle",
             "provider_kind":"codex",
             "runtime_generation":1,

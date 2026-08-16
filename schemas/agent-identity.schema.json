@@ -1,7 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agent-harness.local/schemas/agent-identity.schema.json",
-  "title": "AgentIdentity",
+  "title": "AgentIdentityCompatibilityProjection",
+  "description": "Deprecated same-ID read-only projection of AgentMember. This schema admits compatibility reads only; no writer is authoritative.",
   "type": "object",
   "additionalProperties": false,
   "required": ["id", "display_name", "organization_status", "permission_ceiling", "version", "created_at", "updated_at"],

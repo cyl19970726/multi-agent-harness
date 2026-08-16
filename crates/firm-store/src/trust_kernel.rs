@@ -6,24 +6,29 @@ use crate::{
 use firm_core::agentfirm_api::{
     integration_plan_module_v1, ActorKind, ActorRef, AgentIdentity, AgentMember,
     AgentMemberOrganizationStatus, AgentSession, AgentSessionControlState, AgentSessionStatus,
+    AgentTeamMigrationBundle, AgentTeamPurgeRequest, AgentTeamPurgeTombstone,
     CanonicalMessageDelivery, CanonicalMessageDeliveryStatus, CanonicalMutationEvent,
     CanonicalOperation, CanonicalWorkDelivery, ControlCommandEnvelope, DeliveryClaim,
     DeliveryReconcileOutcome, FailureAnalysis, GateEvaluation, GateRequirement,
     GateRequirementSource, GateVerdict, GateWaiver, GateWaiverState, MemberCoordinationStatus,
     MemberExecutionDriver, MemberRun, MemberRuntimeStatus, MemberWorkspaceBinding, Message,
-    MessageRecipientKind, MessageSubscription, MessageSubscriptionKind, MessageSubscriptionStatus,
-    MutationContext, NativeContinuationActivation, NativeContinuationPhase, NativeSessionRef,
-    ProviderInvocation, ProviderReceipt, RuntimeActivity, RuntimeCommandKind, RuntimeCommandPhase,
-    RuntimeCommandPrecondition, RuntimeCommandRecord, RuntimeCommandStatus, RuntimeDriverRef,
-    RuntimeEffectCertainty, RuntimePostconditionStatus, RuntimeRecoveryResolution,
-    RuntimeResidency, RuntimeSafePointRequirement, SubscriptionCursor, TeamMembership,
-    TeamMembershipRole, TeamMembershipStatus, TrustError, TrustErrorCode, WorkDelivery,
+    MessageRecipientKind, MessageSubjectKind, MessageSubscription, MessageSubscriptionKind,
+    MessageSubscriptionStatus, MutationContext, NativeContinuationActivation,
+    NativeContinuationPhase, NativeSessionRef, ProviderInvocation, ProviderReceipt,
+    RuntimeActivity, RuntimeCommandKind, RuntimeCommandPhase, RuntimeCommandPrecondition,
+    RuntimeCommandRecord, RuntimeCommandStatus, RuntimeDriverRef, RuntimeEffectCertainty,
+    RuntimePostconditionStatus, RuntimeRecoveryResolution, RuntimeResidency,
+    RuntimeSafePointRequirement, SubscriptionCursor, TeamMembership, TeamMembershipRole,
+    TeamMembershipStatus, TeamMessageDeliveryClaim, TrustError, TrustErrorCode, WorkDelivery,
     WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus, WorkFinding,
     WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
     WorkspaceOwnership, WorkspaceSafetyProof,
 };
-use firm_core::collaboration::CollaborationMessageAuthority;
+use firm_core::collaboration::{
+    CollaborationMessageAuthority, MessageAdmissionAuthority, PeerTeamMessageAdmissionAuthority,
+};
 use firm_core::{
+    AgentTeam, AgentTeamStatus, ExecutionNodeStatus,
     MemberCoordinationStatus as LegacyMemberCoordinationStatus, MemberRunStatus,
     ProviderRuntimeProjection, TeamActorKind, TeamActorRef, Validate, Work, WorkCommandContext,
     WorkDelegationRevision,
@@ -409,10 +414,174 @@ pub fn canonical_json_fingerprint(value: &Value) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
+/// Digest the source-authoring policy half of a peer-Team Message authority.
+/// This capability is intentionally independent from target delivery.
+pub fn peer_team_source_policy_digest(authority: &PeerTeamMessageAdmissionAuthority) -> String {
+    canonical_json_fingerprint(&serde_json::json!({
+        "company_id": authority.company_id,
+        "source_team_id": authority.source_team_id,
+        "target_execution_space_id": authority.target_execution_space_id,
+        "target_team_id": authority.target_team_id,
+        "target_team_revision": authority.target_team_revision,
+        "target_node_id": authority.target_node_id,
+        "policy_ref": authority.source_policy_ref,
+        "policy_revision": authority.source_policy_revision,
+        "required_capability": authority.source_required_capability,
+    }))
+}
+
+/// Digest the target durable Team-subject subscription policy half of a
+/// peer-Team Message authority. It grants no source authoring authority.
+pub fn peer_team_target_policy_digest(authority: &PeerTeamMessageAdmissionAuthority) -> String {
+    canonical_json_fingerprint(&serde_json::json!({
+        "team_id": authority.target_team_id,
+        "target_node_id": authority.target_node_id,
+        "authorization_policy_ref": authority.target_authorization_policy_ref,
+        "policy_revision": authority.target_policy_revision,
+        "required_capability": authority.target_required_capability,
+    }))
+}
+
+/// Digest every frozen source and target field of the peer-Team Message
+/// admission authority. Revalidation still treats the two capabilities as
+/// separate grants; this digest only prevents cross-wiring or widening.
+pub fn peer_team_message_authority_digest(authority: &PeerTeamMessageAdmissionAuthority) -> String {
+    canonical_json_fingerprint(&serde_json::json!({
+        "company_id": authority.company_id,
+        "source_execution_space_id": authority.source_execution_space_id,
+        "source_team_id": authority.source_team_id,
+        "source_team_revision": authority.source_team_revision,
+        "source_membership_id": authority.source_membership_id,
+        "source_membership_generation": authority.source_membership_generation,
+        "source_agent_member_id": authority.source_agent_member_id,
+        "source_session_id": authority.source_session_id,
+        "source_session_generation": authority.source_session_generation,
+        "source_node_id": authority.source_node_id,
+        "source_node_daemon_id": authority.source_node_daemon_id,
+        "source_node_daemon_generation": authority.source_node_daemon_generation,
+        "target_execution_space_id": authority.target_execution_space_id,
+        "target_team_id": authority.target_team_id,
+        "target_team_revision": authority.target_team_revision,
+        "target_node_id": authority.target_node_id,
+        "source_policy_ref": authority.source_policy_ref,
+        "source_policy_revision": authority.source_policy_revision,
+        "source_policy_digest": authority.source_policy_digest,
+        "source_required_capability": authority.source_required_capability,
+        "target_subscription_id": authority.target_subscription_id,
+        "target_subscription_revision": authority.target_subscription_revision,
+        "target_authorization_policy_ref": authority.target_authorization_policy_ref,
+        "target_policy_revision": authority.target_policy_revision,
+        "target_policy_digest": authority.target_policy_digest,
+        "target_required_capability": authority.target_required_capability,
+    }))
+}
+
+fn membership_subscriptions(
+    execution_space_id: &str,
+    membership: &TeamMembership,
+    status: MessageSubscriptionStatus,
+    revision: u64,
+    changed_at: &str,
+) -> StoreResult<Vec<MessageSubscription>> {
+    let revoked_at = (status == MessageSubscriptionStatus::Revoked).then(|| changed_at.to_string());
+    let direct = MessageSubscription {
+        id: format!("direct:{}:{}", membership.agent_member_id, membership.id),
+        subscriber_kind: MessageSubjectKind::AgentMember,
+        subscriber_ref: membership.agent_member_id.clone(),
+        execution_space_id: execution_space_id.to_string(),
+        target_team_id: Some(membership.team_id.clone()),
+        target_node_id: membership.node_id.clone(),
+        source_kind: MessageSubscriptionKind::Agent,
+        source_ref: "active_team_members".into(),
+        delivery_mode: firm_core::agentfirm_api::RuntimeDispatchMode::QueueOnly,
+        history_policy: firm_core::agentfirm_api::MessageHistoryPolicy::FromJoin,
+        membership_ref: Some(membership.id.clone()),
+        authorization_policy_ref: "team.direct.active-members".into(),
+        policy_revision: 1,
+        policy_digest: canonical_json_fingerprint(&serde_json::json!({
+            "team_id": membership.team_id,
+            "kind": "direct_from_active_team_members"
+        })),
+        status,
+        revision,
+        created_by: membership.created_by.clone(),
+        created_at: membership.joined_at.clone(),
+        revoked_at: revoked_at.clone(),
+    };
+    let team = MessageSubscription {
+        id: format!("team:{}:{}", membership.team_id, membership.id),
+        subscriber_kind: MessageSubjectKind::AgentMember,
+        subscriber_ref: membership.agent_member_id.clone(),
+        execution_space_id: execution_space_id.to_string(),
+        target_team_id: Some(membership.team_id.clone()),
+        target_node_id: membership.node_id.clone(),
+        source_kind: MessageSubscriptionKind::Team,
+        source_ref: membership.team_id.clone(),
+        delivery_mode: if membership.role == TeamMembershipRole::Observer {
+            firm_core::agentfirm_api::RuntimeDispatchMode::QueueOnly
+        } else {
+            firm_core::agentfirm_api::RuntimeDispatchMode::StartIfIdle
+        },
+        history_policy: firm_core::agentfirm_api::MessageHistoryPolicy::FromJoin,
+        membership_ref: Some(membership.id.clone()),
+        authorization_policy_ref: "team.channel.membership".into(),
+        policy_revision: 1,
+        policy_digest: canonical_json_fingerprint(&serde_json::json!({
+            "team_id": membership.team_id,
+            "kind": "team_channel"
+        })),
+        status,
+        revision,
+        created_by: membership.created_by.clone(),
+        created_at: membership.joined_at.clone(),
+        revoked_at,
+    };
+    Ok(vec![direct, team])
+}
+
+fn team_inbox_subscription(
+    execution_space_id: &str,
+    team: &AgentTeam,
+    status: MessageSubscriptionStatus,
+    revision: u64,
+    created_by: &ActorRef,
+    updated_at: &str,
+) -> MessageSubscription {
+    let authorization_policy_ref = "collaboration.peer_message_deliver".to_string();
+    let required_capability = "collaboration.peer_message_deliver";
+    MessageSubscription {
+        id: format!("team-inbox:{}", team.id),
+        subscriber_kind: MessageSubjectKind::Team,
+        subscriber_ref: team.id.clone(),
+        execution_space_id: execution_space_id.to_string(),
+        target_team_id: Some(team.id.clone()),
+        target_node_id: team.node_id.clone(),
+        source_kind: MessageSubscriptionKind::AllAuthorized,
+        source_ref: "authorized_peer_teams".into(),
+        delivery_mode: firm_core::agentfirm_api::RuntimeDispatchMode::StartIfIdle,
+        history_policy: firm_core::agentfirm_api::MessageHistoryPolicy::FromJoin,
+        membership_ref: None,
+        authorization_policy_ref: authorization_policy_ref.clone(),
+        policy_revision: 1,
+        policy_digest: canonical_json_fingerprint(&serde_json::json!({
+            "team_id": team.id,
+            "target_node_id": team.node_id,
+            "authorization_policy_ref": authorization_policy_ref,
+            "policy_revision": 1,
+            "required_capability": required_capability,
+        })),
+        status,
+        revision,
+        created_by: created_by.clone(),
+        created_at: team.created_at.clone(),
+        revoked_at: (status != MessageSubscriptionStatus::Active).then(|| updated_at.to_string()),
+    }
+}
+
 fn message_content_fingerprint(message: &Message) -> String {
     canonical_json_fingerprint(&serde_json::json!({
         "sender_actor_ref": message.sender_actor_ref,
-        "sender_agent_id": message.sender_agent_id,
+        "sender_agent_member_id": message.sender_agent_member_id,
         "sender_session_id": message.sender_session_id,
         "address_kind": message.address_kind,
         "target_ref": message.target_ref,
@@ -1267,12 +1436,19 @@ impl HarnessStore {
                     None,
                 )
             })?;
-        if team.host_agent_id != run.agent_member_id
-            && !team.member_ids.contains(&run.agent_member_id)
-        {
+        let exact_membership = self
+            .fabric_team_memberships(&context.execution_space_id)?
+            .into_iter()
+            .filter(|membership| {
+                membership.team_id == team.id
+                    && membership.agent_member_id == run.agent_member_id
+                    && membership.state == TeamMembershipStatus::Active
+            })
+            .count();
+        if team.status != AgentTeamStatus::Active || exact_membership != 1 {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,
-                "AgentMember does not belong to the Team",
+                "MemberRun requires one exact active durable TeamMembership on an Active Team",
                 "member_run",
                 &run.id,
                 None,
@@ -2250,9 +2426,12 @@ impl HarnessStore {
                     None,
                 )
             })?;
+        let host_agent_member_id = self
+            .team_host_membership(&context.execution_space_id, &team.id, true)?
+            .agent_member_id;
         let runs = self.trust_member_runs(&context.execution_space_id)?;
         if message.sender.kind == ActorKind::AgentMember
-            && message.sender.id != team.host_agent_id
+            && message.sender.id != host_agent_member_id
             && !runs.iter().any(|run| {
                 run.team_run_id == message.team_run_id
                     && run.agent_member_id == message.sender.id
@@ -2292,10 +2471,10 @@ impl HarnessStore {
                 ));
             }
             let actor_is_host = context.authenticated_actor.kind == ActorKind::AgentMember
-                && (context.authenticated_actor.id == team.host_agent_id
+                && (context.authenticated_actor.id == host_agent_member_id
                     || context.authority_actor.as_ref().is_some_and(|authority| {
                         authority.kind == ActorKind::AgentMember
-                            && authority.id == team.host_agent_id
+                            && authority.id == host_agent_member_id
                     }));
             if !actor_is_host {
                 self.require_exact_work_member_unlocked(
@@ -2325,7 +2504,7 @@ impl HarnessStore {
                         && run.coordination_status != MemberCoordinationStatus::Retired
                 })
                 .collect::<Vec<_>>();
-            if recipient.id == team.host_agent_id && matching.is_empty() {
+            if recipient.id == host_agent_member_id && matching.is_empty() {
                 continue;
             }
             if matching.len() != 1 {
@@ -5127,44 +5306,1329 @@ impl HarnessStore {
         Ok(())
     }
 
+    fn hydrate_agent_team_compatibility_projection(
+        &self,
+        execution_space_id: &str,
+        mut team: AgentTeam,
+    ) -> StoreResult<AgentTeam> {
+        let memberships = self
+            .fabric_team_memberships(execution_space_id)?
+            .into_iter()
+            .filter(|membership| membership.team_id == team.id)
+            .collect::<Vec<_>>();
+        let hosts = memberships
+            .iter()
+            .filter(|membership| membership.role == TeamMembershipRole::Host)
+            .collect::<Vec<_>>();
+        if hosts.len() != 1 {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "AgentTeam compatibility read failed closed because Host Membership authority is ambiguous",
+                "agent_team",
+                &team.id,
+                Some(team.revision),
+            ));
+        }
+        team.mission_id = team.legacy_mission_id.clone().unwrap_or_default();
+        team.host_agent_id = hosts[0].agent_member_id.clone();
+        team.member_ids = memberships
+            .into_iter()
+            .filter(|membership| {
+                membership.role != TeamMembershipRole::Host
+                    && membership.state == TeamMembershipStatus::Active
+            })
+            .map(|membership| membership.agent_member_id)
+            .collect();
+        Ok(team)
+    }
+
+    /// Durable AgentTeams are canonical trust aggregates. Mission linkage is
+    /// optional migration provenance and never participates in identity or
+    /// creation authority.
+    pub fn agent_teams(&self, execution_space_id: &str) -> StoreResult<Vec<AgentTeam>> {
+        self.latest_trust_envelopes_unlocked(execution_space_id, "agent_team")?
+            .values()
+            .map(|envelope| {
+                event_projection::<AgentTeam>(envelope).and_then(|team| {
+                    self.hydrate_agent_team_compatibility_projection(execution_space_id, team)
+                })
+            })
+            .collect()
+    }
+
+    /// Scope-preserving Company/read projection. Duplicate ids across spaces
+    /// are retained as distinct rows and must never be used as mutation input.
+    pub fn all_agent_teams(&self) -> StoreResult<Vec<AgentTeam>> {
+        let mut latest = BTreeMap::new();
+        for envelope in self.trust_operation_envelopes_unlocked()? {
+            if envelope.operation.event.aggregate_kind == "agent_team" {
+                latest.insert(
+                    (
+                        envelope.execution_space_id.clone(),
+                        envelope.operation.event.aggregate_id.clone(),
+                    ),
+                    envelope,
+                );
+            }
+        }
+        latest
+            .into_iter()
+            .map(|((execution_space_id, _), envelope)| {
+                event_projection::<AgentTeam>(&envelope).and_then(|team| {
+                    self.hydrate_agent_team_compatibility_projection(&execution_space_id, team)
+                })
+            })
+            .collect()
+    }
+
+    pub fn agent_team_scope(&self, team_id: &str) -> StoreResult<Option<String>> {
+        Ok(self
+            .trust_operation_envelopes_unlocked()?
+            .into_iter()
+            .rev()
+            .find(|envelope| {
+                envelope.operation.event.aggregate_kind == "agent_team"
+                    && envelope.operation.event.aggregate_id == team_id
+            })
+            .map(|envelope| envelope.execution_space_id))
+    }
+
+    pub fn create_agent_team(
+        &self,
+        context: &MutationContext,
+        team: AgentTeam,
+        memberships: Vec<TeamMembership>,
+    ) -> StoreResult<CanonicalMutationResult<AgentTeam>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        team.validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        let request_payload = serde_json::json!({"team": team, "memberships": memberships});
+        let request_fingerprint = context
+            .request_fingerprint
+            .clone()
+            .unwrap_or_else(|| canonical_json_fingerprint(&request_payload));
+        if let Some(replay) = self.replay_trust_projection_unlocked(
+            context,
+            "agent_team",
+            &team.id,
+            &request_fingerprint,
+        )? {
+            return Ok(replay);
+        }
+        if team.revision != 1
+            || team.status != AgentTeamStatus::Active
+            || context.expected_version != 0
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "new AgentTeam must be Active at revision 1 with absent CAS",
+                "agent_team",
+                &team.id,
+                Some(0),
+            ));
+        }
+        let node = self
+            .latest_execution_nodes()?
+            .into_iter()
+            .find(|node| node.id == team.node_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "AgentTeam requires its immutable placement Node to exist",
+                    "agent_team",
+                    &team.id,
+                    None,
+                )
+            })?;
+        if node.status != ExecutionNodeStatus::Active {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "AgentTeam requires an Active placement Node",
+                "agent_team",
+                &team.id,
+                None,
+            ));
+        }
+        let members = self
+            .trust_agent_members(&context.execution_space_id)?
+            .into_iter()
+            .map(|member| (member.id.clone(), member))
+            .collect::<BTreeMap<_, _>>();
+        let mut membership_ids = BTreeSet::new();
+        let mut member_ids = BTreeSet::new();
+        let mut active_hosts = 0usize;
+        for membership in &memberships {
+            required(&membership.id, "TeamMembership.id")?;
+            required(
+                &membership.agent_member_id,
+                "TeamMembership.agent_member_id",
+            )?;
+            if !membership_ids.insert(membership.id.clone())
+                || !member_ids.insert(membership.agent_member_id.clone())
+            {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "AgentTeam creation contains a duplicate Membership or AgentMember",
+                    "agent_team",
+                    &team.id,
+                    None,
+                ));
+            }
+            if membership.team_id != team.id
+                || membership.node_id != team.node_id
+                || membership.state != TeamMembershipStatus::Active
+                || membership.membership_generation != 1
+                || membership.revision != 1
+                || membership.left_at.is_some()
+                || membership.created_by != context.authenticated_actor
+            {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "initial TeamMembership must be active generation/revision 1 on the Team Node and created by the authenticated actor",
+                    "team_membership",
+                    &membership.id,
+                    None,
+                ));
+            }
+            let member = members.get(&membership.agent_member_id).ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "TeamMembership references a missing AgentMember",
+                    "team_membership",
+                    &membership.id,
+                    None,
+                )
+            })?;
+            if member.organization_status != AgentMemberOrganizationStatus::Active {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "initial TeamMembership requires an Active AgentMember",
+                    "team_membership",
+                    &membership.id,
+                    Some(member.version),
+                ));
+            }
+            active_hosts += usize::from(membership.role == TeamMembershipRole::Host);
+        }
+        if active_hosts != 1 {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "an Active AgentTeam requires exactly one active Host TeamMembership",
+                "agent_team",
+                &team.id,
+                None,
+            ));
+        }
+        let mut committed = self.trust_operation_envelopes_unlocked()?;
+        if committed.iter().any(|envelope| {
+            envelope.execution_space_id == context.execution_space_id
+                && ((envelope.operation.event.aggregate_kind == "agent_team"
+                    && envelope.operation.event.aggregate_id == team.id)
+                    || (envelope.operation.event.aggregate_kind == "team_membership"
+                        && membership_ids.contains(&envelope.operation.event.aggregate_id)))
+        }) {
+            return Err(trust_error(
+                TrustErrorCode::VersionConflict,
+                "AgentTeam or one of its initial TeamMembership ids already exists",
+                "agent_team",
+                &team.id,
+                Some(0),
+            ));
+        }
+        let mut store_sequence = committed
+            .iter()
+            .map(|envelope| envelope.operation.event.store_sequence)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let team_event = CanonicalMutationEvent {
+            id: format!("trust-event-{store_sequence}"),
+            aggregate_kind: "agent_team".into(),
+            aggregate_id: team.id.clone(),
+            sequence: 1,
+            store_sequence,
+            transition: "created".into(),
+            expected_version: 0,
+            resulting_version: team.revision,
+            performed_by_actor: context.authenticated_actor.clone(),
+            authority_actor: context.authority_actor.clone(),
+            causation_ref: None,
+            idempotency_key: context.idempotency_key.clone(),
+            canonical_request_fingerprint: request_fingerprint,
+            payload: request_payload,
+            created_at: now_string(),
+        };
+        committed.push(TrustOperationEnvelope {
+            execution_space_id: context.execution_space_id.clone(),
+            authenticated_actor_kind: context.authenticated_actor.kind,
+            authenticated_actor_id: context.authenticated_actor.id.clone(),
+            command_name: context.command_name.clone(),
+            operation: CanonicalOperation {
+                event: team_event.clone(),
+                resulting_projection: serde_json::to_value(&team)?,
+                immutable_side_records: vec![serde_json::to_value(team_inbox_subscription(
+                    &context.execution_space_id,
+                    &team,
+                    MessageSubscriptionStatus::Active,
+                    1,
+                    &context.authenticated_actor,
+                    &team.created_at,
+                ))?],
+                initial_outbox_records: Vec::new(),
+            },
+        });
+        for membership in &memberships {
+            store_sequence += 1;
+            let payload = serde_json::to_value(membership)?;
+            let membership_event = CanonicalMutationEvent {
+                id: format!("trust-event-{store_sequence}"),
+                aggregate_kind: "team_membership".into(),
+                aggregate_id: membership.id.clone(),
+                sequence: 1,
+                store_sequence,
+                transition: "joined_with_team".into(),
+                expected_version: 0,
+                resulting_version: membership.revision,
+                performed_by_actor: context.authenticated_actor.clone(),
+                authority_actor: context.authority_actor.clone(),
+                causation_ref: Some(team_event.id.clone()),
+                idempotency_key: format!(
+                    "{}:initial-membership:{}",
+                    context.idempotency_key, membership.id
+                ),
+                canonical_request_fingerprint: canonical_json_fingerprint(&payload),
+                payload,
+                created_at: now_string(),
+            };
+            let subscriptions = membership_subscriptions(
+                &context.execution_space_id,
+                membership,
+                MessageSubscriptionStatus::Active,
+                1,
+                &membership.joined_at,
+            )?
+            .into_iter()
+            .map(serde_json::to_value)
+            .collect::<Result<Vec<_>, _>>()?;
+            committed.push(TrustOperationEnvelope {
+                execution_space_id: context.execution_space_id.clone(),
+                authenticated_actor_kind: context.authenticated_actor.kind,
+                authenticated_actor_id: context.authenticated_actor.id.clone(),
+                command_name: format!("{}:initial-membership", context.command_name),
+                operation: CanonicalOperation {
+                    event: membership_event,
+                    resulting_projection: serde_json::to_value(membership)?,
+                    immutable_side_records: subscriptions,
+                    initial_outbox_records: Vec::new(),
+                },
+            });
+        }
+        self.write_trust_operation_envelopes_atomic_unlocked(&committed)?;
+        Ok(CanonicalMutationResult {
+            projection: team,
+            event: team_event,
+            replayed: false,
+        })
+    }
+
+    /// Atomically import one reviewed legacy Team projection without inferring
+    /// identities or changing ids. Ambiguous Host/member maps fail before the
+    /// trust ledger is mutated.
+    pub fn migrate_legacy_agent_team_same_ids(
+        &self,
+        context: &MutationContext,
+        bundle: AgentTeamMigrationBundle,
+    ) -> StoreResult<CanonicalMutationResult<AgentTeam>> {
+        self.init()?;
+        bundle
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if context.expected_version != 0
+            || bundle.source_fingerprint
+                != canonical_json_fingerprint(&serde_json::to_value(&bundle.source)?)
+            || bundle
+                .memberships
+                .iter()
+                .any(|membership| membership.created_by != context.authenticated_actor)
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "legacy Team migration requires exact source fingerprint, version 0 and authenticated membership creator",
+                "agent_team",
+                &bundle.target.id,
+                Some(0),
+            ));
+        }
+        let _lock = self.acquire_write_lock()?;
+        let request_payload = serde_json::to_value(&bundle)?;
+        let request_fingerprint = context
+            .request_fingerprint
+            .clone()
+            .unwrap_or_else(|| canonical_json_fingerprint(&request_payload));
+        if let Some(replay) = self.replay_trust_projection_unlocked(
+            context,
+            "agent_team",
+            &bundle.target.id,
+            &request_fingerprint,
+        )? {
+            return Ok(replay);
+        }
+        let members = self
+            .trust_agent_members(&context.execution_space_id)?
+            .into_iter()
+            .map(|member| (member.id.clone(), member))
+            .collect::<BTreeMap<_, _>>();
+        for member_id in bundle.identity_id_map.values() {
+            let member = members.get(member_id).ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "legacy Team migration references a missing same-ID AgentMember",
+                    "agent_team",
+                    &bundle.target.id,
+                    None,
+                )
+            })?;
+            if bundle.target.status == AgentTeamStatus::Active
+                && member.organization_status != AgentMemberOrganizationStatus::Active
+            {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "Active migrated Team requires every same-ID AgentMember to be Active",
+                    "agent_team",
+                    &bundle.target.id,
+                    Some(member.version),
+                ));
+            }
+        }
+        let node = self
+            .execution_nodes()?
+            .into_iter()
+            .find(|node| node.id == bundle.target.node_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "legacy Team migration references a missing immutable Node",
+                    "agent_team",
+                    &bundle.target.id,
+                    None,
+                )
+            })?;
+        if node.status != ExecutionNodeStatus::Active {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "legacy Team migration requires an Active immutable Node placement",
+                "agent_team",
+                &bundle.target.id,
+                None,
+            ));
+        }
+        let mut committed = self.trust_operation_envelopes_unlocked()?;
+        let membership_ids = bundle
+            .memberships
+            .iter()
+            .map(|membership| membership.id.as_str())
+            .collect::<BTreeSet<_>>();
+        if committed.iter().any(|envelope| {
+            envelope.operation.event.aggregate_id == bundle.target.id
+                && envelope.operation.event.aggregate_kind == "agent_team"
+                || (envelope.operation.event.aggregate_kind == "team_membership"
+                    && membership_ids.contains(envelope.operation.event.aggregate_id.as_str()))
+        }) {
+            return Err(trust_error(
+                TrustErrorCode::VersionConflict,
+                "legacy Team migration target id already exists",
+                "agent_team",
+                &bundle.target.id,
+                Some(0),
+            ));
+        }
+        let mut store_sequence = committed
+            .iter()
+            .map(|envelope| envelope.operation.event.store_sequence)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let team_event = CanonicalMutationEvent {
+            id: format!("trust-event-{store_sequence}"),
+            aggregate_kind: "agent_team".into(),
+            aggregate_id: bundle.target.id.clone(),
+            sequence: 1,
+            store_sequence,
+            transition: "migrated_same_ids".into(),
+            expected_version: 0,
+            resulting_version: 1,
+            performed_by_actor: context.authenticated_actor.clone(),
+            authority_actor: context.authority_actor.clone(),
+            causation_ref: None,
+            idempotency_key: bundle.migration_id.clone(),
+            canonical_request_fingerprint: request_fingerprint,
+            payload: request_payload,
+            created_at: now_string(),
+        };
+        let subscription_status = if bundle.target.status == AgentTeamStatus::Active {
+            MessageSubscriptionStatus::Active
+        } else {
+            MessageSubscriptionStatus::Paused
+        };
+        committed.push(TrustOperationEnvelope {
+            execution_space_id: context.execution_space_id.clone(),
+            authenticated_actor_kind: context.authenticated_actor.kind,
+            authenticated_actor_id: context.authenticated_actor.id.clone(),
+            command_name: context.command_name.clone(),
+            operation: CanonicalOperation {
+                event: team_event.clone(),
+                resulting_projection: serde_json::to_value(&bundle.target)?,
+                immutable_side_records: vec![serde_json::to_value(team_inbox_subscription(
+                    &context.execution_space_id,
+                    &bundle.target,
+                    subscription_status,
+                    1,
+                    &context.authenticated_actor,
+                    &bundle.target.updated_at,
+                ))?],
+                initial_outbox_records: Vec::new(),
+            },
+        });
+        for membership in &bundle.memberships {
+            store_sequence += 1;
+            let membership_payload = serde_json::to_value(membership)?;
+            committed.push(TrustOperationEnvelope {
+                execution_space_id: context.execution_space_id.clone(),
+                authenticated_actor_kind: context.authenticated_actor.kind,
+                authenticated_actor_id: context.authenticated_actor.id.clone(),
+                command_name: format!("{}:membership", context.command_name),
+                operation: CanonicalOperation {
+                    event: CanonicalMutationEvent {
+                        id: format!("trust-event-{store_sequence}"),
+                        aggregate_kind: "team_membership".into(),
+                        aggregate_id: membership.id.clone(),
+                        sequence: 1,
+                        store_sequence,
+                        transition: "migrated_same_id".into(),
+                        expected_version: 0,
+                        resulting_version: 1,
+                        performed_by_actor: context.authenticated_actor.clone(),
+                        authority_actor: context.authority_actor.clone(),
+                        causation_ref: Some(team_event.id.clone()),
+                        idempotency_key: format!("{}:{}", bundle.migration_id, membership.id),
+                        canonical_request_fingerprint: canonical_json_fingerprint(
+                            &membership_payload,
+                        ),
+                        payload: membership_payload,
+                        created_at: now_string(),
+                    },
+                    resulting_projection: serde_json::to_value(membership)?,
+                    immutable_side_records: membership_subscriptions(
+                        &context.execution_space_id,
+                        membership,
+                        subscription_status,
+                        1,
+                        &bundle.target.updated_at,
+                    )?
+                    .into_iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()?,
+                    initial_outbox_records: Vec::new(),
+                },
+            });
+        }
+        self.write_trust_operation_envelopes_atomic_unlocked(&committed)?;
+        Ok(CanonicalMutationResult {
+            projection: bundle.target,
+            event: team_event,
+            replayed: false,
+        })
+    }
+
+    pub fn transition_agent_team(
+        &self,
+        context: &MutationContext,
+        team_id: &str,
+        next_status: AgentTeamStatus,
+        updated_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<AgentTeam>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let request_payload = serde_json::json!({
+            "team_id": team_id,
+            "next_status": next_status,
+            "updated_at": updated_at,
+        });
+        let request_fingerprint = context
+            .request_fingerprint
+            .clone()
+            .unwrap_or_else(|| canonical_json_fingerprint(&request_payload));
+        if let Some(replay) = self.replay_trust_projection_unlocked(
+            context,
+            "agent_team",
+            team_id,
+            &request_fingerprint,
+        )? {
+            return Ok(replay);
+        }
+        let mut current = self
+            .latest_trust_envelopes_unlocked(&context.execution_space_id, "agent_team")?
+            .remove(team_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "AgentTeam not found",
+                    "agent_team",
+                    team_id,
+                    None,
+                )
+            })
+            .and_then(|envelope| event_projection::<AgentTeam>(&envelope))?;
+        if context.expected_version != current.revision {
+            return Err(trust_error(
+                TrustErrorCode::VersionConflict,
+                "AgentTeam lifecycle CAS does not match the current revision",
+                "agent_team",
+                team_id,
+                Some(current.revision),
+            ));
+        }
+        let allowed = matches!(
+            (current.status, next_status),
+            (AgentTeamStatus::Active, AgentTeamStatus::Inactive)
+                | (AgentTeamStatus::Active, AgentTeamStatus::Trashed)
+                | (AgentTeamStatus::Inactive, AgentTeamStatus::Active)
+                | (AgentTeamStatus::Inactive, AgentTeamStatus::Trashed)
+                | (AgentTeamStatus::Trashed, AgentTeamStatus::Inactive)
+        );
+        if !allowed {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "AgentTeam lifecycle transition is not allowed",
+                "agent_team",
+                team_id,
+                Some(current.revision),
+            ));
+        }
+        let members = self
+            .trust_agent_members(&context.execution_space_id)?
+            .into_iter()
+            .map(|member| (member.id.clone(), member))
+            .collect::<BTreeMap<_, _>>();
+        let mut memberships = self
+            .fabric_team_memberships(&context.execution_space_id)?
+            .into_iter()
+            .filter(|membership| membership.team_id == team_id)
+            .collect::<Vec<_>>();
+        let retained_hosts = memberships
+            .iter()
+            .filter(|membership| membership.role == TeamMembershipRole::Host)
+            .collect::<Vec<_>>();
+        if retained_hosts.len() != 1 {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "Inactive/Trashed/Restore requires exactly one retained Host role",
+                "agent_team",
+                team_id,
+                Some(current.revision),
+            ));
+        }
+        let host_member = members
+            .get(&retained_hosts[0].agent_member_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "retained Host TeamMembership references a missing AgentMember",
+                    "agent_team",
+                    team_id,
+                    Some(current.revision),
+                )
+            })?;
+        let authorized = matches!(
+            context.authenticated_actor.kind,
+            ActorKind::Human | ActorKind::Service
+        ) || (context.authenticated_actor.kind == ActorKind::AgentMember
+            && context.authenticated_actor.id == host_member.id);
+        if !authorized {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "AgentTeam lifecycle transition requires its retained Host or control-plane authority",
+                "agent_team",
+                team_id,
+                Some(current.revision),
+            ));
+        }
+        if current.status == AgentTeamStatus::Trashed
+            && next_status == AgentTeamStatus::Inactive
+            && host_member.organization_status == AgentMemberOrganizationStatus::Retired
+        {
+            return Err(trust_error(
+                TrustErrorCode::AgentMemberRetired,
+                "Trashed AgentTeam cannot restore with a Retired retained Host",
+                "agent_team",
+                team_id,
+                Some(current.revision),
+            ));
+        }
+        if next_status == AgentTeamStatus::Active {
+            let active_hosts = memberships
+                .iter()
+                .filter(|membership| {
+                    membership.role == TeamMembershipRole::Host
+                        && membership.state == TeamMembershipStatus::Active
+                })
+                .collect::<Vec<_>>();
+            if active_hosts.len() != 1
+                || members
+                    .get(&active_hosts[0].agent_member_id)
+                    .is_none_or(|member| {
+                        member.organization_status != AgentMemberOrganizationStatus::Active
+                    })
+            {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "AgentTeam activation requires exactly one active Host Membership backed by an Active AgentMember",
+                    "agent_team",
+                    team_id,
+                    Some(current.revision),
+                ));
+            }
+            if memberships.iter().any(|membership| {
+                membership.state == TeamMembershipStatus::Active
+                    && members
+                        .get(&membership.agent_member_id)
+                        .is_none_or(|member| {
+                            member.organization_status != AgentMemberOrganizationStatus::Active
+                        })
+            }) {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "AgentTeam activation found an active Membership without an Active AgentMember",
+                    "agent_team",
+                    team_id,
+                    Some(current.revision),
+                ));
+            }
+        }
+        let mut changed_memberships = Vec::new();
+        if matches!(
+            next_status,
+            AgentTeamStatus::Inactive | AgentTeamStatus::Trashed
+        ) && current.status != AgentTeamStatus::Trashed
+        {
+            for membership in &mut memberships {
+                if membership.state != TeamMembershipStatus::Inactive {
+                    membership.state = TeamMembershipStatus::Inactive;
+                    membership.revision += 1;
+                    changed_memberships.push(membership.clone());
+                }
+            }
+        }
+        current.status = next_status;
+        current.revision += 1;
+        current.updated_at = updated_at.to_string();
+        current.trashed_at =
+            (next_status == AgentTeamStatus::Trashed).then(|| updated_at.to_string());
+        current
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+
+        let mut committed = self.trust_operation_envelopes_unlocked()?;
+        let previous_team_event = committed
+            .iter()
+            .filter(|envelope| {
+                envelope.execution_space_id == context.execution_space_id
+                    && envelope.operation.event.aggregate_kind == "agent_team"
+                    && envelope.operation.event.aggregate_id == team_id
+            })
+            .max_by_key(|envelope| envelope.operation.event.sequence)
+            .map(|envelope| envelope.operation.event.clone())
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "AgentTeam canonical event is missing",
+                    "agent_team",
+                    team_id,
+                    None,
+                )
+            })?;
+        let current_subscriptions = self
+            .fabric_message_subscriptions(&context.execution_space_id)?
+            .into_iter()
+            .map(|subscription| (subscription.id.clone(), subscription))
+            .collect::<BTreeMap<_, _>>();
+        let current_team_subscription = current_subscriptions
+            .get(&format!("team-inbox:{team_id}"))
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "AgentTeam durable Team-subject subscription is missing",
+                    "message_subscription",
+                    &format!("team-inbox:{team_id}"),
+                    None,
+                )
+            })?;
+        let team_subscription = team_inbox_subscription(
+            &context.execution_space_id,
+            &current,
+            if next_status == AgentTeamStatus::Active {
+                MessageSubscriptionStatus::Active
+            } else {
+                MessageSubscriptionStatus::Paused
+            },
+            current_team_subscription.revision + 1,
+            &current_team_subscription.created_by,
+            updated_at,
+        );
+        let mut store_sequence = committed
+            .iter()
+            .map(|envelope| envelope.operation.event.store_sequence)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let team_event = CanonicalMutationEvent {
+            id: format!("trust-event-{store_sequence}"),
+            aggregate_kind: "agent_team".into(),
+            aggregate_id: team_id.to_string(),
+            sequence: previous_team_event.sequence + 1,
+            store_sequence,
+            transition: match next_status {
+                AgentTeamStatus::Active => "activated",
+                AgentTeamStatus::Inactive if previous_team_event.transition == "trashed" => {
+                    "restored"
+                }
+                AgentTeamStatus::Inactive => "deactivated",
+                AgentTeamStatus::Trashed => "trashed",
+            }
+            .into(),
+            expected_version: context.expected_version,
+            resulting_version: current.revision,
+            performed_by_actor: context.authenticated_actor.clone(),
+            authority_actor: context.authority_actor.clone(),
+            causation_ref: None,
+            idempotency_key: context.idempotency_key.clone(),
+            canonical_request_fingerprint: request_fingerprint,
+            payload: request_payload,
+            created_at: now_string(),
+        };
+        committed.push(TrustOperationEnvelope {
+            execution_space_id: context.execution_space_id.clone(),
+            authenticated_actor_kind: context.authenticated_actor.kind,
+            authenticated_actor_id: context.authenticated_actor.id.clone(),
+            command_name: context.command_name.clone(),
+            operation: CanonicalOperation {
+                event: team_event.clone(),
+                resulting_projection: serde_json::to_value(&current)?,
+                immutable_side_records: vec![serde_json::to_value(team_subscription)?],
+                initial_outbox_records: Vec::new(),
+            },
+        });
+        for membership in &changed_memberships {
+            store_sequence += 1;
+            let previous = committed
+                .iter()
+                .filter(|envelope| {
+                    envelope.execution_space_id == context.execution_space_id
+                        && envelope.operation.event.aggregate_kind == "team_membership"
+                        && envelope.operation.event.aggregate_id == membership.id
+                })
+                .max_by_key(|envelope| envelope.operation.event.sequence)
+                .map(|envelope| envelope.operation.event.clone())
+                .ok_or_else(|| {
+                    trust_error(
+                        TrustErrorCode::InvalidStateTransition,
+                        "TeamMembership canonical event is missing",
+                        "team_membership",
+                        &membership.id,
+                        None,
+                    )
+                })?;
+            let subscriptions = membership_subscriptions(
+                &context.execution_space_id,
+                membership,
+                MessageSubscriptionStatus::Paused,
+                current_subscriptions
+                    .values()
+                    .filter(|subscription| {
+                        subscription.membership_ref.as_deref() == Some(membership.id.as_str())
+                    })
+                    .map(|subscription| subscription.revision)
+                    .max()
+                    .unwrap_or(0)
+                    + 1,
+                updated_at,
+            )?
+            .into_iter()
+            .map(serde_json::to_value)
+            .collect::<Result<Vec<_>, _>>()?;
+            let membership_payload = serde_json::json!({
+                "team_event_id": team_event.id,
+                "state": membership.state,
+                "updated_at": updated_at,
+            });
+            committed.push(TrustOperationEnvelope {
+                execution_space_id: context.execution_space_id.clone(),
+                authenticated_actor_kind: context.authenticated_actor.kind,
+                authenticated_actor_id: context.authenticated_actor.id.clone(),
+                command_name: format!("{}:membership", context.command_name),
+                operation: CanonicalOperation {
+                    event: CanonicalMutationEvent {
+                        id: format!("trust-event-{store_sequence}"),
+                        aggregate_kind: "team_membership".into(),
+                        aggregate_id: membership.id.clone(),
+                        sequence: previous.sequence + 1,
+                        store_sequence,
+                        transition: "team_deactivated".into(),
+                        expected_version: previous.resulting_version,
+                        resulting_version: membership.revision,
+                        performed_by_actor: context.authenticated_actor.clone(),
+                        authority_actor: context.authority_actor.clone(),
+                        causation_ref: Some(team_event.id.clone()),
+                        idempotency_key: format!(
+                            "{}:membership:{}",
+                            context.idempotency_key, membership.id
+                        ),
+                        canonical_request_fingerprint: canonical_json_fingerprint(
+                            &membership_payload,
+                        ),
+                        payload: membership_payload,
+                        created_at: now_string(),
+                    },
+                    resulting_projection: serde_json::to_value(membership)?,
+                    immutable_side_records: subscriptions,
+                    initial_outbox_records: Vec::new(),
+                },
+            });
+        }
+        self.write_trust_operation_envelopes_atomic_unlocked(&committed)?;
+        Ok(CanonicalMutationResult {
+            projection: current,
+            event: team_event,
+            replayed: false,
+        })
+    }
+
+    /// Record purge authorization after every recoverable Team lifecycle and
+    /// runtime reference is closed. This method never deletes related rows;
+    /// physical legacy-ledger deletion remains outside DEV-35.
+    pub fn record_agent_team_purge_tombstone(
+        &self,
+        context: &MutationContext,
+        request: AgentTeamPurgeRequest,
+    ) -> StoreResult<CanonicalMutationResult<AgentTeamPurgeTombstone>> {
+        self.init()?;
+        request
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if request.requested_by != context.authenticated_actor || context.expected_version != 0 {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "Team purge tombstone requires the exact authenticated approved requester and version 0",
+                "agent_team_purge_tombstone",
+                &request.tombstone_id,
+                Some(0),
+            ));
+        }
+        let _lock = self.acquire_write_lock()?;
+        let payload = serde_json::to_value(&request)?;
+        let request_fingerprint = context
+            .request_fingerprint
+            .clone()
+            .unwrap_or_else(|| canonical_json_fingerprint(&payload));
+        if let Some(replay) = self.replay_trust_projection_unlocked(
+            context,
+            "agent_team_purge_tombstone",
+            &request.tombstone_id,
+            &request_fingerprint,
+        )? {
+            return Ok(replay);
+        }
+        let team = self
+            .agent_teams(&context.execution_space_id)?
+            .into_iter()
+            .find(|team| team.id == request.team_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "Team purge references a missing AgentTeam",
+                    "agent_team",
+                    &request.team_id,
+                    None,
+                )
+            })?;
+        if team.status != AgentTeamStatus::Trashed
+            || team.revision != request.expected_team_revision
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "Team purge requires the exact current Trashed Team revision",
+                "agent_team",
+                &request.team_id,
+                Some(team.revision),
+            ));
+        }
+        let memberships = self
+            .fabric_team_memberships(&context.execution_space_id)?
+            .into_iter()
+            .filter(|membership| membership.team_id == team.id)
+            .collect::<Vec<_>>();
+        let member_ids = memberships
+            .iter()
+            .map(|membership| membership.agent_member_id.as_str())
+            .collect::<BTreeSet<_>>();
+        let has_active_reference = memberships
+            .iter()
+            .any(|membership| membership.state != TeamMembershipStatus::Inactive)
+            || self.team_runs()?.iter().any(|run| {
+                run.agent_team_id == team.id
+                    && !matches!(
+                        run.status,
+                        firm_core::TeamRunStatus::Completed
+                            | firm_core::TeamRunStatus::Failed
+                            | firm_core::TeamRunStatus::Cancelled
+                    )
+            })
+            || self
+                .fabric_work_execution_bindings(&context.execution_space_id)?
+                .iter()
+                .any(|binding| {
+                    binding.team_id == team.id
+                        && matches!(
+                            binding.status,
+                            WorkExecutionBindingStatus::Offered
+                                | WorkExecutionBindingStatus::Accepted
+                                | WorkExecutionBindingStatus::Active
+                        )
+                })
+            || self
+                .fabric_agent_sessions(&context.execution_space_id)?
+                .iter()
+                .any(|session| {
+                    member_ids.contains(session.agent_member_id.as_str())
+                        && session.lifecycle != AgentSessionStatus::Closed
+                })
+            || self
+                .fabric_message_deliveries(&context.execution_space_id)?
+                .iter()
+                .any(|delivery| {
+                    delivery.target_team_id.as_deref() == Some(team.id.as_str())
+                        && matches!(
+                            delivery.status,
+                            CanonicalMessageDeliveryStatus::Queued
+                                | CanonicalMessageDeliveryStatus::Routed
+                                | CanonicalMessageDeliveryStatus::Claimed
+                                | CanonicalMessageDeliveryStatus::ProviderReceived
+                        )
+                });
+        if has_active_reference {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "Team purge is blocked until memberships, runs, bindings, sessions and deliveries are closed",
+                "agent_team",
+                &request.team_id,
+                Some(team.revision),
+            ));
+        }
+        let tombstone = AgentTeamPurgeTombstone {
+            id: request.tombstone_id.clone(),
+            team_id: team.id,
+            team_revision: team.revision,
+            approval_ref: request.approval_ref,
+            export_manifest_ref: request.export_manifest_ref,
+            restore_window_closed_at: request.restore_window_closed_at,
+            recorded_by: request.requested_by,
+            recorded_at: request.requested_at,
+        };
+        self.commit_trust_projection_unlocked(
+            context,
+            "agent_team_purge_tombstone",
+            &tombstone.id,
+            "recorded_no_delete",
+            payload,
+            &tombstone,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    pub fn update_agent_team_profile(
+        &self,
+        context: &MutationContext,
+        team_id: &str,
+        name: &str,
+        description: &str,
+        updated_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<AgentTeam>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        required(name, "AgentTeam.name")?;
+        required(description, "AgentTeam.description")?;
+        let mut team = self
+            .latest_trust_envelopes_unlocked(&context.execution_space_id, "agent_team")?
+            .remove(team_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "AgentTeam not found",
+                    "agent_team",
+                    team_id,
+                    None,
+                )
+            })
+            .and_then(|envelope| event_projection::<AgentTeam>(&envelope))?;
+        team.name = name.to_string();
+        team.description = description.to_string();
+        team.revision += 1;
+        team.updated_at = updated_at.to_string();
+        team.validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.commit_trust_projection_unlocked(
+            context,
+            "agent_team",
+            team_id,
+            "profile_updated",
+            serde_json::json!({
+                "name": name,
+                "description": description,
+                "updated_at": updated_at,
+            }),
+            &team,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    /// Explicit pre-activation step used after Inactive/Restore. Activating a
+    /// membership never starts or resumes an AgentSession.
+    pub fn activate_team_membership(
+        &self,
+        context: &MutationContext,
+        membership_id: &str,
+        updated_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<TeamMembership>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut membership = self
+            .latest_trust_envelopes_unlocked(&context.execution_space_id, "team_membership")?
+            .remove(membership_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "TeamMembership not found",
+                    "team_membership",
+                    membership_id,
+                    None,
+                )
+            })
+            .and_then(|envelope| event_projection::<TeamMembership>(&envelope))?;
+        if membership.state != TeamMembershipStatus::Inactive {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "only an Inactive TeamMembership can be activated",
+                "team_membership",
+                membership_id,
+                Some(membership.revision),
+            ));
+        }
+        let team = self
+            .agent_teams(&context.execution_space_id)?
+            .into_iter()
+            .find(|team| team.id == membership.team_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "TeamMembership references a missing AgentTeam",
+                    "team_membership",
+                    membership_id,
+                    None,
+                )
+            })?;
+        if team.status != AgentTeamStatus::Inactive {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "TeamMembership activation is allowed only while its Team is Inactive",
+                "team_membership",
+                membership_id,
+                Some(membership.revision),
+            ));
+        }
+        let retained_host =
+            self.team_host_membership(&context.execution_space_id, &membership.team_id, false)?;
+        let authorized = matches!(
+            context.authenticated_actor.kind,
+            ActorKind::Human | ActorKind::Service
+        ) || (context.authenticated_actor.kind == ActorKind::AgentMember
+            && (context.authenticated_actor.id == membership.agent_member_id
+                || context.authenticated_actor.id == retained_host.agent_member_id));
+        if !authorized {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "TeamMembership activation requires the Member, retained Host, or control-plane authority",
+                "team_membership",
+                membership_id,
+                Some(membership.revision),
+            ));
+        }
+        let member = self
+            .trust_agent_members(&context.execution_space_id)?
+            .into_iter()
+            .find(|member| member.id == membership.agent_member_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "TeamMembership references a missing AgentMember",
+                    "team_membership",
+                    membership_id,
+                    None,
+                )
+            })?;
+        if member.organization_status != AgentMemberOrganizationStatus::Active {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "TeamMembership activation requires an Active AgentMember",
+                "team_membership",
+                membership_id,
+                Some(member.version),
+            ));
+        }
+        if membership.role == TeamMembershipRole::Host
+            && self
+                .fabric_team_memberships(&context.execution_space_id)?
+                .iter()
+                .any(|row| {
+                    row.team_id == membership.team_id
+                        && row.id != membership.id
+                        && row.role == TeamMembershipRole::Host
+                        && row.state == TeamMembershipStatus::Active
+                })
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "only one Host TeamMembership may be active",
+                "team_membership",
+                membership_id,
+                Some(membership.revision),
+            ));
+        }
+        let subscriptions = membership_subscriptions(
+            &context.execution_space_id,
+            &membership,
+            MessageSubscriptionStatus::Active,
+            self.fabric_message_subscriptions(&context.execution_space_id)?
+                .into_iter()
+                .filter(|subscription| {
+                    subscription.membership_ref.as_deref() == Some(membership_id)
+                })
+                .map(|subscription| subscription.revision)
+                .max()
+                .unwrap_or(0)
+                + 1,
+            updated_at,
+        )?
+        .into_iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()?;
+        membership.state = TeamMembershipStatus::Active;
+        membership.revision += 1;
+        membership.left_at = None;
+        self.commit_trust_projection_unlocked(
+            context,
+            "team_membership",
+            membership_id,
+            "activated",
+            serde_json::json!({"updated_at": updated_at}),
+            &membership,
+            subscriptions,
+            Vec::new(),
+        )
+    }
+
+    /// AF-ADR-014 compatibility projection. There is no AgentIdentity writer:
+    /// every row is derived from the sole durable AgentMember with the same id.
     pub fn fabric_agent_identities(
         &self,
         execution_space_id: &str,
     ) -> StoreResult<Vec<AgentIdentity>> {
-        self.latest_trust_envelopes_unlocked(execution_space_id, "agent_identity")?
-            .values()
-            .map(event_projection)
-            .collect()
+        Ok(self
+            .trust_agent_members(execution_space_id)?
+            .into_iter()
+            .map(|member| AgentIdentity {
+                id: member.id,
+                display_name: member.name,
+                organization_status: member.organization_status,
+                permission_ceiling: member.permission_ceiling,
+                version: member.version,
+                created_at: member.created_at,
+                updated_at: member.updated_at,
+            })
+            .collect())
     }
 
+    #[deprecated(note = "AgentIdentity is a same-id read-only AgentMember projection")]
     pub fn create_agent_identity(
+        &self,
+        _context: &MutationContext,
+        identity: AgentIdentity,
+    ) -> StoreResult<CanonicalMutationResult<AgentIdentity>> {
+        Err(trust_error(
+            TrustErrorCode::InvalidStateTransition,
+            "AGENT_IDENTITY_READ_ONLY: create the sole durable AgentMember instead",
+            "agent_identity",
+            &identity.id,
+            None,
+        ))
+    }
+
+    /// Explicit one-way AF-ADR-014 migration. The legacy projection id is
+    /// preserved exactly while the only written durable aggregate is
+    /// AgentMember; no AgentIdentity event or ledger is created.
+    pub fn migrate_legacy_agent_identity_same_id(
         &self,
         context: &MutationContext,
         identity: AgentIdentity,
     ) -> StoreResult<CanonicalMutationResult<AgentIdentity>> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
         required(&identity.id, "AgentIdentity.id")?;
-        required(&identity.display_name, "AgentIdentity.display_name")?;
         if identity.version != 1 {
             return Err(trust_error(
-                TrustErrorCode::VersionConflict,
-                "new AgentIdentity must start at version 1",
-                "agent_identity",
+                TrustErrorCode::InvalidStateTransition,
+                "legacy AgentIdentity migration requires an explicit version-1 same-ID source",
+                "agent_member",
                 &identity.id,
                 Some(identity.version),
             ));
         }
-        self.commit_trust_projection_unlocked(
-            context,
-            "agent_identity",
-            &identity.id,
-            "created",
-            serde_json::to_value(&identity)?,
-            &identity,
-            Vec::new(),
-            Vec::new(),
-        )
+        let member = AgentMember {
+            id: identity.id.clone(),
+            name: identity.display_name.clone(),
+            description: "Migrated same-ID AgentMember authority".into(),
+            role: "agent".into(),
+            capabilities: Vec::new(),
+            skill_refs: Vec::new(),
+            provider_profile_ref: None,
+            model_preference: None,
+            workspace_policy: "legacy-explicit-migration".into(),
+            permission_ceiling: identity.permission_ceiling,
+            organization_status: identity.organization_status,
+            version: 1,
+            created_by: context.authenticated_actor.clone(),
+            created_at: identity.created_at.clone(),
+            updated_at: identity.updated_at.clone(),
+        };
+        let migrated = self.create_trust_agent_member(context, member)?;
+        let projection = self
+            .fabric_agent_identities(&context.execution_space_id)?
+            .into_iter()
+            .find(|candidate| candidate.id == identity.id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "same-ID AgentIdentity projection was not reconstructable after migration",
+                    "agent_member",
+                    &identity.id,
+                    Some(1),
+                )
+            })?;
+        Ok(CanonicalMutationResult {
+            projection,
+            event: migrated.event,
+            replayed: migrated.replayed,
+        })
     }
 
     pub fn fabric_agent_sessions(
@@ -5185,7 +6649,7 @@ impl HarnessStore {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         required(&session.id, "AgentSession.id")?;
-        required(&session.agent_identity_id, "AgentSession.agent_identity_id")?;
+        required(&session.agent_member_id, "AgentSession.agent_member_id")?;
         required(&session.node_id, "AgentSession.node_id")?;
         required(&session.provider_kind, "AgentSession.provider_kind")?;
         if session.execution_space_id != context.execution_space_id || session.version != 1 {
@@ -5206,32 +6670,32 @@ impl HarnessStore {
             "agent_session",
             &session.id,
         )?;
-        let identity = self
-            .fabric_agent_identities(&context.execution_space_id)?
+        let member = self
+            .trust_agent_members(&context.execution_space_id)?
             .into_iter()
-            .find(|identity| identity.id == session.agent_identity_id)
+            .find(|member| member.id == session.agent_member_id)
             .ok_or_else(|| {
                 trust_error(
                     TrustErrorCode::InvalidStateTransition,
-                    "AgentSession references a missing AgentIdentity",
+                    "AgentSession references a missing AgentMember",
                     "agent_session",
                     &session.id,
                     None,
                 )
             })?;
-        if identity.organization_status != AgentMemberOrganizationStatus::Active {
+        if member.organization_status != AgentMemberOrganizationStatus::Active {
             return Err(trust_error(
                 TrustErrorCode::InvalidStateTransition,
-                "AgentSession requires an active AgentIdentity",
+                "AgentSession requires an Active AgentMember",
                 "agent_session",
                 &session.id,
                 None,
             ));
         }
-        if session.effective_permission_ceiling > identity.permission_ceiling {
+        if session.effective_permission_ceiling > member.permission_ceiling {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,
-                "AgentSession effective permission exceeds the frozen AgentIdentity ceiling",
+                "AgentSession effective permission exceeds the frozen AgentMember ceiling",
                 "agent_session",
                 &session.id,
                 None,
@@ -5241,16 +6705,16 @@ impl HarnessStore {
             .fabric_agent_sessions(&context.execution_space_id)?
             .into_iter()
             .filter(|row| {
-                row.agent_identity_id == session.agent_identity_id
+                row.agent_member_id == session.agent_member_id
                     && row.lifecycle != AgentSessionStatus::Closed
             })
             .count();
         if current_count != 0 {
             return Err(trust_error(
                 TrustErrorCode::InvalidStateTransition,
-                "AgentIdentity already has a current AgentSession; explicit stop or recovery is required",
-                "agent_identity",
-                &session.agent_identity_id,
+                "AgentMember already has a current AgentSession; explicit stop or recovery is required",
+                "agent_member",
+                &session.agent_member_id,
                 None,
             ));
         }
@@ -5270,10 +6734,59 @@ impl HarnessStore {
         &self,
         execution_space_id: &str,
     ) -> StoreResult<Vec<TeamMembership>> {
-        self.latest_trust_envelopes_unlocked(execution_space_id, "team_membership")?
-            .values()
-            .map(event_projection)
-            .collect()
+        let mut latest = BTreeMap::new();
+        for envelope in self
+            .trust_operation_envelopes_unlocked()?
+            .into_iter()
+            .filter(|envelope| envelope.execution_space_id == execution_space_id)
+        {
+            if envelope.operation.event.aggregate_kind == "team_membership" {
+                let membership = event_projection::<TeamMembership>(&envelope)?;
+                latest.insert(membership.id.clone(), membership);
+            }
+            for value in envelope
+                .operation
+                .initial_outbox_records
+                .iter()
+                .chain(&envelope.operation.immutable_side_records)
+            {
+                if let Ok(membership) = serde_json::from_value::<TeamMembership>(value.clone()) {
+                    latest.insert(membership.id.clone(), membership);
+                }
+            }
+        }
+        Ok(latest.into_values().collect())
+    }
+
+    pub fn team_host_membership(
+        &self,
+        execution_space_id: &str,
+        team_id: &str,
+        require_active: bool,
+    ) -> StoreResult<TeamMembership> {
+        let matching = self
+            .fabric_team_memberships(execution_space_id)?
+            .into_iter()
+            .filter(|membership| {
+                membership.team_id == team_id
+                    && membership.role == TeamMembershipRole::Host
+                    && (!require_active || membership.state == TeamMembershipStatus::Active)
+            })
+            .collect::<Vec<_>>();
+        if matching.len() != 1 {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                format!(
+                    "AgentTeam requires exactly one {}Host TeamMembership; found {}",
+                    if require_active { "active " } else { "" },
+                    matching.len()
+                ),
+                "agent_team",
+                team_id,
+                None,
+            ));
+        }
+        Ok(matching.into_iter().next().expect("length checked"))
     }
 
     pub fn join_team_membership(
@@ -5286,8 +6799,8 @@ impl HarnessStore {
         required(&membership.id, "TeamMembership.id")?;
         required(&membership.team_id, "TeamMembership.team_id")?;
         required(
-            &membership.agent_identity_id,
-            "TeamMembership.agent_identity_id",
+            &membership.agent_member_id,
+            "TeamMembership.agent_member_id",
         )?;
         if membership.revision != 1 || membership.state != TeamMembershipStatus::Active {
             return Err(trust_error(
@@ -5298,40 +6811,66 @@ impl HarnessStore {
                 Some(membership.revision),
             ));
         }
-        let run = self
-            .team_runs()?
+        let team = self
+            .agent_teams(&context.execution_space_id)?
             .into_iter()
-            .rev()
-            .find(|run| run.agent_team_id == membership.team_id)
+            .find(|team| team.id == membership.team_id)
             .ok_or_else(|| {
                 trust_error(
                     TrustErrorCode::InvalidStateTransition,
-                    "TeamMembership references a missing TeamRun",
+                    "TeamMembership references a missing durable AgentTeam",
                     "team_membership",
                     &membership.id,
                     None,
                 )
             })?;
-        if run.execution_node_id != membership.node_id {
+        if team.status != AgentTeamStatus::Active {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "new TeamMembership requires an Active AgentTeam",
+                "team_membership",
+                &membership.id,
+                Some(team.revision),
+            ));
+        }
+        if team.node_id != membership.node_id {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,
-                "TeamMembership must remain on the TeamRun's one pinned machine",
+                "TeamMembership must remain on the Team's immutable Node",
                 "team_membership",
                 &membership.id,
                 None,
             ));
         }
-        if !self
-            .fabric_agent_identities(&context.execution_space_id)?
-            .iter()
-            .any(|identity| identity.id == membership.agent_identity_id)
-        {
+        if membership.created_by != context.authenticated_actor {
             return Err(trust_error(
-                TrustErrorCode::InvalidStateTransition,
-                "TeamMembership references a missing AgentIdentity",
+                TrustErrorCode::UnauthorizedActor,
+                "TeamMembership.created_by must equal the authenticated actor",
                 "team_membership",
                 &membership.id,
                 None,
+            ));
+        }
+        let member = self
+            .trust_agent_members(&context.execution_space_id)?
+            .into_iter()
+            .find(|member| member.id == membership.agent_member_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "TeamMembership references a missing AgentMember",
+                    "team_membership",
+                    &membership.id,
+                    None,
+                )
+            })?;
+        if member.organization_status != AgentMemberOrganizationStatus::Active {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "TeamMembership requires an Active AgentMember",
+                "team_membership",
+                &membership.id,
+                Some(member.version),
             ));
         }
         // Membership is a generation-fenced collaboration binding.  The
@@ -5341,12 +6880,12 @@ impl HarnessStore {
         let prior_memberships = self.fabric_team_memberships(&context.execution_space_id)?;
         if prior_memberships.iter().any(|row| {
             row.team_id == membership.team_id
-                && row.agent_identity_id == membership.agent_identity_id
+                && row.agent_member_id == membership.agent_member_id
                 && row.state == TeamMembershipStatus::Active
         }) {
             return Err(trust_error(
                 TrustErrorCode::InvalidStateTransition,
-                "Team and AgentIdentity already have an active TeamMembership generation",
+                "Team and AgentMember already have an active TeamMembership generation",
                 "team_membership",
                 &membership.id,
                 None,
@@ -5356,7 +6895,7 @@ impl HarnessStore {
             .iter()
             .filter(|row| {
                 row.team_id == membership.team_id
-                    && row.agent_identity_id == membership.agent_identity_id
+                    && row.agent_member_id == membership.agent_member_id
             })
             .map(|row| row.membership_generation)
             .max()
@@ -5373,52 +6912,31 @@ impl HarnessStore {
                 Some(expected_generation.saturating_sub(1)),
             ));
         }
-        let direct = MessageSubscription {
-            id: format!("direct:{}:{}", membership.agent_identity_id, membership.id),
-            subscriber_agent_id: membership.agent_identity_id.clone(),
-            execution_space_id: context.execution_space_id.clone(),
-            source_kind: MessageSubscriptionKind::Agent,
-            source_ref: "active_team_members".into(),
-            delivery_mode: firm_core::agentfirm_api::RuntimeDispatchMode::QueueOnly,
-            history_policy: firm_core::agentfirm_api::MessageHistoryPolicy::FromJoin,
-            membership_ref: Some(membership.id.clone()),
-            authorization_policy_ref: "team.direct.active-members".into(),
-            policy_revision: 1,
-            policy_digest: canonical_json_fingerprint(
-                &serde_json::json!({"team_id": membership.team_id, "kind": "direct_from_active_team_members"}),
-            ),
-            status: MessageSubscriptionStatus::Active,
-            revision: 1,
-            created_by: membership.created_by.clone(),
-            created_at: membership.joined_at.clone(),
-            revoked_at: None,
-        };
-        let team = MessageSubscription {
-            id: format!("team:{}:{}", membership.team_id, membership.id),
-            subscriber_agent_id: membership.agent_identity_id.clone(),
-            execution_space_id: context.execution_space_id.clone(),
-            source_kind: MessageSubscriptionKind::Team,
-            source_ref: membership.team_id.clone(),
-            delivery_mode: if membership.role
-                == firm_core::agentfirm_api::TeamMembershipRole::Observer
-            {
-                firm_core::agentfirm_api::RuntimeDispatchMode::QueueOnly
-            } else {
-                firm_core::agentfirm_api::RuntimeDispatchMode::StartIfIdle
-            },
-            history_policy: firm_core::agentfirm_api::MessageHistoryPolicy::FromJoin,
-            membership_ref: Some(membership.id.clone()),
-            authorization_policy_ref: "team.channel.membership".into(),
-            policy_revision: 1,
-            policy_digest: canonical_json_fingerprint(
-                &serde_json::json!({"team_id": membership.team_id, "kind": "team_channel"}),
-            ),
-            status: MessageSubscriptionStatus::Active,
-            revision: 1,
-            created_by: membership.created_by.clone(),
-            created_at: membership.joined_at.clone(),
-            revoked_at: None,
-        };
+        if membership.role == TeamMembershipRole::Host
+            && prior_memberships.iter().any(|row| {
+                row.team_id == membership.team_id
+                    && row.role == TeamMembershipRole::Host
+                    && row.state == TeamMembershipStatus::Active
+            })
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "an Active AgentTeam cannot have more than one active Host TeamMembership",
+                "team_membership",
+                &membership.id,
+                None,
+            ));
+        }
+        let subscriptions = membership_subscriptions(
+            &context.execution_space_id,
+            &membership,
+            MessageSubscriptionStatus::Active,
+            1,
+            &membership.joined_at,
+        )?
+        .into_iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()?;
         self.commit_trust_projection_unlocked(
             context,
             "team_membership",
@@ -5426,7 +6944,7 @@ impl HarnessStore {
             "joined",
             serde_json::to_value(&membership)?,
             &membership,
-            vec![serde_json::to_value(direct)?, serde_json::to_value(team)?],
+            subscriptions,
             Vec::new(),
         )
     }
@@ -5435,13 +6953,138 @@ impl HarnessStore {
         &self,
         execution_space_id: &str,
     ) -> StoreResult<Vec<MessageSubscription>> {
-        Ok(self
-            .latest_fabric_side_records_unlocked(
-                execution_space_id,
-                |row: &MessageSubscription| row.id.clone(),
-            )?
-            .into_values()
-            .collect())
+        let mut latest = BTreeMap::new();
+        for envelope in self
+            .trust_operation_envelopes_unlocked()?
+            .into_iter()
+            .filter(|envelope| envelope.execution_space_id == execution_space_id)
+        {
+            if envelope.operation.event.aggregate_kind == "message_subscription" {
+                let subscription = event_projection::<MessageSubscription>(&envelope)?;
+                latest.insert(subscription.id.clone(), subscription);
+            }
+            for value in envelope
+                .operation
+                .initial_outbox_records
+                .iter()
+                .chain(&envelope.operation.immutable_side_records)
+            {
+                if let Ok(subscription) =
+                    serde_json::from_value::<MessageSubscription>(value.clone())
+                {
+                    latest.insert(subscription.id.clone(), subscription);
+                }
+            }
+        }
+        Ok(latest.into_values().collect())
+    }
+
+    pub fn create_message_subscription(
+        &self,
+        context: &MutationContext,
+        subscription: MessageSubscription,
+    ) -> StoreResult<CanonicalMutationResult<MessageSubscription>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        required(&subscription.id, "MessageSubscription.id")?;
+        required(
+            &subscription.subscriber_ref,
+            "MessageSubscription.subscriber_ref",
+        )?;
+        required(
+            &subscription.target_node_id,
+            "MessageSubscription.target_node_id",
+        )?;
+        if subscription.execution_space_id != context.execution_space_id
+            || subscription.revision != 1
+            || subscription.status != MessageSubscriptionStatus::Active
+            || subscription.created_by != context.authenticated_actor
+            || context.expected_version != 0
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "new MessageSubscription must be active revision 1 in the authenticated Execution Space",
+                "message_subscription",
+                &subscription.id,
+                Some(0),
+            ));
+        }
+        match subscription.subscriber_kind {
+            MessageSubjectKind::AgentMember => {
+                let member = self
+                    .trust_agent_members(&context.execution_space_id)?
+                    .into_iter()
+                    .find(|member| member.id == subscription.subscriber_ref)
+                    .ok_or_else(|| {
+                        trust_error(
+                            TrustErrorCode::InvalidStateTransition,
+                            "AgentMember subscription references a missing AgentMember",
+                            "message_subscription",
+                            &subscription.id,
+                            None,
+                        )
+                    })?;
+                if member.organization_status != AgentMemberOrganizationStatus::Active {
+                    return Err(trust_error(
+                        TrustErrorCode::InvalidStateTransition,
+                        "AgentMember subscription requires an Active AgentMember",
+                        "message_subscription",
+                        &subscription.id,
+                        Some(member.version),
+                    ));
+                }
+            }
+            MessageSubjectKind::Team => {
+                let target_team_id = subscription.target_team_id.as_deref().ok_or_else(|| {
+                    trust_error(
+                        TrustErrorCode::InvalidStateTransition,
+                        "Team-subject subscription requires target_team_id",
+                        "message_subscription",
+                        &subscription.id,
+                        None,
+                    )
+                })?;
+                let team = self
+                    .agent_teams(&context.execution_space_id)?
+                    .into_iter()
+                    .find(|team| team.id == target_team_id)
+                    .ok_or_else(|| {
+                        trust_error(
+                            TrustErrorCode::InvalidStateTransition,
+                            "Team-subject subscription references a missing AgentTeam",
+                            "message_subscription",
+                            &subscription.id,
+                            None,
+                        )
+                    })?;
+                if subscription.subscriber_ref != team.id
+                    || subscription.target_node_id != team.node_id
+                    || subscription.membership_ref.is_some()
+                    || subscription.source_kind != MessageSubscriptionKind::AllAuthorized
+                    || subscription.source_ref != "authorized_peer_teams"
+                    || subscription.authorization_policy_ref != "collaboration.peer_message_deliver"
+                    || team.status != AgentTeamStatus::Active
+                {
+                    return Err(trust_error(
+                        TrustErrorCode::InvalidStateTransition,
+                        "Team-subject subscription must name one Active Team/Node and cannot preselect a membership",
+                        "message_subscription",
+                        &subscription.id,
+                        Some(team.revision),
+                    ));
+                }
+            }
+        }
+        self.commit_trust_projection_unlocked(
+            context,
+            "message_subscription",
+            &subscription.id,
+            "created",
+            serde_json::to_value(&subscription)?,
+            &subscription,
+            Vec::new(),
+            Vec::new(),
+        )
     }
 
     pub fn leave_team_membership(
@@ -5474,6 +7117,21 @@ impl HarnessStore {
                 Some(membership.revision),
             ));
         }
+        if membership.role == TeamMembershipRole::Host
+            && self
+                .agent_teams(&context.execution_space_id)?
+                .into_iter()
+                .find(|team| team.id == membership.team_id)
+                .is_some_and(|team| team.status == AgentTeamStatus::Active)
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "the sole active Host Membership cannot leave an Active AgentTeam; deactivate the Team first",
+                "team_membership",
+                membership_id,
+                Some(membership.revision),
+            ));
+        }
         let active_bindings = self
             .fabric_work_execution_bindings(&context.execution_space_id)?
             .into_iter()
@@ -5495,12 +7153,19 @@ impl HarnessStore {
                 Some(membership.revision),
             ));
         }
-        if context.authenticated_actor.kind != ActorKind::AgentMember
-            || context.authenticated_actor.id != membership.agent_identity_id
-        {
+        let host_id = self
+            .team_host_membership(&context.execution_space_id, &membership.team_id, false)?
+            .agent_member_id;
+        let authorized = matches!(
+            context.authenticated_actor.kind,
+            ActorKind::Human | ActorKind::Service
+        ) || (context.authenticated_actor.kind == ActorKind::AgentMember
+            && (context.authenticated_actor.id == membership.agent_member_id
+                || context.authenticated_actor.id == host_id));
+        if !authorized {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,
-                "TeamMembership leave requires the exact stable AgentIdentity",
+                "TeamMembership leave requires the exact stable AgentMember",
                 "team_membership",
                 membership_id,
                 Some(membership.revision),
@@ -6226,7 +7891,7 @@ impl HarnessStore {
                 continue;
             };
             if work.version != binding.work_revision
-                || session.agent_identity_id != binding.agent_identity_id
+                || session.agent_member_id != binding.agent_member_id
                 || session.runtime_generation != binding.agent_session_generation
                 || session.lifecycle == AgentSessionStatus::Closed
             {
@@ -6239,7 +7904,7 @@ impl HarnessStore {
                     work_id: binding.work_id.clone(),
                     work_revision: binding.work_revision,
                     work_execution_binding_id: binding.id.clone(),
-                    recipient_identity_id: binding.agent_identity_id.clone(),
+                    recipient_agent_member_id: binding.agent_member_id.clone(),
                     recipient_session_id: binding.agent_session_id.clone(),
                     recipient_session_generation: binding.agent_session_generation,
                     target_node_id: session.node_id.clone(),
@@ -6336,7 +8001,7 @@ impl HarnessStore {
             || binding.status != WorkExecutionBindingStatus::Active
             || binding.work_revision != work.version
             || delivery.work_revision != work.version
-            || session.agent_identity_id != delivery.recipient_identity_id
+            || session.agent_member_id != delivery.recipient_agent_member_id
             || session.runtime_generation != delivery.recipient_session_generation
             || session.node_daemon_id != daemon_id
             || session.node_daemon_generation != daemon_generation
@@ -6375,7 +8040,7 @@ impl HarnessStore {
             id: format!("provider-invocation:{}:{}", delivery.id, delivery.attempt),
             source_plane: "work_delivery".into(),
             source_record_id: delivery.id.clone(),
-            recipient_identity_id: delivery.recipient_identity_id.clone(),
+            recipient_agent_member_id: delivery.recipient_agent_member_id.clone(),
             recipient_session_id: delivery.recipient_session_id.clone(),
             recipient_session_generation: delivery.recipient_session_generation,
             node_id: node_id.to_string(),
@@ -6525,8 +8190,8 @@ impl HarnessStore {
                 )
             })?;
         if membership.state != TeamMembershipStatus::Active
-            || membership.agent_identity_id != binding.agent_identity_id
-            || session.agent_identity_id != binding.agent_identity_id
+            || membership.agent_member_id != binding.agent_member_id
+            || session.agent_member_id != binding.agent_member_id
             || session.node_id != membership.node_id
             || session.runtime_generation != binding.agent_session_generation
             || session.lifecycle == AgentSessionStatus::Closed
@@ -6572,7 +8237,7 @@ impl HarnessStore {
                 work_id: binding.work_id.clone(),
                 work_revision: binding.work_revision,
                 work_execution_binding_id: binding.id.clone(),
-                recipient_identity_id: binding.agent_identity_id.clone(),
+                recipient_agent_member_id: binding.agent_member_id.clone(),
                 recipient_session_id: binding.agent_session_id.clone(),
                 recipient_session_generation: binding.agent_session_generation,
                 target_node_id: session.node_id.clone(),
@@ -6621,7 +8286,7 @@ impl HarnessStore {
             ));
         }
         let exact_member = context.authenticated_actor.kind == ActorKind::AgentMember
-            && context.authenticated_actor.id == binding.agent_identity_id;
+            && context.authenticated_actor.id == binding.agent_member_id;
         let host_or_operator = matches!(
             context.authenticated_actor.kind,
             ActorKind::Human | ActorKind::Service
@@ -6675,14 +8340,28 @@ impl HarnessStore {
         context: &MutationContext,
         message: Message,
     ) -> StoreResult<CanonicalMutationResult<Message>> {
-        self.author_message_with_collaboration_authority(context, message, None)
+        self.author_message_with_admission_authority(context, message, None)
     }
 
+    /// Compatibility entry point for persisted pre-DEV-35 daemon payloads.
+    /// New callers serialize [`MessageAdmissionAuthority`] explicitly.
     pub fn author_message_with_collaboration_authority(
         &self,
         context: &MutationContext,
         message: Message,
         collaboration_authority: Option<&CollaborationMessageAuthority>,
+    ) -> StoreResult<CanonicalMutationResult<Message>> {
+        let authority = collaboration_authority
+            .cloned()
+            .map(MessageAdmissionAuthority::WorkDelegation);
+        self.author_message_with_admission_authority(context, message, authority.as_ref())
+    }
+
+    pub fn author_message_with_admission_authority(
+        &self,
+        context: &MutationContext,
+        message: Message,
+        admission_authority: Option<&MessageAdmissionAuthority>,
     ) -> StoreResult<CanonicalMutationResult<Message>> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
@@ -6709,19 +8388,19 @@ impl HarnessStore {
             "message",
             &message.id,
         )?;
-        if let Some(sender_agent_id) = message.sender_agent_id.as_deref() {
+        if let Some(sender_agent_member_id) = message.sender_agent_member_id.as_deref() {
             let sender_sessions = self
                 .fabric_agent_sessions(&context.execution_space_id)?
                 .into_iter()
                 .filter(|session| {
-                    session.agent_identity_id == sender_agent_id
+                    session.agent_member_id == sender_agent_member_id
                         && session.node_id == message.source_node_id
                         && session.node_daemon_generation == message.source_authority_generation
                         && session.lifecycle != AgentSessionStatus::Closed
                         && message.sender_session_id.as_deref() == Some(session.id.as_str())
                 })
                 .count();
-            if sender_sessions != 1 || message.sender_actor_ref.id != sender_agent_id {
+            if sender_sessions != 1 || message.sender_actor_ref.id != sender_agent_member_id {
                 return Err(trust_error(
                     TrustErrorCode::UnauthorizedActor,
                     "Agent Message author must resolve to the exact current local AgentSession",
@@ -6753,6 +8432,23 @@ impl HarnessStore {
         let subscriptions = self.fabric_message_subscriptions(&context.execution_space_id)?;
         let sessions = self.fabric_agent_sessions(&context.execution_space_id)?;
         let memberships = self.fabric_team_memberships(&context.execution_space_id)?;
+        let collaboration_authority = match admission_authority {
+            Some(MessageAdmissionAuthority::WorkDelegation(authority)) => Some(authority),
+            _ => None,
+        };
+        let peer_authority = match admission_authority {
+            Some(MessageAdmissionAuthority::PeerTeam(authority)) => Some(authority),
+            _ => None,
+        };
+        if let Some(authority) = peer_authority {
+            self.validate_peer_team_message_admission_unlocked(
+                context,
+                &message,
+                authority,
+                &sessions,
+                &memberships,
+            )?;
+        }
         if let Some(authority) = collaboration_authority {
             let scope = message.collaboration_scope.as_ref().ok_or_else(|| {
                 trust_error(
@@ -6818,7 +8514,7 @@ impl HarnessStore {
                     binding.work_id == source_work.id
                         && binding.work_revision == source_work.version
                         && binding.team_id == authority.source_work_ref.team_id
-                        && binding.agent_identity_id == authority.source_owner_ref.id
+                        && binding.agent_member_id == authority.source_owner_ref.id
                         && sessions.iter().any(|session| {
                             session.id == binding.agent_session_id
                                 && session.runtime_generation == binding.agent_session_generation
@@ -6830,19 +8526,19 @@ impl HarnessStore {
                 })
                 .collect::<Vec<_>>();
             let exact_owner_binding = message.sender_actor_ref == authority.source_owner_ref
-                && message.sender_agent_id.as_deref()
+                && message.sender_agent_member_id.as_deref()
                     == Some(authority.source_owner_ref.id.as_str())
                 && current_owner_bindings.len() == 1
                 && message.sender_session_id.as_deref()
                     == Some(current_owner_bindings[0].agent_session_id.as_str());
             let exact_source_host = message.sender_actor_ref == authority.source_host_ref
-                && message.sender_agent_id.as_deref()
+                && message.sender_agent_member_id.as_deref()
                     == Some(authority.source_host_ref.id.as_str())
                 && memberships
                     .iter()
                     .filter(|membership| {
                         membership.team_id == authority.source_work_ref.team_id
-                            && membership.agent_identity_id == authority.source_host_ref.id
+                            && membership.agent_member_id == authority.source_host_ref.id
                             && membership.role == TeamMembershipRole::Host
                             && membership.state == TeamMembershipStatus::Active
                     })
@@ -6858,7 +8554,7 @@ impl HarnessStore {
                     Some(source_work.version),
                 ));
             }
-        } else if message.collaboration_scope.is_some() {
+        } else if message.collaboration_scope.is_some() && peer_authority.is_none() {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,
                 "cross-Team Message authoring requires server-frozen Delegation authority",
@@ -6868,14 +8564,18 @@ impl HarnessStore {
             ));
         }
         if let Some(team_id) = message.team_id.as_deref() {
-            let sender_is_member = message.sender_agent_id.as_deref().is_some_and(|sender| {
-                memberships.iter().any(|membership| {
-                    membership.team_id == team_id
-                        && membership.agent_identity_id == sender
-                        && membership.state == TeamMembershipStatus::Active
-                })
-            });
-            let control_plane_sender = message.sender_agent_id.is_none()
+            let sender_is_member =
+                message
+                    .sender_agent_member_id
+                    .as_deref()
+                    .is_some_and(|sender| {
+                        memberships.iter().any(|membership| {
+                            membership.team_id == team_id
+                                && membership.agent_member_id == sender
+                                && membership.state == TeamMembershipStatus::Active
+                        })
+                    });
+            let control_plane_sender = message.sender_agent_member_id.is_none()
                 && context.authority_actor.as_ref() == Some(&message.sender_actor_ref);
             if !sender_is_member && !control_plane_sender {
                 return Err(trust_error(
@@ -6888,14 +8588,15 @@ impl HarnessStore {
             }
         }
         let mut delivery_rows = Vec::new();
-        let mut delivered_identities = BTreeSet::new();
+        let mut delivered_subjects = BTreeSet::new();
         for recipient in &message.recipients {
             let matching = subscriptions.iter().filter(|subscription| {
                 subscription.status == MessageSubscriptionStatus::Active
                     && match recipient.kind {
-                        MessageRecipientKind::AgentIdentity => {
-                            subscription.source_kind == MessageSubscriptionKind::Agent
-                                && subscription.subscriber_agent_id == recipient.id
+                        MessageRecipientKind::AgentMember => {
+                            subscription.subscriber_kind == MessageSubjectKind::AgentMember
+                                && subscription.subscriber_ref == recipient.id
+                                && subscription.source_kind == MessageSubscriptionKind::Agent
                                 && if let Some(team_id) = message.team_id.as_deref() {
                                     subscription.membership_ref.as_deref().is_some_and(
                                         |membership_id| {
@@ -6909,66 +8610,49 @@ impl HarnessStore {
                                     )
                                 } else {
                                     subscription.membership_ref.is_none()
-                                        && message.sender_agent_id.as_deref()
+                                        && message.sender_agent_member_id.as_deref()
                                             == Some(subscription.source_ref.as_str())
                                 }
                         }
                         MessageRecipientKind::Team => {
-                            subscription.source_kind == MessageSubscriptionKind::Team
-                                && subscription.source_ref == recipient.id
+                            subscription.subscriber_kind == MessageSubjectKind::Team
+                                && subscription.subscriber_ref == recipient.id
+                                && subscription.source_kind
+                                    == MessageSubscriptionKind::AllAuthorized
+                                && subscription.source_ref == "authorized_peer_teams"
+                                && subscription.target_team_id.as_deref()
+                                    == Some(recipient.id.as_str())
                         }
                         MessageRecipientKind::ControlPlaneActor => false,
                     }
             });
             for subscription in matching {
-                if !delivered_identities.insert(subscription.subscriber_agent_id.clone()) {
+                let subject_key = (
+                    subscription.subscriber_kind,
+                    subscription.subscriber_ref.clone(),
+                );
+                if !delivered_subjects.insert(subject_key) {
                     continue;
                 }
-                let current = sessions
-                    .iter()
-                    .filter(|session| {
-                        session.agent_identity_id == subscription.subscriber_agent_id
-                            && session.lifecycle != AgentSessionStatus::Closed
-                    })
-                    .collect::<Vec<_>>();
-                if current.len() > 1 {
-                    return Err(trust_error(
-                        TrustErrorCode::InvalidStateTransition,
-                        "recipient identity has multiple current AgentSessions",
-                        "agent_identity",
-                        &subscription.subscriber_agent_id,
-                        None,
-                    ));
-                }
-                let target_node_id = current
-                    .first()
-                    .map(|session| session.node_id.clone())
-                    .or_else(|| {
-                        subscription
-                            .membership_ref
-                            .as_ref()
-                            .and_then(|membership_id| {
-                                memberships
-                                    .iter()
-                                    .find(|membership| &membership.id == membership_id)
-                                    .map(|membership| membership.node_id.clone())
-                            })
-                    })
-                    .ok_or_else(|| {
-                        trust_error(
-                            TrustErrorCode::InvalidStateTransition,
-                            "recipient identity has no routable Node placement",
-                            "agent_identity",
-                            &subscription.subscriber_agent_id,
-                            None,
-                        )
-                    })?;
+                let resolved_team_membership_id = (subscription.subscriber_kind
+                    == MessageSubjectKind::AgentMember)
+                    .then(|| subscription.membership_ref.clone())
+                    .flatten();
+                let recipient_agent_member_id = (subscription.subscriber_kind
+                    == MessageSubjectKind::AgentMember)
+                    .then(|| subscription.subscriber_ref.clone());
                 delivery_rows.push(CanonicalMessageDelivery {
-                    id: format!("{}:{}", message.id, subscription.subscriber_agent_id),
+                    id: format!("{}:{}", message.id, subscription.id),
                     message_id: message.id.clone(),
                     subscription_id: subscription.id.clone(),
-                    recipient_identity_id: subscription.subscriber_agent_id.clone(),
-                    target_node_id,
+                    subscription_revision: subscription.revision,
+                    subscription_policy_digest: subscription.policy_digest.clone(),
+                    recipient_kind: subscription.subscriber_kind,
+                    recipient_ref: subscription.subscriber_ref.clone(),
+                    target_team_id: subscription.target_team_id.clone(),
+                    target_node_id: subscription.target_node_id.clone(),
+                    resolved_team_membership_id,
+                    recipient_agent_member_id,
                     recipient_session_id: None,
                     recipient_session_generation: None,
                     status: CanonicalMessageDeliveryStatus::Queued,
@@ -7018,6 +8702,201 @@ impl HarnessStore {
         )
     }
 
+    fn validate_peer_team_message_admission_unlocked(
+        &self,
+        context: &MutationContext,
+        message: &Message,
+        authority: &PeerTeamMessageAdmissionAuthority,
+        sessions: &[AgentSession],
+        memberships: &[TeamMembership],
+    ) -> StoreResult<()> {
+        let scope = message.collaboration_scope.as_ref().ok_or_else(|| {
+            trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "peer-Team Message lacks frozen CollaborationScope",
+                "message",
+                &message.id,
+                None,
+            )
+        })?;
+        let expected_source_policy_digest = peer_team_source_policy_digest(authority);
+        let expected_target_policy_digest = peer_team_target_policy_digest(authority);
+        let expected_authority_digest = peer_team_message_authority_digest(authority);
+        let source_teams = self
+            .agent_teams(&context.execution_space_id)?
+            .into_iter()
+            .filter(|team| team.id == authority.source_team_id)
+            .collect::<Vec<_>>();
+        if source_teams.len() != 1 {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "peer-Team source Team is missing or ambiguous",
+                "message",
+                &message.id,
+                None,
+            ));
+        }
+        let source_team = &source_teams[0];
+        let exact_membership = memberships
+            .iter()
+            .filter(|membership| {
+                membership.id == authority.source_membership_id
+                    && membership.team_id == authority.source_team_id
+                    && membership.agent_member_id == authority.source_agent_member_id
+                    && membership.node_id == authority.source_node_id
+                    && membership.membership_generation == authority.source_membership_generation
+                    && membership.state == TeamMembershipStatus::Active
+            })
+            .count()
+            == 1;
+        let exact_session = sessions
+            .iter()
+            .filter(|session| {
+                session.id == authority.source_session_id
+                    && session.agent_member_id == authority.source_agent_member_id
+                    && session.node_id == authority.source_node_id
+                    && session.node_daemon_id == authority.source_node_daemon_id
+                    && session.node_daemon_generation == authority.source_node_daemon_generation
+                    && session.runtime_generation == authority.source_session_generation
+                    && session.lifecycle != AgentSessionStatus::Closed
+            })
+            .count()
+            == 1;
+        let exact_active_member = self
+            .trust_agent_members(&context.execution_space_id)?
+            .into_iter()
+            .filter(|member| {
+                member.id == authority.source_agent_member_id
+                    && member.organization_status == AgentMemberOrganizationStatus::Active
+            })
+            .count()
+            == 1;
+        let exact_team_recipient = message.recipients.len() == 1
+            && message.recipients[0].kind == MessageRecipientKind::Team
+            && message.recipients[0].id == authority.target_team_id
+            && message.target_ref == message.recipients[0];
+        if authority.source_required_capability != "message.peer_team.author"
+            || authority.target_required_capability != "collaboration.peer_message_deliver"
+            || authority.target_authorization_policy_ref != "collaboration.peer_message_deliver"
+            || authority.target_subscription_id
+                != format!("team-inbox:{}", authority.target_team_id)
+            || authority.target_subscription_revision == 0
+            || authority.source_policy_revision == 0
+            || authority.target_policy_revision == 0
+            || authority.source_membership_generation == 0
+            || authority.source_session_generation == 0
+            || authority.source_node_daemon_generation == 0
+            || authority.target_team_revision == 0
+            || authority.source_policy_digest != expected_source_policy_digest
+            || authority.target_policy_digest != expected_target_policy_digest
+            || authority.authority_digest != expected_authority_digest
+            || authority.source_execution_space_id != context.execution_space_id
+            || authority.source_execution_space_id != message.source_execution_space_id
+            || authority.source_team_revision != source_team.revision
+            || source_team.status != AgentTeamStatus::Active
+            || source_team.node_id != authority.source_node_id
+            || message.source_node_id != authority.source_node_id
+            || message.source_node_daemon_id != authority.source_node_daemon_id
+            || message.source_authority_generation != authority.source_node_daemon_generation
+            || message.sender_agent_member_id.as_deref()
+                != Some(authority.source_agent_member_id.as_str())
+            || message.sender_session_id.as_deref() != Some(authority.source_session_id.as_str())
+            || message.sender_actor_ref.kind != ActorKind::AgentMember
+            || message.sender_actor_ref.id != authority.source_agent_member_id
+            || message.team_id.as_deref() != Some(authority.source_team_id.as_str())
+            || message.work_id.is_some()
+            || scope.source_team_id != authority.source_team_id
+            || scope.target_team_id != authority.target_team_id
+            || scope.delegation_id.is_some()
+            || scope.expected_delegation_revision.is_some()
+            || scope.source_work_ref.is_some()
+            || scope.target_work_ref.is_some()
+            || !exact_team_recipient
+            || !exact_membership
+            || !exact_session
+            || !exact_active_member
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "peer-Team Message is outside the exact membership, session, daemon, policy, capability, or target placement authority",
+                "message",
+                &message.id,
+                None,
+            ));
+        }
+        Ok(())
+    }
+
+    /// Revalidate the target half of a frozen peer-Team authority against the
+    /// durable Team-subject subscription. This grants target delivery only;
+    /// callers must separately prove source admission before route creation.
+    pub fn revalidate_peer_team_delivery_subscription(
+        &self,
+        execution_space_id: &str,
+        authority: &PeerTeamMessageAdmissionAuthority,
+    ) -> StoreResult<MessageSubscription> {
+        if authority.target_required_capability != "collaboration.peer_message_deliver"
+            || authority.target_authorization_policy_ref != "collaboration.peer_message_deliver"
+            || authority.target_execution_space_id != execution_space_id
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "peer-Team authority does not carry the target delivery capability",
+                "message_subscription",
+                &authority.target_subscription_id,
+                None,
+            ));
+        }
+        let teams = self
+            .agent_teams(execution_space_id)?
+            .into_iter()
+            .filter(|team| team.id == authority.target_team_id)
+            .collect::<Vec<_>>();
+        let subscriptions = self
+            .fabric_message_subscriptions(execution_space_id)?
+            .into_iter()
+            .filter(|subscription| subscription.id == authority.target_subscription_id)
+            .collect::<Vec<_>>();
+        if teams.len() != 1 || subscriptions.len() != 1 {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "peer-Team target Team or durable subscription is missing or ambiguous",
+                "message_subscription",
+                &authority.target_subscription_id,
+                None,
+            ));
+        }
+        let team = &teams[0];
+        let subscription = &subscriptions[0];
+        let expected_policy_digest = peer_team_target_policy_digest(authority);
+        if team.status != AgentTeamStatus::Active
+            || team.node_id != authority.target_node_id
+            || team.revision != authority.target_team_revision
+            || subscription.subscriber_kind != MessageSubjectKind::Team
+            || subscription.subscriber_ref != authority.target_team_id
+            || subscription.target_team_id.as_deref() != Some(authority.target_team_id.as_str())
+            || subscription.target_node_id != authority.target_node_id
+            || subscription.source_kind != MessageSubscriptionKind::AllAuthorized
+            || subscription.source_ref != "authorized_peer_teams"
+            || subscription.membership_ref.is_some()
+            || subscription.status != MessageSubscriptionStatus::Active
+            || subscription.revision != authority.target_subscription_revision
+            || subscription.authorization_policy_ref != authority.target_authorization_policy_ref
+            || subscription.policy_revision != authority.target_policy_revision
+            || subscription.policy_digest != authority.target_policy_digest
+            || authority.target_policy_digest != expected_policy_digest
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "peer-Team target delivery rejected stale or cross-wired Team/subscription policy authority",
+                "message_subscription",
+                &authority.target_subscription_id,
+                Some(subscription.revision),
+            ));
+        }
+        Ok(subscription.clone())
+    }
+
     /// Persist an immutable source-authored cross-node Message before creating
     /// target-owned MessageDelivery rows. Fabric route journals remain the
     /// only cross-node route truth; this canonical operation records target
@@ -7042,8 +8921,9 @@ impl HarnessStore {
             "message",
             &message.id,
         )?;
-        let (reference, collaboration_authority) =
-            match operation.closed_body().map_err(|error| {
+        let (reference, collaboration_authority, peer_authority) = match operation
+            .closed_body()
+            .map_err(|error| {
                 trust_error(
                     TrustErrorCode::InvalidStateTransition,
                     format!("Remote Message route is invalid: {error}"),
@@ -7052,77 +8932,136 @@ impl HarnessStore {
                     None,
                 )
             })? {
-                firm_fabric::ClosedOperationBody::Message(reference) => (reference, None),
-                firm_fabric::ClosedOperationBody::CollaborationBusiness(reference)
-                    if reference.business_kind == "team_message_deliver"
-                        && reference.required_capability
-                            == "collaboration.team_message_deliver" =>
-                {
-                    let message_reference =
-                        serde_json::from_value::<firm_fabric::MessageReference>(
-                            reference
-                                .payload
-                                .get("message_reference")
-                                .cloned()
-                                .ok_or_else(|| {
-                                    trust_error(
-                            TrustErrorCode::InvalidStateTransition,
-                            "team_message_deliver lacks server-frozen message_reference",
-                            "message",
-                            &message.id,
-                            None,
-                        )
-                                })?,
-                        )
-                        .map_err(|error| {
+            firm_fabric::ClosedOperationBody::Message(reference) => (reference, None, None),
+            firm_fabric::ClosedOperationBody::CollaborationBusiness(reference)
+                if reference.business_kind == "peer_message_deliver"
+                    && reference.required_capability == "collaboration.peer_message_deliver" =>
+            {
+                let message_reference = serde_json::from_value::<firm_fabric::MessageReference>(
+                    reference
+                        .payload
+                        .get("message_reference")
+                        .cloned()
+                        .ok_or_else(|| {
                             trust_error(
                                 TrustErrorCode::InvalidStateTransition,
-                                format!(
-                                "team_message_deliver payload is not a MessageReference: {error}"
-                            ),
+                                "peer_message_deliver lacks server-frozen message_reference",
                                 "message",
                                 &message.id,
                                 None,
                             )
-                        })?;
-                    let authority = serde_json::from_value::<CollaborationMessageAuthority>(
-                        reference
-                            .payload
-                            .get("delegation_authority")
-                            .cloned()
-                            .ok_or_else(|| {
-                                trust_error(
-                                    TrustErrorCode::UnauthorizedActor,
-                                    "team_message_deliver lacks central Delegation authority",
-                                    "message",
-                                    &message.id,
-                                    None,
-                                )
-                            })?,
-                    )
-                    .map_err(|error| {
-                        trust_error(
-                            TrustErrorCode::UnauthorizedActor,
-                            format!(
-                                "team_message_deliver Delegation authority is invalid: {error}"
-                            ),
-                            "message",
-                            &message.id,
-                            None,
-                        )
-                    })?;
-                    (message_reference, Some(authority))
-                }
-                _ => {
-                    return Err(trust_error(
+                        })?,
+                )
+                .map_err(|error| {
+                    trust_error(
                         TrustErrorCode::InvalidStateTransition,
-                        "Remote persistence requires a closed Message route",
+                        format!("peer_message_deliver payload is not a MessageReference: {error}"),
                         "message",
                         &message.id,
                         None,
-                    ))
-                }
-            };
+                    )
+                })?;
+                let admission_authority = serde_json::from_value::<MessageAdmissionAuthority>(
+                    reference
+                        .payload
+                        .get("message_admission_authority")
+                        .cloned()
+                        .ok_or_else(|| {
+                            trust_error(
+                                TrustErrorCode::UnauthorizedActor,
+                                "peer_message_deliver lacks canonical Message admission authority",
+                                "message",
+                                &message.id,
+                                None,
+                            )
+                        })?,
+                )
+                .map_err(|error| {
+                    trust_error(
+                        TrustErrorCode::UnauthorizedActor,
+                        format!(
+                            "peer_message_deliver Message admission authority is invalid: {error}"
+                        ),
+                        "message",
+                        &message.id,
+                        None,
+                    )
+                })?;
+                let MessageAdmissionAuthority::PeerTeam(authority) = admission_authority else {
+                    return Err(trust_error(
+                        TrustErrorCode::UnauthorizedActor,
+                        "peer_message_deliver requires PeerTeam admission authority",
+                        "message",
+                        &message.id,
+                        None,
+                    ));
+                };
+                (message_reference, None, Some(authority))
+            }
+            firm_fabric::ClosedOperationBody::CollaborationBusiness(reference)
+                if reference.business_kind == "team_message_deliver"
+                    && reference.required_capability == "collaboration.team_message_deliver" =>
+            {
+                let message_reference = serde_json::from_value::<firm_fabric::MessageReference>(
+                    reference
+                        .payload
+                        .get("message_reference")
+                        .cloned()
+                        .ok_or_else(|| {
+                            trust_error(
+                                TrustErrorCode::InvalidStateTransition,
+                                "team_message_deliver lacks server-frozen message_reference",
+                                "message",
+                                &message.id,
+                                None,
+                            )
+                        })?,
+                )
+                .map_err(|error| {
+                    trust_error(
+                        TrustErrorCode::InvalidStateTransition,
+                        format!("team_message_deliver payload is not a MessageReference: {error}"),
+                        "message",
+                        &message.id,
+                        None,
+                    )
+                })?;
+                let authority = serde_json::from_value::<CollaborationMessageAuthority>(
+                    reference
+                        .payload
+                        .get("delegation_authority")
+                        .cloned()
+                        .ok_or_else(|| {
+                            trust_error(
+                                TrustErrorCode::UnauthorizedActor,
+                                "team_message_deliver lacks central Delegation authority",
+                                "message",
+                                &message.id,
+                                None,
+                            )
+                        })?,
+                )
+                .map_err(|error| {
+                    trust_error(
+                        TrustErrorCode::UnauthorizedActor,
+                        format!("team_message_deliver Delegation authority is invalid: {error}"),
+                        "message",
+                        &message.id,
+                        None,
+                    )
+                })?;
+                (message_reference, Some(authority), None)
+            }
+            _ => {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "Remote persistence requires a closed Message route",
+                    "message",
+                    &message.id,
+                    None,
+                ))
+            }
+        };
         if operation.target_node_id != target_node_id
             || operation.target_execution_space_id.as_deref()
                 != Some(context.execution_space_id.as_str())
@@ -7228,10 +9167,95 @@ impl HarnessStore {
                     None,
                 ));
             }
+        } else if let Some(authority) = peer_authority.as_ref() {
+            let scope = message.collaboration_scope.as_ref().ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::UnauthorizedActor,
+                    "peer-Team Message lacks CollaborationScope",
+                    "message",
+                    &message.id,
+                    None,
+                )
+            })?;
+            let exact_team_recipient = message.recipients.len() == 1
+                && message.recipients[0].kind == MessageRecipientKind::Team
+                && message.recipients[0].id == authority.target_team_id
+                && message.target_ref == message.recipients[0];
+            if authority.authority_digest != peer_team_message_authority_digest(authority)
+                || authority.source_policy_digest != peer_team_source_policy_digest(authority)
+                || authority.target_policy_digest != peer_team_target_policy_digest(authority)
+                || authority.company_id != operation.company_id
+                || authority.source_required_capability != "message.peer_team.author"
+                || authority.target_required_capability != "collaboration.peer_message_deliver"
+                || authority.source_execution_space_id != message.source_execution_space_id
+                || authority.source_team_id != scope.source_team_id
+                || authority.source_team_revision == 0
+                || authority.source_membership_generation == 0
+                || authority.source_session_generation == 0
+                || authority.source_agent_member_id != message.sender_actor_ref.id
+                || message.sender_actor_ref.kind != ActorKind::AgentMember
+                || message.sender_agent_member_id.as_deref()
+                    != Some(authority.source_agent_member_id.as_str())
+                || message.sender_session_id.as_deref()
+                    != Some(authority.source_session_id.as_str())
+                || message.team_id.as_deref() != Some(authority.source_team_id.as_str())
+                || message.work_id.is_some()
+                || scope.target_team_id != authority.target_team_id
+                || scope.delegation_id.is_some()
+                || scope.expected_delegation_revision.is_some()
+                || scope.source_work_ref.is_some()
+                || scope.target_work_ref.is_some()
+                || authority.source_node_id != message.source_node_id
+                || authority.source_node_daemon_id != message.source_node_daemon_id
+                || authority.source_node_daemon_generation != message.source_authority_generation
+                || authority.target_execution_space_id != context.execution_space_id
+                || authority.target_node_id != target_node_id
+                || operation.actor.actor_kind != firm_fabric::ActorKind::Service
+                || operation.actor.actor_id != authority.source_node_id
+                || operation.actor.session_id
+                    != format!(
+                        "{}:{}",
+                        authority.source_node_daemon_id, authority.source_node_daemon_generation
+                    )
+                || operation.source_gateway_generation.unwrap_or_default() == 0
+                || operation
+                    .authorization_context
+                    .get("business_actor_kind")
+                    .map(String::as_str)
+                    != Some("agent_member")
+                || operation.authorization_context.get("business_actor_id")
+                    != Some(&authority.source_agent_member_id)
+                || operation
+                    .authorization_context
+                    .get("business_actor_session_id")
+                    != Some(&authority.source_session_id)
+                || operation.actor_runtime_generation != Some(authority.source_session_generation)
+                || operation.expected_target_revision
+                    != Some(authority.target_subscription_revision)
+                || operation.authorization_context.get("target_team_id")
+                    != Some(&authority.target_team_id)
+                || operation.authorization_context.get("target_team_revision")
+                    != Some(&authority.target_team_revision.to_string())
+                || operation.authorization_context.get("required_capability")
+                    != Some(&authority.target_required_capability)
+                || !exact_team_recipient
+            {
+                return Err(trust_error(
+                    TrustErrorCode::UnauthorizedActor,
+                    "target Message application rejected widened, cross-wired, or stale peer-Team authority",
+                    "message",
+                    &message.id,
+                    None,
+                ));
+            }
+            self.revalidate_peer_team_delivery_subscription(
+                &context.execution_space_id,
+                authority,
+            )?;
         } else if message.collaboration_scope.is_some() {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,
-                "cross-Team Message route requires server-frozen Delegation authority",
+                "cross-Team Message route requires server-frozen Message admission authority",
                 "message",
                 &message.id,
                 None,
@@ -7250,26 +9274,81 @@ impl HarnessStore {
             return Ok(replay);
         }
         let subscriptions = self.fabric_message_subscriptions(&context.execution_space_id)?;
-        let sessions = self.fabric_agent_sessions(&context.execution_space_id)?;
         let memberships = self.fabric_team_memberships(&context.execution_space_id)?;
-        let mut deliveries = Vec::new();
-        let mut delivered_identities = BTreeSet::new();
-        for recipient in &message.recipients {
+        let mut deliveries = if let Some(authority) = peer_authority.as_ref() {
+            let subscription = subscriptions
+                .iter()
+                .find(|subscription| subscription.id == authority.target_subscription_id)
+                .ok_or_else(|| {
+                    trust_error(
+                        TrustErrorCode::UnauthorizedActor,
+                        "revalidated peer-Team subscription disappeared before delivery creation",
+                        "message_subscription",
+                        &authority.target_subscription_id,
+                        None,
+                    )
+                })?;
+            vec![CanonicalMessageDelivery {
+                id: format!("{}:{}", message.id, subscription.id),
+                message_id: message.id.clone(),
+                subscription_id: subscription.id.clone(),
+                subscription_revision: subscription.revision,
+                subscription_policy_digest: subscription.policy_digest.clone(),
+                recipient_kind: MessageSubjectKind::Team,
+                recipient_ref: authority.target_team_id.clone(),
+                target_team_id: Some(authority.target_team_id.clone()),
+                target_node_id: target_node_id.into(),
+                resolved_team_membership_id: None,
+                recipient_agent_member_id: None,
+                recipient_session_id: None,
+                recipient_session_generation: None,
+                status: CanonicalMessageDeliveryStatus::Queued,
+                attempt: 1,
+                claim_id: None,
+                claimed_node_daemon_generation: None,
+                provider_receipt_id: None,
+                failure_code: None,
+                failure_detail: None,
+                version: 1,
+                created_at: message.created_at.clone(),
+                updated_at: message.created_at.clone(),
+            }]
+        } else {
+            Vec::new()
+        };
+        let mut delivered_subjects = BTreeSet::new();
+        let routed_recipients = if peer_authority.is_none() {
+            message.recipients.as_slice()
+        } else {
+            &[]
+        };
+        for recipient in routed_recipients {
             for subscription in subscriptions.iter().filter(|subscription| {
                 subscription.status == MessageSubscriptionStatus::Active
+                    && subscription.target_node_id == target_node_id
                     && match recipient.kind {
-                        MessageRecipientKind::AgentIdentity => {
-                            subscription.source_kind == MessageSubscriptionKind::Agent
-                                && subscription.subscriber_agent_id == recipient.id
+                        MessageRecipientKind::AgentMember => {
+                            subscription.subscriber_kind == MessageSubjectKind::AgentMember
+                                && subscription.subscriber_ref == recipient.id
+                                && subscription.source_kind == MessageSubscriptionKind::Agent
                         }
                         MessageRecipientKind::Team => {
-                            subscription.source_kind == MessageSubscriptionKind::Team
-                                && subscription.source_ref == recipient.id
+                            subscription.subscriber_kind == MessageSubjectKind::Team
+                                && subscription.subscriber_ref == recipient.id
+                                && subscription.source_kind
+                                    == MessageSubscriptionKind::AllAuthorized
+                                && subscription.source_ref == "authorized_peer_teams"
+                                && subscription.target_team_id.as_deref()
+                                    == Some(recipient.id.as_str())
                         }
                         MessageRecipientKind::ControlPlaneActor => false,
                     }
             }) {
-                if !delivered_identities.insert(subscription.subscriber_agent_id.clone()) {
+                let subject_key = (
+                    subscription.subscriber_kind,
+                    subscription.subscriber_ref.clone(),
+                );
+                if !delivered_subjects.insert(subject_key) {
                     continue;
                 }
                 // `Message.team_id` remains the immutable source-Team scope.
@@ -7283,51 +9362,51 @@ impl HarnessStore {
                     .map(|scope| scope.target_team_id.as_str())
                     .or(message.team_id.as_deref());
                 if let Some(team_id) = recipient_team_id {
-                    let exact_membership =
-                        subscription
-                            .membership_ref
-                            .as_deref()
-                            .is_some_and(|membership_id| {
-                                memberships.iter().any(|membership| {
-                                    membership.id == membership_id
-                                        && membership.team_id == team_id
-                                        && membership.agent_identity_id
-                                            == subscription.subscriber_agent_id
-                                        && membership.node_id == target_node_id
-                                        && membership.state == TeamMembershipStatus::Active
-                                })
-                            });
-                    if !exact_membership {
-                        continue;
+                    match subscription.subscriber_kind {
+                        MessageSubjectKind::AgentMember => {
+                            let exact_membership = subscription
+                                .membership_ref
+                                .as_deref()
+                                .is_some_and(|membership_id| {
+                                    memberships.iter().any(|membership| {
+                                        membership.id == membership_id
+                                            && membership.team_id == team_id
+                                            && membership.agent_member_id
+                                                == subscription.subscriber_ref
+                                            && membership.node_id == target_node_id
+                                            && membership.state == TeamMembershipStatus::Active
+                                    })
+                                });
+                            if !exact_membership {
+                                continue;
+                            }
+                        }
+                        MessageSubjectKind::Team => {
+                            if subscription.target_team_id.as_deref() != Some(team_id) {
+                                continue;
+                            }
+                        }
                     }
                 }
-                let current = sessions
-                    .iter()
-                    .filter(|session| {
-                        session.agent_identity_id == subscription.subscriber_agent_id
-                            && session.node_id == target_node_id
-                            && session.lifecycle != AgentSessionStatus::Closed
-                    })
-                    .collect::<Vec<_>>();
-                if current.len() > 1 {
-                    return Err(trust_error(
-                        TrustErrorCode::InvalidStateTransition,
-                        "remote Message recipient has ambiguous current AgentSession",
-                        "agent_identity",
-                        &subscription.subscriber_agent_id,
-                        None,
-                    ));
-                }
                 deliveries.push(CanonicalMessageDelivery {
-                    id: format!("{}:{}", message.id, subscription.subscriber_agent_id),
+                    id: format!("{}:{}", message.id, subscription.id),
                     message_id: message.id.clone(),
                     subscription_id: subscription.id.clone(),
-                    recipient_identity_id: subscription.subscriber_agent_id.clone(),
+                    subscription_revision: subscription.revision,
+                    subscription_policy_digest: subscription.policy_digest.clone(),
+                    recipient_kind: subscription.subscriber_kind,
+                    recipient_ref: subscription.subscriber_ref.clone(),
+                    target_team_id: subscription.target_team_id.clone(),
                     target_node_id: target_node_id.into(),
-                    recipient_session_id: current.first().map(|session| session.id.clone()),
-                    recipient_session_generation: current
-                        .first()
-                        .map(|session| session.runtime_generation),
+                    resolved_team_membership_id: (subscription.subscriber_kind
+                        == MessageSubjectKind::AgentMember)
+                        .then(|| subscription.membership_ref.clone())
+                        .flatten(),
+                    recipient_agent_member_id: (subscription.subscriber_kind
+                        == MessageSubjectKind::AgentMember)
+                        .then(|| subscription.subscriber_ref.clone()),
+                    recipient_session_id: None,
+                    recipient_session_generation: None,
                     status: CanonicalMessageDeliveryStatus::Queued,
                     attempt: 1,
                     claim_id: None,
@@ -7370,6 +9449,222 @@ impl HarnessStore {
         )
     }
 
+    /// Resolve one Team-subject delivery to one exact active membership
+    /// generation. Admission intentionally has no AgentSession dependency;
+    /// provider dispatch may bind the resolved member's current session later.
+    pub fn claim_team_message_delivery(
+        &self,
+        context: &MutationContext,
+        delivery_id: &str,
+        claim: &TeamMessageDeliveryClaim,
+        updated_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<CanonicalMessageDelivery>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        required(delivery_id, "delivery_id")?;
+        required(&claim.claim_id, "TeamMessageDeliveryClaim.claim_id")?;
+        required(
+            &claim.team_membership_id,
+            "TeamMessageDeliveryClaim.team_membership_id",
+        )?;
+        if context.expected_version != 0 {
+            return Err(trust_error(
+                TrustErrorCode::VersionConflict,
+                "Team delivery claim is a new idempotent routing operation",
+                "team_message_delivery_claim",
+                &claim.claim_id,
+                Some(0),
+            ));
+        }
+        let request_payload = serde_json::json!({
+            "delivery_id": delivery_id,
+            "claim": claim,
+            "updated_at": updated_at,
+        });
+        let request_fingerprint = context
+            .request_fingerprint
+            .clone()
+            .unwrap_or_else(|| canonical_json_fingerprint(&request_payload));
+        if let Some(replay) = self.replay_trust_projection_unlocked(
+            context,
+            "team_message_delivery_claim",
+            &claim.claim_id,
+            &request_fingerprint,
+        )? {
+            return Ok(replay);
+        }
+        let mut delivery = self
+            .latest_fabric_side_records_unlocked(
+                &context.execution_space_id,
+                |row: &CanonicalMessageDelivery| row.id.clone(),
+            )?
+            .remove(delivery_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "Team MessageDelivery not found",
+                    "message_delivery",
+                    delivery_id,
+                    None,
+                )
+            })?;
+        let team_id = delivery.target_team_id.clone().ok_or_else(|| {
+            trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "Team-subject delivery is missing target_team_id",
+                "message_delivery",
+                delivery_id,
+                Some(delivery.version),
+            )
+        })?;
+        if delivery.recipient_kind != MessageSubjectKind::Team
+            || delivery.recipient_ref != team_id
+            || delivery.status != CanonicalMessageDeliveryStatus::Queued
+            || delivery.resolved_team_membership_id.is_some()
+            || delivery.recipient_agent_member_id.is_some()
+            || delivery.recipient_session_id.is_some()
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "only one unresolved queued Team-subject delivery may be membership-claimed",
+                "message_delivery",
+                delivery_id,
+                Some(delivery.version),
+            ));
+        }
+        let current_subscriptions = self
+            .fabric_message_subscriptions(&context.execution_space_id)?
+            .into_iter()
+            .filter(|subscription| subscription.id == delivery.subscription_id)
+            .collect::<Vec<_>>();
+        if current_subscriptions.len() != 1 {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "Team delivery subscription is missing or ambiguous",
+                "message_delivery",
+                delivery_id,
+                Some(delivery.version),
+            ));
+        }
+        let subscription = &current_subscriptions[0];
+        if subscription.subscriber_kind != MessageSubjectKind::Team
+            || subscription.subscriber_ref != team_id
+            || subscription.target_team_id.as_deref() != Some(team_id.as_str())
+            || subscription.target_node_id != delivery.target_node_id
+            || subscription.source_kind != MessageSubscriptionKind::AllAuthorized
+            || subscription.source_ref != "authorized_peer_teams"
+            || subscription.authorization_policy_ref != "collaboration.peer_message_deliver"
+            || subscription.status != MessageSubscriptionStatus::Active
+            || subscription.revision != delivery.subscription_revision
+            || subscription.policy_digest != delivery.subscription_policy_digest
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "Team delivery claim requires the exact active durable subscription generation",
+                "message_delivery",
+                delivery_id,
+                Some(delivery.version),
+            ));
+        }
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            &delivery.target_node_id,
+            &context.authenticated_actor.id,
+            claim.node_daemon_generation,
+            &context.authenticated_actor,
+            "message_delivery",
+            delivery_id,
+        )?;
+        let team = self
+            .agent_teams(&context.execution_space_id)?
+            .into_iter()
+            .find(|team| team.id == team_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "Team-subject delivery references a missing AgentTeam",
+                    "message_delivery",
+                    delivery_id,
+                    Some(delivery.version),
+                )
+            })?;
+        if team.status != AgentTeamStatus::Active || team.node_id != delivery.target_node_id {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "Team-subject delivery requires the exact Active Team placement",
+                "message_delivery",
+                delivery_id,
+                Some(delivery.version),
+            ));
+        }
+        let active_members = self
+            .trust_agent_members(&context.execution_space_id)?
+            .into_iter()
+            .filter(|member| member.organization_status == AgentMemberOrganizationStatus::Active)
+            .map(|member| (member.id.clone(), member))
+            .collect::<BTreeMap<_, _>>();
+        let eligible_memberships = self
+            .fabric_team_memberships(&context.execution_space_id)?
+            .into_iter()
+            .filter(|membership| {
+                membership.team_id == team.id
+                    && membership.node_id == team.node_id
+                    && membership.state == TeamMembershipStatus::Active
+                    && membership.role != TeamMembershipRole::Observer
+                    && active_members.contains_key(&membership.agent_member_id)
+            })
+            .collect::<Vec<_>>();
+        if eligible_memberships.len() != 1
+            || eligible_memberships[0].id != claim.team_membership_id
+            || eligible_memberships[0].membership_generation != claim.membership_generation
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "Team delivery remains queued unless exactly one eligible active Host/Member membership generation exists and matches the claim",
+                "message_delivery",
+                delivery_id,
+                Some(delivery.version),
+            ));
+        }
+        let membership = eligible_memberships.into_iter().next().ok_or_else(|| {
+            trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "Team delivery has no eligible TeamMembership",
+                "message_delivery",
+                delivery_id,
+                Some(delivery.version),
+            )
+        })?;
+        let member = active_members
+            .get(&membership.agent_member_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "claimed TeamMembership references no active AgentMember",
+                    "message_delivery",
+                    delivery_id,
+                    Some(delivery.version),
+                )
+            })?;
+        delivery.status = CanonicalMessageDeliveryStatus::Routed;
+        delivery.resolved_team_membership_id = Some(membership.id);
+        delivery.recipient_agent_member_id = Some(member.id.clone());
+        delivery.claim_id = Some(claim.claim_id.clone());
+        delivery.claimed_node_daemon_generation = Some(claim.node_daemon_generation);
+        delivery.version += 1;
+        delivery.updated_at = updated_at.to_string();
+        self.commit_trust_projection_unlocked(
+            context,
+            "team_message_delivery_claim",
+            &claim.claim_id,
+            "team_subject_resolved",
+            request_payload,
+            &delivery,
+            vec![serde_json::to_value(&delivery)?],
+            Vec::new(),
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn claim_message_for_provider(
         &self,
@@ -7409,7 +9704,10 @@ impl HarnessStore {
                 )
             })?;
         if delivery.target_node_id != node_id
-            || delivery.status != CanonicalMessageDeliveryStatus::Queued
+            || !matches!(
+                delivery.status,
+                CanonicalMessageDeliveryStatus::Queued | CanonicalMessageDeliveryStatus::Routed
+            )
         {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,
@@ -7419,11 +9717,38 @@ impl HarnessStore {
                 Some(delivery.version),
             ));
         }
+        if delivery.recipient_kind == MessageSubjectKind::Team
+            && (delivery.status != CanonicalMessageDeliveryStatus::Routed
+                || delivery.claim_id.as_deref() != Some(claim_id)
+                || delivery.claimed_node_daemon_generation != Some(daemon_generation)
+                || delivery.resolved_team_membership_id.is_none())
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "Team-subject delivery must first be resolved by the exact membership-generation claim",
+                "message_delivery",
+                delivery_id,
+                Some(delivery.version),
+            ));
+        }
+        let recipient_agent_member_id =
+            delivery
+                .recipient_agent_member_id
+                .as_deref()
+                .ok_or_else(|| {
+                    trust_error(
+                        TrustErrorCode::InvalidStateTransition,
+                        "MessageDelivery has no resolved AgentMember",
+                        "message_delivery",
+                        delivery_id,
+                        Some(delivery.version),
+                    )
+                })?;
         let current = self
             .fabric_agent_sessions(&context.execution_space_id)?
             .into_iter()
             .filter(|session| {
-                session.agent_identity_id == delivery.recipient_identity_id
+                session.agent_member_id == recipient_agent_member_id
                     && session.node_id == node_id
                     && session.node_daemon_id == daemon_id
                     && session.node_daemon_generation == daemon_generation
@@ -7477,7 +9802,7 @@ impl HarnessStore {
             id: format!("provider-invocation:{}:{}", delivery.id, delivery.attempt),
             source_plane: "message".into(),
             source_record_id: message.id,
-            recipient_identity_id: delivery.recipient_identity_id.clone(),
+            recipient_agent_member_id: recipient_agent_member_id.to_string(),
             recipient_session_id: session.id.clone(),
             recipient_session_generation: session.runtime_generation,
             node_id: node_id.to_string(),
@@ -7635,7 +9960,8 @@ impl HarnessStore {
                 )
             })?;
         if context.authenticated_actor.kind != ActorKind::AgentMember
-            || context.authenticated_actor.id != delivery.recipient_identity_id
+            || delivery.recipient_agent_member_id.as_deref()
+                != Some(context.authenticated_actor.id.as_str())
             || delivery.status != CanonicalMessageDeliveryStatus::ProviderReceived
         {
             return Err(trust_error(
@@ -7656,7 +9982,10 @@ impl HarnessStore {
             .transpose()?;
         let cursor = SubscriptionCursor {
             subscription_id: delivery.subscription_id.clone(),
-            recipient_agent_id: delivery.recipient_identity_id.clone(),
+            recipient_agent_member_id: delivery
+                .recipient_agent_member_id
+                .clone()
+                .expect("recipient checked above"),
             last_visible_store_sequence: current_cursor
                 .as_ref()
                 .map(|cursor| cursor.last_visible_store_sequence.saturating_add(1))
@@ -8100,7 +10429,7 @@ impl HarnessStore {
             )?;
             let actor = &command.authenticated_actor;
             let exact_self =
-                actor.kind == ActorKind::AgentMember && actor.id == session.agent_identity_id;
+                actor.kind == ActorKind::AgentMember && actor.id == session.agent_member_id;
             let exact_operator = actor.kind == ActorKind::Service
                 && (actor.id == session.node_id || actor.id == session.node_daemon_id);
             if !exact_self && !exact_operator {
@@ -8116,7 +10445,7 @@ impl HarnessStore {
                 let identity = self
                     .fabric_agent_identities(&context.execution_space_id)?
                     .into_iter()
-                    .find(|identity| identity.id == requested.agent_identity_id)
+                    .find(|identity| identity.id == requested.agent_member_id)
                     .ok_or_else(|| {
                         trust_error(
                             TrustErrorCode::InvalidStateTransition,
@@ -8904,7 +11233,7 @@ mod tests {
     fn session(id: &str, identity_id: &str) -> AgentSession {
         AgentSession {
             id: id.into(),
-            agent_identity_id: identity_id.into(),
+            agent_member_id: identity_id.into(),
             node_id: "11111111-1111-4111-8111-111111111111".into(),
             execution_space_id: "space-test".into(),
             node_daemon_id: "daemon-1".into(),
@@ -9052,7 +11381,7 @@ mod tests {
         TeamMembership {
             id: id.into(),
             team_id: "team-membership-test".into(),
-            agent_identity_id: "membership-agent".into(),
+            agent_member_id: "membership-agent".into(),
             node_id: "11111111-1111-4111-8111-111111111111".into(),
             role: firm_core::agentfirm_api::TeamMembershipRole::Member,
             state: TeamMembershipStatus::Active,
@@ -9104,21 +11433,63 @@ mod tests {
                     })
                     .unwrap();
             }
+            let existing_members = store.trust_agent_members("space-test").unwrap();
+            let preferred_host = if team_id == "source-team"
+                && existing_members
+                    .iter()
+                    .any(|member| member.id == "remote-sender")
+            {
+                "remote-sender".to_string()
+            } else {
+                let suffix_host = team_id
+                    .strip_prefix("team-")
+                    .map(|suffix| format!("host-{suffix}"));
+                suffix_host
+                    .filter(|candidate| {
+                        existing_members
+                            .iter()
+                            .any(|member| member.id == *candidate)
+                    })
+                    .unwrap_or_else(|| "fixture-host".into())
+            };
+            let team = firm_core::AgentTeam {
+                id: team_id.into(),
+                name: team_id.into(),
+                description: "runtime authority fixture".into(),
+                legacy_mission_id: Some(mission_id.clone()),
+                mission_id,
+                host_agent_id: preferred_host.clone(),
+                node_id: "11111111-1111-4111-8111-111111111111".into(),
+                status: firm_core::AgentTeamStatus::Active,
+                revision: 1,
+                trashed_at: None,
+                member_ids: Vec::new(),
+                created_at: "t1".into(),
+                updated_at: "t1".into(),
+            };
             store
-                .append_jsonl(
-                    "teams.jsonl",
-                    &firm_core::AgentTeam {
-                        id: team_id.into(),
-                        name: team_id.into(),
-                        description: "runtime authority fixture".into(),
-                        mission_id,
-                        host_agent_id: "fixture-host".into(),
+                .create_agent_team(
+                    &context(
+                        "fixture-host",
+                        "agent_team.create",
+                        &format!("team-{team_id}"),
+                        0,
+                    ),
+                    team,
+                    vec![TeamMembership {
+                        id: format!("membership:{team_id}:{preferred_host}"),
+                        team_id: team_id.into(),
+                        agent_member_id: preferred_host,
                         node_id: "11111111-1111-4111-8111-111111111111".into(),
-                        status: firm_core::AgentTeamStatus::Active,
-                        member_ids: Vec::new(),
-                        created_at: "t1".into(),
-                        updated_at: "t1".into(),
-                    },
+                        role: TeamMembershipRole::Host,
+                        state: TeamMembershipStatus::Active,
+                        membership_generation: 1,
+                        default_subscription_refs: Vec::new(),
+                        created_by: actor("fixture-host"),
+                        revision: 1,
+                        joined_at: "t1".into(),
+                        left_at: None,
+                    }],
                 )
                 .unwrap();
         }
@@ -9155,7 +11526,7 @@ mod tests {
         let membership = TeamMembership {
             id: id.into(),
             team_id: team_id.into(),
-            agent_identity_id: identity_id.into(),
+            agent_member_id: identity_id.into(),
             node_id: "11111111-1111-4111-8111-111111111111".into(),
             role,
             state: TeamMembershipStatus::Active,
@@ -9235,29 +11606,9 @@ mod tests {
     }
 
     fn seed_membership_scope(store: &HarnessStore) {
+        append_runtime_team(store, "team-membership-test", "team-run-membership-test");
         store
-            .legacy_import_append_team_run_projection(&firm_core::AgentTeamRun {
-                id: "team-run-membership-test".into(),
-                agent_team_id: "team-membership-test".into(),
-                execution_node_id: "11111111-1111-4111-8111-111111111111".into(),
-                project_binding_id: "project-1".into(),
-                previous_run_id: None,
-                host_surface: "test".into(),
-                host_thread_id: None,
-                host_actor: None,
-                host_control_mode: firm_core::HostControlMode::External,
-                objective: "membership cardinality".into(),
-                execution_root: None,
-                status: firm_core::TeamRunStatus::Running,
-                member_run_ids: Vec::new(),
-                budget_limit_usd: None,
-                created_at: "t1".into(),
-                updated_at: "t1".into(),
-                completed_at: None,
-            })
-            .unwrap();
-        store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "identity-membership-agent", 0),
                 identity("membership-agent"),
             )
@@ -9325,10 +11676,707 @@ mod tests {
             .fabric_team_memberships("space-test")
             .unwrap()
             .into_iter()
-            .filter(|membership| membership.state == TeamMembershipStatus::Active)
+            .filter(|membership| {
+                membership.state == TeamMembershipStatus::Active
+                    && membership.agent_member_id == "membership-agent"
+            })
             .collect::<Vec<_>>();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].membership_generation, 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn peer_team_authority_keeps_source_and_target_fences_distinct_then_claims_one_membership() {
+        let (store, root) = fabric_store();
+        store
+            .migrate_legacy_agent_identity_same_id(
+                &context("operator", "identity.migrate", "peer-sender", 0),
+                identity("remote-sender"),
+            )
+            .unwrap();
+        store
+            .create_agent_session(
+                &service_context("session.create", "peer-sender-session", 0),
+                session("session-peer-sender", "remote-sender"),
+            )
+            .unwrap();
+        append_runtime_team(&store, "source-team", "source-peer-run");
+        append_runtime_team(&store, "target-team", "target-peer-run");
+        let source_team = store
+            .agent_teams("space-test")
+            .unwrap()
+            .into_iter()
+            .find(|team| team.id == "source-team")
+            .unwrap();
+        let target_team = store
+            .agent_teams("space-test")
+            .unwrap()
+            .into_iter()
+            .find(|team| team.id == "target-team")
+            .unwrap();
+        let source_membership = store
+            .team_host_membership("space-test", "source-team", true)
+            .unwrap();
+        let target_membership = store
+            .team_host_membership("space-test", "target-team", true)
+            .unwrap();
+        let target_subscription = store
+            .fabric_message_subscriptions("space-test")
+            .unwrap()
+            .into_iter()
+            .find(|subscription| subscription.id == "team-inbox:target-team")
+            .unwrap();
+        let source_policy_ref = "peer-team-message-admission.v1".to_string();
+        let source_required_capability = "message.peer_team.author".to_string();
+        let source_policy_digest = canonical_json_fingerprint(&serde_json::json!({
+            "company_id": "company-test",
+            "source_team_id": source_team.id,
+            "target_execution_space_id": "space-test",
+            "target_team_id": target_team.id,
+            "target_team_revision": target_team.revision,
+            "target_node_id": target_team.node_id,
+            "policy_ref": source_policy_ref,
+            "policy_revision": 1,
+            "required_capability": source_required_capability,
+        }));
+        let mut peer = PeerTeamMessageAdmissionAuthority {
+            company_id: "company-test".into(),
+            source_execution_space_id: "space-test".into(),
+            source_team_id: source_team.id.clone(),
+            source_team_revision: source_team.revision,
+            source_membership_id: source_membership.id.clone(),
+            source_membership_generation: source_membership.membership_generation,
+            source_agent_member_id: "remote-sender".into(),
+            source_session_id: "session-peer-sender".into(),
+            source_session_generation: 1,
+            source_node_id: source_team.node_id.clone(),
+            source_node_daemon_id: "daemon-1".into(),
+            source_node_daemon_generation: 1,
+            target_execution_space_id: "space-test".into(),
+            target_team_id: target_team.id.clone(),
+            target_team_revision: target_team.revision,
+            target_node_id: target_team.node_id.clone(),
+            source_policy_ref,
+            source_policy_revision: 1,
+            source_policy_digest,
+            source_required_capability,
+            target_subscription_id: target_subscription.id.clone(),
+            target_subscription_revision: target_subscription.revision,
+            target_authorization_policy_ref: target_subscription.authorization_policy_ref.clone(),
+            target_policy_revision: target_subscription.policy_revision,
+            target_policy_digest: target_subscription.policy_digest.clone(),
+            target_required_capability: "collaboration.peer_message_deliver".into(),
+            authority_digest: String::new(),
+        };
+        peer.authority_digest = peer_team_message_authority_digest(&peer);
+        store
+            .revalidate_peer_team_delivery_subscription("space-test", &peer)
+            .expect("target durable subscription independently revalidates");
+
+        let recipients = vec![firm_core::agentfirm_api::MessageRecipientRef {
+            kind: MessageRecipientKind::Team,
+            id: "target-team".into(),
+        }];
+        let mut message = Message {
+            id: "peer-team-message".into(),
+            source_execution_space_id: "space-test".into(),
+            source_node_id: source_team.node_id,
+            source_node_daemon_id: "daemon-1".into(),
+            source_authority_generation: 1,
+            sender_actor_ref: ActorRef {
+                kind: ActorKind::AgentMember,
+                id: "remote-sender".into(),
+            },
+            sender_agent_member_id: Some("remote-sender".into()),
+            sender_session_id: Some("session-peer-sender".into()),
+            address_kind: firm_core::agentfirm_api::MessageAddressKind::TeamChannel,
+            target_ref: recipients[0].clone(),
+            recipients,
+            team_id: Some("source-team".into()),
+            team_run_id: None,
+            work_id: None,
+            collaboration_scope: Some(firm_core::collaboration::CollaborationScope {
+                source_team_id: "source-team".into(),
+                target_team_id: "target-team".into(),
+                delegation_id: None,
+                expected_delegation_revision: None,
+                source_work_ref: None,
+                target_work_ref: None,
+            }),
+            kind: firm_core::agentfirm_api::MessageKind::Message,
+            body: "ordinary peer conversation".into(),
+            body_digest: format!("sha256:{:x}", Sha256::digest(b"ordinary peer conversation")),
+            correlation_id: "peer-correlation".into(),
+            causation_id: None,
+            response_intent: firm_core::agentfirm_api::ResponseIntent::Informational,
+            evidence_refs: Vec::new(),
+            content_fingerprint: String::new(),
+            schema_version: 1,
+            idempotency_key: "peer-team-message".into(),
+            created_at: "t-peer".into(),
+        };
+        message.content_fingerprint = message_content_fingerprint(&message);
+        let before_hostile = store.canonical_operations().unwrap();
+        let mut cross_wired = peer.clone();
+        cross_wired.source_required_capability = "collaboration.peer_message_deliver".into();
+        cross_wired.target_required_capability = "message.peer_team.author".into();
+        cross_wired.authority_digest = peer_team_message_authority_digest(&cross_wired);
+        store
+            .author_message_with_admission_authority(
+                &service_context("message.author", "peer-hostile", 0),
+                message.clone(),
+                Some(&MessageAdmissionAuthority::PeerTeam(cross_wired)),
+            )
+            .expect_err("source and target capabilities cannot be cross-wired");
+        assert_eq!(store.canonical_operations().unwrap(), before_hostile);
+
+        store
+            .author_message_with_admission_authority(
+                &service_context("message.author", "peer-team-message", 0),
+                message.clone(),
+                Some(&MessageAdmissionAuthority::PeerTeam(peer.clone())),
+            )
+            .unwrap();
+        let delivery = store
+            .fabric_message_deliveries("space-test")
+            .unwrap()
+            .into_iter()
+            .find(|delivery| delivery.recipient_kind == MessageSubjectKind::Team)
+            .unwrap();
+        assert_eq!(delivery.recipient_agent_member_id, None);
+        assert_eq!(delivery.recipient_session_id, None);
+        assert_eq!(
+            delivery.subscription_revision,
+            peer.target_subscription_revision
+        );
+        let mut remote_message = message.clone();
+        remote_message.id = "peer-team-message-remote".into();
+        remote_message.idempotency_key = "peer-team-message-remote".into();
+        remote_message.created_at = "t-peer-remote".into();
+        remote_message.content_fingerprint = message_content_fingerprint(&remote_message);
+        let make_peer_operation =
+            |message: &Message, authority: &PeerTeamMessageAdmissionAuthority| {
+                let message_reference = firm_fabric::MessageReference {
+                    message_id: message.id.clone(),
+                    body_digest: message.body_digest.clone(),
+                    canonical_message_envelope: Some(serde_json::to_value(message).unwrap()),
+                    message_object_ref: None,
+                };
+                let payload = serde_json::json!({
+                    "message_reference": message_reference,
+                    "message_admission_authority": MessageAdmissionAuthority::PeerTeam(authority.clone()),
+                });
+                let body = serde_json::to_value(firm_fabric::CollaborationBusinessReference {
+                    business_kind: "peer_message_deliver".into(),
+                    required_capability: "collaboration.peer_message_deliver".into(),
+                    business_actor_kind: "agent_member".into(),
+                    business_actor_id: authority.source_agent_member_id.clone(),
+                    target_team_id: authority.target_team_id.clone(),
+                    target_team_revision: authority.target_team_revision,
+                    placement_generation: 1,
+                    expected_revision: authority.target_subscription_revision,
+                    payload_digest: canonical_json_fingerprint(&payload),
+                    payload,
+                })
+                .unwrap();
+                firm_fabric::RoutedOperation {
+                    id: format!("peer-route:{}", message.id),
+                    company_id: authority.company_id.clone(),
+                    kind: firm_fabric::COLLABORATION_BUSINESS_OPERATION_KIND.into(),
+                    source_authority: firm_fabric::OperationSourceAuthority::Node,
+                    source_node_id: Some(authority.source_node_id.clone()),
+                    target_node_id: authority.target_node_id.clone(),
+                    source_gateway_generation: Some(1),
+                    source_node_daemon_id: Some(authority.source_node_daemon_id.clone()),
+                    source_node_daemon_generation: Some(authority.source_node_daemon_generation),
+                    control_plane_generation: 1,
+                    source_execution_space_id: Some(authority.source_execution_space_id.clone()),
+                    target_execution_space_id: Some(authority.target_execution_space_id.clone()),
+                    actor: firm_fabric::AuthenticatedActor {
+                        company_id: authority.company_id.clone(),
+                        actor_id: authority.source_node_id.clone(),
+                        actor_kind: firm_fabric::ActorKind::Service,
+                        role_bindings: BTreeSet::from(["fabric_submit".into()]),
+                        session_id: format!(
+                            "{}:{}",
+                            authority.source_node_daemon_id,
+                            authority.source_node_daemon_generation
+                        ),
+                        issued_at_unix_ms: 1,
+                        expires_at_unix_ms: 90_000,
+                    },
+                    actor_runtime_generation: Some(authority.source_session_generation),
+                    authorization_context: BTreeMap::from([
+                        ("target_team_id".into(), authority.target_team_id.clone()),
+                        (
+                            "target_team_revision".into(),
+                            authority.target_team_revision.to_string(),
+                        ),
+                        ("placement_generation".into(), "1".into()),
+                        (
+                            "required_capability".into(),
+                            "collaboration.peer_message_deliver".into(),
+                        ),
+                        ("business_actor_kind".into(), "agent_member".into()),
+                        (
+                            "business_actor_id".into(),
+                            authority.source_agent_member_id.clone(),
+                        ),
+                        (
+                            "business_actor_session_id".into(),
+                            authority.source_session_id.clone(),
+                        ),
+                    ]),
+                    idempotency_key: format!("peer-route:{}", message.id),
+                    ordering_key: format!("team:{}", authority.target_team_id),
+                    correlation_id: message.correlation_id.clone(),
+                    causation_id: None,
+                    expected_target_revision: Some(authority.target_subscription_revision),
+                    body_schema: firm_fabric::COLLABORATION_BUSINESS_OPERATION_SCHEMA.into(),
+                    body_digest: firm_fabric::json_digest(&body).unwrap(),
+                    body,
+                    priority: firm_fabric::OperationPriority::Normal,
+                    created_at_unix_ms: 2,
+                    expires_at_unix_ms: 90_000,
+                    protocol_version: firm_fabric::FABRIC_PROTOCOL_VERSION,
+                    schema_version: firm_fabric::FABRIC_SCHEMA_VERSION.into(),
+                    canonicalization_version: firm_fabric::FABRIC_CANONICALIZATION_VERSION.into(),
+                }
+            };
+        let mut target_cross_wired = peer.clone();
+        target_cross_wired.source_required_capability = "collaboration.peer_message_deliver".into();
+        target_cross_wired.target_required_capability = "message.peer_team.author".into();
+        target_cross_wired.source_policy_digest =
+            peer_team_source_policy_digest(&target_cross_wired);
+        target_cross_wired.target_policy_digest =
+            peer_team_target_policy_digest(&target_cross_wired);
+        target_cross_wired.authority_digest =
+            peer_team_message_authority_digest(&target_cross_wired);
+        let hostile_operation = make_peer_operation(&remote_message, &target_cross_wired);
+        let hostile_context = service_context("remote_message_persist", &hostile_operation.id, 0);
+        let before_target_hostile = store.canonical_operations().unwrap();
+        store
+            .persist_remote_message(
+                &hostile_context,
+                &hostile_operation,
+                remote_message.clone(),
+                &peer.target_node_id,
+                "daemon-1",
+                1,
+            )
+            .expect_err("target persistence cannot cross-wire source and target capabilities");
+        assert_eq!(store.canonical_operations().unwrap(), before_target_hostile);
+
+        let peer_operation = make_peer_operation(&remote_message, &peer);
+        let mut peer_context = service_context("remote_message_persist", &peer_operation.id, 0);
+        peer_context.request_fingerprint = Some(firm_fabric::json_digest(&peer_operation).unwrap());
+        store
+            .persist_remote_message(
+                &peer_context,
+                &peer_operation,
+                remote_message.clone(),
+                &peer.target_node_id,
+                "daemon-1",
+                1,
+            )
+            .expect("target persists one unresolved canonical Team delivery");
+        let remote_deliveries = store
+            .fabric_message_deliveries("space-test")
+            .unwrap()
+            .into_iter()
+            .filter(|candidate| candidate.message_id == remote_message.id)
+            .collect::<Vec<_>>();
+        assert_eq!(remote_deliveries.len(), 1);
+        assert_eq!(
+            remote_deliveries[0].recipient_kind,
+            MessageSubjectKind::Team
+        );
+        assert_eq!(remote_deliveries[0].recipient_ref, peer.target_team_id);
+        assert_eq!(remote_deliveries[0].resolved_team_membership_id, None);
+        assert_eq!(remote_deliveries[0].recipient_agent_member_id, None);
+        assert_eq!(remote_deliveries[0].recipient_session_id, None);
+        assert_eq!(
+            remote_deliveries[0].subscription_revision,
+            peer.target_subscription_revision
+        );
+        store
+            .migrate_legacy_agent_identity_same_id(
+                &context("operator", "identity.migrate", "peer-extra", 0),
+                identity("peer-extra"),
+            )
+            .unwrap();
+        let extra_membership = TeamMembership {
+            id: "target-team-extra-membership".into(),
+            team_id: "target-team".into(),
+            agent_member_id: "peer-extra".into(),
+            node_id: peer.target_node_id.clone(),
+            role: TeamMembershipRole::Member,
+            state: TeamMembershipStatus::Active,
+            membership_generation: 1,
+            default_subscription_refs: Vec::new(),
+            created_by: actor("fixture-host"),
+            revision: 1,
+            joined_at: "t-peer-extra".into(),
+            left_at: None,
+        };
+        store
+            .join_team_membership(
+                &context(
+                    "fixture-host",
+                    "membership.join",
+                    "target-team-extra-membership",
+                    0,
+                ),
+                extra_membership.clone(),
+            )
+            .unwrap();
+        let before_ambiguous_claim = store.canonical_operations().unwrap();
+        store
+            .claim_team_message_delivery(
+                &service_context("message.team_claim", "peer-claim-ambiguous", 0),
+                &delivery.id,
+                &TeamMessageDeliveryClaim {
+                    claim_id: "peer-claim-ambiguous".into(),
+                    team_membership_id: target_membership.id.clone(),
+                    membership_generation: target_membership.membership_generation,
+                    node_daemon_generation: 1,
+                    claim_expires_at: "t-expiry".into(),
+                },
+                "t-claim-ambiguous",
+            )
+            .expect_err("a second eligible membership keeps the Team delivery queued");
+        assert_eq!(
+            store.canonical_operations().unwrap(),
+            before_ambiguous_claim
+        );
+        store
+            .leave_team_membership(
+                &context(
+                    "fixture-host",
+                    "membership.leave",
+                    "target-team-extra-membership:leave",
+                    1,
+                ),
+                &extra_membership.id,
+                "t-peer-extra-left",
+            )
+            .unwrap();
+        let stale_claim = TeamMessageDeliveryClaim {
+            claim_id: "peer-claim-stale".into(),
+            team_membership_id: target_membership.id.clone(),
+            membership_generation: target_membership.membership_generation + 1,
+            node_daemon_generation: 1,
+            claim_expires_at: "t-expiry".into(),
+        };
+        let before_stale_claim = store.canonical_operations().unwrap();
+        store
+            .claim_team_message_delivery(
+                &service_context("message.team_claim", "peer-claim-stale", 0),
+                &delivery.id,
+                &stale_claim,
+                "t-claim-stale",
+            )
+            .expect_err("stale membership generation is fenced");
+        assert_eq!(store.canonical_operations().unwrap(), before_stale_claim);
+        let claimed = store
+            .claim_team_message_delivery(
+                &service_context("message.team_claim", "peer-claim", 0),
+                &delivery.id,
+                &TeamMessageDeliveryClaim {
+                    claim_id: "peer-claim".into(),
+                    team_membership_id: target_membership.id,
+                    membership_generation: target_membership.membership_generation,
+                    node_daemon_generation: 1,
+                    claim_expires_at: "t-expiry".into(),
+                },
+                "t-claim",
+            )
+            .unwrap();
+        assert_eq!(
+            claimed.projection.status,
+            CanonicalMessageDeliveryStatus::Routed
+        );
+        assert_eq!(
+            claimed.projection.recipient_agent_member_id.as_deref(),
+            Some("fixture-host")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn same_id_team_migration_fails_closed_on_alias_and_purge_records_no_delete_tombstone() {
+        let (store, root) = fabric_store();
+        for id in ["legacy-host", "legacy-member"] {
+            store
+                .migrate_legacy_agent_identity_same_id(
+                    &context("operator", "identity.migrate", &format!("identity-{id}"), 0),
+                    identity(id),
+                )
+                .unwrap();
+        }
+        let source = firm_core::agentfirm_api::LegacyAgentTeamProjection {
+            id: "legacy-team".into(),
+            name: "Legacy Team".into(),
+            description: "explicit same-ID import".into(),
+            mission_id: "legacy-mission".into(),
+            host_agent_id: "legacy-host".into(),
+            node_id: "11111111-1111-4111-8111-111111111111".into(),
+            status: firm_core::agentfirm_api::LegacyAgentTeamStatus::Archived,
+            member_ids: vec!["legacy-member".into()],
+            created_at: "t1".into(),
+            updated_at: "t2".into(),
+        };
+        let target = AgentTeam {
+            id: source.id.clone(),
+            name: source.name.clone(),
+            description: source.description.clone(),
+            node_id: source.node_id.clone(),
+            status: AgentTeamStatus::Trashed,
+            revision: 1,
+            legacy_mission_id: Some(source.mission_id.clone()),
+            trashed_at: Some(source.updated_at.clone()),
+            mission_id: source.mission_id.clone(),
+            host_agent_id: source.host_agent_id.clone(),
+            member_ids: source.member_ids.clone(),
+            created_at: source.created_at.clone(),
+            updated_at: source.updated_at.clone(),
+        };
+        let migration_actor = actor("operator");
+        let memberships = [
+            ("legacy-host", TeamMembershipRole::Host),
+            ("legacy-member", TeamMembershipRole::Member),
+        ]
+        .into_iter()
+        .map(|(member_id, role)| TeamMembership {
+            id: format!("membership:legacy-team:{member_id}"),
+            team_id: "legacy-team".into(),
+            agent_member_id: member_id.into(),
+            node_id: source.node_id.clone(),
+            role,
+            state: TeamMembershipStatus::Inactive,
+            membership_generation: 1,
+            default_subscription_refs: Vec::new(),
+            created_by: migration_actor.clone(),
+            revision: 1,
+            joined_at: "t1".into(),
+            left_at: Some("t2".into()),
+        })
+        .collect::<Vec<_>>();
+        let source_fingerprint =
+            canonical_json_fingerprint(&serde_json::to_value(&source).unwrap());
+        let mut bundle = AgentTeamMigrationBundle {
+            source,
+            target,
+            memberships,
+            identity_id_map: BTreeMap::from([
+                ("legacy-host".into(), "legacy-host".into()),
+                ("legacy-member".into(), "legacy-member".into()),
+            ]),
+            migration_id: "migration-legacy-team".into(),
+            source_fingerprint,
+        };
+        let before_alias = store.canonical_operations().unwrap();
+        bundle
+            .identity_id_map
+            .insert("legacy-host".into(), "legacy-member".into());
+        store
+            .migrate_legacy_agent_team_same_ids(
+                &context("operator", "agent_team.migrate", "migration-hostile", 0),
+                bundle.clone(),
+            )
+            .expect_err("identity aliasing fails closed");
+        assert_eq!(store.canonical_operations().unwrap(), before_alias);
+        bundle
+            .identity_id_map
+            .insert("legacy-host".into(), "legacy-host".into());
+        let migrated = store
+            .migrate_legacy_agent_team_same_ids(
+                &context("operator", "agent_team.migrate", "migration-legacy-team", 0),
+                bundle,
+            )
+            .unwrap();
+        assert_eq!(migrated.projection.id, "legacy-team");
+        assert_eq!(migrated.projection.status, AgentTeamStatus::Trashed);
+        let rows_before_purge = store.canonical_operations().unwrap().len();
+        let tombstone = store
+            .record_agent_team_purge_tombstone(
+                &context("operator", "agent_team.purge", "purge-legacy-team", 0),
+                AgentTeamPurgeRequest {
+                    tombstone_id: "purge-legacy-team".into(),
+                    team_id: "legacy-team".into(),
+                    expected_team_revision: 1,
+                    approval_ref: "approval:purge".into(),
+                    export_manifest_ref: "export:legacy-team".into(),
+                    restore_window_closed_at: "t3".into(),
+                    requested_by: migration_actor,
+                    requested_at: "t4".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(tombstone.projection.team_id, "legacy-team");
+        assert_eq!(
+            store.canonical_operations().unwrap().len(),
+            rows_before_purge + 1
+        );
+        assert!(store
+            .agent_teams("space-test")
+            .unwrap()
+            .iter()
+            .any(|team| team.id == "legacy-team"));
+        assert_eq!(
+            store
+                .fabric_team_memberships("space-test")
+                .unwrap()
+                .iter()
+                .filter(|membership| membership.team_id == "legacy-team")
+                .count(),
+            2
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn team_trash_restore_preserves_work_message_membership_and_native_session_records() {
+        let (store, root) = fabric_store();
+        append_runtime_team(&store, "team-trash", "run-trash");
+        store
+            .create_agent_session(
+                &service_context("session.create", "session-trash-host", 0),
+                session("session-trash-host", "fixture-host"),
+            )
+            .unwrap();
+        store
+            .bind_agent_session_native_session(
+                &service_context("session.native.bind", "native-trash-host", 1),
+                "session-trash-host",
+                1,
+                settled_native_session("native-trash-host"),
+            )
+            .unwrap();
+        insert_runtime_work(&store, "work-trash", "team-trash", "run-trash");
+        let recipients = vec![firm_core::agentfirm_api::MessageRecipientRef {
+            kind: MessageRecipientKind::Team,
+            id: "team-trash".into(),
+        }];
+        let mut message = Message {
+            id: "message-trash".into(),
+            source_execution_space_id: "space-test".into(),
+            source_node_id: "11111111-1111-4111-8111-111111111111".into(),
+            source_node_daemon_id: "daemon-1".into(),
+            source_authority_generation: 1,
+            sender_actor_ref: ActorRef {
+                kind: ActorKind::AgentMember,
+                id: "fixture-host".into(),
+            },
+            sender_agent_member_id: Some("fixture-host".into()),
+            sender_session_id: Some("session-trash-host".into()),
+            address_kind: firm_core::agentfirm_api::MessageAddressKind::TeamChannel,
+            target_ref: recipients[0].clone(),
+            recipients,
+            team_id: Some("team-trash".into()),
+            team_run_id: Some("run-trash".into()),
+            work_id: Some("work-trash".into()),
+            collaboration_scope: None,
+            kind: firm_core::agentfirm_api::MessageKind::Message,
+            body: "retain this Team record".into(),
+            body_digest: format!("sha256:{:x}", Sha256::digest(b"retain this Team record")),
+            correlation_id: "trash-correlation".into(),
+            causation_id: None,
+            response_intent: firm_core::agentfirm_api::ResponseIntent::Informational,
+            evidence_refs: Vec::new(),
+            content_fingerprint: String::new(),
+            schema_version: 1,
+            idempotency_key: "message-trash".into(),
+            created_at: "t-message".into(),
+        };
+        message.content_fingerprint = message_content_fingerprint(&message);
+        store
+            .author_message(
+                &service_context("message.author", "message-trash", 0),
+                message,
+            )
+            .unwrap();
+        let works_before = store.latest_works().unwrap();
+        let messages_before = store.fabric_messages("space-test").unwrap();
+        let deliveries_before = store.fabric_message_deliveries("space-test").unwrap();
+        let sessions_before = store.fabric_agent_sessions("space-test").unwrap();
+        let membership_before = store
+            .team_host_membership("space-test", "team-trash", true)
+            .unwrap();
+        let trashed = store
+            .transition_agent_team(
+                &context("fixture-host", "agent_team.trash", "team-trash", 1),
+                "team-trash",
+                AgentTeamStatus::Trashed,
+                "t-trash",
+            )
+            .unwrap();
+        assert_eq!(
+            trashed.projection.node_id,
+            "11111111-1111-4111-8111-111111111111"
+        );
+        let restored = store
+            .transition_agent_team(
+                &context("fixture-host", "agent_team.restore", "team-restore", 2),
+                "team-trash",
+                AgentTeamStatus::Inactive,
+                "t-restore",
+            )
+            .unwrap();
+        assert_eq!(restored.projection.status, AgentTeamStatus::Inactive);
+        assert_eq!(store.latest_works().unwrap(), works_before);
+        assert_eq!(
+            store.fabric_messages("space-test").unwrap(),
+            messages_before
+        );
+        assert_eq!(
+            store.fabric_message_deliveries("space-test").unwrap(),
+            deliveries_before
+        );
+        assert_eq!(
+            store.fabric_agent_sessions("space-test").unwrap(),
+            sessions_before
+        );
+        let retained_membership = store
+            .fabric_team_memberships("space-test")
+            .unwrap()
+            .into_iter()
+            .find(|membership| membership.id == membership_before.id)
+            .unwrap();
+        assert_eq!(retained_membership.state, TeamMembershipStatus::Inactive);
+        store
+            .activate_team_membership(
+                &context(
+                    "fixture-host",
+                    "membership.activate",
+                    "membership-trash-activate",
+                    retained_membership.revision,
+                ),
+                &retained_membership.id,
+                "t-membership-active",
+            )
+            .unwrap();
+        store
+            .transition_agent_team(
+                &context(
+                    "fixture-host",
+                    "agent_team.activate",
+                    "team-trash-active",
+                    3,
+                ),
+                "team-trash",
+                AgentTeamStatus::Active,
+                "t-active",
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .team_host_membership("space-test", "team-trash", true)
+                .unwrap()
+                .id,
+            membership_before.id
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -9351,7 +12399,7 @@ mod tests {
     fn bind_agent_session_native_session_is_cas_generation_fenced_and_idempotent() {
         let (store, root) = fabric_store();
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "identity-bind-native", 0),
                 identity("bind-native"),
             )
@@ -9609,14 +12657,23 @@ mod tests {
             .fabric_team_memberships("space-test")
             .unwrap()
             .into_iter()
-            .filter(|membership| membership.state == TeamMembershipStatus::Active)
+            .filter(|membership| {
+                membership.state == TeamMembershipStatus::Active
+                    && membership.agent_member_id == "membership-agent"
+            })
             .collect::<Vec<_>>();
         assert_eq!(active.len(), 1);
         assert_eq!(
             store
                 .fabric_message_subscriptions("space-test")
                 .unwrap()
-                .len(),
+                .into_iter()
+                .filter(|subscription| {
+                    subscription.subscriber_kind == MessageSubjectKind::AgentMember
+                        && subscription.subscriber_ref == "membership-agent"
+                        && subscription.status == MessageSubscriptionStatus::Active
+                })
+                .count(),
             2
         );
         fs::remove_dir_all(root).unwrap();
@@ -9627,7 +12684,7 @@ mod tests {
         let (store, root) = fabric_store();
         for id in ["sender", "recipient"] {
             store
-                .create_agent_identity(
+                .migrate_legacy_agent_identity_same_id(
                     &context("host", "identity.create", &format!("identity-{id}"), 0),
                     identity(id),
                 )
@@ -9648,8 +12705,11 @@ mod tests {
 
         let subscription = MessageSubscription {
             id: "direct-recipient".into(),
-            subscriber_agent_id: "recipient".into(),
+            subscriber_kind: MessageSubjectKind::AgentMember,
+            subscriber_ref: "recipient".into(),
             execution_space_id: "space-test".into(),
+            target_team_id: None,
+            target_node_id: "11111111-1111-4111-8111-111111111111".into(),
             source_kind: MessageSubscriptionKind::Agent,
             source_ref: "sender".into(),
             delivery_mode: firm_core::agentfirm_api::RuntimeDispatchMode::StartIfIdle,
@@ -9673,23 +12733,23 @@ mod tests {
                     "recipient",
                     "created",
                     serde_json::to_value(&subscription).unwrap(),
-                    &serde_json::json!({"recipient_identity_id": "recipient"}),
+                    &serde_json::json!({"recipient_agent_member_id": "recipient"}),
                     vec![serde_json::to_value(&subscription).unwrap()],
                     Vec::new(),
                 )
                 .unwrap();
         }
         let recipients = vec![firm_core::agentfirm_api::MessageRecipientRef {
-            kind: MessageRecipientKind::AgentIdentity,
+            kind: MessageRecipientKind::AgentMember,
             id: "recipient".into(),
         }];
         let body_digest = format!("sha256:{:x}", Sha256::digest(b"hello"));
         let fingerprint = canonical_json_fingerprint(&serde_json::json!({
             "sender_actor_ref": {"kind": "agent_member", "id": "sender"},
-            "sender_agent_id": "sender",
+            "sender_agent_member_id": "sender",
             "sender_session_id": "session-sender",
             "address_kind": "direct_agent",
-            "target_ref": {"kind": "agent_identity", "id": "recipient"},
+            "target_ref": {"kind": "agent_member", "id": "recipient"},
             "recipients": recipients,
             "team_id": null,
             "team_run_id": null,
@@ -9718,11 +12778,11 @@ mod tests {
                         kind: ActorKind::AgentMember,
                         id: "sender".into(),
                     },
-                    sender_agent_id: Some("sender".into()),
+                    sender_agent_member_id: Some("sender".into()),
                     sender_session_id: Some("session-sender".into()),
                     address_kind: firm_core::agentfirm_api::MessageAddressKind::DirectAgent,
                     target_ref: firm_core::agentfirm_api::MessageRecipientRef {
-                        kind: MessageRecipientKind::AgentIdentity,
+                        kind: MessageRecipientKind::AgentMember,
                         id: "recipient".into(),
                     },
                     recipients,
@@ -9761,7 +12821,7 @@ mod tests {
                 "t3",
             )
             .unwrap();
-        assert_eq!(dispatch.projection.recipient_identity_id, "recipient");
+        assert_eq!(dispatch.projection.recipient_agent_member_id, "recipient");
         assert_eq!(
             dispatch.projection.recipient_session_id,
             "session-recipient"
@@ -9829,7 +12889,7 @@ mod tests {
     fn source_node_authors_cross_node_message_only_with_frozen_delegation_authority() {
         let (store, root) = fabric_store();
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "identity-remote-sender", 0),
                 identity("remote-sender"),
             )
@@ -9841,13 +12901,9 @@ mod tests {
             )
             .unwrap();
         append_runtime_team(&store, "source-team", "source-team-run");
-        join_runtime_membership(
-            &store,
-            "source-membership",
-            "source-team",
-            "remote-sender",
-            firm_core::agentfirm_api::TeamMembershipRole::Host,
-        );
+        let source_membership = store
+            .team_host_membership("space-test", "source-team", true)
+            .unwrap();
         let source_work =
             insert_runtime_work(&store, "source-work", "source-team", "source-team-run");
         store
@@ -9858,8 +12914,8 @@ mod tests {
                     work_id: source_work.id.clone(),
                     work_revision: source_work.version,
                     team_id: "source-team".into(),
-                    team_membership_id: "source-membership".into(),
-                    agent_identity_id: "remote-sender".into(),
+                    team_membership_id: source_membership.id,
+                    agent_member_id: "remote-sender".into(),
                     agent_session_id: "session-remote-sender".into(),
                     agent_session_generation: 1,
                     delivery_id: "source-work-delivery".into(),
@@ -9944,7 +13000,7 @@ mod tests {
             "inbound_policy_snapshot": authority.inbound_policy_snapshot,
         }));
         let recipients = vec![firm_core::agentfirm_api::MessageRecipientRef {
-            kind: MessageRecipientKind::AgentIdentity,
+            kind: MessageRecipientKind::AgentMember,
             id: "target-host-on-another-node".into(),
         }];
         let mut message = Message {
@@ -9957,7 +13013,7 @@ mod tests {
                 kind: ActorKind::AgentMember,
                 id: "remote-sender".into(),
             },
-            sender_agent_id: Some("remote-sender".into()),
+            sender_agent_member_id: Some("remote-sender".into()),
             sender_session_id: Some("session-remote-sender".into()),
             address_kind: firm_core::agentfirm_api::MessageAddressKind::DirectAgent,
             target_ref: recipients[0].clone(),
@@ -10006,7 +13062,7 @@ mod tests {
             deliveries_before
         );
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "identity-wrong-source", 0),
                 identity("wrong-source"),
             )
@@ -10030,7 +13086,7 @@ mod tests {
             kind: ActorKind::AgentMember,
             id: "wrong-source".into(),
         };
-        wrong_source.sender_agent_id = Some("wrong-source".into());
+        wrong_source.sender_agent_member_id = Some("wrong-source".into());
         wrong_source.sender_session_id = Some("session-wrong-source".into());
         wrong_source.idempotency_key = wrong_source.id.clone();
         wrong_source.content_fingerprint = message_content_fingerprint(&wrong_source);
@@ -10074,7 +13130,7 @@ mod tests {
     fn remote_message_persists_before_delivery_and_replays_without_route_duplication() {
         let (store, root) = fabric_store();
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "remote-recipient", 0),
                 identity("remote-recipient"),
             )
@@ -10097,8 +13153,11 @@ mod tests {
         );
         let subscription = MessageSubscription {
             id: "remote-direct-recipient".into(),
-            subscriber_agent_id: "remote-recipient".into(),
+            subscriber_kind: MessageSubjectKind::AgentMember,
+            subscriber_ref: "remote-recipient".into(),
             execution_space_id: "space-test".into(),
+            target_team_id: None,
+            target_node_id: "11111111-1111-4111-8111-111111111111".into(),
             source_kind: MessageSubscriptionKind::Agent,
             source_ref: "remote-sender".into(),
             delivery_mode: firm_core::agentfirm_api::RuntimeDispatchMode::StartIfIdle,
@@ -10122,7 +13181,7 @@ mod tests {
                     "remote-recipient",
                     "created",
                     serde_json::to_value(&subscription).unwrap(),
-                    &serde_json::json!({"recipient_identity_id": "remote-recipient"}),
+                    &serde_json::json!({"recipient_agent_member_id": "remote-recipient"}),
                     vec![serde_json::to_value(&subscription).unwrap()],
                     Vec::new(),
                 )
@@ -10131,7 +13190,7 @@ mod tests {
 
         let make_message = |body: &str| {
             let recipients = vec![firm_core::agentfirm_api::MessageRecipientRef {
-                kind: MessageRecipientKind::AgentIdentity,
+                kind: MessageRecipientKind::AgentMember,
                 id: "remote-recipient".into(),
             }];
             let mut message = Message {
@@ -10144,7 +13203,7 @@ mod tests {
                     kind: ActorKind::AgentMember,
                     id: "remote-sender".into(),
                 },
-                sender_agent_id: Some("remote-sender".into()),
+                sender_agent_member_id: Some("remote-sender".into()),
                 sender_session_id: Some("remote-sender-session".into()),
                 address_kind: firm_core::agentfirm_api::MessageAddressKind::DirectAgent,
                 target_ref: recipients[0].clone(),
@@ -10374,7 +13433,10 @@ mod tests {
         let deliveries = store.fabric_message_deliveries("space-test").unwrap();
         assert_eq!(deliveries.len(), 1);
         assert_eq!(deliveries[0].message_id, message.id);
-        assert_eq!(deliveries[0].recipient_identity_id, "remote-recipient");
+        assert_eq!(
+            deliveries[0].recipient_agent_member_id.as_deref(),
+            Some("remote-recipient")
+        );
 
         let replay = store
             .persist_remote_message(
@@ -10421,7 +13483,7 @@ mod tests {
     fn runtime_command_replay_and_ambiguous_effect_fail_closed() {
         let (store, root) = fabric_store();
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "identity-runtime", 0),
                 identity("runtime-agent"),
             )
@@ -10527,7 +13589,7 @@ mod tests {
     fn agent_session_reattach_preserves_native_identity_and_fences_daemon_driver() {
         let (store, root) = fabric_store();
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "reattach-agent", 0),
                 identity("reattach-agent"),
             )
@@ -10629,7 +13691,7 @@ mod tests {
     fn agent_session_reattach_rejects_expiry_without_provider_drain_receipt() {
         let (store, root) = fabric_store();
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "expired-agent", 0),
                 identity("expired-agent"),
             )
@@ -10698,7 +13760,7 @@ mod tests {
     fn interrupt_is_the_only_successor_admitted_while_start_cycle_is_in_flight() {
         let (store, root) = fabric_store();
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context(
                     "host",
                     "identity.create",
@@ -10767,7 +13829,7 @@ mod tests {
     fn runtime_command_replay_precedes_successor_fence_but_stale_settlement_is_zero_effect() {
         let (store, root) = fabric_store();
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "identity-runtime-fence", 0),
                 identity("runtime-fence"),
             )
@@ -10871,7 +13933,7 @@ mod tests {
     fn runtime_control_rejects_missing_turn_and_requires_explicit_binding_release_before_stop() {
         let (store, root) = fabric_store();
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "identity-runtime-control", 0),
                 identity("runtime-control"),
             )
@@ -10935,7 +13997,7 @@ mod tests {
             work_revision: 1,
             team_id: "team-runtime-control".into(),
             team_membership_id: "membership-runtime-control".into(),
-            agent_identity_id: "runtime-control".into(),
+            agent_member_id: "runtime-control".into(),
             agent_session_id: "session-runtime-control".into(),
             agent_session_generation: 1,
             delivery_id: "work-delivery-runtime-control".into(),
@@ -11035,7 +14097,7 @@ mod tests {
     fn admitted_stop_closes_exact_session_once_and_replays_after_terminal_state() {
         let (store, root) = fabric_store();
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "identity-runtime-stop", 0),
                 identity("runtime-stop"),
             )
@@ -11144,7 +14206,7 @@ mod tests {
             let identity_id = format!("runtime-{operation}");
             let session_id = format!("session-{operation}");
             store
-                .create_agent_identity(
+                .migrate_legacy_agent_identity_same_id(
                     &context(
                         "host",
                         "identity.create",
@@ -11283,7 +14345,7 @@ mod tests {
         for (label, status, certainty) in outcomes {
             let (store, root) = fabric_store();
             store
-                .create_agent_identity(
+                .migrate_legacy_agent_identity_same_id(
                     &context("host", "identity.create", &format!("identity-{label}"), 0),
                     identity(label),
                 )
@@ -11367,7 +14429,7 @@ mod tests {
     fn runtime_recovery_resolution_is_operator_fenced_replay_safe_and_never_blind_replays() {
         let (store, root) = fabric_store();
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "identity-recovery-agent", 0),
                 identity("recovery-agent"),
             )
@@ -11510,7 +14572,7 @@ mod tests {
         let (store, root) = fabric_store();
         for identity_id in ["runtime-owner", "runtime-sibling"] {
             store
-                .create_agent_identity(
+                .migrate_legacy_agent_identity_same_id(
                     &context(
                         "host",
                         "identity.create",
@@ -11632,7 +14694,7 @@ mod tests {
     fn standalone_session_is_machine_owned_and_team_membership_is_only_an_overlay() {
         let (store, root) = fabric_store();
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("operator", "identity.create", "standalone-identity", 0),
                 identity("standalone-agent"),
             )
@@ -11723,7 +14785,7 @@ mod tests {
             .iter()
             .any(|membership| {
                 membership.team_id == "team-b"
-                    && membership.agent_identity_id == "standalone-agent"
+                    && membership.agent_member_id == "standalone-agent"
                     && membership.state == TeamMembershipStatus::Active
             }));
         fs::remove_dir_all(root).unwrap();
@@ -11734,7 +14796,7 @@ mod tests {
         let (store, root) = fabric_store();
         for identity_id in ["shared-agent", "host-a", "host-b"] {
             store
-                .create_agent_identity(
+                .migrate_legacy_agent_identity_same_id(
                     &context(
                         "operator",
                         "identity.create",
@@ -11768,19 +14830,19 @@ mod tests {
             "shared-agent",
             firm_core::agentfirm_api::TeamMembershipRole::Member,
         );
-        join_runtime_membership(
-            &store,
-            "membership-host-a",
-            "team-a",
-            "host-a",
-            firm_core::agentfirm_api::TeamMembershipRole::Host,
+        assert_eq!(
+            store
+                .team_host_membership("space-test", "team-a", true)
+                .unwrap()
+                .agent_member_id,
+            "host-a"
         );
-        join_runtime_membership(
-            &store,
-            "membership-host-b",
-            "team-b",
-            "host-b",
-            firm_core::agentfirm_api::TeamMembershipRole::Host,
+        assert_eq!(
+            store
+                .team_host_membership("space-test", "team-b", true)
+                .unwrap()
+                .agent_member_id,
+            "host-b"
         );
         let work_a = insert_runtime_work(&store, "work-a", "team-a", "team-run-a");
         let work_b = insert_runtime_work(&store, "work-b", "team-b", "team-run-b");
@@ -11797,7 +14859,7 @@ mod tests {
                         work_revision: work.version,
                         team_id: membership.team_id.clone(),
                         team_membership_id: membership.id.clone(),
-                        agent_identity_id: "shared-agent".into(),
+                        agent_member_id: "shared-agent".into(),
                         agent_session_id: shared_session.id.clone(),
                         agent_session_generation: shared_session.runtime_generation,
                         delivery_id: format!("delivery-{id}"),
@@ -11922,7 +14984,7 @@ mod tests {
             let identity_id = format!("binding-{field}");
             let session_id = format!("session-binding-{field}");
             store
-                .create_agent_identity(
+                .migrate_legacy_agent_identity_same_id(
                     &context("host", "identity.create", &identity_id, 0),
                     identity(&identity_id),
                 )
@@ -11983,7 +15045,7 @@ mod tests {
             )
             .unwrap();
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "supervised-agent", 0),
                 identity("supervised-agent"),
             )
@@ -12060,14 +15122,14 @@ mod tests {
 
         let mut stale = session("session-stale-supervisor", "supervised-agent");
         stale.id = "session-stale-supervisor".into();
-        stale.agent_identity_id = "another-supervised-agent".into();
+        stale.agent_member_id = "another-supervised-agent".into();
         stale.control_state.driver_ref = RuntimeDriverRef::TeamSupervisor {
             team_run_id: "run-supervisor".into(),
             team_supervisor_id: successor.supervisor_id,
             team_supervisor_generation: successor.generation.saturating_add(1),
         };
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "another-supervised-agent", 0),
                 identity("another-supervised-agent"),
             )
@@ -12103,12 +15165,20 @@ mod tests {
         let (store, root) = fabric_store();
         let mut legacy_json =
             serde_json::to_value(session("legacy-session", "legacy-agent")).unwrap();
-        legacy_json.as_object_mut().unwrap().remove("control_state");
+        let legacy_object = legacy_json.as_object_mut().unwrap();
+        legacy_object.remove("control_state");
+        let legacy_identity = legacy_object
+            .remove("agent_member_id")
+            .expect("canonical AgentMember field");
+        legacy_object.insert("agent_identity_id".into(), legacy_identity);
         let legacy: AgentSession = serde_json::from_value(legacy_json).unwrap();
         assert_eq!(legacy.control_state.driver_generation, 0);
         assert_eq!(legacy.control_state.driver_ref, RuntimeDriverRef::Unknown);
+        let rewritten = serde_json::to_value(&legacy).unwrap();
+        assert_eq!(rewritten["agent_member_id"], "legacy-agent");
+        assert!(rewritten.get("agent_identity_id").is_none());
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "legacy-agent", 0),
                 identity("legacy-agent"),
             )
@@ -12145,7 +15215,7 @@ mod tests {
             let identity_id = format!("continuation-{case}");
             let session_id = format!("session-continuation-{case}");
             store
-                .create_agent_identity(
+                .migrate_legacy_agent_identity_same_id(
                     &context("host", "identity.create", &identity_id, 0),
                     identity(&identity_id),
                 )
@@ -12245,7 +15315,7 @@ mod tests {
             let identity_id = format!("precondition-{case}");
             let session_id = format!("session-precondition-{case}");
             store
-                .create_agent_identity(
+                .migrate_legacy_agent_identity_same_id(
                     &context("host", "identity.create", &identity_id, 0),
                     identity(&identity_id),
                 )
@@ -12321,7 +15391,7 @@ mod tests {
     fn runtime_command_settlement_rechecks_the_prepared_semantic_snapshot() {
         let (store, root) = fabric_store();
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "settle-precondition", 0),
                 identity("settle-precondition"),
             )
@@ -12382,7 +15452,7 @@ mod tests {
     fn recovery_cannot_confirm_applied_after_semantic_precondition_drift() {
         let (store, root) = fabric_store();
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "recovery-precondition", 0),
                 identity("recovery-precondition"),
             )
@@ -12488,7 +15558,7 @@ mod tests {
     fn control_state_binding_is_quiescent_generation_fenced_and_exactly_replayable() {
         let (store, root) = fabric_store();
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "control-bind-agent", 0),
                 identity("control-bind-agent"),
             )
@@ -12547,7 +15617,7 @@ mod tests {
     fn terminal_session_rejects_every_provider_runtime_effect_with_zero_delta() {
         let (store, root) = fabric_store();
         store
-            .create_agent_identity(
+            .migrate_legacy_agent_identity_same_id(
                 &context("host", "identity.create", "identity-terminal", 0),
                 identity("terminal"),
             )

@@ -159,7 +159,7 @@ impl ProviderEventFold {
             .filter(|item| item.is_team_public_allowlisted())
             .map(|item| TeamRuntimeActivity {
                 observation_id: item.observation_id.clone(),
-                agent_identity_id: item.agent_identity_id.clone(),
+                agent_member_id: item.agent_member_id.clone(),
                 semantic_kind: item.semantic_kind,
                 lifecycle_phase: item.lifecycle_phase,
                 completeness: item.completeness,

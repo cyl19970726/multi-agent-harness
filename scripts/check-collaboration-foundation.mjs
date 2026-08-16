@@ -75,6 +75,7 @@ const registryKinds = [
   "TargetWorkCreate",
   "DelegationCancelRequest",
   "DelegationCancelDecide",
+  "PeerMessageDeliver",
   "TeamMessageDeliver",
   "RemoteFactPublish",
   "ArtifactGrant",
@@ -87,4 +88,4 @@ if (failures.length) {
   console.error(failures.join("\n"));
   process.exit(1);
 }
-console.log(`validated collaboration foundation: ${validCount} valid, ${invalidCount} invalid fixtures, 8 routed kinds`);
+console.log(`validated collaboration foundation: ${validCount} valid, ${invalidCount} invalid fixtures, 9 routed kinds`);

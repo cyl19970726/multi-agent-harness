@@ -437,7 +437,8 @@ pub struct DeliveryIntentReference {
     pub delivery_id: String,
     pub message_id: String,
     pub message_body_digest: String,
-    pub recipient_identity_id: String,
+    #[serde(alias = "recipient_identity_id")]
+    pub recipient_agent_member_id: String,
     pub target_execution_space_id: String,
 }
 
@@ -641,7 +642,7 @@ fn validate_closed_body(
             non_empty(&body.delivery_id)
                 && non_empty(&body.message_id)
                 && fingerprint(&body.message_body_digest)
-                && non_empty(&body.recipient_identity_id)
+                && non_empty(&body.recipient_agent_member_id)
                 && operation.target_execution_space_id.as_deref()
                     == Some(body.target_execution_space_id.as_str())
         }
@@ -649,7 +650,7 @@ fn validate_closed_body(
             non_empty(&body.artifact_id) && digest(&body.artifact_digest)
         }
         ClosedOperationBody::CollaborationBusiness(body) => {
-            const KINDS: [(&str, &str); 8] = [
+            const KINDS: [(&str, &str); 9] = [
                 ("delegation_propose", "collaboration.delegation_propose"),
                 ("delegation_decide", "collaboration.delegation_decide"),
                 ("target_work_create", "collaboration.target_work_create"),
@@ -661,6 +662,7 @@ fn validate_closed_body(
                     "delegation_cancel_decide",
                     "collaboration.delegation_cancel_decide",
                 ),
+                ("peer_message_deliver", "collaboration.peer_message_deliver"),
                 ("team_message_deliver", "collaboration.team_message_deliver"),
                 ("remote_fact_publish", "collaboration.remote_fact_publish"),
                 ("artifact_grant", "collaboration.artifact_grant"),
@@ -691,6 +693,14 @@ fn validate_closed_body(
                     == Some(&body.business_actor_kind)
                 && operation.authorization_context.get("business_actor_id")
                     == Some(&body.business_actor_id)
+                && (body.business_kind != "peer_message_deliver"
+                    || (operation.actor.actor_kind == ActorKind::Service
+                        && body.business_actor_kind == "agent_member"
+                        && operation.actor_runtime_generation.unwrap_or_default() > 0
+                        && operation
+                            .authorization_context
+                            .get("business_actor_session_id")
+                            .is_some_and(|session_id| !session_id.trim().is_empty())))
         }
     };
     if !valid {

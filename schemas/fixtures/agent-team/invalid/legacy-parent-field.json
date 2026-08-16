@@ -2,10 +2,9 @@
   "id": "team-child-2",
   "name": "Legacy Nested Team",
   "description": "Nested Team topology is retired.",
-  "mission_id": "mission-2",
-  "host_agent_id": "agent-host-2",
   "node_id": "0f95cac7-5ff8-4c76-8f36-9c8f208815d3",
-  "member_ids": ["agent-worker-2"],
+  "status": "active",
+  "revision": 1,
   "parent_team_id": "team-root-1",
   "created_at": "2026-08-09T00:00:00Z",
   "updated_at": "2026-08-09T00:00:00Z"

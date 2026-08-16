@@ -170,7 +170,7 @@ fn direct_fabric_error(
 fn immutable_message_fingerprint(message: &Message) -> String {
     canonical_json_fingerprint(&serde_json::json!({
         "sender_actor_ref": message.sender_actor_ref,
-        "sender_agent_id": message.sender_agent_id,
+        "sender_agent_member_id": message.sender_agent_member_id,
         "sender_session_id": message.sender_session_id,
         "address_kind": message.address_kind,
         "target_ref": message.target_ref,
@@ -1937,8 +1937,18 @@ impl HarnessStore {
                     None,
                 )
             })?;
+        let team_scope = self.agent_team_scope(&team.id)?.ok_or_else(|| {
+            collaboration_error(
+                FabricErrorCode::PublicationScopeMismatch,
+                "remote publication Team has no canonical Execution Space scope",
+                "remote_fact_publication",
+                &publication.id,
+                None,
+            )
+        })?;
+        let host_membership = self.team_host_membership(&team_scope, &team.id, true)?;
         let actor_is_host = context.authenticated_actor.kind == ActorKind::AgentMember
-            && context.authenticated_actor.id == team.host_agent_id;
+            && context.authenticated_actor.id == host_membership.agent_member_id;
         let actor_is_owner = context.authenticated_actor.kind == ActorKind::AgentMember
             && work.owner_member_id.as_deref() == Some(context.authenticated_actor.id.as_str());
         let accepted_result_revision =
@@ -2918,32 +2928,33 @@ pub fn project_cross_node_deliveries(
             None,
         ));
     }
-    let expected_direct = message
+    let expected_subjects = message
         .recipients
         .iter()
-        .filter(|recipient| {
-            recipient.kind == firm_core::agentfirm_api::MessageRecipientKind::AgentIdentity
+        .filter_map(|recipient| {
+            let kind = match recipient.kind {
+                firm_core::agentfirm_api::MessageRecipientKind::AgentMember => {
+                    firm_core::agentfirm_api::MessageSubjectKind::AgentMember
+                }
+                firm_core::agentfirm_api::MessageRecipientKind::Team => {
+                    firm_core::agentfirm_api::MessageSubjectKind::Team
+                }
+                firm_core::agentfirm_api::MessageRecipientKind::ControlPlaneActor => {
+                    return None;
+                }
+            };
+            Some((kind, recipient.id.clone()))
         })
-        .map(|recipient| recipient.id.clone())
         .collect::<BTreeSet<_>>();
-    let has_team_recipient = message
-        .recipients
-        .iter()
-        .any(|recipient| recipient.kind == firm_core::agentfirm_api::MessageRecipientKind::Team);
     let actual = deliveries
         .iter()
-        .map(|delivery| delivery.recipient_identity_id.clone())
+        .map(|delivery| (delivery.recipient_kind, delivery.recipient_ref.clone()))
         .collect::<BTreeSet<_>>();
     let target_nodes = deliveries
         .iter()
         .map(|delivery| delivery.target_node_id.as_str())
         .collect::<BTreeSet<_>>();
-    let recipient_set_valid = if has_team_recipient {
-        !actual.is_empty() && expected_direct.is_subset(&actual)
-    } else {
-        expected_direct == actual
-    };
-    if !recipient_set_valid || actual.len() != deliveries.len() || target_nodes.len() != 1 {
+    if expected_subjects != actual || actual.len() != deliveries.len() || target_nodes.len() != 1 {
         return Err(collaboration_error(
             FabricErrorCode::MessageRecipientUnauthorized,
             "per-recipient delivery batch is missing, duplicated, cross-node mixed, or outside the immutable Message/subscription expansion",
@@ -2964,12 +2975,40 @@ pub fn project_cross_node_deliveries(
                     Some(delivery.version),
                 ));
             }
+            if (delivery.recipient_kind
+                == firm_core::agentfirm_api::MessageSubjectKind::AgentMember
+                && delivery.recipient_agent_member_id.as_deref()
+                    != Some(delivery.recipient_ref.as_str()))
+                || (delivery.recipient_kind
+                    == firm_core::agentfirm_api::MessageSubjectKind::Team
+                    && delivery.resolved_team_membership_id.is_none())
+            {
+                return Err(collaboration_error(
+                    FabricErrorCode::MessageRecipientUnauthorized,
+                    "delivery subject and resolved AgentMember/membership authority disagree",
+                    "canonical_message_delivery",
+                    &delivery.id,
+                    Some(delivery.version),
+                ));
+            }
+            let recipient_agent_member_id = delivery
+                .recipient_agent_member_id
+                .clone()
+                .ok_or_else(|| {
+                    collaboration_error(
+                        FabricErrorCode::MessageRecipientUnauthorized,
+                        "Team-subject delivery must be membership-generation resolved before AgentMember projection",
+                        "canonical_message_delivery",
+                        &delivery.id,
+                        Some(delivery.version),
+                    )
+                })?;
             Ok(CrossNodeDeliveryProjection {
                 delivery_id: delivery.id.clone(),
                 message_id: delivery.message_id.clone(),
                 recipient_actor_ref: ActorRef {
                     kind: ActorKind::AgentMember,
-                    id: delivery.recipient_identity_id.clone(),
+                    id: recipient_agent_member_id,
                 },
                 recipient_session_id: delivery.recipient_session_id.clone(),
                 recipient_runtime_generation: delivery.recipient_session_generation,

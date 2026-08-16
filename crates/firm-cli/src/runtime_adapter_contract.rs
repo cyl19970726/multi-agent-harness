@@ -995,7 +995,7 @@ mod tests {
         };
         AgentSession {
             id: "session-1".to_string(),
-            agent_identity_id: "identity-1".to_string(),
+            agent_member_id: "identity-1".to_string(),
             node_id: "node-1".to_string(),
             execution_space_id: "space-1".to_string(),
             node_daemon_id: "daemon-1".to_string(),

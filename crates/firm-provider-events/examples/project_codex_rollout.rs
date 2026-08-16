@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let context = DecodeContext {
         provider: ProviderKind::Codex,
         native_source_ref: "provider-source:local-codex-dogfood:redacted".into(),
-        agent_identity_id: "dogfood-agent".into(),
+        agent_member_id: "dogfood-agent".into(),
         agent_session_id: "dogfood-session".into(),
         agent_session_generation: 1,
         node_daemon_id: "dogfood-daemon".into(),

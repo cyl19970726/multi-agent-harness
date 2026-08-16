@@ -114,8 +114,8 @@ const liveEventEnvelope = {
 };
 if (!ajv.getSchema(liveEventSchema.$id)(liveEventEnvelope)) failures.push("generated live activity event violates schema");
 const publicObservation = readJson(join(root, "fixtures/valid/runtime-ready-public.json"));
-const { observation_id, agent_identity_id, semantic_kind, lifecycle_phase, completeness, effect_certainty, occurred_at, payload } = publicObservation;
-if (!ajv.getSchema(teamSchema.$id)({ observation_id, agent_identity_id, semantic_kind, lifecycle_phase, completeness, effect_certainty, occurred_at, payload })) failures.push("generated Team activity violates schema");
+const { observation_id, agent_member_id, semantic_kind, lifecycle_phase, completeness, effect_certainty, occurred_at, payload } = publicObservation;
+if (!ajv.getSchema(teamSchema.$id)({ observation_id, agent_member_id, semantic_kind, lifecycle_phase, completeness, effect_certainty, occurred_at, payload })) failures.push("generated Team activity violates schema");
 
 if (failures.length) {
   console.error(failures.join("\n"));

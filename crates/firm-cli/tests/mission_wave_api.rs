@@ -319,14 +319,18 @@ fn mission_log_keeps_one_mission_team_and_member_sessions_alive() {
         created["team_run"]["agent_team_id"].as_str(),
         Some("team-platform")
     );
+    let persisted_team = run_json(
+        &home,
+        &project_id,
+        &["team", "show", "--id", "team-platform"],
+    );
     assert_eq!(
-        run_json(
-            &home,
-            &project_id,
-            &["team", "show", "--id", "team-platform"]
-        )["mission_id"]
-            .as_str(),
+        persisted_team["legacy_mission_id"].as_str(),
         Some("mission-host-plan")
+    );
+    assert!(
+        persisted_team.get("mission_id").is_none(),
+        "Mission linkage is provenance, never vNext Team identity authority"
     );
     assert_eq!(
         created["member_runs"][0]["agent_member_id"].as_str(),

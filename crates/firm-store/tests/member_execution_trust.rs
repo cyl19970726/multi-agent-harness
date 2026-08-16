@@ -16,8 +16,9 @@ use firm_core::agentfirm_api::{
     GateRequirementSource, GateVerdict, GateWaiver, GateWaiverState, MemberCoordinationStatus,
     MemberRun, MemberRuntimeStatus, MemberWorkspaceBinding, MutationContext,
     NativeSessionAvailability, NativeSessionRef, PermissionCeiling, PrimaryCauseStatus,
-    RetrySafety, TrustError, TrustErrorCode, WorkFinding, WorkFindingKind, WorkReport,
-    WorkReportKind, WorkspaceLifecycle, WorkspaceMode, WorkspaceOwnership, WorkspaceSafetyProof,
+    RetrySafety, TeamMembership, TeamMembershipRole, TeamMembershipStatus, TrustError,
+    TrustErrorCode, WorkFinding, WorkFindingKind, WorkReport, WorkReportKind, WorkspaceLifecycle,
+    WorkspaceMode, WorkspaceOwnership, WorkspaceSafetyProof,
 };
 use firm_core::{
     AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, MemberRunStatus,
@@ -238,20 +239,76 @@ fn seed_team(store: &HarnessStore, label: &str, member_ids: &[&str]) -> AgentTea
             )
             .expect("register project on node");
     }
-    store
-        .insert_agent_team_with_unique_mission(&AgentTeam {
-            id: team_id.clone(),
-            name: "trust team".into(),
-            description: "trust fixture".into(),
-            mission_id,
-            host_agent_id: member_ids[0].into(),
+    let team_creator = human("fixture-host");
+    for member_id in member_ids {
+        if !store
+            .trust_agent_members(SPACE)
+            .expect("read Team AgentMembers")
+            .iter()
+            .any(|candidate| candidate.id == *member_id)
+        {
+            store
+                .create_trust_agent_member(
+                    &context(
+                        team_creator.clone(),
+                        "agent_member.create",
+                        &format!("team-member-{label}-{member_id}"),
+                        0,
+                    ),
+                    member(member_id, &team_creator),
+                )
+                .expect("create durable Team AgentMember");
+        }
+    }
+    let team = AgentTeam {
+        id: team_id.clone(),
+        name: "trust team".into(),
+        description: "trust fixture".into(),
+        legacy_mission_id: Some(mission_id.clone()),
+        mission_id,
+        host_agent_id: member_ids[0].into(),
+        node_id: NODE.into(),
+        status: AgentTeamStatus::Active,
+        revision: 1,
+        trashed_at: None,
+        member_ids: member_ids.iter().skip(1).map(|id| (*id).into()).collect(),
+        created_at: "t1".into(),
+        updated_at: "t1".into(),
+    };
+    let memberships = member_ids
+        .iter()
+        .enumerate()
+        .map(|(index, member_id)| TeamMembership {
+            id: format!("membership-{team_id}-{member_id}"),
+            team_id: team_id.clone(),
+            agent_member_id: (*member_id).into(),
             node_id: NODE.into(),
-            status: AgentTeamStatus::Active,
-            member_ids: member_ids.iter().skip(1).map(|id| (*id).into()).collect(),
-            created_at: "t1".into(),
-            updated_at: "t1".into(),
+            role: if index == 0 {
+                TeamMembershipRole::Host
+            } else {
+                TeamMembershipRole::Member
+            },
+            state: TeamMembershipStatus::Active,
+            membership_generation: 1,
+            default_subscription_refs: Vec::new(),
+            created_by: team_creator.clone(),
+            revision: 1,
+            joined_at: "t1".into(),
+            left_at: None,
         })
-        .expect("insert team");
+        .collect();
+    store
+        .create_agent_team(
+            &context(
+                team_creator,
+                "agent_team.create",
+                &format!("team-create-{label}"),
+                0,
+            ),
+            team,
+            memberships,
+        )
+        .expect("create durable Team and Memberships");
     let run = AgentTeamRun {
         id: run_id,
         agent_team_id: team_id,
@@ -494,17 +551,24 @@ fn create_member_and_run(
     run_id: &str,
     resumable: bool,
 ) -> MemberRun {
-    store
-        .create_trust_agent_member(
-            &context(
-                creator.clone(),
-                "member.create",
-                &format!("create-{member_id}"),
-                0,
-            ),
-            member(member_id, creator),
-        )
-        .expect("create member");
+    if !store
+        .trust_agent_members(SPACE)
+        .expect("read AgentMembers")
+        .iter()
+        .any(|candidate| candidate.id == member_id)
+    {
+        store
+            .create_trust_agent_member(
+                &context(
+                    creator.clone(),
+                    "member.create",
+                    &format!("create-{member_id}"),
+                    0,
+                ),
+                member(member_id, creator),
+            )
+            .expect("create member");
+    }
     let run = member_run(run_id, member_id, team_run_id, resumable);
     let runtime = runtime_member_run(&run, &format!("Member {member_id}"));
     admit_existing_member_run(store, creator, run.clone(), runtime)
@@ -938,15 +1002,7 @@ fn paused_and_retired_members_cannot_start_runs() {
     let harness = TestStore::new("member-status");
     let host = human("host");
     let team_run = seed_team(&harness.store, "status", &["paused", "retired"]);
-    for id in ["paused", "retired"] {
-        harness
-            .store
-            .create_trust_agent_member(
-                &context(host.clone(), "member.create", &format!("create-{id}"), 0),
-                member(id, &host),
-            )
-            .expect("create member");
-    }
+    // seed_team already created both durable AgentMembers; pause/retire them.
     harness
         .store
         .transition_trust_agent_member(

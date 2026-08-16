@@ -4,7 +4,7 @@
   "provider": "kimi",
   "adapter_version": "agentfirm.provider_event_adapter.v1",
   "native_source_ref": "provider-source:provider_session:kimi:9",
-  "agent_identity_id": "agent-1",
+  "agent_member_id": "agent-1",
   "agent_session_id": "session-1",
   "agent_session_generation": 7,
   "node_daemon_id": "daemon-1",

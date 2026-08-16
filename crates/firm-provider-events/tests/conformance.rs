@@ -18,7 +18,7 @@ fn context(provider: ProviderKind) -> DecodeContext {
     DecodeContext {
         provider,
         native_source_ref: format!("provider-source:session:source:12:{}", provider.as_str()),
-        agent_identity_id: "agent-1".into(),
+        agent_member_id: "agent-1".into(),
         agent_session_id: "session-1".into(),
         agent_session_generation: 7,
         node_daemon_id: "daemon-1".into(),
@@ -209,7 +209,7 @@ fn same_fingerprint_with_changed_envelope_is_not_a_replay() {
         json!({"type":"turn/completed"}),
     ));
     let mut changed = first.clone();
-    changed.agent_identity_id = "impersonated-agent".into();
+    changed.agent_member_id = "impersonated-agent".into();
     let mut fold = ProviderEventFold::new("session-1", 7, "daemon-1", 4);
     assert_eq!(fold.ingest(first), Ok(FoldOutcome::Inserted));
     assert_eq!(
@@ -400,18 +400,18 @@ fn authority() -> ProjectionAuthority {
         execution_space_id: "space-1".into(),
         project_binding_id: "project-1".into(),
         team_id: "team-1".into(),
-        agent_identity_id: "agent-1".into(),
+        agent_member_id: "agent-1".into(),
         agent_session_id: "session-1".into(),
         agent_session_generation: 7,
     }
 }
 
-fn viewer(agent_identity_id: &str) -> ProjectionViewer {
+fn viewer(agent_member_id: &str) -> ProjectionViewer {
     ProjectionViewer {
         execution_space_id: "space-1".into(),
         project_binding_id: "project-1".into(),
         team_id: "team-1".into(),
-        agent_identity_id: agent_identity_id.into(),
+        agent_member_id: agent_member_id.into(),
         is_team_host: false,
     }
 }

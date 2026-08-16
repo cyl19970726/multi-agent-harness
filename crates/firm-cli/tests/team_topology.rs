@@ -1,6 +1,7 @@
-//! Integration coverage for the flat AgentTeam model: one Mission, one Host
-//! Agent, and one immutable ExecutionNode placement per Team. Cross-Team work
-//! is represented by WorkDelegation, never parent/child Team topology.
+//! Integration coverage for the flat durable AgentTeam model: one active Host
+//! TeamMembership and one immutable ExecutionNode placement per Team. Mission
+//! linkage is optional legacy provenance, never Team creation or identity
+//! authority; cross-Team work uses WorkDelegation, never parent/child topology.
 
 mod firm_env;
 
@@ -112,8 +113,10 @@ fn team_create_persists_and_enforces_flat_identity_and_placement() {
             "agent-cto",
         ],
     );
-    assert_eq!(root["mission_id"], "mission-root");
-    assert_eq!(root["host_agent_id"], "agent-lead");
+    assert_eq!(root["legacy_mission_id"], "mission-root");
+    assert!(root.get("mission_id").is_none());
+    assert!(root.get("host_agent_id").is_none());
+    assert!(root.get("member_ids").is_none());
     assert_eq!(root["node_id"], node_id);
     assert!(root.get("parent_team_id").is_none());
     assert!(root.get("host_member_id").is_none());
@@ -140,12 +143,13 @@ fn team_create_persists_and_enforces_flat_identity_and_placement() {
             "agent-worker",
         ],
     );
-    assert_eq!(peer["mission_id"], "mission-peer");
-    assert_eq!(peer["host_agent_id"], "agent-cto");
+    assert_eq!(peer["legacy_mission_id"], "mission-peer");
+    assert!(peer.get("mission_id").is_none());
+    assert!(peer.get("host_agent_id").is_none());
     assert!(peer.get("parent_team_id").is_none());
 
-    // The Mission relation is one-to-one.
-    let err = run_err(
+    // Legacy Mission provenance does not own Team identity and may be shared.
+    let shared_provenance = run_json(
         &home,
         &project_id,
         &[
@@ -165,10 +169,10 @@ fn team_create_persists_and_enforces_flat_identity_and_placement() {
             &node_id,
         ],
     );
-    assert!(err.contains("Mission mission-root"), "stderr: {err}");
+    assert_eq!(shared_provenance["legacy_mission_id"], "mission-root");
 
-    // Missing durable joins fail before a Team row is appended.
-    let err = run_err(
+    // A vNext Team does not require Mission creation or linkage.
+    let no_mission = run_json(
         &home,
         &project_id,
         &[
@@ -179,16 +183,14 @@ fn team_create_persists_and_enforces_flat_identity_and_placement() {
             "--name",
             "Missing Mission",
             "--description",
-            "Must fail",
-            "--mission-id",
-            "mission-missing",
+            "Independent durable Team",
             "--host-agent-id",
             "agent-worker",
             "--node-id",
             &node_id,
         ],
     );
-    assert!(err.contains("TEAM_REQUIRES_MISSION"), "stderr: {err}");
+    assert!(no_mission.get("legacy_mission_id").is_none());
 
     let err = run_err(
         &home,
@@ -210,7 +212,10 @@ fn team_create_persists_and_enforces_flat_identity_and_placement() {
             "00000000-0000-4000-8000-000000000099",
         ],
     );
-    assert!(err.contains("NODE_NOT_ACTIVE"), "stderr: {err}");
+    assert!(
+        err.contains("immutable placement Node to exist"),
+        "stderr: {err}"
+    );
 
     let err = run_err(
         &home,
@@ -232,10 +237,13 @@ fn team_create_persists_and_enforces_flat_identity_and_placement() {
             &node_id,
         ],
     );
-    assert!(err.contains("missing Host Agent"), "stderr: {err}");
+    assert!(
+        err.contains("TeamMembership references a missing AgentMember"),
+        "stderr: {err}"
+    );
 
-    // Membership is execution composition, not Host authority.
-    let updated = run_json(
+    // Membership lifecycle is durable and cannot remove the sole active Host.
+    let left = run_json(
         &home,
         &project_id,
         &[
@@ -247,6 +255,20 @@ fn team_create_persists_and_enforces_flat_identity_and_placement() {
             "agent-cto",
         ],
     );
-    assert_eq!(updated["host_agent_id"], "agent-lead");
-    assert_eq!(updated["member_ids"], serde_json::json!(["agent-lead"]));
+    assert_eq!(left["agent_member_id"], "agent-cto");
+    assert_eq!(left["role"], "member");
+    assert_eq!(left["state"], "inactive");
+    let err = run_err(
+        &home,
+        &project_id,
+        &[
+            "team",
+            "remove-member",
+            "--id",
+            "team-root",
+            "--member",
+            "agent-lead",
+        ],
+    );
+    assert!(err.contains("sole active Host Membership"), "stderr: {err}");
 }

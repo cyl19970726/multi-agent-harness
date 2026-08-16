@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/agent-team-migration-bundle.schema.json",
+  "title": "AgentTeamMigrationBundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source", "target", "memberships", "identity_id_map", "migration_id", "source_fingerprint"],
+  "properties": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "description", "mission_id", "host_agent_id", "node_id", "status", "member_ids", "created_at", "updated_at"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "mission_id": {"type": "string", "minLength": 1},
+        "host_agent_id": {"type": "string", "minLength": 1},
+        "node_id": {"type": "string", "format": "uuid"},
+        "status": {"enum": ["active", "closed", "archived"]},
+        "member_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "created_at": {"type": "string", "minLength": 1},
+        "updated_at": {"type": "string", "minLength": 1}
+      }
+    },
+    "target": {"$ref": "agent-team.schema.json"},
+    "memberships": {"type": "array", "minItems": 1, "items": {"$ref": "team-membership.schema.json"}},
+    "identity_id_map": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string", "minLength": 1}},
+    "migration_id": {"type": "string", "minLength": 1},
+    "source_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

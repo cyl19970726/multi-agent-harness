@@ -2,19 +2,43 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agent-harness.local/schemas/message-subscription.schema.json",
   "title": "MessageSubscription",
+  "description": "One durable AgentMember or Team inbox policy. Team subjects remain unresolved until a membership-generation claim.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "recipient_identity_id", "execution_space_id", "kind", "status", "version", "created_at", "updated_at"],
+  "required": ["id", "subscriber_kind", "subscriber_ref", "execution_space_id", "target_node_id", "source_kind", "source_ref", "delivery_mode", "history_policy", "authorization_policy_ref", "policy_revision", "policy_digest", "status", "revision", "created_by", "created_at"],
   "properties": {
     "id": {"type": "string", "minLength": 1},
-    "recipient_identity_id": {"type": "string", "minLength": 1},
+    "subscriber_kind": {"enum": ["agent_member", "team"]},
+    "subscriber_ref": {"type": "string", "minLength": 1},
     "execution_space_id": {"type": "string", "minLength": 1},
-    "kind": {"enum": ["direct", "team"]},
-    "team_membership_id": {"type": ["string", "null"]},
-    "team_id": {"type": ["string", "null"]},
-    "status": {"enum": ["active", "revoked"]},
-    "version": {"type": "integer", "minimum": 1},
+    "target_team_id": {"type": ["string", "null"], "minLength": 1},
+    "target_node_id": {"type": "string", "format": "uuid"},
+    "source_kind": {"enum": ["agent", "team", "channel", "all_authorized"]},
+    "source_ref": {"type": "string", "minLength": 1},
+    "delivery_mode": {"enum": ["queue_only", "start_if_idle", "inject_if_safe"]},
+    "history_policy": {"enum": ["from_join", "latest", "authorized_history"]},
+    "membership_ref": {"type": ["string", "null"], "minLength": 1},
+    "authorization_policy_ref": {"type": "string", "minLength": 1},
+    "policy_revision": {"type": "integer", "minimum": 1},
+    "policy_digest": {"type": "string", "minLength": 1},
+    "status": {"enum": ["active", "paused", "revoked"]},
+    "revision": {"type": "integer", "minimum": 1},
+    "created_by": {"$ref": "#/$defs/actor_ref"},
     "created_at": {"type": "string", "minLength": 1},
-    "updated_at": {"type": "string", "minLength": 1}
-  }
+    "revoked_at": {"type": ["string", "null"], "minLength": 1}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"subscriber_kind": {"const": "team"}}, "required": ["subscriber_kind"]},
+      "then": {
+        "required": ["target_team_id"],
+        "properties": {
+          "target_team_id": {"type": "string", "minLength": 1},
+          "source_kind": {"const": "all_authorized"},
+          "membership_ref": {"type": "null"}
+        }
+      }
+    }
+  ],
+  "$defs": {"actor_ref": {"type": "object", "additionalProperties": false, "required": ["kind", "id"], "properties": {"kind": {"enum": ["human", "agent_member", "external", "service"]}, "id": {"type": "string", "minLength": 1}}}}
 }

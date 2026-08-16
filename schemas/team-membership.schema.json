@@ -4,17 +4,30 @@
   "title": "TeamMembership",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "team_id", "team_run_id", "agent_identity_id", "node_id", "role_snapshot", "status", "version", "joined_at"],
+  "required": ["id", "team_id", "agent_member_id", "node_id", "role", "state", "membership_generation", "default_subscription_refs", "created_by", "revision", "joined_at"],
   "properties": {
     "id": {"type": "string", "minLength": 1},
     "team_id": {"type": "string", "minLength": 1},
-    "team_run_id": {"type": "string", "minLength": 1},
-    "agent_identity_id": {"type": "string", "minLength": 1},
+    "agent_member_id": {"type": "string", "minLength": 1},
     "node_id": {"type": "string", "format": "uuid"},
-    "role_snapshot": {"type": "string", "minLength": 1},
-    "status": {"enum": ["active", "left", "revoked"]},
-    "version": {"type": "integer", "minimum": 1},
+    "role": {"enum": ["host", "member", "observer"]},
+    "state": {"enum": ["invited", "active", "leaving", "inactive"]},
+    "membership_generation": {"type": "integer", "minimum": 1},
+    "default_subscription_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "created_by": {"$ref": "#/$defs/actor_ref"},
+    "revision": {"type": "integer", "minimum": 1},
     "joined_at": {"type": "string", "minLength": 1},
-    "ended_at": {"type": ["string", "null"]}
+    "left_at": {"type": ["string", "null"]}
+  },
+  "$defs": {
+    "actor_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {"enum": ["human", "agent_member", "external", "service"]},
+        "id": {"type": "string", "minLength": 1}
+      }
+    }
   }
 }

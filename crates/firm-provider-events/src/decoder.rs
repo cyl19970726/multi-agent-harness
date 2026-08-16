@@ -148,7 +148,7 @@ fn manifest(
 pub struct DecodeContext {
     pub provider: ProviderKind,
     pub native_source_ref: String,
-    pub agent_identity_id: String,
+    pub agent_member_id: String,
     pub agent_session_id: String,
     pub agent_session_generation: u64,
     pub node_daemon_id: String,
@@ -265,7 +265,7 @@ pub fn decode_native_event(
         provider: context.provider,
         adapter_version: PROVIDER_EVENT_ADAPTER_VERSION.into(),
         native_source_ref: context.native_source_ref.clone(),
-        agent_identity_id: context.agent_identity_id.clone(),
+        agent_member_id: context.agent_member_id.clone(),
         agent_session_id: context.agent_session_id.clone(),
         agent_session_generation: context.agent_session_generation,
         node_daemon_id: context.node_daemon_id.clone(),
@@ -384,7 +384,7 @@ fn malformed_observation(
         provider: context.provider,
         adapter_version: PROVIDER_EVENT_ADAPTER_VERSION.into(),
         native_source_ref: context.native_source_ref.clone(),
-        agent_identity_id: context.agent_identity_id.clone(),
+        agent_member_id: context.agent_member_id.clone(),
         agent_session_id: context.agent_session_id.clone(),
         agent_session_generation: context.agent_session_generation,
         node_daemon_id: context.node_daemon_id.clone(),
@@ -414,7 +414,7 @@ fn malformed_observation(
 
 fn validate_context(context: &DecodeContext, event: &NativeEvent) -> Result<(), DecodeError> {
     if !context.native_source_ref.starts_with("provider-source:")
-        || context.agent_identity_id.trim().is_empty()
+        || context.agent_member_id.trim().is_empty()
         || context.agent_session_id.trim().is_empty()
         || context.node_daemon_id.trim().is_empty()
         || context.observed_at.trim().is_empty()
@@ -431,7 +431,7 @@ fn validate_context(context: &DecodeContext, event: &NativeEvent) -> Result<(), 
 
 fn reject_authority_injection(raw: &serde_json::Value) -> Result<(), DecodeError> {
     const FORBIDDEN: &[&str] = &[
-        "agent_identity_id",
+        "agent_member_id",
         "agent_session_id",
         "agent_session_generation",
         "node_daemon_id",

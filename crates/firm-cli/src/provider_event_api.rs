@@ -87,7 +87,7 @@ pub(crate) struct HistoricalProjectionRequest<'a> {
     pub execution_space_id: &'a str,
     pub project_id: &'a str,
     pub team_id: &'a str,
-    pub agent_identity_id: &'a str,
+    pub agent_member_id: &'a str,
     pub agent_session_id: &'a str,
     pub agent_session_generation: u64,
     pub node_daemon_id: &'a str,
@@ -122,7 +122,7 @@ pub(crate) fn read_historical_projection(
             request.agent_session_id,
             request.agent_session_generation
         ),
-        agent_identity_id: request.agent_identity_id.to_string(),
+        agent_member_id: request.agent_member_id.to_string(),
         agent_session_id: request.agent_session_id.to_string(),
         agent_session_generation: request.agent_session_generation,
         node_daemon_id: request.node_daemon_id.to_string(),
@@ -135,7 +135,7 @@ pub(crate) fn read_historical_projection(
         execution_space_id: request.execution_space_id.to_string(),
         project_binding_id: request.project_id.to_string(),
         team_id: request.team_id.to_string(),
-        agent_identity_id: request.agent_identity_id.to_string(),
+        agent_member_id: request.agent_member_id.to_string(),
         agent_session_id: request.agent_session_id.to_string(),
         agent_session_generation: request.agent_session_generation,
     };
@@ -143,7 +143,7 @@ pub(crate) fn read_historical_projection(
         execution_space_id: request.execution_space_id.to_string(),
         project_binding_id: request.project_id.to_string(),
         team_id: request.team_id.to_string(),
-        agent_identity_id: request.viewer_identity_id.to_string(),
+        agent_member_id: request.viewer_identity_id.to_string(),
         is_team_host: false,
     };
     let mut service = ProviderProjectionService::open(context);
@@ -250,13 +250,13 @@ pub(crate) fn clear_live_for_agent(
     store: &harness_store::HarnessStore,
     execution_space_id: &str,
     project_id: &str,
-    agent_identity_id: &str,
+    agent_member_id: &str,
 ) -> CliResult<()> {
     let session_ids = store
         .fabric_agent_sessions(execution_space_id)?
         .into_iter()
         .filter(|session| session.execution_space_id == execution_space_id)
-        .filter(|session| session.agent_identity_id == agent_identity_id)
+        .filter(|session| session.agent_member_id == agent_member_id)
         .map(|session| session.id)
         .collect::<BTreeSet<_>>();
     clear_live_for_session_ids(execution_space_id, project_id, &session_ids);
@@ -316,7 +316,7 @@ pub(crate) fn exact_live_scope(
         .map_err(|_| "AgentSession registry is unavailable")?;
     let current = sessions
         .into_iter()
-        .filter(|session| session.agent_identity_id == member_run.agent_member_id)
+        .filter(|session| session.agent_member_id == member_run.agent_member_id)
         .filter(|session| session.execution_space_id == execution_space_id)
         .filter(|session| session.provider_kind == member_run.provider)
         .filter(|session| {

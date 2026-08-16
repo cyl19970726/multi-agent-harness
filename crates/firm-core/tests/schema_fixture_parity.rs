@@ -5,12 +5,17 @@
 //! The directory classification is therefore the shared expected verdict, not
 //! an independent JS-only rule set.
 
-use firm_core::agentfirm_api::TeamMessage;
+use firm_core::agentfirm_api::{
+    AgentSession, AgentTeamMigrationBundle, AgentTeamPurgeRequest, AgentTeamPurgeTombstone,
+    CanonicalMessageDelivery, Message, MessageSubscription, SubscriptionCursor, TeamMembership,
+    TeamMessage, TeamMessageDeliveryClaim, WorkExecutionBinding,
+};
 use firm_core::collaboration::{
     CollaborationScope, CrossNodeDeliveryProjection, DelegationCancellationDecision,
     DelegationCancellationRequest, DelegationDecision, DelegationInboundPolicy,
-    ImmutableMessageTransferPayload, RemoteFactPublication, RemoteWorkRef, RoutedBusinessOperation,
-    SourceRemoteMessageTransfer, SourceWorkAttestation, TargetPlacementRef, WorkDelegationV1,
+    ImmutableMessageTransferPayload, MessageAdmissionAuthority, RemoteFactPublication,
+    RemoteWorkRef, RoutedBusinessOperation, SourceRemoteMessageTransfer, SourceWorkAttestation,
+    TargetPlacementRef, WorkDelegationV1,
 };
 use firm_core::{
     AgentTeam, AgentTeamRun, ExecutionNode, Mission, NodeDaemonLease, NodeProjectRegistration,
@@ -112,6 +117,24 @@ fn wave_three_identity_and_runtime_fixtures_match_rust_contracts() {
     assert_fixture_contract::<TeamSupervisorLease>("team-supervisor-lease");
     assert_fixture_contract::<WorkDelegation>("work-delegation");
     assert_fixture_contract::<WorkDelegationEvent>("work-delegation-event");
+}
+
+#[test]
+fn dev_35_member_membership_and_message_fixtures_match_rust_contracts() {
+    assert_fixture_contract::<AgentSession>("agent-session");
+    assert_fixture_contract::<TeamMembership>("team-membership");
+    assert_fixture_contract::<WorkExecutionBinding>("work-execution-binding");
+    assert_fixture_contract::<Message>("message");
+    assert_fixture_contract::<MessageSubscription>("message-subscription");
+    assert_fixture_contract::<SubscriptionCursor>("subscription-cursor");
+    assert_fixture_contract::<CanonicalMessageDelivery>("canonical-message-delivery");
+    assert_fixture_contract::<TeamMessageDeliveryClaim>("team-message-delivery-claim");
+    assert_fixture_contract::<MessageAdmissionAuthority>("message-admission-authority");
+    assert_fixture_contract::<AgentTeamMigrationBundle>("agent-team-migration-bundle");
+    assert_fixture_contract::<AgentTeamPurgeRequest>("agent-team-purge-request");
+    assert_closed_wire_fixture_contract::<AgentTeamPurgeTombstone>(
+        &fixture_root().join("agent-team-purge-tombstone"),
+    );
 }
 
 #[test]

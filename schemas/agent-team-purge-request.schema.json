@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/agent-team-purge-request.schema.json",
+  "title": "AgentTeamPurgeRequest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["tombstone_id", "team_id", "expected_team_revision", "approval_ref", "export_manifest_ref", "restore_window_closed_at", "requested_by", "requested_at"],
+  "properties": {
+    "tombstone_id": {"type": "string", "minLength": 1},
+    "team_id": {"type": "string", "minLength": 1},
+    "expected_team_revision": {"type": "integer", "minimum": 1},
+    "approval_ref": {"type": "string", "minLength": 1},
+    "export_manifest_ref": {"type": "string", "minLength": 1},
+    "restore_window_closed_at": {"type": "string", "minLength": 1},
+    "requested_by": {"$ref": "team-membership.schema.json#/$defs/actor_ref"},
+    "requested_at": {"type": "string", "minLength": 1}
+  }
+}

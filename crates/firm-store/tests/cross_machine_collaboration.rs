@@ -1,6 +1,8 @@
 use firm_core::agentfirm_api::{
-    ActorKind, ActorRef, CanonicalMessageDelivery, CanonicalMessageDeliveryStatus, Message,
-    MessageAddressKind, MessageKind, MessageRecipientKind, MessageRecipientRef, ResponseIntent,
+    ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus, CanonicalMessageDelivery,
+    CanonicalMessageDeliveryStatus, Message, MessageAddressKind, MessageKind, MessageRecipientKind,
+    MessageRecipientRef, MutationContext, PermissionCeiling, ResponseIntent, TeamMembership,
+    TeamMembershipRole, TeamMembershipStatus,
 };
 use firm_core::collaboration::{
     ArtifactImport, CancellationDecisionKind, CancellationRequestState,
@@ -428,19 +430,79 @@ fn seed_team(
             completed_at: None,
         })
         .unwrap();
+    let team_creator = actor(ActorKind::Human, "fixture-operator");
     store
-        .insert_agent_team_with_unique_mission(&AgentTeam {
-            id: team_id.into(),
-            name: team_name.into(),
-            description: "Target Team".into(),
-            mission_id: mission_id.into(),
-            host_agent_id: host_id.into(),
-            node_id: node_id.into(),
-            status: AgentTeamStatus::Active,
-            member_ids: Vec::new(),
-            created_at: "unix-ms:1".into(),
-            updated_at: "unix-ms:1".into(),
-        })
+        .create_trust_agent_member(
+            &MutationContext {
+                execution_space_id: execution_space_id.into(),
+                authenticated_actor: team_creator.clone(),
+                authority_actor: None,
+                command_name: "agent_member.create".into(),
+                idempotency_key: format!("member-create-{host_id}"),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            AgentMember {
+                id: host_id.into(),
+                name: host_id.into(),
+                description: "cross-machine fixture Host".into(),
+                role: "host".into(),
+                capabilities: Vec::new(),
+                skill_refs: Vec::new(),
+                provider_profile_ref: None,
+                model_preference: None,
+                workspace_policy: "test".into(),
+                permission_ceiling: PermissionCeiling::WorkspaceWrite,
+                organization_status: AgentMemberOrganizationStatus::Active,
+                version: 1,
+                created_by: team_creator.clone(),
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            },
+        )
+        .unwrap();
+    let team = AgentTeam {
+        id: team_id.into(),
+        name: team_name.into(),
+        description: "Target Team".into(),
+        legacy_mission_id: Some(mission_id.into()),
+        mission_id: mission_id.into(),
+        host_agent_id: host_id.into(),
+        node_id: node_id.into(),
+        status: AgentTeamStatus::Active,
+        revision: 1,
+        trashed_at: None,
+        member_ids: Vec::new(),
+        created_at: "unix-ms:1".into(),
+        updated_at: "unix-ms:1".into(),
+    };
+    store
+        .create_agent_team(
+            &MutationContext {
+                execution_space_id: execution_space_id.into(),
+                authenticated_actor: team_creator.clone(),
+                authority_actor: None,
+                command_name: "agent_team.create".into(),
+                idempotency_key: format!("team-create-{team_id}"),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            team,
+            vec![TeamMembership {
+                id: format!("membership-{team_id}-{host_id}"),
+                team_id: team_id.into(),
+                agent_member_id: host_id.into(),
+                node_id: node_id.into(),
+                role: TeamMembershipRole::Host,
+                state: TeamMembershipStatus::Active,
+                membership_generation: 1,
+                default_subscription_refs: Vec::new(),
+                created_by: team_creator,
+                revision: 1,
+                joined_at: "unix-ms:1".into(),
+                left_at: None,
+            }],
+        )
         .unwrap();
     store
         .create_team_run_with_member_runs_from_agent_team(
@@ -2011,8 +2073,14 @@ fn canonical_delivery(
         id: id.into(),
         message_id: "message-1".into(),
         subscription_id: format!("subscription-{recipient}"),
-        recipient_identity_id: recipient.into(),
+        subscription_revision: 1,
+        subscription_policy_digest: "sha256:policy".into(),
+        recipient_kind: firm_core::agentfirm_api::MessageSubjectKind::AgentMember,
+        recipient_ref: recipient.into(),
+        target_team_id: None,
         target_node_id: "node-b".into(),
+        resolved_team_membership_id: None,
+        recipient_agent_member_id: Some(recipient.into()),
         recipient_session_id: Some(format!("session-{recipient}")),
         recipient_session_generation: Some(4),
         status,
@@ -2031,7 +2099,7 @@ fn canonical_delivery(
 fn message_fingerprint(message: &Message) -> String {
     canonical_json_fingerprint(&serde_json::json!({
         "sender_actor_ref": message.sender_actor_ref,
-        "sender_agent_id": message.sender_agent_id,
+        "sender_agent_member_id": message.sender_agent_member_id,
         "sender_session_id": message.sender_session_id,
         "address_kind": message.address_kind,
         "target_ref": message.target_ref,
@@ -2068,11 +2136,11 @@ fn persisted_replica(message: &Message) -> firm_core::collaboration::RemoteMessa
 fn message_projection_preserves_per_recipient_partial_delivery_truth() {
     let recipients = vec![
         MessageRecipientRef {
-            kind: MessageRecipientKind::AgentIdentity,
+            kind: MessageRecipientKind::AgentMember,
             id: "member-b1".into(),
         },
         MessageRecipientRef {
-            kind: MessageRecipientKind::AgentIdentity,
+            kind: MessageRecipientKind::AgentMember,
             id: "member-b2".into(),
         },
     ];
@@ -2083,7 +2151,7 @@ fn message_projection_preserves_per_recipient_partial_delivery_truth() {
         source_node_daemon_id: "daemon-a".into(),
         source_authority_generation: 8,
         sender_actor_ref: actor(ActorKind::AgentMember, "host-a"),
-        sender_agent_id: Some("host-a".into()),
+        sender_agent_member_id: Some("host-a".into()),
         sender_session_id: Some("session-host-a".into()),
         address_kind: MessageAddressKind::DirectAgent,
         target_ref: recipients[0].clone(),
@@ -2153,7 +2221,7 @@ fn message_projection_preserves_per_recipient_partial_delivery_truth() {
     assert_eq!(projections[1].state, CanonicalMessageDeliveryStatus::Queued);
 
     let mut duplicate = deliveries.clone();
-    duplicate[1].recipient_identity_id = "member-b1".into();
+    duplicate[1].recipient_agent_member_id = Some("member-b1".into());
     assert!(project_cross_node_deliveries(
         &message,
         &replica,
@@ -2175,23 +2243,34 @@ fn message_projection_preserves_per_recipient_partial_delivery_truth() {
         ..message.clone()
     };
     let team_replica = persisted_replica(&team_message);
+    let mut team_delivery = canonical_delivery(
+        "delivery-team-1",
+        "member-b1",
+        CanonicalMessageDeliveryStatus::Routed,
+    );
+    team_delivery.recipient_kind = firm_core::agentfirm_api::MessageSubjectKind::Team;
+    team_delivery.recipient_ref = "team-b".into();
+    team_delivery.target_team_id = Some("team-b".into());
+    team_delivery.resolved_team_membership_id = Some("membership-team-b-member-b1".into());
     assert_eq!(
         project_cross_node_deliveries(
             &team_message,
             &team_replica,
-            &deliveries,
+            std::slice::from_ref(&team_delivery),
             "route-team-1",
             Some(9),
             45,
             "2026-08-11T00:00:02Z",
         )
-        .expect("target Node subscription expansion remains per-recipient")
+        .expect("one resolved Team-subject delivery projects one selected membership")
         .len(),
-        2
+        1
     );
 
-    let mut mixed_nodes = deliveries;
-    mixed_nodes[1].target_node_id = "node-c".into();
+    let mut duplicate_team_delivery = team_delivery.clone();
+    duplicate_team_delivery.id = "delivery-team-duplicate".into();
+    duplicate_team_delivery.target_node_id = "node-c".into();
+    let mixed_nodes = vec![team_delivery, duplicate_team_delivery];
     assert!(project_cross_node_deliveries(
         &team_message,
         &team_replica,
@@ -2262,7 +2341,7 @@ impl RemoteMessageReplicaPort for FaithfulReplicaStore {
 #[test]
 fn immutable_message_transfer_persists_exact_replica_before_delivery_and_replays() {
     let recipients = vec![MessageRecipientRef {
-        kind: MessageRecipientKind::AgentIdentity,
+        kind: MessageRecipientKind::AgentMember,
         id: "member-b1".into(),
     }];
     let mut message = Message {
@@ -2272,7 +2351,7 @@ fn immutable_message_transfer_persists_exact_replica_before_delivery_and_replays
         source_node_daemon_id: "daemon-a".into(),
         source_authority_generation: 8,
         sender_actor_ref: actor(ActorKind::AgentMember, "host-a"),
-        sender_agent_id: Some("host-a".into()),
+        sender_agent_member_id: Some("host-a".into()),
         sender_session_id: Some("session-host-a".into()),
         address_kind: MessageAddressKind::DirectAgent,
         target_ref: recipients[0].clone(),
@@ -2692,12 +2771,12 @@ fn target_work_create_applies_once_through_native_work_authority() {
     assert_eq!(works[0].team_id.as_deref(), Some("team-b"));
 
     for (label, status) in [
-        ("closed", AgentTeamStatus::Closed),
-        ("archived", AgentTeamStatus::Archived),
+        ("closed", AgentTeamStatus::Inactive),
+        ("archived", AgentTeamStatus::Trashed),
     ] {
         let unavailable = TestStore::new(&format!("target-work-{label}"));
         seed_target_team(&unavailable.store);
-        let mut team = unavailable
+        let team = unavailable
             .store
             .teams()
             .unwrap()
@@ -2705,9 +2784,23 @@ fn target_work_create_applies_once_through_native_work_authority() {
             .rev()
             .find(|team| team.id == "team-b")
             .unwrap();
-        team.status = status;
-        team.updated_at = format!("unix-ms:{label}");
-        unavailable.store.append_team(&team).unwrap();
+        unavailable
+            .store
+            .transition_agent_team(
+                &MutationContext {
+                    execution_space_id: "space-node-b".into(),
+                    authenticated_actor: actor(ActorKind::Human, "fixture-operator"),
+                    authority_actor: None,
+                    command_name: "agent_team.transition".into(),
+                    idempotency_key: format!("team-b-{label}"),
+                    expected_version: team.revision,
+                    request_fingerprint: None,
+                },
+                &team.id,
+                status,
+                &format!("unix-ms:{label}"),
+            )
+            .unwrap();
         let before_works = unavailable.store.latest_works().unwrap();
         let before_events = unavailable.store.work_events().unwrap();
         let error = apply_collaboration_target_operation(&unavailable.store, &route, "unix-ms:201")
