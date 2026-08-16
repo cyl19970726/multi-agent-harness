@@ -1670,7 +1670,7 @@ fn post_mission_and_retired_wave_write_routes() {
 }
 
 #[test]
-fn get_team_member_inbox_uses_actionable_latest_wins_projection() {
+fn unauthenticated_team_member_inbox_http_route_is_retired() {
     let home = TempHome::new("team-inbox-http");
     let _project_id = init_project(&home, "alpha");
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
@@ -1701,22 +1701,21 @@ fn get_team_member_inbox_uses_actionable_latest_wins_projection() {
         }),
     );
     assert_eq!(status, 200, "body: {sent}");
-    let message_id = sent["result"]["id"].as_str().expect("message id");
-
     let (status, inbox) =
         serve.get_json(&format!("/v1/team-runs/{run_id}/members/{member_id}/inbox"));
-    assert_eq!(status, 200, "body: {inbox}");
+    assert_eq!(status, 410, "body: {inbox}");
     assert_eq!(
-        inbox["messages"].as_array().map(Vec::len),
-        Some(1),
-        "queued ordinary message is actionable"
+        inbox["error"]["code"].as_str(),
+        Some("RETIRED_RUNTIME_READER")
     );
-    assert_eq!(inbox["messages"][0]["id"].as_str(), Some(message_id));
     let (status, all) = serve.get_json(&format!(
         "/v1/team-runs/{run_id}/members/{member_id}/inbox?all=true"
     ));
-    assert_eq!(status, 200, "body: {all}");
-    assert_eq!(all["messages"].as_array().map(Vec::len), Some(1));
+    assert_eq!(status, 410, "body: {all}");
+    assert_eq!(
+        all["error"]["code"].as_str(),
+        Some("RETIRED_RUNTIME_READER")
+    );
 }
 
 #[test]

@@ -7954,7 +7954,7 @@ pub(crate) fn operator_provider_admission_probe(
 }
 
 fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "member providers|preflight|message|work")?;
+    require_subcommand(args, "member providers|preflight|inbox|message|work")?;
     match args[0].as_str() {
         // Runtime availability of each provider ACCOUNT, reported separately
         // from adapter compatibility. See `member providers` for the latter.
@@ -8015,6 +8015,7 @@ fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 ));
             }
         }
+        "inbox" => bound_member_inbox_command(store, &args[1..])?,
         "message" => bound_member_message_command(store, &args[1..])?,
         "work" => bound_member_work_command(store, &args[1..])?,
         other => return Err(CliError::Usage(format!("unknown member command: {other}"))),
@@ -8082,6 +8083,42 @@ fn execute_bound_member_role_action(
         },
     )?;
     print_json(&result)
+}
+
+fn bound_member_inbox_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let context = bound_member_role_context()?;
+    let member_run_id = context.member_run_id.clone();
+    let messages = dispatch_live_member_control(
+        store,
+        LiveMemberControlRequest::ReadInbox {
+            team_run_id: context.team_run_id,
+            member_run_id: context.member_run_id,
+            capability_token: context.capability_token,
+            include_all: has_flag(args, "--all"),
+        },
+    )?;
+    let messages = serde_json::from_value::<Vec<TeamMessageProjection>>(messages)?;
+    if has_flag(args, "--json") {
+        print_json(&messages)?;
+    } else {
+        for message in &messages {
+            let delivery = message
+                .deliveries
+                .iter()
+                .find(|delivery| delivery.member_id == member_run_id)
+                .map(|delivery| serde_snake_label(&delivery.status))
+                .unwrap_or_else(|| "unknown".to_string());
+            println!(
+                "{}\t{}\tfrom={}\t{}\t{}",
+                message.id,
+                team_message_kind_label(&message.kind),
+                message.sender_runtime_id,
+                delivery,
+                message.body.lines().next().unwrap_or_default()
+            );
+        }
+    }
+    Ok(())
 }
 
 fn bound_member_message_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -11955,8 +11992,9 @@ fn member_preflight_command(store: &HarnessStore, args: &[String]) -> CliResult<
 ///
 /// `/mode` names the execution mode (`app-server`, `acp`, `agent-sdk`
 /// shortcuts or the literal mode id). `external_interactive` declares a
-/// user-driven external session: Harness spawns no provider process for it
-/// and the member polls its own inbox via `team-run inbox`/`send`/`ack`.
+/// user-driven external session: Harness spawns no provider process for it,
+/// and the exact environment-bound member polls its own inbox via the legacy
+/// `team-run inbox` hook path. Managed provider members use `member inbox`.
 fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
     let (raw, inline_work) = match raw.split_once('#') {
         Some((head, brief)) if !brief.trim().is_empty() => (head, Some(brief.trim().to_string())),
@@ -13678,6 +13716,45 @@ pub(crate) fn team_run_inbox(
             .then_with(|| left.id.cmp(&right.id))
     });
     Ok(messages)
+}
+
+fn require_external_interactive_inbox_scope(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+) -> CliResult<()> {
+    let bound_team_run_id = env::var("FIRM_TEAM_RUN_ID")
+        .or_else(|_| env::var("HARNESS_TEAM_RUN_ID"))
+        .map_err(|_| {
+            CliError::Usage(
+                "team-run inbox is reserved for the explicitly bound external_interactive session; managed members must use `member inbox`"
+                    .into(),
+            )
+        })?;
+    let bound_member_run_id = env::var("FIRM_MEMBER_RUN_ID")
+        .or_else(|_| env::var("HARNESS_MEMBER_RUN_ID"))
+        .map_err(|_| {
+            CliError::Usage(
+                "team-run inbox is reserved for the explicitly bound external_interactive session; managed members must use `member inbox`"
+                    .into(),
+            )
+        })?;
+    if bound_team_run_id != team_run_id || bound_member_run_id != member_run_id {
+        return Err(CliError::Usage(
+            "UNAUTHORIZED_ACTOR: team-run inbox cannot select another TeamRun or MemberRun".into(),
+        ));
+    }
+    let member = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .find(|member| member.id == member_run_id && member.team_run_id == team_run_id)
+        .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+    if !member.is_external_interactive() {
+        return Err(CliError::Usage(
+            "RETIRED_RUNTIME_READER: managed members must read their exact-self Inbox through `member inbox`"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 fn canonical_team_messages_for_run(
@@ -17466,12 +17543,10 @@ fn team_run_command(
         }
         "inbox" => {
             let member_run_id = required(args, "--member-run-id")?;
-            let messages = team_run_inbox(
-                store,
-                &required(args, "--id")?,
-                &member_run_id,
-                has_flag(args, "--all"),
-            )?;
+            let team_run_id = required(args, "--id")?;
+            require_external_interactive_inbox_scope(store, &team_run_id, &member_run_id)?;
+            let messages =
+                team_run_inbox(store, &team_run_id, &member_run_id, has_flag(args, "--all"))?;
             if json {
                 print_json(&messages)?;
             } else {
@@ -18119,6 +18194,12 @@ enum LiveMemberControlRequest {
         reason: String,
         requested_by: String,
     },
+    ReadInbox {
+        team_run_id: String,
+        member_run_id: String,
+        capability_token: String,
+        include_all: bool,
+    },
     RoleAction {
         team_run_id: String,
         member_run_id: String,
@@ -18136,6 +18217,7 @@ impl LiveMemberControlRequest {
             Self::Steer { team_run_id, .. }
             | Self::Interrupt { team_run_id, .. }
             | Self::Close { team_run_id, .. }
+            | Self::ReadInbox { team_run_id, .. }
             | Self::RoleAction { team_run_id, .. } => team_run_id,
         }
     }
@@ -18145,6 +18227,7 @@ impl LiveMemberControlRequest {
             Self::Steer { member_run_id, .. }
             | Self::Interrupt { member_run_id, .. }
             | Self::Close { member_run_id, .. }
+            | Self::ReadInbox { member_run_id, .. }
             | Self::RoleAction { member_run_id, .. } => member_run_id,
         }
     }
@@ -18154,6 +18237,7 @@ impl LiveMemberControlRequest {
             Self::Steer { .. } => LiveMemberControlRequirement::Steer,
             Self::Interrupt { .. } => LiveMemberControlRequirement::Interrupt,
             Self::Close { .. } => LiveMemberControlRequirement::Close,
+            Self::ReadInbox { .. } => LiveMemberControlRequirement::RoleAction,
             Self::RoleAction { .. } => LiveMemberControlRequirement::RoleAction,
         }
     }
@@ -19769,6 +19853,52 @@ fn is_same_runtime_close_drift(
         && latest.native_session == expected.native_session
 }
 
+fn require_bound_live_member_authority(
+    store: &HarnessStore,
+    control: &LiveMemberControl,
+    team_run_id: &str,
+    member_run_id: &str,
+    supervisor_id: &str,
+    generation: u64,
+    capability_token: &str,
+) -> CliResult<harness_core::agentfirm_api::AgentSession> {
+    if capability_token.len() != 64 || capability_token != control.role_action_token {
+        return Err(CliError::Usage(
+            "UNAUTHORIZED_ACTOR: member Role Action capability is invalid for this live runtime"
+                .into(),
+        ));
+    }
+    let member = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .find(|member| member.id == member_run_id && member.team_run_id == team_run_id)
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "BOUND_MEMBER_RUN_NOT_FOUND: {member_run_id} is not a member of TeamRun {team_run_id}"
+            ))
+        })?;
+    if !member.coordination_is_active() || member.agent_member_id != control.agent_identity_id {
+        return Err(CliError::Usage(
+            "UNAUTHORIZED_ACTOR: live member identity no longer matches durable Team authority"
+                .into(),
+        ));
+    }
+    let ledger = TeamRunLedger::new(
+        store,
+        team_run_id,
+        supervisor_id,
+        generation,
+        Arc::new(AtomicBool::new(true)),
+    );
+    let session = require_member_provider_session_authority(&ledger, &member, true)?;
+    if session.agent_identity_id != control.agent_identity_id {
+        return Err(CliError::Usage(
+            "AGENT_SESSION_SCOPE_FENCED: live Role Action identity does not match the current AgentSession"
+                .into(),
+        ));
+    }
+    Ok(session)
+}
+
 fn dispatch_local_live_member_control(
     store: &HarnessStore,
     supervisor_id: &str,
@@ -19841,6 +19971,29 @@ where
             "member {member_run_id} does not belong to team run {team_run_id}"
         )));
     }
+    if let LiveMemberControlRequest::ReadInbox {
+        capability_token,
+        include_all,
+        ..
+    } = &request
+    {
+        require_bound_live_member_authority(
+            store,
+            &control,
+            &team_run_id,
+            &member_run_id,
+            supervisor_id,
+            generation,
+            capability_token,
+        )?;
+        return serde_json::to_value(team_run_inbox(
+            store,
+            &team_run_id,
+            &member_run_id,
+            *include_all,
+        )?)
+        .map_err(CliError::Json);
+    }
     if let LiveMemberControlRequest::RoleAction {
         capability_token,
         path,
@@ -19850,40 +20003,15 @@ where
         ..
     } = &request
     {
-        if capability_token.len() != 64 || capability_token != &control.role_action_token {
-            return Err(CliError::Usage(
-                "UNAUTHORIZED_ACTOR: member Role Action capability is invalid for this live runtime"
-                    .into(),
-            ));
-        }
-        let member = latest_member_runs_in_append_order(store)?
-            .into_iter()
-            .find(|member| member.id == member_run_id && member.team_run_id == team_run_id)
-            .ok_or_else(|| {
-                CliError::Usage(format!(
-                    "BOUND_MEMBER_RUN_NOT_FOUND: {member_run_id} is not a member of TeamRun {team_run_id}"
-                ))
-            })?;
-        if !member.coordination_is_active() || member.agent_member_id != control.agent_identity_id {
-            return Err(CliError::Usage(
-                "UNAUTHORIZED_ACTOR: live member identity no longer matches durable Team authority"
-                    .into(),
-            ));
-        }
-        let ledger = TeamRunLedger::new(
+        let session = require_bound_live_member_authority(
             store,
+            &control,
             &team_run_id,
+            &member_run_id,
             supervisor_id,
             generation,
-            Arc::new(AtomicBool::new(true)),
-        );
-        let session = require_member_provider_session_authority(&ledger, &member, true)?;
-        if session.agent_identity_id != control.agent_identity_id {
-            return Err(CliError::Usage(
-                "AGENT_SESSION_SCOPE_FENCED: live Role Action identity does not match the current AgentSession"
-                    .into(),
-            ));
-        }
+            capability_token,
+        )?;
         let auth = agentfirm_api::AuthenticatedMutation {
             execution_space_id: session.execution_space_id,
             actor: harness_core::agentfirm_api::ActorRef {
@@ -19996,6 +20124,9 @@ where
             requested_by,
             reply: reply_tx,
         },
+        LiveMemberControlRequest::ReadInbox { .. } => {
+            unreachable!("bound Inbox reads return after Supervisor capability validation")
+        }
         LiveMemberControlRequest::RoleAction { .. } => {
             unreachable!("Role Action requests return before provider control dispatch")
         }
@@ -26567,8 +26698,9 @@ fn work_contract_prompt(
            \"$HARNESS_BIN\" member work start --work-id {work_id} --expected-version {work_version}\n\
          - Read the board: \"$HARNESS_BIN\" team-run work list --team-run-id {team_run_id}\n\
          - Inspect the latest version before every transition: \"$HARNESS_BIN\" team-run work show --work-id {work_id}\n\
-         - Ordinary canonical Message is conversation only. Link discussion to Work {work_id}; never create or transfer ownership through chat.\n\
-         - Send a canonical Work-linked Message with: \"$HARNESS_BIN\" member message send --recipient-agent-id <stable-agent-identity> --work-id {work_id} --body '<markdown>'. The bound command derives your sender identity and live runtime scope; never select a sender identity.\n\
+         - Ordinary canonical Message is conversation only. Messages never change Work ownership or status. Link discussion to Work {work_id}; never create or transfer ownership through chat.\n\
+         - Read actionable mail through the same exact-self Supervisor binding with: \"$HARNESS_BIN\" member inbox --all --json.\n\
+         - Send a canonical Work-linked Message through the authenticated Member Role Action with: \"$HARNESS_BIN\" member message send --recipient-agent-id <stable-agent-identity> --work-id {work_id} --body '<markdown>'. The bound command derives your sender identity and live runtime scope; never select a sender identity.\n\
          - Reply with the exact correlation and causation ids printed beside an incoming Message: \"$HARNESS_BIN\" member message reply --recipient-agent-id <stable-agent-identity> --correlation-id <correlation-id> --causation-id <message-id> --work-id {work_id} --body '<markdown>'.\n\
          - Ask the Host for a decision with: \"$HARNESS_BIN\" member message request-decision --work-id {work_id} --body '<decision needed, options, recommendation>'. Conversation never transfers Work.\n\
          - If blocked, inspect the latest version, then run: \"$HARNESS_BIN\" member work block --work-id {work_id} --expected-version <latest-version> --reason '<reason>'; follow it with a concise Work-linked Message. Resume with member work resume and the next exact version.\n\
@@ -29794,22 +29926,20 @@ fn handle_http_connection(
                 return Ok(());
             }
             if let [team_run_id, "members", member_run_id, "inbox"] = parts.as_slice() {
-                let include_all = query_param(&path, "all")
-                    .as_deref()
-                    .is_some_and(|value| matches!(value, "1" | "true" | "yes"));
-                match team_run_inbox(store, team_run_id, member_run_id, include_all) {
-                    Ok(messages) => write_http_json(
-                        &mut stream,
-                        "200 OK",
-                        &serde_json::json!({"messages": messages}),
-                    )?,
-                    Err(CliError::Usage(detail)) => write_http_json(
-                        &mut stream,
-                        "404 Not Found",
-                        &serde_json::json!({"error": "team_run_inbox_not_found", "detail": detail}),
-                    )?,
-                    Err(error) => return Err(error),
-                }
+                write_http_json(
+                    &mut stream,
+                    "410 Gone",
+                    &serde_json::json!({
+                        "ok": false,
+                        "error": {
+                            "code": "RETIRED_RUNTIME_READER",
+                            "message": "managed Member Inbox is exact-self only; use the Supervisor-bound `member inbox` command or an authenticated RoleView",
+                            "resource_kind": "member_run",
+                            "resource_id": member_run_id,
+                            "team_run_id": team_run_id
+                        }
+                    }),
+                )?;
                 return Ok(());
             }
             if let [team_run_id, "works"] = parts.as_slice() {
@@ -41421,6 +41551,7 @@ fn print_help() {
   member providers [--fail-on-review]
   member preflight [--provider <name>] [--execution-mode <mode>] [--canary]
                    [--timeout-s <n>] [--fail-on-unavailable] [--fail-on-review] [--json]
+  member inbox [--all] [--json]
   member message send|reply|request-decision --body <markdown>
                    [--recipient-agent-id <stable-agent-identity>] [--work-id <id>]
   member work claim|start|block|resume|release|submit --work-id <id> --expected-version <n>
@@ -45528,7 +45659,7 @@ mod tests {
                 .find(|binding| binding.capability == "quiesce")
                 .unwrap()
                 .admission,
-            harness_core::ProviderBindingAdmission::Active
+            harness_core::ProviderBindingAdmission::PendingDependency
         );
 
         let mut full_access = team_member_provider_profile_for_mode("pi", Some("pi_rpc"));
@@ -45586,7 +45717,13 @@ mod tests {
             .iter_mut()
             .find(|binding| binding.capability == "start_cycle")
             .expect("start_cycle binding")
-            .status = harness_core::ProviderCapabilityStatus::ReviewRequired;
+            .status = harness_core::ProviderCapabilityStatus::Unsupported;
+        capability_changed
+            .capability_bindings
+            .iter_mut()
+            .find(|binding| binding.capability == "start_cycle")
+            .expect("start_cycle binding")
+            .admission = harness_core::ProviderBindingAdmission::Failed;
         capability_changed.capability_fingerprint =
             profile_capability_fingerprint(&capability_changed);
         capability_changed.composition_fingerprint =
@@ -53370,6 +53507,53 @@ package:com.tencent.mm
             register_live_member_control(&second, &second_token, 1);
         let supervisor_valid = AtomicBool::new(true);
         let authority_gate = Mutex::new(());
+        author_test_canonical_message(
+            &store,
+            &created,
+            &lease,
+            &lease.execution_space_id,
+            "bound-member-private-inbox",
+            &second.agent_member_id,
+            &first.agent_member_id,
+            harness_core::agentfirm_api::MessageKind::Message,
+            "Private exact-self inbox message",
+            "bound-member-private-inbox-thread",
+            None,
+            harness_core::agentfirm_api::ResponseIntent::ResponseRequired,
+        );
+        let forged_inbox = dispatch_local_live_member_control(
+            &store,
+            &lease.supervisor_id,
+            lease.generation,
+            &supervisor_valid,
+            &authority_gate,
+            LiveMemberControlRequest::ReadInbox {
+                team_run_id: created.team_run.id.clone(),
+                member_run_id: second.id.clone(),
+                capability_token: first_token.clone(),
+                include_all: true,
+            },
+        )
+        .expect_err("one member capability cannot read its sibling inbox");
+        assert!(forged_inbox.to_string().contains("UNAUTHORIZED_ACTOR"));
+        let own_inbox = dispatch_local_live_member_control(
+            &store,
+            &lease.supervisor_id,
+            lease.generation,
+            &supervisor_valid,
+            &authority_gate,
+            LiveMemberControlRequest::ReadInbox {
+                team_run_id: created.team_run.id.clone(),
+                member_run_id: first.id.clone(),
+                capability_token: first_token.clone(),
+                include_all: true,
+            },
+        )
+        .expect("exact live capability reads only its own Inbox");
+        let own_inbox =
+            serde_json::from_value::<Vec<TeamMessageProjection>>(own_inbox).expect("Inbox rows");
+        assert_eq!(own_inbox.len(), 1);
+        assert_eq!(own_inbox[0].body, "Private exact-self inbox message");
         let work_value = create_team_work_value(
             &store,
             &created.team_run.id,

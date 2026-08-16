@@ -155,9 +155,9 @@ const memberSkill = read(join(ROOT, "skills/collaborate-as-agent-team-member/SKI
 
 if (memberSkill && mainRs) {
   const ops = [
-    { name: "work start", skill: "work start", code: "team-run work start" },
-    { name: "work submit", skill: "work submit", code: "team-run work submit" },
-    { name: "inbox read", skill: "team-run inbox", code: "team-run inbox" },
+    { name: "work start", skill: "member work start", code: "member work start" },
+    { name: "work submit", skill: "member work submit", code: "member work submit" },
+    { name: "inbox read", skill: "member inbox", code: "member inbox" },
     {
       name: "send message",
       skill: "authenticated[\\s\\S]{0,80}Member Role Action",

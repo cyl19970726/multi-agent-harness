@@ -71,6 +71,11 @@ const store = readFileSync("crates/firm-store/src/trust_kernel.rs", "utf8");
 const daemon = readFileSync("crates/firm-cli/src/supervisor_daemon.rs", "utf8");
 const server = readFileSync("crates/firm-cli/src/main.rs", "utf8");
 const providerAdapter = readFileSync("crates/firm-cli/src/provider_adapter.rs", "utf8");
+const providerRuntimeSources = {
+  CodexDeferredNativeControl: productionRust("crates/firm-cli/src/codex_team_runtime.rs"),
+  ClaudeControlFlags: productionRust("crates/firm-cli/src/claude_team_runtime.rs"),
+  KimiNeutralNativeControl: productionRust("crates/firm-cli/src/kimi_team_runtime.rs"),
+};
 
 for (const token of [
   "pub struct AgentIdentity",
@@ -117,14 +122,17 @@ for (const token of [
   "ProviderNativeControl",
   "execute_team_control",
   "settle_team_control",
-  "CodexNativeControl",
-  "ClaudeNativeControl",
-  "KimiNativeControl",
   "PiNativeControl",
   "provider_availability",
   "PROVIDER_CONTROL_FAILED",
 ]) {
   if (!providerAdapter.includes(token)) failures.push(`provider conformance is not executable: ${token}`);
+}
+for (const [control, source] of Object.entries(providerRuntimeSources)) {
+  if (!source.includes(`impl ProviderNativeControl for ${control}`)
+      && !source.includes(`impl crate::provider_adapter::ProviderNativeControl for ${control}`)) {
+    failures.push(`provider conformance is not executable: ${control}`);
+  }
 }
 if (providerAdapter.includes("execute_control_plan")) {
   failures.push("provider conformance must use concrete adapters, not an injected control closure");

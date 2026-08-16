@@ -246,9 +246,15 @@ GET /v1/snapshot
 GET /v1/dashboard/snapshot
 GET /v1/events
 GET /v1/team-runs/host-inbox
-GET /v1/team-runs/{id}/members/{member-run-id}/inbox
 GET /v1/views/agent-workspace/{team-run-or-member-run}?agent_id={exact-owner}
 ```
+
+Managed provider members read only their exact-self coordination Inbox through
+the Supervisor-bound `harness member inbox [--all] [--json]` command. The
+former unauthenticated per-Member HTTP Inbox route is retired. The cooperative
+`external_interactive` hook may still use `team-run inbox` only for the
+TeamRun and MemberRun already bound in its environment; it cannot select
+another recipient.
 
 The local API also exposes safe control-plane actions used by the Agent
 Dashboard:
