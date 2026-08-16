@@ -219,12 +219,16 @@ export async function fetchSnapshot(
   project?: string | null,
   company?: string | null,
   space?: string | null,
+  signal?: AbortSignal,
 ): Promise<DashboardSnapshot> {
   const normalized = normalizeBaseUrl(baseUrl);
   if (!normalized) {
     throw new Error("Harness API URL is required");
   }
-  const response = await fetch(`${normalized}${withProjectAndCompany("/v1/snapshot", project, company, space)}`);
+  const response = await fetch(
+    `${normalized}${withProjectAndCompany("/v1/snapshot", project, company, space)}`,
+    { signal },
+  );
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
@@ -237,11 +241,15 @@ export async function fetchTeamRunSnapshot(
   project?: string | null,
   company?: string | null,
   space?: string | null,
+  signal?: AbortSignal,
 ): Promise<DashboardSnapshot> {
   const normalized = normalizeBaseUrl(baseUrl);
   if (!normalized) throw new Error("Harness API URL is required");
   const path = `/v1/team-runs/${encodeURIComponent(teamRunId)}/snapshot`;
-  const response = await fetch(`${normalized}${withProjectAndCompany(path, project, company, space)}`);
+  const response = await fetch(
+    `${normalized}${withProjectAndCompany(path, project, company, space)}`,
+    { signal },
+  );
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return (await response.json()) as DashboardSnapshot;
 }

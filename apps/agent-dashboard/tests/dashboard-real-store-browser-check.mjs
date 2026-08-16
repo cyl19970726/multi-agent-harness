@@ -11,6 +11,7 @@ const config = {
   api: process.env.DASHBOARD_REAL_STORE_API,
   space: process.env.DASHBOARD_REAL_STORE_SPACE,
   project: process.env.DASHBOARD_REAL_STORE_PROJECT,
+  company: process.env.DASHBOARD_REAL_STORE_COMPANY,
   teamRun: process.env.DASHBOARD_REAL_STORE_TEAM_RUN,
   teamName: process.env.DASHBOARD_REAL_STORE_TEAM_NAME,
   host: process.env.DASHBOARD_REAL_STORE_HOST,
@@ -48,16 +49,22 @@ const pageErrors = [];
 const httpErrors = [];
 const snapshotStarts = new Map();
 const snapshotLatenciesMs = [];
+const storeSnapshotLatenciesMs = [];
 let snapshotRequestCount = 0;
 let inFlightSnapshots = 0;
 let maxInFlightSnapshots = 0;
 const surfaceLatenciesMs = {};
+let releaseInitialFollowUp;
+const initialFollowUpRelease = new Promise((resolveRelease) => {
+  releaseInitialFollowUp = resolveRelease;
+});
+let routedSnapshotCount = 0;
 
 function isSnapshot(request) {
   return new URL(request.url()).pathname === "/v1/snapshot";
 }
 
-async function waitFor(predicate, label, timeoutMs = 30_000) {
+async function waitFor(predicate, label, timeoutMs = 180_000) {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
     assert.ok(Date.now() < deadline, `timed out waiting for ${label}`);
@@ -67,6 +74,21 @@ async function waitFor(predicate, label, timeoutMs = 30_000) {
 
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  // This opt-in check intentionally exercises retained stores whose remote
+  // fabric journal can be hundreds of megabytes. Keep every assertion exact,
+  // but allow the real backend enough time to produce both its full snapshot
+  // and independently authenticated RoleViews under that pressure.
+  page.setDefaultTimeout(180_000);
+  await page.route("**/v1/snapshot?**", async (route) => {
+    routedSnapshotCount += 1;
+    const startedAt = Date.now();
+    const response = await route.fetch();
+    storeSnapshotLatenciesMs.push(Date.now() - startedAt);
+    if (routedSnapshotCount === 2) {
+      await initialFollowUpRelease;
+    }
+    await route.fulfill({ response });
+  });
   await page.addInitScript((token) => {
     window.__AGENTFIRM_BOOTSTRAP__ = { capabilityToken: token };
   }, config.hostToken);
@@ -94,7 +116,7 @@ try {
   page.on("requestfinished", settleSnapshot);
   page.on("requestfailed", settleSnapshot);
 
-  const scope = `space=${encodeURIComponent(config.space)}&project=${encodeURIComponent(config.project)}`;
+  const scope = `space=${encodeURIComponent(config.space)}&project=${encodeURIComponent(config.project)}&company=${encodeURIComponent(config.company)}`;
   await page.goto(`${base}/?surface=team&${scope}`, { waitUntil: "domcontentloaded" });
   await page.getByText("Loading Agent Teams…", { exact: true }).waitFor();
   await page.getByText("Loading Execution Nodes…", { exact: true }).waitFor();
@@ -103,8 +125,11 @@ try {
 
   await waitFor(() => snapshotLatenciesMs.length >= 1, "first full snapshot");
   await page.getByText(config.teamName, { exact: true }).first().waitFor();
-  const firstSuccessCommittedBeforeFollowUp = snapshotLatenciesMs.length === 1;
+  await waitFor(() => storeSnapshotLatenciesMs.length >= 2, "coalesced follow-up Store response");
+  const firstSuccessCommittedBeforeFollowUp = snapshotLatenciesMs.length === 1
+    && inFlightSnapshots === 1;
   assert.equal(firstSuccessCommittedBeforeFollowUp, true, "first successful full snapshot did not commit before its follow-up completed");
+  releaseInitialFollowUp();
   await waitFor(() => snapshotLatenciesMs.length >= 2, "coalesced full-snapshot follow-up");
   const initialSnapshotRequestCount = snapshotRequestCount;
   assert.equal(initialSnapshotRequestCount, 2, "slow bootstrap must issue one initial full snapshot and one coalesced follow-up");
@@ -113,7 +138,12 @@ try {
 
   async function navigate(name, params, ready) {
     const startedAt = Date.now();
-    const search = new URLSearchParams({ ...params, space: config.space, project: config.project }).toString();
+    const search = new URLSearchParams({
+      ...params,
+      space: config.space,
+      project: config.project,
+      company: config.company,
+    }).toString();
     await page.evaluate((nextSearch) => {
       window.history.pushState({}, "", `/?${nextSearch}`);
       window.dispatchEvent(new PopStateEvent("popstate"));
@@ -175,10 +205,12 @@ try {
     evidence_kind: "canonical_store_live_clone",
     execution_space_id: config.space,
     project_binding_id: config.project,
+    company_id: config.company,
     initial_snapshot_request_count: initialSnapshotRequestCount,
     total_snapshot_request_count: snapshotRequestCount,
     max_in_flight_full_snapshots: maxInFlightSnapshots,
     full_snapshot_latencies_ms: snapshotLatenciesMs,
+    store_snapshot_latencies_ms: storeSnapshotLatenciesMs,
     first_success_committed_before_follow_up: firstSuccessCommittedBeforeFollowUp,
     surface_latencies_ms: surfaceLatenciesMs,
     console_errors: consoleErrors,
@@ -190,6 +222,7 @@ try {
   console.log("Dashboard real-store retained surfaces: PASS");
   console.log(JSON.stringify(result, null, 2));
 } finally {
+  releaseInitialFollowUp();
   await browser.close();
   await vite.close();
 }

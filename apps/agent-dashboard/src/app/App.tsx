@@ -236,6 +236,7 @@ export function App() {
   const resyncInFlightRef = useRef(false);
   const resyncDirtyRef = useRef(false);
   const resyncRunnerRef = useRef<(() => void) | null>(null);
+  const resyncAbortControllerRef = useRef<AbortController | null>(null);
   const resyncRetryTimerRef = useRef<number | null>(null);
   const resyncRetryAttemptRef = useRef(0);
   const staleConnectionAttemptRef = useRef<number | null>(null);
@@ -285,6 +286,8 @@ export function App() {
     } | null> => {
       const request = beginReadSnapshotRequest();
       if (!request) return null;
+      const controller = new AbortController();
+      resyncAbortControllerRef.current = controller;
       try {
         // Resolve a team definition id (team-xxx, not team-run-xxx) to its
         // latest team-run id before calling fetchTeamRunSnapshot so the
@@ -297,7 +300,13 @@ export function App() {
           !effectiveTeamId.startsWith("team-run-")
         ) {
           try {
-            const fullSnapshot = await fetchSnapshot(baseUrl, project, company, space);
+            const fullSnapshot = await fetchSnapshot(
+              baseUrl,
+              project,
+              company,
+              space,
+              controller.signal,
+            );
             const matchingRun = (fullSnapshot.team_runs ?? [])
               .filter((run) => run.agent_team_id === effectiveTeamId)
               .sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""))[0];
@@ -315,12 +324,23 @@ export function App() {
           }
         }
         const next = selection.surface === "team" && effectiveTeamId
-          ? await fetchTeamRunSnapshot(baseUrl, effectiveTeamId, project, company, space)
-          : await fetchSnapshot(baseUrl, project, company, space);
+          ? await fetchTeamRunSnapshot(
+              baseUrl,
+              effectiveTeamId,
+              project,
+              company,
+              space,
+              controller.signal,
+            )
+          : await fetchSnapshot(baseUrl, project, company, space, controller.signal);
         return { request, snapshot: next };
       } catch (error) {
         discardSnapshotRequest(request);
         throw error;
+      } finally {
+        if (resyncAbortControllerRef.current === controller) {
+          resyncAbortControllerRef.current = null;
+        }
       }
     },
     [beginReadSnapshotRequest, discardSnapshotRequest, selection.surface, selection.teamId],
@@ -464,6 +484,12 @@ export function App() {
   ]);
 
   const moveStreamBoundary = useCallback((nextStreamKey: string): void => {
+    // A request for the previous Project/Company/Execution Space cannot
+    // satisfy the new scope. Abort it before handing the one physical read
+    // slot to the new generation; otherwise a slow or deliberately held old
+    // response can head-of-line block the current scope indefinitely.
+    resyncAbortControllerRef.current?.abort();
+    resyncAbortControllerRef.current = null;
     selectedStreamRef.current = nextStreamKey;
     confirmedScopeRef.current = {};
     invalidationTracker.current.reset();
