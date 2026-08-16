@@ -48,10 +48,10 @@ type ContextSelection =
   | null;
 
 export function AgentConversationWorkspace({
-  apiUrl,space,project,company,routeIdentity,selection,refreshKey,onAction,actionsEnabled,onSelectionChange,
+  apiUrl,space,project,company,routeIdentity,selection,refreshKey,onAction,onSelectionChange,
 }:{
   apiUrl:string; space:string; project:string; company?:string; routeIdentity:string; selection:SelectionState;
-  refreshKey?:string; onAction:RoleActionExecutor; actionsEnabled:boolean;
+  refreshKey?:string; onAction:RoleActionExecutor;
   onSelectionChange:(next:Partial<SelectionState>)=>void;
 }) {
   const [view,setView]=useState<RoleView<AgentWorkspaceData>|null>(null);
@@ -116,7 +116,7 @@ export function AgentConversationWorkspace({
   // This surface owns an independently authenticated RoleView. Its write
   // freshness must therefore follow that exact projection, not the ambient
   // snapshot domains used by the surrounding dashboard shell.
-  const actionsCurrent=actionsEnabled && currentView.freshness==="current" && !loading && !error;
+  const actionsCurrent=currentView.freshness==="current" && !loading && !error;
   const selected=data.selected_agent;
   const publicProjection=data.projection_scope==="host_member_public";
   const selectedRunId=selected.current_member_run_ref;

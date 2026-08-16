@@ -203,6 +203,10 @@ export function App() {
   // /v1/snapshot has loaded (enabling SSE, polling and write actions), else an
   // empty (not-connected) workspace. The user-facing chip label is derived below.
   const [source, setSource] = useState<typeof liveSource | "offline">("offline");
+  // Mirrors the source transition synchronously for retry timers. React state
+  // cleanup may run a tick later than the first successful response; that tick
+  // must not dirty a second follow-up before the offline interval is removed.
+  const liveSourceRef = useRef(false);
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [selectorRecoveryNotice, setSelectorRecoveryNotice] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -355,8 +359,9 @@ export function App() {
         let superseded = false;
         const drainGeneration = resyncGenerationRef.current;
         try {
-          // One initial read plus one dirty follow-up. Further writes retain the
-          // dirty bit and schedule another bounded drain after this burst.
+          // One initial read plus one dirty follow-up. The follow-up covers all
+          // signals that crossed either pass, so a steady retry cadence cannot
+          // turn one slow response into an unbounded immediate drain.
           while (resyncDirtyRef.current && passes < 2) {
             resyncDirtyRef.current = false;
             passes += 1;
@@ -387,6 +392,13 @@ export function App() {
             if (adoptSnapshotResponse(result.request, result.snapshot)) {
               committed = true;
               resyncRetryAttemptRef.current = 0;
+              // Pass two is the single coalesced follow-up for this burst.
+              // Signals that crossed that follow-up are covered by its
+              // authoritative response and cannot create a third immediate
+              // request/livelock cycle.
+              if (passes === 2) resyncDirtyRef.current = false;
+              setIsLoading(false);
+              liveSourceRef.current = true;
               setSource(liveSource);
               setSourceError(null);
               setDomainFreshness(freshnessAfterSnapshot(streamConnectedRef.current));
@@ -430,8 +442,6 @@ export function App() {
               resyncRetryTimerRef.current = null;
               resyncRunnerRef.current?.();
             }, delay);
-          } else if (resyncDirtyRef.current && passes >= 2) {
-            window.setTimeout(() => resyncRunnerRef.current?.(), 100);
           }
         }
       })();
@@ -439,7 +449,9 @@ export function App() {
     // Install the latest closure even while an older scope owns the physical
     // request. Its finally block can then hand off to this runner safely.
     resyncRunnerRef.current = drain;
-    if (resyncInFlightRef.current) return;
+    // External signals may arrive while failure backoff is pending. They only
+    // occupy the dirty slot; they never shorten the bounded retry ladder.
+    if (resyncInFlightRef.current || resyncRetryTimerRef.current !== null) return;
     drain();
   }, [
     adoptSnapshotResponse,
@@ -536,63 +548,34 @@ export function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
-  // Auto-connect to the URL-selected harness on first load so deep links and
-  // capture proxies do not also issue a stray request to the default port. The
-  // state already falls back to apiDefault when no `?api=` value is supplied.
-  // This remains a silent attempt: explicit user actions own visible errors.
+  // Auto-connect through the shared coalescer so React effect replay, a retry
+  // tick, or an SSE/lifecycle signal cannot create an overlapping bootstrap
+  // read. The workflow catalog remains an independent best-effort request.
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
-      setIsLoading(true);
-      try {
-        const result = await fetchReadSnapshot(apiUrl, selectedProjectId, selectedCompanyId, selectedSpaceId);
-        if (!result) return;
-        if (cancelled) {
-          discardSnapshotRequest(result.request);
-          return;
-        }
-        if (adoptSnapshotResponse(result.request, result.snapshot)) {
-          setSource(liveSource);
-          setDomainFreshness(freshnessAfterSnapshot(streamConnectedRef.current));
-        }
-        try {
-          const defs = await fetchWorkflowDefs(apiUrl);
-          if (!cancelled) setWorkflowDefs(defs);
-        } catch {
-          // Catalog is best-effort; the surface shows an "unavailable" state.
-        }
-      } catch {
-        // Stay offline/empty; the auto-retry effect below keeps trying.
-      } finally {
-        if (!cancelled) setIsLoading(false);
-      }
-    })();
+    setIsLoading(true);
+    requestAuthoritativeResync();
+    void fetchWorkflowDefs(apiUrl).then((defs) => {
+      if (!cancelled) setWorkflowDefs(defs);
+    }).catch(() => {
+      if (!cancelled) setWorkflowDefs([]);
+    });
     return () => {
       cancelled = true;
     };
-  }, [adoptSnapshotResponse, apiUrl, discardSnapshotRequest, fetchReadSnapshot, selectedCompanyId, selectedProjectId, selectedSpaceId]);
+  }, [apiUrl, requestAuthoritativeResync, selectedCompanyId, selectedProjectId, selectedSpaceId]);
 
-  // Auto-retry while offline: if the initial connect failed or the backend went
-  // away, silently re-attempt the default URL every few seconds so the dashboard
-  // reconnects on its own — no manual button needed. Stops once live.
+  // The legacy four-second recovery cadence remains a signal source for
+  // offline self-healing, but it no longer starts HTTP reads directly. Slow
+  // requests retain commit eligibility and repeated ticks coalesce into the
+  // scheduler's single dirty follow-up without overriding failure backoff.
   useEffect(() => {
     if (source === liveSource) return;
     const id = window.setInterval(() => {
-      void (async () => {
-        try {
-          const result = await fetchReadSnapshot(apiUrl, selectedProjectId, selectedCompanyId, selectedSpaceId);
-          if (!result) return;
-          if (adoptSnapshotResponse(result.request, result.snapshot)) {
-            setSource(liveSource);
-            setDomainFreshness(freshnessAfterSnapshot(streamConnectedRef.current));
-          }
-        } catch {
-          // still offline; retry next tick
-        }
-      })();
-    }, 4000);
+      if (!liveSourceRef.current) requestAuthoritativeResync();
+    }, 4_000);
     return () => window.clearInterval(id);
-  }, [source, apiUrl, selectedCompanyId, selectedProjectId, selectedSpaceId, adoptSnapshotResponse, fetchReadSnapshot]);
+  }, [requestAuthoritativeResync, source]);
 
   // Load the project list (goal-multi-project P6) once a live source is up, and
   // re-load on apiUrl change (a different serve has a different registry). If no
@@ -850,12 +833,18 @@ export function App() {
   const isLive = source === liveSource;
 
   async function refreshLive() {
+    let joinedExistingRead = false;
     setIsLoading(true);
     setSourceError(null);
     try {
       const result = await fetchReadSnapshot(apiUrl, selectedProjectId, selectedCompanyId, selectedSpaceId);
-      if (!result) return;
+      if (!result) {
+        joinedExistingRead = true;
+        requestAuthoritativeResync();
+        return;
+      }
       if (adoptSnapshotResponse(result.request, result.snapshot)) {
+        liveSourceRef.current = true;
         setSource(liveSource);
         setFreshnessState("live");
         setDomainFreshness(freshnessAfterSnapshot(streamConnectedRef.current));
@@ -868,6 +857,7 @@ export function App() {
       }
     } catch (error) {
       setSourceError(error instanceof Error ? error.message : String(error));
+      liveSourceRef.current = false;
       setSource("offline");
       setFreshnessState("reconnecting");
       setDomainFreshness(uniformFreshness("offline"));
@@ -878,7 +868,11 @@ export function App() {
       setSnapshot(emptySnapshot);
       setWorkflowDefs([]);
     } finally {
-      setIsLoading(false);
+      // A rejected begin means another read or mutation still owns loading.
+      // Its scheduler/settlement clears the state; doing so here would expose
+      // the empty bootstrap model as a false zero state.
+      if (!joinedExistingRead) setIsLoading(false);
+      if (resyncDirtyRef.current) resyncRunnerRef.current?.();
     }
   }
 
@@ -1039,7 +1033,10 @@ export function App() {
     [],
   );
 
-  // Interval poll of /v1/snapshot is manual opt-in only. Automatic recovery is
+  // Interval poll of /v1/snapshot is manual opt-in only. Its ticks are freshness
+  // signals, not permission to start overlapping HTTP requests: the shared
+  // scheduler keeps one read in flight and one coalesced dirty follow-up.
+  // Automatic recovery is
   // edge-triggered above and on stream reconnect, so an outage does not create
   // permanent high-frequency polling. A failed
   // poll surfaces the error but keeps the last good snapshot — it does not tear
@@ -1049,44 +1046,21 @@ export function App() {
   const shouldPoll = isLive && pollEnabled;
   useEffect(() => {
     if (!shouldPoll) return;
-    let cancelled = false;
     const id = window.setInterval(() => {
-      void (async () => {
-        try {
-          const result = await fetchReadSnapshot(apiUrl, selectedProjectId, selectedCompanyId, selectedSpaceId);
-          if (!result) return;
-          if (cancelled) {
-            discardSnapshotRequest(result.request);
-            return;
-          }
-          if (adoptSnapshotResponse(result.request, result.snapshot)) setSourceError(null);
-        } catch (error) {
-          if (!cancelled) {
-            setSourceError(error instanceof Error ? error.message : String(error));
-          }
-        }
-      })();
+      requestAuthoritativeResync();
     }, pollIntervalMs);
     return () => {
-      cancelled = true;
       window.clearInterval(id);
     };
   }, [
     shouldPoll,
-    apiUrl,
-    selectedCompanyId,
-    selectedProjectId,
-    selectedSpaceId,
-    adoptSnapshotResponse,
-    discardSnapshotRequest,
-    fetchReadSnapshot,
+    requestAuthoritativeResync,
   ]);
 
   // Returns whether the action succeeded so callers that chain actions (e.g. the
   // composer's queue-then-deliver) can stop on failure instead of clobbering the
   // first error with the next call's `setSourceError(null)`.
   async function runActionDetailed(path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }): Promise<RoleActionExecutionResult> {
-    if (!isLive) return { ok: false, error: { code: "OFFLINE", message: "Live AgentFirm connection is required." } };
     if (mutationInFlightRef.current) {
       setSourceError("Another Console action is still in progress");
       return { ok: false, error: { code: "MUTATION_IN_FLIGHT", message: "Another Console action is still in progress." } };
@@ -1122,6 +1096,10 @@ export function App() {
   }
 
   async function runAction(path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }): Promise<boolean> {
+    if (!isLive) {
+      setSourceError("Live AgentFirm connection is required.");
+      return false;
+    }
     return (await runActionDetailed(path, body, options)).ok;
   }
 
