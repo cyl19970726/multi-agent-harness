@@ -1151,15 +1151,15 @@ fn pi_rpc_provider_profile_validation() {
         team_profile
             .get("supports_cancel")
             .and_then(|v| v.as_bool()),
-        Some(false),
-        "Pi protocol support must not advertise executable cancel before exact live evidence"
+        Some(true),
+        "Pi 0.84.2 cancel is executable only after the exact live abort canary"
     );
     assert_eq!(
         team_profile
             .get("supports_resume")
             .and_then(|v| v.as_bool()),
-        Some(false),
-        "Pi protocol support must not advertise executable resume before exact live evidence"
+        Some(true),
+        "Pi 0.84.2 resume has exact retained-session live evidence"
     );
     assert_eq!(
         team_profile
@@ -1187,18 +1187,28 @@ fn pi_rpc_provider_profile_validation() {
         "reconcile_effect must not be claimed for Pi"
     );
     assert_eq!(
-        pi["core_runtime_capability_admission"], "review_required",
-        "deterministic Pi support remains non-executable until exact live evidence exists"
+        pi["core_runtime_capability_admission"], "active",
+        "Pi 0.84.2 core open/start/observe bindings have exact live evidence"
     );
-
-    let strict = run_with_fake_pi(
-        &home,
-        &fake_bin,
-        "DONE",
-        &["member", "providers", "--fail-on-review"],
+    assert_eq!(
+        team_profile["binding_admission"], "degraded",
+        "optional Pi capabilities without proportional live evidence must remain pending"
     );
-    assert!(
-        !strict.status.success(),
-        "--fail-on-review must reject a tuple whose core bindings are still pending"
-    );
+    let admitted_bindings = team_profile["capability_bindings"]
+        .as_array()
+        .expect("versioned Pi capability bindings");
+    for capability in ["interrupt_current_cycle", "close_runtime"] {
+        let binding = admitted_bindings
+            .iter()
+            .find(|binding| binding["capability"] == capability)
+            .unwrap_or_else(|| panic!("missing {capability} binding"));
+        assert_eq!(binding["status"], "verified");
+        assert_eq!(binding["admission"], "active");
+    }
+    let steer_admission = admitted_bindings
+        .iter()
+        .find(|binding| binding["capability"] == "inject_current_cycle")
+        .expect("inject_current_cycle binding");
+    assert_eq!(steer_admission["status"], "review_required");
+    assert_eq!(steer_admission["admission"], "pending_dependency");
 }

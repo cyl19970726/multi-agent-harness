@@ -9388,6 +9388,12 @@ fn finalize_provider_integration_profile(profile: &mut ProviderIntegrationProfil
                         ("pi", "start_cycle", Some("0.84.2")) =>
                             Some("live:DEV-26:pi_rpc@0.84.2:prompt-accepted+agent-settled+get-state-idle+no-persisted-thinking"
                                 .to_string()),
+                        ("pi", "interrupt_current_cycle", Some("0.84.2")) =>
+                            Some("live:DEV-26:pi_rpc@0.84.2:session-2026-08-16T03-58-33-028Z_01a008b8-a244-79e1-a65f-fa26d56accde:busy-bash+abort-receipt+agent-settled+get-state-idle"
+                                .to_string()),
+                        ("pi", "close_runtime", Some("0.84.2")) =>
+                            Some("live:DEV-26:pi_rpc@0.84.2:session-2026-08-16T03-58-33-028Z_01a008b8-a244-79e1-a65f-fa26d56accde:owned-process-reaped+native-session-retained"
+                                .to_string()),
                         ("pi", "observe", Some("0.84.2")) =>
                             Some("live:DEV-26:pi_rpc@0.84.2:get-state-before-and-after-exact-session-resume"
                                 .to_string()),
@@ -54863,9 +54869,15 @@ package:com.tencent.mm
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(
             pi_live_capabilities,
-            std::collections::BTreeSet::from(["observe", "open_or_resume", "start_cycle"])
+            std::collections::BTreeSet::from([
+                "close_runtime",
+                "interrupt_current_cycle",
+                "observe",
+                "open_or_resume",
+                "start_cycle",
+            ])
         );
-        assert!(!pi.supports_cancel);
+        assert!(pi.supports_cancel);
         assert!(pi.supports_resume);
 
         let mut claude = team_member_provider_profile_for_mode("claude", Some("claude_agent_sdk"));

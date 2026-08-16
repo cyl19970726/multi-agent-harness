@@ -210,10 +210,19 @@ The DEV-26 run on 2026-08-16 retained its provider-native record at
 That exact 0.84.2 record proves prompt acceptance, `agent_settled`, passive
 idle/empty-queue observation, no persisted thinking, and a later
 `pi --session <that-file>` process resolving the same absolute `sessionFile`.
-It admits only the core `open_or_resume`, `start_cycle`, and `observe`
-bindings. Interrupt, native steer/queue, narrow Close, strong quiesce/release,
-and permission-enforcement claims remain at their deterministic or degraded
-admission until a proportional live run exercises those exact semantics.
+It admits the core `open_or_resume`, `start_cycle`, and `observe` bindings.
+
+The follow-up DEV-26 control canary retained its provider-native record at
+`~/.harness/native-evidence/dev26/pi-0.84.2-interrupt-close/pi-0.84.2-91147-1786852712638750000/2026-08-16T03-58-33-028Z_01a008b8-a244-79e1-a65f-fa26d56accde.jsonl`.
+On that exact session, Pi started a real long-running Bash tool, accepted an
+`abort` RPC, emitted `agent_settled`, and then reported `isStreaming=false`
+with an empty pending-message queue. The owned Pi process was reaped and its
+native JSONL remained available with no persisted thinking. Together with the
+deterministic provider-neutral control journey, this admits
+`interrupt_current_cycle` and narrow `close_runtime`. Native steer/queue,
+strong quiesce/release, and permission-enforcement claims remain at their
+deterministic or degraded admission until a proportional live run exercises
+those exact semantics.
 
 Set `PI_CANARY_EVIDENCE_DIR` when the native JSONL must survive the canary.
 The ignored `pi_rpc_resumes_the_retained_native_session` check consumes an
