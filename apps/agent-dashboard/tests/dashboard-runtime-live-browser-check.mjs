@@ -134,8 +134,10 @@ async function waitForText(page, text) {
 }
 
 async function waitForDomain(page, domain, status) {
+  // 45s: the freshness transition crosses server snapshot build + SSE push +
+  // UI refetch; 15s only fit an uncontended dev machine (repeatedly red on CI).
   await page.locator(`[data-freshness-domain="${domain}"][data-freshness-status="${status}"]`)
-    .waitFor({ timeout: 15_000 });
+    .waitFor({ timeout: 45_000 });
 }
 
 async function navigate(page, label) {
