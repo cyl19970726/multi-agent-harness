@@ -5711,6 +5711,7 @@ impl HarnessStore {
     /// A session that may have owned a provider process can move only after
     /// the predecessor lease was explicitly released. Lease expiry alone is
     /// not evidence that writable children were drained.
+    #[allow(clippy::too_many_arguments)] // exact old/new daemon and session fences stay explicit at this mutation boundary
     pub fn reattach_agent_session_to_node_daemon(
         &self,
         context: &MutationContext,
@@ -5831,12 +5832,11 @@ impl HarnessStore {
         let predecessor_was_released = self
             .read_jsonl::<firm_core::NodeDaemonLease>("node_daemon_leases.jsonl")?
             .into_iter()
-            .filter(|lease| {
+            .rfind(|lease| {
                 lease.node_id == session.node_id
                     && lease.daemon_id == session.node_daemon_id
                     && lease.generation == expected_predecessor_daemon_generation
             })
-            .last()
             .is_some_and(|lease| lease.status == firm_core::NodeDaemonLeaseStatus::Released);
         let predecessor_may_have_owned_runtime = session.native_session_ref.is_some()
             || session.control_state.runtime_residency != RuntimeResidency::Detached;

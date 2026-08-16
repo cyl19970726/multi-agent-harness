@@ -1672,9 +1672,30 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     // An idle member on an unreviewed provider tuple keeps its runtime
     // availability fact but must not be counted Ready, and the adapter review
     // state rides along as its own fact with remediation metadata.
+    let review_team_view_route =
+        format!("/v1/views/team-workspace/{}?project={project_id}", team.id);
+    let (status, current_team_view) =
+        serve.get_json_with_headers(&review_team_view_route, &[("X-AgentFirm-Token", TOKEN)]);
+    assert_eq!(status, 200, "current Team RoleView: {current_team_view}");
+    let current_capability_admission = current_team_view["data"]["members"]
+        .as_array()
+        .and_then(|members| {
+            members
+                .iter()
+                .find(|member| member["current_member_run_ref"] == successor_provider_run.id)
+        })
+        .map(|member| member["provider_capability_admission"].clone())
+        .expect("current member capability admission");
     let mut review_run = successor_provider_run.clone();
     review_run.runtime_generation += 1;
     review_run.started_at = "unix-ms:matrix-review-required".into();
+    let review_native_session = review_run
+        .native_session
+        .as_mut()
+        .expect("review fixture keeps the discovered native session");
+    review_native_session.availability = harness_core::NativeSessionAvailability::Available;
+    review_native_session.supports_resume = true;
+    review_native_session.last_verified_at = Some("unix-ms:matrix-native-verified".into());
     let mut review_profile = review_run
         .provider_profile
         .clone()
@@ -1690,8 +1711,6 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     store
         .compare_and_advance_member_run_generation(&successor_provider_run, &review_run)
         .expect("append review-required runtime generation");
-    let review_team_view_route =
-        format!("/v1/views/team-workspace/{}?project={project_id}", team.id);
     let (status, review_team_view) =
         serve.get_json_with_headers(&review_team_view_route, &[("X-AgentFirm-Token", TOKEN)]);
     assert_eq!(
@@ -1714,8 +1733,8 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     );
     assert_eq!(review_member["provider_version"], "0.146.0");
     assert_eq!(
-        review_member["provider_capability_admission"], "active",
-        "source/version review and executable capability admission remain separate facts"
+        review_member["provider_capability_admission"], current_capability_admission,
+        "changing only source/version review must not rewrite executable capability admission"
     );
     assert!(review_member["provider_compatibility_note"]
         .as_str()
@@ -1816,7 +1835,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
                     .expect("close action version"),
                 request_fingerprint: None,
             },
-            &member_run_id,
+            member_run_id,
             CurrentTeamMemberLifecycleTransition::Close,
             "unix-ms:matrix-member-closed-fixture",
         )

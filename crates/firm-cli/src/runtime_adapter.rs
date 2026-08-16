@@ -1440,8 +1440,6 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                 && turn.tool_call_count == 0;
             if is_zero_output {
                 zero_output_streak += 1;
-            } else if provider_terminal_failure.is_some() {
-                zero_output_streak = 0;
             } else {
                 zero_output_streak = 0;
             }
