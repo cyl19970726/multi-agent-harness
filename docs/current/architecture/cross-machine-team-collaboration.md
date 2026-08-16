@@ -7,25 +7,38 @@ product model remains simple: one Mission owns one flat Team, and every Member
 of that Team executes on the Team's single immutable Node. Cross-machine work
 is cooperation between Teams, never a Team split across machines.
 
-## Authority flow
+## Authority flows
 
 ```text
+responsibility:
 source Team WorkApplicationService
   -> server-authored SourceWorkAttestation
   -> source NodeGateway outbox
-  -> Company Control Plane route journal + WorkDelegation relationship
+  -> Control Plane route journal + durable WorkDelegation relationship
   -> target NodeGateway inbox
   -> target native WorkApplicationService
   -> target Work / Report / Finding / Failure
   -> immutable redacted RemoteFactPublication
   -> source Node read-only cache
+
+conversation:
+source AgentMember -> immutable Message
+  -> policy/capability-fenced MessageSubscription
+  -> one Team-addressed CanonicalMessageDelivery
+  -> Control Plane route journal -> target NodeGateway inbox
+  -> atomic TeamMembership + membership/NodeDaemon generation claim
+  -> resolved AgentMember/session CanonicalMessageDelivery
 ```
 
 The accepted Remote Node Fabric owns transport, attempts, receipts, ordering,
-expiry and `RecoveryRequired`. The Company collaboration store owns only the
-`WorkDelegation` relationship, frozen inbound policy, decisions, cancellation
-requests, immutable publication metadata and cross-node projections. Each
-Execution Space continues to own its native Work.
+expiry and `RecoveryRequired`. One durable control-store authority owns Team,
+TeamMembership, Work, Message, MessageSubscription,
+CanonicalMessageDelivery, explicit WorkDelegation relationships, decisions,
+cancellation requests, immutable publication metadata and cross-node
+projections. The retained `company_id` protocol field is only a Fabric tenant
+isolation key; it does not introduce Company or Organization product authority.
+Execution Spaces locate Stores and execution resources and never authorize a
+business admission.
 
 No caller may directly write a remote Store. Every cross-node mutation becomes
 one closed `collaboration.business.v1` operation using exactly one of:
@@ -35,6 +48,7 @@ one closed `collaboration.business.v1` operation using exactly one of:
 - `target_work_create`
 - `delegation_cancel_request`
 - `delegation_cancel_decide`
+- `peer_message_deliver`
 - `team_message_deliver`
 - `remote_fact_publish`
 - `artifact_grant`
@@ -66,26 +80,25 @@ treated as Work cancellation.
 
 The cross-machine collaboration batch does not introduce a second Message or
 delivery ledger. The source NodeDaemon authors the existing immutable current
-`Message` once with an
-optional `CollaborationScope`. The route carries canonical Message bytes (or a
-content-addressed immutable object reference). The target NodeDaemon verifies
-the source identity, schema, fingerprint and body digest, persists a remote
-replica, then creates the existing per-recipient `CanonicalMessageDelivery`.
+`Message` once. An ordinary AgentMember peer Message is admitted by the current
+MessageSubscription and its frozen authorization policy, policy revision,
+policy digest, `collaboration.peer_message_deliver` capability, target Team and
+immutable Node placement. WorkDelegation is neither required nor consulted.
 
-`CollaborationScope` is an intent hint, not authority. Before authoring, the
-server resolves a frozen `CollaborationMessageAuthority` from the current
-central `WorkDelegation`, accepted target Work, exact source Work binding,
-target Host decision, current placement and non-revoked inbound policy. The
-source Store checks that proof again under its Message write lock. The Control
-Plane re-resolves the same central records before accepting the route, and the
-target Store checks the frozen Work/Team/placement tuple before replica or
-`CanonicalMessageDelivery` persistence. Nonexistent, pending, rejected, cancelled, stale or
-caller-widened authority has zero Message, route,
-`CanonicalMessageDelivery`, or provider effect.
+Admission creates exactly one Team-addressed CanonicalMessageDelivery. It does
+not select a recipient runtime, AgentSession or admission-time
+TeamMembership. The route carries canonical Message bytes (or a
+content-addressed immutable object reference) plus the frozen subscription and
+Team/Node fence. The target atomically claims the queued delivery against one
+eligible current TeamMembership, its membership generation and the current
+NodeDaemon generation, then applies the resolved per-recipient delivery to the
+claimed AgentMember/session. An offline recipient remains queued; a stale or
+revoked policy, capability, Team placement, membership generation, NodeDaemon
+generation or claim fails closed without a second Message or delivery.
 
-Control Plane route receipts are transport evidence only. Company and Team
-surfaces may show `CrossNodeDeliveryProjection`, but that projection cannot be
-acknowledged or mutated as delivery authority.
+Control Plane route receipts are transport evidence only. Read projections may
+show cross-node state, but no projection can be acknowledged or mutated as
+delivery authority.
 
 ## Facts and artifacts
 
@@ -118,11 +131,11 @@ Public callers cannot submit retention anchors.
 - Control Plane Host REST lists/reads Delegations and publications and performs
   exact-revision Host decisions, cancellation decisions and artifact grants.
   Read projections are restricted to the exact source owner, source Host or
-  target Host resolved from the authenticated credential; Company, Team and
-  Execution Space are never caller-selected authority.
+  target Host resolved from the authenticated credential; Fabric tenant, Team
+  and Execution Space are never caller-selected authority.
 - HTTP and MCP list endpoints return bounded, opaque server-signed cursors
-  bound to Company, actor, filter and a frozen Store sequence. Hidden sibling
-  rows advance the raw scan but never consume a visible page.
+  bound to Fabric tenant, actor, filter and a frozen Store sequence. Hidden
+  sibling rows advance the raw scan but never consume a visible page.
 - MCP collaboration tools are read-only central projections. Retired local
   WorkDelegation writers are absent and fail as unknown tools with zero Store
   delta.

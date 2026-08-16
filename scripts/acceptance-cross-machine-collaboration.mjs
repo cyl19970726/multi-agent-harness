@@ -34,8 +34,10 @@ const objects = (value) => {
   return found;
 };
 const core = read("crates/firm-core/src/collaboration.rs");
+const agentfirmCore = read("crates/firm-core/src/agentfirm_api.rs");
 const store = read("crates/firm-store/src/collaboration.rs");
 const route = read("crates/firm-store/src/collaboration_fabric.rs");
+const trustKernel = read("crates/firm-store/src/trust_kernel.rs");
 const runtime = read("crates/firm-cli/src/fabric_runtime.rs");
 const http = read("crates/firm-cli/src/main.rs");
 const mcp = read("crates/firm-cli/src/mcp.rs");
@@ -51,18 +53,24 @@ for (const token of [
   "DelegationCancellationRequest",
   "RemoteFactPublication",
   "CrossNodeDeliveryProjection",
+  "PeerTeamMessageAdmissionAuthority",
+  "MessageAdmissionAuthority",
+  "MessageSubjectKind",
+  "TeamMessageDeliveryClaim",
 ]) {
-  if (!core.includes(token)) failures.push(`canonical collaboration type missing: ${token}`);
+  if (!`${core}\n${agentfirmCore}`.includes(token)) failures.push(`canonical collaboration type missing: ${token}`);
 }
 for (const token of [
   "queue_collaboration_proposal",
   "queue_collaboration_message",
+  "queue_peer_team_message",
   "queue_remote_fact_publication",
   "persist_remote_message",
+  "claim_team_message_delivery",
   "RemoteFabricCollaborationPort",
   "RecoveryRequired",
 ]) {
-  if (!`${runtime}\n${route}`.includes(token)) failures.push(`integrated collaboration seam missing: ${token}`);
+  if (!`${runtime}\n${route}\n${trustKernel}`.includes(token)) failures.push(`integrated collaboration seam missing: ${token}`);
 }
 for (const token of [
   "/v1/collaboration/delegations",
@@ -85,6 +93,9 @@ for (const token of [
   "one Mission owns one flat Team",
   "RecoveryRequired",
   "second process on one Mac",
+  "ordinary AgentMember peer Message does not require a WorkDelegation",
+  "collaboration.peer_message_deliver",
+  "Fabric isolation key, not a Company or Organization product authority",
 ]) {
   if (!normalizedDocs.includes(token)) failures.push(`current collaboration docs omit invariant: ${token}`);
 }
@@ -219,6 +230,20 @@ if (realEvidencePath) {
         }
 
         const collaborationRows = readJsonLines(material.central_collaboration_ledger.absolute);
+        const provenanceClaim = evidence.raw_export_provenance_claim;
+        if (
+          provenanceClaim?.scope !== "slice_recomputable" ||
+          provenanceClaim?.source_store_digest_verification !==
+            "recorded_at_export_not_recomputed_from_committed_slice" ||
+          provenanceClaim?.selector_digest_verification !==
+            "recorded_selector_identity_not_an_inclusion_proof" ||
+          typeof provenanceClaim?.limitation !== "string" ||
+          !provenanceClaim.limitation.includes("not proof")
+        ) {
+          throw new Error(
+            "evidence must state that source_store_digest and selector_digest are provenance metadata, not independently recomputed inclusion proof",
+          );
+        }
         for (const [name, descriptor] of Object.entries(evidence.files)) {
           if (name.includes("ledger") || name.includes("journal")) {
             if (

@@ -252,6 +252,10 @@ try {
       if (message.type() === "error") rolePageErrors.push(`${label} console: ${message.text()}`);
     });
     page.on("response", (response) => {
+      // External font CDN fetches are not RoleView surface behavior; a
+      // transient fonts.gstatic.com 404 must not fail the write-surface proof
+      // (same filter as agent-workspace-browser-check.mjs).
+      if (response.url().startsWith("https://fonts.gstatic.com/")) return;
       if (response.status() >= 400) roleHttpErrors.push(`${label} ${response.status()} ${response.url()}`);
     });
   };

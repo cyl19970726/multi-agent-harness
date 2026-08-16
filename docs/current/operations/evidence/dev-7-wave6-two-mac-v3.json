@@ -33,6 +33,12 @@
   "source_work_auto_completed": false,
   "cleanup_verified": true,
   "secret_material_recorded": false,
+  "raw_export_provenance_claim": {
+    "scope": "slice_recomputable",
+    "source_store_digest_verification": "recorded_at_export_not_recomputed_from_committed_slice",
+    "selector_digest_verification": "recorded_selector_identity_not_an_inclusion_proof",
+    "limitation": "Committed slice bytes and their file digests are independently recomputable; source_store_digest and selector_digest remain export provenance metadata, not proof that the slice is complete relative to the uncommitted source Store."
+  },
   "transport": {
     "kind": "user_provided_tailscale_overlay",
     "control_plane_ip": "100.107.201.108",
