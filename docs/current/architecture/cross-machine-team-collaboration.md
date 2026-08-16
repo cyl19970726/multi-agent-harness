@@ -48,6 +48,7 @@ one closed `collaboration.business.v1` operation using exactly one of:
 - `target_work_create`
 - `delegation_cancel_request`
 - `delegation_cancel_decide`
+- `peer_message_deliver`
 - `team_message_deliver`
 - `remote_fact_publish`
 - `artifact_grant`

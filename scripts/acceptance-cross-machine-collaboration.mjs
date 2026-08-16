@@ -37,6 +37,7 @@ const core = read("crates/firm-core/src/collaboration.rs");
 const agentfirmCore = read("crates/firm-core/src/agentfirm_api.rs");
 const store = read("crates/firm-store/src/collaboration.rs");
 const route = read("crates/firm-store/src/collaboration_fabric.rs");
+const trustKernel = read("crates/firm-store/src/trust_kernel.rs");
 const runtime = read("crates/firm-cli/src/fabric_runtime.rs");
 const http = read("crates/firm-cli/src/main.rs");
 const mcp = read("crates/firm-cli/src/mcp.rs");
@@ -62,13 +63,14 @@ for (const token of [
 for (const token of [
   "queue_collaboration_proposal",
   "queue_collaboration_message",
+  "queue_peer_team_message",
   "queue_remote_fact_publication",
   "persist_remote_message",
   "claim_team_message_delivery",
   "RemoteFabricCollaborationPort",
   "RecoveryRequired",
 ]) {
-  if (!`${runtime}\n${route}`.includes(token)) failures.push(`integrated collaboration seam missing: ${token}`);
+  if (!`${runtime}\n${route}\n${trustKernel}`.includes(token)) failures.push(`integrated collaboration seam missing: ${token}`);
 }
 for (const token of [
   "/v1/collaboration/delegations",

@@ -2339,15 +2339,23 @@ pub(crate) fn queue_collaboration_message(
     admission_authority: harness_core::collaboration::MessageAdmissionAuthority,
     now_unix_ms: u64,
 ) -> Result<serde_json::Value, FabricError> {
-    let harness_core::collaboration::MessageAdmissionAuthority::WorkDelegation(authority) =
-        admission_authority
-    else {
-        // DEV-35 exposes the generic source-authority handoff. The peer route
-        // and its control-plane application remain owned by DEV-34.
-        return Err(FabricError::none(
-            FabricErrorCode::SchemaIncompatible,
-            "peer-Team Message admission is ready for the peer_message_deliver route",
-        ));
+    let authority = match admission_authority {
+        harness_core::collaboration::MessageAdmissionAuthority::WorkDelegation(authority) => {
+            authority
+        }
+        harness_core::collaboration::MessageAdmissionAuthority::PeerTeam(authority) => {
+            return queue_peer_team_message(
+                firm_home,
+                execution_space_id,
+                local_node_id,
+                credential,
+                idempotency_key,
+                message,
+                request,
+                &authority,
+                now_unix_ms,
+            );
+        }
     };
     let scope = message.collaboration_scope.as_ref().ok_or_else(|| {
         FabricError::none(
@@ -2454,6 +2462,240 @@ pub(crate) fn queue_collaboration_message(
             expires_at_unix_ms: request.expires_unix_ms,
         },
     )?;
+    let (outbox, replayed) = local.prepare_outbox(&session, &node_actor, &routed, now_unix_ms)?;
+    Ok(serde_json::json!({
+        "message_id": message.id,
+        "operation_id": routed.id,
+        "outbox_state": outbox.local_state,
+        "replayed": replayed,
+    }))
+}
+
+/// Queue one ordinary peer-Team Message for cross-node delivery. Peer
+/// admission is the non-Delegation path: the frozen
+/// `PeerTeamMessageAdmissionAuthority` proves that one exact active source
+/// TeamMembership and one exact local AgentSession/NodeDaemon generation
+/// authored the Message, and the route delivers exactly one Team-addressed
+/// CanonicalMessageDelivery under the durable target Team-subject
+/// subscription. No WorkDelegation is required or consulted.
+#[allow(clippy::too_many_arguments)]
+fn queue_peer_team_message(
+    firm_home: &Path,
+    execution_space_id: &str,
+    local_node_id: &str,
+    credential: &super::AgentFirmHttpCredential,
+    idempotency_key: &str,
+    message: &harness_core::agentfirm_api::Message,
+    request: &QueueCollaborationMessageRequest,
+    authority: &harness_core::collaboration::PeerTeamMessageAdmissionAuthority,
+    now_unix_ms: u64,
+) -> Result<serde_json::Value, FabricError> {
+    let scope = message.collaboration_scope.as_ref().ok_or_else(|| {
+        FabricError::none(
+            FabricErrorCode::InvalidPayload,
+            "cross-node Message requires CollaborationScope",
+        )
+    })?;
+    let exact_team_recipient = message.recipients.len() == 1
+        && message.recipients[0].kind == harness_core::agentfirm_api::MessageRecipientKind::Team
+        && message.recipients[0].id == authority.target_team_id
+        && message.target_ref == message.recipients[0];
+    if message.sender_actor_ref != credential.actor
+        || message.sender_actor_ref.kind != harness_core::agentfirm_api::ActorKind::AgentMember
+        || message.source_execution_space_id != execution_space_id
+        || message.source_node_id != local_node_id
+        || message.idempotency_key != idempotency_key
+        || request.target_node_id == local_node_id
+        || request.expected_delegation_revision != 0
+        || request.expires_unix_ms <= now_unix_ms
+        || !exact_team_recipient
+        || message.sender_agent_member_id.as_deref()
+            != Some(authority.source_agent_member_id.as_str())
+        || message.sender_session_id.as_deref() != Some(authority.source_session_id.as_str())
+        || message.team_id.as_deref() != Some(authority.source_team_id.as_str())
+        || message.work_id.is_some()
+        || scope.source_team_id != authority.source_team_id
+        || scope.target_team_id != request.target_team_id
+        || scope.delegation_id.is_some()
+        || scope.expected_delegation_revision.is_some()
+        || scope.source_work_ref.is_some()
+        || scope.target_work_ref.is_some()
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::UnauthorizedActor,
+            "ordinary peer-Team Message route disagrees with the exact sender, non-Delegation scope, or single Team recipient",
+        ));
+    }
+    if authority.company_id != request.company_id
+        || authority.source_execution_space_id != execution_space_id
+        || authority.source_node_id != local_node_id
+        || authority.source_agent_member_id != credential.actor.id
+        || authority.source_team_revision == 0
+        || authority.source_membership_generation == 0
+        || authority.source_session_generation == 0
+        || authority.source_node_daemon_generation == 0
+        || authority.target_team_revision == 0
+        || authority.target_subscription_revision == 0
+        || authority.target_execution_space_id != request.target_execution_space_id
+        || authority.target_team_id != request.target_team_id
+        || authority.target_team_revision != request.target_team_revision
+        || authority.target_node_id != request.target_node_id
+        || authority.source_required_capability != "message.peer_team.author"
+        || authority.target_required_capability != "collaboration.peer_message_deliver"
+        || authority.source_policy_digest
+            != harness_store::peer_team_source_policy_digest(authority)
+        || authority.target_policy_digest
+            != harness_store::peer_team_target_policy_digest(authority)
+        || authority.authority_digest
+            != harness_store::peer_team_message_authority_digest(authority)
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::UnauthorizedActor,
+            "peer-Team Message admission authority is stale, widened, or cross-wired",
+        ));
+    }
+    let target_placement = harness_core::collaboration::TargetPlacementRef {
+        team_id: request.target_team_id.clone(),
+        team_revision: request.target_team_revision,
+        node_id: request.target_node_id.clone(),
+        placement_generation: 1,
+    };
+    let canonical_message_envelope = serde_json::to_value(message)
+        .map_err(|error| FabricError::none(FabricErrorCode::InvalidPayload, error.to_string()))?;
+    let reference = harness_fabric::MessageReference {
+        message_id: message.id.clone(),
+        body_digest: message.body_digest.clone(),
+        canonical_message_envelope: Some(canonical_message_envelope),
+        message_object_ref: None,
+    };
+    let payload = serde_json::json!({
+        "message_reference": reference,
+        "message_admission_authority":
+            harness_core::collaboration::MessageAdmissionAuthority::PeerTeam(authority.clone()),
+    });
+    let business = harness_core::collaboration::RoutedBusinessOperation {
+        id: format!("collaboration-message:{}", message.id),
+        protocol_version: "agentfirm.fabric.v1".into(),
+        company_id: request.company_id.clone(),
+        kind: harness_core::collaboration::RoutedBusinessKind::PeerMessageDeliver,
+        authenticated_actor: credential.actor.clone(),
+        source_node_id: local_node_id.into(),
+        target_placement,
+        expected_revision: authority.target_subscription_revision,
+        idempotency_key: format!("route:{idempotency_key}"),
+        payload_digest: harness_store::canonical_json_fingerprint(&payload),
+        payload,
+        required_capability: harness_core::collaboration::RoutedBusinessKind::PeerMessageDeliver
+            .required_capability(),
+        ordering_key: format!("team:{}", request.target_team_id),
+        created_at: format!("unix-ms:{now_unix_ms}"),
+    };
+    let layout = RemoteFabricStoreLayout::open(firm_home)?;
+    let local = layout.open_node_local(&request.company_id, local_node_id)?;
+    let session = local.active_session()?.ok_or_else(|| {
+        FabricError::none(
+            FabricErrorCode::NodeStaleGeneration,
+            "source Node has no current authenticated Fabric gateway session",
+        )
+    })?;
+    if message.source_node_daemon_id != session.node_daemon_id
+        || message.source_authority_generation != session.node_daemon_generation
+        || authority.source_node_daemon_id != session.node_daemon_id
+        || authority.source_node_daemon_generation != session.node_daemon_generation
+        || session.gateway_generation == 0
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::NodeStaleGeneration,
+            "peer-Team Message or its admission authority is not bound to the exact current NodeDaemon generation",
+        ));
+    }
+    let node_actor = AuthenticatedActor {
+        company_id: request.company_id.clone(),
+        actor_id: local_node_id.into(),
+        actor_kind: harness_fabric::ActorKind::Service,
+        role_bindings: BTreeSet::from(["fabric_submit".into()]),
+        session_id: format!(
+            "{}:{}",
+            session.node_daemon_id, session.node_daemon_generation
+        ),
+        issued_at_unix_ms: now_unix_ms,
+        expires_at_unix_ms: request.expires_unix_ms,
+    };
+    // The generic store route adapter cannot express the peer session facts
+    // (source AgentSession runtime generation and business session id), so the
+    // peer route freezes the closed RoutedOperation directly. The target
+    // independently revalidates every field before any Message mutation.
+    let body = serde_json::to_value(harness_fabric::CollaborationBusinessReference {
+        business_kind: business.kind.wire_name().into(),
+        required_capability: business.required_capability.clone(),
+        business_actor_kind: "agent_member".into(),
+        business_actor_id: authority.source_agent_member_id.clone(),
+        target_team_id: business.target_placement.team_id.clone(),
+        target_team_revision: business.target_placement.team_revision,
+        placement_generation: business.target_placement.placement_generation,
+        expected_revision: business.expected_revision,
+        payload_digest: business.payload_digest.clone(),
+        payload: business.payload.clone(),
+    })
+    .map_err(|error| FabricError::none(FabricErrorCode::InvalidPayload, error.to_string()))?;
+    let routed = RoutedOperation {
+        id: business.id.clone(),
+        company_id: business.company_id.clone(),
+        kind: COLLABORATION_BUSINESS_OPERATION_KIND.into(),
+        source_authority: harness_fabric::OperationSourceAuthority::Node,
+        source_node_id: Some(local_node_id.into()),
+        target_node_id: request.target_node_id.clone(),
+        source_gateway_generation: Some(session.gateway_generation),
+        source_node_daemon_id: Some(session.node_daemon_id.clone()),
+        source_node_daemon_generation: Some(session.node_daemon_generation),
+        control_plane_generation: session.control_plane_generation,
+        source_execution_space_id: Some(execution_space_id.into()),
+        target_execution_space_id: Some(request.target_execution_space_id.clone()),
+        actor: node_actor.clone(),
+        actor_runtime_generation: Some(authority.source_session_generation),
+        authorization_context: std::collections::BTreeMap::from([
+            (
+                "target_team_id".into(),
+                business.target_placement.team_id.clone(),
+            ),
+            (
+                "target_team_revision".into(),
+                business.target_placement.team_revision.to_string(),
+            ),
+            (
+                "placement_generation".into(),
+                business.target_placement.placement_generation.to_string(),
+            ),
+            (
+                "required_capability".into(),
+                business.required_capability.clone(),
+            ),
+            ("business_actor_kind".into(), "agent_member".into()),
+            (
+                "business_actor_id".into(),
+                authority.source_agent_member_id.clone(),
+            ),
+            (
+                "business_actor_session_id".into(),
+                authority.source_session_id.clone(),
+            ),
+        ]),
+        idempotency_key: business.idempotency_key.clone(),
+        ordering_key: business.ordering_key.clone(),
+        correlation_id: business.id.clone(),
+        causation_id: None,
+        expected_target_revision: Some(business.expected_revision),
+        body_schema: harness_fabric::COLLABORATION_BUSINESS_OPERATION_SCHEMA.into(),
+        body_digest: harness_fabric::json_digest(&body)?,
+        body,
+        priority: harness_fabric::OperationPriority::Normal,
+        created_at_unix_ms: now_unix_ms,
+        expires_at_unix_ms: request.expires_unix_ms,
+        protocol_version: FABRIC_PROTOCOL_VERSION,
+        schema_version: harness_fabric::FABRIC_SCHEMA_VERSION.into(),
+        canonicalization_version: harness_fabric::FABRIC_CANONICALIZATION_VERSION.into(),
+    };
+    routed.closed_body()?;
     let (outbox, replayed) = local.prepare_outbox(&session, &node_actor, &routed, now_unix_ms)?;
     Ok(serde_json::json!({
         "message_id": message.id,
