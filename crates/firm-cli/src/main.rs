@@ -27504,6 +27504,118 @@ fn sse_post_snapshot_test_pause() -> Option<std::time::Duration> {
         .map(std::time::Duration::from_millis)
 }
 
+fn dashboard_snapshot_build_test_pause() -> Option<std::time::Duration> {
+    std::env::var("FIRM_TEST_DASHBOARD_SNAPSHOT_BUILD_PAUSE_MS")
+        .or_else(|_| std::env::var("HARNESS_TEST_DASHBOARD_SNAPSHOT_BUILD_PAUSE_MS"))
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(std::time::Duration::from_millis)
+}
+
+/// One serve-process fence around the synchronous full Dashboard Store build.
+///
+/// HTTP connections remain independently threaded so SSE and writes never
+/// head-of-line block. Full snapshots are the exception: their Store scan is
+/// synchronous and cannot be interrupted after a browser disconnect, so a
+/// true scope handoff must wait outside the builder instead of starting a
+/// second abandoned scan. The browser still owns first-success/coalesced-dirty
+/// semantics; this fence owns only backend build concurrency.
+#[derive(Default)]
+struct DashboardSnapshotBuildFence {
+    gate: Mutex<()>,
+    active: AtomicU64,
+    max_active: AtomicU64,
+    started: AtomicU64,
+    completed: AtomicU64,
+}
+
+struct ActiveDashboardSnapshotBuild<'a> {
+    fence: &'a DashboardSnapshotBuildFence,
+    _gate: std::sync::MutexGuard<'a, ()>,
+}
+
+impl Drop for ActiveDashboardSnapshotBuild<'_> {
+    fn drop(&mut self) {
+        self.fence.active.fetch_sub(1, Ordering::SeqCst);
+        self.fence.completed.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl DashboardSnapshotBuildFence {
+    fn build<T>(&self, build: impl FnOnce() -> CliResult<T>) -> CliResult<T> {
+        let gate = self
+            .gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_active.fetch_max(active, Ordering::SeqCst);
+        self.started.fetch_add(1, Ordering::SeqCst);
+        let _active = ActiveDashboardSnapshotBuild {
+            fence: self,
+            _gate: gate,
+        };
+        if let Some(pause) = dashboard_snapshot_build_test_pause() {
+            std::thread::sleep(pause);
+        }
+        build()
+    }
+
+    fn test_metrics(&self) -> serde_json::Value {
+        serde_json::json!({
+            "active": self.active.load(Ordering::SeqCst),
+            "max_active": self.max_active.load(Ordering::SeqCst),
+            "started": self.started.load(Ordering::SeqCst),
+            "completed": self.completed.load(Ordering::SeqCst),
+        })
+    }
+}
+
+#[cfg(test)]
+mod dashboard_snapshot_build_tests {
+    use super::*;
+    use std::sync::Barrier;
+
+    #[test]
+    fn full_snapshot_store_builds_are_serialized() {
+        let fence = Arc::new(DashboardSnapshotBuildFence::default());
+        let rendezvous = Arc::new(Barrier::new(5));
+        let active_builds = Arc::new(AtomicU64::new(0));
+        let max_active_builds = Arc::new(AtomicU64::new(0));
+        let mut workers = Vec::new();
+
+        for _ in 0..4 {
+            let worker_fence = Arc::clone(&fence);
+            let worker_rendezvous = Arc::clone(&rendezvous);
+            let worker_active = Arc::clone(&active_builds);
+            let worker_max = Arc::clone(&max_active_builds);
+            workers.push(std::thread::spawn(move || {
+                worker_rendezvous.wait();
+                worker_fence
+                    .build(|| {
+                        let active = worker_active.fetch_add(1, Ordering::SeqCst) + 1;
+                        worker_max.fetch_max(active, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(25));
+                        worker_active.fetch_sub(1, Ordering::SeqCst);
+                        Ok(())
+                    })
+                    .expect("snapshot build");
+            }));
+        }
+
+        rendezvous.wait();
+        for worker in workers {
+            worker.join().expect("snapshot worker");
+        }
+        let metrics = fence.test_metrics();
+        assert_eq!(max_active_builds.load(Ordering::SeqCst), 1);
+        assert_eq!(metrics["max_active"], 1);
+        assert_eq!(metrics["started"], 4);
+        assert_eq!(metrics["completed"], 4);
+        assert_eq!(metrics["active"], 0);
+    }
+}
+
 /// Independent Execution Space and Project Binding routing for one live serve.
 ///
 /// Native mode routes `?space` to coordination storage and `?project` to
@@ -27526,6 +27638,10 @@ struct ServeProjects {
     /// would otherwise collapse project_root into store_root, and provider
     /// members would receive an unusable FIRM_PROJECT selector.
     default_context: Option<ProjectContext>,
+    /// Shared by every per-connection thread in this serve process. It fences
+    /// the synchronous full-snapshot Store builder without serializing SSE,
+    /// authenticated RoleView reads/writes, or other HTTP work.
+    dashboard_snapshot_builds: Arc<DashboardSnapshotBuildFence>,
 }
 
 impl ServeProjects {
@@ -27553,6 +27669,7 @@ impl ServeProjects {
             default_store: store.clone(),
             default_space: resolved.execution_space_context.clone(),
             default_context: resolved.context.clone(),
+            dashboard_snapshot_builds: Arc::new(DashboardSnapshotBuildFence::default()),
         }
     }
 
@@ -30000,17 +30117,27 @@ fn handle_http_connection(
                 "200 OK",
                 &serde_json::json!({"status": "ok", "generated_at": now_string()}),
             )?,
-            "/v1/snapshot" | "/v1/dashboard/snapshot" => write_http_json(
-                &mut stream,
-                "200 OK",
-                &dashboard_snapshot_with_company_spaces(
-                    &store_owned,
-                    company_store_owned
-                        .as_ref()
-                        .map(|(_, company_store)| company_store),
-                    &execution_space_stores,
-                )?,
-            )?,
+            "/v1/snapshot" | "/v1/dashboard/snapshot" => {
+                let snapshot = projects.dashboard_snapshot_builds.build(|| {
+                    dashboard_snapshot_with_company_spaces(
+                        &store_owned,
+                        company_store_owned
+                            .as_ref()
+                            .map(|(_, company_store)| company_store),
+                        &execution_space_stores,
+                    )
+                })?;
+                write_http_json(&mut stream, "200 OK", &snapshot)?
+            }
+            "/v1/test/dashboard-snapshot-builds"
+                if dashboard_snapshot_build_test_pause().is_some() =>
+            {
+                write_http_json(
+                    &mut stream,
+                    "200 OK",
+                    &projects.dashboard_snapshot_builds.test_metrics(),
+                )?
+            }
             // GET /v1/meta — server build/data provenance (issue #307). Always
             // the coordination store (`store_owned`), never the Company OS
             // store: it answers "which build served this, which store did it
@@ -56456,6 +56583,7 @@ mod sse_tests {
             default_store: store.clone(),
             default_space: None,
             default_context: Some(expected.clone()),
+            dashboard_snapshot_builds: Arc::new(DashboardSnapshotBuildFence::default()),
         };
 
         let resolved = projects.context_for(Some(&expected.id), None, &store);
@@ -56496,6 +56624,7 @@ mod sse_tests {
                 default_store: serve_store.clone(),
                 default_space: None,
                 default_context: None,
+                dashboard_snapshot_builds: Arc::new(DashboardSnapshotBuildFence::default()),
             };
             let watcher_projects = projects.clone();
             sse::start_sse_watcher(move || watcher_projects.watch_map(), sse_manager.clone())
