@@ -34,6 +34,7 @@ const objects = (value) => {
   return found;
 };
 const core = read("crates/firm-core/src/collaboration.rs");
+const agentfirmCore = read("crates/firm-core/src/agentfirm_api.rs");
 const store = read("crates/firm-store/src/collaboration.rs");
 const route = read("crates/firm-store/src/collaboration_fabric.rs");
 const runtime = read("crates/firm-cli/src/fabric_runtime.rs");
@@ -51,14 +52,19 @@ for (const token of [
   "DelegationCancellationRequest",
   "RemoteFactPublication",
   "CrossNodeDeliveryProjection",
+  "PeerTeamMessageAdmissionAuthority",
+  "MessageAdmissionAuthority",
+  "MessageSubjectKind",
+  "TeamMessageDeliveryClaim",
 ]) {
-  if (!core.includes(token)) failures.push(`canonical collaboration type missing: ${token}`);
+  if (!`${core}\n${agentfirmCore}`.includes(token)) failures.push(`canonical collaboration type missing: ${token}`);
 }
 for (const token of [
   "queue_collaboration_proposal",
   "queue_collaboration_message",
   "queue_remote_fact_publication",
   "persist_remote_message",
+  "claim_team_message_delivery",
   "RemoteFabricCollaborationPort",
   "RecoveryRequired",
 ]) {
@@ -85,6 +91,9 @@ for (const token of [
   "one Mission owns one flat Team",
   "RecoveryRequired",
   "second process on one Mac",
+  "ordinary AgentMember peer Message does not require a WorkDelegation",
+  "collaboration.peer_message_deliver",
+  "Fabric isolation key, not a Company or Organization product authority",
 ]) {
   if (!normalizedDocs.includes(token)) failures.push(`current collaboration docs omit invariant: ${token}`);
 }
