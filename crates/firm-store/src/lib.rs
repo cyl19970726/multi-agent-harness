@@ -400,8 +400,8 @@ impl HarnessStore {
         self.append_jsonl("missions.jsonl", value)
     }
 
-    /// Compare-and-append one Mission revision. Team membership is not stored
-    /// on Mission: `AgentTeam.mission_id` is the single relation authority.
+    /// Compare-and-append one Mission revision. Mission lifecycle is
+    /// independent from durable AgentTeam identity and membership authority.
     pub fn compare_and_append_mission(
         &self,
         expected: &Mission,
@@ -428,21 +428,6 @@ impl HarnessStore {
                 "mission revision must preserve identity, creation time, and Legacy Wave membership"
                     .to_string(),
             ));
-        }
-        if next.status == MissionStatus::Running {
-            let active_team_count = self
-                .read_jsonl::<AgentTeam>("teams.jsonl")?
-                .into_iter()
-                .filter(|team| {
-                    team.mission_id == next.id && team.status == firm_core::AgentTeamStatus::Active
-                })
-                .count();
-            if active_team_count != 1 {
-                return Err(StoreError::Conflict(format!(
-                    "MISSION_REQUIRES_TEAM: running mission {} requires exactly one active AgentTeam, found {active_team_count}",
-                    next.id
-                )));
-            }
         }
         self.append_jsonl_unlocked("missions.jsonl", next)
     }
@@ -701,93 +686,22 @@ impl HarnessStore {
         self.append_jsonl("provider_launch_profiles.jsonl", value)
     }
 
-    /// Compare-and-append a Team revision while preserving its Mission, Host,
-    /// Node placement, and creation identity.
+    /// Retired pre-vNext direct Team writer. Durable Team and Membership
+    /// authority must be committed through the canonical trust kernel.
     pub fn append_team(&self, value: &AgentTeam) -> StoreResult<()> {
-        value
-            .validate()
-            .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        let current = latest_by_id(self.read_jsonl::<AgentTeam>("teams.jsonl")?, |team| {
-            team.id.clone()
-        })
-        .remove(&value.id)
-        .ok_or_else(|| StoreError::Conflict(format!("agent team not found: {}", value.id)))?;
-        if value.id != current.id
-            || value.created_at != current.created_at
-            || value.mission_id != current.mission_id
-            || value.host_agent_id != current.host_agent_id
-            || value.node_id != current.node_id
-        {
-            return Err(StoreError::Conflict(format!(
-                "TEAM_IDENTITY_IMMUTABLE: AgentTeam {} cannot change Mission, Host, Node, id, or creation time",
-                value.id
-            )));
-        }
-        self.append_jsonl_unlocked("teams.jsonl", value)
+        Err(StoreError::Conflict(format!(
+            "RETIRED_TEAM_WRITER: AgentTeam {} must use create_agent_team/transition_agent_team",
+            value.id
+        )))
     }
 
-    /// Insert the one AgentTeam for a Mission. Mission uniqueness and active
-    /// Node placement are checked under the same Store write boundary.
+    /// Retired Mission-owned Team writer retained only as a fail-closed source
+    /// compatibility hook. It never mutates `teams.jsonl`.
     pub fn insert_agent_team_with_unique_mission(&self, value: &AgentTeam) -> StoreResult<()> {
-        value
-            .validate()
-            .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        let teams = latest_by_id(self.read_jsonl::<AgentTeam>("teams.jsonl")?, |team| {
-            team.id.clone()
-        });
-        if teams.contains_key(&value.id) {
-            return Err(StoreError::Conflict(format!(
-                "agent team already exists: {}",
-                value.id
-            )));
-        }
-        if teams
-            .values()
-            .any(|team| team.mission_id == value.mission_id)
-        {
-            return Err(StoreError::Conflict(format!(
-                "MISSION_ALREADY_HAS_TEAM: Mission {} already has an AgentTeam",
-                value.mission_id
-            )));
-        }
-        let mission = latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
-            mission.id.clone()
-        })
-        .remove(&value.mission_id)
-        .ok_or_else(|| {
-            StoreError::Conflict(format!(
-                "TEAM_REQUIRES_MISSION: Mission {} not found",
-                value.mission_id
-            ))
-        })?;
-        if matches!(
-            mission.status,
-            MissionStatus::Completed | MissionStatus::Cancelled
-        ) {
-            return Err(StoreError::Conflict(format!(
-                "TEAM_REQUIRES_MISSION: Mission {} is terminal",
-                value.mission_id
-            )));
-        }
-        let node = latest_by_id(
-            self.read_jsonl::<ExecutionNode>("execution_nodes.jsonl")?,
-            |node| node.id.clone(),
-        )
-        .remove(&value.node_id)
-        .ok_or_else(|| {
-            StoreError::Conflict(format!("NODE_NOT_ACTIVE: {} not found", value.node_id))
-        })?;
-        if node.status != ExecutionNodeStatus::Active {
-            return Err(StoreError::Conflict(format!(
-                "NODE_NOT_ACTIVE: {} is {:?}",
-                value.node_id, node.status
-            )));
-        }
-        self.append_jsonl_unlocked("teams.jsonl", value)
+        Err(StoreError::Conflict(format!(
+            "RETIRED_MISSION_TEAM_WRITER: AgentTeam {} is independent of Mission; use create_agent_team",
+            value.id
+        )))
     }
 
     /// Append a new active operational admission for one exact provider tuple.
@@ -1735,16 +1649,14 @@ impl HarnessStore {
                 value.id
             )));
         }
-        let team = latest_by_id(self.read_jsonl::<AgentTeam>("teams.jsonl")?, |team| {
-            team.id.clone()
-        })
-        .remove(&value.agent_team_id)
-        .ok_or_else(|| {
-            StoreError::Conflict(format!(
-                "TEAM_RUN_REQUIRES_TEAM: AgentTeam {} not found",
-                value.agent_team_id
-            ))
-        })?;
+        let team = latest_by_id(self.all_agent_teams()?, |team| team.id.clone())
+            .remove(&value.agent_team_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "TEAM_RUN_REQUIRES_TEAM: AgentTeam {} not found",
+                    value.agent_team_id
+                ))
+            })?;
         if team.status != firm_core::AgentTeamStatus::Active {
             return Err(StoreError::Conflict(format!(
                 "TEAM_RUN_REQUIRES_TEAM: AgentTeam {} is {:?}",
@@ -1757,18 +1669,34 @@ impl HarnessStore {
                 value.id, value.execution_node_id, team.id, team.node_id
             )));
         }
-        let mission = latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
-            mission.id.clone()
-        })
-        .remove(&team.mission_id)
-        .ok_or_else(|| StoreError::Conflict(format!("mission not found: {}", team.mission_id)))?;
-        if matches!(
-            mission.status,
-            MissionStatus::Completed | MissionStatus::Cancelled
-        ) {
+        let active_hosts = self
+            .fabric_team_memberships(execution_space_id)?
+            .into_iter()
+            .filter(|membership| {
+                membership.team_id == team.id
+                    && membership.role == firm_core::agentfirm_api::TeamMembershipRole::Host
+                    && membership.state == firm_core::agentfirm_api::TeamMembershipStatus::Active
+            })
+            .collect::<Vec<_>>();
+        if active_hosts.len() != 1 {
             return Err(StoreError::Conflict(format!(
-                "TEAM_RUN_REQUIRES_TEAM: Mission {} is terminal",
-                mission.id
+                "TEAM_RUN_REQUIRES_HOST_MEMBERSHIP: AgentTeam {} has {} active Host memberships",
+                team.id,
+                active_hosts.len()
+            )));
+        }
+        let host_is_active = self
+            .trust_agent_members(execution_space_id)?
+            .into_iter()
+            .any(|member| {
+                member.id == active_hosts[0].agent_member_id
+                    && member.organization_status
+                        == firm_core::agentfirm_api::AgentMemberOrganizationStatus::Active
+            });
+        if !host_is_active {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_RUN_REQUIRES_HOST_MEMBERSHIP: AgentTeam {} Host AgentMember is not Active",
+                team.id
             )));
         }
         let node = latest_by_id(
@@ -2815,16 +2743,14 @@ impl HarnessStore {
             }
         }
 
-        let target_team = latest_by_id(self.read_jsonl::<AgentTeam>("teams.jsonl")?, |team| {
-            team.id.clone()
-        })
-        .remove(&delegation.target_agent_team_id)
-        .ok_or_else(|| {
-            StoreError::Conflict(format!(
-                "DELEGATION_TARGET_INVALID: AgentTeam {} not found",
-                delegation.target_agent_team_id
-            ))
-        })?;
+        let target_team = latest_by_id(self.all_agent_teams()?, |team| team.id.clone())
+            .remove(&delegation.target_agent_team_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "DELEGATION_TARGET_INVALID: AgentTeam {} not found",
+                    delegation.target_agent_team_id
+                ))
+            })?;
         if target_team.status != firm_core::AgentTeamStatus::Active {
             return Err(StoreError::Conflict(format!(
                 "DELEGATION_TARGET_INVALID: AgentTeam {} is {:?}",
@@ -7274,11 +7200,11 @@ impl HarnessStore {
     }
 
     pub fn teams(&self) -> StoreResult<Vec<AgentTeam>> {
-        self.read_jsonl("teams.jsonl")
+        self.all_agent_teams()
     }
 
-    /// Latest-row-wins AgentTeam projection keyed by team id. This is the
-    /// input for recursive topology validation and queries (ADR 0052).
+    /// Latest canonical AgentTeam projection keyed by team id. A physical
+    /// multi-space recovery store must not use this map for mutation routing.
     pub fn latest_teams(&self) -> StoreResult<std::collections::BTreeMap<String, AgentTeam>> {
         Ok(latest_by_id(self.teams()?, |team| team.id.clone()))
     }
@@ -11072,7 +10998,7 @@ mod tests {
                 completed_at: None,
             })
             .expect("insert fixture Mission");
-        let identities = members
+        let mut identities = members
             .iter()
             .map(|member| member.agent_member_id.clone())
             .collect::<Vec<_>>();
@@ -11121,20 +11047,103 @@ mod tests {
                     .expect("create fixture AgentMember");
             }
         }
+        if identities.is_empty() {
+            identities.push("fixture-host".into());
+            store
+                .create_trust_agent_member(
+                    &MutationContext {
+                        execution_space_id: SPACE.into(),
+                        authenticated_actor: ActorRef {
+                            kind: ActorKind::Human,
+                            id: "fixture-host".into(),
+                        },
+                        authority_actor: None,
+                        command_name: "agent_member.create".into(),
+                        idempotency_key: format!("fixture-agent:{}", run.agent_team_id),
+                        expected_version: 0,
+                        request_fingerprint: None,
+                    },
+                    AgentMember {
+                        id: "fixture-host".into(),
+                        name: "Fixture Host".into(),
+                        description: "current TeamRun fixture".into(),
+                        role: "host".into(),
+                        capabilities: Vec::new(),
+                        skill_refs: Vec::new(),
+                        provider_profile_ref: None,
+                        model_preference: None,
+                        workspace_policy: "test".into(),
+                        permission_ceiling: PermissionCeiling::WorkspaceWrite,
+                        organization_status: AgentMemberOrganizationStatus::Active,
+                        version: 1,
+                        created_by: ActorRef {
+                            kind: ActorKind::Human,
+                            id: "fixture-host".into(),
+                        },
+                        created_at: "unix-ms:1".into(),
+                        updated_at: "unix-ms:1".into(),
+                    },
+                )
+                .expect("create fixture Host AgentMember");
+        }
+        let team = AgentTeam {
+            id: run.agent_team_id.clone(),
+            name: run.agent_team_id.clone(),
+            description: "current TeamRun fixture".into(),
+            legacy_mission_id: Some(mission_id.clone()),
+            mission_id,
+            host_agent_id: identities.first().cloned().unwrap_or_else(|| "host".into()),
+            node_id: run.execution_node_id.clone(),
+            status: firm_core::AgentTeamStatus::Active,
+            revision: 1,
+            trashed_at: None,
+            member_ids: identities.clone(),
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        };
+        let team_creator = ActorRef {
+            kind: ActorKind::Human,
+            id: "fixture-host".into(),
+        };
+        let memberships = identities
+            .iter()
+            .enumerate()
+            .map(
+                |(index, member_id)| firm_core::agentfirm_api::TeamMembership {
+                    id: format!("membership:{}:{}", run.agent_team_id, member_id),
+                    team_id: run.agent_team_id.clone(),
+                    agent_member_id: member_id.clone(),
+                    node_id: run.execution_node_id.clone(),
+                    role: if index == 0 {
+                        firm_core::agentfirm_api::TeamMembershipRole::Host
+                    } else {
+                        firm_core::agentfirm_api::TeamMembershipRole::Member
+                    },
+                    state: firm_core::agentfirm_api::TeamMembershipStatus::Active,
+                    membership_generation: 1,
+                    default_subscription_refs: Vec::new(),
+                    created_by: team_creator.clone(),
+                    revision: 1,
+                    joined_at: "unix-ms:1".into(),
+                    left_at: None,
+                },
+            )
+            .collect();
         store
-            .insert_agent_team_with_unique_mission(&AgentTeam {
-                id: run.agent_team_id.clone(),
-                name: run.agent_team_id.clone(),
-                description: "current TeamRun fixture".into(),
-                mission_id,
-                host_agent_id: identities.first().cloned().unwrap_or_else(|| "host".into()),
-                node_id: run.execution_node_id.clone(),
-                status: firm_core::AgentTeamStatus::Active,
-                member_ids: identities,
-                created_at: "unix-ms:1".into(),
-                updated_at: "unix-ms:1".into(),
-            })
-            .expect("insert fixture AgentTeam");
+            .create_agent_team(
+                &MutationContext {
+                    execution_space_id: SPACE.into(),
+                    authenticated_actor: team_creator,
+                    authority_actor: None,
+                    command_name: "agent_team.create".into(),
+                    idempotency_key: format!("fixture-team:{}", run.agent_team_id),
+                    expected_version: 0,
+                    request_fingerprint: None,
+                },
+                team,
+                memberships,
+            )
+            .expect("create fixture AgentTeam and Memberships");
         let canonical = members
             .iter()
             .map(|member| canonical_member_admission_for_test(SPACE, member))
@@ -14263,20 +14272,101 @@ mod tests {
                     completed_at: None,
                 })
                 .expect("insert Mission");
-            store
-                .insert_agent_team_with_unique_mission(&AgentTeam {
-                    id: team_id.clone(),
-                    name: format!("Team {suffix}"),
-                    description: "Flat delegation test Team".into(),
-                    mission_id,
-                    host_agent_id: format!("host-{suffix}"),
+            let team_creator = firm_core::agentfirm_api::ActorRef {
+                kind: firm_core::agentfirm_api::ActorKind::Human,
+                id: "fixture-host".into(),
+            };
+            let host_id = format!("host-{suffix}");
+            let agent_id = format!("agent-{suffix}");
+            for (member_id, role) in [(&host_id, "host"), (&agent_id, "builder")] {
+                store
+                    .create_trust_agent_member(
+                        &firm_core::agentfirm_api::MutationContext {
+                            execution_space_id: "delegation-test-space".into(),
+                            authenticated_actor: team_creator.clone(),
+                            authority_actor: None,
+                            command_name: "agent_member.create".into(),
+                            idempotency_key: format!("fixture-member:{member_id}"),
+                            expected_version: 0,
+                            request_fingerprint: None,
+                        },
+                        firm_core::agentfirm_api::AgentMember {
+                            id: member_id.clone(),
+                            name: member_id.clone(),
+                            description: "delegation fixture AgentMember".into(),
+                            role: role.into(),
+                            capabilities: Vec::new(),
+                            skill_refs: Vec::new(),
+                            provider_profile_ref: None,
+                            model_preference: None,
+                            workspace_policy: "test".into(),
+                            permission_ceiling:
+                                firm_core::agentfirm_api::PermissionCeiling::WorkspaceWrite,
+                            organization_status:
+                                firm_core::agentfirm_api::AgentMemberOrganizationStatus::Active,
+                            version: 1,
+                            created_by: team_creator.clone(),
+                            created_at: "unix-ms:1".into(),
+                            updated_at: "unix-ms:1".into(),
+                        },
+                    )
+                    .expect("create delegation fixture AgentMember");
+            }
+            let team = AgentTeam {
+                id: team_id.clone(),
+                name: format!("Team {suffix}"),
+                description: "Flat delegation test Team".into(),
+                legacy_mission_id: Some(mission_id.clone()),
+                mission_id,
+                host_agent_id: host_id.clone(),
+                node_id: node_id.into(),
+                status: firm_core::AgentTeamStatus::Active,
+                revision: 1,
+                trashed_at: None,
+                member_ids: vec![agent_id.clone()],
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            };
+            let memberships = [
+                (host_id, firm_core::agentfirm_api::TeamMembershipRole::Host),
+                (
+                    agent_id,
+                    firm_core::agentfirm_api::TeamMembershipRole::Member,
+                ),
+            ]
+            .into_iter()
+            .map(
+                |(member_id, role)| firm_core::agentfirm_api::TeamMembership {
+                    id: format!("membership:{team_id}:{member_id}"),
+                    team_id: team_id.clone(),
+                    agent_member_id: member_id,
                     node_id: node_id.into(),
-                    status: firm_core::AgentTeamStatus::Active,
-                    member_ids: vec![format!("agent-{suffix}")],
-                    created_at: "unix-ms:1".into(),
-                    updated_at: "unix-ms:1".into(),
-                })
-                .expect("insert Team");
+                    role,
+                    state: firm_core::agentfirm_api::TeamMembershipStatus::Active,
+                    membership_generation: 1,
+                    default_subscription_refs: Vec::new(),
+                    created_by: team_creator.clone(),
+                    revision: 1,
+                    joined_at: "unix-ms:1".into(),
+                    left_at: None,
+                },
+            )
+            .collect();
+            store
+                .create_agent_team(
+                    &firm_core::agentfirm_api::MutationContext {
+                        execution_space_id: "delegation-test-space".into(),
+                        authenticated_actor: team_creator,
+                        authority_actor: None,
+                        command_name: "agent_team.create".into(),
+                        idempotency_key: format!("fixture-team:{team_id}"),
+                        expected_version: 0,
+                        request_fingerprint: None,
+                    },
+                    team,
+                    memberships,
+                )
+                .expect("create Team and durable Memberships");
             let run = AgentTeamRun {
                 id: run_id,
                 agent_team_id: team_id,

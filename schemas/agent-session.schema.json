@@ -5,10 +5,10 @@
   "description": "NodeDaemon-owned durable control identity. control_state is a bounded projection, never a provider transcript or event ledger.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "agent_identity_id", "node_id", "execution_space_id", "node_daemon_id", "node_daemon_generation", "provider_kind", "provider_profile_ref", "permission_envelope_ref", "effective_permission_ceiling", "lifecycle", "runtime_generation", "queued_input_count", "version", "opened_at", "last_active_at"],
+  "required": ["id", "agent_member_id", "node_id", "execution_space_id", "node_daemon_id", "node_daemon_generation", "provider_kind", "provider_profile_ref", "permission_envelope_ref", "effective_permission_ceiling", "lifecycle", "runtime_generation", "queued_input_count", "version", "opened_at", "last_active_at"],
   "properties": {
     "id": {"type": "string", "minLength": 1},
-    "agent_identity_id": {"type": "string", "minLength": 1},
+    "agent_member_id": {"type": "string", "minLength": 1},
     "node_id": {"type": "string", "format": "uuid"},
     "execution_space_id": {"type": "string", "minLength": 1},
     "node_daemon_id": {"type": "string", "minLength": 1},

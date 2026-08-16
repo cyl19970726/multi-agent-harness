@@ -335,6 +335,39 @@ fn application_error(
     error
 }
 
+fn active_team_host_id(
+    store: &crate::HarnessStore,
+    team_id: &str,
+    operation_id: &str,
+) -> Result<String, FabricError> {
+    let execution_space_id = store
+        .agent_team_scope(team_id)
+        .map_err(|error| {
+            application_error(
+                FabricErrorCode::StoreUnavailable,
+                format!("AgentTeam scope lookup failed: {error}"),
+                operation_id,
+            )
+        })?
+        .ok_or_else(|| {
+            application_error(
+                FabricErrorCode::TargetNotPlaced,
+                "AgentTeam has no canonical Execution Space scope",
+                operation_id,
+            )
+        })?;
+    store
+        .team_host_membership(&execution_space_id, team_id, true)
+        .map(|membership| membership.agent_member_id)
+        .map_err(|error| {
+            application_error(
+                FabricErrorCode::UnauthorizedActor,
+                format!("AgentTeam Host membership is invalid: {error}"),
+                operation_id,
+            )
+        })
+}
+
 /// Target Node application boundary for routed collaboration operations. The
 /// route/inbox is already durably claimed when this is called. Native Work is
 /// created through the existing WorkApplicationService store contract, so an
@@ -411,6 +444,7 @@ pub fn apply_collaboration_target_operation(
                     &operation.id,
                 )
             })?;
+        let host_agent_member_id = active_team_host_id(store, &team.id, &operation.id)?;
         if team_revision != reference.target_team_revision
             || team.node_id != operation.target_node_id
             || team.status != AgentTeamStatus::Active
@@ -429,7 +463,7 @@ pub fn apply_collaboration_target_operation(
                 "policy_id": payload.policy_id,
                 "target_host_ref": {
                     "kind": "agent_member",
-                    "id": team.host_agent_id,
+                    "id": host_agent_member_id,
                 },
                 "target_placement": payload.request.target_placement,
             }),
@@ -469,6 +503,7 @@ pub fn apply_collaboration_target_operation(
                     &operation.id,
                 )
             })?;
+        let host_agent_member_id = active_team_host_id(store, &team.id, &operation.id)?;
         if payload.delegation_id.trim().is_empty()
             || payload.decision.id != operation.id
             || payload.decision.delegation_id != payload.delegation_id
@@ -482,8 +517,8 @@ pub fn apply_collaboration_target_operation(
             || team.status != AgentTeamStatus::Active
             || reference.placement_generation != 1
             || reference.business_actor_kind != "agent_member"
-            || reference.business_actor_id != team.host_agent_id
-            || payload.decision.decided_by_target_host.id != team.host_agent_id
+            || reference.business_actor_id != host_agent_member_id
+            || payload.decision.decided_by_target_host.id != host_agent_member_id
         {
             return Err(application_error(
                 FabricErrorCode::UnauthorizedActor,
@@ -695,6 +730,7 @@ pub fn apply_collaboration_target_operation(
                     &operation.id,
                 )
             })?;
+        let host_agent_member_id = active_team_host_id(store, &team.id, &operation.id)?;
         if payload.delegation_id.trim().is_empty()
             || payload.delegation.id != payload.delegation_id
             || payload.delegation.company_id != operation.company_id
@@ -703,7 +739,7 @@ pub fn apply_collaboration_target_operation(
             || payload.delegation.source_owner_ref
                 != payload.source_work_attestation.source_owner_ref
             || payload.source_work_attestation.company_id != operation.company_id
-            || payload.source_work_attestation.source_host_ref.id != team.host_agent_id
+            || payload.source_work_attestation.source_host_ref.id != host_agent_member_id
             || payload.delegation.source_team_id != payload.source_placement.team_id
             || payload.delegation.source_node_id != payload.source_placement.node_id
             || payload.source_placement.team_id != reference.target_team_id
@@ -719,13 +755,13 @@ pub fn apply_collaboration_target_operation(
             || !payload
                 .manifest
                 .authorized_readers
-                .contains(&team.host_agent_id)
+                .contains(&host_agent_member_id)
             || payload.read_capability.purpose != firm_fabric::ArtifactCapabilityPurpose::Download
             || payload.read_capability.company_id != operation.company_id
             || payload.read_capability.node_id != operation.target_node_id
             || payload.read_capability.artifact_id != payload.manifest.id
             || payload.read_capability.artifact_digest != payload.manifest.sha256
-            || payload.read_capability.issued_to != team.host_agent_id
+            || payload.read_capability.issued_to != host_agent_member_id
         {
             return Err(application_error(
                 FabricErrorCode::UnauthorizedActor,
@@ -777,6 +813,7 @@ pub fn apply_collaboration_target_operation(
                     &operation.id,
                 )
             })?;
+        let host_agent_member_id = active_team_host_id(store, &team.id, &operation.id)?;
         let work_ref = payload.target_work_ref.as_ref().ok_or_else(|| {
             application_error(
                 FabricErrorCode::InvalidPayload,
@@ -804,8 +841,8 @@ pub fn apply_collaboration_target_operation(
             || team.node_id != operation.target_node_id
             || team.status != AgentTeamStatus::Active
             || reference.business_actor_kind != "agent_member"
-            || reference.business_actor_id != team.host_agent_id
-            || payload.decision.decided_by_target_host.id != team.host_agent_id
+            || reference.business_actor_id != host_agent_member_id
+            || payload.decision.decided_by_target_host.id != host_agent_member_id
             || !native_event_matches
         {
             return Err(application_error(
@@ -882,12 +919,20 @@ pub fn apply_collaboration_target_operation(
         || team.node_id != operation.target_node_id
         || team.status != AgentTeamStatus::Active
         || reference.placement_generation != 1
-        || reference.business_actor_kind != "agent_member"
-        || reference.business_actor_id != team.host_agent_id
     {
         return Err(application_error(
             FabricErrorCode::NodeStaleGeneration,
-            "target Team revision, immutable Node, status, or exact Host changed",
+            "target Team revision, immutable Node, status, or placement changed",
+            &operation.id,
+        ));
+    }
+    let host_agent_member_id = active_team_host_id(store, &team.id, &operation.id)?;
+    if reference.business_actor_kind != "agent_member"
+        || reference.business_actor_id != host_agent_member_id
+    {
+        return Err(application_error(
+            FabricErrorCode::UnauthorizedActor,
+            "target Work creation requires the exact active Host TeamMembership",
             &operation.id,
         ));
     }
@@ -945,7 +990,7 @@ pub fn apply_collaboration_target_operation(
                 priority: WorkPriority::Normal,
                 created_by_actor: TeamActorRef {
                     kind: TeamActorKind::Host,
-                    id: team.host_agent_id.clone(),
+                    id: host_agent_member_id.clone(),
                     display_name: None,
                     authn_source: Some("remote_fabric_verified_source_node".into()),
                 },
@@ -963,7 +1008,7 @@ pub fn apply_collaboration_target_operation(
                 event_id: event_id.clone(),
                 performed_by_actor: TeamActorRef {
                     kind: TeamActorKind::Host,
-                    id: team.host_agent_id.clone(),
+                    id: host_agent_member_id.clone(),
                     display_name: None,
                     authn_source: Some("remote_fabric_verified_source_node".into()),
                 },

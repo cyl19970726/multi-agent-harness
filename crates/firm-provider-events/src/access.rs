@@ -7,7 +7,7 @@ pub struct ProjectionAuthority {
     pub execution_space_id: String,
     pub project_binding_id: String,
     pub team_id: String,
-    pub agent_identity_id: String,
+    pub agent_member_id: String,
     pub agent_session_id: String,
     pub agent_session_generation: u64,
 }
@@ -17,7 +17,7 @@ pub struct ProjectionViewer {
     pub execution_space_id: String,
     pub project_binding_id: String,
     pub team_id: String,
-    pub agent_identity_id: String,
+    pub agent_member_id: String,
     pub is_team_host: bool,
 }
 
@@ -44,7 +44,7 @@ pub fn project_private_session(
     limit: usize,
 ) -> Result<SessionEventProjection, ProjectionAccessError> {
     verify_shared_scope(authority, viewer)?;
-    if viewer.agent_identity_id != authority.agent_identity_id {
+    if viewer.agent_member_id != authority.agent_member_id {
         return Err(ProjectionAccessError::NotSessionOwner);
     }
     verify_fold(authority, fold)?;

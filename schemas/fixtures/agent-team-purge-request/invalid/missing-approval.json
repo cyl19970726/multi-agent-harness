@@ -1,0 +1,1 @@
+{"tombstone_id":"purge-team-1","team_id":"team-1","expected_team_revision":3,"export_manifest_ref":"export:team-1","restore_window_closed_at":"unix-ms:9","requested_by":{"kind":"human","id":"operator-1"},"requested_at":"unix-ms:10"}

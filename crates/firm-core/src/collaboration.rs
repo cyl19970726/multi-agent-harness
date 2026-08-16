@@ -225,6 +225,57 @@ pub struct CollaborationMessageAuthority {
     pub authority_digest: String,
 }
 
+/// Frozen source-admission authority for an ordinary peer-Team Message.
+///
+/// This authority proves that one exact active TeamMembership and one exact
+/// local AgentSession/NodeDaemon generation authored the Message. It does not
+/// convey Work ownership and cannot authorize a WorkDelegation effect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerTeamMessageAdmissionAuthority {
+    pub company_id: String,
+    pub source_execution_space_id: String,
+    pub source_team_id: String,
+    pub source_team_revision: u64,
+    pub source_membership_id: String,
+    pub source_membership_generation: u64,
+    pub source_agent_member_id: String,
+    pub source_session_id: String,
+    pub source_session_generation: u64,
+    pub source_node_id: String,
+    pub source_node_daemon_id: String,
+    pub source_node_daemon_generation: u64,
+    pub target_execution_space_id: String,
+    pub target_team_id: String,
+    pub target_team_revision: u64,
+    pub target_node_id: String,
+    pub source_policy_ref: String,
+    pub source_policy_revision: u64,
+    pub source_policy_digest: String,
+    pub source_required_capability: String,
+    pub target_subscription_id: String,
+    pub target_subscription_revision: u64,
+    pub target_authorization_policy_ref: String,
+    pub target_policy_revision: u64,
+    pub target_policy_digest: String,
+    pub target_required_capability: String,
+    pub authority_digest: String,
+}
+
+/// Canonical Message admission authority. Delegation remains a distinct
+/// responsibility-changing path; peer-Team admission grants conversation
+/// authorship only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "authority_kind",
+    content = "authority",
+    rename_all = "snake_case"
+)]
+pub enum MessageAdmissionAuthority {
+    PeerTeam(PeerTeamMessageAdmissionAuthority),
+    WorkDelegation(CollaborationMessageAuthority),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DelegationDecisionKind {
@@ -493,6 +544,11 @@ pub enum RoutedBusinessKind {
     TargetWorkCreate,
     DelegationCancelRequest,
     DelegationCancelDecide,
+    /// Canonical shared-Team-inbox delivery. This is the only current peer
+    /// Message route kind and requires the durable target subscription fence.
+    PeerMessageDeliver,
+    /// Legacy WorkDelegation-scoped Message route, retained for read/replay
+    /// compatibility. New ordinary peer-Team Messages never use this kind.
     TeamMessageDeliver,
     RemoteFactPublish,
     ArtifactGrant,
@@ -506,6 +562,7 @@ impl RoutedBusinessKind {
             Self::TargetWorkCreate => "target_work_create",
             Self::DelegationCancelRequest => "delegation_cancel_request",
             Self::DelegationCancelDecide => "delegation_cancel_decide",
+            Self::PeerMessageDeliver => "peer_message_deliver",
             Self::TeamMessageDeliver => "team_message_deliver",
             Self::RemoteFactPublish => "remote_fact_publish",
             Self::ArtifactGrant => "artifact_grant",
@@ -640,6 +697,12 @@ pub fn collaboration_business_registry_v1() -> Vec<RoutedBusinessDescriptor> {
             "node.work",
         ),
         (
+            PeerMessageDeliver,
+            "message-admission-authority",
+            "canonical-message-delivery",
+            "node.message",
+        ),
+        (
             TeamMessageDeliver,
             "message",
             "canonical-message-delivery",
@@ -688,12 +751,12 @@ mod tests {
     #[test]
     fn routed_business_registry_is_closed_and_complete() {
         let registry = collaboration_business_registry_v1();
-        assert_eq!(registry.len(), 8);
+        assert_eq!(registry.len(), 9);
         let kinds = registry
             .iter()
             .map(|entry| entry.kind)
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(kinds.len(), 8);
+        assert_eq!(kinds.len(), 9);
         assert!(registry
             .iter()
             .all(|entry| entry.requires_expected_revision));

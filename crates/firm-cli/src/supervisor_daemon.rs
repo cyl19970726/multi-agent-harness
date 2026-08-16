@@ -1187,7 +1187,7 @@ impl MultiTeamDaemon {
                                         envelope.target_node_daemon_generation,
                                     )?;
                                 }
-                                let (sender_agent_id, sender_session_id) = if envelope
+                                let (sender_agent_member_id, sender_session_id) = if envelope
                                     .authenticated_actor
                                     .kind
                                     == harness_core::agentfirm_api::ActorKind::AgentMember
@@ -1197,7 +1197,7 @@ impl MultiTeamDaemon {
                                         .map_err(|error| CliError::Usage(error.to_string()))?
                                         .into_iter()
                                         .filter(|session| {
-                                            session.agent_identity_id
+                                            session.agent_member_id
                                                 == envelope.authenticated_actor.id
                                                 && session.node_id == self.node_id
                                                 && session.node_daemon_id == self.daemon_id
@@ -1230,7 +1230,7 @@ impl MultiTeamDaemon {
                                 let fingerprint = harness_store::canonical_json_fingerprint(
                                     &serde_json::json!({
                                         "sender_actor_ref": envelope.authenticated_actor,
-                                        "sender_agent_id": sender_agent_id,
+                                        "sender_agent_member_id": sender_agent_member_id,
                                         "sender_session_id": sender_session_id,
                                         "address_kind": draft.address_kind,
                                         "target_ref": draft.target_ref,
@@ -1250,23 +1250,40 @@ impl MultiTeamDaemon {
                                         "idempotency_key": envelope.idempotency_key,
                                     }),
                                 );
-                                let collaboration_authority = envelope
+                                let admission_authority = if let Some(value) = envelope
                                     .payload
-                                    .get("delegation_authority")
+                                    .get("message_admission_authority")
                                     .filter(|value| !value.is_null())
-                                    .map(|value| {
-                                        serde_json::from_value::<
-                                            harness_core::collaboration::CollaborationMessageAuthority,
-                                        >(value.clone())
-                                        .map_err(|error| {
-                                            CliError::Usage(format!(
-                                                "INVALID_COLLABORATION_MESSAGE_AUTHORITY: {error}"
-                                            ))
+                                {
+                                    Some(serde_json::from_value::<
+                                        harness_core::collaboration::MessageAdmissionAuthority,
+                                    >(value.clone()).map_err(|error| {
+                                        CliError::Usage(format!(
+                                            "INVALID_MESSAGE_ADMISSION_AUTHORITY: {error}"
+                                        ))
+                                    })?)
+                                } else {
+                                    // Serialized migration compatibility for
+                                    // already-prepared WorkDelegation commands.
+                                    envelope
+                                        .payload
+                                        .get("delegation_authority")
+                                        .filter(|value| !value.is_null())
+                                        .map(|value| {
+                                            serde_json::from_value::<
+                                                harness_core::collaboration::CollaborationMessageAuthority,
+                                            >(value.clone())
+                                            .map(harness_core::collaboration::MessageAdmissionAuthority::WorkDelegation)
+                                            .map_err(|error| {
+                                                CliError::Usage(format!(
+                                                    "INVALID_COLLABORATION_MESSAGE_AUTHORITY: {error}"
+                                                ))
+                                            })
                                         })
-                                    })
-                                    .transpose()?;
+                                        .transpose()?
+                                };
                                 store
-                                    .author_message_with_collaboration_authority(
+                                    .author_message_with_admission_authority(
                                         &effect_mutation,
                                         harness_core::agentfirm_api::Message {
                                             id: format!("message:{}", envelope.idempotency_key),
@@ -1275,7 +1292,7 @@ impl MultiTeamDaemon {
                                             source_node_daemon_id: self.daemon_id.clone(),
                                             source_authority_generation: envelope.target_node_daemon_generation,
                                             sender_actor_ref: envelope.authenticated_actor.clone(),
-                                            sender_agent_id,
+                                            sender_agent_member_id,
                                             sender_session_id,
                                             address_kind: draft.address_kind,
                                             target_ref: draft.target_ref,
@@ -1296,7 +1313,7 @@ impl MultiTeamDaemon {
                                             idempotency_key: envelope.idempotency_key.clone(),
                                             created_at: accepted_at.clone(),
                                         },
-                                        collaboration_authority.as_ref(),
+                                        admission_authority.as_ref(),
                                     )
                                     .map_err(|error| CliError::Usage(error.to_string()))
                                     .and_then(|result| {
@@ -1323,7 +1340,7 @@ impl MultiTeamDaemon {
                                     .fabric_agent_identities(&envelope.execution_space_id)
                                     .map_err(|error| CliError::Usage(error.to_string()))?
                                     .into_iter()
-                                    .find(|identity| identity.id == session.agent_identity_id)
+                                    .find(|identity| identity.id == session.agent_member_id)
                                     .map(|identity| identity.display_name)
                                     .ok_or_else(|| {
                                         CliError::Usage("AGENT_IDENTITY_NOT_FOUND".into())
@@ -1451,7 +1468,7 @@ impl MultiTeamDaemon {
                                     .fabric_agent_identities(&envelope.execution_space_id)
                                     .map_err(|error| CliError::Usage(error.to_string()))?
                                     .into_iter()
-                                    .find(|identity| identity.id == session.agent_identity_id)
+                                    .find(|identity| identity.id == session.agent_member_id)
                                     .map(|identity| identity.display_name)
                                     .ok_or_else(|| {
                                         CliError::Usage("AGENT_IDENTITY_NOT_FOUND".into())
@@ -2372,7 +2389,10 @@ mod tests {
                     {
                         std::thread::sleep(Duration::from_millis(5));
                     }
-                    Err(error) => panic!("wait for scanner to open registry FIFO: {error}"),
+                    Err(error) => {
+                        shutdown.store(true, Ordering::SeqCst);
+                        panic!("wait for scanner to open registry FIFO: {error}");
+                    }
                 }
             };
 
@@ -2398,9 +2418,33 @@ mod tests {
                 assert_eq!(response["ok"], true);
                 assert_eq!(response["node_id"], "test-node");
             }));
-
             shutdown.store(true, Ordering::SeqCst);
             drop(registry_writer);
+
+            // The independent authority heartbeat may reach the same FIFO
+            // after the discovery reader observes EOF but before it observes
+            // shutdown. Release that one late read as well; otherwise the
+            // scoped join can hide a successful responsiveness assertion
+            // behind an unbounded test hang.
+            let release_deadline = Instant::now() + Duration::from_secs(2);
+            while !server.is_finished() && Instant::now() < release_deadline {
+                match OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&registry_path)
+                {
+                    Ok(mut writer) => {
+                        writer
+                            .write_all(b"\n")
+                            .expect("release late registry FIFO reader");
+                        break;
+                    }
+                    Err(error) if error.raw_os_error() == Some(libc::ENXIO) => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("release late registry FIFO reader: {error}"),
+                }
+            }
             let server_result = server.join().expect("daemon control thread");
             if let Err(payload) = status_result {
                 std::panic::resume_unwind(payload);

@@ -1108,7 +1108,14 @@ fn tool_team_run_create(
     }
     let agent_team_id = required_non_empty_str(arguments, "agent_team_id")?.to_string();
     if members.is_empty() {
-        members = team_member_specs_from_definition(store, &agent_team_id)
+        let execution_space_id = resolved
+            .execution_space_context
+            .as_ref()
+            .map(|space| space.id.as_str())
+            .ok_or_else(|| {
+                "team run creation requires an explicitly selected execution space".to_string()
+            })?;
+        members = team_member_specs_from_definition(store, execution_space_id, &agent_team_id)
             .map_err(|error| error.to_string())?;
     }
     let created = create_team_run(

@@ -1,1 +1,1 @@
-{"id":"work-delivery-1","work_id":"work-1","work_revision":1,"work_execution_binding_id":"binding-1","recipient_identity_id":"agent-1","recipient_session_id":"session-1","recipient_session_generation":1,"status":"queued","attempt":1,"version":1,"updated_at":"unix-ms:1"}
+{"id":"work-delivery-1","work_id":"work-1","work_revision":1,"work_execution_binding_id":"binding-1","recipient_agent_member_id":"agent-1","recipient_session_id":"session-1","recipient_session_generation":1,"status":"queued","attempt":1,"version":1,"updated_at":"unix-ms:1"}

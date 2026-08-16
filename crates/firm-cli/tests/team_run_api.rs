@@ -93,7 +93,7 @@ fn assert_trust_native_binding_synced(
         .fabric_agent_sessions(&space_id)
         .expect("read canonical AgentSessions")
         .into_iter()
-        .filter(|session| session.agent_identity_id == trust_run.agent_member_id)
+        .filter(|session| session.agent_member_id == trust_run.agent_member_id)
         .filter(|session| session.runtime_generation == trust_run.runtime_generation)
         .filter(|session| {
             session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
@@ -1759,7 +1759,7 @@ fn canonical_team_message_routes_member_to_host_identity_without_special_inbox_a
         .into_iter()
         .find(|delivery| delivery.message_id == canonical_id)
         .expect("Host identity delivery");
-    assert_ne!(delivery.recipient_identity_id, "host");
+    assert_ne!(delivery.recipient_agent_member_id.as_deref(), Some("host"));
     assert_eq!(delivery.status, CanonicalMessageDeliveryStatus::Queued);
 
     let (status, exact) =
@@ -5707,7 +5707,7 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
         .expect("closed member remains visible");
     assert_eq!(latest["coordination_status"].as_str(), Some("closed"));
     assert_eq!(latest["status"].as_str(), Some("stopped"));
-    let agent_identity_id = latest["agent_member_id"]
+    let agent_member_id = latest["agent_member_id"]
         .as_str()
         .expect("member carries canonical AgentIdentity")
         .to_string();
@@ -5715,7 +5715,7 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
         .as_array()
         .into_iter()
         .flatten()
-        .find(|session| session["agent_identity_id"].as_str() == Some(agent_identity_id.as_str()))
+        .find(|session| session["agent_member_id"].as_str() == Some(agent_member_id.as_str()))
         .expect("Team close preserves the machine-owned AgentSession");
     assert_eq!(
         session["lifecycle"].as_str(),
@@ -5728,7 +5728,7 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
             .into_iter()
             .flatten()
             .any(|binding| {
-                binding["agent_identity_id"].as_str() == Some(agent_identity_id.as_str())
+                binding["agent_member_id"].as_str() == Some(agent_member_id.as_str())
                     && binding["status"].as_str() == Some("active")
             }),
         "Team close must not silently release a WorkExecutionBinding"

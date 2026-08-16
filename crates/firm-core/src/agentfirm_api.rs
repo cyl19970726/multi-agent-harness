@@ -5,6 +5,7 @@
 //! delivery/gate records from the root module.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -286,7 +287,8 @@ pub struct AgentSessionControlState {
 #[serde(deny_unknown_fields)]
 pub struct AgentSession {
     pub id: String,
-    pub agent_identity_id: String,
+    #[serde(alias = "agent_identity_id")]
+    pub agent_member_id: String,
     pub node_id: String,
     pub execution_space_id: String,
     pub node_daemon_id: String,
@@ -337,7 +339,8 @@ pub enum TeamMembershipRole {
 pub struct TeamMembership {
     pub id: String,
     pub team_id: String,
-    pub agent_identity_id: String,
+    #[serde(alias = "agent_identity_id")]
+    pub agent_member_id: String,
     pub node_id: String,
     pub role: TeamMembershipRole,
     pub state: TeamMembershipStatus,
@@ -349,6 +352,72 @@ pub struct TeamMembership {
     pub joined_at: String,
     #[serde(default)]
     pub left_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LegacyAgentTeamStatus {
+    Active,
+    Closed,
+    Archived,
+}
+
+/// Explicit legacy input used only by the one-way, same-ID Team migration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LegacyAgentTeamProjection {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub mission_id: String,
+    pub host_agent_id: String,
+    pub node_id: String,
+    pub status: LegacyAgentTeamStatus,
+    #[serde(default)]
+    pub member_ids: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Closed, reviewable migration bundle. Every legacy AgentIdentity id must map
+/// to the same AgentMember id; ambiguity or inferred identity is invalid.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTeamMigrationBundle {
+    pub source: LegacyAgentTeamProjection,
+    pub target: crate::AgentTeam,
+    pub memberships: Vec<TeamMembership>,
+    pub identity_id_map: BTreeMap<String, String>,
+    pub migration_id: String,
+    pub source_fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTeamPurgeRequest {
+    pub tombstone_id: String,
+    pub team_id: String,
+    pub expected_team_revision: u64,
+    pub approval_ref: String,
+    pub export_manifest_ref: String,
+    pub restore_window_closed_at: String,
+    pub requested_by: ActorRef,
+    pub requested_at: String,
+}
+
+/// Purge authorization evidence. DEV-35 records this tombstone but deliberately
+/// does not bulk-delete Team-related Work, Messages, Memberships or sessions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTeamPurgeTombstone {
+    pub id: String,
+    pub team_id: String,
+    pub team_revision: u64,
+    pub approval_ref: String,
+    pub export_manifest_ref: String,
+    pub restore_window_closed_at: String,
+    pub recorded_by: ActorRef,
+    pub recorded_at: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -373,7 +442,8 @@ pub struct WorkExecutionBinding {
     pub work_revision: u64,
     pub team_id: String,
     pub team_membership_id: String,
-    pub agent_identity_id: String,
+    #[serde(alias = "agent_identity_id")]
+    pub agent_member_id: String,
     pub agent_session_id: String,
     pub agent_session_generation: u64,
     pub delivery_id: String,
@@ -395,7 +465,8 @@ pub struct CanonicalWorkDelivery {
     pub work_id: String,
     pub work_revision: u64,
     pub work_execution_binding_id: String,
-    pub recipient_identity_id: String,
+    #[serde(alias = "recipient_identity_id")]
+    pub recipient_agent_member_id: String,
     pub recipient_session_id: String,
     pub recipient_session_generation: u64,
     pub target_node_id: String,
@@ -535,7 +606,8 @@ pub enum MessageKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageRecipientKind {
-    AgentIdentity,
+    #[serde(alias = "agent_identity")]
+    AgentMember,
     Team,
     ControlPlaneActor,
 }
@@ -567,8 +639,8 @@ pub struct Message {
     pub source_node_daemon_id: String,
     pub source_authority_generation: u64,
     pub sender_actor_ref: ActorRef,
-    #[serde(default)]
-    pub sender_agent_id: Option<String>,
+    #[serde(default, alias = "sender_agent_id")]
+    pub sender_agent_member_id: Option<String>,
     #[serde(default)]
     pub sender_session_id: Option<String>,
     pub address_kind: MessageAddressKind,
@@ -634,6 +706,16 @@ pub enum MessageSubscriptionKind {
     AllAuthorized,
 }
 
+/// Subject that owns one subscription or canonical inbox delivery. A Team
+/// subject remains unresolved until one exact active membership generation is
+/// atomically claimed; it never fans out to every Team member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageSubjectKind {
+    AgentMember,
+    Team,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageSubscriptionStatus {
@@ -656,8 +738,12 @@ pub enum MessageHistoryPolicy {
 #[serde(deny_unknown_fields)]
 pub struct MessageSubscription {
     pub id: String,
-    pub subscriber_agent_id: String,
+    pub subscriber_kind: MessageSubjectKind,
+    pub subscriber_ref: String,
     pub execution_space_id: String,
+    #[serde(default)]
+    pub target_team_id: Option<String>,
+    pub target_node_id: String,
     pub source_kind: MessageSubscriptionKind,
     pub source_ref: String,
     pub delivery_mode: RuntimeDispatchMode,
@@ -679,7 +765,8 @@ pub struct MessageSubscription {
 #[serde(deny_unknown_fields)]
 pub struct SubscriptionCursor {
     pub subscription_id: String,
-    pub recipient_agent_id: String,
+    #[serde(alias = "recipient_agent_id")]
+    pub recipient_agent_member_id: String,
     pub last_visible_store_sequence: u64,
     pub last_delivered_store_sequence: u64,
     pub last_read_store_sequence: u64,
@@ -708,8 +795,17 @@ pub struct CanonicalMessageDelivery {
     pub id: String,
     pub message_id: String,
     pub subscription_id: String,
-    pub recipient_identity_id: String,
+    pub subscription_revision: u64,
+    pub subscription_policy_digest: String,
+    pub recipient_kind: MessageSubjectKind,
+    pub recipient_ref: String,
+    #[serde(default)]
+    pub target_team_id: Option<String>,
     pub target_node_id: String,
+    #[serde(default)]
+    pub resolved_team_membership_id: Option<String>,
+    #[serde(default)]
+    pub recipient_agent_member_id: Option<String>,
     #[serde(default)]
     pub recipient_session_id: Option<String>,
     #[serde(default)]
@@ -969,7 +1065,8 @@ pub struct ProviderInvocation {
     pub id: String,
     pub source_plane: String,
     pub source_record_id: String,
-    pub recipient_identity_id: String,
+    #[serde(alias = "recipient_identity_id")]
+    pub recipient_agent_member_id: String,
     pub recipient_session_id: String,
     pub recipient_session_generation: u64,
     pub node_id: String,
@@ -1156,6 +1253,18 @@ pub struct DeliveryClaim {
     pub claim_id: String,
     pub supervisor_generation: u64,
     pub member_generation: u64,
+    pub claim_expires_at: String,
+}
+
+/// Atomic Team-subject inbox claim. The membership generation is the routing
+/// fence; no AgentSession is required when the Team delivery is admitted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamMessageDeliveryClaim {
+    pub claim_id: String,
+    pub team_membership_id: String,
+    pub membership_generation: u64,
+    pub node_daemon_generation: u64,
     pub claim_expires_at: String,
 }
 
@@ -1670,7 +1779,7 @@ mod runtime_control_contract_tests {
     fn legacy_agent_session_defaults_fail_closed_without_enabling_provider_driver() {
         let session: AgentSession = serde_json::from_value(serde_json::json!({
             "id": "session-1",
-            "agent_identity_id": "agent-1",
+            "agent_member_id": "agent-1",
             "node_id": "node-1",
             "execution_space_id": "space-1",
             "node_daemon_id": "daemon-1",

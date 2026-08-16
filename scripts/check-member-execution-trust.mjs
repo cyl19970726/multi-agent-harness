@@ -256,8 +256,14 @@ const retiredPatterns = [
   ["StandingAgent execution join", /execution_agent_member_ref/g],
   ["AgentRuntime", /\bAgentRuntime(?:Status|Health)?\b/g],
   ["AgentEvent", /\bAgentEvent\b/g],
-  ["optional MemberRun identity", /agent_member_id\s*:\s*Option\s*</g],
-  ["optional TypeScript MemberRun identity", /agent_member_id\s*\?\s*:/g],
+  [
+    "optional MemberRun identity",
+    /\bstruct\s+MemberRun\b[^}]*\bagent_member_id\s*:\s*Option\s*</gs,
+  ],
+  [
+    "optional TypeScript MemberRun identity",
+    /\b(?:interface|type)\s+MemberRun\b[^}]*\bagent_member_id\s*\?\s*:/gs,
+  ],
   ["fallback MemberRun identity", /stable_member_identity/g],
   ["durable member legacy ledger", /durable_agent_members\.jsonl/g],
   ["runtime-heavy member registry ledger", /["']members\.jsonl["']/g],

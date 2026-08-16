@@ -1,0 +1,15 @@
+{
+  "business_kind": "peer_message_deliver",
+  "required_capability": "collaboration.peer_message_deliver",
+  "business_actor_kind": "agent_member",
+  "business_actor_id": "source-member",
+  "target_team_id": "target-team",
+  "target_team_revision": 4,
+  "placement_generation": 1,
+  "expected_revision": 2,
+  "payload_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "payload": {
+    "message_reference": "message-ref-1",
+    "message_admission_authority": "peer-authority-1"
+  }
+}

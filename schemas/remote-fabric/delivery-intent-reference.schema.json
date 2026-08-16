@@ -6,13 +6,13 @@
   "additionalProperties": false,
   "required": [
     "delivery_id", "message_id", "message_body_digest",
-    "recipient_identity_id", "target_execution_space_id"
+    "recipient_agent_member_id", "target_execution_space_id"
   ],
   "properties": {
     "delivery_id": { "type": "string", "minLength": 1 },
     "message_id": { "type": "string", "minLength": 1 },
     "message_body_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
-    "recipient_identity_id": { "type": "string", "minLength": 1 },
+    "recipient_agent_member_id": { "type": "string", "minLength": 1 },
     "target_execution_space_id": { "type": "string", "minLength": 1 }
   }
 }

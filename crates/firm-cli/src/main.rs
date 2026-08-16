@@ -1987,7 +1987,7 @@ fn run() -> CliResult<()> {
         "agent" => return Err(retired_surface_error("agent")),
         "org" => org_command(&store, &args[1..])?,
         "node" => node_command(&store, &resolved, &args[1..])?,
-        "team" => team_command(&store, &args[1..])?,
+        "team" => team_command(&store, &resolved, &args[1..])?,
         "mission" => mission_command(&store, &args[1..])?,
         "legacy" => legacy_command(&store, &args[1..])?,
         "wave" => {
@@ -8547,30 +8547,81 @@ fn node_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String])
     Ok(())
 }
 
-fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+fn team_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "team create|list|show|rename|add-member|remove-member|close|archive",
+        "team create|list|show|rename|add-member|remove-member|activate-member|activate|deactivate|trash|restore",
     )?;
+    let execution_space_id = resolved
+        .execution_space_context
+        .as_ref()
+        .map(|space| space.id.clone())
+        .ok_or_else(|| {
+            CliError::Usage("Team mutation/read requires an explicitly selected --space".into())
+        })?;
+    let actor = harness_core::agentfirm_api::ActorRef {
+        kind: harness_core::agentfirm_api::ActorKind::Human,
+        id: value(args, "--actor-id").unwrap_or_else(|| "operator:cli".into()),
+    };
+    let context = |command_name: &str, idempotency_key: String, expected_version: u64| {
+        harness_core::agentfirm_api::MutationContext {
+            execution_space_id: execution_space_id.clone(),
+            authenticated_actor: actor.clone(),
+            authority_actor: None,
+            command_name: command_name.into(),
+            idempotency_key,
+            expected_version,
+            request_fingerprint: None,
+        }
+    };
     match args[0].as_str() {
         "create" => {
+            let host_agent_member_id = value(args, "--host-agent-member-id")
+                .or_else(|| value(args, "--host-agent-id"))
+                .ok_or_else(|| {
+                    CliError::Usage("missing required option --host-agent-member-id".into())
+                })?;
+            let mut member_ids = many(args, "--member");
+            member_ids.retain(|member_id| member_id != &host_agent_member_id);
+            let legacy_mission_id =
+                value(args, "--legacy-mission-id").or_else(|| value(args, "--mission-id"));
+            let timestamp = now_string();
             let team = AgentTeam {
                 id: value(args, "--id").unwrap_or_else(|| generated_id("team")),
                 name: required(args, "--name")?,
                 description: required(args, "--description")?,
-                mission_id: required(args, "--mission-id")?,
-                host_agent_id: required(args, "--host-agent-id")?,
                 node_id: match value(args, "--node-id") {
                     Some(id) => id,
                     None => read_local_node_id()?,
                 },
                 status: AgentTeamStatus::Active,
-                member_ids: many(args, "--member"),
-                created_at: now_string(),
-                updated_at: now_string(),
+                revision: 1,
+                legacy_mission_id: legacy_mission_id.clone(),
+                trashed_at: None,
+                created_at: timestamp.clone(),
+                updated_at: timestamp.clone(),
+                mission_id: legacy_mission_id.unwrap_or_default(),
+                host_agent_id: host_agent_member_id.clone(),
+                member_ids: member_ids.clone(),
             };
-            persist_new_team(store, &team)?;
-            print_json(&team)?;
+            let memberships = initial_team_memberships(
+                &team,
+                &host_agent_member_id,
+                &member_ids,
+                &actor,
+                &timestamp,
+            );
+            let created = store.create_agent_team(
+                &context(
+                    "team.create",
+                    value(args, "--idempotency-key")
+                        .unwrap_or_else(|| format!("team-create:{}", team.id)),
+                    0,
+                ),
+                team,
+                memberships,
+            )?;
+            print_json(&created.projection)?;
         }
         "list" => {
             let teams = latest_teams(store)?
@@ -8595,51 +8646,155 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             if let Some(description) = value(args, "--description") {
                 team.description = description;
             }
-            team.updated_at = now_string();
-            store.append_team(&team)?;
-            print_json(&team)?;
+            let updated = store.update_agent_team_profile(
+                &context(
+                    "team.profile.update",
+                    value(args, "--idempotency-key")
+                        .unwrap_or_else(|| format!("team-profile:{}:{}", team.id, team.revision)),
+                    team.revision,
+                ),
+                &team.id,
+                &team.name,
+                &team.description,
+                &now_string(),
+            )?;
+            print_json(&updated.projection)?;
         }
-        "add-member" | "remove-member" => {
+        "add-member" => {
             let id = required(args, "--id")?;
             let member_id = required(args, "--member")?;
-            let mut team = latest_teams(store)?
+            let team = latest_teams(store)?
                 .remove(&id)
                 .ok_or_else(|| CliError::Usage(format!("team not found: {id}")))?;
-            if args[0] == "add-member" {
-                if !known_agent_member_ids(store)?.contains(&member_id) {
-                    return Err(CliError::Usage(format!(
-                        "agent member not found: {member_id}"
-                    )));
-                }
-                if !team.member_ids.iter().any(|id| id == &member_id) {
-                    team.member_ids.push(member_id);
-                }
-            } else {
-                team.member_ids.retain(|id| id != &member_id);
+            if !known_agent_member_ids(store)?.contains(&member_id) {
+                return Err(CliError::Usage(format!(
+                    "agent member not found: {member_id}"
+                )));
             }
-            team.updated_at = now_string();
-            store.append_team(&team)?;
-            print_json(&team)?;
+            let prior = store.fabric_team_memberships(&execution_space_id)?;
+            let membership_generation = prior
+                .iter()
+                .filter(|membership| {
+                    membership.team_id == team.id && membership.agent_member_id == member_id
+                })
+                .map(|membership| membership.membership_generation)
+                .max()
+                .unwrap_or(0)
+                + 1;
+            let timestamp = now_string();
+            let membership_id =
+                value(args, "--membership-id").unwrap_or_else(|| generated_id("membership"));
+            let role = match value(args, "--role").as_deref().unwrap_or("member") {
+                "host" => harness_core::agentfirm_api::TeamMembershipRole::Host,
+                "member" => harness_core::agentfirm_api::TeamMembershipRole::Member,
+                "observer" => harness_core::agentfirm_api::TeamMembershipRole::Observer,
+                other => {
+                    return Err(CliError::Usage(format!(
+                        "invalid --role {other}; expected host|member|observer"
+                    )))
+                }
+            };
+            let membership = harness_core::agentfirm_api::TeamMembership {
+                id: membership_id.clone(),
+                team_id: team.id,
+                agent_member_id: member_id.clone(),
+                node_id: team.node_id,
+                role,
+                state: harness_core::agentfirm_api::TeamMembershipStatus::Active,
+                membership_generation,
+                default_subscription_refs: vec![
+                    format!("direct:{}:{}", member_id, membership_id),
+                    format!("team:{}:{}", id, membership_id),
+                ],
+                created_by: actor.clone(),
+                revision: 1,
+                joined_at: timestamp,
+                left_at: None,
+            };
+            let joined = store.join_team_membership(
+                &context(
+                    "team.membership.join",
+                    value(args, "--idempotency-key")
+                        .unwrap_or_else(|| format!("team-membership-join:{membership_id}")),
+                    0,
+                ),
+                membership,
+            )?;
+            print_json(&joined.projection)?;
         }
-        "close" => {
+        "remove-member" => {
             let id = required(args, "--id")?;
-            let mut team = latest_teams(store)?
+            let member_id = required(args, "--member")?;
+            let membership = store
+                .fabric_team_memberships(&execution_space_id)?
+                .into_iter()
+                .find(|membership| {
+                    membership.team_id == id
+                        && membership.agent_member_id == member_id
+                        && membership.state
+                            == harness_core::agentfirm_api::TeamMembershipStatus::Active
+                })
+                .ok_or_else(|| CliError::Usage("active TeamMembership not found".into()))?;
+            let left = store.leave_team_membership(
+                &context(
+                    "team.membership.leave",
+                    value(args, "--idempotency-key")
+                        .unwrap_or_else(|| format!("team-membership-leave:{}", membership.id)),
+                    membership.revision,
+                ),
+                &membership.id,
+                &now_string(),
+            )?;
+            print_json(&left.projection)?;
+        }
+        "activate-member" => {
+            let id = required(args, "--id")?;
+            let member_id = required(args, "--member")?;
+            let membership = store
+                .fabric_team_memberships(&execution_space_id)?
+                .into_iter()
+                .find(|membership| {
+                    membership.team_id == id
+                        && membership.agent_member_id == member_id
+                        && membership.state
+                            == harness_core::agentfirm_api::TeamMembershipStatus::Inactive
+                })
+                .ok_or_else(|| CliError::Usage("inactive TeamMembership not found".into()))?;
+            let activated = store.activate_team_membership(
+                &context(
+                    "team.membership.activate",
+                    value(args, "--idempotency-key")
+                        .unwrap_or_else(|| format!("team-membership-activate:{}", membership.id)),
+                    membership.revision,
+                ),
+                &membership.id,
+                &now_string(),
+            )?;
+            print_json(&activated.projection)?;
+        }
+        "activate" | "deactivate" | "close" | "trash" | "archive" | "restore" => {
+            let id = required(args, "--id")?;
+            let team = latest_teams(store)?
                 .remove(&id)
                 .ok_or_else(|| CliError::Usage(format!("team not found: {id}")))?;
-            team.status = AgentTeamStatus::Closed;
-            team.updated_at = now_string();
-            store.append_team(&team)?;
-            print_json(&team)?;
-        }
-        "archive" => {
-            let id = required(args, "--id")?;
-            let mut team = latest_teams(store)?
-                .remove(&id)
-                .ok_or_else(|| CliError::Usage(format!("team not found: {id}")))?;
-            team.status = AgentTeamStatus::Archived;
-            team.updated_at = now_string();
-            store.append_team(&team)?;
-            print_json(&team)?;
+            let next_status = match args[0].as_str() {
+                "activate" => AgentTeamStatus::Active,
+                "deactivate" | "close" | "restore" => AgentTeamStatus::Inactive,
+                "trash" | "archive" => AgentTeamStatus::Trashed,
+                _ => unreachable!(),
+            };
+            let transitioned = store.transition_agent_team(
+                &context(
+                    "team.lifecycle.transition",
+                    value(args, "--idempotency-key")
+                        .unwrap_or_else(|| format!("team-lifecycle:{}:{}", team.id, team.revision)),
+                    team.revision,
+                ),
+                &team.id,
+                next_status,
+                &now_string(),
+            )?;
+            print_json(&transitioned.projection)?;
         }
         other => return Err(CliError::Usage(format!("unknown team command: {other}"))),
     }
@@ -9147,22 +9302,42 @@ struct TeamMemberSpec {
 
 fn team_member_specs_from_definition(
     store: &HarnessStore,
+    execution_space_id: &str,
     team_id: &str,
 ) -> CliResult<Vec<TeamMemberSpec>> {
-    let team = latest_teams(store)?
-        .remove(team_id)
+    let team = store
+        .agent_teams(execution_space_id)?
+        .into_iter()
+        .find(|team| team.id == team_id)
         .ok_or_else(|| CliError::Usage(format!("team not found: {team_id}")))?;
     let members = store
-        .all_trust_agent_members()?
+        .trust_agent_members(execution_space_id)?
         .into_iter()
         .map(|member| (member.id.clone(), member))
         .collect::<BTreeMap<_, _>>();
-    team.member_ids
-        .iter()
-        .map(|member_id| {
-            let member = members.get(member_id).ok_or_else(|| {
+    let mut memberships = store
+        .fabric_team_memberships(execution_space_id)?
+        .into_iter()
+        .filter(|membership| {
+            membership.team_id == team.id
+                && membership.node_id == team.node_id
+                && membership.state == harness_core::agentfirm_api::TeamMembershipStatus::Active
+                && membership.role != harness_core::agentfirm_api::TeamMembershipRole::Observer
+        })
+        .collect::<Vec<_>>();
+    memberships.sort_by_key(|membership| {
+        (
+            membership.role != harness_core::agentfirm_api::TeamMembershipRole::Host,
+            membership.id.clone(),
+        )
+    });
+    memberships
+        .into_iter()
+        .map(|membership| {
+            let member = members.get(&membership.agent_member_id).ok_or_else(|| {
                 CliError::Usage(format!(
-                    "team {team_id} references missing agent member {member_id}"
+                    "team {team_id} membership {} references missing AgentMember {}",
+                    membership.id, membership.agent_member_id
                 ))
             })?;
             Ok(TeamMemberSpec {
@@ -12439,19 +12614,87 @@ fn ensure_legacy_unit_test_team_binding(
             SPACE_ID,
         )?;
     }
+    let creator = harness_core::agentfirm_api::ActorRef {
+        kind: harness_core::agentfirm_api::ActorKind::Service,
+        id: "unit-test-fixture".into(),
+    };
+    if !store
+        .trust_agent_members(SPACE_ID)?
+        .iter()
+        .any(|member| member.id == "host")
+    {
+        store.create_trust_agent_member(
+            &harness_core::agentfirm_api::MutationContext {
+                execution_space_id: SPACE_ID.into(),
+                authenticated_actor: creator.clone(),
+                authority_actor: None,
+                command_name: "unit_test.agent_member.create".into(),
+                idempotency_key: "unit-test-member:host".into(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            harness_core::agentfirm_api::AgentMember {
+                id: "host".into(),
+                name: "Host".into(),
+                description: "canonical unit-test Host AgentMember".into(),
+                role: "host".into(),
+                capabilities: Vec::new(),
+                skill_refs: Vec::new(),
+                provider_profile_ref: Some("codex".into()),
+                model_preference: None,
+                workspace_policy: "managed-worktree".into(),
+                permission_ceiling: harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite,
+                organization_status:
+                    harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active,
+                version: 1,
+                created_by: creator.clone(),
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            },
+        )?;
+    }
     if !latest_teams(store)?.contains_key(TEAM_ID) {
-        store.insert_agent_team_with_unique_mission(&AgentTeam {
+        let team = AgentTeam {
             id: TEAM_ID.to_string(),
             name: "Unit-test AgentTeam".to_string(),
             description: "Canonical binding for pre-Wave-3 unit fixtures".to_string(),
-            mission_id: MISSION_ID.to_string(),
-            host_agent_id: "host".to_string(),
             node_id: NODE_ID.to_string(),
             status: AgentTeamStatus::Active,
+            revision: 1,
+            legacy_mission_id: Some(MISSION_ID.to_string()),
+            trashed_at: None,
+            mission_id: MISSION_ID.to_string(),
+            host_agent_id: "host".to_string(),
             member_ids: Vec::new(),
             created_at: now.clone(),
-            updated_at: now,
-        })?;
+            updated_at: now.clone(),
+        };
+        store.create_agent_team(
+            &harness_core::agentfirm_api::MutationContext {
+                execution_space_id: SPACE_ID.into(),
+                authenticated_actor: creator.clone(),
+                authority_actor: None,
+                command_name: "unit_test.agent_team.create".into(),
+                idempotency_key: "unit-test-agent-team".into(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            team,
+            vec![harness_core::agentfirm_api::TeamMembership {
+                id: format!("membership:{TEAM_ID}:host"),
+                team_id: TEAM_ID.into(),
+                agent_member_id: "host".into(),
+                node_id: NODE_ID.into(),
+                role: harness_core::agentfirm_api::TeamMembershipRole::Host,
+                state: harness_core::agentfirm_api::TeamMembershipStatus::Active,
+                membership_generation: 1,
+                default_subscription_refs: Vec::new(),
+                created_by: creator,
+                revision: 1,
+                joined_at: now.clone(),
+                left_at: None,
+            }],
+        )?;
     }
 
     let project_root = store.root().join("unit-test-project");
@@ -12484,61 +12727,173 @@ fn ensure_unit_test_canonical_members(
         .into_iter()
         .map(|member| member.id)
         .collect::<BTreeSet<_>>();
+    let team = store
+        .agent_teams(execution_space_id)?
+        .into_iter()
+        .find(|team| team.id == team_id);
+    let mut existing_memberships = store
+        .fabric_team_memberships(execution_space_id)?
+        .into_iter()
+        .filter(|membership| {
+            membership.team_id == team_id
+                && membership.state == harness_core::agentfirm_api::TeamMembershipStatus::Active
+        })
+        .map(|membership| membership.agent_member_id)
+        .collect::<BTreeSet<_>>();
     for member in members {
-        if existing.contains(&member.agent_member_id) {
-            continue;
-        }
         let now = "unix-ms:1".to_string();
-        store.create_trust_agent_member(
-            &harness_core::agentfirm_api::MutationContext {
-                execution_space_id: execution_space_id.to_string(),
-                authenticated_actor: creator.clone(),
-                authority_actor: None,
-                command_name: "unit_test.agent_member.create".into(),
-                idempotency_key: format!("unit-test-member:{}", member.agent_member_id),
-                expected_version: 0,
-                request_fingerprint: None,
-            },
-            harness_core::agentfirm_api::AgentMember {
-                id: member.agent_member_id.clone(),
-                name: member.name.clone(),
-                description: "canonical unit-test AgentMember".into(),
-                role: member.role.clone(),
-                capabilities: Vec::new(),
-                skill_refs: Vec::new(),
-                provider_profile_ref: Some(member.provider.clone()),
-                model_preference: member.model.clone(),
-                workspace_policy: "managed-worktree".into(),
-                permission_ceiling: if matches!(member.provider.as_str(), "kimi" | "pi") {
-                    // Pi RPC has no filesystem containment for write/edit.
-                    // Unit-test Team fixtures mirror the explicit trusted
-                    // development policy; Kimi's callback bridge likewise
-                    // admits only an exact full-access ceiling.
-                    harness_core::agentfirm_api::PermissionCeiling::FullAccess
-                } else {
-                    harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite
+        if !existing.contains(&member.agent_member_id) {
+            store.create_trust_agent_member(
+                &harness_core::agentfirm_api::MutationContext {
+                    execution_space_id: execution_space_id.to_string(),
+                    authenticated_actor: creator.clone(),
+                    authority_actor: None,
+                    command_name: "unit_test.agent_member.create".into(),
+                    idempotency_key: format!("unit-test-member:{}", member.agent_member_id),
+                    expected_version: 0,
+                    request_fingerprint: None,
                 },
-                organization_status:
-                    harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active,
-                version: 1,
-                created_by: creator.clone(),
-                created_at: now.clone(),
-                updated_at: now,
-            },
-        )?;
-    }
-    let mut team = latest_teams(store)?
-        .remove(team_id)
-        .ok_or_else(|| CliError::Usage(format!("team not found: {team_id}")))?;
-    for member in members {
-        if team.host_agent_id != member.agent_member_id
-            && !team.member_ids.contains(&member.agent_member_id)
+                harness_core::agentfirm_api::AgentMember {
+                    id: member.agent_member_id.clone(),
+                    name: member.name.clone(),
+                    description: "canonical unit-test AgentMember".into(),
+                    role: member.role.clone(),
+                    capabilities: Vec::new(),
+                    skill_refs: Vec::new(),
+                    provider_profile_ref: Some(member.provider.clone()),
+                    model_preference: member.model.clone(),
+                    workspace_policy: "managed-worktree".into(),
+                    permission_ceiling: if matches!(member.provider.as_str(), "kimi" | "pi") {
+                        // Pi RPC has no filesystem containment for write/edit.
+                        // Unit-test Team fixtures mirror the explicit trusted
+                        // development policy; Kimi's callback bridge likewise
+                        // admits only an exact full-access ceiling.
+                        harness_core::agentfirm_api::PermissionCeiling::FullAccess
+                    } else {
+                        harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite
+                    },
+                    organization_status:
+                        harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active,
+                    version: 1,
+                    created_by: creator.clone(),
+                    created_at: now.clone(),
+                    updated_at: now.clone(),
+                },
+            )?;
+        }
+        if let Some(team) = team
+            .as_ref()
+            .filter(|_| !existing_memberships.contains(&member.agent_member_id))
         {
-            team.member_ids.push(member.agent_member_id.clone());
+            store.join_team_membership(
+                &harness_core::agentfirm_api::MutationContext {
+                    execution_space_id: execution_space_id.to_string(),
+                    authenticated_actor: creator.clone(),
+                    authority_actor: None,
+                    command_name: "unit_test.team_membership.join".into(),
+                    idempotency_key: format!(
+                        "unit-test-membership:{team_id}:{}",
+                        member.agent_member_id
+                    ),
+                    expected_version: 0,
+                    request_fingerprint: None,
+                },
+                harness_core::agentfirm_api::TeamMembership {
+                    id: format!("membership:{team_id}:{}", member.agent_member_id),
+                    team_id: team_id.into(),
+                    agent_member_id: member.agent_member_id.clone(),
+                    node_id: team.node_id.clone(),
+                    role: if member.agent_member_id == team.host_agent_id {
+                        harness_core::agentfirm_api::TeamMembershipRole::Host
+                    } else {
+                        harness_core::agentfirm_api::TeamMembershipRole::Member
+                    },
+                    state: harness_core::agentfirm_api::TeamMembershipStatus::Active,
+                    membership_generation: 1,
+                    default_subscription_refs: Vec::new(),
+                    created_by: creator.clone(),
+                    revision: 1,
+                    joined_at: now,
+                    left_at: None,
+                },
+            )?;
+            existing_memberships.insert(member.agent_member_id.clone());
         }
     }
-    team.updated_at = "unix-ms:2".into();
-    store.append_team(&team)?;
+    Ok(())
+}
+
+#[cfg(test)]
+fn ensure_unit_test_canonical_team(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    source_team: &AgentTeam,
+    members: &[TeamMemberSpec],
+) -> CliResult<()> {
+    ensure_unit_test_canonical_members(store, execution_space_id, &source_team.id, members)?;
+    if store
+        .agent_teams(execution_space_id)?
+        .iter()
+        .any(|team| team.id == source_team.id)
+    {
+        return Ok(());
+    }
+    if !members
+        .iter()
+        .any(|member| member.agent_member_id == source_team.host_agent_id)
+    {
+        return Err(CliError::Usage(format!(
+            "unit-test Team {} requires its exact Host AgentMember fixture",
+            source_team.id
+        )));
+    }
+    let creator = harness_core::agentfirm_api::ActorRef {
+        kind: harness_core::agentfirm_api::ActorKind::Service,
+        id: "unit-test-fixture".into(),
+    };
+    let timestamp = format!("unix-ms:{execution_space_id}");
+    let team = AgentTeam {
+        revision: 1,
+        status: AgentTeamStatus::Active,
+        trashed_at: None,
+        created_at: timestamp.clone(),
+        updated_at: timestamp.clone(),
+        ..source_team.clone()
+    };
+    let memberships = members
+        .iter()
+        .map(|member| harness_core::agentfirm_api::TeamMembership {
+            id: format!("membership:{}:{}", source_team.id, member.agent_member_id),
+            team_id: source_team.id.clone(),
+            agent_member_id: member.agent_member_id.clone(),
+            node_id: source_team.node_id.clone(),
+            role: if member.agent_member_id == source_team.host_agent_id {
+                harness_core::agentfirm_api::TeamMembershipRole::Host
+            } else {
+                harness_core::agentfirm_api::TeamMembershipRole::Member
+            },
+            state: harness_core::agentfirm_api::TeamMembershipStatus::Active,
+            membership_generation: 1,
+            default_subscription_refs: Vec::new(),
+            created_by: creator.clone(),
+            revision: 1,
+            joined_at: timestamp.clone(),
+            left_at: None,
+        })
+        .collect();
+    store.create_agent_team(
+        &harness_core::agentfirm_api::MutationContext {
+            execution_space_id: execution_space_id.to_string(),
+            authenticated_actor: creator,
+            authority_actor: None,
+            command_name: "unit_test.agent_team.create".into(),
+            idempotency_key: format!("unit-test-team:{execution_space_id}:{}", source_team.id),
+            expected_version: 0,
+            request_fingerprint: None,
+        },
+        team,
+        memberships,
+    )?;
     Ok(())
 }
 
@@ -13519,7 +13874,7 @@ fn publish_team_message(
         .map(|recipient| {
             if recipient == "host" {
                 Ok(MessageRecipientRef {
-                    kind: MessageRecipientKind::AgentIdentity,
+                    kind: MessageRecipientKind::AgentMember,
                     id: store
                         .latest_teams()?
                         .remove(&run.agent_team_id)
@@ -13534,7 +13889,7 @@ fn publish_team_message(
                     .find(|member| member.id == *recipient && member.team_run_id == run.id)
                     .ok_or_else(|| CliError::Usage(format!("member run not found: {recipient}")))?;
                 Ok(MessageRecipientRef {
-                    kind: MessageRecipientKind::AgentIdentity,
+                    kind: MessageRecipientKind::AgentMember,
                     id: stable.agent_member_id.clone(),
                 })
             }
@@ -13545,7 +13900,7 @@ fn publish_team_message(
         .cloned()
         .ok_or_else(|| CliError::Usage("Message requires a recipient".into()))?;
     let address_kind =
-        if recipients.len() == 1 && target_ref.kind == MessageRecipientKind::AgentIdentity {
+        if recipients.len() == 1 && target_ref.kind == MessageRecipientKind::AgentMember {
             MessageAddressKind::DirectAgent
         } else {
             MessageAddressKind::AuthorizedBroadcast
@@ -13625,8 +13980,11 @@ fn publish_team_message(
     message.deliveries.clear();
     for delivery in store.fabric_message_deliveries(&registration.execution_space_id)? {
         if delivery.message_id == message.id {
+            let Some(member_id) = delivery.recipient_agent_member_id.clone() else {
+                continue;
+            };
             message.deliveries.push(ProviderDispatchAttempt {
-                member_id: delivery.recipient_identity_id,
+                member_id,
                 policy: TeamDeliveryPolicy::Queue,
                 status: TeamDeliveryStatus::Queued,
                 attempt: delivery.attempt,
@@ -13790,11 +14148,12 @@ fn canonical_team_messages_for_run(
             .iter()
             .filter(|delivery| delivery.message_id == message.id)
             .filter_map(|delivery| {
-                let runtime_id = if delivery.recipient_identity_id == host_identity {
+                let recipient_agent_member_id = delivery.recipient_agent_member_id.as_deref()?;
+                let runtime_id = if recipient_agent_member_id == host_identity {
                     "host".to_string()
                 } else {
                     identity_to_runtime
-                        .get(&delivery.recipient_identity_id)
+                        .get(recipient_agent_member_id)
                         .cloned()?
                 };
                 Some((runtime_id, delivery))
@@ -17007,7 +17366,17 @@ fn team_run_command(
                 .collect::<CliResult<_>>()?;
             if members.is_empty() {
                 if let Some(team_id) = agent_team_id.as_deref() {
-                    members = team_member_specs_from_definition(store, team_id)?;
+                    let execution_space_id = resolved
+                        .execution_space_context
+                        .as_ref()
+                        .map(|space| space.id.as_str())
+                        .ok_or_else(|| {
+                            CliError::Usage(
+                                "team-run create requires an explicitly selected --space".into(),
+                            )
+                        })?;
+                    members =
+                        team_member_specs_from_definition(store, execution_space_id, team_id)?;
                 }
             }
             for resume in many(args, "--resume-member") {
@@ -18170,7 +18539,7 @@ static LIVE_TEAM_SUPERVISORS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new()
 #[derive(Clone)]
 struct LiveMemberControl {
     team_run_id: String,
-    agent_identity_id: String,
+    agent_member_id: String,
     role_action_token: String,
     execution_mode: String,
     supports_steer: bool,
@@ -18925,7 +19294,7 @@ fn provider_session_for_member(
         .fabric_agent_sessions(&execution_space_id)?
         .into_iter()
         .filter(|session| {
-            session.agent_identity_id == member.agent_member_id
+            session.agent_member_id == member.agent_member_id
                 && session.lifecycle != AgentSessionStatus::Closed
         })
         .collect::<Vec<_>>();
@@ -18981,7 +19350,7 @@ pub(crate) fn transition_provider_session_runtime_control(
             .fabric_agent_sessions(&execution_space_id)?
             .into_iter()
             .filter(|session| {
-                session.agent_identity_id == member.agent_member_id
+                session.agent_member_id == member.agent_member_id
                     && session.lifecycle != AgentSessionStatus::Closed
             })
         {
@@ -19057,14 +19426,14 @@ pub(crate) fn transition_provider_session_runtime_control(
 
 fn require_provider_session_authority(
     ledger: &TeamRunLedger,
-    agent_identity_id: &str,
+    agent_member_id: &str,
     require_active: bool,
 ) -> CliResult<harness_core::agentfirm_api::AgentSession> {
     use harness_core::agentfirm_api::AgentSessionStatus;
     let members = latest_member_runs_in_append_order(&ledger.store)?
         .into_iter()
         .filter(|member| {
-            member.team_run_id == ledger.run_id && member.agent_member_id == agent_identity_id
+            member.team_run_id == ledger.run_id && member.agent_member_id == agent_member_id
         })
         .collect::<Vec<_>>();
     let member = match members.as_slice() {
@@ -19074,7 +19443,7 @@ fn require_provider_session_authority(
                 "MEMBER_RUN_SCOPE_MISMATCH: TeamRun {} has {} members for AgentIdentity {}",
                 ledger.run_id,
                 rows.len(),
-                agent_identity_id
+                agent_member_id
             )))
         }
     };
@@ -19131,7 +19500,7 @@ fn claim_canonical_messages_for_member(
         .fabric_agent_sessions(&execution_space_id)?
         .into_iter()
         .filter(|session| {
-            session.agent_identity_id == member.agent_member_id
+            session.agent_member_id == member.agent_member_id
                 && session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
         })
         .collect::<Vec<_>>();
@@ -19158,7 +19527,7 @@ fn claim_canonical_messages_for_member(
         .fabric_message_deliveries(&execution_space_id)?
         .into_iter()
         .filter(|delivery| {
-            delivery.recipient_identity_id == member.agent_member_id
+            delivery.recipient_agent_member_id.as_deref() == Some(member.agent_member_id.as_str())
                 && delivery.status
                     == harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Queued
         })
@@ -19667,7 +20036,7 @@ fn register_live_member_control(
             member.id.clone(),
             LiveMemberControl {
                 team_run_id: member.team_run_id.clone(),
-                agent_identity_id: member.agent_member_id.clone(),
+                agent_member_id: member.agent_member_id.clone(),
                 role_action_token: role_action_token.to_string(),
                 execution_mode: profile
                     .map(|profile| profile.execution_mode.clone())
@@ -19882,7 +20251,7 @@ fn require_bound_live_member_authority(
                 "BOUND_MEMBER_RUN_NOT_FOUND: {member_run_id} is not a member of TeamRun {team_run_id}"
             ))
         })?;
-    if !member.coordination_is_active() || member.agent_member_id != control.agent_identity_id {
+    if !member.coordination_is_active() || member.agent_member_id != control.agent_member_id {
         return Err(CliError::Usage(
             "UNAUTHORIZED_ACTOR: live member identity no longer matches durable Team authority"
                 .into(),
@@ -19896,7 +20265,7 @@ fn require_bound_live_member_authority(
         Arc::new(AtomicBool::new(true)),
     );
     let session = require_member_provider_session_authority(&ledger, &member, true)?;
-    if session.agent_identity_id != control.agent_identity_id {
+    if session.agent_member_id != control.agent_member_id {
         return Err(CliError::Usage(
             "AGENT_SESSION_SCOPE_FENCED: live Role Action identity does not match the current AgentSession"
                 .into(),
@@ -20022,7 +20391,7 @@ where
             execution_space_id: session.execution_space_id,
             actor: harness_core::agentfirm_api::ActorRef {
                 kind: harness_core::agentfirm_api::ActorKind::AgentMember,
-                id: control.agent_identity_id,
+                id: control.agent_member_id,
             },
             authorized_authority_actors: Vec::new(),
             idempotency_key: idempotency_key.clone(),
@@ -20353,7 +20722,7 @@ fn managed_member_runtime_close_is_settled(
         .fabric_agent_sessions(&execution_space_id)?
         .into_iter()
         .filter(|session| {
-            session.agent_identity_id == member.agent_member_id
+            session.agent_member_id == member.agent_member_id
                 && session.provider_kind == member.provider
         })
         .collect::<Vec<_>>();
@@ -20488,7 +20857,7 @@ fn managed_member_runtime_reopen_is_settled(
         .fabric_agent_sessions(&execution_space_id)?
         .into_iter()
         .filter(|session| {
-            session.agent_identity_id == latest_member.agent_member_id
+            session.agent_member_id == latest_member.agent_member_id
                 && session.provider_kind == latest_member.provider
                 && session
                     .native_session_ref
@@ -20686,11 +21055,11 @@ fn claim_canonical_work_for_member(
         let sessions = ledger.store.fabric_agent_sessions(&space_id)?;
         let memberships = ledger.store.fabric_team_memberships(&space_id)?;
         for session in sessions.into_iter().filter(|session| {
-            session.agent_identity_id == member.agent_member_id
+            session.agent_member_id == member.agent_member_id
                 && session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
         }) {
             if let Some(membership) = memberships.iter().find(|membership| {
-                membership.agent_identity_id == member.agent_member_id
+                membership.agent_member_id == member.agent_member_id
                     && membership.team_id == run.agent_team_id
                     && membership.state == harness_core::agentfirm_api::TeamMembershipStatus::Active
             }) {
@@ -20754,7 +21123,7 @@ fn claim_canonical_work_for_member(
                     work_revision: work.version,
                     team_id: run.agent_team_id.clone(),
                     team_membership_id: membership.id.clone(),
-                    agent_identity_id: member.agent_member_id.clone(),
+                    agent_member_id: member.agent_member_id.clone(),
                     agent_session_id: session.id.clone(),
                     agent_session_generation: session.runtime_generation,
                     delivery_id: format!("work-delivery:{}:1", work.id),
@@ -20777,7 +21146,7 @@ fn claim_canonical_work_for_member(
     let active_binding_ids = bindings
         .into_iter()
         .filter(|binding| {
-            binding.agent_identity_id == member.agent_member_id
+            binding.agent_member_id == member.agent_member_id
                 && binding.agent_session_id == session.id
                 && binding.agent_session_generation == session.runtime_generation
                 && binding.status == harness_core::agentfirm_api::WorkExecutionBindingStatus::Active
@@ -21239,7 +21608,7 @@ impl TeamRunLedger {
                 .fabric_agent_sessions(&space_id)?
                 .into_iter()
                 .filter(|session| {
-                    session.agent_identity_id == next.agent_member_id
+                    session.agent_member_id == next.agent_member_id
                         && session.runtime_generation == next.runtime_generation
                         && session.lifecycle
                             != harness_core::agentfirm_api::AgentSessionStatus::Closed
@@ -21505,7 +21874,7 @@ impl TeamRunLedger {
             .fabric_agent_sessions(&execution_space_id)?
             .into_iter()
             .filter(|session| {
-                session.agent_identity_id == member.agent_member_id
+                session.agent_member_id == member.agent_member_id
                     && session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
             })
             .collect::<Vec<_>>();
@@ -21533,7 +21902,8 @@ impl TeamRunLedger {
             .fabric_message_deliveries(&execution_space_id)?
             .into_iter()
             .filter(|delivery| {
-                delivery.recipient_identity_id == member.agent_member_id
+                delivery.recipient_agent_member_id.as_deref()
+                    == Some(member.agent_member_id.as_str())
                     && delivery.status
                         == harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Claimed
                     && delivery.claimed_node_daemon_generation == Some(daemon.generation)
@@ -22580,10 +22950,9 @@ pub(crate) struct PreparedTeamRunStart {
     supervisor_registration: TeamSupervisorRegistration,
 }
 
-/// Materialize the collaboration overlay onto the machine-local runtime
-/// fabric before any provider child can be spawned. TeamRun/MemberRun rows are
-/// retained as read projections only; AgentSession and TeamMembership are the
-/// authority used by the NodeDaemon.
+/// Validate the durable collaboration overlay, then materialize/recover only
+/// machine-local AgentSessions before any provider child can be spawned.
+/// TeamMembership is never a TeamRun side effect.
 #[cfg(unix)]
 pub(crate) fn ensure_team_runtime_fabric(
     store: &HarnessStore,
@@ -22593,8 +22962,8 @@ pub(crate) fn ensure_team_runtime_fabric(
     daemon_generation: u64,
 ) -> CliResult<()> {
     use harness_core::agentfirm_api::{
-        ActorKind, ActorRef, AgentIdentity, AgentSession, AgentSessionStatus, MutationContext,
-        TeamMembership, TeamMembershipRole, TeamMembershipStatus,
+        ActorKind, ActorRef, AgentSession, AgentSessionStatus, MutationContext,
+        TeamMembershipStatus,
     };
     let daemon_actor = ActorRef {
         kind: ActorKind::Service,
@@ -22608,6 +22977,7 @@ pub(crate) fn ensure_team_runtime_fabric(
         .latest_teams()?
         .remove(&body.run.agent_team_id)
         .ok_or_else(|| CliError::Usage("TeamRun references a missing AgentTeam".into()))?;
+    let memberships = store.fabric_team_memberships(execution_space_id)?;
     for member in &body.members {
         let durable = canonical_members
             .iter()
@@ -22618,31 +22988,20 @@ pub(crate) fn ensure_team_runtime_fabric(
                     member.id, member.agent_member_id
                 ))
             })?;
-        if !store
-            .fabric_agent_identities(execution_space_id)?
+        let exact_memberships = memberships
             .iter()
-            .any(|identity| identity.id == durable.id)
-        {
-            store.create_agent_identity(
-                &MutationContext {
-                    execution_space_id: execution_space_id.to_string(),
-                    authenticated_actor: daemon_actor.clone(),
-                    authority_actor: Some(durable.created_by.clone()),
-                    command_name: "runtime_fabric.identity.materialize".into(),
-                    idempotency_key: format!("identity:{}", durable.id),
-                    expected_version: 0,
-                    request_fingerprint: None,
-                },
-                AgentIdentity {
-                    id: durable.id.clone(),
-                    display_name: durable.name.clone(),
-                    organization_status: durable.organization_status,
-                    permission_ceiling: durable.permission_ceiling,
-                    version: 1,
-                    created_at: timestamp.clone(),
-                    updated_at: timestamp.clone(),
-                },
-            )?;
+            .filter(|membership| {
+                membership.team_id == team.id
+                    && membership.agent_member_id == durable.id
+                    && membership.node_id == team.node_id
+                    && membership.state == TeamMembershipStatus::Active
+            })
+            .count();
+        if exact_memberships != 1 {
+            return Err(CliError::Usage(format!(
+                "TEAM_MEMBERSHIP_REQUIRED: MemberRun {} requires one durable active TeamMembership, found {}",
+                member.id, exact_memberships
+            )));
         }
         crate::provider_adapter::map_permission(&member.provider, durable.permission_ceiling)
             .map_err(CliError::Usage)?;
@@ -22650,7 +23009,7 @@ pub(crate) fn ensure_team_runtime_fabric(
             .fabric_agent_sessions(execution_space_id)?
             .into_iter()
             .filter(|session| {
-                session.agent_identity_id == durable.id
+                session.agent_member_id == durable.id
                     && session.lifecycle != AgentSessionStatus::Closed
             })
             .collect::<Vec<_>>();
@@ -22735,7 +23094,7 @@ pub(crate) fn ensure_team_runtime_fabric(
                         daemon_generation,
                         member.runtime_generation
                     ),
-                    agent_identity_id: durable.id.clone(),
+                    agent_member_id: durable.id.clone(),
                     node_id: body.run.execution_node_id.clone(),
                     execution_space_id: execution_space_id.to_string(),
                     node_daemon_id: daemon_id.to_string(),
@@ -22766,78 +23125,17 @@ pub(crate) fn ensure_team_runtime_fabric(
                 },
             )?;
         }
-        let membership_id = format!("team-membership:{}:{}", body.run.agent_team_id, durable.id);
-        if !store
-            .fabric_team_memberships(execution_space_id)?
-            .iter()
-            .any(|membership| membership.id == membership_id)
-        {
-            store.join_team_membership(
-                &MutationContext {
-                    execution_space_id: execution_space_id.to_string(),
-                    authenticated_actor: daemon_actor.clone(),
-                    authority_actor: None,
-                    command_name: "runtime_fabric.membership.join".into(),
-                    idempotency_key: membership_id.clone(),
-                    expected_version: 0,
-                    request_fingerprint: None,
-                },
-                TeamMembership {
-                    id: membership_id,
-                    team_id: body.run.agent_team_id.clone(),
-                    agent_identity_id: durable.id.clone(),
-                    node_id: body.run.execution_node_id.clone(),
-                    role: if member.role.eq_ignore_ascii_case("observer") {
-                        TeamMembershipRole::Observer
-                    } else {
-                        TeamMembershipRole::Member
-                    },
-                    state: TeamMembershipStatus::Active,
-                    membership_generation: 1,
-                    default_subscription_refs: Vec::new(),
-                    created_by: daemon_actor.clone(),
-                    revision: 1,
-                    joined_at: timestamp.clone(),
-                    left_at: None,
-                },
-            )?;
-        }
     }
+    let host_membership = store.team_host_membership(execution_space_id, &team.id, true)?;
     let host = canonical_members
         .iter()
-        .find(|candidate| candidate.id == team.host_agent_id)
+        .find(|candidate| candidate.id == host_membership.agent_member_id)
         .ok_or_else(|| {
             CliError::Usage(format!(
                 "AGENT_IDENTITY_NOT_FOUND: TeamRun {} references missing canonical Host {}",
-                body.run.id, team.host_agent_id
+                body.run.id, host_membership.agent_member_id
             ))
         })?;
-    if !store
-        .fabric_agent_identities(execution_space_id)?
-        .iter()
-        .any(|identity| identity.id == host.id)
-    {
-        store.create_agent_identity(
-            &MutationContext {
-                execution_space_id: execution_space_id.to_string(),
-                authenticated_actor: daemon_actor.clone(),
-                authority_actor: Some(host.created_by.clone()),
-                command_name: "runtime_fabric.host_identity.materialize".into(),
-                idempotency_key: format!("identity:{}", host.id),
-                expected_version: 0,
-                request_fingerprint: None,
-            },
-            AgentIdentity {
-                id: host.id.clone(),
-                display_name: host.name.clone(),
-                organization_status: host.organization_status,
-                permission_ceiling: host.permission_ceiling,
-                version: 1,
-                created_at: timestamp.clone(),
-                updated_at: timestamp.clone(),
-            },
-        )?;
-    }
     let host_provider = host
         .provider_profile_ref
         .as_deref()
@@ -22854,7 +23152,7 @@ pub(crate) fn ensure_team_runtime_fabric(
         .fabric_agent_sessions(execution_space_id)?
         .into_iter()
         .filter(|session| {
-            session.agent_identity_id == host.id && session.lifecycle != AgentSessionStatus::Closed
+            session.agent_member_id == host.id && session.lifecycle != AgentSessionStatus::Closed
         })
         .collect::<Vec<_>>();
     if host_sessions.len() > 1 {
@@ -22936,7 +23234,7 @@ pub(crate) fn ensure_team_runtime_fabric(
                     "agent-session:{}:{}:{}",
                     host.id, body.run.execution_node_id, daemon_generation
                 ),
-                agent_identity_id: host.id.clone(),
+                agent_member_id: host.id.clone(),
                 node_id: body.run.execution_node_id.clone(),
                 execution_space_id: execution_space_id.to_string(),
                 node_daemon_id: daemon_id.to_string(),
@@ -22960,41 +23258,6 @@ pub(crate) fn ensure_team_runtime_fabric(
                 opened_at: timestamp.clone(),
                 last_active_at: timestamp.clone(),
                 closed_at: None,
-            },
-        )?;
-    }
-    let host_membership_id = format!(
-        "team-membership:{}:{}",
-        body.run.agent_team_id, team.host_agent_id
-    );
-    if !store
-        .fabric_team_memberships(execution_space_id)?
-        .iter()
-        .any(|membership| membership.id == host_membership_id)
-    {
-        store.join_team_membership(
-            &MutationContext {
-                execution_space_id: execution_space_id.to_string(),
-                authenticated_actor: daemon_actor.clone(),
-                authority_actor: None,
-                command_name: "runtime_fabric.host_membership.join".into(),
-                idempotency_key: host_membership_id.clone(),
-                expected_version: 0,
-                request_fingerprint: None,
-            },
-            TeamMembership {
-                id: host_membership_id,
-                team_id: body.run.agent_team_id.clone(),
-                agent_identity_id: host.id.clone(),
-                node_id: body.run.execution_node_id.clone(),
-                role: TeamMembershipRole::Host,
-                state: TeamMembershipStatus::Active,
-                membership_generation: 1,
-                default_subscription_refs: Vec::new(),
-                created_by: daemon_actor,
-                revision: 1,
-                joined_at: timestamp,
-                left_at: None,
             },
         )?;
     }
@@ -23032,7 +23295,7 @@ pub(crate) fn bind_team_runtime_supervisor(
             .fabric_agent_sessions(execution_space_id)?
             .into_iter()
             .filter(|session| {
-                session.agent_identity_id == member.agent_member_id
+                session.agent_member_id == member.agent_member_id
                     && session.lifecycle != AgentSessionStatus::Closed
             })
             .collect::<Vec<_>>();
@@ -27278,13 +27541,13 @@ fn broadcast_live_provider_activity(
     manager: &sse::SseManager,
     execution_space_id: &str,
     project_binding_id: &str,
-    owner_agent_identity_id: &str,
+    owner_agent_member_id: &str,
     event: serde_json::Value,
 ) -> serde_json::Value {
     manager.broadcast_live_provider_activity(
         execution_space_id,
         project_binding_id,
-        owner_agent_identity_id,
+        owner_agent_member_id,
         event.clone(),
     );
     event
@@ -27295,7 +27558,7 @@ fn handle_sse_stream(
     execution_space_id: &str,
     private_project_binding_id: Option<&str>,
     company_scope_id: Option<&str>,
-    private_agent_identity_id: Option<&str>,
+    private_agent_member_id: Option<&str>,
     mut stream: TcpStream,
     sse_manager: sse::SseManager,
 ) -> CliResult<()> {
@@ -27304,14 +27567,14 @@ fn handle_sse_stream(
     // A private live overlay is valid only for one connected stream lifetime.
     // Clear any pre-connection residue before subscribing so reconnect cannot
     // turn process memory into a replay surface.
-    if let (Some(agent_identity_id), Some(project_binding_id)) =
-        (private_agent_identity_id, private_project_binding_id)
+    if let (Some(agent_member_id), Some(project_binding_id)) =
+        (private_agent_member_id, private_project_binding_id)
     {
         provider_event_api::clear_live_for_agent(
             store,
             execution_space_id,
             project_binding_id,
-            agent_identity_id,
+            agent_member_id,
         )?;
     }
 
@@ -27322,7 +27585,7 @@ fn handle_sse_stream(
     let rx = sse_manager.subscribe_scoped_private(
         execution_space_id,
         company_scope_id,
-        private_agent_identity_id,
+        private_agent_member_id,
         private_project_binding_id,
     );
 
@@ -27342,7 +27605,7 @@ fn handle_sse_stream(
         "execution_space_id": execution_space_id,
         "private_project_binding_id": private_project_binding_id,
         "company_scope_id": company_scope_id,
-        "private_provider_activity": private_agent_identity_id.is_some(),
+        "private_provider_activity": private_agent_member_id.is_some(),
         "stream_epoch": sse_manager.stream_epoch(),
     });
     sse::write_sse_frame(&mut stream, "snapshot", &snapshot_json)?;
@@ -27479,8 +27742,8 @@ fn handle_sse_stream(
         }
     }
 
-    if let (Some(agent_identity_id), Some(project_binding_id)) =
-        (private_agent_identity_id, private_project_binding_id)
+    if let (Some(agent_member_id), Some(project_binding_id)) =
+        (private_agent_member_id, private_project_binding_id)
     {
         // The transport is already gone; cleanup is best-effort and must not
         // turn an ordinary disconnect into a new HTTP error response.
@@ -27488,7 +27751,7 @@ fn handle_sse_stream(
             store,
             execution_space_id,
             project_binding_id,
-            agent_identity_id,
+            agent_member_id,
         );
     }
 
@@ -28255,7 +28518,7 @@ struct RuntimeCommandHttpRequest {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RuntimeStartSessionIntent {
-    agent_identity_id: String,
+    agent_member_id: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -28281,6 +28544,135 @@ struct RuntimeAuthorMessageIntent {
     draft: harness_core::agentfirm_api::MessageDraft,
     #[serde(default)]
     remote_transfer: Option<fabric_runtime::QueueCollaborationMessageRequest>,
+}
+
+fn resolve_peer_team_message_admission_authority(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    local_node_id: &str,
+    credential: &AgentFirmHttpCredential,
+    draft: &harness_core::agentfirm_api::MessageDraft,
+    request: &fabric_runtime::QueueCollaborationMessageRequest,
+) -> Result<harness_core::collaboration::PeerTeamMessageAdmissionAuthority, String> {
+    use harness_core::agentfirm_api::{
+        ActorKind, AgentSessionStatus, MessageRecipientKind, TeamMembershipStatus,
+    };
+    use harness_core::collaboration::PeerTeamMessageAdmissionAuthority;
+
+    let scope = draft
+        .collaboration_scope
+        .as_ref()
+        .ok_or_else(|| "peer-Team Message requires an exact CollaborationScope".to_string())?;
+    let source_team_id = draft
+        .team_id
+        .as_deref()
+        .ok_or_else(|| "peer-Team Message requires its source Team".to_string())?;
+    if credential.actor.kind != ActorKind::AgentMember
+        || scope.source_team_id != source_team_id
+        || scope.target_team_id != request.target_team_id
+        || scope.delegation_id.is_some()
+        || scope.expected_delegation_revision.is_some()
+        || scope.source_work_ref.is_some()
+        || scope.target_work_ref.is_some()
+        || draft.work_id.is_some()
+        || draft.recipients.len() != 1
+        || draft.recipients[0].kind != MessageRecipientKind::Team
+        || draft.recipients[0].id != request.target_team_id
+        || draft.target_ref != draft.recipients[0]
+        || source_team_id == request.target_team_id
+    {
+        return Err(
+            "ordinary peer-Team admission requires one Team subject and cannot carry WorkDelegation authority"
+                .into(),
+        );
+    }
+    let source_teams = store
+        .agent_teams(execution_space_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|team| team.id == source_team_id)
+        .collect::<Vec<_>>();
+    if source_teams.len() != 1 {
+        return Err("peer-Team source Team is missing or ambiguous".into());
+    }
+    let source_team = &source_teams[0];
+    if source_team.status != harness_core::AgentTeamStatus::Active
+        || source_team.node_id != local_node_id
+    {
+        return Err("peer-Team source Team is not active on the current Node".into());
+    }
+    let memberships = store
+        .fabric_team_memberships(execution_space_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|membership| {
+            membership.team_id == source_team_id
+                && membership.agent_member_id == credential.actor.id
+                && membership.node_id == local_node_id
+                && membership.state == TeamMembershipStatus::Active
+        })
+        .collect::<Vec<_>>();
+    if memberships.len() != 1 {
+        return Err(
+            "peer-Team author must resolve to one exact active source TeamMembership".into(),
+        );
+    }
+    let sessions = store
+        .fabric_agent_sessions(execution_space_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|session| {
+            session.agent_member_id == credential.actor.id
+                && session.node_id == local_node_id
+                && session.lifecycle != AgentSessionStatus::Closed
+        })
+        .collect::<Vec<_>>();
+    if sessions.len() != 1 {
+        return Err("peer-Team author must resolve to one exact current local AgentSession".into());
+    }
+    let membership = &memberships[0];
+    let session = &sessions[0];
+    let source_policy_ref = "peer-team-message-admission.v1".to_string();
+    let source_policy_revision = 1;
+    let source_required_capability = "message.peer_team.author".to_string();
+    let target_subscription_id = format!("team-inbox:{}", request.target_team_id);
+    let target_subscription_revision = 1;
+    let target_authorization_policy_ref = "collaboration.peer_message_deliver".to_string();
+    let target_policy_revision = 1;
+    let target_required_capability = "collaboration.peer_message_deliver".to_string();
+    let mut authority = PeerTeamMessageAdmissionAuthority {
+        company_id: request.company_id.clone(),
+        source_execution_space_id: execution_space_id.into(),
+        source_team_id: source_team_id.into(),
+        source_team_revision: source_team.revision,
+        source_membership_id: membership.id.clone(),
+        source_membership_generation: membership.membership_generation,
+        source_agent_member_id: credential.actor.id.clone(),
+        source_session_id: session.id.clone(),
+        source_session_generation: session.runtime_generation,
+        source_node_id: local_node_id.into(),
+        source_node_daemon_id: session.node_daemon_id.clone(),
+        source_node_daemon_generation: session.node_daemon_generation,
+        target_execution_space_id: request.target_execution_space_id.clone(),
+        target_team_id: request.target_team_id.clone(),
+        target_team_revision: request.target_team_revision,
+        target_node_id: request.target_node_id.clone(),
+        source_policy_ref,
+        source_policy_revision,
+        source_policy_digest: String::new(),
+        source_required_capability,
+        target_subscription_id,
+        target_subscription_revision,
+        target_authorization_policy_ref,
+        target_policy_revision,
+        target_policy_digest: String::new(),
+        target_required_capability,
+        authority_digest: String::new(),
+    };
+    authority.source_policy_digest = harness_store::peer_team_source_policy_digest(&authority);
+    authority.target_policy_digest = harness_store::peer_team_target_policy_digest(&authority);
+    authority.authority_digest = harness_store::peer_team_message_authority_digest(&authority);
+    Ok(authority)
 }
 
 fn runtime_command_capability(
@@ -28800,30 +29192,65 @@ fn handle_http_connection(
                         return Ok(());
                     }
                 };
-                let delegation_authority = if let Some(remote_transfer) =
+                let (message_admission_authority, delegation_authority) = if let Some(
+                    remote_transfer,
+                ) =
                     intent.remote_transfer.as_ref()
                 {
-                    match fabric_runtime::resolve_collaboration_message_authority(
-                        &store_owned,
-                        &execution_space::firm_home().map_err(execution_space_err)?,
-                        &project_id,
-                        &read_local_node_id()?,
-                        &credential,
-                        &intent.draft,
-                        remote_transfer,
-                    ) {
-                        Ok(authority) => Some(authority),
-                        Err(error) => {
-                            write_http_json(
-                                &mut stream,
-                                "403 Forbidden",
-                                &serde_json::json!({"ok":false,"error":{"code":format!("{:?}",error.code).to_ascii_uppercase(),"message":error.message}}),
-                            )?;
-                            return Ok(());
-                        }
+                    if intent
+                        .draft
+                        .collaboration_scope
+                        .as_ref()
+                        .and_then(|scope| scope.delegation_id.as_ref())
+                        .is_some()
+                    {
+                        match fabric_runtime::resolve_collaboration_message_authority(
+                                &store_owned,
+                                &execution_space::firm_home().map_err(execution_space_err)?,
+                                &project_id,
+                                &read_local_node_id()?,
+                                &credential,
+                                &intent.draft,
+                                remote_transfer,
+                            ) {
+                                Ok(authority) => (
+                                    Some(harness_core::collaboration::MessageAdmissionAuthority::WorkDelegation(authority.clone())),
+                                    Some(authority),
+                                ),
+                                Err(error) => {
+                                    write_http_json(
+                                        &mut stream,
+                                        "403 Forbidden",
+                                        &serde_json::json!({"ok":false,"error":{"code":format!("{:?}",error.code).to_ascii_uppercase(),"message":error.message}}),
+                                    )?;
+                                    return Ok(());
+                                }
+                            }
+                    } else {
+                        match resolve_peer_team_message_admission_authority(
+                                &store_owned,
+                                &project_id,
+                                &read_local_node_id()?,
+                                &credential,
+                                &intent.draft,
+                                remote_transfer,
+                            ) {
+                                Ok(authority) => (
+                                    Some(harness_core::collaboration::MessageAdmissionAuthority::PeerTeam(authority)),
+                                    None,
+                                ),
+                                Err(message) => {
+                                    write_http_json(
+                                        &mut stream,
+                                        "403 Forbidden",
+                                        &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":message}}),
+                                    )?;
+                                    return Ok(());
+                                }
+                            }
                     }
                 } else {
-                    None
+                    (None, None)
                 };
                 let target_node_id = intent
                     .draft
@@ -28851,6 +29278,7 @@ fn handle_http_connection(
                     serde_json::json!({
                         "draft": intent.draft,
                         "remote_transfer": intent.remote_transfer,
+                        "message_admission_authority": message_admission_authority,
                         "delegation_authority": delegation_authority,
                     }),
                 )
@@ -28872,7 +29300,7 @@ fn handle_http_connection(
                 let identity = store_owned
                     .fabric_agent_identities(&project_id)?
                     .into_iter()
-                    .find(|identity| identity.id == intent.agent_identity_id)
+                    .find(|identity| identity.id == intent.agent_member_id)
                     .ok_or_else(|| CliError::Usage("AGENT_IDENTITY_NOT_FOUND".into()))?;
                 // AgentSession placement is machine runtime truth, independent
                 // of TeamMembership. This machine's immutable Node identity
@@ -28941,7 +29369,7 @@ fn handle_http_connection(
                 let session_observed_at = format!("runtime-command:{}", idempotency_key);
                 let session = AgentSession {
                     id: session_id.clone(),
-                    agent_identity_id: identity.id.clone(),
+                    agent_member_id: identity.id.clone(),
                     node_id: target_node_id.clone(),
                     execution_space_id: project_id.clone(),
                     node_daemon_id: String::new(),
@@ -28999,7 +29427,7 @@ fn handle_http_connection(
                     .ok_or_else(|| CliError::Usage("AGENT_SESSION_NOT_FOUND".into()))?;
                 (
                     session.node_id,
-                    Some(session.agent_identity_id),
+                    Some(session.agent_member_id),
                     serde_json::json!({
                         "session_id":intent.session_id,
                         "session_generation":intent.session_generation,
@@ -29030,7 +29458,7 @@ fn handle_http_connection(
                     .ok_or_else(|| CliError::Usage("AGENT_SESSION_NOT_FOUND".into()))?;
                 (
                     session.node_id,
-                    Some(session.agent_identity_id),
+                    Some(session.agent_member_id),
                     serde_json::json!({
                         "session_id":intent.session_id,
                         "session_generation":intent.session_generation,
@@ -29313,6 +29741,34 @@ fn handle_http_connection(
                                 CliError::Usage("COLLABORATION_MESSAGE_RESULT_MISSING".into())
                             })?,
                         )?;
+                        let message_admission_authority = if let Some(value) = envelope
+                            .payload
+                            .get("message_admission_authority")
+                            .filter(|value| !value.is_null())
+                        {
+                            serde_json::from_value::<
+                                harness_core::collaboration::MessageAdmissionAuthority,
+                            >(value.clone())?
+                        } else {
+                            // Compatibility is deliberately read-only and
+                            // bounded to an already prepared WorkDelegation
+                            // command. New peer-Team commands must carry the
+                            // tagged canonical authority field.
+                            harness_core::collaboration::MessageAdmissionAuthority::WorkDelegation(
+                                serde_json::from_value(
+                                    envelope
+                                        .payload
+                                        .get("delegation_authority")
+                                        .cloned()
+                                        .filter(|value| !value.is_null())
+                                        .ok_or_else(|| {
+                                            CliError::Usage(
+                                                "COLLABORATION_MESSAGE_AUTHORITY_MISSING".into(),
+                                            )
+                                        })?,
+                                )?,
+                            )
+                        };
                         match fabric_runtime::queue_collaboration_message(
                             &firm_home,
                             &project_id,
@@ -29321,17 +29777,7 @@ fn handle_http_connection(
                             &envelope.idempotency_key,
                             &message,
                             &request,
-                            serde_json::from_value(
-                                envelope
-                                    .payload
-                                    .get("delegation_authority")
-                                    .cloned()
-                                    .ok_or_else(|| {
-                                        CliError::Usage(
-                                            "COLLABORATION_MESSAGE_AUTHORITY_MISSING".into(),
-                                        )
-                                    })?,
-                            )?,
+                            message_admission_authority,
                             current_unix_ms_u64(),
                         ) {
                             Ok(queued) => write_http_json(
@@ -30242,7 +30688,7 @@ fn handle_http_connection(
                 )?
             }
             "/v1/events" => {
-                let private_agent_identity_id = match trust_transport_token.as_deref() {
+                let private_agent_member_id = match trust_transport_token.as_deref() {
                     None => None,
                     Some(_) => {
                         match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
@@ -30264,7 +30710,7 @@ fn handle_http_connection(
                         }
                     }
                 };
-                let private_project_binding_id = if private_agent_identity_id.is_some() {
+                let private_project_binding_id = if private_agent_member_id.is_some() {
                     match projects.exact_project_context_for(project_param.as_deref(), &project_id)
                     {
                         Ok(project) => Some(project.id),
@@ -30289,7 +30735,7 @@ fn handle_http_connection(
                     &project_id,
                     private_project_binding_id.as_deref(),
                     company_store_owned.as_ref().map(|(id, _)| id.as_str()),
-                    private_agent_identity_id.as_deref(),
+                    private_agent_member_id.as_deref(),
                     stream,
                     sse_manager,
                 )?
@@ -30993,7 +31439,7 @@ fn handle_http_action(
             "mission_id".to_string(),
             serde_json::Value::String(mission_id.to_string()),
         );
-        let team_value = create_team_value(store, &team_body)?;
+        let team_value = create_team_value(store, execution_space_id, &team_body)?;
         return Ok(serde_json::json!({"team": team_value}));
     }
     if let Some(mission_id) = path
@@ -31171,7 +31617,7 @@ fn handle_http_action(
         return create_message_value(store, body);
     }
     if path == "/v1/teams" {
-        return create_team_value(store, body);
+        return create_team_value(store, execution_space_id, body);
     }
     if path == "/v1/gateway/tick" {
         return provider_gateway_tick_value(
@@ -31812,7 +32258,7 @@ fn authenticated_host_answer_sender(
         .into_iter()
         .filter(|membership| {
             membership.team_id == team.id
-                && membership.agent_identity_id == actor.id
+                && membership.agent_member_id == actor.id
                 && membership.node_id == team.node_id
                 && membership.role == TeamMembershipRole::Host
                 && membership.state == TeamMembershipStatus::Active
@@ -31828,7 +32274,7 @@ fn authenticated_host_answer_sender(
         .fabric_agent_sessions(&execution_space_id)?
         .into_iter()
         .filter(|session| {
-            session.agent_identity_id == actor.id
+            session.agent_member_id == actor.id
                 && session.node_id == team.node_id
                 && !matches!(
                     session.lifecycle,
@@ -32054,7 +32500,8 @@ fn acknowledge_provider_request_as_host(
         .fabric_message_deliveries(&execution_space_id)?
         .into_iter()
         .filter(|delivery| {
-            delivery.message_id == request.id && delivery.recipient_identity_id == host_identity
+            delivery.message_id == request.id
+                && delivery.recipient_agent_member_id.as_deref() == Some(host_identity.as_str())
         })
         .collect::<Vec<_>>();
     let mut delivery = match matches.as_slice() {
@@ -32079,7 +32526,7 @@ fn acknowledge_provider_request_as_host(
         .fabric_agent_sessions(&execution_space_id)?
         .into_iter()
         .filter(|session| {
-            session.agent_identity_id == host_identity
+            session.agent_member_id == host_identity
                 && !matches!(
                     session.lifecycle,
                     harness_core::agentfirm_api::AgentSessionStatus::Closed
@@ -32440,41 +32887,75 @@ fn create_message_value(
 // then call these helpers, so behaviour cannot diverge.
 // ---------------------------------------------------------------------------
 
-/// Persist a freshly-built team. Mirrors the `team create` CLI arm.
-fn persist_new_team(store: &HarnessStore, team: &AgentTeam) -> CliResult<()> {
-    if latest_teams(store)?.contains_key(&team.id) {
-        return Err(CliError::Usage(format!(
-            "AgentTeam already exists: {}",
-            team.id
-        )));
-    }
-    let members = known_agent_member_ids(store)?;
-    let mut unique = BTreeSet::new();
-    for member_id in &team.member_ids {
-        if member_id.trim().is_empty() {
-            return Err(CliError::Usage(
-                "AgentTeam member id must not be empty".to_string(),
-            ));
+fn initial_team_memberships(
+    team: &AgentTeam,
+    host_agent_member_id: &str,
+    member_ids: &[String],
+    created_by: &harness_core::agentfirm_api::ActorRef,
+    created_at: &str,
+) -> Vec<harness_core::agentfirm_api::TeamMembership> {
+    std::iter::once((
+        host_agent_member_id.to_string(),
+        harness_core::agentfirm_api::TeamMembershipRole::Host,
+    ))
+    .chain(member_ids.iter().cloned().map(|member_id| {
+        (
+            member_id,
+            harness_core::agentfirm_api::TeamMembershipRole::Member,
+        )
+    }))
+    .map(|(agent_member_id, role)| {
+        let id = format!("membership:{}:{}", team.id, agent_member_id);
+        harness_core::agentfirm_api::TeamMembership {
+            id: id.clone(),
+            team_id: team.id.clone(),
+            agent_member_id: agent_member_id.clone(),
+            node_id: team.node_id.clone(),
+            role,
+            state: harness_core::agentfirm_api::TeamMembershipStatus::Active,
+            membership_generation: 1,
+            default_subscription_refs: vec![
+                format!("direct:{agent_member_id}:{id}"),
+                format!("team:{}:{id}", team.id),
+            ],
+            created_by: created_by.clone(),
+            revision: 1,
+            joined_at: created_at.to_string(),
+            left_at: None,
         }
-        if !unique.insert(member_id) {
-            return Err(CliError::Usage(format!(
-                "AgentTeam contains duplicate member id: {member_id}"
-            )));
-        }
-        if !members.contains(member_id) {
-            return Err(CliError::Usage(format!(
-                "AgentTeam references missing ProviderLaunchProfile: {member_id}"
-            )));
-        }
-    }
-    if !members.contains(&team.host_agent_id) {
-        return Err(CliError::Usage(format!(
-            "AgentTeam references missing Host Agent: {}",
-            team.host_agent_id
-        )));
-    }
-    store.insert_agent_team_with_unique_mission(team)?;
-    Ok(())
+    })
+    .collect()
+}
+
+/// Persist a freshly-built vNext Team plus its authoritative initial
+/// memberships in one canonical trust-ledger commit.
+fn persist_new_team(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    actor: &harness_core::agentfirm_api::ActorRef,
+    team: AgentTeam,
+) -> CliResult<AgentTeam> {
+    let memberships = initial_team_memberships(
+        &team,
+        &team.host_agent_id,
+        &team.member_ids,
+        actor,
+        &team.created_at,
+    );
+    let result = store.create_agent_team(
+        &harness_core::agentfirm_api::MutationContext {
+            execution_space_id: execution_space_id.to_string(),
+            authenticated_actor: actor.clone(),
+            authority_actor: None,
+            command_name: "team.create".into(),
+            idempotency_key: format!("team-create:{}", team.id),
+            expected_version: 0,
+            request_fingerprint: None,
+        },
+        team,
+        memberships,
+    )?;
+    Ok(result.projection)
 }
 
 /// Persist a freshly-built Agent Member. Mirrors the `agent create` CLI arm.
@@ -32828,22 +33309,42 @@ fn mutate_team_work_value(
 
 fn create_team_value(
     store: &HarnessStore,
+    execution_space_id: &str,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
+    let host_agent_member_id = json_string(body, "host_agent_member_id")
+        .or_else(|| json_string(body, "host_agent_id"))
+        .ok_or_else(|| CliError::Usage("missing field host_agent_member_id".into()))?;
+    let mut member_ids = json_string_array(body, "member");
+    member_ids.retain(|member_id| member_id != &host_agent_member_id);
+    let legacy_mission_id =
+        json_string(body, "legacy_mission_id").or_else(|| json_string(body, "mission_id"));
+    let timestamp = now_string();
     let team = AgentTeam {
         id: json_string(body, "id").unwrap_or_else(|| generated_id("team")),
         name: required_json_string(body, "name")?,
         description: required_json_string(body, "description")?,
-        mission_id: required_json_string(body, "mission_id")?,
-        host_agent_id: required_json_string(body, "host_agent_id")?,
         node_id: required_json_string(body, "node_id")?,
         status: AgentTeamStatus::Active,
-        member_ids: json_string_array(body, "member"),
-        created_at: now_string(),
-        updated_at: now_string(),
+        revision: 1,
+        legacy_mission_id: legacy_mission_id.clone(),
+        trashed_at: None,
+        created_at: timestamp.clone(),
+        updated_at: timestamp,
+        mission_id: legacy_mission_id.unwrap_or_default(),
+        host_agent_id: host_agent_member_id,
+        member_ids,
     };
-    persist_new_team(store, &team)?;
-    Ok(serde_json::to_value(team)?)
+    let actor = harness_core::agentfirm_api::ActorRef {
+        kind: harness_core::agentfirm_api::ActorKind::Human,
+        id: json_string(body, "actor_id").unwrap_or_else(|| "operator:http".into()),
+    };
+    Ok(serde_json::to_value(persist_new_team(
+        store,
+        execution_space_id,
+        &actor,
+        team,
+    )?)?)
 }
 
 /// POST /v1/team-runs — create a team run from the JSON body (same semantics
@@ -32903,7 +33404,7 @@ fn create_team_run_value(
     }
     if members.is_empty() {
         if let Some(team_id) = agent_team_id.as_deref() {
-            members = team_member_specs_from_definition(store, team_id)?;
+            members = team_member_specs_from_definition(store, execution_space_id, team_id)?;
         }
     }
     let budget_limit_usd = match body.get("budget_limit_usd") {
@@ -38511,7 +39012,44 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         .collect();
     Ok(serde_json::json!({
         "generated_at": now_string(),
-        "teams": teams.into_values().filter(|team| team.status == AgentTeamStatus::Active).collect::<Vec<_>>(),
+        "teams": teams.into_values().filter(|team| team.status == AgentTeamStatus::Active).map(|team| {
+            // DEV-35 compatibility projection: the dashboard AgentTeam type
+            // still requires mission_id / host_agent_id / member_ids. Derive
+            // them from the durable TeamMembership authority — read-model
+            // compat fields, never stored Team authority.
+            let mut value = serde_json::to_value(&team).unwrap_or_else(|_| serde_json::json!({}));
+            if let Some(object) = value.as_object_mut() {
+                let active_memberships = team_memberships
+                    .iter()
+                    .filter(|membership| {
+                        membership.team_id == team.id
+                            && membership.state
+                                == harness_core::agentfirm_api::TeamMembershipStatus::Active
+                    })
+                    .collect::<Vec<_>>();
+                let host_agent_id = active_memberships
+                    .iter()
+                    .find(|membership| {
+                        membership.role == harness_core::agentfirm_api::TeamMembershipRole::Host
+                    })
+                    .map(|membership| membership.agent_member_id.clone())
+                    .unwrap_or_default();
+                let member_ids = active_memberships
+                    .iter()
+                    .filter(|membership| {
+                        membership.role != harness_core::agentfirm_api::TeamMembershipRole::Host
+                    })
+                    .map(|membership| membership.agent_member_id.clone())
+                    .collect::<Vec<_>>();
+                object.insert(
+                    "mission_id".to_string(),
+                    team.legacy_mission_id.clone().unwrap_or_default().into(),
+                );
+                object.insert("host_agent_id".to_string(), host_agent_id.into());
+                object.insert("member_ids".to_string(), member_ids.into());
+            }
+            value
+        }).collect::<Vec<_>>(),
         "members": member_cards,
         "messages": messages,
         "evidence": evidence,
@@ -41408,7 +41946,7 @@ fn append_harness_runtime_control_fact(
         task_id: task_id.map(str::to_string),
         source_type: "harness_runtime_control_fact".into(),
         source_ref: serde_json::json!({
-            "agent_identity_id": agent_member_id,
+            "agent_member_id": agent_member_id,
             "provider_runtime_id": runtime_id,
             "provider": "codex",
             "event_type": event_type,
@@ -49827,7 +50365,7 @@ package:com.tencent.mm
             Err(error) => error,
         };
         assert!(
-            error.to_string().contains("selected Execution Space"),
+            error.to_string().contains("not part of AgentTeam"),
             "unexpected scoped error: {error}"
         );
         assert_eq!(
@@ -50233,13 +50771,32 @@ package:com.tencent.mm
             resume_native_session_id: None,
             initial_work: None,
         };
-        ensure_unit_test_canonical_members(
+        let team = store
+            .latest_teams()
+            .expect("read source Team")
+            .remove(&created.team_run.agent_team_id)
+            .expect("source Team");
+        let host = TeamMemberSpec {
+            agent_member_id: team.host_agent_id.clone(),
+            name: "ForeignDuplicateHost".into(),
+            role: "host".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: Vec::new(),
+            resume_native_session_id: None,
+            initial_work: None,
+        };
+        ensure_unit_test_canonical_team(
             &store,
             "foreign-duplicate-member-space",
-            &created.team_run.agent_team_id,
-            &[spec],
+            &team,
+            &[host, spec],
         )
-        .expect("seed the foreign AgentMember identity");
+        .expect("seed the foreign Team and Membership authority");
         let duplicate = canonical_member_run_admission("foreign-duplicate-member-space", &member);
         store
             .legacy_import_create_trust_member_run_projection(&duplicate.context, duplicate.run)
@@ -50914,7 +51471,7 @@ package:com.tencent.mm
             .remove(&created.team_run.agent_team_id)
             .expect("test Team");
         let mut members = vec![TeamMemberSpec {
-            agent_member_id: team.host_agent_id,
+            agent_member_id: team.host_agent_id.clone(),
             name: "ForeignTestHost".into(),
             role: "host".into(),
             provider: "codex".into(),
@@ -50941,13 +51498,8 @@ package:com.tencent.mm
             resume_native_session_id: None,
             initial_work: None,
         }));
-        ensure_unit_test_canonical_members(
-            store,
-            execution_space_id,
-            &created.team_run.agent_team_id,
-            &members,
-        )
-        .expect("materialize foreign canonical AgentMembers");
+        ensure_unit_test_canonical_team(store, execution_space_id, &team, &members)
+            .expect("materialize foreign durable AgentTeam and TeamMemberships");
         ensure_team_message_fabric(
             store,
             &created.team_run.id,
@@ -50966,7 +51518,7 @@ package:com.tencent.mm
         execution_space_id: &str,
         id: &str,
         sender_identity_id: &str,
-        recipient_identity_id: &str,
+        recipient_agent_member_id: &str,
         kind: harness_core::agentfirm_api::MessageKind,
         body: &str,
         correlation_id: &str,
@@ -50983,22 +51535,22 @@ package:com.tencent.mm
             .fabric_agent_sessions(execution_space_id)
             .expect("canonical test AgentSessions")
             .into_iter()
-            .find(|session| session.agent_identity_id == sender_identity_id)
+            .find(|session| session.agent_member_id == sender_identity_id)
             .expect("sender has one canonical AgentSession");
         let sender = ActorRef {
             kind: ActorKind::AgentMember,
             id: sender_identity_id.to_string(),
         };
         let recipient = MessageRecipientRef {
-            kind: MessageRecipientKind::AgentIdentity,
-            id: recipient_identity_id.to_string(),
+            kind: MessageRecipientKind::AgentMember,
+            id: recipient_agent_member_id.to_string(),
         };
         let recipients = vec![recipient.clone()];
         let body_digest = format!("sha256:{:x}", Sha256::digest(body.as_bytes()));
         let idempotency_key = format!("test-author:{id}");
         let content_fingerprint = harness_store::canonical_json_fingerprint(&serde_json::json!({
             "sender_actor_ref": sender,
-            "sender_agent_id": sender_identity_id,
+            "sender_agent_member_id": sender_identity_id,
             "sender_session_id": session.id,
             "address_kind": MessageAddressKind::DirectAgent,
             "target_ref": recipient,
@@ -51024,7 +51576,7 @@ package:com.tencent.mm
             source_node_daemon_id: lease.node_daemon_id.clone(),
             source_authority_generation: lease.node_daemon_generation,
             sender_actor_ref: sender,
-            sender_agent_id: Some(sender_identity_id.to_string()),
+            sender_agent_member_id: Some(sender_identity_id.to_string()),
             sender_session_id: Some(session.id),
             address_kind: MessageAddressKind::DirectAgent,
             target_ref: recipient,
@@ -51252,7 +51804,7 @@ package:com.tencent.mm
             .fabric_agent_sessions(foreign_space)
             .expect("foreign sessions")
             .into_iter()
-            .find(|session| session.agent_identity_id == member.agent_member_id)
+            .find(|session| session.agent_member_id == member.agent_member_id)
             .expect("sole foreign provider session");
         assert_ne!(before.lifecycle, AgentSessionStatus::Closed);
         let ledger = TeamRunLedger::new(
@@ -53343,7 +53895,7 @@ package:com.tencent.mm
             .fabric_agent_sessions(&space_id)
             .expect("canonical AgentSessions")
             .into_iter()
-            .filter(|session| session.agent_identity_id == settled.agent_member_id)
+            .filter(|session| session.agent_member_id == settled.agent_member_id)
             .collect::<Vec<_>>();
         assert_eq!(sessions.len(), 1, "one current AgentSession: {sessions:?}");
         assert_eq!(
@@ -55934,7 +56486,8 @@ package:com.tencent.mm
         let (store, root) = temp_store("wp-ii-team-bad");
         // No owner / name -> CliError::Usage (mapped to HTTP 400 by serve loop).
         let body = serde_json::json!({"description": "no name or owner"});
-        let error = create_team_value(&store, &body).expect_err("missing fields must error");
+        let error =
+            create_team_value(&store, "space-test", &body).expect_err("missing fields must error");
         assert!(
             matches!(error, CliError::Usage(_)),
             "malformed body must be a Usage error, got: {error:?}"

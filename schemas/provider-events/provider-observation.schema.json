@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": [
     "schema_version", "observation_id", "provider", "adapter_version",
-    "native_source_ref", "agent_identity_id", "agent_session_id",
+    "native_source_ref", "agent_member_id", "agent_session_id",
     "agent_session_generation", "node_daemon_id", "node_daemon_generation",
     "ordering_position", "observed_at", "semantic_kind", "lifecycle_phase",
     "completeness", "effect_certainty", "visibility", "redacted", "truncated",
@@ -18,7 +18,7 @@
     "provider": {"enum": ["codex", "claude", "kimi", "pi"]},
     "adapter_version": {"const": "agentfirm.provider_event_adapter.v1"},
     "native_source_ref": {"type": "string", "pattern": "^provider-source:[A-Za-z0-9:_-]+$"},
-    "agent_identity_id": {"type": "string", "minLength": 1},
+    "agent_member_id": {"type": "string", "minLength": 1},
     "agent_session_id": {"type": "string", "minLength": 1},
     "agent_session_generation": {"type": "integer", "minimum": 1},
     "node_daemon_id": {"type": "string", "minLength": 1},

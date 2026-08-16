@@ -901,7 +901,7 @@ mod tests {
         };
         let session = AgentSession {
             id: "agent-session-kimi-test".to_string(),
-            agent_identity_id: "identity-kimi-test".to_string(),
+            agent_member_id: "identity-kimi-test".to_string(),
             node_id: "node-kimi-test".to_string(),
             execution_space_id: "space-kimi-test".to_string(),
             node_daemon_id: node_daemon_id.clone(),

@@ -147,7 +147,8 @@ pub struct ProviderObservation {
     /// Opaque, scoped provider-source locator. Never a provider filesystem path
     /// and never a Harness Evidence reference.
     pub native_source_ref: String,
-    pub agent_identity_id: String,
+    #[serde(alias = "agent_identity_id")]
+    pub agent_member_id: String,
     pub agent_session_id: String,
     pub agent_session_generation: u64,
     pub node_daemon_id: String,
@@ -316,7 +317,8 @@ pub struct SessionEventProjection {
 #[serde(deny_unknown_fields)]
 pub struct TeamRuntimeActivity {
     pub observation_id: String,
-    pub agent_identity_id: String,
+    #[serde(alias = "agent_identity_id")]
+    pub agent_member_id: String,
     pub semantic_kind: SemanticKind,
     pub lifecycle_phase: LifecyclePhase,
     pub completeness: Completeness,

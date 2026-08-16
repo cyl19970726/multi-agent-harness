@@ -1549,14 +1549,16 @@ fn execute_canonical_role_action(
                     .iter()
                     .filter(|membership| {
                         membership.team_id == team.id
-                            && membership.agent_identity_id == *recipient_id
+                            && membership.agent_member_id == *recipient_id
                             && membership.state
                                 == harness_core::agentfirm_api::TeamMembershipStatus::Active
                     })
                     .collect::<Vec<_>>();
                 if matching.len() != 1
                     || !subscriptions.iter().any(|subscription| {
-                        subscription.subscriber_agent_id == *recipient_id
+                        subscription.subscriber_kind
+                            == harness_core::agentfirm_api::MessageSubjectKind::AgentMember
+                            && subscription.subscriber_ref == *recipient_id
                             && subscription.membership_ref.as_deref()
                                 == Some(matching[0].id.as_str())
                             && subscription.status

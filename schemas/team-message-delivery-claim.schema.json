@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/team-message-delivery-claim.schema.json",
+  "title": "TeamMessageDeliveryClaim",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["claim_id", "team_membership_id", "membership_generation", "node_daemon_generation", "claim_expires_at"],
+  "properties": {
+    "claim_id": {"type": "string", "minLength": 1},
+    "team_membership_id": {"type": "string", "minLength": 1},
+    "membership_generation": {"type": "integer", "minimum": 1},
+    "node_daemon_generation": {"type": "integer", "minimum": 1},
+    "claim_expires_at": {"type": "string", "minLength": 1}
+  }
+}

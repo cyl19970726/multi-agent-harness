@@ -1,10 +1,9 @@
 {
   "id": "team-1",
   "name": "Core Development",
-  "description": "A Team cannot exist without its one Mission.",
-  "host_agent_id": "agent-host-1",
+  "description": "A durable Team requires an explicit revision.",
   "node_id": "0f95cac7-5ff8-4c76-8f36-9c8f208815d3",
-  "member_ids": ["agent-worker-1"],
+  "status": "active",
   "created_at": "2026-08-09T00:00:00Z",
   "updated_at": "2026-08-09T00:00:00Z"
 }

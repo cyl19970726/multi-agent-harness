@@ -4,18 +4,28 @@
   "title": "WorkExecutionBinding",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "work_id", "work_revision", "team_membership_id", "agent_identity_id", "agent_session_id", "agent_session_generation", "status", "version", "bound_at"],
+  "required": ["id", "work_id", "work_revision", "team_id", "team_membership_id", "agent_member_id", "agent_session_id", "agent_session_generation", "delivery_id", "binding_generation", "status", "version", "created_by", "bound_at"],
   "properties": {
     "id": {"type": "string", "minLength": 1},
     "work_id": {"type": "string", "minLength": 1},
     "work_revision": {"type": "integer", "minimum": 1},
+    "team_id": {"type": "string", "minLength": 1},
     "team_membership_id": {"type": "string", "minLength": 1},
-    "agent_identity_id": {"type": "string", "minLength": 1},
+    "agent_member_id": {"type": "string", "minLength": 1},
     "agent_session_id": {"type": "string", "minLength": 1},
     "agent_session_generation": {"type": "integer", "minimum": 1},
-    "status": {"enum": ["active", "released", "completed", "cancelled"]},
+    "delivery_id": {"type": "string", "minLength": 1},
+    "binding_generation": {"type": "integer", "minimum": 1},
+    "status": {"enum": ["offered", "accepted", "active", "released", "completed", "invalidated"]},
     "version": {"type": "integer", "minimum": 1},
+    "created_by": {"$ref": "#/$defs/actor_ref"},
     "bound_at": {"type": "string", "minLength": 1},
     "ended_at": {"type": ["string", "null"]}
+  },
+  "$defs": {
+    "actor_ref": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "id"],
+      "properties": {"kind": {"enum": ["human", "agent_member", "external", "service"]}, "id": {"type": "string", "minLength": 1}}
+    }
   }
 }

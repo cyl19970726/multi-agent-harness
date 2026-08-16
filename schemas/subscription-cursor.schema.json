@@ -4,13 +4,14 @@
   "title": "SubscriptionCursor",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "subscription_id", "recipient_identity_id", "last_message_sequence", "version", "updated_at"],
+  "required": ["subscription_id", "recipient_agent_member_id", "last_visible_store_sequence", "last_delivered_store_sequence", "last_read_store_sequence", "cursor_revision", "updated_at"],
   "properties": {
-    "id": {"type": "string", "minLength": 1},
     "subscription_id": {"type": "string", "minLength": 1},
-    "recipient_identity_id": {"type": "string", "minLength": 1},
-    "last_message_sequence": {"type": "integer", "minimum": 1},
-    "version": {"type": "integer", "minimum": 1},
+    "recipient_agent_member_id": {"type": "string", "minLength": 1},
+    "last_visible_store_sequence": {"type": "integer", "minimum": 0},
+    "last_delivered_store_sequence": {"type": "integer", "minimum": 0},
+    "last_read_store_sequence": {"type": "integer", "minimum": 0},
+    "cursor_revision": {"type": "integer", "minimum": 1},
     "updated_at": {"type": "string", "minLength": 1}
   }
 }

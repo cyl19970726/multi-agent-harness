@@ -655,7 +655,7 @@ impl ServeHandle {
     ) -> serde_json::Value {
         use harness_core::agentfirm_api::{
             ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus, MutationContext,
-            PermissionCeiling,
+            PermissionCeiling, TeamMembership, TeamMembershipRole, TeamMembershipStatus,
         };
         use harness_store::HarnessStore;
 
@@ -696,13 +696,12 @@ impl ServeHandle {
         else {
             return prepared;
         };
-        let mut team = teams.get(&team_id).cloned().expect("fixture AgentTeam");
+        let team = teams.get(&team_id).cloned().expect("fixture AgentTeam");
         let creator = ActorRef {
             kind: ActorKind::Service,
             id: "integration-test-fixture".into(),
         };
         let fixture_generation = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let mut changed_team = false;
         for (index, member) in members.iter_mut().enumerate() {
             let Some(member_object) = member.as_object_mut() else {
                 continue;
@@ -761,19 +760,38 @@ impl ServeHandle {
                         version: 1,
                         created_by: creator.clone(),
                         created_at: now.clone(),
-                        updated_at: now,
+                        updated_at: now.clone(),
                     },
                 )
                 .expect("create canonical fixture AgentMember");
-            if team.host_agent_id != id && !team.member_ids.contains(&id) {
-                team.member_ids.push(id.clone());
-                changed_team = true;
-            }
+            store
+                .join_team_membership(
+                    &MutationContext {
+                        execution_space_id: execution_space_id.clone(),
+                        authenticated_actor: creator.clone(),
+                        authority_actor: None,
+                        command_name: "integration_test.team_membership.join".into(),
+                        idempotency_key: format!("integration-test-membership-{team_id}-{id}"),
+                        expected_version: 0,
+                        request_fingerprint: None,
+                    },
+                    TeamMembership {
+                        id: format!("membership:{team_id}:{id}"),
+                        team_id: team_id.clone(),
+                        agent_member_id: id.clone(),
+                        node_id: team.node_id.clone(),
+                        role: TeamMembershipRole::Member,
+                        state: TeamMembershipStatus::Active,
+                        membership_generation: 1,
+                        default_subscription_refs: Vec::new(),
+                        created_by: creator.clone(),
+                        revision: 1,
+                        joined_at: now,
+                        left_at: None,
+                    },
+                )
+                .expect("create durable fixture TeamMembership");
             member_object.insert("agent_member_id".into(), serde_json::Value::String(id));
-        }
-        if changed_team {
-            team.updated_at = format!("unix-ms:{}", current_unix_ms_for_fixture());
-            store.append_team(&team).expect("extend fixture AgentTeam");
         }
         prepared
     }

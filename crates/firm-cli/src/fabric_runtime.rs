@@ -1089,11 +1089,11 @@ pub(crate) fn resolve_collaboration_message_authority(
             binding.work_id == source_work.id
                 && binding.work_revision == source_work.version
                 && binding.team_id == source_team.id
-                && binding.agent_identity_id == delegation.source_owner_ref.id
+                && binding.agent_member_id == delegation.source_owner_ref.id
                 && binding.status == WorkExecutionBindingStatus::Active
                 && source_sessions.iter().any(|session| {
                     session.id == binding.agent_session_id
-                        && session.agent_identity_id == binding.agent_identity_id
+                        && session.agent_member_id == binding.agent_member_id
                         && session.runtime_generation == binding.agent_session_generation
                         && session.node_id == local_node_id
                         && session.lifecycle
@@ -1803,7 +1803,7 @@ pub(crate) fn queue_remote_fact_publication(
             binding.work_id == current_work.id
                 && binding.work_revision == current_work.version
                 && binding.team_id == team.id
-                && binding.agent_identity_id == credential.actor.id
+                && binding.agent_member_id == credential.actor.id
                 && binding.status == harness_core::agentfirm_api::WorkExecutionBindingStatus::Active
         })
         .count()
@@ -2030,9 +2030,19 @@ pub(crate) fn queue_collaboration_message(
     idempotency_key: &str,
     message: &harness_core::agentfirm_api::Message,
     request: &QueueCollaborationMessageRequest,
-    authority: harness_core::collaboration::CollaborationMessageAuthority,
+    admission_authority: harness_core::collaboration::MessageAdmissionAuthority,
     now_unix_ms: u64,
 ) -> Result<serde_json::Value, FabricError> {
+    let harness_core::collaboration::MessageAdmissionAuthority::WorkDelegation(authority) =
+        admission_authority
+    else {
+        // DEV-35 exposes the generic source-authority handoff. The peer route
+        // and its control-plane application remain owned by DEV-34.
+        return Err(FabricError::none(
+            FabricErrorCode::SchemaIncompatible,
+            "peer-Team Message admission is ready for the peer_message_deliver route",
+        ));
+    };
     let scope = message.collaboration_scope.as_ref().ok_or_else(|| {
         FabricError::none(
             FabricErrorCode::InvalidPayload,

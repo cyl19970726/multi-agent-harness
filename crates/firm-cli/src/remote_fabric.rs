@@ -306,7 +306,7 @@ fn decode_embedded_message(
     })?;
     let expected_fingerprint = harness_store::canonical_json_fingerprint(&serde_json::json!({
         "sender_actor_ref": message.sender_actor_ref,
-        "sender_agent_id": message.sender_agent_id,
+        "sender_agent_member_id": message.sender_agent_member_id,
         "sender_session_id": message.sender_session_id,
         "address_kind": message.address_kind,
         "target_ref": message.target_ref,

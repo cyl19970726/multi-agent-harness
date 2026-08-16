@@ -2,7 +2,7 @@
   "delivery_id": "message-delivery:remote-1",
   "message_id": "message:remote-1",
   "message_body_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-  "recipient_identity_id": "agent-b",
+  "recipient_agent_member_id": "agent-b",
   "target_execution_space_id": "space-b",
   "claim_id": "caller-selected-provider-claim"
 }

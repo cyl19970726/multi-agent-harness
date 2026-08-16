@@ -1,1 +1,1 @@
-{"id":"cursor-1","subscription_id":"subscription-1","recipient_identity_id":"agent-1","last_message_sequence":1,"version":1,"updated_at":"unix-ms:1"}
+{"subscription_id":"subscription-1","recipient_agent_member_id":"agent-1","last_visible_store_sequence":1,"last_delivered_store_sequence":1,"last_read_store_sequence":1,"cursor_revision":1,"updated_at":"unix-ms:1"}
