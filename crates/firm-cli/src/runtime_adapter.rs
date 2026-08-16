@@ -25,6 +25,7 @@
 //! - one execution driver per native session + writable workspace: the
 //!   supervisor lease + generation fencing stays the single-driver seam.
 
+use std::cell::Cell;
 use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
@@ -42,14 +43,55 @@ use crate::{
     active_work_continuation_prompt, emit_live_provider_activity, mark_message_delivered,
     member_work_collaboration_envelope, native_session_ref, now_string, parse_round_result,
     prepare_provider_effect, provider_turn_coordination_summary,
-    require_provider_session_authority, settle_provider_effect, settle_provider_effect_not_applied,
-    team_message_kind_label, transition_provider_session_for_member, wait_for_idle_member_wake,
+    refresh_member_after_provider_callbacks, require_provider_session_authority,
+    settle_provider_effect, settle_provider_effect_not_applied, stop_member_for_latched_close,
+    team_messages_prompt, transition_provider_session_for_member, wait_for_idle_member_wake,
     work_contract_prompt, ClaimedWork, CliError, CliResult, ControlReceiver, IdleMemberWake,
     LiveMemberControlRegistration, LiveProviderTurnGuard, MemberActionStatus, MemberControlCommand,
-    MemberCoordinationStatus, MemberOutcome, MemberRoundResult, MemberRunStatus,
-    MemberRuntimeContext, ProviderRuntimeProjection, TeamMessageProjection, TeamRunEventSourceKind,
-    TeamRunLedger,
+    MemberOutcome, MemberRoundResult, MemberRunStatus, MemberRuntimeContext,
+    ProviderRuntimeProjection, TeamMessageProjection, TeamRunEventSourceKind, TeamRunLedger,
 };
+
+const PROVIDER_UNPRODUCTIVE_ROUND_LIMIT: u32 = 3;
+
+/// Deterministic integration hook: pause after the provider terminal boundary
+/// is observed but before the current Supervisor/session authority is
+/// revalidated. This proves that a successor lease fences every semantic
+/// write from the stale process-local handle. The hook is provider-neutral;
+/// provider names only select isolated test files.
+fn supervisor_test_terminal_receive_barrier(provider: &str) -> CliResult<()> {
+    let provider = provider.to_ascii_uppercase();
+    let ready_key = format!("FIRM_TEST_{provider}_TERMINAL_RECEIVED_READY");
+    let legacy_ready_key = format!("HARNESS_TEST_{provider}_TERMINAL_RECEIVED_READY");
+    let release_key = format!("FIRM_TEST_{provider}_TERMINAL_RECEIVED_RELEASE");
+    let legacy_release_key = format!("HARNESS_TEST_{provider}_TERMINAL_RECEIVED_RELEASE");
+    let Some(ready) = std::env::var_os(&ready_key).or_else(|| std::env::var_os(&legacy_ready_key))
+    else {
+        return Ok(());
+    };
+    let release = std::env::var_os(&release_key)
+        .or_else(|| std::env::var_os(&legacy_release_key))
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "{ready_key} requires the bounded test release selector {release_key}"
+            ))
+        })?;
+    std::fs::write(
+        std::path::PathBuf::from(ready),
+        b"terminal provider frame received",
+    )?;
+    let release = std::path::PathBuf::from(release);
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !release.exists() {
+        if std::time::Instant::now() >= deadline {
+            return Err(CliError::Usage(format!(
+                "timed out waiting for {release_key}"
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Capability honesty
@@ -145,10 +187,6 @@ impl RuntimeObservation {
             && self.is_streaming == Some(false)
             && self.settled_boundary_observed
     }
-
-    fn runtime_released(&self) -> bool {
-        !self.transport_alive && !self.process_alive && self.is_streaming == Some(false)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -171,6 +209,10 @@ pub(crate) struct QuiesceOutcome {
 #[derive(Debug, Clone)]
 pub(crate) struct ExecutionCycleOutcome {
     pub final_text: String,
+    /// A provider-structured terminal semantic failure. This is distinct from
+    /// transport uncertainty: the provider accepted the input and emitted a
+    /// terminal boundary, so the StartCycle effect remains Applied.
+    pub provider_terminal_failure: Option<crate::ProviderTerminalFailure>,
     pub interrupted: bool,
     pub close_requested_by_harness: bool,
     pub tool_call_count: u32,
@@ -442,13 +484,32 @@ struct CycleInput {
 
 struct PendingControlReply {
     action: provider_adapter::ProviderControlAction,
-    reply: SyncSender<CliResult<Value>>,
+    reply: Option<SyncSender<CliResult<Value>>>,
+}
+
+impl PendingControlReply {
+    fn send(mut self, result: CliResult<Value>) {
+        if let Some(reply) = self.reply.take() {
+            let _ = reply.send(result);
+        }
+    }
+}
+
+impl Drop for PendingControlReply {
+    fn drop(&mut self) {
+        if let Some(reply) = self.reply.take() {
+            let _ = reply.send(Err(CliError::Usage(
+                "RUNTIME_COMMAND_RECOVERY_REQUIRED: provider control ended before its durable postcondition receipt was published"
+                    .to_string(),
+            )));
+        }
+    }
 }
 
 fn fail_pending_control_replies(replies: &mut Vec<PendingControlReply>, detail: impl Into<String>) {
     let detail = detail.into();
     for pending in replies.drain(..) {
-        let _ = pending.reply.send(Err(CliError::Usage(detail.clone())));
+        pending.send(Err(CliError::Usage(detail.clone())));
     }
 }
 
@@ -459,8 +520,8 @@ fn idle_wake_into_cycle<A: TeamRuntimeAdapter>(
     ledger: &TeamRunLedger,
     objective: &str,
     context: &MemberRuntimeContext,
-    member_row: &ProviderRuntimeProjection,
-    adapter: &A,
+    member_row: &mut ProviderRuntimeProjection,
+    adapter: &mut A,
 ) -> CliResult<Result<CycleInput, MemberOutcome>> {
     match wake {
         IdleMemberWake::Work(claimed) => {
@@ -500,20 +561,12 @@ fn idle_wake_into_cycle<A: TeamRuntimeAdapter>(
             }))
         }
         IdleMemberWake::Messages(messages) => {
-            let mut prompt = String::from(
+            let prompt = team_messages_prompt(
                 "TEAM MESSAGES arrived. They are conversation, not Work ownership. \
                  Address the question or coordination request, and use the Works \
-                 board for any durable responsibility.\n\n",
+                 board for any durable responsibility.",
+                &messages,
             );
-            for message in &messages {
-                prompt.push_str(&format!(
-                    "--- {} ({}, correlation_id={}) ---\n{}\n\n",
-                    message.sender_runtime_id,
-                    team_message_kind_label(&message.kind),
-                    message.correlation_id,
-                    message.body
-                ));
-            }
             Ok(Ok(CycleInput {
                 prompt,
                 active_work: None,
@@ -521,11 +574,31 @@ fn idle_wake_into_cycle<A: TeamRuntimeAdapter>(
                 consumed_work_version: None,
             }))
         }
-        IdleMemberWake::Closed => Ok(Err(MemberOutcome::new(
-            member_row,
-            MemberRunStatus::Stopped,
-            format!("{} member runtime closed by Host", adapter.display_name()),
-        ))),
+        IdleMemberWake::CloseRequested { close, reply } => {
+            let result = close_idle_runtime(ledger, member_row, adapter, &close);
+            match result {
+                Ok((outcome, close_receipt)) => {
+                    if let Some(reply) = reply {
+                        let _ = reply.send(Ok(serde_json::json!({
+                            "member_run_id": member_row.id,
+                            "status": "closed",
+                            "provider_ack": "member_runtime_close_applied",
+                            "provider_terminal_evidence": {
+                                "provider_terminal_event": "idle_before_close",
+                                "member_runtime_close": close_receipt,
+                            },
+                        })));
+                    }
+                    Ok(Err(outcome))
+                }
+                Err(error) => {
+                    if let Some(reply) = reply {
+                        let _ = reply.send(Err(CliError::Usage(error.to_string())));
+                    }
+                    Err(error)
+                }
+            }
+        }
         IdleMemberWake::TestRetired => Ok(Err(MemberOutcome::new(
             member_row,
             MemberRunStatus::Idle,
@@ -540,6 +613,143 @@ fn idle_wake_into_cycle<A: TeamRuntimeAdapter>(
             format!("{} member degraded: {reason}", adapter.display_name()),
         ))),
     }
+}
+
+/// Execute a reversible Team-member Close while idle. This is intentionally
+/// not the stronger Quiesce + Release operation: Team Close releases only the
+/// owned adapter/process handle and retains the machine-owned AgentSession and
+/// provider-native session for Reopen.
+fn close_idle_runtime<A: TeamRuntimeAdapter>(
+    ledger: &TeamRunLedger,
+    member_row: &mut ProviderRuntimeProjection,
+    adapter: &mut A,
+    close: &harness_core::TeamMemberCloseRequest,
+) -> CliResult<(
+    MemberOutcome,
+    crate::runtime_adapter_contract::MemberRuntimeCloseReceipt,
+)> {
+    use harness_core::agentfirm_api::{AgentSessionStatus, RuntimeActivity, RuntimeResidency};
+    let close_receipt = execute_member_runtime_close(ledger, member_row, adapter, close, "idle")?;
+    crate::transition_provider_session_runtime_control(
+        ledger,
+        member_row,
+        RuntimeResidency::Detached,
+        RuntimeActivity::Idle,
+    )?;
+    transition_provider_session_for_member(ledger, member_row, AgentSessionStatus::Idle)?;
+    stop_member_for_latched_close(ledger, member_row, close)?;
+    Ok((
+        MemberOutcome::new(
+            member_row,
+            MemberRunStatus::Stopped,
+            format!("{} member runtime closed by Host", adapter.display_name()),
+        ),
+        close_receipt,
+    ))
+}
+
+/// Cross the provider boundary for the narrow, reversible Team Close. This
+/// is deliberately independent from strong Quiesce/Release: it proves that
+/// the owned live handle is gone and the native session locator is retained,
+/// but makes no workspace-child or durable-flush claim.
+fn execute_member_runtime_close<A: TeamRuntimeAdapter>(
+    ledger: &TeamRunLedger,
+    member_row: &mut ProviderRuntimeProjection,
+    adapter: &mut A,
+    close: &harness_core::TeamMemberCloseRequest,
+    boundary: &str,
+) -> CliResult<crate::runtime_adapter_contract::MemberRuntimeCloseReceipt> {
+    use crate::runtime_adapter_contract::SemanticCapability;
+    use harness_core::agentfirm_api::RuntimeCommandKind;
+
+    let profile = member_row.provider_profile.clone().ok_or_else(|| {
+        CliError::Usage(format!(
+            "RUNTIME_ADAPTER_PROFILE_MISSING: {} has no persisted provider profile",
+            member_row.id
+        ))
+    })?;
+    let close_source = format!("{}:{boundary}:close-runtime", close.id);
+    let effect = crate::prepare_provider_effect_kind(
+        ledger,
+        member_row,
+        &close_source,
+        "close the owned Team member runtime and retain its native session",
+        RuntimeCommandKind::CloseMember,
+        "member.close",
+    )?;
+    let close_admission = adapter
+        .bind_authority_session(effect.target_session.clone(), &profile)
+        .and_then(|_| {
+            let binding = canonical_runtime_binding(&effect.target_session);
+            crate::runtime_adapter_contract::preflight_effect(
+                adapter.describe(),
+                &effect.target_session,
+                crate::runtime_adapter_contract::RuntimeFence {
+                    binding: &binding,
+                    target_node_daemon_id: &effect.target_session.node_daemon_id,
+                    target_node_daemon_generation: effect.target_session.node_daemon_generation,
+                },
+                SemanticCapability::CloseRuntime,
+                &[],
+            )
+            .map(|_| ())
+            .map_err(|error| CliError::Usage(error.to_string()))
+        });
+    if let Err(error) = close_admission {
+        settle_provider_effect_not_applied(ledger, &effect, error.to_string())?;
+        return Err(CliError::Usage(format!(
+            "RUNTIME_COMMAND_NOT_APPLIED: {} {boundary} Close preflight failed: {error}",
+            adapter.provider()
+        )));
+    }
+    let binding = canonical_runtime_binding(&effect.target_session);
+    let close_receipt = match adapter.close_runtime(crate::runtime_adapter_contract::RuntimeFence {
+        binding: &binding,
+        target_node_daemon_id: &effect.target_session.node_daemon_id,
+        target_node_daemon_generation: effect.target_session.node_daemon_generation,
+    }) {
+        Ok(receipt) => receipt,
+        Err(
+            error @ crate::runtime_adapter_contract::RuntimeContractError::CapabilityAdmissionDenied {
+                ..
+            },
+        ) => {
+            // Dynamic adapter admission (for example, a permission mode that
+            // cannot prove old workspace writers are gone) is decided before
+            // crossing the provider boundary. Preserve that exact NotApplied
+            // fact instead of manufacturing RecoveryRequired uncertainty.
+            settle_provider_effect_not_applied(ledger, &effect, error.to_string())?;
+            return Err(CliError::Usage(format!(
+                "RUNTIME_COMMAND_NOT_APPLIED: {} {boundary} Close admission failed: {error}",
+                adapter.provider()
+            )));
+        }
+        Err(error) => {
+            settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
+            return Err(CliError::Usage(format!(
+                "RUNTIME_COMMAND_RECOVERY_REQUIRED: {} {boundary} Close is unproven: {error}",
+                adapter.provider()
+            )));
+        }
+    };
+    if let Err(error) = close_receipt.verify() {
+        settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
+        return Err(CliError::Usage(format!(
+            "RUNTIME_COMMAND_RECOVERY_REQUIRED: {} {boundary} Close receipt is incomplete: {error}",
+            adapter.provider()
+        )));
+    }
+    settle_provider_effect(
+        ledger,
+        &effect,
+        true,
+        Some(serde_json::json!({
+            "phase": "member_runtime_closed",
+            "receipt": &close_receipt,
+        })),
+        None,
+    )?;
+    Ok(close_receipt)
 }
 
 /// Wait for the next wake and project it into a cycle input (or a terminal
@@ -642,6 +852,14 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
             .map(str::to_string)
             .unwrap_or_else(|| format!("continuation:{}:{round}", member_row.id));
         let source_record_id = format!("{source_record_id}:turn:{round}");
+        // A concrete cycle is the only boundary that activates the machine
+        // AgentSession. Idle mailbox waiting and an attached process are not
+        // an active provider turn.
+        transition_provider_session_for_member(
+            ledger,
+            member_row,
+            harness_core::agentfirm_api::AgentSessionStatus::Active,
+        )?;
         let effect = prepare_provider_effect(ledger, member_row, &source_record_id, &prompt)?;
         let profile = member_row.provider_profile.as_ref().ok_or_else(|| {
             CliError::Usage(format!(
@@ -660,13 +878,20 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
         let mut pending_control_effects: Vec<Box<PendingProviderControl>> = Vec::new();
         let mut pending_control_replies: Vec<PendingControlReply> = Vec::new();
         let mut control_prepare_error: Option<String> = None;
+        // Close/Interrupt may arrive before the provider's first
+        // input-acceptance evidence. Both RuntimeCommands are then admitted
+        // against the same Idle activity snapshot. Preserve that snapshot
+        // until both commands settle, then publish the terminal Idle state.
+        let terminal_control_dispatched = Cell::new(false);
 
+        let round_start = member_row.clone();
         let turn_result = {
             let _turn_lease = context.turn_leases.acquire();
             let _live_turn_guard = LiveProviderTurnGuard::new(
                 context.live_sink.clone(),
                 ledger.run_id.clone(),
                 member_row.id.clone(),
+                member_row.runtime_generation,
             );
             let live_sink = context.live_sink.clone();
             adapter.run_cycle(
@@ -716,12 +941,14 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                             provider_receipt,
                         )?;
                     }
-                    crate::transition_provider_session_runtime_control(
-                        ledger,
-                        member_row,
-                        harness_core::agentfirm_api::RuntimeResidency::Attached,
-                        harness_core::agentfirm_api::RuntimeActivity::Running,
-                    )?;
+                    if !terminal_control_dispatched.get() {
+                        crate::transition_provider_session_runtime_control(
+                            ledger,
+                            member_row,
+                            harness_core::agentfirm_api::RuntimeResidency::Attached,
+                            harness_core::agentfirm_api::RuntimeActivity::Running,
+                        )?;
+                    }
                     Ok(())
                 },
                 &mut |pending, result| {
@@ -732,29 +959,43 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                         true,
                     )?;
                     match result {
-                        SteerProviderResult::Acknowledged(receipt) => settle_provider_effect(
-                            ledger,
-                            &pending.admission,
-                            true,
-                            Some(serde_json::json!({
-                                "phase": "provider_input_accepted",
-                                "provider_receipt": receipt,
-                            })),
-                            None,
-                        ),
-                        SteerProviderResult::Unknown(detail) => settle_provider_effect(
-                            ledger,
-                            &pending.admission,
-                            false,
-                            None,
-                            Some(detail.clone()),
-                        ),
+                        SteerProviderResult::Acknowledged(receipt) => {
+                            settle_provider_effect(
+                                ledger,
+                                &pending.admission,
+                                true,
+                                Some(serde_json::json!({
+                                    "phase": "provider_input_accepted",
+                                    "provider_receipt": receipt,
+                                })),
+                                None,
+                            )?;
+                            let _ = pending.reply.send(Ok(pending.success_reply.clone()));
+                            Ok(())
+                        }
+                        SteerProviderResult::Unknown(detail) => {
+                            settle_provider_effect(
+                                ledger,
+                                &pending.admission,
+                                false,
+                                None,
+                                Some(detail.clone()),
+                            )?;
+                            let _ = pending.reply.send(Err(CliError::Usage(format!(
+                                "RUNTIME_COMMAND_RECOVERY_REQUIRED: {detail}"
+                            ))));
+                            Ok(())
+                        }
                         SteerProviderResult::NotApplied(detail) => {
                             settle_provider_effect_not_applied(
                                 ledger,
                                 &pending.admission,
                                 detail.clone(),
-                            )
+                            )?;
+                            let _ = pending
+                                .reply
+                                .send(Err(CliError::Usage(detail.clone())));
+                            Ok(())
                         }
                     }
                 },
@@ -769,7 +1010,44 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                     let mut control = CycleControl::default();
                     while let Ok(command) = live_control.try_recv() {
                         match command {
-                            MemberControlCommand::Close { reason, reply, .. } => {
+                            MemberControlCommand::Close {
+                                reason,
+                                requested_by,
+                                reply,
+                                ..
+                            } => {
+                                let close_request = match crate::pending_member_close(
+                                    &ledger.store,
+                                    &member_row.id,
+                                ) {
+                                    Ok(Some(close))
+                                        if close.reason == reason
+                                            && close.requested_by == requested_by =>
+                                    {
+                                        close
+                                    }
+                                    Ok(Some(_)) => {
+                                        let detail = "RUNTIME_COMMAND_RECOVERY_REQUIRED: live Close no longer matches the exact durable Close latch".to_string();
+                                        let _ = reply.send(Err(CliError::Usage(detail.clone())));
+                                        control_prepare_error = Some(detail.clone());
+                                        control.fatal_error = Some(detail);
+                                        return control;
+                                    }
+                                    Ok(None) => {
+                                        let detail = "RUNTIME_COMMAND_RECOVERY_REQUIRED: live Close has no durable Close latch".to_string();
+                                        let _ = reply.send(Err(CliError::Usage(detail.clone())));
+                                        control_prepare_error = Some(detail.clone());
+                                        control.fatal_error = Some(detail);
+                                        return control;
+                                    }
+                                    Err(error) => {
+                                        let detail = error.to_string();
+                                        let _ = reply.send(Err(CliError::Usage(detail.clone())));
+                                        control_prepare_error = Some(detail.clone());
+                                        control.fatal_error = Some(detail);
+                                        return control;
+                                    }
+                                };
                                 let mut close = false;
                                 let mut interrupt = false;
                                 let dispatch = {
@@ -777,7 +1055,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                                     provider_adapter::execute_team_control(
                                         ledger,
                                         member_row,
-                                        &format!("{provider}-close:{}:{round}", member_row.id),
+                                        &format!("{}:active:interrupt", close_request.id),
                                         &reason,
                                         true,
                                         &mut proxy,
@@ -787,10 +1065,11 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                                 control.interrupt = interrupt;
                                 match dispatch {
                                     Ok(ProviderControlDispatch::Pending(pending)) => {
+                                        terminal_control_dispatched.set(true);
                                         pending_control_effects.push(pending);
                                         pending_control_replies.push(PendingControlReply {
                                             action: provider_adapter::ProviderControlAction::CloseSession,
-                                            reply,
+                                            reply: Some(reply),
                                         });
                                     }
                                     Ok(ProviderControlDispatch::Replayed) => {
@@ -809,7 +1088,12 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                                 }
                                 return control;
                             }
-                            MemberControlCommand::Interrupt { reason, reply, .. } => {
+                            MemberControlCommand::Interrupt {
+                                reason,
+                                requested_by,
+                                reply,
+                                ..
+                            } => {
                                 let mut close = false;
                                 let mut interrupt = false;
                                 let dispatch = {
@@ -817,7 +1101,10 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                                     provider_adapter::execute_team_control(
                                         ledger,
                                         member_row,
-                                        &format!("{provider}-interrupt:{}:{round}", member_row.id),
+                                        &format!(
+                                            "{provider}-interrupt:{}:{round}:{requested_by}",
+                                            member_row.id
+                                        ),
                                         &reason,
                                         false,
                                         &mut proxy,
@@ -827,10 +1114,11 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                                 control.interrupt = interrupt;
                                 match dispatch {
                                     Ok(ProviderControlDispatch::Pending(pending)) => {
+                                        terminal_control_dispatched.set(true);
                                         pending_control_effects.push(pending);
                                         pending_control_replies.push(PendingControlReply {
                                             action: provider_adapter::ProviderControlAction::CancelProviderTurn,
-                                            reply,
+                                            reply: Some(reply),
                                         });
                                     }
                                     Ok(ProviderControlDispatch::Replayed) => {
@@ -874,7 +1162,10 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                                             success_reply: serde_json::json!({
                                                 "member_run_id": member_row.id,
                                                 "status": "steer_accepted",
-                                                "provider_ack": "pi_rpc_response_success",
+                                                "delivery": "steered",
+                                                "provider_ack": format!(
+                                                    "{provider}_native_input_accepted"
+                                                ),
                                             }),
                                             reply,
                                             admission,
@@ -895,6 +1186,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                 },
             )
         };
+        supervisor_test_terminal_receive_barrier(provider)?;
         // A terminal callback can arrive after supervisor replacement. Fence
         // before every terminal settlement, delivery mutation, action, or
         // member/session transition; stale completions remain explicit
@@ -920,11 +1212,44 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                     format!("RUNTIME_COMMAND_RECOVERY_REQUIRED: {error}"),
                 );
                 if accepted_provider_receipt.is_none() {
-                    settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
+                    settle_provider_effect_not_applied(ledger, &effect, error.to_string())?;
+                }
+                let action = ledger.append_action(
+                    &member_row.id,
+                    "provider_error",
+                    MemberActionStatus::Failed,
+                    &format!("{display} provider round {round} failed"),
+                    &crate::provider_turn_failure_summary(display, round),
+                )?;
+                ledger.fold_event(
+                    TeamRunEventSourceKind::Member,
+                    Some(member_row.id.clone()),
+                    "action",
+                    &action.id,
+                    "created",
+                    &format!("{} provider round {round} failed", member_row.name),
+                )?;
+                if accepted_provider_receipt.is_some() {
+                    let detail = error.to_string();
+                    return Err(CliError::Usage(
+                        if detail.contains("RUNTIME_COMMAND_RECOVERY_REQUIRED") {
+                            detail
+                        } else {
+                            format!(
+                            "RUNTIME_COMMAND_RECOVERY_REQUIRED: {display} failed after accepting cycle input: {detail}"
+                        )
+                        },
+                    ));
                 }
                 return Err(error);
             }
         };
+        // Reverse provider callbacks may legitimately advance only their
+        // transient Waiting/Running projection while the native cycle is in
+        // flight. Rebase that bounded same-runtime progress before the
+        // terminal CAS; never let a stale outer row overwrite it or turn the
+        // provider receipt into a false conflict.
+        *member_row = refresh_member_after_provider_callbacks(ledger, &round_start)?;
         if turn.input_acceptance_receipt.response_id.as_deref()
             != accepted_provider_receipt.as_deref()
         {
@@ -941,11 +1266,11 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
             return Err(CliError::Usage(error));
         }
 
-        // Close is an ordered composition of three independently authorized
-        // effects.  The interrupt command must first become terminal before
-        // the Store can admit quiesce; quiesce must then become terminal
-        // before release.  Keep the API replies pending until the complete
-        // lifecycle postcondition is durable below.
+        // Busy Close has two independent provider effects. The current-cycle
+        // Interrupt must first obtain its terminal acknowledgement. Only then
+        // may the reversible CloseMember command dispose this owned runtime.
+        // Strong Quiesce/Release are reserved for composition/driver swaps and
+        // must not be weakened merely to implement Team Close.
         let abort_receipt_observed = turn
             .control_receipts
             .iter()
@@ -977,236 +1302,40 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
             )));
         }
 
-        let mut terminal_observation = turn.terminal_observation.clone();
-        let mut close_quiesce: Option<crate::runtime_adapter_contract::QuiesceReceipt> = None;
-        let mut close_release: Option<crate::runtime_adapter_contract::ReleaseReceipt> = None;
-        let mut terminal_failure = None;
+        let mut close_receipt = None;
+        let mut close_request = None;
         if turn.close_requested_by_harness {
-            let profile = member_row.provider_profile.as_ref().ok_or_else(|| {
+            let request = crate::pending_member_close(&ledger.store, &member_row.id)?.ok_or_else(|| {
                 CliError::Usage(format!(
-                    "RUNTIME_ADAPTER_PROFILE_MISSING: {} has no persisted provider profile",
+                    "RUNTIME_COMMAND_RECOVERY_REQUIRED: {} requested Close without a durable pending close latch",
                     member_row.id
                 ))
             })?;
-
-            // Close is a composed control, not one overloaded interrupt. The
-            // interrupt above has its own RuntimeCommand; quiesce and release
-            // each receive a separate exact durable authorization before the
-            // adapter may cross the provider boundary.
-            let quiesce_source = format!("{source_record_id}:close:quiesce");
-            match crate::prepare_provider_effect_kind(
-                ledger,
-                member_row,
-                &quiesce_source,
-                "quiesce execution lane after terminal cycle acknowledgement",
-                harness_core::agentfirm_api::RuntimeCommandKind::QuiesceExecutionLane,
-                "execution_lane.quiesce",
-            ) {
-                Ok(admission) => {
-                    let bind_result = adapter
-                        .bind_authority_session(admission.target_session.clone(), profile)
-                        .and_then(|_| {
-                            let binding = canonical_runtime_binding(&admission.target_session);
-                            crate::runtime_adapter_contract::preflight_effect(
-                                crate::runtime_adapter_contract::RuntimeAdapter::describe(adapter),
-                                &admission.target_session,
-                                crate::runtime_adapter_contract::RuntimeFence {
-                                    binding: &binding,
-                                    target_node_daemon_id: &admission.target_session.node_daemon_id,
-                                    target_node_daemon_generation: admission
-                                        .target_session
-                                        .node_daemon_generation,
-                                },
-                                crate::runtime_adapter_contract::SemanticCapability::Quiesce,
-                                &[],
-                            )
-                            .map(|_| ())
-                            .map_err(|error| CliError::Usage(error.to_string()))
-                        });
-                    if let Err(error) = bind_result {
-                        settle_provider_effect_not_applied(ledger, &admission, error.to_string())?;
-                        terminal_failure = Some(format!(
-                            "RUNTIME_COMMAND_NOT_APPLIED: {provider} quiesce preflight failed: {error}"
-                        ));
-                    } else {
-                        let binding = canonical_runtime_binding(&admission.target_session);
-                        match crate::runtime_adapter_contract::RuntimeAdapter::quiesce(
-                            adapter,
-                            crate::runtime_adapter_contract::RuntimeFence {
-                                binding: &binding,
-                                target_node_daemon_id: &admission.target_session.node_daemon_id,
-                                target_node_daemon_generation: admission
-                                    .target_session
-                                    .node_daemon_generation,
-                            },
-                        ) {
-                            Ok(receipt) => {
-                                settle_provider_effect(
-                                    ledger,
-                                    &admission,
-                                    true,
-                                    Some(serde_json::json!({
-                                        "phase": "execution_lane_quiesced",
-                                        "receipt": &receipt,
-                                    })),
-                                    None,
-                                )?;
-                                close_quiesce = Some(receipt);
-                            }
-                            Err(error) => {
-                                settle_provider_effect(
-                                    ledger,
-                                    &admission,
-                                    false,
-                                    None,
-                                    Some(error.to_string()),
-                                )?;
-                                terminal_failure = Some(format!(
-                                    "RUNTIME_COMMAND_RECOVERY_REQUIRED: {provider} quiesce failed after provider-boundary admission: {error}"
-                                ));
-                            }
-                        }
-                    }
+            match execute_member_runtime_close(ledger, member_row, adapter, &request, "active") {
+                Ok(receipt) => {
+                    close_receipt = Some(receipt);
+                    close_request = Some(request);
                 }
                 Err(error) => {
-                    terminal_failure = Some(format!(
-                        "RUNTIME_COMMAND_NOT_APPLIED: {provider} quiesce admission failed: {error}"
-                    ));
-                }
-            }
-
-            if terminal_failure.is_none() {
-                let release_source = format!("{source_record_id}:close:release");
-                match crate::prepare_provider_effect_kind(
-                    ledger,
-                    member_row,
-                    &release_source,
-                    "release owned runtime after verified quiesce",
-                    harness_core::agentfirm_api::RuntimeCommandKind::ReleaseRuntime,
-                    "runtime.release",
-                ) {
-                    Ok(admission) => {
-                        let bind_result = adapter
-                            .bind_authority_session(admission.target_session.clone(), profile)
-                            .and_then(|_| {
-                                let binding = canonical_runtime_binding(&admission.target_session);
-                                crate::runtime_adapter_contract::preflight_effect(
-                                    crate::runtime_adapter_contract::RuntimeAdapter::describe(
-                                        adapter,
-                                    ),
-                                    &admission.target_session,
-                                    crate::runtime_adapter_contract::RuntimeFence {
-                                        binding: &binding,
-                                        target_node_daemon_id: &admission
-                                            .target_session
-                                            .node_daemon_id,
-                                        target_node_daemon_generation: admission
-                                            .target_session
-                                            .node_daemon_generation,
-                                    },
-                                    crate::runtime_adapter_contract::SemanticCapability::Release,
-                                    &[],
-                                )
-                                .map(|_| ())
-                                .map_err(|error| CliError::Usage(error.to_string()))
-                            });
-                        if let Err(error) = bind_result {
-                            settle_provider_effect_not_applied(
-                                ledger,
-                                &admission,
-                                error.to_string(),
-                            )?;
-                            terminal_failure = Some(format!(
-                                "RUNTIME_COMMAND_NOT_APPLIED: {provider} release preflight failed: {error}"
-                            ));
-                        } else {
-                            let binding = canonical_runtime_binding(&admission.target_session);
-                            match crate::runtime_adapter_contract::RuntimeAdapter::release(
-                                adapter,
-                                crate::runtime_adapter_contract::RuntimeFence {
-                                    binding: &binding,
-                                    target_node_daemon_id: &admission.target_session.node_daemon_id,
-                                    target_node_daemon_generation: admission
-                                        .target_session
-                                        .node_daemon_generation,
-                                },
-                            ) {
-                                Ok(receipt) => {
-                                    settle_provider_effect(
-                                        ledger,
-                                        &admission,
-                                        true,
-                                        Some(serde_json::json!({
-                                            "phase": "runtime_released",
-                                            "receipt": &receipt,
-                                        })),
-                                        None,
-                                    )?;
-                                    terminal_observation = RuntimeObservation {
-                                        transport_alive: false,
-                                        process_alive: false,
-                                        is_streaming: Some(false),
-                                        pending_message_count: Some(0),
-                                        steering_mode: turn
-                                            .terminal_observation
-                                            .steering_mode
-                                            .clone(),
-                                        follow_up_mode: turn
-                                            .terminal_observation
-                                            .follow_up_mode
-                                            .clone(),
-                                        settled_boundary_observed: true,
-                                    };
-                                    close_release = Some(receipt);
-                                }
-                                Err(error) => {
-                                    settle_provider_effect(
-                                        ledger,
-                                        &admission,
-                                        false,
-                                        None,
-                                        Some(error.to_string()),
-                                    )?;
-                                    terminal_failure = Some(format!(
-                                        "RUNTIME_COMMAND_RECOVERY_REQUIRED: {provider} release failed after provider-boundary admission: {error}"
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        terminal_failure = Some(format!(
-                            "RUNTIME_COMMAND_NOT_APPLIED: {provider} release admission failed: {error}"
-                        ));
-                    }
+                    fail_pending_control_replies(&mut pending_control_replies, error.to_string());
+                    return Err(error);
                 }
             }
         }
 
-        let close_terminal_observed = !turn.close_requested_by_harness
-            || (close_quiesce.is_some()
-                && close_release.is_some()
-                && terminal_observation.runtime_released());
         let terminal_ack = (turn.interrupted
             && abort_receipt_observed
             && cycle_terminal_observed
-            && close_terminal_observed
-            && terminal_failure.is_none())
+            && (!turn.close_requested_by_harness || close_receipt.is_some()))
         .then(|| {
             serde_json::json!({
                 "provider_terminal_event": "agent_settled",
                 "control_transport_receipts": &turn.control_receipts,
                 "post_abort_observation": &turn.terminal_observation,
-                "quiesce": &close_quiesce,
-                "release": &close_release,
-                "post_release_observation": &terminal_observation,
+                "member_runtime_close": &close_receipt,
             })
             .to_string()
         });
-        if let Some(detail) = terminal_failure {
-            fail_pending_control_replies(&mut pending_control_replies, detail.clone());
-            return Err(CliError::Usage(detail));
-        }
         debug_assert!(!had_pending_control || terminal_ack.is_some());
 
         crate::transition_provider_session_runtime_control(
@@ -1220,32 +1349,10 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
             harness_core::agentfirm_api::RuntimeActivity::Idle,
         )?;
         require_provider_session_authority(ledger, &member_row.agent_member_id, true)?;
-        // Refresh the native session locator after the cycle.
-        let mut close_authority_anchor = None;
+        // Refresh the native session locator after the cycle. The locator is
+        // stable identity; disposing the process-local handle must not erase
+        // it.
         if turn.close_requested_by_harness {
-            // HTTP Close durably latches coordination=Closed before the live
-            // provider loop receives its control. Rebase only that expected
-            // same-runtime drift, then fold native-session refresh and the
-            // terminal Stopped state into the single CAS below. Saving here
-            // against the stale Active row would deterministically conflict
-            // with the already-committed Close latch.
-            let latest = ledger.latest_member_run(&member_row.id)?.ok_or_else(|| {
-                CliError::Usage(format!(
-                    "RUNTIME_COMMAND_RECOVERY_REQUIRED: {} disappeared while Close was settling",
-                    member_row.id
-                ))
-            })?;
-            if !latest.coordination_is_closed()
-                || !crate::member_runtime_anchor_matches(member_row, &latest)
-                || latest.native_session != member_row.native_session
-            {
-                return Err(CliError::Usage(format!(
-                    "RUNTIME_COMMAND_RECOVERY_REQUIRED: {} changed outside the exact runtime generation admitted by Close",
-                    member_row.id
-                )));
-            }
-            close_authority_anchor = Some(latest.clone());
-            *member_row = latest;
             member_row.native_session = Some(native_session_ref(
                 member_row,
                 adapter.native_session_locator(),
@@ -1267,8 +1374,12 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
         if turn.interrupted {
             let interruption_summary = if turn.close_requested_by_harness {
                 format!("The Host explicitly closed the {display} member runtime.")
-            } else {
+            } else if had_pending_control {
                 format!("The operator or Lead interrupted the active {display} turn.")
+            } else {
+                format!(
+                    "{display} reported the active turn as interrupted without a Harness control request; inspect the provider-native session for the source."
+                )
             };
             if turn.close_requested_by_harness {
                 transition_provider_session_for_member(
@@ -1276,67 +1387,24 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                     member_row,
                     AgentSessionStatus::Idle,
                 )?;
-                member_row.coordination_status = MemberCoordinationStatus::Closed;
-            }
-            let refreshed_native_session = member_row.native_session.clone();
-            let terminal_timestamp = now_string();
-            let mut attempt = 0usize;
-            loop {
+                let request = close_request.as_ref().expect("verified Close request");
+                stop_member_for_latched_close(ledger, member_row, request)?;
+            } else {
                 let expected = member_row.clone();
-                member_row.native_session = refreshed_native_session.clone();
-                member_row.status = if turn.close_requested_by_harness {
-                    MemberRunStatus::Stopped
-                } else {
-                    MemberRunStatus::Idle
-                };
-                member_row.finished_at = turn
-                    .close_requested_by_harness
-                    .then(|| terminal_timestamp.clone());
-                member_row.last_event_at = Some(terminal_timestamp.clone());
-                match ledger.save_member_run(&expected, member_row) {
-                    Ok(()) => break,
-                    Err(CliError::Store(harness_store::StoreError::Conflict(_)))
-                        if turn.close_requested_by_harness
-                            && attempt + 1 < crate::PROVIDER_MEMBER_CAS_RETRIES =>
-                    {
-                        attempt += 1;
-                        let latest = ledger.latest_member_run(&member_row.id)?.ok_or_else(|| {
-                            CliError::Usage(format!(
-                                "RUNTIME_COMMAND_RECOVERY_REQUIRED: {} disappeared while Close was finalizing",
-                                member_row.id
-                            ))
-                        })?;
-                        let anchor = close_authority_anchor.as_ref().expect("Close anchor");
-                        if !latest.coordination_is_closed()
-                            || !crate::member_runtime_progress_matches(
-                                anchor, anchor, &latest, false,
-                            )
-                        {
-                            return Err(CliError::Usage(format!(
-                                "RUNTIME_COMMAND_RECOVERY_REQUIRED: {} changed outside the exact runtime generation admitted by Close",
-                                member_row.id
-                            )));
-                        }
-                        *member_row = latest;
-                    }
-                    Err(error) => return Err(error),
-                }
+                member_row.status = MemberRunStatus::Idle;
+                member_row.finished_at = None;
+                member_row.last_event_at = Some(now_string());
+                ledger.save_member_run(&expected, member_row)?;
             }
-            ledger.append_action(
-                &member_row.id,
-                if turn.close_requested_by_harness {
-                    "closed"
-                } else {
-                    "interrupted"
-                },
-                MemberActionStatus::Cancelled,
-                if turn.close_requested_by_harness {
-                    "member runtime closed"
-                } else {
-                    "provider turn interrupted"
-                },
-                &interruption_summary,
-            )?;
+            if !turn.close_requested_by_harness {
+                ledger.append_action(
+                    &member_row.id,
+                    "interrupted",
+                    MemberActionStatus::Cancelled,
+                    "provider turn interrupted",
+                    &interruption_summary,
+                )?;
+            }
             // The HTTP/API acknowledgement is a postcondition receipt, not a
             // transport write receipt. Only expose success after the durable
             // RuntimeCommand, AgentSession control state, MemberRun terminal
@@ -1349,7 +1417,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                     provider_adapter::ProviderControlAction::CancelProviderTurn => "interrupted",
                     provider_adapter::ProviderControlAction::CloseSession => "closed",
                 };
-                let _ = pending.reply.send(Ok(serde_json::json!({
+                pending.send(Ok(serde_json::json!({
                     "member_run_id": member_row.id,
                     "status": status,
                     "provider_terminal_evidence": serde_json::from_str::<Value>(evidence)
@@ -1366,13 +1434,16 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
             }
         } else {
             let final_text = turn.final_text;
-            let is_zero_output = final_text.trim().is_empty() && turn.tool_call_count == 0;
+            let provider_terminal_failure = turn.provider_terminal_failure;
+            let is_zero_output = provider_terminal_failure.is_none()
+                && final_text.trim().is_empty()
+                && turn.tool_call_count == 0;
             if is_zero_output {
                 zero_output_streak += 1;
             } else {
                 zero_output_streak = 0;
             }
-            let action_status = if is_zero_output {
+            let action_status = if is_zero_output || provider_terminal_failure.is_some() {
                 MemberActionStatus::Failed
             } else {
                 let result = parse_round_result(&final_text);
@@ -1382,14 +1453,49 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                     MemberActionStatus::Failed
                 }
             };
-            let round_summary =
-                provider_turn_coordination_summary(display, round, !final_text.trim().is_empty());
-            let action = ledger.append_action(
+            let (action_type, action_title, round_summary, provider_status) = if let Some(failure) =
+                provider_terminal_failure.as_ref()
+            {
+                let status = failure
+                    .http_status
+                    .map(|code| format!(" (HTTP {code})"))
+                    .unwrap_or_default();
+                (
+                        "provider_error",
+                        format!("{display} provider round {round} failed"),
+                        format!(
+                            "{display} provider round {round} failed: {}{status}; transcript remains provider-native",
+                            failure.reason
+                        ),
+                        Some(failure.to_provider_status()),
+                    )
+            } else if is_zero_output {
+                (
+                    "empty_provider_round",
+                    format!("{display} provider round {round} completed without output"),
+                    provider_turn_coordination_summary(display, round, false),
+                    None,
+                )
+            } else {
+                (
+                    "turn_completed",
+                    format!("{display} provider round {round} completed"),
+                    provider_turn_coordination_summary(
+                        display,
+                        round,
+                        !final_text.trim().is_empty(),
+                    ),
+                    None,
+                )
+            };
+            let action = ledger.append_action_with_provider_status(
                 &member_row.id,
-                "turn_completed",
+                action_type,
                 action_status,
-                &format!("{display} provider round {round} completed"),
+                &action_title,
                 &round_summary,
+                provider_status,
+                &[],
             )?;
             ledger.fold_event(
                 TeamRunEventSourceKind::Member,
@@ -1415,6 +1521,47 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                 "updated",
                 &format!("member {} idle after round {round}", member_row.name),
             )?;
+
+            if zero_output_streak >= PROVIDER_UNPRODUCTIVE_ROUND_LIMIT {
+                let mut reason = format!(
+                    "{display} provider circuit breaker opened after {PROVIDER_UNPRODUCTIVE_ROUND_LIMIT} consecutive unproductive rounds (last outcome: empty terminal success). No durable agent output was produced. Provider capacity remains unknown because the runtime adapter has no reviewed quota receipt for this outcome. Inspect the provider-native session, account access, and model-specific controls before explicitly reopening the member."
+                );
+                if let Err(error) = ledger.fail_unreceived_work_claims_for(&member_row.id, &reason)
+                {
+                    reason.push_str(&format!(
+                        " The unreceived Work claim also needs reconciliation: {error}"
+                    ));
+                }
+                let expected = member_row.clone();
+                member_row.status = MemberRunStatus::Failed;
+                member_row.finished_at = Some(now_string());
+                member_row.last_event_at = Some(now_string());
+                ledger.save_member_run(&expected, member_row)?;
+                let action = ledger.append_action(
+                    &member_row.id,
+                    "provider_circuit_breaker",
+                    MemberActionStatus::Failed,
+                    &format!("{display} provider circuit breaker opened"),
+                    &reason,
+                )?;
+                ledger.fold_event(
+                    TeamRunEventSourceKind::Member,
+                    Some(member_row.id.clone()),
+                    "action",
+                    &action.id,
+                    "created",
+                    &format!(
+                        "member {} failed after repeated unproductive provider rounds",
+                        member_row.name
+                    ),
+                )?;
+                drop(live_control_registration.take());
+                return Ok(MemberOutcome::new(
+                    member_row,
+                    MemberRunStatus::Failed,
+                    reason,
+                ));
+            }
         }
 
         cycle = match await_next_cycle(
@@ -1447,13 +1594,44 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
 // Binding registry
 // ---------------------------------------------------------------------------
 
-/// Executable capability report for a provider's Team runtime binding, when
-/// one exists. `None` means the provider still runs a branded loop without
-/// an executable binding report — itself an honest signal.
-pub(crate) fn capability_bindings_for(provider: &str) -> Option<Vec<CapabilityBinding>> {
-    match provider {
-        "pi" => Some(crate::pi_rpc::PiTeamRuntime::capability_bindings()),
+/// The closed set of persistent Team runtime implementations. This one
+/// selector is shared by admission, capability reporting, and runner dispatch
+/// so a provider cannot advertise an executable binding without a runnable
+/// path (or acquire a runnable path without a capability contract).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SharedTeamRuntimeKind {
+    Pi,
+    Kimi,
+    Codex,
+    Claude,
+}
+
+pub(crate) fn shared_team_runtime_kind(
+    provider: &str,
+    execution_mode: Option<&str>,
+) -> Option<SharedTeamRuntimeKind> {
+    match (provider, execution_mode) {
+        ("pi", Some("pi_rpc") | None) => Some(SharedTeamRuntimeKind::Pi),
+        ("kimi", Some("kimi_acp") | None) => Some(SharedTeamRuntimeKind::Kimi),
+        ("codex", Some("codex_app_server") | None) => Some(SharedTeamRuntimeKind::Codex),
+        ("claude", Some("claude_agent_sdk") | None) => Some(SharedTeamRuntimeKind::Claude),
         _ => None,
+    }
+}
+
+/// Executable capability report for a provider's Team runtime binding, when
+/// one exists. `None` means no provider-neutral Team runtime binding is
+/// registered and persistent Team execution must fail closed.
+pub(crate) fn capability_bindings_for(provider: &str) -> Option<Vec<CapabilityBinding>> {
+    match shared_team_runtime_kind(provider, None)? {
+        SharedTeamRuntimeKind::Pi => Some(crate::pi_rpc::PiTeamRuntime::capability_bindings()),
+        SharedTeamRuntimeKind::Kimi => {
+            Some(crate::kimi_team_runtime::KimiTeamRuntime::capability_bindings())
+        }
+        SharedTeamRuntimeKind::Codex => Some(crate::codex_team_runtime::capability_bindings()),
+        SharedTeamRuntimeKind::Claude => {
+            Some(crate::claude_team_runtime::ClaudeTeamRuntime::capability_bindings())
+        }
     }
 }
 
@@ -1465,6 +1643,29 @@ pub(crate) fn capability_bindings_for(provider: &str) -> Option<Vec<CapabilityBi
 mod tests {
     use super::*;
     use harness_core::SecurityEnforcementLocusKind;
+
+    #[test]
+    fn binding_registry_is_the_closed_runner_dispatch_registry() {
+        for (provider, mode, kind) in [
+            ("pi", "pi_rpc", SharedTeamRuntimeKind::Pi),
+            ("kimi", "kimi_acp", SharedTeamRuntimeKind::Kimi),
+            ("codex", "codex_app_server", SharedTeamRuntimeKind::Codex),
+            ("claude", "claude_agent_sdk", SharedTeamRuntimeKind::Claude),
+        ] {
+            assert_eq!(shared_team_runtime_kind(provider, Some(mode)), Some(kind));
+            assert_eq!(shared_team_runtime_kind(provider, None), Some(kind));
+            assert!(capability_bindings_for(provider).is_some());
+        }
+        for (provider, mode) in [
+            ("codex", "codex_exec"),
+            ("claude", "claude_cli"),
+            ("kimi", "pi_rpc"),
+            ("unknown", "unknown"),
+        ] {
+            assert_eq!(shared_team_runtime_kind(provider, Some(mode)), None);
+        }
+        assert!(capability_bindings_for("unknown").is_none());
+    }
 
     #[test]
     fn pi_launch_policy_only_compiles_admissible_ceilings() {
@@ -1570,10 +1771,57 @@ mod tests {
     }
 
     #[test]
-    fn providers_without_a_binding_report_none() {
+    fn kimi_capability_bindings_match_the_reviewed_acp_surface() {
+        let bindings = capability_bindings_for("kimi").expect("Kimi ACP binding report");
+        for capability in [
+            "open_or_resume",
+            "start_cycle",
+            "interrupt_current_cycle",
+            "observe",
+        ] {
+            let binding = bindings
+                .iter()
+                .find(|binding| binding.capability == capability)
+                .unwrap();
+            assert_eq!(binding.status, CapabilityStatus::Supported, "{capability}");
+            assert!(!binding.evidence.trim().is_empty(), "{capability}");
+        }
+        for capability in [
+            "inject_current_cycle",
+            "queue_at_native_boundary",
+            "inspect_continuation",
+            "reconcile_effect",
+        ] {
+            let binding = bindings
+                .iter()
+                .find(|binding| binding.capability == capability)
+                .unwrap();
+            assert_eq!(
+                binding.status,
+                CapabilityStatus::Unsupported,
+                "{capability}"
+            );
+        }
+        for capability in ["quiesce", "release", "permission_enforcement"] {
+            let binding = bindings
+                .iter()
+                .find(|binding| binding.capability == capability)
+                .unwrap();
+            assert_eq!(binding.status, CapabilityStatus::Degraded, "{capability}");
+        }
+    }
+
+    #[test]
+    fn unknown_providers_without_a_binding_report_none() {
         // DeepSeek needs no new core object to plug in later — until its
         // bridge exists, the honest report is "no executable binding yet".
         assert!(capability_bindings_for("deepseek").is_none());
-        assert!(capability_bindings_for("codex").is_none());
+        for provider in ["codex", "claude"] {
+            let bindings = capability_bindings_for(provider).expect("executable binding report");
+            assert!(bindings.iter().any(|binding| {
+                binding.capability == "close_runtime"
+                    && binding.status == CapabilityStatus::Supported
+            }));
+        }
     }
 }

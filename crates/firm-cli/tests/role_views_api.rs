@@ -14,10 +14,10 @@ use harness_core::agentfirm_api::{
     RuntimeDispatchMode, RuntimeDriverRef,
 };
 use harness_core::{
-    ExecutionNode, ExecutionNodeStatus, MemberRunStatus, NodeProjectRegistration,
-    NodeProjectRegistrationStatus, ProviderCompatibilityStatus,
+    ExecutionNode, ExecutionNodeStatus, MemberCoordinationStatus, MemberRunStatus,
+    NodeProjectRegistration, NodeProjectRegistrationStatus, ProviderCompatibilityStatus,
 };
-use harness_store::HarnessStore;
+use harness_store::{CurrentTeamMemberLifecycleTransition, HarnessStore};
 
 const TOKEN: &str = "role-view-local-capability";
 const MEMBER_TOKEN: &str = "role-view-member-capability";
@@ -1409,6 +1409,95 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .compare_and_advance_member_run_generation(&failed_provider_run, &successor_provider_run)
         .expect("append higher-generation replacement runtime");
 
+    // Interrupt is a live-only semantic action, not a durable lifecycle
+    // mutation. Prove the authenticated HTTP boundary accepts only the exact
+    // action/reason/current MemberRun revision. Provider acknowledgement is
+    // exercised by provider-adapter journeys; this HTTP test deliberately
+    // stops at authorization so it cannot wait on an unrelated live handle.
+    let mut interrupt_running_run = successor_provider_run.clone();
+    interrupt_running_run.status = MemberRunStatus::Running;
+    interrupt_running_run.last_event_at = Some("unix-ms:matrix-interrupt-running".into());
+    let interrupt_profile = interrupt_running_run
+        .provider_profile
+        .as_mut()
+        .expect("Interrupt provider profile");
+    interrupt_profile.provider_version = Some("0.148.0-alpha.9".into());
+    interrupt_profile.compatibility_status = ProviderCompatibilityStatus::Current;
+    interrupt_profile.supports_cancel = true;
+    store
+        .compare_and_append_member_run(&successor_provider_run, &interrupt_running_run)
+        .expect("project running provider turn for Interrupt fixture");
+    let interrupt_version = store
+        .trust_member_runs(&space_id)
+        .expect("Interrupt canonical MemberRun")
+        .into_iter()
+        .find(|run| run.id == member_run_id)
+        .expect("Interrupt MemberRun")
+        .version
+        .to_string();
+    let interrupt_route =
+        format!("/v1/agentfirm/member-runs/{member_run_id}/interrupt?project={project_id}");
+    for (key, body) in [
+        (
+            "matrix-member-interrupt-wrong-action",
+            serde_json::json!({"action":"close_member_run"}),
+        ),
+        (
+            "matrix-member-interrupt-empty-reason",
+            serde_json::json!({"action":"interrupt_member_run","reason":"   "}),
+        ),
+    ] {
+        let before = ledger_digest(serve.fixture_store_root());
+        let (status, rejected) = serve.post_json_with_headers(
+            &interrupt_route,
+            &body,
+            &action_headers(TOKEN, key, &interrupt_version),
+        );
+        assert_eq!(status, 409, "invalid Interrupt intent: {rejected}");
+        assert_eq!(
+            rejected["error"]["code"], "INVALID_STATE_TRANSITION",
+            "invalid Interrupt must fail at the closed semantic boundary"
+        );
+        assert_eq!(
+            ledger_digest(serve.fixture_store_root()),
+            before,
+            "invalid Interrupt intent changed durable state"
+        );
+    }
+    let stale_interrupt_version = u64::MAX.to_string();
+    let before_stale_interrupt = ledger_digest(serve.fixture_store_root());
+    let (status, rejected_stale_interrupt) = serve.post_json_with_headers(
+        &interrupt_route,
+        &serde_json::json!({
+            "action":"interrupt_member_run",
+            "reason":"stop exactly the current provider turn"
+        }),
+        &action_headers(
+            TOKEN,
+            "matrix-member-interrupt-stale",
+            &stale_interrupt_version,
+        ),
+    );
+    assert_eq!(
+        status, 409,
+        "stale Interrupt must fail before provider control: {rejected_stale_interrupt}"
+    );
+    assert_eq!(
+        rejected_stale_interrupt["error"]["code"], "VERSION_CONFLICT",
+        "valid semantic body must still bind the exact current MemberRun revision"
+    );
+    assert_eq!(
+        ledger_digest(serve.fixture_store_root()),
+        before_stale_interrupt,
+        "stale Interrupt changed durable state"
+    );
+    let mut post_interrupt_idle_run = successor_provider_run.clone();
+    post_interrupt_idle_run.last_event_at = Some("unix-ms:matrix-interrupt-idle".into());
+    store
+        .compare_and_append_member_run(&interrupt_running_run, &post_interrupt_idle_run)
+        .expect("restore idle provider projection after Interrupt boundary fixture");
+    let successor_provider_run = post_interrupt_idle_run;
+
     let host_steps = [
         (
             "assign",
@@ -1583,9 +1672,30 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     // An idle member on an unreviewed provider tuple keeps its runtime
     // availability fact but must not be counted Ready, and the adapter review
     // state rides along as its own fact with remediation metadata.
+    let review_team_view_route =
+        format!("/v1/views/team-workspace/{}?project={project_id}", team.id);
+    let (status, current_team_view) =
+        serve.get_json_with_headers(&review_team_view_route, &[("X-AgentFirm-Token", TOKEN)]);
+    assert_eq!(status, 200, "current Team RoleView: {current_team_view}");
+    let current_capability_admission = current_team_view["data"]["members"]
+        .as_array()
+        .and_then(|members| {
+            members
+                .iter()
+                .find(|member| member["current_member_run_ref"] == successor_provider_run.id)
+        })
+        .map(|member| member["provider_capability_admission"].clone())
+        .expect("current member capability admission");
     let mut review_run = successor_provider_run.clone();
     review_run.runtime_generation += 1;
     review_run.started_at = "unix-ms:matrix-review-required".into();
+    let review_native_session = review_run
+        .native_session
+        .as_mut()
+        .expect("review fixture keeps the discovered native session");
+    review_native_session.availability = harness_core::NativeSessionAvailability::Available;
+    review_native_session.supports_resume = true;
+    review_native_session.last_verified_at = Some("unix-ms:matrix-native-verified".into());
     let mut review_profile = review_run
         .provider_profile
         .clone()
@@ -1601,8 +1711,6 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     store
         .compare_and_advance_member_run_generation(&successor_provider_run, &review_run)
         .expect("append review-required runtime generation");
-    let review_team_view_route =
-        format!("/v1/views/team-workspace/{}?project={project_id}", team.id);
     let (status, review_team_view) =
         serve.get_json_with_headers(&review_team_view_route, &[("X-AgentFirm-Token", TOKEN)]);
     assert_eq!(
@@ -1624,6 +1732,10 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         "unreviewed exact tuple renders review_required as a separate fact"
     );
     assert_eq!(review_member["provider_version"], "0.146.0");
+    assert_eq!(
+        review_member["provider_capability_admission"], current_capability_admission,
+        "changing only source/version review must not rewrite executable capability admission"
+    );
     assert!(review_member["provider_compatibility_note"]
         .as_str()
         .is_some_and(|note| note.contains("run provider acceptance")));
@@ -1633,9 +1745,13 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let review_members = review_team_view["data"]["members"]
         .as_array()
         .expect("members");
-    let available_members = review_members
+    let honestly_ready_members = review_members
         .iter()
-        .filter(|member| member["capacity"] == "available")
+        .filter(|member| {
+            member["capacity"] == "available"
+                && member["provider_compatibility"] == "current"
+                && member["provider_capability_admission"] == "active"
+        })
         .count() as u64;
     let review_blocked_available = review_members
         .iter()
@@ -1652,9 +1768,8 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         "the review-required member is present and still runtime-available"
     );
     assert_eq!(
-        ready_members,
-        available_members - review_blocked_available,
-        "every unreviewed or incompatible tuple is excluded from Ready"
+        ready_members, honestly_ready_members,
+        "Ready requires both a current exact provider tuple and active verified core capabilities"
     );
     // The public lifecycle surface keeps Close/Reopen and Resume distinct.
     // Closing an Active member advertises Reopen only; a caller cannot invoke
@@ -1670,31 +1785,70 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
             })
         })
         .expect("Active MemberRun close action");
-    let close_version = close_action["required_version"]
-        .as_u64()
-        .expect("close version")
-        .to_string();
-    let close_headers = [
-        ("X-AgentFirm-Token", TOKEN),
-        ("Idempotency-Key", "matrix-member-close"),
-        ("If-Match", close_version.as_str()),
-        ("X-AgentFirm-Confirm", "close_member_run"),
-    ];
     let lifecycle_route = |operation: &str| {
         format!("/v1/agentfirm/member-runs/{member_run_id}/{operation}?project={project_id}")
     };
-    let (status, closed) = serve.post_json_with_headers(
+    let stale_close_version = u64::MAX.to_string();
+    let stale_close_headers = [
+        ("X-AgentFirm-Token", TOKEN),
+        ("Idempotency-Key", "matrix-member-close-stale"),
+        ("If-Match", stale_close_version.as_str()),
+        ("X-AgentFirm-Confirm", "close_member_run"),
+    ];
+    let before_stale_close = ledger_digest(serve.fixture_store_root());
+    let (status, rejected_close) = serve.post_json_with_headers(
         &lifecycle_route("close"),
         &serde_json::json!({"action":"close_member_run"}),
-        &close_headers,
+        &stale_close_headers,
     );
-    assert_eq!(status, 200, "close MemberRun: {closed}");
-    assert_eq!(closed["projection"]["coordination_status"], "closed");
-    assert_eq!(closed["projection"]["runtime_status"], "stopped");
-    let closed_version = closed["projection"]["version"]
-        .as_u64()
-        .expect("closed version")
-        .to_string();
+    assert_eq!(
+        status, 409,
+        "a stale Close must fail before provider control: {rejected_close}"
+    );
+    assert_eq!(
+        rejected_close["error"]["code"], "VERSION_CONFLICT",
+        "Close remains exact-CAS bound"
+    );
+    assert_eq!(
+        ledger_digest(serve.fixture_store_root()),
+        before_stale_close,
+        "stale Close must have byte-zero durable side effects"
+    );
+
+    // The rest of this test covers RoleView lifecycle projection, not a live
+    // provider control journey. Seed the closed state through the canonical
+    // Store transition explicitly rather than pretending this HTTP fixture
+    // closed a physical handle.
+    let seeded_closed = store
+        .transition_current_team_member_lifecycle(
+            &MutationContext {
+                execution_space_id: space_id.clone(),
+                authenticated_actor: ActorRef {
+                    kind: ActorKind::AgentMember,
+                    id: team.host_agent_id.clone(),
+                },
+                authority_actor: None,
+                command_name: "test_fixture.member_run.close".into(),
+                idempotency_key: "seed-matrix-member-closed".into(),
+                expected_version: close_action["required_version"]
+                    .as_u64()
+                    .expect("close action version"),
+                request_fingerprint: None,
+            },
+            member_run_id,
+            CurrentTeamMemberLifecycleTransition::Close,
+            "unix-ms:matrix-member-closed-fixture",
+        )
+        .expect("seed canonical closed lifecycle fixture");
+    assert_eq!(
+        seeded_closed.runtime_projection.coordination_status,
+        MemberCoordinationStatus::Closed
+    );
+    assert_eq!(
+        seeded_closed.runtime_projection.status,
+        MemberRunStatus::Stopped
+    );
+    let closed_version = seeded_closed.canonical.projection.version.to_string();
     let (status, lifecycle_closed) =
         serve.get_json_with_headers(&view_route, &[("X-AgentFirm-Token", TOKEN)]);
     assert_eq!(status, 200, "closed lifecycle RoleView: {lifecycle_closed}");
@@ -4031,7 +4185,7 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
 
     std::fs::write(
         &shim,
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'codex-cli 0.145.0-alpha.18'; exit 0; fi\nexit 2\n",
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'codex-cli 0.148.0-alpha.9'; exit 0; fi\nexit 2\n",
     )
     .expect("replace probe shim with an adapter-current version");
     let (status, current_provider_view) =

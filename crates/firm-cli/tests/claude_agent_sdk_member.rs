@@ -255,19 +255,35 @@ fn write_fake_runner_with_version(
     provider_version: &str,
 ) -> std::path::PathBuf {
     std::fs::create_dir_all(dir).unwrap();
-    let sdk_package = dir.join("node_modules/@anthropic-ai/claude-agent-sdk/package.json");
-    std::fs::create_dir_all(sdk_package.parent().expect("SDK package parent")).unwrap();
+    let sdk_package = dir.join("package.json");
     std::fs::write(
         &sdk_package,
         serde_json::json!({
+            "name": "@star-harness/fake-claude-member-runner",
+            "private": true,
+            "type": "module",
+            "dependencies": {
+                "@anthropic-ai/claude-agent-sdk": "0.3.220"
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let installed_sdk = dir.join("node_modules/@anthropic-ai/claude-agent-sdk/package.json");
+    std::fs::create_dir_all(installed_sdk.parent().expect("SDK package parent")).unwrap();
+    std::fs::write(
+        &installed_sdk,
+        serde_json::json!({
             "name": "@anthropic-ai/claude-agent-sdk",
-            "version": "0.2.70",
+            "version": "0.3.220",
             "claudeCodeVersion": provider_version,
         })
         .to_string(),
     )
     .unwrap();
-    let path = dir.join("fake-runner.mjs");
+    let bin_dir = dir.join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let path = bin_dir.join("fake-runner.mjs");
     let follow_up = if follow_up_after_first_turn {
         "true"
     } else {
@@ -285,6 +301,8 @@ fn write_fake_runner_with_version(
     };
     let script = format!(
         r#"
+import {{ appendFileSync }} from "node:fs";
+import {{ fileURLToPath }} from "node:url";
 import {{ spawnSync }} from "node:child_process";
 import {{ createInterface }} from "node:readline";
 
@@ -294,6 +312,7 @@ const SILENT_TURN = {silent_turn};
 let cfg = null;
 let turns = 0;
 let sentFollowUp = false;
+const RUNNER_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 const emit = (event, data) => process.stdout.write(JSON.stringify({{ event, data }}) + "\n");
 const harness = (args) => {{
@@ -309,6 +328,9 @@ for await (const line of rl) {{
 
   if (command === "start") {{
     cfg = payload;
+    if (cfg.resumeSessionId) {{
+      appendFileSync(`${{RUNNER_ROOT}}/resume.log`, `${{cfg.resumeSessionId}}\n`);
+    }}
     emit("member_started", {{ memberRunId: cfg.memberRunId }});
     emit("session_bound", {{
       sessionId: "fake-native-session-0001",
@@ -385,7 +407,12 @@ for await (const line of rl) {{
       throw new Error("historical CLI mail injection is retired; use canonical Role Action -> RuntimeCommand");
     }}
   }} else if (command === "close") {{
-    emit("member_closed", {{ reason: payload?.reason ?? "closed", undelivered: [] }});
+    appendFileSync(`${{RUNNER_ROOT}}/close.log`, `${{payload?.reason ?? "closed"}}\n`);
+    emit("member_closed", {{
+      reason: payload?.reason ?? "closed",
+      sessionId: "fake-native-session-0001",
+      undelivered: [],
+    }});
     rl.close();
   }}
 }}
@@ -867,6 +894,122 @@ fn agent_sdk_member_binds_one_native_session_and_turn_completion_is_idle() {
         "2.1.220"
     );
     assert_eq!(detail["member_run"]["status"], "idle");
+}
+
+#[test]
+fn agent_sdk_close_releases_runtime_and_reopen_resumes_the_exact_native_session() {
+    let home = TempHome::new("agent-sdk-close-reopen");
+    init_project(&home, "proj");
+    let root = home.base().join("proj");
+    let runner_root = home.base().join("runner");
+    let runner = write_fake_runner(&runner_root, false, FakeTurnShape::Report);
+
+    let run_id = create_run(&home, &root);
+    let out = start_with_fake_runner(&home, &root, &runner, "500", &run_id);
+    assert!(out.status.success(), "start failed: {out:?}");
+
+    let initial = wait_for_member_detail(&home, &root, &run_id, |detail| {
+        detail["member_run"]["native_session"]["native_session_id"] == "fake-native-session-0001"
+            && detail["member_run"]["status"] == "idle"
+    });
+    let member_id = initial["member_run"]["id"]
+        .as_str()
+        .expect("member id")
+        .to_string();
+    let native_session_id = initial["member_run"]["native_session"]["native_session_id"]
+        .as_str()
+        .expect("native session")
+        .to_string();
+
+    let closed = run_firm(
+        &home,
+        &root,
+        &[
+            "team-run",
+            "close-member",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &member_id,
+            "--reason",
+            "deterministic close receipt",
+        ],
+    );
+    assert!(closed.status.success(), "close failed: {closed:?}");
+    let closed_json: serde_json::Value =
+        serde_json::from_slice(&closed.stdout).expect("close response JSON");
+    assert_eq!(
+        closed_json["status"], "closed",
+        "close response: {closed_json}"
+    );
+    assert_eq!(
+        closed_json["provider_terminal_evidence"]["member_runtime_close"]["control_acknowledged"],
+        "satisfied",
+        "close must expose the independent runtime receipt: {closed_json}"
+    );
+    let stopped = wait_for_member_detail(&home, &root, &run_id, |detail| {
+        detail["member_run"]["status"] == "stopped"
+            && detail["member_run"]["coordination_status"] == "closed"
+    });
+    assert_eq!(
+        stopped["member_run"]["native_session"]["native_session_id"], native_session_id,
+        "Close must retain the resumable provider-native session"
+    );
+    assert!(
+        runner_root.join("close.log").is_file(),
+        "the runner did not acknowledge the close command"
+    );
+
+    let reopened = run_firm(
+        &home,
+        &root,
+        &[
+            "team-run",
+            "reopen-member",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &member_id,
+            "--reason",
+            "resume the same Claude conversation",
+        ],
+    );
+    assert!(reopened.status.success(), "reopen failed: {reopened:?}");
+    let resumed = wait_for_member_detail(&home, &root, &run_id, |detail| {
+        detail["member_run"]["runtime_generation"] == 2
+            && detail["member_run"]["coordination_status"] == "active"
+            && matches!(
+                detail["member_run"]["status"].as_str(),
+                Some("running" | "idle")
+            )
+            && detail["member_run"]["native_session"]["native_session_id"] == native_session_id
+    });
+    assert_eq!(resumed["member_run"]["runtime_generation"], 2);
+    let resume_log =
+        std::fs::read_to_string(runner_root.join("resume.log")).expect("Claude resume marker");
+    assert!(
+        resume_log.lines().any(|line| line == native_session_id),
+        "Reopen did not pass the retained session to the SDK runner: {resume_log}"
+    );
+
+    let cleanup = run_firm(
+        &home,
+        &root,
+        &[
+            "team-run",
+            "close-member",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &member_id,
+            "--reason",
+            "close acceptance complete",
+        ],
+    );
+    assert!(
+        cleanup.status.success(),
+        "cleanup close failed: {cleanup:?}"
+    );
 }
 
 // TODO: Fake-runner tests are non-deterministically flaky in CI (timing).

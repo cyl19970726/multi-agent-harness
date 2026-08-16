@@ -5939,8 +5939,10 @@ impl HarnessStore {
         )
         .remove(node_id);
         if let Some(current) = current.as_ref() {
-            if current.status == NodeDaemonLeaseStatus::Active
-                && current.expires_unix_ms > now_unix_ms
+            if matches!(
+                current.status,
+                NodeDaemonLeaseStatus::Active | NodeDaemonLeaseStatus::Draining
+            ) && current.expires_unix_ms > now_unix_ms
             {
                 if current.daemon_id == daemon_id && current.instance_id == instance_id {
                     return Ok(current.clone());
@@ -5999,6 +6001,50 @@ impl HarnessStore {
         }
         lease.renewed_unix_ms = now_unix_ms;
         lease.expires_unix_ms = now_unix_ms.saturating_add(ttl_ms.max(1));
+        self.append_jsonl_unlocked("node_daemon_leases.jsonl", &lease)?;
+        Ok(lease)
+    }
+
+    /// Fence every new provider effect while a NodeDaemon drains its owned
+    /// supervisors. A successor cannot acquire the Node until this bounded
+    /// drain lease expires or the current daemon publishes `Released` after
+    /// all provider handles have been reaped.
+    pub fn drain_node_daemon_lease(
+        &self,
+        node_id: &str,
+        daemon_id: &str,
+        generation: u64,
+        instance_id: &str,
+        now_unix_ms: u64,
+        drain_ttl_ms: u64,
+    ) -> StoreResult<NodeDaemonLease> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut lease = latest_by_id(
+            self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
+            |lease| lease.node_id.clone(),
+        )
+        .remove(node_id)
+        .ok_or_else(|| StoreError::Conflict(format!("NODE_DAEMON_GENERATION_FENCED: {node_id}")))?;
+        if lease.daemon_id != daemon_id
+            || lease.generation != generation
+            || lease.instance_id != instance_id
+        {
+            return Err(StoreError::Conflict(format!(
+                "NODE_DAEMON_GENERATION_FENCED: stale daemon cannot drain Node {node_id}"
+            )));
+        }
+        if lease.status == NodeDaemonLeaseStatus::Draining {
+            return Ok(lease);
+        }
+        if lease.status != NodeDaemonLeaseStatus::Active || lease.expires_unix_ms <= now_unix_ms {
+            return Err(StoreError::Conflict(format!(
+                "NODE_DAEMON_GENERATION_FENCED: Node {node_id} is no longer actively owned"
+            )));
+        }
+        lease.status = NodeDaemonLeaseStatus::Draining;
+        lease.renewed_unix_ms = now_unix_ms;
+        lease.expires_unix_ms = now_unix_ms.saturating_add(drain_ttl_ms.max(1));
         self.append_jsonl_unlocked("node_daemon_leases.jsonl", &lease)?;
         Ok(lease)
     }

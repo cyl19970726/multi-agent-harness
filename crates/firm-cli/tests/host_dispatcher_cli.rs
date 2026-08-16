@@ -173,7 +173,7 @@ fn dispatch_host_resumes_exact_kimi_session_and_releases_lease() {
         .env_remove("FIRM_PROJECT")
         .env_remove("FIRM_SPACE")
         .env("KIMI_CODE_BIN", fake_bin.join("kimi"))
-        .env("FAKE_KIMI_VERSION", "0.31.0")
+        .env("FAKE_KIMI_VERSION", "0.36.1")
         .env("FAKE_KIMI_ATTACH_MARKER", &attach_marker)
         .env("FAKE_KIMI_PROMPT_MARKER", &prompt_marker)
         .output()

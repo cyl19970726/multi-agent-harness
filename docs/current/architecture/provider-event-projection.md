@@ -76,8 +76,19 @@ Hosts, siblings, anonymous streams, cross-project streams, and later reconnects
 receive no Member-private overlay. Terminal turn state clears the overlay
 immediately; disconnect, TTL expiry, or process restart loses it.
 
+The live scope carries `member_run_generation` and
+`agent_session_generation` as independent fences. Reopen advances the Team
+adapter's MemberRun generation while it may continue the same canonical
+AgentSession generation and exact provider-native Session. An update or
+terminal event from the pre-Reopen adapter is rejected at ingress and cannot
+populate or clear the reopened generation's overlay. Historical reads continue
+to resolve the exact native-session binding; they do not require those two
+independent generations to be numerically equal.
+
 Codex live reasoning accepts only provider-declared `summaryTextDelta`. Kimi
-thought text is discarded and becomes only a generic thinking phase. Pi runs
+thought text is discarded and becomes only a generic thinking phase; an ACP
+reverse permission request becomes only a generic interaction-waiting phase.
+Pi runs
 with provider thinking disabled. Claude Agent SDK thinking blocks are discarded
 because the SDK does not label them as display-safe summaries. Unknown provider
 tool names, arguments, paths, and status strings are also omitted. Raw

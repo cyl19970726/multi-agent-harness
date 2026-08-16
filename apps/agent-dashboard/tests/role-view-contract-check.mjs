@@ -51,7 +51,7 @@ const agentWorkspaceValidate=ajv.getSchema("agentfirm.role_views.v1/agent-worksp
 const privateAgentWorkspaceFixture=JSON.parse(fs.readFileSync(path.join(fixtureDir,"agent-workspace.json"),"utf8"));
 const publicAgentWorkspaceFixture=structuredClone(privateAgentWorkspaceFixture);
 publicAgentWorkspaceFixture.data.projection_scope="host_member_public";
-Object.assign(publicAgentWorkspaceFixture.data.selected_agent,{current_member_run_ref:null,provider:null,execution_mode:null,runtime_status:null});
+Object.assign(publicAgentWorkspaceFixture.data.selected_agent,{current_member_run_ref:null,provider:null,execution_mode:null,runtime_status:null,runtime_generation:null});
 for(const member of publicAgentWorkspaceFixture.data.roster){delete member.runtime_state;member.coordination_status=null;member.capacity="not_projected";}
 delete publicAgentWorkspaceFixture.data.live_provider_activity;
 delete publicAgentWorkspaceFixture.data.session_event_projection;
@@ -64,6 +64,7 @@ for(const [label,mutate] of [
   ["selected provider",fixture=>{fixture.data.selected_agent.provider="codex"}],
   ["selected execution mode",fixture=>{fixture.data.selected_agent.execution_mode="codex_app_server"}],
   ["selected runtime status",fixture=>{fixture.data.selected_agent.runtime_status="running"}],
+  ["selected runtime generation",fixture=>{fixture.data.selected_agent.runtime_generation=2}],
   ["native activity",fixture=>{fixture.data.session_activity={items:[]}}],
   ["Session event projection",fixture=>{fixture.data.session_event_projection=privateAgentWorkspaceFixture.data.session_event_projection}],
   ["live provider activity",fixture=>{fixture.data.live_provider_activity=privateAgentWorkspaceFixture.data.live_provider_activity}],
@@ -121,7 +122,7 @@ assert.deepEqual(manifest.transport,{authentication:"X-AgentFirm-Token",idempote
 const actions=new Set(manifest.actions.map(item=>item.ui_action));
 for(const required of [
   "create_work","assign_work","rebind_work","release_work","request_changes","accept_work","cancel_work",
-  "send_message","reply_message","close_member_run","reopen_member_run","retire_member_run","resume_native_session",
+  "send_message","reply_message","interrupt_member_run","close_member_run","reopen_member_run","retire_member_run","resume_native_session",
   "provision_workspace","attach_workspace","archive_workspace","cleanup_workspace","request_gate_evaluation","evaluate_gate","waive_gate","revoke_waiver",
   "claim_work","start_work","block_work","unblock_work","submit_work","revise_work","write_report","write_finding","write_failure","request_decision",
   "reconcile_delivery","reconcile_message_delivery","resolve_runtime_recovery","start_daemon","stop_daemon","admit_provider","diagnose",

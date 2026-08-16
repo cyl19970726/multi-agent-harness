@@ -30,6 +30,7 @@ pub(crate) struct LiveProviderScope {
     pub project_id: String,
     pub team_run_id: String,
     pub member_run_id: String,
+    pub member_run_generation: u64,
     pub agent_session_id: String,
     pub agent_session_generation: u64,
 }
@@ -295,6 +296,11 @@ pub(crate) fn exact_live_scope(
     if member_run.team_run_id != team_run_id {
         return Err("member run does not belong to the selected TeamRun");
     }
+    let expected_native = member_run
+        .native_session
+        .as_ref()
+        .map(crate::agentfirm_native_session_ref)
+        .ok_or("member run has no exact provider-native Session binding")?;
     let run = store
         .team_runs()
         .map_err(|_| "TeamRun registry is unavailable")?
@@ -313,7 +319,12 @@ pub(crate) fn exact_live_scope(
         .filter(|session| session.agent_identity_id == member_run.agent_member_id)
         .filter(|session| session.execution_space_id == execution_space_id)
         .filter(|session| session.provider_kind == member_run.provider)
-        .filter(|session| session.runtime_generation == member_run.runtime_generation)
+        .filter(|session| {
+            crate::agentfirm_native_session_identity_matches(
+                session.native_session_ref.as_ref(),
+                Some(&expected_native),
+            )
+        })
         .filter(|session| {
             session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
         })
@@ -336,11 +347,14 @@ pub(crate) fn exact_live_scope(
             project_id: project_id.to_string(),
             team_run_id: team_run_id.to_string(),
             member_run_id: member_run.id.clone(),
+            member_run_generation: member_run.runtime_generation,
             agent_session_id: session.id.clone(),
             agent_session_generation: session.runtime_generation,
         }),
-        [] => Err("no exact current AgentSession binds this MemberRun generation"),
-        _ => Err("multiple current AgentSessions ambiguously bind this MemberRun generation"),
+        [] => Err("no exact current AgentSession binds this Member identity and provider"),
+        _ => {
+            Err("multiple current AgentSessions ambiguously bind this Member identity and provider")
+        }
     }
 }
 
@@ -366,6 +380,7 @@ fn snapshot_locked(registry: &LiveRegistry, scope: &LiveProviderScope) -> Option
         "project_id":scope.project_id,
         "team_run_id":scope.team_run_id,
         "member_run_id":scope.member_run_id,
+        "member_run_generation":scope.member_run_generation,
         "agent_session_id":scope.agent_session_id,
         "agent_session_generation":scope.agent_session_generation,
         "runtime_snapshot_locator":format!("runtime-snapshot-{snapshot_locator}"),
@@ -400,8 +415,21 @@ mod tests {
             project_id: project_id.into(),
             team_run_id: "team-run-1".into(),
             member_run_id: "member-run-1".into(),
+            member_run_generation: generation,
             agent_session_id: format!("agent-session-{generation}"),
             agent_session_generation: generation,
+        }
+    }
+
+    fn reopened_scope(member_run_generation: u64) -> LiveProviderScope {
+        LiveProviderScope {
+            execution_space_id: "space-a".into(),
+            project_id: "project-a".into(),
+            team_run_id: "team-run-1".into(),
+            member_run_id: "member-run-1".into(),
+            member_run_generation,
+            agent_session_id: "agent-session-stable".into(),
+            agent_session_generation: 1,
         }
     }
 
@@ -451,6 +479,23 @@ mod tests {
         assert!(event["activity"].is_null());
         assert!(live_snapshot_at(&generation_one, 101).is_none());
         assert!(live_snapshot_at(&generation_two, 101).is_some());
+    }
+
+    #[test]
+    fn stale_adapter_terminal_does_not_clear_reopened_generation_activity() {
+        let _guard = test_guard();
+        reset_live_for_test();
+        let old_adapter = reopened_scope(1);
+        let reopened_adapter = reopened_scope(2);
+        record_live_at(
+            reopened_adapter.clone(),
+            "codex",
+            LiveProviderActivityKind::ResponseStreaming,
+            "response streaming".into(),
+            100,
+        );
+        clear_live_terminal(&old_adapter);
+        assert!(live_snapshot_at(&reopened_adapter, 101).is_some());
     }
 
     #[test]

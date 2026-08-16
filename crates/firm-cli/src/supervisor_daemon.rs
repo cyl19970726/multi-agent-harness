@@ -103,6 +103,12 @@ fn daemon_control_generation_authorized(
     })
 }
 
+fn node_authority_refresh_interval(scan_interval: Duration) -> Duration {
+    scan_interval
+        .min(Duration::from_secs(5))
+        .max(Duration::from_secs(1))
+}
+
 /// The one machine-scoped NodeDaemon.
 pub(crate) struct MultiTeamDaemon {
     firm_home: PathBuf,
@@ -214,24 +220,29 @@ impl MultiTeamDaemon {
 
         // Always remove the socket and drain managed supervisors, even when a
         // store or control-loop error stops the foreground service.
-        let serve_result = daemon
-            .recover_orphaned_runs()
-            .and_then(|()| daemon.serve_loop(&listener));
+        let serve_result = daemon.serve_loop(&listener);
         drop(listener);
         let _ = std::fs::remove_file(&socket_path);
-        // Release the machine authority before waiting on provider threads.
-        // AgentSession/provider loops fence themselves against the current
-        // NodeDaemon lease, so keeping that lease live while joining children
-        // lets an idle provider remain authoritative until its normal idle
-        // timeout. Publishing the release first is the shutdown linearization
-        // point: no new runtime effect may start, every existing loop observes
-        // NODE_DAEMON_GENERATION_FENCED, and graceful_shutdown can reap it
-        // without inventing a semantic Member close.
-        let release_result = daemon.release_node_authorities();
+        // Draining is the shutdown linearization point: it fences every new
+        // provider effect while retaining exclusive Node ownership long enough
+        // to reap all Supervisor/provider handles. `Released` is published
+        // only after that drain succeeds, so a successor may use it as a
+        // durable no-writable-child receipt. Lease expiry alone never proves
+        // that postcondition.
+        let drain_result = daemon.drain_node_authorities();
         let shutdown_result = daemon.graceful_shutdown();
+        let drained = drain_result.is_ok() && shutdown_result.is_ok();
+        let release_result = if drained {
+            daemon.release_node_authorities()
+        } else {
+            Ok(())
+        };
 
         eprintln!("[node-daemon] shutdown complete");
-        serve_result.and(shutdown_result).and(release_result)
+        serve_result
+            .and(drain_result)
+            .and(shutdown_result)
+            .and(release_result)
     }
 
     /// A dead socket is not sufficient evidence that the previous daemon
@@ -272,12 +283,6 @@ impl MultiTeamDaemon {
         Ok(())
     }
 
-    /// Enumerate non-terminal team-runs and adopt runs whose supervisor lease
-    /// is expired (no live supervisor elsewhere).
-    fn recover_orphaned_runs(&self) -> CliResult<()> {
-        self.scan_and_adopt()
-    }
-
     fn registered_spaces(&self) -> CliResult<Vec<(harness_core::ExecutionSpace, HarnessStore)>> {
         let spaces = crate::execution_space::list_spaces(&self.firm_home).map_err(|error| {
             CliError::Usage(format!(
@@ -301,6 +306,47 @@ impl MultiTeamDaemon {
             .unwrap_or(u64::MAX)
             .saturating_mul(4)
             .max(15_000)
+    }
+
+    /// Renew only authority already owned by this exact daemon instance.
+    /// Discovery remains responsible for first acquisition; this heartbeat is
+    /// deliberately unable to steal or create authority in an unscanned Space.
+    fn refresh_held_node_authorities(&self) -> CliResult<()> {
+        let now_ms = current_unix_ms_u64();
+        let ttl_ms = self.node_lease_ttl_ms();
+        for (space, store) in self.registered_spaces()? {
+            let lease = match store.latest_node_daemon_lease(&self.node_id) {
+                Ok(Some(lease)) => lease,
+                Ok(None) => continue,
+                Err(error) => {
+                    eprintln!(
+                        "[node-daemon] cannot refresh Node authority in {}: {error}",
+                        space.id
+                    );
+                    continue;
+                }
+            };
+            if lease.daemon_id != self.daemon_id
+                || lease.instance_id != self.instance_id
+                || lease.status != harness_core::NodeDaemonLeaseStatus::Active
+            {
+                continue;
+            }
+            if let Err(error) = store.renew_node_daemon_lease(
+                &self.node_id,
+                &lease.daemon_id,
+                lease.generation,
+                &lease.instance_id,
+                now_ms,
+                ttl_ms,
+            ) {
+                eprintln!(
+                    "[node-daemon] cannot refresh Node authority in {}: {error}",
+                    space.id
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Acquire or renew this process' parent authority in one registered
@@ -366,15 +412,13 @@ impl MultiTeamDaemon {
     }
 
     fn release_node_authorities(&self) -> CliResult<()> {
+        let mut failures = Vec::new();
         for (space, store) in self.registered_spaces()? {
             let lease = match store.latest_node_daemon_lease(&self.node_id) {
                 Ok(Some(lease)) => lease,
                 Ok(None) => continue,
                 Err(error) => {
-                    eprintln!(
-                        "[node-daemon] isolating Execution Space {} during Node authority release: {error}",
-                        space.id
-                    );
+                    failures.push(format!("{}: {error}", space.id));
                     continue;
                 }
             };
@@ -388,32 +432,119 @@ impl MultiTeamDaemon {
                 &lease.instance_id,
                 current_unix_ms_u64(),
             ) {
-                eprintln!(
-                    "[node-daemon] failed to release Node authority in {}: {error}",
-                    space.id
-                );
+                failures.push(format!("{}: {error}", space.id));
             }
         }
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(CliError::Usage(format!(
+                "NODE_DAEMON_RELEASE_INCOMPLETE: {}",
+                failures.join("; ")
+            )))
+        }
     }
 
-    /// Main loop: scan for new runs, reap finished contexts, poll control socket.
+    fn drain_node_authorities(&self) -> CliResult<()> {
+        const DRAIN_TTL_MS: u64 = 60_000;
+        let mut failures = Vec::new();
+        for (space, store) in self.registered_spaces()? {
+            let lease = match store.latest_node_daemon_lease(&self.node_id) {
+                Ok(Some(lease)) => lease,
+                Ok(None) => continue,
+                Err(error) => {
+                    failures.push(format!("{}: {error}", space.id));
+                    continue;
+                }
+            };
+            if lease.daemon_id != self.daemon_id || lease.instance_id != self.instance_id {
+                continue;
+            }
+            if let Err(error) = store.drain_node_daemon_lease(
+                &self.node_id,
+                &lease.daemon_id,
+                lease.generation,
+                &lease.instance_id,
+                current_unix_ms_u64(),
+                DRAIN_TTL_MS,
+            ) {
+                failures.push(format!("{}: {error}", space.id));
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(CliError::Usage(format!(
+                "NODE_DAEMON_DRAIN_INCOMPLETE: {}",
+                failures.join("; ")
+            )))
+        }
+    }
+
+    /// Keep the machine control plane responsive while durable discovery and
+    /// provider recovery scan every registered Execution Space. Store reads,
+    /// stale-run validation and native-session recovery can take many seconds;
+    /// none of them may head-of-line block status/start/runtime control.
     fn serve_loop(&self, listener: &UnixListener) -> CliResult<()> {
         const CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(20);
         let mut pending = Vec::new();
-        let mut next_scan = Instant::now();
 
-        while !self.shutdown.load(Ordering::SeqCst) {
-            if Instant::now() >= next_scan {
-                self.scan_and_adopt()?;
-                self.reap_finished()?;
-                next_scan = Instant::now() + self.scan_interval;
+        std::thread::scope(|scope| {
+            let scanner = scope.spawn(|| -> CliResult<()> {
+                while !self.shutdown.load(Ordering::SeqCst) {
+                    self.scan_and_adopt()?;
+                    self.reap_finished()?;
+                    let next_scan = Instant::now() + self.scan_interval;
+                    while !self.shutdown.load(Ordering::SeqCst) && Instant::now() < next_scan {
+                        std::thread::sleep(CONTROL_POLL_INTERVAL);
+                    }
+                }
+                Ok(())
+            });
+
+            let authority_heartbeat = scope.spawn(|| -> CliResult<()> {
+                // Discovery may spend longer than one lease TTL inspecting
+                // unrelated historical Spaces. Keep already-acquired machine
+                // authority alive on an independent cadence so a slow scan
+                // cannot fence the AgentSessions currently being supervised.
+                let interval = node_authority_refresh_interval(self.scan_interval);
+                while !self.shutdown.load(Ordering::SeqCst) {
+                    self.refresh_held_node_authorities()?;
+                    let next_refresh = Instant::now() + interval;
+                    while !self.shutdown.load(Ordering::SeqCst) && Instant::now() < next_refresh {
+                        std::thread::sleep(CONTROL_POLL_INTERVAL);
+                    }
+                }
+                Ok(())
+            });
+
+            while !self.shutdown.load(Ordering::SeqCst)
+                && !scanner.is_finished()
+                && !authority_heartbeat.is_finished()
+            {
+                self.poll_control_socket(listener, &mut pending);
+                std::thread::sleep(CONTROL_POLL_INTERVAL);
             }
 
-            self.poll_control_socket(listener, &mut pending);
-            std::thread::sleep(CONTROL_POLL_INTERVAL);
-        }
-        Ok(())
+            // A failure in either background responsibility ends the exact
+            // daemon generation and lets the normal drain/release path run.
+            self.shutdown.store(true, Ordering::SeqCst);
+
+            let scan_result = match scanner.join() {
+                Ok(result) => result,
+                Err(_) => Err(CliError::Usage(
+                    "NODE_DAEMON_SCAN_PANICKED: recovery scanner terminated unexpectedly".into(),
+                )),
+            };
+            let heartbeat_result = match authority_heartbeat.join() {
+                Ok(result) => result,
+                Err(_) => Err(CliError::Usage(
+                    "NODE_DAEMON_HEARTBEAT_PANICKED: authority heartbeat terminated unexpectedly"
+                        .into(),
+                )),
+            };
+            scan_result.and(heartbeat_result)
+        })
     }
 
     /// Scan every registered Execution Space. One broken Store is logged and
@@ -453,6 +584,23 @@ impl MultiTeamDaemon {
                     || managed_ids.contains(&(space.id.clone(), run.id.clone()))
                 {
                     continue;
+                }
+                // Close freezes a MemberRun without completing its TeamRun.
+                // A Running TeamRun with no Active coordination member is
+                // therefore dormant, not orphaned runtime work. Re-adopting
+                // it would create an unbounded Supervisor-generation loop;
+                // Reopen makes the same row Active again and the next scan (or
+                // explicit daemon start request) becomes eligible.
+                match team_run_has_active_member(&store, &run.id) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => {
+                        eprintln!(
+                            "[node-daemon] cannot inspect TeamRun {} members in {}: {error}",
+                            run.id, space.id
+                        );
+                        continue;
+                    }
                 }
                 let now_ms = current_unix_ms_u64();
                 let should_start = match store.latest_team_supervisor_lease(&run.id) {
@@ -506,6 +654,11 @@ impl MultiTeamDaemon {
         // the daemon and every review-required provider is rejected even
         // though the exact tuple was admitted.
         let run_scope = crate::latest_team_run(&store, run_id)?;
+        if !team_run_has_active_member(&store, run_id)? {
+            return Err(CliError::Usage(format!(
+                "TEAM_RUN_DORMANT: TeamRun {run_id} has no Active MemberRun; Reopen a member before runtime adoption"
+            )));
+        }
         let store = store.with_provider_compatibility_scope(
             run_scope.project_binding_id,
             format!("execution-space:{}", space.id),
@@ -832,16 +985,35 @@ impl MultiTeamDaemon {
         // socket's immediately available send buffer: `writeln!` can then
         // leave a valid prefix on the wire before returning WouldBlock, and
         // dropping the connection makes the client parse that prefix as an
-        // EOF-truncated object. Switch this one bounded response to blocking
-        // I/O and write the fully serialized frame before closing it.
-        stream.set_nonblocking(false).map_err(CliError::Io)?;
-        stream
-            .set_write_timeout(Some(Duration::from_secs(10)))
-            .map_err(CliError::Io)?;
+        // EOF-truncated object. Keep the accepted AF_UNIX socket nonblocking
+        // (switching it back to blocking is not portable on macOS) and drain
+        // the complete bounded frame against an explicit deadline.
         let mut frame = serde_json::to_vec(response).map_err(CliError::Json)?;
         frame.push(b'\n');
-        stream.write_all(&frame).map_err(CliError::Io)?;
-        stream.flush().map_err(CliError::Io)
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut written = 0;
+        while written < frame.len() {
+            match stream.write(&frame[written..]) {
+                Ok(0) => {
+                    return Err(CliError::Io(std::io::Error::new(
+                        std::io::ErrorKind::WriteZero,
+                        "NodeDaemon control client closed before the response was complete",
+                    )))
+                }
+                Ok(count) => written += count,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return Err(CliError::Io(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "NodeDaemon control response exceeded its 10s write deadline",
+                        )));
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => return Err(CliError::Io(error)),
+            }
+        }
+        Ok(())
     }
 
     /// Handle a single control socket command.
@@ -1521,6 +1693,35 @@ impl MultiTeamDaemon {
                         Self::write_control_response(stream, &response)?;
                     }
                     Err(e) => {
+                        // Recovery discovery and an explicit Start request run
+                        // concurrently. The scanner may finish adopting this
+                        // exact TeamRun after the fast `already_managed` check
+                        // above but before `start_supervising` acquires the
+                        // context lock. In that case the requested effect is
+                        // already true under this daemon generation, so report
+                        // an idempotent reuse instead of turning a successful
+                        // recovery into a client-visible rejection.
+                        let concurrently_managed = self
+                            .contexts
+                            .lock()
+                            .map_err(|error| {
+                                CliError::Usage(format!("context lock poisoned: {error}"))
+                            })?
+                            .iter()
+                            .any(|context| {
+                                context.execution_space_id == execution_space_id
+                                    && context.run_id == run_id
+                            });
+                        if concurrently_managed {
+                            let response = serde_json::json!({
+                                "ok": true,
+                                "execution_space_id": execution_space_id,
+                                "run_id": run_id,
+                                "reused": true,
+                            });
+                            Self::write_control_response(stream, &response)?;
+                            return Ok(());
+                        }
                         let response = serde_json::json!({
                             "ok": false,
                             "execution_space_id": execution_space_id,
@@ -1658,26 +1859,47 @@ impl MultiTeamDaemon {
         const JOIN_DEADLINE_SECS: u64 = 30;
         let deadline = Instant::now() + Duration::from_secs(JOIN_DEADLINE_SECS);
 
+        let mut failures = Vec::new();
         for ctx in contexts {
             let Some(thread) = ctx.thread else { continue };
             loop {
                 if thread.is_finished() {
-                    let _ = thread.join();
+                    if thread.join().is_err() {
+                        failures.push(format!(
+                            "{}/{} supervisor panicked during shutdown",
+                            ctx.execution_space_id, ctx.run_id
+                        ));
+                    }
                     break;
                 }
                 if Instant::now() >= deadline {
-                    eprintln!(
-                        "[node-daemon] shutdown deadline exceeded for {}/{}",
+                    failures.push(format!(
+                        "{}/{} exceeded the shutdown deadline",
                         ctx.execution_space_id, ctx.run_id
-                    );
+                    ));
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(250));
             }
         }
-
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(CliError::Usage(format!(
+                "NODE_DAEMON_DRAIN_INCOMPLETE: {}",
+                failures.join("; ")
+            )))
+        }
     }
+}
+
+fn team_run_has_active_member(store: &HarnessStore, run_id: &str) -> CliResult<bool> {
+    Ok(crate::latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .any(|member| {
+            member.team_run_id == run_id
+                && member.coordination_status == harness_core::MemberCoordinationStatus::Active
+        }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1916,8 +2138,13 @@ pub(crate) fn start_daemon_process_fenced(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
     let mut child = command.spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // Recovery/adoption can legitimately take longer than a trivial socket
+    // bind. A failed start must not leave a child that later acquires the
+    // NodeDaemon generation behind the caller's back.
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         if let Some(status) = daemon_status_via_socket(firm_home, node_id) {
             let status_value = serde_json::from_str::<serde_json::Value>(&status).ok();
@@ -1952,8 +2179,10 @@ pub(crate) fn start_daemon_process_fenced(
             )));
         }
         if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
             return Err(CliError::Usage(format!(
-                "NodeDaemon pid {} did not become ready within 10s",
+                "NodeDaemon pid {} did not become ready within 60s and was stopped",
                 child.id()
             )));
         }
@@ -1994,6 +2223,43 @@ pub(crate) fn daemon_stop_via_socket(
 mod tests {
     use super::*;
 
+    struct TestTree(PathBuf);
+
+    impl TestTree {
+        fn new(label: &str) -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "firm-node-daemon-{label}-{}-{sequence}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).expect("create test tree");
+            Self(path)
+        }
+    }
+
+    impl Drop for TestTree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn node_authority_heartbeat_is_independent_of_a_long_discovery_scan() {
+        assert_eq!(
+            node_authority_refresh_interval(Duration::from_millis(20)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            node_authority_refresh_interval(Duration::from_secs(2)),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            node_authority_refresh_interval(Duration::from_secs(30)),
+            Duration::from_secs(5)
+        );
+    }
+
     #[test]
     fn control_response_is_one_complete_json_frame_under_backpressure() {
         let (mut server, mut client) = UnixStream::pair().expect("create control socket pair");
@@ -2013,18 +2279,134 @@ mod tests {
         // the reader drains it. The old nonblocking `writeln!` path exposed a
         // truncated JSON prefix at this boundary.
         std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            !writer.is_finished(),
+            "the delayed reader must force the nonblocking writer through backpressure"
+        );
         let mut bytes = Vec::new();
         client
             .read_to_end(&mut bytes)
             .expect("read complete response frame");
         writer.join().expect("writer thread");
         assert!(bytes.ends_with(b"\n"));
-        let parsed: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("response is complete JSON");
+        assert_eq!(
+            bytes.iter().filter(|byte| **byte == b'\n').count(),
+            1,
+            "one response is exactly one newline-delimited frame"
+        );
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1])
+            .expect("response frame is complete JSON before its delimiter");
         assert_eq!(
             parsed["result"]["payload"].as_str().map(str::len),
             Some(2 * 1024 * 1024)
         );
+    }
+
+    #[test]
+    fn status_remains_responsive_while_execution_space_scan_is_blocked() {
+        use std::ffi::CString;
+        use std::fs::OpenOptions;
+        use std::io::BufReader;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let tree = TestTree::new("scan-control");
+        let firm_home = tree.0.join("home");
+        let registry_path = crate::execution_space::registry_path(&firm_home);
+        std::fs::create_dir_all(
+            registry_path
+                .parent()
+                .expect("Execution Space registry has a parent"),
+        )
+        .expect("create Execution Space registry directory");
+        let fifo_path = CString::new(registry_path.as_os_str().as_bytes())
+            .expect("registry test path has no interior NUL");
+        // SAFETY: `fifo_path` is a live, NUL-terminated path and mode contains
+        // only filesystem permission bits.
+        let mkfifo_result = unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) };
+        assert_eq!(
+            mkfifo_result,
+            0,
+            "create blocking registry FIFO: {}",
+            std::io::Error::last_os_error()
+        );
+
+        let socket_path = tree.0.join("daemon.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind test control socket");
+        listener
+            .set_nonblocking(true)
+            .expect("configure nonblocking test listener");
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let daemon = MultiTeamDaemon {
+            firm_home,
+            node_id: "test-node".into(),
+            daemon_id: "node-daemon:test-node".into(),
+            instance_id: "test-instance".into(),
+            contexts: Mutex::new(Vec::new()),
+            session_runtimes: Mutex::new(HashMap::new()),
+            live_provider_activity_endpoint: Arc::new(Mutex::new(None)),
+            max_concurrency: 1,
+            idle_timeout_secs: 1,
+            scan_interval: Duration::from_secs(60),
+            shutdown: Arc::clone(&shutdown),
+        };
+
+        std::thread::scope(|scope| {
+            let server = scope.spawn(|| daemon.serve_loop(&listener));
+
+            // Opening the FIFO writer nonblocking succeeds only after the
+            // scanner is waiting in its blocking registry read. Keep the
+            // writer open without data so the scan cannot finish while the
+            // status request below is served.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let registry_writer = loop {
+                match OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&registry_path)
+                {
+                    Ok(file) => break file,
+                    Err(error)
+                        if error.raw_os_error() == Some(libc::ENXIO)
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("wait for scanner to open registry FIFO: {error}"),
+                }
+            };
+
+            // Always release the scanner before the scoped server is joined,
+            // including when a response assertion panics. That keeps a useful
+            // failure from turning into a hung test process.
+            let status_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut client = UnixStream::connect(&socket_path).expect("connect control client");
+                client
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .expect("bound status response wait");
+                client
+                    .write_all(b"{\"cmd\":\"status\"}\n")
+                    .expect("send status request");
+                client.flush().expect("flush status request");
+
+                let mut response = String::new();
+                BufReader::new(&mut client)
+                    .read_line(&mut response)
+                    .expect("status returns while scan is still blocked");
+                let response: serde_json::Value =
+                    serde_json::from_str(response.trim()).expect("status is complete JSON");
+                assert_eq!(response["ok"], true);
+                assert_eq!(response["node_id"], "test-node");
+            }));
+
+            shutdown.store(true, Ordering::SeqCst);
+            drop(registry_writer);
+            let server_result = server.join().expect("daemon control thread");
+            if let Err(payload) = status_result {
+                std::panic::resume_unwind(payload);
+            }
+            server_result.expect("daemon exits cleanly after blocked scan is released");
+        });
     }
 
     #[test]

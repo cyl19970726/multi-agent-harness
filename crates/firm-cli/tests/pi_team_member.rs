@@ -820,7 +820,7 @@ fn pi_workspace_write_without_containment_fails_before_spawn() {
 }
 
 #[test]
-fn pi_read_only_busy_close_proves_quiescence_and_releases_runtime() {
+fn pi_read_only_busy_close_releases_runtime_without_overclaiming_quiesce() {
     let home = TempHome::new("pi-busy-close");
     let project_id = init_pi_project(&home, "pi-busy-close");
     create_pi_identity_with_ceiling(&home, &project_id, "agent-pi-close-read", "read_only");
@@ -892,7 +892,14 @@ fn pi_read_only_busy_close_proves_quiescence_and_releases_runtime() {
         evidence["post_abort_observation"]["pending_message_count"],
         0
     );
-    assert_eq!(evidence["post_release_observation"]["process_alive"], false);
+    assert_eq!(
+        evidence["member_runtime_close"]["managed_runtime_released"],
+        "satisfied"
+    );
+    assert_eq!(
+        evidence["member_runtime_close"]["native_session_retained"],
+        "satisfied"
+    );
     assert!(
         session_file.is_file(),
         "Close must preserve the provider-native JSONL session"
@@ -907,21 +914,25 @@ fn pi_read_only_busy_close_proves_quiescence_and_releases_runtime() {
     let commands = store
         .runtime_commands(&space_id)
         .expect("Pi Close runtime command evidence");
-    for kind in [
-        harness_core::agentfirm_api::RuntimeCommandKind::InterruptCurrentCycle,
-        harness_core::agentfirm_api::RuntimeCommandKind::QuiesceExecutionLane,
-        harness_core::agentfirm_api::RuntimeCommandKind::ReleaseRuntime,
-    ] {
-        assert!(
-            commands.iter().any(|command| {
-                command.command == kind
-                    && command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
-                    && command.postcondition_status
-                        == harness_core::agentfirm_api::RuntimePostconditionStatus::Satisfied
-            }),
-            "Close must durably settle the ordered {kind:?} effect: {commands:?}"
-        );
-    }
+    assert!(
+        commands.iter().any(|command| {
+            command.command == harness_core::agentfirm_api::RuntimeCommandKind::CloseMember
+                && command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+                && command.postcondition_status
+                    == harness_core::agentfirm_api::RuntimePostconditionStatus::Satisfied
+        }),
+        "Close must durably settle the narrow CloseMember effect: {commands:?}"
+    );
+    assert!(
+        commands.iter().all(|command| {
+            !matches!(
+                command.command,
+                harness_core::agentfirm_api::RuntimeCommandKind::QuiesceExecutionLane
+                    | harness_core::agentfirm_api::RuntimeCommandKind::ReleaseRuntime
+            )
+        }),
+        "reversible Team Close must not overclaim strong Quiesce/Release: {commands:?}"
+    );
     assert!(
         commands.iter().all(|command| {
             command.command != harness_core::agentfirm_api::RuntimeCommandKind::CancelProviderTurn
@@ -1019,7 +1030,7 @@ fn pi_full_access_background_writer_denies_quiesce_before_effect() {
         .runtime_commands(&space_id)
         .expect("Pi quiesce RuntimeCommand evidence");
     assert!(commands.iter().any(|command| {
-        command.command == harness_core::agentfirm_api::RuntimeCommandKind::QuiesceExecutionLane
+        command.command == harness_core::agentfirm_api::RuntimeCommandKind::CloseMember
             && command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Failed
             && command.effect_certainty
                 == harness_core::agentfirm_api::RuntimeEffectCertainty::NotApplied
@@ -1027,7 +1038,11 @@ fn pi_full_access_background_writer_denies_quiesce_before_effect() {
                 == harness_core::agentfirm_api::RuntimePostconditionStatus::Unsatisfied
     }));
     assert!(commands.iter().all(|command| {
-        command.command != harness_core::agentfirm_api::RuntimeCommandKind::ReleaseRuntime
+        !matches!(
+            command.command,
+            harness_core::agentfirm_api::RuntimeCommandKind::QuiesceExecutionLane
+                | harness_core::agentfirm_api::RuntimeCommandKind::ReleaseRuntime
+        )
     }));
 }
 
@@ -1137,20 +1152,20 @@ fn pi_rpc_provider_profile_validation() {
             .get("supports_cancel")
             .and_then(|v| v.as_bool()),
         Some(true),
-        "pi should support cancel"
+        "Pi 0.84.2 cancel is executable only after the exact live abort canary"
     );
     assert_eq!(
         team_profile
             .get("supports_resume")
             .and_then(|v| v.as_bool()),
         Some(true),
-        "pi should support resume"
+        "Pi 0.84.2 resume has exact retained-session live evidence"
     );
     assert_eq!(
         team_profile
             .get("ordinary_message_boundary")
             .and_then(|v| v.as_str()),
-        Some("next_round")
+        Some("next_round_batched")
     );
     // The executable capability report rides the same surface (DOC-89).
     let bindings = pi
@@ -1171,4 +1186,29 @@ fn pi_rpc_provider_profile_validation() {
         Some("unsupported"),
         "reconcile_effect must not be claimed for Pi"
     );
+    assert_eq!(
+        pi["core_runtime_capability_admission"], "active",
+        "Pi 0.84.2 core open/start/observe bindings have exact live evidence"
+    );
+    assert_eq!(
+        team_profile["binding_admission"], "degraded",
+        "optional Pi capabilities without proportional live evidence must remain pending"
+    );
+    let admitted_bindings = team_profile["capability_bindings"]
+        .as_array()
+        .expect("versioned Pi capability bindings");
+    for capability in ["interrupt_current_cycle", "close_runtime"] {
+        let binding = admitted_bindings
+            .iter()
+            .find(|binding| binding["capability"] == capability)
+            .unwrap_or_else(|| panic!("missing {capability} binding"));
+        assert_eq!(binding["status"], "verified");
+        assert_eq!(binding["admission"], "active");
+    }
+    let steer_admission = admitted_bindings
+        .iter()
+        .find(|binding| binding["capability"] == "inject_current_cycle")
+        .expect("inject_current_cycle binding");
+    assert_eq!(steer_admission["status"], "review_required");
+    assert_eq!(steer_admission["admission"], "pending_dependency");
 }

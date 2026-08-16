@@ -13,6 +13,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 #[test]
@@ -28,7 +29,7 @@ fn pi_rpc_handshake_and_basic_prompt() {
         "this canary is evidence only for the reviewed Pi 0.84.2 RPC contract"
     );
 
-    let tmp = unique_temp_dir();
+    let (tmp, preserve_native_evidence) = canary_session_dir();
     std::fs::create_dir_all(&tmp).expect("create temp dir");
 
     // The file-writing canary exercises the production trusted-FullAccess
@@ -193,20 +194,242 @@ fn pi_rpc_handshake_and_basic_prompt() {
         Path::new(session_file).is_file(),
         "releasing Pi must retain the native session JSONL"
     );
-    std::fs::remove_dir_all(&tmp).expect("remove temp dir");
+    if !preserve_native_evidence {
+        std::fs::remove_dir_all(&tmp).expect("remove temp dir");
+    }
 
     eprintln!("✅ Pi RPC live canary passed");
     eprintln!("   provider_version: {exact_version}");
     eprintln!("   session_file: {session_file}");
+    eprintln!("   native_evidence_retained: {preserve_native_evidence}");
     eprintln!("   final_text: {final_text}");
 }
 
-fn unique_temp_dir() -> PathBuf {
+#[test]
+fn pi_rpc_busy_interrupt_and_runtime_release() {
+    let version = Command::new("pi")
+        .arg("--version")
+        .output()
+        .expect("probe pi version");
+    assert!(version.status.success(), "pi --version must succeed");
+    let exact_version = String::from_utf8_lossy(&version.stdout).trim().to_string();
+    assert_eq!(
+        exact_version, "0.84.2",
+        "this canary is evidence only for the reviewed Pi 0.84.2 RPC contract"
+    );
+
+    let (tmp, preserve_native_evidence) = canary_session_dir();
+    std::fs::create_dir_all(&tmp).expect("create canary session dir");
+    let mut child = Command::new("pi")
+        .args([
+            "--mode",
+            "rpc",
+            "--no-context-files",
+            "--no-extensions",
+            "--thinking",
+            "off",
+            "--session-dir",
+        ])
+        .arg(&tmp)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn pi --mode rpc");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let frames = spawn_json_frame_reader(stdout);
+
+    writeln!(stdin, r#"{{"id":"interrupt-state","type":"get_state"}}"#).unwrap();
+    stdin.flush().unwrap();
+    let state = recv_frame_until(&frames, Duration::from_secs(10), |frame| {
+        frame.get("type").and_then(serde_json::Value::as_str) == Some("response")
+            && frame.get("id").and_then(serde_json::Value::as_str) == Some("interrupt-state")
+    });
+    let session_file = state["data"]["sessionFile"]
+        .as_str()
+        .expect("sessionFile")
+        .to_string();
+    assert!(Path::new(&session_file).is_absolute());
+
+    writeln!(
+        stdin,
+        r#"{{"id":"interrupt-compaction","type":"set_auto_compaction","enabled":false}}"#
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    let compaction = recv_frame_until(&frames, Duration::from_secs(5), |frame| {
+        frame.get("type").and_then(serde_json::Value::as_str) == Some("response")
+            && frame.get("id").and_then(serde_json::Value::as_str) == Some("interrupt-compaction")
+    });
+    assert_eq!(compaction["success"].as_bool(), Some(true));
+
+    let prompt = "Use the bash tool to run `sleep 60`. Start the tool immediately. Do not use any other tool and do not answer before the command finishes.";
+    writeln!(
+        stdin,
+        r#"{{"id":"interrupt-prompt","type":"prompt","message":{}}}"#,
+        serde_json::to_string(prompt).unwrap()
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    let mut prompt_accepted = false;
+    let tool_start = recv_frame_until(&frames, Duration::from_secs(60), |frame| {
+        if frame.get("type").and_then(serde_json::Value::as_str) == Some("response")
+            && frame.get("id").and_then(serde_json::Value::as_str) == Some("interrupt-prompt")
+        {
+            prompt_accepted =
+                frame.get("success").and_then(serde_json::Value::as_bool) == Some(true);
+        }
+        frame.get("type").and_then(serde_json::Value::as_str) == Some("tool_execution_start")
+    });
+    assert!(
+        prompt_accepted,
+        "Pi must accept the busy-turn canary prompt"
+    );
+    assert_eq!(
+        tool_start
+            .get("toolName")
+            .and_then(serde_json::Value::as_str),
+        Some("bash"),
+        "the canary must interrupt a real in-flight tool"
+    );
+
+    writeln!(stdin, r#"{{"id":"interrupt-abort","type":"abort"}}"#).unwrap();
+    stdin.flush().unwrap();
+    let mut abort_receipt = false;
+    let mut agent_settled = false;
+    recv_frame_until(&frames, Duration::from_secs(20), |frame| {
+        if frame.get("type").and_then(serde_json::Value::as_str) == Some("response")
+            && (frame.get("id").and_then(serde_json::Value::as_str) == Some("interrupt-abort")
+                || frame.get("command").and_then(serde_json::Value::as_str) == Some("abort"))
+        {
+            abort_receipt = frame.get("success").and_then(serde_json::Value::as_bool) == Some(true);
+        }
+        if frame.get("type").and_then(serde_json::Value::as_str) == Some("agent_settled") {
+            agent_settled = true;
+        }
+        abort_receipt && agent_settled
+    });
+    assert!(
+        abort_receipt,
+        "Pi abort must return a successful transport receipt"
+    );
+
+    writeln!(stdin, r#"{{"id":"post-abort-state","type":"get_state"}}"#).unwrap();
+    stdin.flush().unwrap();
+    let settled = recv_frame_until(&frames, Duration::from_secs(10), |frame| {
+        frame.get("type").and_then(serde_json::Value::as_str) == Some("response")
+            && frame.get("id").and_then(serde_json::Value::as_str) == Some("post-abort-state")
+    });
+    assert_eq!(settled["data"]["isStreaming"].as_bool(), Some(false));
+    assert_eq!(settled["data"]["pendingMessageCount"].as_u64(), Some(0));
+    assert_eq!(
+        settled["data"]["sessionFile"].as_str(),
+        Some(session_file.as_str()),
+        "interrupt must not replace the native session"
+    );
+
+    drop(stdin);
+    child.kill().expect("terminate the owned Pi runtime");
+    child.wait().expect("reap the owned Pi runtime");
+    assert!(
+        Path::new(&session_file).is_file(),
+        "runtime release must retain the provider-native session"
+    );
+    assert_native_session_has_no_thinking(Path::new(&session_file));
+    if !preserve_native_evidence {
+        std::fs::remove_dir_all(&tmp).expect("remove temp dir");
+    }
+
+    eprintln!("✅ Pi RPC busy interrupt + runtime release canary passed");
+    eprintln!("   provider_version: {exact_version}");
+    eprintln!("   session_file: {session_file}");
+    eprintln!("   native_evidence_retained: {preserve_native_evidence}");
+}
+
+#[test]
+#[ignore = "requires PI_CANARY_RESUME_SESSION pointing at retained Pi 0.84.2 native evidence"]
+fn pi_rpc_resumes_the_retained_native_session() {
+    let session_file = std::env::var("PI_CANARY_RESUME_SESSION")
+        .expect("PI_CANARY_RESUME_SESSION must name the retained native JSONL");
+    let session_path = Path::new(&session_file);
+    assert!(
+        session_path.is_absolute(),
+        "resume evidence must be absolute"
+    );
+    assert!(session_path.is_file(), "resume evidence must still exist");
+    assert_native_session_has_no_thinking(session_path);
+
+    let version = Command::new("pi")
+        .arg("--version")
+        .output()
+        .expect("probe pi version");
+    assert!(version.status.success(), "pi --version must succeed");
+    assert_eq!(
+        String::from_utf8_lossy(&version.stdout).trim(),
+        "0.84.2",
+        "resume evidence is valid only for exact Pi 0.84.2"
+    );
+
+    let mut child = Command::new("pi")
+        .args([
+            "--mode",
+            "rpc",
+            "--no-context-files",
+            "--no-extensions",
+            "--thinking",
+            "off",
+            "--session",
+        ])
+        .arg(session_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("resume pi --mode rpc against retained native session");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    writeln!(stdin, r#"{{"id":"resume-state","type":"get_state"}}"#).unwrap();
+    stdin.flush().unwrap();
+    let state = read_response(&mut stdout, "resume-state", Duration::from_secs(10))
+        .expect("resumed get_state response");
+    let data = state.get("data").expect("resumed get_state data");
+    assert_eq!(
+        data.get("sessionFile").and_then(serde_json::Value::as_str),
+        Some(session_file.as_str()),
+        "Pi must resume the exact retained native session"
+    );
+    assert_eq!(
+        data.get("isStreaming").and_then(serde_json::Value::as_bool),
+        Some(false),
+        "resumed session must be passively observable as idle"
+    );
+
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        session_path.is_file(),
+        "release must retain resumed evidence"
+    );
+    assert_native_session_has_no_thinking(session_path);
+    eprintln!("✅ Pi RPC retained-session resume canary passed");
+    eprintln!("   provider_version: 0.84.2");
+    eprintln!("   session_file: {session_file}");
+}
+
+fn canary_session_dir() -> (PathBuf, bool) {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock")
         .as_nanos();
-    std::env::temp_dir().join(format!("harness-pi-canary-{}-{nonce}", std::process::id()))
+    let leaf = format!("pi-0.84.2-{}-{nonce}", std::process::id());
+    match std::env::var_os("PI_CANARY_EVIDENCE_DIR") {
+        Some(root) => (PathBuf::from(root).join(leaf), true),
+        None => (std::env::temp_dir().join(format!("harness-{leaf}")), false),
+    }
 }
 
 fn assert_native_session_has_no_thinking(path: &Path) {
@@ -234,6 +457,48 @@ fn contains_persisted_thinking(value: &serde_json::Value) -> bool {
         }
         serde_json::Value::Array(values) => values.iter().any(contains_persisted_thinking),
         _ => false,
+    }
+}
+
+fn spawn_json_frame_reader<R>(reader: R) -> Receiver<serde_json::Value>
+where
+    R: Read + Send + 'static,
+{
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(reader).lines() {
+            let Ok(line) = line else {
+                break;
+            };
+            let Ok(frame) = serde_json::from_str(&line) else {
+                continue;
+            };
+            if sender.send(frame).is_err() {
+                break;
+            }
+        }
+    });
+    receiver
+}
+
+fn recv_frame_until<F>(
+    frames: &Receiver<serde_json::Value>,
+    timeout: Duration,
+    mut predicate: F,
+) -> serde_json::Value
+where
+    F: FnMut(&serde_json::Value) -> bool,
+{
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(!remaining.is_zero(), "timed out waiting for Pi RPC frame");
+        let frame = frames
+            .recv_timeout(remaining)
+            .unwrap_or_else(|error| panic!("Pi RPC frame stream ended before evidence: {error}"));
+        if predicate(&frame) {
+            return frame;
+        }
     }
 }
 

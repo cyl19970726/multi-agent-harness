@@ -42,7 +42,7 @@ const TEAM_WORK_ACTIONS = {
 
 export type ExecutableRoleActionKind = "create_work" | "accept_work" | "reconcile_delivery" | keyof typeof TEAM_WORK_ACTIONS
   | "request_changes" | "revise_work" | "send_message" | "reply_message" | "request_decision"
-  | "close_member_run" | "reopen_member_run" | "retire_member_run" | "resume_native_session"
+  | "interrupt_member_run" | "close_member_run" | "reopen_member_run" | "retire_member_run" | "resume_native_session"
   | "provision_workspace" | "attach_workspace" | "archive_workspace" | "cleanup_workspace"
   | "write_report" | "write_finding" | "write_failure" | "request_gate_evaluation"
   | "evaluate_gate" | "waive_gate" | "revoke_waiver" | "reconcile_message_delivery" | "resolve_runtime_recovery"
@@ -71,7 +71,7 @@ export function prepareRoleAction(
   const node=context.nodeId&&encodeURIComponent(context.nodeId);
   const id=encodeURIComponent(action.target_ref.id);
   const operation=TEAM_WORK_ACTIONS[action.kind as keyof typeof TEAM_WORK_ACTIONS];
-  const memberRunActions:Record<string,string>={close_member_run:"close",reopen_member_run:"reopen",retire_member_run:"retire",resume_native_session:"resume-native-session"};
+  const memberRunActions:Record<string,string>={interrupt_member_run:"interrupt",close_member_run:"close",reopen_member_run:"reopen",retire_member_run:"retire",resume_native_session:"resume-native-session"};
   const workspaceActions:Record<string,string>={provision_workspace:"provision",attach_workspace:"attach",archive_workspace:"archive",cleanup_workspace:"cleanup"};
   const workRecordActions:Record<string,string>={request_changes:"request-changes",revise_work:"revise",write_report:"reports",write_finding:"findings",write_failure:"failure-analyses",request_gate_evaluation:"gate-requirements"};
   const messageActions:Record<string,string>={send_message:"send",reply_message:"reply",request_decision:"request-decision"};
@@ -119,6 +119,7 @@ export function prepareRoleAction(
       case "send_message": body={action:"send_message",recipient_ids:required("recipient_ids").split(",").map(v=>v.trim()).filter(Boolean),body:required("body"),response_required:fields.response_required==="true",...(fields.work_id?.trim()?{work_id:fields.work_id.trim()}:{}),evidence_refs:(fields.evidence_refs??"").split(",").map(v=>v.trim()).filter(Boolean)};break;
       case "reply_message": body={action:"reply_message",recipient_ids:required("recipient_ids").split(",").map(v=>v.trim()).filter(Boolean),body:required("body"),correlation_id:required("correlation_id"),causation_id:required("causation_id"),response_required:fields.response_required==="true",...(fields.work_id?.trim()?{work_id:fields.work_id.trim()}:{}),evidence_refs:(fields.evidence_refs??"").split(",").map(v=>v.trim()).filter(Boolean)};break;
       case "request_decision": body={action:"request_decision",body:required("body"),...(fields.work_id?.trim()?{work_id:fields.work_id.trim()}:{}),evidence_refs:(fields.evidence_refs??"").split(",").map(v=>v.trim()).filter(Boolean)};break;
+      case "interrupt_member_run": body={action:"interrupt_member_run",reason:required("reason")};break;
       case "close_member_run": body={action:"close_member_run"};break; case "reopen_member_run": body={action:"reopen_member_run"};break; case "retire_member_run": body={action:"retire_member_run"};break; case "resume_native_session": body={action:"resume_native_session"};break;
       case "provision_workspace": body={action:"provision_workspace",project_binding_id:required("project_binding_id"),mode:fields.mode||"worktree",ownership:fields.ownership||"managed",canonical_root:required("canonical_root"),...(fields.work_id?.trim()?{work_id:fields.work_id.trim()}:{})};break;
       case "attach_workspace": body={action:"attach_workspace"};break; case "archive_workspace": body={action:"archive_workspace"};break; case "cleanup_workspace": body={action:"cleanup_workspace"};break;
@@ -157,7 +158,7 @@ export function roleActionRoute(action:AllowedAction,context:{teamId?:string;tea
   if(workRecords[action.kind]&&team)return `/v1/agentfirm/teams/${team}/works/${id}/${workRecords[action.kind]}`;
   const messages:Record<string,string>={send_message:"send",reply_message:"reply",request_decision:"request-decision"};
   if(messages[action.kind]&&run)return `/v1/agentfirm/team-runs/${run}/messages/${messages[action.kind]}`;
-  const memberRuns:Record<string,string>={close_member_run:"close",reopen_member_run:"reopen",retire_member_run:"retire",resume_native_session:"resume-native-session"};
+  const memberRuns:Record<string,string>={interrupt_member_run:"interrupt",close_member_run:"close",reopen_member_run:"reopen",retire_member_run:"retire",resume_native_session:"resume-native-session"};
   if(memberRuns[action.kind])return `/v1/agentfirm/member-runs/${id}/${memberRuns[action.kind]}`;
   const workspaces:Record<string,string>={provision_workspace:"provision",attach_workspace:"attach",archive_workspace:"archive",cleanup_workspace:"cleanup"};
   if(workspaces[action.kind])return `/v1/agentfirm/member-runs/${id}/workspace/${workspaces[action.kind]}`;
@@ -202,6 +203,9 @@ export interface MemberCapacitySummary {
   provider_compatibility?:"current"|"review_required"|"incompatible"|"unavailable"|"unknown"|null;
   provider_compatibility_note?:string|null;
   provider_version?:string|null;
+  /** Exact core runtime binding admission; separate from source/version compatibility. */
+  provider_capability_admission?:"active"|"review_required"|"unavailable"|"unknown"|null;
+  provider_capability_note?:string|null;
   queued_work_count:number; active_work_count:number; review_work_count:number; blocked_work_count:number;
   latest_action:RoleRecordSummary|null;
 }
@@ -328,11 +332,11 @@ export interface LiveProviderActivityItem {
 export interface LiveProviderActivity {
   schema_version:"agentfirm.live_provider_activity.v1"; durability:"volatile_process_memory"; replayable:false;
   execution_space_id:string; project_id:string; team_run_id:string; member_run_id:string; agent_session_id:string;
-  agent_session_generation:number; runtime_snapshot_locator:string; expires_unix_ms:number; items:LiveProviderActivityItem[];
+  member_run_generation:number; agent_session_generation:number; runtime_snapshot_locator:string; expires_unix_ms:number; items:LiveProviderActivityItem[];
 }
 export interface LiveProviderActivityEvent {
   schema_version:"agentfirm.live_provider_activity_event.v1"; reason:"updated"|"terminal";
-  scope:{execution_space_id:string;project_id:string;team_run_id:string;member_run_id:string;agent_session_id:string;agent_session_generation:number};
+  scope:{execution_space_id:string;project_id:string;team_run_id:string;member_run_id:string;member_run_generation:number;agent_session_id:string;agent_session_generation:number};
   activity:LiveProviderActivity|null;
 }
 export type HostSessionMode = "harness_managed"|"external_interactive"|"unbound";
@@ -342,7 +346,7 @@ export interface AgentWorkspaceRosterItem extends Partial<MemberCapacitySummary>
   host_session_mode?:HostSessionMode;
 }
 interface AgentWorkspaceSelectedAgent {
-  agent_member_ref:ActorRef;display_name:string;role:string;organization_status:string;is_host:boolean;current_member_run_ref:string|null;provider:string|null;execution_mode:string|null;runtime_status:string|null;
+  agent_member_ref:ActorRef;display_name:string;role:string;organization_status:string;is_host:boolean;current_member_run_ref:string|null;provider:string|null;execution_mode:string|null;runtime_status:string|null;runtime_generation:number|null;
   /** Present (non-null) only when the selected agent is the Team Host (DEV-24). */
   host_session_mode?:HostSessionMode|null;
 }
@@ -365,7 +369,7 @@ export type AgentWorkspacePrivateData=AgentWorkspaceDataBase&{
 };
 export type AgentWorkspaceHostMemberPublicData=AgentWorkspaceDataBase&{
   projection_scope:"host_member_public";
-  selected_agent:AgentWorkspaceSelectedAgent&{current_member_run_ref:null;provider:null;execution_mode:null;runtime_status:null};
+  selected_agent:AgentWorkspaceSelectedAgent&{current_member_run_ref:null;provider:null;execution_mode:null;runtime_status:null;runtime_generation:null};
   session_event_projection?:never;
   live_provider_activity?:never;
   configuration:AgentWorkspaceConfiguration&{prompt_ref:null;tool_refs:[];provider_profile_ref:null;model_preference:null;workspace_policy:null;permission_ceiling:null;forbidden_actions:[];workspace_binding:null};

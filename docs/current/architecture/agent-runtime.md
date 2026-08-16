@@ -13,6 +13,14 @@ transcripts. One machine-scoped NodeDaemon owns every local AgentSession,
 provider process/thread, provider delivery, and runtime-control effect across
 the machine's registered Execution Spaces.
 
+Lease renewal is independent of Execution Space discovery. The NodeDaemon
+heartbeats only the exact machine authorities it already owns while the
+discovery loop scans registered Spaces; it never acquires or steals authority
+through that heartbeat path. A slow or unhealthy Space therefore cannot let an
+otherwise live daemon's lease expire underneath an attached AgentSession. A
+heartbeat failure stops the daemon and uses the normal drain/release path;
+lease expiry alone is never treated as a provider-drain receipt.
+
 ## Canonical separation
 
 ```text
@@ -195,10 +203,20 @@ Codex, Claude, Kimi, and Pi expose separate, closed capability tuples:
   (`crates/firm-cli/src/runtime_adapter.rs`): wake → claim → ExecutionCycle →
   settle is shared, and each binding compiles the semantic intents
   (open/resume, start cycle, inject current cycle, queue at native boundary,
-  interrupt, continuation inspection, release) into provider primitives with
-  an executable per-intent capability report. Pi is the first migrated
-  binding; Codex, Claude, and Kimi still run branded loops until their
-  migration proves the same contract;
+  interrupt, continuation inspection/control, narrow Team Close, strong
+  quiesce, and release) into provider primitives with an executable per-intent
+  capability report. Pi, Codex app-server, Claude Agent SDK, and Kimi ACP all
+  enter through this shared loop; their provider modules own only native
+  transport, observation, permission mapping, and exact-version receipts;
+- Team `CloseRuntime` and strong runtime replacement are deliberately separate
+  intents. `CloseRuntime` terminates and reaps the Harness-owned provider
+  handle, freezes the Member mailbox, and retains the native session id for an
+  explicit higher-generation Reopen. Strong `quiesce`/`release` additionally
+  require every adapter to prove continuation inhibition, current-cycle
+  terminal state, native queue settlement, writable-child drain, idle
+  observation, and durable native flush. A provider that cannot observe one of
+  those postconditions remains degraded and fails closed; a process exit or
+  session-close ACK never fills in missing evidence;
 - DeepSeek is not a managed production provider in this contract. Any current
   DeepSeek harness work is treated as a faithful conformance shim/table-driven
   test surface until a reviewed native adapter, exact version, capability
@@ -211,6 +229,11 @@ Codex, Claude, Kimi, and Pi expose separate, closed capability tuples:
 - provider binary/version availability is probed explicitly; installation alone
   does not grant a capability, and an unavailable or unprovable provider is
   disabled rather than reported as conformance PASS;
+- Team RoleViews project exact-version compatibility and executable capability
+  admission as separate facts. An idle Member counts as Ready only when its
+  provider tuple is current and the core `open_or_resume`, `start_cycle`, and
+  `observe` bindings are all `verified/active`; protocol support or a passing
+  deterministic shim without exact live evidence cannot make that row Ready;
 - the browser cannot declare provider compatibility, permission, current turn,
   or effect success;
 - provider transcripts, tool calls, commands, files, reasoning, and child

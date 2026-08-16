@@ -748,7 +748,7 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
     }
     assert_eq!(
         after["provider_profile"]["provider_version"].as_str(),
-        Some("0.145.0-alpha.18"),
+        Some("0.148.0-alpha.9"),
         "the compatibility gate must record the installed reviewed version before capacity refusal: {after}"
     );
     assert_eq!(
@@ -823,10 +823,9 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
         std::fs::read_to_string(&thread_marker).unwrap_or_default()
     );
 
-    // 6. A replacement NodeDaemon generation may not silently adopt the old
-    // AgentSession even when capacity has recovered. Until an explicit atomic
-    // session handoff/rebind is performed, successor start fails closed and
-    // leaves Work/runtime ledgers unchanged.
+    // 6. Capacity refusal happened before any native session/provider effect.
+    // A replacement NodeDaemon generation may therefore start a fresh runtime
+    // once capacity recovers; there is no old native session to "adopt".
     let recovered = FakeCodex {
         rate_limits_json: Some(rate_limits_json(5, "null", false)),
         thread_marker: Some(thread_marker.clone()),
@@ -846,18 +845,23 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
         ],
     );
     assert!(
-        !restart.status.success(),
-        "successor must not adopt old session"
-    );
-    assert!(
-        String::from_utf8_lossy(&restart.stderr).contains("AGENT_SESSION_RECOVERY_REQUIRED"),
-        "restart must return a typed recovery fence: {}",
+        restart.status.success(),
+        "capacity-recovered fresh start failed: {}",
         String::from_utf8_lossy(&restart.stderr)
     );
-    assert!(canonical_work_deliveries(&home, &project_id).is_empty());
+    wait_for_runtime_projection("capacity-recovered fresh provider start", || {
+        thread_marker.exists()
+            && canonical_work_deliveries(&home, &project_id)
+                .into_iter()
+                .next()
+                .is_some_and(|delivery| delivery["status"] != "queued")
+    });
     assert!(
-        !thread_marker.exists(),
-        "rejected successor must not start provider"
+        store_rows(&home, &project_id, "member_runs.jsonl")
+            .into_iter()
+            .next()
+            .is_some_and(|member| !member["native_session"].is_null()),
+        "the recovered start must bind the first provider-native session"
     );
     stop_node_authority(&home, &mut daemon);
 }

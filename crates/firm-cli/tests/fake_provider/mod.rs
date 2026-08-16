@@ -107,7 +107,7 @@ pub fn install_kimi_acp_shim(base: &Path) -> PathBuf {
 # Fake `kimi acp` (Agent Team v0 tests): line-delimited JSON-RPC over stdio.
 result="${FAKE_KIMI_RESULT:-done}"
 ask="${FAKE_KIMI_ASK:-0}"
-version="${FAKE_KIMI_VERSION:-0.31.0}"
+version="${FAKE_KIMI_VERSION:-0.36.1}"
 if [ "$1" = "--version" ]; then
   printf '%s\n' "$version"
   exit 0
@@ -126,7 +126,7 @@ while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in
     *'"method":"initialize"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[],"agentInfo":{"name":"fake-kimi","version":"%s"}}}\n' "$id" "$version"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"close":{}}},"authMethods":[],"agentInfo":{"name":"fake-kimi","version":"%s"}}}\n' "$id" "$version"
       ;;
     *'"method":"session/new"'*)
       printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"%s","configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"},{"value":"qwen/qwen3.8-max","name":"Qwen 3.8 Max"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id" "$session_id"
@@ -371,6 +371,12 @@ while IFS= read -r line; do
         printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"cancelled"}}\n' "$prompt_id"
       fi
       ;;
+    *'"method":"session/close"'*)
+      if [ -n "${FAKE_KIMI_CLOSE_MARKER:-}" ]; then
+        printf '%s\n' "$line" >> "$FAKE_KIMI_CLOSE_MARKER"
+      fi
+      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+      ;;
   esac
 done
 exit 0
@@ -397,13 +403,15 @@ if [ -n "${FAKE_CODEX_ENV_MARKER:-}" ]; then
   env | grep '^FIRM_' | sort > "$FAKE_CODEX_ENV_MARKER"
 fi
 if [ "$1" = "--version" ]; then
-  printf '%s\n' 'codex-cli 0.145.0-alpha.18'
+  printf '%s\n' 'codex-cli 0.148.0-alpha.9'
   exit 0
 fi
 if [ "$1" = "app-server" ]; then
   thread_id="thread_fake_codex_app_server"
   turn_id="turn_fake_codex_app_server"
   turn_seq=0
+  thread_status="idle"
+  goal_status="${FAKE_CODEX_GOAL_STATUS:-none}"
   # Capacity fixtures. Assign the defaults here rather than inline in the
   # printf: `${VAR:-{"a":1}}` terminates at the FIRST `}` of the default, which
   # silently corrupts a JSON literal.
@@ -433,11 +441,19 @@ if [ "$1" = "app-server" ]; then
         fi
         reasoning_effort=$(printf '%s' "$line" | sed -n 's/.*"model_reasoning_effort":"\([^"]*\)".*/\1/p')
         service_tier=$(printf '%s' "$line" | sed -n 's/.*"serviceTier":"\([^"]*\)".*/\1/p')
+        approval_policy=$(printf '%s' "$line" | sed -n 's/.*"approvalPolicy":"\([^"]*\)".*/\1/p')
+        sandbox=$(printf '%s' "$line" | sed -n 's/.*"sandbox":"\([^"]*\)".*/\1/p')
         reasoning_json=null
         service_json=null
         if [ -n "$reasoning_effort" ]; then reasoning_json="\"$reasoning_effort\""; fi
         if [ -n "$service_tier" ]; then service_json="\"$service_tier\""; fi
-        printf '{"id":%s,"result":{"model":"gpt-5.6-sol","reasoningEffort":%s,"serviceTier":%s,"thread":{"id":"%s"}}}\n' "$id" "$reasoning_json" "$service_json" "$thread_id"
+        case "$sandbox" in
+          read-only) sandbox_type=readOnly ;;
+          workspace-write) sandbox_type=workspaceWrite ;;
+          danger-full-access) sandbox_type=dangerFullAccess ;;
+          *) sandbox_type="$sandbox" ;;
+        esac
+        printf '{"id":%s,"result":{"model":"gpt-5.6-sol","reasoningEffort":%s,"serviceTier":%s,"approvalPolicy":"%s","sandbox":{"type":"%s"},"thread":{"id":"%s"}}}\n' "$id" "$reasoning_json" "$service_json" "$approval_policy" "$sandbox_type" "$thread_id"
         ;;
       *'"method":"thread/resume"'*)
         if [ -n "${FAKE_CODEX_THREAD_MARKER:-}" ]; then
@@ -449,11 +465,19 @@ if [ "$1" = "app-server" ]; then
         thread_id=$(printf '%s' "$line" | sed -n 's/.*"threadId":"\([^"]*\)".*/\1/p')
         reasoning_effort=$(printf '%s' "$line" | sed -n 's/.*"model_reasoning_effort":"\([^"]*\)".*/\1/p')
         service_tier=$(printf '%s' "$line" | sed -n 's/.*"serviceTier":"\([^"]*\)".*/\1/p')
+        approval_policy=$(printf '%s' "$line" | sed -n 's/.*"approvalPolicy":"\([^"]*\)".*/\1/p')
+        sandbox=$(printf '%s' "$line" | sed -n 's/.*"sandbox":"\([^"]*\)".*/\1/p')
         reasoning_json=null
         service_json=null
         if [ -n "$reasoning_effort" ]; then reasoning_json="\"$reasoning_effort\""; fi
         if [ -n "$service_tier" ]; then service_json="\"$service_tier\""; fi
-        printf '{"id":%s,"result":{"model":"gpt-5.6-sol","reasoningEffort":%s,"serviceTier":%s,"thread":{"id":"%s","turns":[]}}}\n' "$id" "$reasoning_json" "$service_json" "$thread_id"
+        case "$sandbox" in
+          read-only) sandbox_type=readOnly ;;
+          workspace-write) sandbox_type=workspaceWrite ;;
+          danger-full-access) sandbox_type=dangerFullAccess ;;
+          *) sandbox_type="$sandbox" ;;
+        esac
+        printf '{"id":%s,"result":{"model":"gpt-5.6-sol","reasoningEffort":%s,"serviceTier":%s,"approvalPolicy":"%s","sandbox":{"type":"%s"},"thread":{"id":"%s","turns":[]}}}\n' "$id" "$reasoning_json" "$service_json" "$approval_policy" "$sandbox_type" "$thread_id"
         ;;
       *'"method":"thread/name/set"'*)
         if [ -n "${FAKE_CODEX_NAME_MARKER:-}" ]; then
@@ -461,11 +485,26 @@ if [ "$1" = "app-server" ]; then
         fi
         printf '{"id":%s,"result":{}}\n' "$id"
         ;;
+      *'"method":"thread/read"'*)
+        if [ "$thread_status" = "active" ]; then
+          printf '{"id":%s,"result":{"thread":{"id":"%s","status":{"type":"active"},"turns":[{"id":"%s","status":"inProgress","items":[]}]}}}\n' "$id" "$thread_id" "$turn_id"
+        else
+          printf '{"id":%s,"result":{"thread":{"id":"%s","status":{"type":"idle"},"turns":[]}}}\n' "$id" "$thread_id"
+        fi
+        ;;
+      *'"method":"thread/goal/get"'*)
+        if [ "$goal_status" = "none" ]; then
+          printf '{"id":%s,"result":{"goal":null}}\n' "$id"
+        else
+          printf '{"id":%s,"result":{"goal":{"threadId":"%s","objective":"fake work","status":"%s","tokenBudget":1000,"tokensUsed":0,"updatedAt":1}}}\n' "$id" "$thread_id" "$goal_status"
+        fi
+        ;;
       *'"method":"thread/goal/set"'*)
         if [ -n "${FAKE_CODEX_PLAN_MARKER:-}" ]; then
           printf 'goal_set %s\n' "$line" >> "$FAKE_CODEX_PLAN_MARKER"
         fi
-        printf '{"id":%s,"result":{"goal":{"objective":"fake work","status":"active"}}}\n' "$id"
+        goal_status=$(printf '%s' "$line" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')
+        printf '{"id":%s,"result":{"goal":{"threadId":"%s","objective":"fake work","status":"%s","tokenBudget":1000,"tokensUsed":0,"updatedAt":2}}}\n' "$id" "$thread_id" "$goal_status"
         ;;
       *'"method":"turn/start"'*)
         plan_mode=0
@@ -475,6 +514,7 @@ if [ "$1" = "app-server" ]; then
         fi
         turn_seq=$((turn_seq + 1))
         turn_id="turn_fake_codex_app_server_${turn_seq}"
+        thread_status="active"
         response_turn_id="$turn_id"
         if [ "${FAKE_CODEX_REBIND_EVENT_TURN:-0}" = "1" ]; then
           response_turn_id="turn_start_response_${turn_seq}"
@@ -486,12 +526,14 @@ if [ "$1" = "app-server" ]; then
           fi
           printf '{"method":"turn/plan/updated","params":{"threadId":"%s","turnId":"%s","plan":[{"step":"Revision %s: inspect the Assignment contract","status":"completed"},{"step":"Implement only after Host approval","status":"pending"},{"step":"Run focused checks","status":"pending"}]}}\n' "$thread_id" "$turn_id" "$turn_seq"
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[{"id":"plan-app-%s","type":"plan","text":"Revision %s\\n1. Inspect the Work contract\\n2. Implement only after Host review\\n3. Run focused checks"}]}}}\n' "$thread_id" "$turn_id" "$turn_seq" "$turn_seq"
+          thread_status="idle"
           continue
         fi
         printf '{"method":"item/started","params":{"threadId":"%s","turnId":"%s","item":{"id":"command-app-1","type":"commandExecution","command":"cargo check","commandActions":[],"cwd":"/tmp","status":"inProgress"}}}\n' "$thread_id" "$turn_id"
         if [ "${FAKE_CODEX_AUTO_COMPLETE:-0}" = "1" ] || { [ "${FAKE_CODEX_AUTO_COMPLETE_AFTER_STEER:-0}" = "1" ] && [ "$turn_seq" -gt "1" ]; }; then
           printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"%s","itemId":"message-app-1","delta":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}}\n' "$thread_id" "$turn_id"
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[{"id":"message-app-1","type":"agentMessage","text":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}]}}}\n' "$thread_id" "$turn_id"
+          thread_status="idle"
           if [ "${FAKE_CODEX_EXIT_AFTER_FIRST_TURN:-0}" = "1" ] && [ "$turn_seq" = "1" ]; then
             if [ -n "${FAKE_CODEX_EXIT_SPAWN_COUNT:-}" ] && [ -n "${FAKE_CODEX_EXIT_ONCE_MARKER:-}" ]; then
               exit_count=0
@@ -516,24 +558,28 @@ if [ "$1" = "app-server" ]; then
           fi
         elif [ "${FAKE_CODEX_INTERRUPT_WITHOUT_REQUEST:-0}" = "1" ]; then
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"interrupted","items":[]}}}\n' "$thread_id" "$turn_id"
+          thread_status="idle"
         elif [ "${FAKE_CODEX_ASK:-0}" = "multiple" ]; then
-          printf '{"id":700,"method":"item/tool/requestUserInput","params":{"threadId":"%s","turnId":"%s","itemId":"ask-app-1","questions":[{"id":"implementation","header":"Contract","question":"Which implementation should be used?","options":[]},{"id":"verification","header":"Verification","question":"Which verification should be run?","options":[]}]}}\n' "$thread_id" "$turn_id"
+          printf '{"id":700,"method":"item/tool/requestUserInput","params":{"threadId":"%s","turnId":"%s","itemId":"ask-app-1","isBlocking":true,"questions":[{"id":"implementation","header":"Contract","question":"Which implementation should be used?","isSecret":false,"options":[]},{"id":"verification","header":"Verification","question":"Which verification should be run?","isSecret":false,"options":[]}]}}\n' "$thread_id" "$turn_id"
         elif [ "${FAKE_CODEX_ASK:-0}" = "1" ]; then
-          printf '{"id":700,"method":"item/tool/requestUserInput","params":{"threadId":"%s","turnId":"%s","itemId":"ask-app-1","questions":[{"id":"implementation","header":"Contract","question":"Which implementation should be used?","options":[{"label":"Use native contract","description":"Use the provider-native path."},{"label":"Stop","description":"Do not continue."}]}]}}\n' "$thread_id" "$turn_id"
+          printf '{"id":700,"method":"item/tool/requestUserInput","params":{"threadId":"%s","turnId":"%s","itemId":"ask-app-1","isBlocking":true,"questions":[{"id":"implementation","header":"Contract","question":"Which implementation should be used?","isSecret":false,"options":[{"label":"Use native contract","description":"Use the provider-native path."},{"label":"Stop","description":"Do not continue."}]}]}}\n' "$thread_id" "$turn_id"
         fi
         ;;
       *'"method":"turn/steer"'*)
         printf '{"id":%s,"result":{"turnId":"%s"}}\n' "$id" "$turn_id"
         printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"%s","itemId":"message-app-1","delta":"## RESULT\\ndone\\n## SUMMARY\\nsteered app-server member\\n"}}\n' "$thread_id" "$turn_id"
         printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[{"id":"message-app-1","type":"agentMessage","text":"## RESULT\\ndone\\n## SUMMARY\\nsteered app-server member\\n"}]}}}\n' "$thread_id" "$turn_id"
+        thread_status="idle"
         ;;
       *'"method":"turn/interrupt"'*)
         printf '{"id":%s,"result":{}}\n' "$id"
         printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"interrupted","items":[]}}}\n' "$thread_id" "$turn_id"
+        thread_status="idle"
         ;;
       *'"id":700'*'"answers"'*)
         printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"%s","itemId":"message-app-ask","delta":"## RESULT\\ndone\\n## SUMMARY\\nreceived Lead answer\\n"}}\n' "$thread_id" "$turn_id"
         printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[]}}}\n' "$thread_id" "$turn_id"
+        thread_status="idle"
         ;;
     esac
   done

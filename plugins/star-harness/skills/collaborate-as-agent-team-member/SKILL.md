@@ -39,18 +39,13 @@ delivered your Work context and set these env vars. Run these exact commands
 "$HARNESS_BIN" team-run work show --work-id "$HARNESS_WORK_ID" --json
 
 # 2. Mark it in progress (version from step 1)
-"$HARNESS_BIN" team-run work start \
-  --team-run-id "$HARNESS_TEAM_RUN_ID" \
+"$HARNESS_BIN" member work start \
   --work-id "$HARNESS_WORK_ID" \
-  --member-run-id "$HARNESS_MEMBER_RUN_ID" \
   --expected-version <version-from-step-1> \
   --idempotency-key "start-$(date +%s)"
 
 # 3. Check for messages from Host or peers
-"$HARNESS_BIN" team-run inbox \
-  --id "$HARNESS_TEAM_RUN_ID" \
-  --member-run-id "$HARNESS_MEMBER_RUN_ID" \
-  --all --json
+"$HARNESS_BIN" member inbox --all --json
 
 # 4. Read the board to see other members' status
 "$HARNESS_BIN" team-run board-summary --id "$HARNESS_TEAM_RUN_ID"
@@ -109,10 +104,8 @@ For a compact board overview when context is limited:
 For a ready unassigned Work you are eligible to take, atomically claim it:
 
 ```bash
-"$HARNESS_BIN" team-run work claim \
-  --team-run-id "$HARNESS_TEAM_RUN_ID" \
+"$HARNESS_BIN" member work claim \
   --work-id <work-id> \
-  --member-run-id "$HARNESS_MEMBER_RUN_ID" \
   --expected-version <latest-version> \
   --idempotency-key <stable-command-key>
 ```
@@ -120,10 +113,8 @@ For a ready unassigned Work you are eligible to take, atomically claim it:
 For Work already assigned to you, explicitly start it:
 
 ```bash
-"$HARNESS_BIN" team-run work start \
-  --team-run-id "$HARNESS_TEAM_RUN_ID" \
+"$HARNESS_BIN" member work start \
   --work-id "$HARNESS_WORK_ID" \
-  --member-run-id "$HARNESS_MEMBER_RUN_ID" \
   --expected-version "$HARNESS_WORK_VERSION" \
   --idempotency-key <stable-command-key>
 ```
@@ -159,10 +150,8 @@ Use Provider-native subagents for bounded internal lanes. They inherit your Work
 Read actionable mail, or include history when needed:
 
 ```bash
-"$HARNESS_BIN" team-run inbox --id "$HARNESS_TEAM_RUN_ID" \
-  --member-run-id "$HARNESS_MEMBER_RUN_ID" --json
-"$HARNESS_BIN" team-run inbox --id "$HARNESS_TEAM_RUN_ID" \
-  --member-run-id "$HARNESS_MEMBER_RUN_ID" --all --json
+"$HARNESS_BIN" member inbox --json
+"$HARNESS_BIN" member inbox --all --json
 ```
 
 Legacy TeamRun send/ACK commands are retired because they let a caller select
@@ -196,16 +185,15 @@ mail. A tool status of `completed` is not the semantic answer.
 When safe progress is impossible, preserve ownership and record the blocker:
 
 ```bash
-"$HARNESS_BIN" team-run work block \
-  --team-run-id "$HARNESS_TEAM_RUN_ID" \
+"$HARNESS_BIN" member work block \
   --work-id "$HARNESS_WORK_ID" \
-  --member-run-id "$HARNESS_MEMBER_RUN_ID" \
   --expected-version <latest-version> \
   --reason "<specific blocker and required decision>" \
   --idempotency-key <stable-command-key>
 ```
 
-`--member-run-id` is optional; when omitted the CLI blocks the Work as the Host. As a Member you should always supply your own member-run-id.
+The Supervisor-bound Member Role Action derives your exact MemberRun and
+AgentSession scope. Never supply or override a sender or Member identity.
 
 Then send one concise linked Message with options and recommendation when Human,
 Host, or peer input is useful. Do not repeatedly resend or create duplicate
@@ -250,7 +238,7 @@ Work; never keep executing a Work already in `review`, `blocked`, `done`, or
 - **Submissions MUST carry artifact_refs and check_refs.** Every `work submit`
   must include `--artifact-ref` and `--check-ref` when the Work's declared
   gates (`artifact-exists`, `check-pass`) or completion criteria require them.
-  Use `--github-pr owner/repo#N` to attach a PR link (required by `github-pr` gate).
+  Use `--artifact-ref <PR URL>` to attach a PR link when required by a gate.
   These are not optional decoration — they are
   the verifiable evidence the Host inspects during review.
 - **Non-trivial work defaults to plan-first.** Before implementing a multi-file
@@ -268,7 +256,7 @@ Work; never keep executing a Work already in `review`, `blocked`, `done`, or
   main checkout or in `.worktrees/`. Report the absolute worktree path, branch,
   and commit in your submission.
 
-- **Submission format.** Every `work submit --result` must follow this
+- **Submission format.** Every `work submit --result-summary` must follow this
   format so the Host can review efficiently:
 
   ```
@@ -293,7 +281,7 @@ Work; never keep executing a Work already in `review`, `blocked`, `done`, or
   - CI run URL (if applicable)
   ```
 
-  The `--result` should be pasted from this template, not re-typed.
+  The `--result-summary` should be pasted from this template, not re-typed.
   The `## WORKTREE` section tells Host where to find your changes.
   After Host accepts, the review feedback is in the work's `result_summary`
   and the PR comments — check both.
@@ -303,19 +291,17 @@ result summary. Add artifact and check refs when the completion criteria or
 Host review requires them; they are not universal submission fields:
 
 ```bash
-"$HARNESS_BIN" team-run work submit \
-  --team-run-id "$HARNESS_TEAM_RUN_ID" \
+"$HARNESS_BIN" member work submit \
   --work-id "$HARNESS_WORK_ID" \
-  --member-run-id "$HARNESS_MEMBER_RUN_ID" \
   --expected-version <latest-version> \
-  --result "<concise result summary>" \
+  --result-summary "<concise result summary>" \
+  --candidate-revision "<exact revision>" \
   --idempotency-key <stable-command-key>
 ```
 
-When required, add one or more `--artifact-ref <artifact-or-path>`,
-`--check-ref "<command and actual result>"`, and/or `--github-pr owner/repo#N`
-(to attach a GitHub PR link required by the `github-pr` gate) arguments to that
-command.
+When required, add one or more `--artifact-ref <artifact-or-path>` and
+`--check-ref "<command and actual result>"` arguments to that command.
+Attach a GitHub PR as its full URL in `--artifact-ref`.
 
 Submission moves Work to `review`; it does not imply Host acceptance. Send an optional linked Message only when review needs explanation. Remain available for `request-changes`; update the same Work and resubmit. Only Host acceptance moves Work to `done` — see shared hard invariants §5.
 
@@ -391,7 +377,10 @@ The harness injects these environment variables when starting your runtime. The 
 | `HARNESS_WORK_VERSION` | When delivered with Work | The Work version for your current delivery |
 | `HARNESS_ORIGIN_WAVE_ID` | Historical | Deprecated; preserved for compatibility reads only |
 
-`HARNESS_MEMBER_RUN_ID` and `HARNESS_TEAM_RUN_ID` are validated on every member-side Work command (`work claim`, `work start`, `work block`, `work submit`). The CLI rejects a call where the bound environment value does not match the command argument.
+`HARNESS_MEMBER_RUN_ID`, `HARNESS_TEAM_RUN_ID`, and the live Supervisor
+capability token are validated on every `member inbox`, `member work`, and
+`member message` command. These bound commands do not accept a caller-selected
+Member identity.
 
 **Legacy Wave note.** The word **wave** in a batch label is only a planning
 rhythm, not a governed object. The historical `Wave`, `WaveStatus`, `wave_ids`,

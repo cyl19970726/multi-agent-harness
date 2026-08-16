@@ -1005,6 +1005,13 @@ impl crate::runtime_adapter::TeamRuntimeAdapter for PiTeamRuntime {
                 security_enforcement_locus: None,
             },
             CapabilityBinding {
+                capability: "close_runtime",
+                status: CapabilityStatus::Supported,
+                evidence: "get_state proves the current cycle and native input queue idle; the one-shot owned process-group disposer reaps the Pi child while retaining the native JSONL session file. This narrower Team Close does not claim full writable-child drain or durable flush"
+                    .into(),
+                security_enforcement_locus: None,
+            },
+            CapabilityBinding {
                 capability: "inspect_continuation",
                 status: CapabilityStatus::Unsupported,
                 evidence: "Pi has no native Goal/continuation object".into(),
@@ -1148,6 +1155,7 @@ impl crate::runtime_adapter::TeamRuntimeAdapter for PiTeamRuntime {
         )?;
         Ok(crate::runtime_adapter::ExecutionCycleOutcome {
             final_text: outcome.final_text,
+            provider_terminal_failure: None,
             interrupted: outcome.interrupted,
             close_requested_by_harness: outcome.close_requested_by_harness,
             tool_call_count: outcome.tool_call_count,
@@ -1402,6 +1410,81 @@ impl crate::runtime_adapter_contract::RuntimeAdapter for PiTeamRuntime {
             crate::runtime_adapter_contract::SemanticCapability::Reconcile,
         )?;
         unreachable!("Pi reconcile is not admitted")
+    }
+
+    fn close_runtime(
+        &mut self,
+        fence: crate::runtime_adapter_contract::RuntimeFence<'_>,
+    ) -> Result<
+        crate::runtime_adapter_contract::MemberRuntimeCloseReceipt,
+        crate::runtime_adapter_contract::RuntimeContractError,
+    > {
+        use harness_core::agentfirm_api::RuntimePostconditionStatus;
+
+        if self.canonical_released {
+            return Err(crate::runtime_adapter_contract::RuntimeContractError::AlreadyReleased);
+        }
+        self.contract_preflight(
+            fence,
+            crate::runtime_adapter_contract::SemanticCapability::CloseRuntime,
+        )?;
+        let (writable_children, writable_children_evidence) =
+            self.client.writable_children_drain_proof();
+        if writable_children != RuntimePostconditionStatus::Satisfied {
+            return Err(
+                crate::runtime_adapter_contract::RuntimeContractError::CapabilityAdmissionDenied {
+                    capability: crate::runtime_adapter_contract::SemanticCapability::CloseRuntime,
+                    admission: harness_core::ProviderBindingAdmission::PendingDependency,
+                    reasons: vec![writable_children_evidence],
+                },
+            );
+        }
+        let session_file = self.client.session_file().to_string();
+        let boundary = self
+            .client
+            .quiesce_runtime()
+            .map_err(pi_contract_bridge_error)?;
+        if !boundary.drained {
+            return Err(
+                crate::runtime_adapter_contract::RuntimeContractError::MemberCloseIncomplete {
+                    fields: vec!["current_cycle_terminal=Unknown".to_string()],
+                },
+            );
+        }
+        let observation = self.client.release().map_err(pi_contract_bridge_error)?;
+        let released = !observation.transport_alive && !observation.process_alive;
+        let retained = Path::new(&session_file).is_file();
+        let receipt = crate::runtime_adapter_contract::MemberRuntimeCloseReceipt {
+            control_acknowledged: RuntimePostconditionStatus::Satisfied,
+            current_cycle_terminal: RuntimePostconditionStatus::Satisfied,
+            managed_runtime_released: if released {
+                RuntimePostconditionStatus::Satisfied
+            } else {
+                RuntimePostconditionStatus::Unknown
+            },
+            live_handle_disposed: if released {
+                RuntimePostconditionStatus::Satisfied
+            } else {
+                RuntimePostconditionStatus::Unknown
+            },
+            native_session_retained: if retained {
+                RuntimePostconditionStatus::Satisfied
+            } else {
+                RuntimePostconditionStatus::Unknown
+            },
+            evidence: vec![
+                format!("pi.get_state.member_close_boundary:{}", boundary.evidence),
+                format!(
+                    "pi.owned_process_group_released:transport_alive={};process_alive={}",
+                    observation.transport_alive, observation.process_alive
+                ),
+                writable_children_evidence,
+                format!("pi.native_session_retained:{session_file}"),
+            ],
+        };
+        receipt.verify()?;
+        self.canonical_released = true;
+        Ok(receipt)
     }
 
     fn quiesce(

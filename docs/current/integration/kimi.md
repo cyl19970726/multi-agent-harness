@@ -18,10 +18,14 @@ requested/effective controls, busy-turn mailbox behavior, Interrupt, restart,
 and native-session resume are defined in the focused
 [Kimi ACP Agent Team runtime](kimi-agent-team.md) contract.
 
-The installed Kimi Code probe is 0.31.1. Following the Human-approved upgrade,
-`kimi-acp-v1` is reviewed for prompt delivery, model/`thinking` control,
+The installed Kimi Code probe is 0.36.1. Following the Human-approved upgrade,
+`kimi-acp-v1` is reviewed for prompt delivery, K3/`thinking=max` control,
 same-session resume across a Supervisor generation change, next-round batched
 mail, bounded full-access permission receipts, and cooperative Interrupt.
+Kimi 0.36.1 replays historical `session/update` notifications during
+`session/resume`; the adapter drains all attach-time replay before accepting
+the next Harness cycle, so native history never becomes a second Harness
+delivery.
 `session/cancel` is an ACP notification without a JSON-RPC request id; sending
 it as a request produces method-not-found and is not a valid capability probe.
 

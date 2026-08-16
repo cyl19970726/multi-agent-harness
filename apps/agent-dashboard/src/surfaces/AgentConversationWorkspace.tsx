@@ -106,6 +106,7 @@ export function AgentConversationWorkspace({
     apiUrl,space,project,company,
     teamRunId:privateData?.team.latest_run_id??null,
     memberRunId:privateData?.selected_agent.current_member_run_ref??null,
+    memberRunGeneration:privateData?.selected_agent.runtime_generation??null,
     sessionId:privateData?.session_event_projection?.agent_session_id??null,
     sessionGeneration:privateData?.session_event_projection?.agent_session_generation??null,
     initialActivity:privateData?.live_provider_activity??null,
@@ -120,7 +121,7 @@ export function AgentConversationWorkspace({
   const publicProjection=data.projection_scope==="host_member_public";
   const selectedRunId=selected.current_member_run_ref;
   const sessionProjection=publicProjection?null:data.session_event_projection??null;
-  const currentLiveActivity=selectAgentWorkspaceLiveActivity({activity:streamedLiveActivity,projectionScope:data.projection_scope,executionSpaceId:space,projectId:project,teamRunId:data.team.latest_run_id,memberRunId:selectedRunId,sessionId:sessionProjection?.agent_session_id??null,sessionGeneration:sessionProjection?.agent_session_generation??null});
+  const currentLiveActivity=selectAgentWorkspaceLiveActivity({activity:streamedLiveActivity,projectionScope:data.projection_scope,executionSpaceId:space,projectId:project,teamRunId:data.team.latest_run_id,memberRunId:selectedRunId,memberRunGeneration:selected.runtime_generation,sessionId:sessionProjection?.agent_session_id??null,sessionGeneration:sessionProjection?.agent_session_generation??null});
   const currentWork=data.works.find(work=>work.work_id===(contextSelection?.kind==="work"?contextSelection.work.work_id:data.context_summary.current_work_id));
   const selectAgent=(agent:AgentWorkspaceRosterItem)=>{
     onSelectionChange({
@@ -474,7 +475,7 @@ function ContextMessageRow({data,message}:{data:AgentWorkspaceData;message:Messa
 function TagList({values,empty,humanize=false}:{values:string[];empty:string;humanize?:boolean}){return values.length?<div className="aw-profile-token-list">{values.map(value=><span key={value} title={value} className="aw-profile-token">{humanize?humanizeToken(value):value}</span>)}</div>:<p className="aw-profile-empty">{empty}</p>}
 function ProfileList({label,values,empty,humanize=false}:{label:string;values:string[];empty:string;humanize?:boolean}){return <div className="mt-3 first:mt-0"><p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p><TagList values={values} empty={empty} humanize={humanize}/></div>}
 function EmptyCanvas({title,detail,compact=false}:{title:string;detail:string;compact?:boolean}){return <div className="aw-empty-state" data-compact={compact||undefined}><Inbox aria-hidden="true"/><div><h3>{title}</h3><p>{detail}</p></div></div>}
-function actionLabel(kind:string){return ({send_message:"Send message",assign_work:"Assign work",rebind_work:"Reassign work",close_member_run:"Close member run",reopen_member_run:"Reopen member run",retire_member_run:"Retire agent from team",resume_native_session:"Resume native session",reconcile_delivery:"Reconcile work delivery",reconcile_message_delivery:"Reconcile message delivery",request_gate_evaluation:"Request gate review",request_changes:"Request work changes",accept_work:"Accept work",cancel_work:"Cancel work"} as Record<string,string>)[kind]??kind.replace(/_/g," ")}
+function actionLabel(kind:string){return ({send_message:"Send message",assign_work:"Assign work",rebind_work:"Reassign work",interrupt_member_run:"Interrupt current turn",close_member_run:"Close member run",reopen_member_run:"Reopen member run",retire_member_run:"Retire agent from team",resume_native_session:"Resume native session",reconcile_delivery:"Reconcile work delivery",reconcile_message_delivery:"Reconcile message delivery",request_gate_evaluation:"Request gate review",request_changes:"Request work changes",accept_work:"Accept work",cancel_work:"Cancel work"} as Record<string,string>)[kind]??kind.replace(/_/g," ")}
 function decisionActionRank(kind:string,work?:WorkSummary){if(work?.phase==="review"){if(kind==="accept_work")return 0;if(kind==="request_changes")return 1;if(kind==="request_gate_evaluation")return 2;}if(work?.condition==="blocked"&&/reconcile|rebind|resume/.test(kind))return 0;if(kind==="send_message")return 3;if(/assign|rebind/.test(kind))return 4;if(/close|retire|cancel/.test(kind))return 9;return 5}
 function keyForAction(action:AllowedAction){return `${action.kind}:${action.target_ref.kind}:${action.target_ref.id}`}
 function meaningfulRecovery(work:WorkSummary){const value=work.delivery_summary.recovery_class;return typeof value==="string"&&!['','none','null','not_modeled','not_projected'].includes(value)}
@@ -511,7 +512,7 @@ function observationCopy(event:ProviderObservation){
 function observationPresentationKind(event:ProviderObservation){if(event.semantic_kind==="reasoning_summary")return "thinking";if(event.semantic_kind.startsWith("tool_call_"))return "tool";if(event.semantic_kind==="authored_response")return "message";if(event.semantic_kind==="artifact_created")return "artifact";return "runtime"}
 function observationStatus(event:ProviderObservation){if(event.semantic_kind==="tool_call_failed"||event.semantic_kind==="turn_failed")return "failed";if(event.lifecycle_phase==="terminal")return "completed";return "running"}
 export function isUnexpiredActivity(activity:LiveProviderActivity,now=Date.now()){return activity.expires_unix_ms>now}
-export function selectAgentWorkspaceLiveActivity({activity,projectionScope,executionSpaceId,projectId,teamRunId,memberRunId,sessionId,sessionGeneration,now=Date.now()}:{activity?:LiveProviderActivity|null;projectionScope:AgentWorkspaceData["projection_scope"];executionSpaceId:string;projectId:string;teamRunId:string|null;memberRunId:string|null;sessionId:string|null;sessionGeneration:number|null|undefined;now?:number}){
+export function selectAgentWorkspaceLiveActivity({activity,projectionScope,executionSpaceId,projectId,teamRunId,memberRunId,memberRunGeneration,sessionId,sessionGeneration,now=Date.now()}:{activity?:LiveProviderActivity|null;projectionScope:AgentWorkspaceData["projection_scope"];executionSpaceId:string;projectId:string;teamRunId:string|null;memberRunId:string|null;memberRunGeneration:number|null|undefined;sessionId:string|null;sessionGeneration:number|null|undefined;now?:number}){
   return projectionScope!=="host_member_public"
     && activity
     && memberRunId
@@ -520,6 +521,7 @@ export function selectAgentWorkspaceLiveActivity({activity,projectionScope,execu
     && activity.execution_space_id===executionSpaceId
     && activity.project_id===projectId
     && activity.member_run_id===memberRunId
+    && activity.member_run_generation===memberRunGeneration
     && activity.team_run_id===teamRunId
     && activity.agent_session_id===sessionId
     && activity.agent_session_generation===sessionGeneration
@@ -527,11 +529,11 @@ export function selectAgentWorkspaceLiveActivity({activity,projectionScope,execu
       ? activity
       : null;
 }
-function liveEventMatches(event:LiveProviderActivityEvent,scope:{executionSpaceId:string;projectId:string;teamRunId:string;memberRunId:string;sessionId:string;sessionGeneration:number}){return event.scope.execution_space_id===scope.executionSpaceId&&event.scope.project_id===scope.projectId&&event.scope.team_run_id===scope.teamRunId&&event.scope.member_run_id===scope.memberRunId&&event.scope.agent_session_id===scope.sessionId&&event.scope.agent_session_generation===scope.sessionGeneration}
-function useAuthenticatedLiveProviderActivity({apiUrl,space,project,company,teamRunId,memberRunId,sessionId,sessionGeneration,initialActivity}:{apiUrl:string;space:string;project:string;company?:string;teamRunId:string|null;memberRunId:string|null;sessionId:string|null;sessionGeneration:number|null;initialActivity:LiveProviderActivity|null}){
+function liveEventMatches(event:LiveProviderActivityEvent,scope:{executionSpaceId:string;projectId:string;teamRunId:string;memberRunId:string;memberRunGeneration:number;sessionId:string;sessionGeneration:number}){return event.scope.execution_space_id===scope.executionSpaceId&&event.scope.project_id===scope.projectId&&event.scope.team_run_id===scope.teamRunId&&event.scope.member_run_id===scope.memberRunId&&event.scope.member_run_generation===scope.memberRunGeneration&&event.scope.agent_session_id===scope.sessionId&&event.scope.agent_session_generation===scope.sessionGeneration}
+function useAuthenticatedLiveProviderActivity({apiUrl,space,project,company,teamRunId,memberRunId,memberRunGeneration,sessionId,sessionGeneration,initialActivity}:{apiUrl:string;space:string;project:string;company?:string;teamRunId:string|null;memberRunId:string|null;memberRunGeneration:number|null;sessionId:string|null;sessionGeneration:number|null;initialActivity:LiveProviderActivity|null}){
   const [activity,setActivity]=useState<LiveProviderActivity|null>(null);
   useEffect(()=>{
-    const exactScope=teamRunId&&memberRunId&&sessionId&&sessionGeneration!=null?{executionSpaceId:space,projectId:project,teamRunId,memberRunId,sessionId,sessionGeneration}:null;
+    const exactScope=teamRunId&&memberRunId&&memberRunGeneration!=null&&sessionId&&sessionGeneration!=null?{executionSpaceId:space,projectId:project,teamRunId,memberRunId,memberRunGeneration,sessionId,sessionGeneration}:null;
     setActivity(exactScope?selectAgentWorkspaceLiveActivity({activity:initialActivity,projectionScope:"member_self_private",...exactScope,now:Date.now()}):null);
     const token=window.__AGENTFIRM_BOOTSTRAP__?.capabilityToken;
     if(!exactScope||!token)return;
@@ -547,7 +549,7 @@ function useAuthenticatedLiveProviderActivity({apiUrl,space,project,company,team
       }catch(error){if(!controller.signal.aborted)console.warn("Agent Workspace live activity disconnected",error);}finally{if(!controller.signal.aborted)setActivity(null);}
     })();
     return()=>{controller.abort();setActivity(null);};
-  },[apiUrl,space,project,company,teamRunId,memberRunId,sessionId,sessionGeneration,initialActivity]);
+  },[apiUrl,space,project,company,teamRunId,memberRunId,memberRunGeneration,sessionId,sessionGeneration,initialActivity]);
   return activity;
 }
 function formatTime(value:string|null|undefined){if(!value)return "unknown";const timestamp=timestampKey(value);if(!timestamp)return value;return new Date(timestamp).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}
