@@ -11,8 +11,8 @@ use firm_core::{
     content_hash_hex16, AgentTeam, AgentTeamRun, Decision, DelegationRun, Evidence, ExecutionNode,
     ExecutionNodeStatus, Gap, GitHubLink, HostAttention, HostAttentionInbox, HostAttentionKind,
     HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind, HostBindingLeaseStatus,
-    LegacyWave, LegacyWaveGateStatus, LegacyWaveStatus, MemberAction, MessageTerminalSource,
-    Mission, MissionLogEntry, MissionStatus, NodeDaemonLease, NodeDaemonLeaseStatus,
+    LegacyWave, MemberAction, MessageTerminalSource,
+    Mission, MissionLogEntry, NodeDaemonLease, NodeDaemonLeaseStatus,
     NodeProjectRegistration, NodeProjectRegistrationStatus, Proposal, ProviderChildThread,
     ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
     ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
@@ -39,11 +39,6 @@ pub use collaboration::*;
 pub use collaboration_fabric::*;
 pub mod remote_fabric_store;
 
-mod company_os;
-pub mod docs_v2;
-pub use company_os::{
-    ActionAuditReservation, ActionCommandClaimResult, CompanyActor, FinancialRecord,
-};
 
 unsafe extern "C" {
     fn flock(fd: i32, operation: i32) -> i32;
@@ -393,295 +388,20 @@ impl HarnessStore {
         })
     }
 
-    /// Raw append retained for verified migration/import and append-only
-    /// history reconstruction. Current Mission creation must use
-    /// [`Self::insert_mission`], which rejects Legacy Wave membership.
+    /// Raw append retained ONLY for verified migration/import and append-only
+    /// history reconstruction (DOC-108 Stage A export/restore, Execution
+    /// Space migration). No current product path may author a new Mission.
     pub fn append_mission(&self, value: &Mission) -> StoreResult<()> {
         self.append_jsonl("missions.jsonl", value)
     }
 
     /// Compare-and-append one Mission revision. Mission lifecycle is
     /// independent from durable AgentTeam identity and membership authority.
-    pub fn compare_and_append_mission(
-        &self,
-        expected: &Mission,
-        next: &Mission,
-    ) -> StoreResult<()> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        let current = latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
-            mission.id.clone()
-        })
-        .remove(&expected.id)
-        .ok_or_else(|| StoreError::Conflict(format!("mission not found: {}", expected.id)))?;
-        if current != *expected {
-            return Err(StoreError::Conflict(format!(
-                "mission {} changed concurrently; retry the operation",
-                expected.id
-            )));
-        }
-        if next.id != current.id
-            || next.created_at != current.created_at
-            || next.legacy_wave_ids != current.legacy_wave_ids
-        {
-            return Err(StoreError::Conflict(
-                "mission revision must preserve identity, creation time, and Legacy Wave membership"
-                    .to_string(),
-            ));
-        }
-        self.append_jsonl_unlocked("missions.jsonl", next)
-    }
 
     /// Insert a new native Mission under the store lock. Unlike the generic
     /// append method this rejects a concurrently-created duplicate id.
-    pub fn insert_mission(&self, value: &Mission) -> StoreResult<()> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        if !value.legacy_wave_ids.is_empty() {
-            return Err(StoreError::Conflict(
-                "NEW_MISSION_CANNOT_REFERENCE_LEGACY_WAVE: create the Mission with an empty legacy_wave_ids compatibility field"
-                    .to_string(),
-            ));
-        }
-        let missions = latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
-            mission.id.clone()
-        });
-        if missions.contains_key(&value.id) {
-            return Err(StoreError::Conflict(format!(
-                "mission already exists: {}",
-                value.id
-            )));
-        }
-        self.append_jsonl_unlocked("missions.jsonl", value)
-    }
 
     /// Test-only seed helper for ADR 0051 pre-cutover rows. Production has no
-    /// Legacy Wave writer; historical rows are read-only compatibility data.
-    #[cfg(test)]
-    fn append_legacy_wave_for_test(&self, value: &LegacyWave) -> StoreResult<()> {
-        self.append_jsonl("waves.jsonl", value)
-    }
-
-    /// Test-only reconstruction of the pre-ADR 0051 writer. It exists solely
-    /// to prove historical concurrency and overflow behavior; no production
-    /// code can create or attach another Legacy Wave row.
-    #[cfg(test)]
-    fn insert_legacy_wave_and_update_mission_for_test(
-        &self,
-        mut wave: LegacyWave,
-        requested_index: Option<u32>,
-        mission_updated_at: &str,
-    ) -> StoreResult<LegacyWave> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        let mut missions = latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
-            mission.id.clone()
-        });
-        let mut mission = missions.remove(&wave.mission_id).ok_or_else(|| {
-            StoreError::Conflict(format!("native mission not found: {}", wave.mission_id))
-        })?;
-        if matches!(
-            mission.status,
-            MissionStatus::Completed | MissionStatus::Cancelled
-        ) {
-            return Err(StoreError::Conflict(format!(
-                "mission {} is {:?} and cannot accept another Legacy Wave",
-                mission.id, mission.status
-            )));
-        }
-        let waves = latest_by_id(self.read_jsonl::<LegacyWave>("waves.jsonl")?, |row| {
-            row.id.clone()
-        })
-        .into_values()
-        .collect::<Vec<_>>();
-        if waves.iter().any(|existing| existing.id == wave.id) {
-            return Err(StoreError::Conflict(format!(
-                "wave already exists: {}",
-                wave.id
-            )));
-        }
-        wave.index = match requested_index {
-            Some(index) => index,
-            None => waves
-                .iter()
-                .filter(|existing| existing.mission_id == wave.mission_id)
-                .map(|existing| existing.index)
-                .max()
-                .unwrap_or(0)
-                .checked_add(1)
-                .ok_or_else(|| {
-                    StoreError::Conflict(format!(
-                        "wave index space is exhausted for mission {}",
-                        wave.mission_id
-                    ))
-                })?,
-        };
-        if wave.index == 0 {
-            return Err(StoreError::Conflict(
-                "wave index must be at least 1".to_string(),
-            ));
-        }
-        if waves
-            .iter()
-            .any(|existing| existing.mission_id == wave.mission_id && existing.index == wave.index)
-        {
-            return Err(StoreError::Conflict(format!(
-                "wave index {} already exists for mission {}",
-                wave.index, wave.mission_id
-            )));
-        }
-
-        let mut ordered = waves
-            .iter()
-            .filter(|existing| existing.mission_id == wave.mission_id)
-            .map(|existing| (existing.index, existing.id.clone()))
-            .collect::<Vec<_>>();
-        ordered.push((wave.index, wave.id.clone()));
-        ordered.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
-        mission.legacy_wave_ids = ordered.into_iter().map(|(_, id)| id).collect();
-        mission.updated_at = mission_updated_at.to_string();
-
-        self.append_jsonl_unlocked("waves.jsonl", &wave)?;
-        self.append_jsonl_unlocked("missions.jsonl", &mission)?;
-        Ok(wave)
-    }
-
-    /// Append one [`MissionLogEntry`] under the store lock, atomically
-    /// allocating its monotonic `revision` the same way
-    /// the retired Legacy Wave writer allocated an index: read the
-    /// current max for this `mission_id`, then `+ 1` (starting at 1). This
-    /// is the Mission Log's ONLY write operation (ADR 0051) — there is no
-    /// update or delete, so unlike Legacy Wave there is no compare-and-append
-    /// variant to race against.
-    pub fn append_mission_log_entry(
-        &self,
-        mut entry: MissionLogEntry,
-    ) -> StoreResult<MissionLogEntry> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        if entry.body.trim().is_empty() {
-            return Err(StoreError::Conflict(
-                "mission log entry body must not be empty".to_string(),
-            ));
-        }
-        if entry.actor.trim().is_empty() {
-            return Err(StoreError::Conflict(
-                "mission log entry actor must not be empty".to_string(),
-            ));
-        }
-        let missions = latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
-            mission.id.clone()
-        });
-        if !missions.contains_key(&entry.mission_id) {
-            return Err(StoreError::Conflict(format!(
-                "mission not found: {}",
-                entry.mission_id
-            )));
-        }
-        let existing = self.read_jsonl::<MissionLogEntry>("mission_log.jsonl")?;
-        if existing.iter().any(|row| row.id == entry.id) {
-            return Err(StoreError::Conflict(format!(
-                "mission log entry already exists: {}",
-                entry.id
-            )));
-        }
-        entry.revision = existing
-            .iter()
-            .filter(|row| row.mission_id == entry.mission_id)
-            .map(|row| row.revision)
-            .max()
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or_else(|| {
-                StoreError::Conflict(format!(
-                    "mission log revision space is exhausted for mission {}",
-                    entry.mission_id
-                ))
-            })?;
-        self.append_jsonl_unlocked("mission_log.jsonl", &entry)?;
-        Ok(entry)
-    }
-
-    /// Atomically close one Mission. Prior to ADR 0051 this required every
-    /// ordered Legacy Wave to have an accepted, completed gate; Legacy Wave write commands
-    /// (including the gate) are now retired, so a native post-cutover
-    /// Mission always has empty `legacy_wave_ids` and closes on its own outcome —
-    /// the Host records `kind = closeout_evidence` in the Mission Log
-    /// beforehand by convention, not as a store-enforced precondition (ADR
-    /// 0051 "Mission closeout evidence becomes a ... Log entry instead of a
-    /// separate Legacy-Wave-outcome convention"). A legacy Mission that already
-    /// accumulated `legacy_wave_ids` before the cutover keeps the original
-    /// Legacy-Wave-gate requirement so its in-flight contract does not change
-    /// underneath it; no NEW Mission can reach that branch because
-    /// `insert_mission` rejects Legacy Wave membership. The historical set is
-    /// still checked under the same store lock as the Mission CAS.
-    pub fn compare_and_close_mission(&self, expected: &Mission, next: &Mission) -> StoreResult<()> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        let current = latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
-            mission.id.clone()
-        })
-        .remove(&expected.id)
-        .ok_or_else(|| StoreError::Conflict(format!("mission not found: {}", expected.id)))?;
-        if current != *expected {
-            return Err(StoreError::Conflict(format!(
-                "mission {} changed concurrently; retry the operation",
-                expected.id
-            )));
-        }
-        if !current.legacy_wave_ids.is_empty() {
-            let waves = latest_by_id(self.read_jsonl::<LegacyWave>("waves.jsonl")?, |wave| {
-                wave.id.clone()
-            });
-            let mut actual_legacy_wave_ids = waves
-                .values()
-                .filter(|wave| wave.mission_id == current.id)
-                .map(|wave| (wave.index, wave.id.clone()))
-                .collect::<Vec<_>>();
-            actual_legacy_wave_ids
-                .sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
-            let actual_legacy_wave_ids = actual_legacy_wave_ids
-                .into_iter()
-                .map(|(_, id)| id)
-                .collect::<Vec<_>>();
-            if actual_legacy_wave_ids != current.legacy_wave_ids {
-                return Err(StoreError::Conflict(format!(
-                    "mission {} Legacy Wave membership changed or is inconsistent; retry closeout",
-                    current.id
-                )));
-            }
-            for wave_id in &current.legacy_wave_ids {
-                let wave = waves.get(wave_id).ok_or_else(|| {
-                    StoreError::Conflict(format!(
-                        "mission {} references missing Legacy Wave {wave_id}",
-                        current.id
-                    ))
-                })?;
-                if wave.mission_id != current.id
-                    || wave.status != LegacyWaveStatus::Completed
-                    || wave.gate_status != LegacyWaveGateStatus::Accepted
-                {
-                    return Err(StoreError::Conflict(format!(
-                        "mission {} cannot close: Legacy Wave {} is status {:?} with gate {:?}",
-                        current.id, wave.id, wave.status, wave.gate_status
-                    )));
-                }
-            }
-        }
-        if next.id != current.id
-            || next.status != MissionStatus::Completed
-            || next.outcome_summary.as_deref().is_none_or(str::is_empty)
-            || next.completed_by.as_deref().is_none_or(str::is_empty)
-            || next.completed_at.as_deref().is_none_or(str::is_empty)
-        {
-            return Err(StoreError::Conflict(
-                "mission closeout must preserve identity and record completed status, outcome, actor, and timestamp"
-                    .to_string(),
-            ));
-        }
-        self.append_jsonl_unlocked("missions.jsonl", next)
-    }
-
     pub fn append_member(&self, value: &ProviderLaunchProfile) -> StoreResult<()> {
         self.append_jsonl("provider_launch_profiles.jsonl", value)
     }
@@ -1768,50 +1488,6 @@ impl HarnessStore {
 
     /// Test-only reconstruction of the pre-ADR 0051 compare-and-append path.
     /// Production exposes historical reads but no Legacy Wave maintenance writer.
-    #[cfg(test)]
-    fn compare_and_append_legacy_wave_for_test(
-        &self,
-        expected: &LegacyWave,
-        next: &LegacyWave,
-    ) -> StoreResult<()> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        let current = latest_by_id(self.read_jsonl::<LegacyWave>("waves.jsonl")?, |wave| {
-            wave.id.clone()
-        })
-        .remove(&expected.id)
-        .ok_or_else(|| StoreError::Conflict(format!("wave not found: {}", expected.id)))?;
-        if current != *expected {
-            return Err(StoreError::Conflict(format!(
-                "wave {} changed concurrently; retry the operation",
-                expected.id
-            )));
-        }
-        let mut missions = latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
-            mission.id.clone()
-        });
-        let mut mission = missions.remove(&next.mission_id).ok_or_else(|| {
-            StoreError::Conflict(format!("native mission not found: {}", next.mission_id))
-        })?;
-        if matches!(
-            mission.status,
-            MissionStatus::Completed | MissionStatus::Cancelled
-        ) {
-            return Err(StoreError::Conflict(format!(
-                "mission {} is {:?} and its Legacy Waves are immutable",
-                mission.id, mission.status
-            )));
-        }
-        mission.status = match next.gate_status {
-            LegacyWaveGateStatus::Blocked => MissionStatus::Blocked,
-            LegacyWaveGateStatus::Accepted
-            | LegacyWaveGateStatus::Revise
-            | LegacyWaveGateStatus::Pending => MissionStatus::Running,
-        };
-        mission.updated_at = next.updated_at.clone();
-        self.append_jsonl_unlocked("waves.jsonl", next)?;
-        self.append_jsonl_unlocked("missions.jsonl", &mission)
-    }
 
     /// Reconstruct one raw historical ProviderRuntimeProjection during an
     /// explicit Legacy import. It is intentionally not a current admission
@@ -9124,7 +8800,7 @@ mod tests {
     use firm_core::{
         DelegationMode, DelegationStatus, HostAttentionKind, LegacyWave, LegacyWaveExecutorKind,
         LegacyWaveGateStatus, LegacyWaveStatus, MemberActionStatus, MemberExecutionDriver,
-        MemberRunStatus, MemberWorkspaceSnapshot, Mission, MissionLogEntry, MissionLogEntryKind,
+        MemberRunStatus, MemberWorkspaceSnapshot, Mission,
         MissionStatus, OrdinaryMessageBoundary, ProviderCompatibilityBlockBoundary,
         ProviderCompatibilityBlockSource, ProviderDispatchAttempt, ProviderDispatchIntent,
         ProviderEventFidelity, ProviderFeatureMode, ProviderInteractionMode,
@@ -10446,11 +10122,14 @@ mod tests {
         accepted_wave.accepted_by = Some("host".into());
         accepted_wave.accepted_at = Some("unix-ms:2".into());
         accepted_wave.updated_at = "unix-ms:2".into();
+        // The test-only Legacy Wave writer is gone with DOC-108; historical
+        // rows are written to the ledger directly, exactly like an export
+        // restore.
         store
-            .append_legacy_wave_for_test(&wave)
+            .append_jsonl("waves.jsonl", &wave)
             .expect("append legacy wave");
         store
-            .append_legacy_wave_for_test(&accepted_wave)
+            .append_jsonl("waves.jsonl", &accepted_wave)
             .expect("append accepted legacy wave");
 
         assert_eq!(store.missions().expect("raw missions").len(), 2);
@@ -10467,41 +10146,6 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
-    #[test]
-    fn current_mission_insert_rejects_legacy_wave_membership() {
-        let root = std::env::temp_dir().join(format!(
-            "firm-store-current-mission-no-legacy-wave-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock")
-                .as_millis()
-        ));
-        let store = HarnessStore::new(&root);
-        let error = store
-            .insert_mission(&Mission {
-                id: "mission-new".into(),
-                title: "Current Mission".into(),
-                objective: "Use Mission Log rather than Legacy Wave".into(),
-                context: String::new(),
-                desired_outcome: None,
-                status: MissionStatus::Planned,
-                legacy_wave_ids: vec!["wave-forged".into()],
-                outcome_summary: None,
-                completed_by: None,
-                created_at: "unix-ms:1".into(),
-                updated_at: "unix-ms:1".into(),
-                completed_at: None,
-            })
-            .expect_err("new Mission must not attach Legacy Wave history");
-        assert!(
-            error
-                .to_string()
-                .contains("NEW_MISSION_CANNOT_REFERENCE_LEGACY_WAVE"),
-            "error: {error}"
-        );
-        assert!(store.missions().expect("missions").is_empty());
-        std::fs::remove_dir_all(root).expect("remove temp store");
-    }
 
     /// ADR 0051 changed `compare_and_close_mission` to skip the Legacy-Wave gate
     /// check entirely for a Mission whose `legacy_wave_ids` is empty (the only
@@ -10510,524 +10154,11 @@ mod tests {
     /// accumulated `legacy_wave_ids` before the cutover still requires every one
     /// of them to be an accepted, completed Legacy Wave -- its in-flight contract
     /// does not silently change underneath it.
-    #[test]
-    fn mission_close_with_legacy_wave_ids_still_requires_accepted_gate() {
-        let root = std::env::temp_dir().join(format!(
-            "firm-store-legacy-mission-close-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock")
-                .as_millis()
-        ));
-        let store = HarnessStore::new(&root);
-        let mission = Mission {
-            id: "mission-legacy".into(),
-            title: "Pre-cutover Mission".into(),
-            objective: "Already has Legacy Wave membership from before ADR 0051".into(),
-            context: String::new(),
-            desired_outcome: None,
-            status: MissionStatus::Running,
-            legacy_wave_ids: vec!["wave-legacy".into()],
-            outcome_summary: None,
-            completed_by: None,
-            created_at: "unix-ms:1".into(),
-            updated_at: "unix-ms:1".into(),
-            completed_at: None,
-        };
-        store.append_mission(&mission).expect("append mission");
-        let pending_wave = LegacyWave {
-            id: "wave-legacy".into(),
-            mission_id: "mission-legacy".into(),
-            index: 1,
-            title: "Legacy Wave".into(),
-            objective: "Not yet accepted".into(),
-            context: String::new(),
-            revision: 1,
-            updated_by: Some("host".into()),
-            exit_criteria: None,
-            status: LegacyWaveStatus::Running,
-            executor_kind: LegacyWaveExecutorKind::Host,
-            executor_run_ids: Vec::new(),
-            accepted_run_id: None,
-            plan_note: None,
-            outcome_summary: None,
-            artifact_refs: Vec::new(),
-            gate_status: LegacyWaveGateStatus::Pending,
-            gate_note: None,
-            accepted_by: None,
-            accepted_at: None,
-            created_at: "unix-ms:1".into(),
-            updated_at: "unix-ms:1".into(),
-        };
-        store
-            .append_legacy_wave_for_test(&pending_wave)
-            .expect("append legacy wave");
 
-        let mut closed = mission.clone();
-        closed.status = MissionStatus::Completed;
-        closed.outcome_summary = Some("done".into());
-        closed.completed_by = Some("host".into());
-        closed.completed_at = Some("unix-ms:2".into());
-        closed.updated_at = "unix-ms:2".into();
-        let error = store
-            .compare_and_close_mission(&mission, &closed)
-            .expect_err("a pending legacy Wave must still block closeout");
-        assert!(
-            error.to_string().contains("cannot close: Legacy Wave"),
-            "error: {error}"
-        );
 
-        let mut accepted_wave = pending_wave.clone();
-        accepted_wave.status = LegacyWaveStatus::Completed;
-        accepted_wave.gate_status = LegacyWaveGateStatus::Accepted;
-        accepted_wave.accepted_by = Some("host".into());
-        accepted_wave.accepted_at = Some("unix-ms:2".into());
-        accepted_wave.updated_at = "unix-ms:2".into();
-        store
-            .compare_and_append_legacy_wave_for_test(&pending_wave, &accepted_wave)
-            .expect("accept the legacy wave");
 
-        // The test-only Legacy Wave CAS folds the gate outcome into Mission.phase
-        // as a side effect (line ~754 above), so the CAS baseline for close
-        // must be the freshly stored row, not the pre-gate local `mission`.
-        let after_gate = store
-            .latest_missions()
-            .expect("latest missions")
-            .into_iter()
-            .find(|row| row.id == "mission-legacy")
-            .expect("mission row after gate acceptance");
-        let mut closed_after_gate = after_gate.clone();
-        closed_after_gate.status = MissionStatus::Completed;
-        closed_after_gate.outcome_summary = Some("done".into());
-        closed_after_gate.completed_by = Some("host".into());
-        closed_after_gate.completed_at = Some("unix-ms:3".into());
-        closed_after_gate.updated_at = "unix-ms:3".into();
-        store
-            .compare_and_close_mission(&after_gate, &closed_after_gate)
-            .expect("an accepted legacy Wave allows closeout, same as before ADR 0051");
-        assert_eq!(
-            store
-                .latest_missions()
-                .expect("latest missions")
-                .into_iter()
-                .find(|row| row.id == "mission-legacy")
-                .expect("closed mission row")
-                .status,
-            MissionStatus::Completed
-        );
 
-        std::fs::remove_dir_all(root).expect("remove temp store");
-    }
 
-    #[test]
-    fn legacy_wave_import_and_event_updates_are_concurrency_safe() {
-        let root = std::env::temp_dir().join(format!(
-            "firm-store-native-concurrency-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock")
-                .as_millis()
-        ));
-        let store = Arc::new(HarnessStore::new(&root));
-        store
-            .insert_mission(&Mission {
-                id: "mission-concurrent".into(),
-                title: "Concurrent Mission".into(),
-                objective: "Keep native joins lossless".into(),
-                context: String::new(),
-                desired_outcome: None,
-                status: MissionStatus::Planned,
-                legacy_wave_ids: Vec::new(),
-                outcome_summary: None,
-                completed_by: None,
-                created_at: "unix-ms:1".into(),
-                updated_at: "unix-ms:1".into(),
-                completed_at: None,
-            })
-            .expect("insert mission");
-
-        let wave_barrier = Arc::new(Barrier::new(2));
-        let wave_handles = ["wave-a", "wave-b"].map(|id| {
-            let store = Arc::clone(&store);
-            let barrier = Arc::clone(&wave_barrier);
-            std::thread::spawn(move || {
-                barrier.wait();
-                store.insert_legacy_wave_and_update_mission_for_test(
-                    LegacyWave {
-                        id: id.into(),
-                        mission_id: "mission-concurrent".into(),
-                        index: 0,
-                        title: id.into(),
-                        objective: "one ordered wave".into(),
-                        context: String::new(),
-                        revision: 1,
-                        updated_by: Some("host".into()),
-                        exit_criteria: None,
-                        status: LegacyWaveStatus::Planned,
-                        executor_kind: LegacyWaveExecutorKind::AgentTeam,
-                        executor_run_ids: Vec::new(),
-                        accepted_run_id: None,
-                        plan_note: None,
-                        outcome_summary: None,
-                        artifact_refs: Vec::new(),
-                        gate_status: LegacyWaveGateStatus::Pending,
-                        gate_note: None,
-                        accepted_by: None,
-                        accepted_at: None,
-                        created_at: "unix-ms:2".into(),
-                        updated_at: "unix-ms:2".into(),
-                    },
-                    None,
-                    "unix-ms:2",
-                )
-            })
-        });
-        for handle in wave_handles {
-            handle.join().expect("wave thread").expect("insert wave");
-        }
-        let waves = store.latest_legacy_waves().expect("latest waves");
-        assert_eq!(
-            waves.iter().map(|wave| wave.index).collect::<Vec<_>>(),
-            vec![1, 2]
-        );
-        let mission = store.latest_missions().expect("latest missions").remove(0);
-        assert_eq!(
-            mission.legacy_wave_ids,
-            vec![waves[0].id.clone(), waves[1].id.clone()]
-        );
-
-        let mut max_index_wave = waves[0].clone();
-        max_index_wave.id = "wave-max-index".into();
-        max_index_wave.index = u32::MAX;
-        max_index_wave.executor_run_ids.clear();
-        store
-            .insert_legacy_wave_and_update_mission_for_test(
-                max_index_wave.clone(),
-                Some(u32::MAX),
-                "unix-ms:2",
-            )
-            .expect("insert maximum explicit wave index");
-        let mut overflow_wave = max_index_wave;
-        overflow_wave.id = "wave-overflow".into();
-        let error = store
-            .insert_legacy_wave_and_update_mission_for_test(overflow_wave, None, "unix-ms:2")
-            .expect_err("implicit wave index must not overflow");
-        assert!(
-            error.to_string().contains("index space is exhausted"),
-            "error: {error}"
-        );
-
-        let event_run_id = "team-run-concurrent-events".to_string();
-        seed_current_team_run_fixture(
-            &store,
-            &AgentTeamRun {
-                id: event_run_id.clone(),
-                agent_team_id: "team-concurrent-events".into(),
-                execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
-                project_binding_id: "project-test".into(),
-                previous_run_id: None,
-                host_surface: "test".into(),
-                host_thread_id: None,
-                host_actor: None,
-                host_control_mode: Default::default(),
-                objective: "concurrent current-event sequence".into(),
-                execution_root: None,
-                status: TeamRunStatus::Running,
-                member_run_ids: Vec::new(),
-                budget_limit_usd: None,
-                created_at: "unix-ms:3".into(),
-                updated_at: "unix-ms:3".into(),
-                completed_at: None,
-            },
-            &[],
-        );
-
-        let event_barrier = Arc::new(Barrier::new(8));
-        let event_handles = (0..8)
-            .map(|index| {
-                let store = Arc::clone(&store);
-                let barrier = Arc::clone(&event_barrier);
-                let event_run_id = event_run_id.clone();
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    store.append_team_run_event_next(TeamRunEvent {
-                        id: format!("event-{index}"),
-                        seq: 0,
-                        team_run_id: event_run_id,
-                        source_kind: TeamRunEventSourceKind::Host,
-                        member_run_id: None,
-                        delegation_run_id: None,
-                        entity_type: "message".into(),
-                        entity_id: format!("message-{index}"),
-                        operation: "created".into(),
-                        summary: "concurrent".into(),
-                        occurred_at: "unix-ms:4".into(),
-                    })
-                })
-            })
-            .collect::<Vec<_>>();
-        for handle in event_handles {
-            handle.join().expect("event thread").expect("append event");
-        }
-        let mut seqs = store
-            .legacy_team_run_events()
-            .expect("events")
-            .into_iter()
-            .map(|event| event.seq)
-            .collect::<Vec<_>>();
-        seqs.sort_unstable();
-        assert_eq!(seqs, (1..=8).collect::<Vec<_>>());
-
-        std::fs::remove_dir_all(root).expect("remove temp store");
-    }
-
-    /// A minimal native Mission for Mission Log tests below.
-    fn mission_log_test_mission(id: &str) -> Mission {
-        Mission {
-            id: id.into(),
-            title: "Ship the Mission Log cutover".into(),
-            objective: "Prove append-only Mission Log semantics".into(),
-            context: String::new(),
-            desired_outcome: None,
-            status: MissionStatus::Planned,
-            legacy_wave_ids: Vec::new(),
-            outcome_summary: None,
-            completed_by: None,
-            created_at: "unix-ms:1".into(),
-            updated_at: "unix-ms:1".into(),
-            completed_at: None,
-        }
-    }
-
-    #[test]
-    fn mission_log_entries_round_trip_with_ordered_revisions_and_tail() {
-        let root = std::env::temp_dir().join(format!(
-            "firm-store-mission-log-round-trip-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock")
-                .as_millis()
-        ));
-        let store = HarnessStore::new(&root);
-        store
-            .insert_mission(&mission_log_test_mission("mission-log-1"))
-            .expect("insert mission");
-
-        let kinds = [
-            MissionLogEntryKind::Judgment,
-            MissionLogEntryKind::Replan,
-            MissionLogEntryKind::Recovery,
-            MissionLogEntryKind::CloseoutEvidence,
-        ];
-        for (index, kind) in kinds.iter().enumerate() {
-            let appended = store
-                .append_mission_log_entry(MissionLogEntry {
-                    id: format!("entry-{index}"),
-                    mission_id: "mission-log-1".into(),
-                    revision: 0, // store-assigned; must be overwritten below
-                    kind: *kind,
-                    body: format!("entry body {index}"),
-                    actor: "host".into(),
-                    created_at: format!("unix-ms:{index}"),
-                })
-                .unwrap_or_else(|error| panic!("append entry {index}: {error}"));
-            // Store-assigned, monotonic starting at 1 -- the CLI's placeholder
-            // `revision: 0` is never trusted back.
-            assert_eq!(appended.revision, (index + 1) as u32);
-        }
-
-        // A second Mission's entries never leak into the first Mission's
-        // ledger, exactly like Wave's per-mission index scoping.
-        store
-            .insert_mission(&mission_log_test_mission("mission-log-2"))
-            .expect("insert other mission");
-        store
-            .append_mission_log_entry(MissionLogEntry {
-                id: "entry-other-mission".into(),
-                mission_id: "mission-log-2".into(),
-                revision: 0,
-                kind: MissionLogEntryKind::Judgment,
-                body: "unrelated mission's judgment".into(),
-                actor: "host".into(),
-                created_at: "unix-ms:9".into(),
-            })
-            .expect("append other-mission entry");
-
-        let entries = store
-            .mission_log_entries("mission-log-1")
-            .expect("mission log entries");
-        assert_eq!(entries.len(), 4);
-        assert_eq!(
-            entries
-                .iter()
-                .map(|entry| entry.revision)
-                .collect::<Vec<_>>(),
-            vec![1, 2, 3, 4]
-        );
-        assert_eq!(entries[0].kind, MissionLogEntryKind::Judgment);
-        assert_eq!(entries[3].kind, MissionLogEntryKind::CloseoutEvidence);
-
-        // tail(2) returns the last two, oldest-of-the-tail first (Unix `tail`
-        // ordering), never the unrelated Mission's row.
-        let tail = store
-            .mission_log_tail("mission-log-1", 2)
-            .expect("mission log tail");
-        assert_eq!(
-            tail.iter().map(|entry| entry.revision).collect::<Vec<_>>(),
-            vec![3, 4]
-        );
-
-        // tail(n) larger than the ledger returns every row, not an error.
-        let full_tail = store
-            .mission_log_tail("mission-log-1", 100)
-            .expect("mission log tail overshoot");
-        assert_eq!(full_tail.len(), 4);
-
-        // A Mission with no entries yet has an empty tail, not an error --
-        // the CLI/skill treat this as "no mission log yet", not a failure.
-        store
-            .insert_mission(&mission_log_test_mission("mission-log-empty"))
-            .expect("insert empty mission");
-        assert_eq!(
-            store
-                .mission_log_tail("mission-log-empty", 3)
-                .expect("empty tail"),
-            Vec::new()
-        );
-
-        // The raw cross-mission ledger sees every row in append order.
-        assert_eq!(store.mission_log().expect("raw mission log").len(), 5);
-
-        std::fs::remove_dir_all(root).expect("remove temp store");
-    }
-
-    #[test]
-    fn mission_log_entry_rejects_empty_body_empty_actor_and_missing_mission() {
-        let root = std::env::temp_dir().join(format!(
-            "firm-store-mission-log-validation-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock")
-                .as_millis()
-        ));
-        let store = HarnessStore::new(&root);
-        store
-            .insert_mission(&mission_log_test_mission("mission-log-validate"))
-            .expect("insert mission");
-
-        let base = MissionLogEntry {
-            id: "entry-invalid".into(),
-            mission_id: "mission-log-validate".into(),
-            revision: 0,
-            kind: MissionLogEntryKind::Judgment,
-            body: "   ".into(),
-            actor: "host".into(),
-            created_at: "unix-ms:1".into(),
-        };
-        let empty_body_error = store
-            .append_mission_log_entry(base.clone())
-            .expect_err("whitespace-only body must be rejected");
-        assert!(
-            empty_body_error
-                .to_string()
-                .contains("body must not be empty"),
-            "error: {empty_body_error}"
-        );
-
-        let mut empty_actor = base.clone();
-        empty_actor.body = "a real judgment".into();
-        empty_actor.actor = "  ".into();
-        let empty_actor_error = store
-            .append_mission_log_entry(empty_actor)
-            .expect_err("whitespace-only actor must be rejected");
-        assert!(
-            empty_actor_error
-                .to_string()
-                .contains("actor must not be empty"),
-            "error: {empty_actor_error}"
-        );
-
-        let mut missing_mission = base.clone();
-        missing_mission.body = "a real judgment".into();
-        missing_mission.mission_id = "mission-log-does-not-exist".into();
-        let missing_mission_error = store
-            .append_mission_log_entry(missing_mission)
-            .expect_err("unknown mission must be rejected");
-        assert!(
-            missing_mission_error
-                .to_string()
-                .contains("mission not found"),
-            "error: {missing_mission_error}"
-        );
-
-        // No invalid attempt above left a row behind.
-        assert_eq!(
-            store
-                .mission_log_entries("mission-log-validate")
-                .expect("mission log entries")
-                .len(),
-            0
-        );
-
-        std::fs::remove_dir_all(root).expect("remove temp store");
-    }
-
-    #[test]
-    fn mission_log_entry_revision_is_monotonic_under_concurrent_append() {
-        let root = std::env::temp_dir().join(format!(
-            "firm-store-mission-log-concurrency-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock")
-                .as_millis()
-        ));
-        let store = Arc::new(HarnessStore::new(&root));
-        store
-            .insert_mission(&mission_log_test_mission("mission-log-concurrent"))
-            .expect("insert mission");
-
-        let barrier = Arc::new(Barrier::new(4));
-        let handles = ["a", "b", "c", "d"].map(|tag| {
-            let store = Arc::clone(&store);
-            let barrier = Arc::clone(&barrier);
-            std::thread::spawn(move || {
-                barrier.wait();
-                store.append_mission_log_entry(MissionLogEntry {
-                    id: format!("entry-concurrent-{tag}"),
-                    mission_id: "mission-log-concurrent".into(),
-                    revision: 0,
-                    kind: MissionLogEntryKind::Judgment,
-                    body: format!("concurrent judgment {tag}"),
-                    actor: "host".into(),
-                    created_at: "unix-ms:1".into(),
-                })
-            })
-        });
-        let mut revisions = Vec::new();
-        for handle in handles {
-            revisions.push(
-                handle
-                    .join()
-                    .expect("append thread")
-                    .expect("append entry")
-                    .revision,
-            );
-        }
-        revisions.sort_unstable();
-        // Four concurrent appends against the same Mission never collide or
-        // skip: the store lock serializes the max-plus-one allocation exactly
-        // like insert_wave_and_update_mission's index allocation.
-        assert_eq!(revisions, vec![1, 2, 3, 4]);
-        let stored_revisions = store
-            .mission_log_entries("mission-log-concurrent")
-            .expect("mission log entries")
-            .into_iter()
-            .map(|entry| entry.revision)
-            .collect::<Vec<_>>();
-        assert_eq!(stored_revisions, vec![1, 2, 3, 4]);
-
-        std::fs::remove_dir_all(root).expect("remove temp store");
-    }
 
     #[test]
     fn concurrent_appends_write_complete_jsonl_rows() {
@@ -11376,7 +10507,7 @@ mod tests {
             .expect("register fixture project");
         let mission_id = format!("mission-{}", run.id);
         store
-            .insert_mission(&Mission {
+            .append_mission(&Mission {
                 id: mission_id.clone(),
                 title: mission_id.clone(),
                 objective: run.objective.clone(),
@@ -14652,7 +13783,7 @@ mod tests {
             let run_id = format!("run-{name}-{suffix}");
             let member = make_member(&run_id, suffix);
             store
-                .insert_mission(&Mission {
+                .append_mission(&Mission {
                     id: mission_id.clone(),
                     title: format!("Mission {suffix}"),
                     objective: format!("Prove Team {suffix} delegation"),

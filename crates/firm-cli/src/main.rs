@@ -20,8 +20,8 @@ use harness_core::{
     HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind, HostControlMode,
     HostDispatchConfig, LaunchMcp, LaunchPermission, LaunchSpec, LegacyWave, MemberAction,
     MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver, MemberRunStatus,
-    MemberWorkspaceSnapshot, MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind,
-    MissionStatus, NativeSessionAvailability, NativeSessionRef, NodeDaemonLeaseStatus,
+    MemberWorkspaceSnapshot, MessageTerminalSource, MissionLogEntry, NativeSessionAvailability,
+    NativeSessionRef, NodeDaemonLeaseStatus,
     NodeProjectRegistration, NodeProjectRegistrationStatus, OrdinaryMessageBoundary,
     ProjectContext, ProjectKind, ProviderAccountRef, ProviderCapabilities,
     ProviderCapacityConfidence, ProviderCapacityEvidence, ProviderCapacitySnapshot,
@@ -50,6 +50,10 @@ use harness_store::{
     canonical_surface, CanonicalMemberRunAdmission, HarnessStore, HostAttentionClaimResult,
     MessageDeliveryClaimResult, StoreError,
 };
+
+// Mission/MissionStatus remain only for cfg(test) legacy-history fixtures.
+#[cfg(test)]
+use harness_core::{Mission, MissionStatus};
 use thiserror::Error;
 
 mod agentfirm_api;
@@ -4089,51 +4093,6 @@ fn mission_log_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     Ok(())
 }
 
-/// Append one Mission Log entry. `revision` is store-assigned (monotonic per
-/// `mission_id`); callers never choose it. Mirrors `create_wave`'s
-/// validate-then-insert shape, but there is no compare-and-append variant
-/// because a Mission Log entry, once appended, is never revised in place.
-pub(crate) fn create_mission_log_entry(
-    store: &HarnessStore,
-    mission_id: &str,
-    kind: &str,
-    body: &str,
-    actor: Option<String>,
-) -> CliResult<MissionLogEntry> {
-    if mission_id.trim().is_empty() {
-        return Err(CliError::Usage(
-            "mission log entry mission id must not be empty".to_string(),
-        ));
-    }
-    if body.trim().is_empty() {
-        return Err(CliError::Usage(
-            "mission log entry body must not be empty".to_string(),
-        ));
-    }
-    let entry = MissionLogEntry {
-        id: generated_id("mission-log"),
-        mission_id: mission_id.to_string(),
-        revision: 0, // store-assigned on append
-        kind: parse_mission_log_kind(kind)?,
-        body: body.to_string(),
-        actor: actor.unwrap_or_else(|| "host".to_string()),
-        created_at: now_string(),
-    };
-    store_conflict_as_usage(store.append_mission_log_entry(entry))
-}
-
-pub(crate) fn parse_mission_log_kind(value: &str) -> CliResult<MissionLogEntryKind> {
-    match value {
-        "judgment" => Ok(MissionLogEntryKind::Judgment),
-        "replan" => Ok(MissionLogEntryKind::Replan),
-        "recovery" => Ok(MissionLogEntryKind::Recovery),
-        "closeout_evidence" => Ok(MissionLogEntryKind::CloseoutEvidence),
-        other => Err(CliError::Usage(format!(
-            "unknown mission log kind `{other}` (judgment|replan|recovery|closeout_evidence)"
-        ))),
-    }
-}
-
 /// Render Mission Log entries as plain text for a terminal reader — the
 /// non-JSON `mission log show` output and the mandatory-reader tail
 /// `team-run recover` prints before its recovery report. Entries are
@@ -4160,57 +4119,6 @@ fn format_mission_log_entries_text(entries: &[MissionLogEntry]) -> String {
         .collect::<Vec<_>>()
         .join("\n\n")
 }
-
-/// Complete durable Mission intent. Prior to ADR 0051 this required every
-/// ordered Legacy Wave to have an explicit Host advance outcome; those write
-/// commands are now retired, so a native post-cutover Mission closes on its
-/// own outcome (the Host records `kind = closeout_evidence` in the Mission
-/// Log beforehand by convention — see `HarnessStore::compare_and_close_mission`).
-/// Closeout is idempotent for the same outcome and immutable for a
-/// conflicting second outcome. It never changes linked Team lifecycle.
-pub(crate) fn close_mission(
-    store: &HarnessStore,
-    mission_id: &str,
-    outcome: &str,
-    completed_by: &str,
-) -> CliResult<Mission> {
-    if outcome.trim().is_empty() || completed_by.trim().is_empty() {
-        return Err(CliError::Usage(
-            "mission close requires a non-empty outcome and completed-by actor".to_string(),
-        ));
-    }
-    let mission = store
-        .latest_missions()?
-        .into_iter()
-        .find(|mission| mission.id == mission_id)
-        .ok_or_else(|| CliError::Usage(format!("mission not found: {mission_id}")))?;
-    if mission.status == MissionStatus::Completed {
-        if mission.outcome_summary.as_deref() == Some(outcome)
-            && mission.completed_by.as_deref() == Some(completed_by)
-        {
-            return Ok(mission);
-        }
-        return Err(CliError::Usage(format!(
-            "mission {mission_id} is already completed with a different outcome"
-        )));
-    }
-    if mission.status == MissionStatus::Cancelled {
-        return Err(CliError::Usage(format!(
-            "mission {mission_id} is cancelled and cannot be completed"
-        )));
-    }
-    let expected = mission.clone();
-    let now = now_string();
-    let mut completed = mission;
-    completed.status = MissionStatus::Completed;
-    completed.outcome_summary = Some(outcome.to_string());
-    completed.completed_by = Some(completed_by.to_string());
-    completed.completed_at = Some(now.clone());
-    completed.updated_at = now;
-    store_conflict_as_usage(store.compare_and_close_mission(&expected, &completed))?;
-    Ok(completed)
-}
-
 fn legacy_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(args, "legacy wave")?;
     match args[0].as_str() {
@@ -4307,80 +4215,6 @@ pub(crate) fn retired_company_error(command: &str) -> CliError {
     CliError::Usage(format!(
         "`harness company {command}` was retired with the legacy CompanyOS cutover (DOC-108): the Company Store registry and its Docs/Organization/Approval/Finance writers and reads are closed. Use `harness team`, `harness team-run work`, the read-only Global Work aggregate `harness work list|show`, and `harness legacy-company-os export|verify` for historical data."
     ))
-}
-
-/// Create one native Mission.
-pub(crate) fn create_mission(
-    store: &HarnessStore,
-    id: Option<String>,
-    title: &str,
-    objective: &str,
-    desired_outcome: Option<String>,
-    context: Option<String>,
-) -> CliResult<Mission> {
-    let id = id.unwrap_or_else(|| generated_id("mission"));
-    if id.trim().is_empty() {
-        return Err(CliError::Usage("mission id must not be empty".to_string()));
-    }
-    if title.trim().is_empty() || objective.trim().is_empty() {
-        return Err(CliError::Usage(
-            "mission title and objective must not be empty".to_string(),
-        ));
-    }
-    if desired_outcome
-        .as_ref()
-        .is_some_and(|outcome| outcome.trim().is_empty())
-    {
-        return Err(CliError::Usage(
-            "mission desired outcome must not be empty when supplied".to_string(),
-        ));
-    }
-    let mission = Mission {
-        id,
-        title: title.to_string(),
-        objective: objective.to_string(),
-        context: context.unwrap_or_default(),
-        desired_outcome,
-        status: MissionStatus::Planned,
-        legacy_wave_ids: Vec::new(),
-        outcome_summary: None,
-        completed_by: None,
-        created_at: now_string(),
-        updated_at: now_string(),
-        completed_at: None,
-    };
-    store_conflict_as_usage(store.insert_mission(&mission))?;
-    Ok(mission)
-}
-
-pub(crate) fn revise_mission_context(
-    store: &HarnessStore,
-    mission_id: &str,
-    context: &str,
-) -> CliResult<Mission> {
-    if context.trim().is_empty() {
-        return Err(CliError::Usage(
-            "mission context must not be empty".to_string(),
-        ));
-    }
-    let mut mission = store
-        .latest_missions()?
-        .into_iter()
-        .find(|mission| mission.id == mission_id)
-        .ok_or_else(|| CliError::Usage(format!("mission not found: {mission_id}")))?;
-    if matches!(
-        mission.status,
-        MissionStatus::Completed | MissionStatus::Cancelled
-    ) {
-        return Err(CliError::Usage(format!(
-            "mission {mission_id} is terminal and cannot be revised"
-        )));
-    }
-    let expected = mission.clone();
-    mission.context = context.to_string();
-    mission.updated_at = now_string();
-    store_conflict_as_usage(store.compare_and_append_mission(&expected, &mission))?;
-    Ok(mission)
 }
 
 /// Read one Legacy Wave by id. Its write commands (`create`/`update`/
@@ -7768,7 +7602,7 @@ fn ensure_legacy_unit_test_team_binding(
         .iter()
         .any(|mission| mission.id == MISSION_ID)
     {
-        store.insert_mission(&Mission {
+        store.append_mission(&Mission {
             id: MISSION_ID.to_string(),
             title: "Unit-test mission".to_string(),
             objective: "Exercise legacy unit fixtures through the canonical Team contract"

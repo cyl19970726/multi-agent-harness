@@ -184,7 +184,7 @@ fn seed_team(store: &HarnessStore, label: &str, member_ids: &[&str]) -> AgentTea
     let team_id = format!("team-{label}");
     let run_id = format!("team-run-{label}");
     store
-        .insert_mission(&Mission {
+        .append_mission(&Mission {
             id: mission_id.clone(),
             title: "trust test".into(),
             objective: "exercise the trust kernel".into(),

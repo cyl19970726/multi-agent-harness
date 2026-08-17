@@ -1,3 +1,8 @@
+//! INACTIVE HISTORICAL (DOC-108 Stage B): the `firm-store` docs_v2 module
+//! this file covered was deleted with the legacy CompanyOS cutover (built-in
+//! Docs retirement). Kept source-only per the inactive-historical convention.
+#![cfg(any())]
+
 //! Acceptance tests for the AI-first Docs slice (ADR 0054): revision ledger,
 //! expected-revision optimistic concurrency, idempotent replay, and atomic
 //! multi-block page writes.

@@ -4,11 +4,8 @@ use thiserror::Error;
 
 pub mod agentfirm_api;
 pub mod collaboration;
-pub mod company_os;
-pub mod docs_v2;
 pub use agentfirm_api::MemberExecutionDriver;
 pub use collaboration::*;
-pub use company_os::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
