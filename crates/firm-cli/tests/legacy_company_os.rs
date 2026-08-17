@@ -93,7 +93,11 @@ fn seed_home(home: &TempHome) -> PathBuf {
             "is_git_repo": false,
         }),
     );
-    std::fs::write(project_store.join("members.jsonl"), b"{\"id\":\"member-1\"}\n").unwrap();
+    std::fs::write(
+        project_store.join("members.jsonl"),
+        b"{\"id\":\"member-1\"}\n",
+    )
+    .unwrap();
     std::fs::write(
         project_store.join("team_messages.jsonl"),
         b"{\"id\":\"tm-1\"}\n",
@@ -183,12 +187,17 @@ fn export_then_verify_round_trips_all_store_kinds() {
     let company = stores.iter().find(|s| s["id"] == "company-acme").unwrap();
     let excluded = company["excluded_locations"].as_array().unwrap();
     assert_eq!(excluded.len(), 3);
-    let reasons: Vec<&str> = excluded.iter().map(|e| e["reason"].as_str().unwrap()).collect();
+    let reasons: Vec<&str> = excluded
+        .iter()
+        .map(|e| e["reason"].as_str().unwrap())
+        .collect();
     assert!(reasons.contains(&"secret_file"));
     assert!(reasons.contains(&"provider_native_transcript"));
 
     // Secret and transcript bytes never entered the archive.
-    assert!(!archive.join("stores/company-acme/provider-sessions").exists());
+    assert!(!archive
+        .join("stores/company-acme/provider-sessions")
+        .exists());
     let mut all_bytes = Vec::new();
     for entry in walk_archive(&archive) {
         all_bytes.extend_from_slice(&std::fs::read(entry).unwrap());
@@ -272,7 +281,9 @@ fn export_rejects_selectors_and_unsafe_destinations() {
         .join("archive-inside");
     let output = run(&home, home.base(), &export_args(&inside_store));
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("outside every enumerated source store"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("outside every enumerated source store")
+    );
 }
 
 #[test]

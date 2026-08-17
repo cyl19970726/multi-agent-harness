@@ -204,48 +204,192 @@ struct LedgerContract {
 /// retirement scope.
 const LEDGER_CONTRACT: &[LedgerContract] = &[
     // --- Company OS: Docs ---
-    LedgerContract { ledger: "company_os_documents.jsonl", object_type: "company_os_document", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_blocks.jsonl", object_type: "company_os_block", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_blocks_v2.jsonl", object_type: "company_os_block_v2", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_document_revisions.jsonl", object_type: "company_os_document_revision", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_document_change_ops.jsonl", object_type: "company_os_document_change_op", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_typed_records.jsonl", object_type: "company_os_typed_record", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_relations.jsonl", object_type: "company_os_relation", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_views.jsonl", object_type: "company_os_view", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_business_modules.jsonl", object_type: "company_os_business_module", section: LedgerSection::CompanyOs },
+    LedgerContract {
+        ledger: "company_os_documents.jsonl",
+        object_type: "company_os_document",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_blocks.jsonl",
+        object_type: "company_os_block",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_blocks_v2.jsonl",
+        object_type: "company_os_block_v2",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_document_revisions.jsonl",
+        object_type: "company_os_document_revision",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_document_change_ops.jsonl",
+        object_type: "company_os_document_change_op",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_typed_records.jsonl",
+        object_type: "company_os_typed_record",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_relations.jsonl",
+        object_type: "company_os_relation",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_views.jsonl",
+        object_type: "company_os_view",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_business_modules.jsonl",
+        object_type: "company_os_business_module",
+        section: LedgerSection::CompanyOs,
+    },
     // --- Company OS: actors / Organization ---
-    LedgerContract { ledger: "company_os_human_members.jsonl", object_type: "company_os_human_member_actor", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_human_provider_launch_profiles.jsonl", object_type: "company_os_human_provider_launch_profile", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_agent_memberships.jsonl", object_type: "company_os_agent_membership_actor", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_external_participants.jsonl", object_type: "company_os_external_participant_actor", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_service_actors.jsonl", object_type: "company_os_service_actor", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_org_units.jsonl", object_type: "company_os_org_unit", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_organization_memberships.jsonl", object_type: "company_os_organization_membership", section: LedgerSection::CompanyOs },
+    LedgerContract {
+        ledger: "company_os_human_members.jsonl",
+        object_type: "company_os_human_member_actor",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_human_provider_launch_profiles.jsonl",
+        object_type: "company_os_human_provider_launch_profile",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_agent_memberships.jsonl",
+        object_type: "company_os_agent_membership_actor",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_external_participants.jsonl",
+        object_type: "company_os_external_participant_actor",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_service_actors.jsonl",
+        object_type: "company_os_service_actor",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_org_units.jsonl",
+        object_type: "company_os_org_unit",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_organization_memberships.jsonl",
+        object_type: "company_os_organization_membership",
+        section: LedgerSection::CompanyOs,
+    },
     // --- Company OS: Work / Finance / Approvals ---
-    LedgerContract { ledger: "company_os_milestones.jsonl", object_type: "company_os_milestone", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_approvals.jsonl", object_type: "company_os_approval", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_commitments.jsonl", object_type: "company_os_commitment", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_payments.jsonl", object_type: "company_os_payment", section: LedgerSection::CompanyOs },
+    LedgerContract {
+        ledger: "company_os_milestones.jsonl",
+        object_type: "company_os_milestone",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_approvals.jsonl",
+        object_type: "company_os_approval",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_commitments.jsonl",
+        object_type: "company_os_commitment",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_payments.jsonl",
+        object_type: "company_os_payment",
+        section: LedgerSection::CompanyOs,
+    },
     // --- Company OS: programmable pages + action/audit machinery ---
-    LedgerContract { ledger: "company_os_custom_page_definitions.jsonl", object_type: "company_os_custom_page_definition", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_custom_page_packages.jsonl", object_type: "company_os_custom_page_package", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_action_commands.jsonl", object_type: "company_os_action_command", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_action_policy_definitions.jsonl", object_type: "company_os_action_policy_definition", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_audit_events.jsonl", object_type: "company_os_audit_event", section: LedgerSection::CompanyOs },
-    LedgerContract { ledger: "company_os_action_audit_reservations.jsonl", object_type: "company_os_action_audit_reservation", section: LedgerSection::CompanyOs },
+    LedgerContract {
+        ledger: "company_os_custom_page_definitions.jsonl",
+        object_type: "company_os_custom_page_definition",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_custom_page_packages.jsonl",
+        object_type: "company_os_custom_page_package",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_action_commands.jsonl",
+        object_type: "company_os_action_command",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_action_policy_definitions.jsonl",
+        object_type: "company_os_action_policy_definition",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_audit_events.jsonl",
+        object_type: "company_os_audit_event",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_action_audit_reservations.jsonl",
+        object_type: "company_os_action_audit_reservation",
+        section: LedgerSection::CompanyOs,
+    },
     // --- Mission / Wave coordination ---
-    LedgerContract { ledger: "missions.jsonl", object_type: "mission", section: LedgerSection::MissionCoordination },
-    LedgerContract { ledger: "mission_log.jsonl", object_type: "mission_log_entry", section: LedgerSection::MissionCoordination },
-    LedgerContract { ledger: "waves.jsonl", object_type: "legacy_wave", section: LedgerSection::MissionCoordination },
+    LedgerContract {
+        ledger: "missions.jsonl",
+        object_type: "mission",
+        section: LedgerSection::MissionCoordination,
+    },
+    LedgerContract {
+        ledger: "mission_log.jsonl",
+        object_type: "mission_log_entry",
+        section: LedgerSection::MissionCoordination,
+    },
+    LedgerContract {
+        ledger: "waves.jsonl",
+        object_type: "legacy_wave",
+        section: LedgerSection::MissionCoordination,
+    },
     // --- AgentIdentity compatibility rows ---
-    LedgerContract { ledger: "members.jsonl", object_type: "legacy_member_identity", section: LedgerSection::AgentIdentityCompatibility },
-    LedgerContract { ledger: "agents.jsonl", object_type: "legacy_agent_identity", section: LedgerSection::AgentIdentityCompatibility },
-    LedgerContract { ledger: "agent_identities.jsonl", object_type: "agent_identity_compatibility_row", section: LedgerSection::AgentIdentityCompatibility },
-    LedgerContract { ledger: "agent_events.jsonl", object_type: "legacy_agent_event", section: LedgerSection::AgentIdentityCompatibility },
-    LedgerContract { ledger: "agent_runtimes.jsonl", object_type: "legacy_agent_runtime", section: LedgerSection::AgentIdentityCompatibility },
+    LedgerContract {
+        ledger: "members.jsonl",
+        object_type: "legacy_member_identity",
+        section: LedgerSection::AgentIdentityCompatibility,
+    },
+    LedgerContract {
+        ledger: "agents.jsonl",
+        object_type: "legacy_agent_identity",
+        section: LedgerSection::AgentIdentityCompatibility,
+    },
+    LedgerContract {
+        ledger: "agent_identities.jsonl",
+        object_type: "agent_identity_compatibility_row",
+        section: LedgerSection::AgentIdentityCompatibility,
+    },
+    LedgerContract {
+        ledger: "agent_events.jsonl",
+        object_type: "legacy_agent_event",
+        section: LedgerSection::AgentIdentityCompatibility,
+    },
+    LedgerContract {
+        ledger: "agent_runtimes.jsonl",
+        object_type: "legacy_agent_runtime",
+        section: LedgerSection::AgentIdentityCompatibility,
+    },
     // --- Retired read-only history sections ---
-    LedgerContract { ledger: "team_messages.jsonl", object_type: "team_message_projection", section: LedgerSection::RetiredHistory },
-    LedgerContract { ledger: "provider_dispatch_events.jsonl", object_type: "provider_dispatch_event", section: LedgerSection::RetiredHistory },
+    LedgerContract {
+        ledger: "team_messages.jsonl",
+        object_type: "team_message_projection",
+        section: LedgerSection::RetiredHistory,
+    },
+    LedgerContract {
+        ledger: "provider_dispatch_events.jsonl",
+        object_type: "provider_dispatch_event",
+        section: LedgerSection::RetiredHistory,
+    },
 ];
 
 /// Why a location is excluded from the archive.
@@ -293,18 +437,66 @@ struct ExclusionRule {
 }
 
 const EXCLUSION_CONTRACT: &[ExclusionRule] = &[
-    ExclusionRule { name: "provider-sessions", is_dir: true, reason: ExclusionReason::ProviderNativeTranscript },
-    ExclusionRule { name: "runtimes", is_dir: true, reason: ExclusionReason::ProviderNativeRuntimeState },
-    ExclusionRule { name: "prompts", is_dir: true, reason: ExclusionReason::UnstructuredPromptContent },
-    ExclusionRule { name: "remote-fabric", is_dir: true, reason: ExclusionReason::OutOfScopeCurrentState },
-    ExclusionRule { name: "collaboration-v1", is_dir: true, reason: ExclusionReason::OutOfScopeCurrentState },
-    ExclusionRule { name: ".env", is_dir: false, reason: ExclusionReason::SecretFile },
-    ExclusionRule { name: "secrets.json", is_dir: false, reason: ExclusionReason::SecretFile },
-    ExclusionRule { name: "tokens.json", is_dir: false, reason: ExclusionReason::SecretFile },
-    ExclusionRule { name: "auth.json", is_dir: false, reason: ExclusionReason::SecretFile },
-    ExclusionRule { name: "credentials.json", is_dir: false, reason: ExclusionReason::SecretFile },
-    ExclusionRule { name: "daemon.sock", is_dir: false, reason: ExclusionReason::EphemeralIpcOrLock },
-    ExclusionRule { name: ".registry.lock", is_dir: false, reason: ExclusionReason::EphemeralIpcOrLock },
+    ExclusionRule {
+        name: "provider-sessions",
+        is_dir: true,
+        reason: ExclusionReason::ProviderNativeTranscript,
+    },
+    ExclusionRule {
+        name: "runtimes",
+        is_dir: true,
+        reason: ExclusionReason::ProviderNativeRuntimeState,
+    },
+    ExclusionRule {
+        name: "prompts",
+        is_dir: true,
+        reason: ExclusionReason::UnstructuredPromptContent,
+    },
+    ExclusionRule {
+        name: "remote-fabric",
+        is_dir: true,
+        reason: ExclusionReason::OutOfScopeCurrentState,
+    },
+    ExclusionRule {
+        name: "collaboration-v1",
+        is_dir: true,
+        reason: ExclusionReason::OutOfScopeCurrentState,
+    },
+    ExclusionRule {
+        name: ".env",
+        is_dir: false,
+        reason: ExclusionReason::SecretFile,
+    },
+    ExclusionRule {
+        name: "secrets.json",
+        is_dir: false,
+        reason: ExclusionReason::SecretFile,
+    },
+    ExclusionRule {
+        name: "tokens.json",
+        is_dir: false,
+        reason: ExclusionReason::SecretFile,
+    },
+    ExclusionRule {
+        name: "auth.json",
+        is_dir: false,
+        reason: ExclusionReason::SecretFile,
+    },
+    ExclusionRule {
+        name: "credentials.json",
+        is_dir: false,
+        reason: ExclusionReason::SecretFile,
+    },
+    ExclusionRule {
+        name: "daemon.sock",
+        is_dir: false,
+        reason: ExclusionReason::EphemeralIpcOrLock,
+    },
+    ExclusionRule {
+        name: ".registry.lock",
+        is_dir: false,
+        reason: ExclusionReason::EphemeralIpcOrLock,
+    },
 ];
 
 /// Name-pattern exclusions beyond exact top-level names: `.env.*`,
@@ -335,8 +527,14 @@ fn exclusion_for_name(name: &str, is_dir: bool) -> Option<ExclusionReason> {
 /// store list in the manifest is auditable offline. These are registry and
 /// marker files only; none of them carries secrets.
 const CONTROL_PLANE_REGISTRIES: &[(&str, &str)] = &[
-    ("projects/registry.json", "registries/projects.registry.json"),
-    ("companies/registry.json", "registries/companies.registry.json"),
+    (
+        "projects/registry.json",
+        "registries/projects.registry.json",
+    ),
+    (
+        "companies/registry.json",
+        "registries/companies.registry.json",
+    ),
     (
         "execution-spaces/registry.json",
         "registries/execution-spaces.registry.json",
@@ -782,16 +980,16 @@ fn restore_read_proof(archive: &Path, manifest: &Manifest) -> Result<u64, String
     for store in &manifest.stores {
         for ledger in &store.ledgers {
             let restored = restore.path.join(&ledger.archive_path);
-            let bytes =
-                fs::read(&restored).map_err(|e| format!("read restored {}: {e}", restored.display()))?;
+            let bytes = fs::read(&restored)
+                .map_err(|e| format!("read restored {}: {e}", restored.display()))?;
             if sha256_hex(&bytes) != ledger.sha256 {
                 return Err(format!(
                     "restored hash mismatch for {}",
                     ledger.archive_path
                 ));
             }
-            let rows = crate::legacy_export::jsonl_records(&bytes, &ledger.archive_path)?
-                .len() as u64;
+            let rows =
+                crate::legacy_export::jsonl_records(&bytes, &ledger.archive_path)?.len() as u64;
             if rows != ledger.rows {
                 return Err(format!(
                     "restored row-count mismatch for {}: manifest {}, restored {}",
@@ -1009,8 +1207,7 @@ fn child_directories(dir: &Path) -> Result<Vec<PathBuf>, String> {
         Err(error) => return Err(format!("read directory {}: {error}", dir.display())),
     };
     for entry in read_dir {
-        let entry =
-            entry.map_err(|e| format!("read entry in {}: {e}", dir.display()))?;
+        let entry = entry.map_err(|e| format!("read entry in {}: {e}", dir.display()))?;
         let path = entry.path();
         let metadata = fs::symlink_metadata(&path)
             .map_err(|e| format!("inspect enumerated store {}: {e}", path.display()))?;
@@ -1123,8 +1320,8 @@ fn archive_store(
 /// Names only: excluded content is never opened.
 fn excluded_locations_for_store(root: &Path) -> Result<Vec<ExcludedLocation>, String> {
     let mut excluded = Vec::new();
-    let read_dir = fs::read_dir(root)
-        .map_err(|e| format!("read source store {}: {e}", root.display()))?;
+    let read_dir =
+        fs::read_dir(root).map_err(|e| format!("read source store {}: {e}", root.display()))?;
     for entry in read_dir {
         let entry = entry.map_err(|e| format!("read entry in {}: {e}", root.display()))?;
         let name = entry
@@ -1158,8 +1355,7 @@ fn archive_control_plane_files(
         if !source.is_file() {
             continue;
         }
-        let bytes =
-            fs::read(&source).map_err(|e| format!("read {}: {e}", source.display()))?;
+        let bytes = fs::read(&source).map_err(|e| format!("read {}: {e}", source.display()))?;
         // Registries are JSON documents, not JSONL ledgers; record rows as
         // absent and keep byte/line accounting exact.
         write_archive_file(archive_root, archive_relative, &bytes)?;
@@ -1178,8 +1374,7 @@ fn archive_control_plane_files(
         if !source.is_file() {
             continue;
         }
-        let bytes =
-            fs::read(&source).map_err(|e| format!("read {}: {e}", source.display()))?;
+        let bytes = fs::read(&source).map_err(|e| format!("read {}: {e}", source.display()))?;
         let archive_relative = format!("markers/{marker}");
         write_archive_file(archive_root, &archive_relative, &bytes)?;
         files.push(ManifestFile {
@@ -1218,8 +1413,8 @@ fn snapshot_inputs(stores: &[SourceStore], firm_home: &Path) -> Result<InputSnap
         let read_dir = fs::read_dir(&store.root)
             .map_err(|e| format!("snapshot read store {}: {e}", store.root.display()))?;
         for entry in read_dir {
-            let entry =
-                entry.map_err(|e| format!("snapshot read entry in {}: {e}", store.root.display()))?;
+            let entry = entry
+                .map_err(|e| format!("snapshot read entry in {}: {e}", store.root.display()))?;
             let name = entry
                 .file_name()
                 .into_string()
@@ -1271,9 +1466,7 @@ fn ensure_inputs_unchanged(
 ) -> Result<(), String> {
     let after = snapshot_inputs(stores, firm_home)?;
     if &after != before {
-        return Err(
-            "source stores changed during export; refusing mixed-moment archive".into(),
-        );
+        return Err("source stores changed during export; refusing mixed-moment archive".into());
     }
     Ok(())
 }
@@ -1466,11 +1659,8 @@ mod tests {
     fn symlinked_enumerated_store_fails_closed() {
         let root = TempRoot::new("enum-symlink");
         let (home, _repo) = seed_home(&root.0);
-        std::os::unix::fs::symlink(
-            home.join("nodes/node-1"),
-            home.join("nodes/node-alias"),
-        )
-        .expect("symlink");
+        std::os::unix::fs::symlink(home.join("nodes/node-1"), home.join("nodes/node-alias"))
+            .expect("symlink");
         let error = enumerate_stores(&home).expect_err("symlink store must fail");
         assert!(error.contains("must not be a symlink"), "{error}");
     }
@@ -1531,7 +1721,10 @@ mod tests {
             Some(ExclusionReason::EphemeralIpcOrLock)
         );
         // Contract ledgers and ordinary current ledgers are never excluded.
-        assert_eq!(exclusion_for_name("company_os_documents.jsonl", false), None);
+        assert_eq!(
+            exclusion_for_name("company_os_documents.jsonl", false),
+            None
+        );
         assert_eq!(exclusion_for_name("missions.jsonl", false), None);
         assert_eq!(exclusion_for_name("work_operations.jsonl", false), None);
         assert_eq!(exclusion_for_name("metadata.json", false), None);
@@ -1602,10 +1795,9 @@ mod tests {
             b""
         );
 
-        let manifest: serde_json::Value = serde_json::from_slice(
-            &fs::read(output.join("manifest.json")).expect("manifest"),
-        )
-        .expect("manifest json");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("manifest.json")).expect("manifest"))
+                .expect("manifest json");
         let stores = manifest["stores"].as_array().unwrap();
         let company = stores
             .iter()
@@ -1623,7 +1815,10 @@ mod tests {
         assert_eq!(documents["object_type"], "company_os_document");
         assert_eq!(documents["schema_version"], "company-os-ledger-v1");
         assert!(documents["source_path"].as_str().unwrap().starts_with('/'));
-        let waves = ledgers.iter().find(|l| l["ledger"] == "waves.jsonl").unwrap();
+        let waves = ledgers
+            .iter()
+            .find(|l| l["ledger"] == "waves.jsonl")
+            .unwrap();
         assert_eq!(waves["present"], false);
         assert_eq!(waves["rows"], 0);
         let team_messages = ledgers
@@ -1653,7 +1848,9 @@ mod tests {
         assert!(!output
             .join("stores/company-acme/ledgers/teams.jsonl")
             .exists());
-        assert!(!output.join("stores/company-acme/provider-sessions").exists());
+        assert!(!output
+            .join("stores/company-acme/provider-sessions")
+            .exists());
 
         // Control-plane markers are archived for offline audit.
         assert_eq!(
@@ -1760,8 +1957,12 @@ mod tests {
 
         // 4. A hand-added file smuggled from an excluded location.
         let archive = export_seeded(&root.0, &home, "a4");
-        write_archive_file(&archive, "stores/company-acme/ledgers/sneaky.jsonl", b"{}\n")
-            .expect("plant file");
+        write_archive_file(
+            &archive,
+            "stores/company-acme/ledgers/sneaky.jsonl",
+            b"{}\n",
+        )
+        .expect("plant file");
         let mut manifest = read_manifest(&archive);
         let store_path = manifest["stores"]
             .as_array()
@@ -1772,15 +1973,18 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        manifest["files"].as_array_mut().unwrap().push(serde_json::json!({
-            "path": "stores/company-acme/ledgers/sneaky.jsonl",
-            "category": "legacy_ledger",
-            "sha256": sha256_hex(b"{}\n"),
-            "bytes": 3,
-            "line_count": 1,
-            "rows": 1,
-            "source_path": format!("{store_path}/provider-sessions/sneaky.jsonl"),
-        }));
+        manifest["files"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "path": "stores/company-acme/ledgers/sneaky.jsonl",
+                "category": "legacy_ledger",
+                "sha256": sha256_hex(b"{}\n"),
+                "bytes": 3,
+                "line_count": 1,
+                "rows": 1,
+                "source_path": format!("{store_path}/provider-sessions/sneaky.jsonl"),
+            }));
         write_manifest(&archive, &manifest);
         let error = verify_archive(&archive).expect_err("smuggled exclusion");
         assert!(error.contains("excluded location"), "{error}");

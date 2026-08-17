@@ -1578,7 +1578,10 @@ pub(crate) struct JsonlRecord<'a> {
     value: serde_json::Value,
 }
 
-pub(crate) fn jsonl_records<'a>(bytes: &'a [u8], label: &str) -> Result<Vec<JsonlRecord<'a>>, String> {
+pub(crate) fn jsonl_records<'a>(
+    bytes: &'a [u8],
+    label: &str,
+) -> Result<Vec<JsonlRecord<'a>>, String> {
     let mut records = Vec::new();
     let mut start = 0_usize;
     for (index, end) in bytes

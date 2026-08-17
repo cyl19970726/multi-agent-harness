@@ -7593,8 +7593,7 @@ fn legacy_company_os_command(args: &mut Vec<String>) -> CliResult<()> {
         }
         "verify" => {
             let archive = PathBuf::from(required(args, "--archive")?);
-            let summary =
-                legacy_company_os::verify_archive(&archive).map_err(CliError::Usage)?;
+            let summary = legacy_company_os::verify_archive(&archive).map_err(CliError::Usage)?;
             print_json(&summary)?;
         }
         other => {
