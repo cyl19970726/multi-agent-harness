@@ -73,8 +73,18 @@ struct Manifest {
     exported_at_unix_ms: u128,
     firm_home: String,
     stores: Vec<ManifestStore>,
+    /// The exclusion contract the exporter applied, echoed so verification
+    /// and later deletion stages can audit it offline.
+    exclusion_contract: Vec<ExclusionContractEcho>,
     files: Vec<ManifestFile>,
     totals: ManifestTotals,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ExclusionContractEcho {
+    name: String,
+    is_dir: bool,
+    reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,6 +151,205 @@ struct ManifestTotals {
     excluded_locations_present: u64,
 }
 
+/// Which retired surface a contracted ledger belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LedgerSection {
+    /// The retired Company OS record ledgers (Docs, Organization, Work,
+    /// Finance, programmable pages, action/audit machinery).
+    CompanyOs,
+    /// Mission / Mission Log / pre-ADR-0051 Wave coordination ledgers.
+    MissionCoordination,
+    /// Legacy AgentIdentity compatibility rows (retired members/agents
+    /// identity ledgers and their events/runtimes).
+    AgentIdentityCompatibility,
+    /// Preserved-but-retired read-only history (TeamMessage projections,
+    /// provider dispatch history).
+    RetiredHistory,
+}
+
+impl LedgerSection {
+    fn label(self) -> &'static str {
+        match self {
+            Self::CompanyOs => "company_os",
+            Self::MissionCoordination => "mission_coordination",
+            Self::AgentIdentityCompatibility => "agent_identity_compatibility",
+            Self::RetiredHistory => "retired_history",
+        }
+    }
+
+    /// Exporter read-contract tag for the section. Source rows carry no
+    /// uniform per-row schema version, so this names the archive contract
+    /// under which the preserved bytes remain readable; it is honestly the
+    /// exporter's own versioned interpretation, not a source-derived field.
+    fn schema_version(self) -> &'static str {
+        match self {
+            Self::CompanyOs => "company-os-ledger-v1",
+            Self::MissionCoordination => "mission-coordination-ledger-v1",
+            Self::AgentIdentityCompatibility => "agent-identity-compat-ledger-v1",
+            Self::RetiredHistory => "retired-history-ledger-v1",
+        }
+    }
+}
+
+struct LedgerContract {
+    ledger: &'static str,
+    object_type: &'static str,
+    section: LedgerSection,
+}
+
+/// The explicit legacy ledger contract (DOC-108). Every contracted ledger is
+/// enumerated per store — present or explicitly absent — so a later deletion
+/// stage can prove nothing contracted was left behind. Non-contracted files
+/// are either excluded locations (below) or current surfaces outside the
+/// retirement scope.
+const LEDGER_CONTRACT: &[LedgerContract] = &[
+    // --- Company OS: Docs ---
+    LedgerContract { ledger: "company_os_documents.jsonl", object_type: "company_os_document", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_blocks.jsonl", object_type: "company_os_block", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_blocks_v2.jsonl", object_type: "company_os_block_v2", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_document_revisions.jsonl", object_type: "company_os_document_revision", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_document_change_ops.jsonl", object_type: "company_os_document_change_op", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_typed_records.jsonl", object_type: "company_os_typed_record", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_relations.jsonl", object_type: "company_os_relation", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_views.jsonl", object_type: "company_os_view", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_business_modules.jsonl", object_type: "company_os_business_module", section: LedgerSection::CompanyOs },
+    // --- Company OS: actors / Organization ---
+    LedgerContract { ledger: "company_os_human_members.jsonl", object_type: "company_os_human_member_actor", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_human_provider_launch_profiles.jsonl", object_type: "company_os_human_provider_launch_profile", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_agent_memberships.jsonl", object_type: "company_os_agent_membership_actor", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_external_participants.jsonl", object_type: "company_os_external_participant_actor", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_service_actors.jsonl", object_type: "company_os_service_actor", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_org_units.jsonl", object_type: "company_os_org_unit", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_organization_memberships.jsonl", object_type: "company_os_organization_membership", section: LedgerSection::CompanyOs },
+    // --- Company OS: Work / Finance / Approvals ---
+    LedgerContract { ledger: "company_os_milestones.jsonl", object_type: "company_os_milestone", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_approvals.jsonl", object_type: "company_os_approval", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_commitments.jsonl", object_type: "company_os_commitment", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_payments.jsonl", object_type: "company_os_payment", section: LedgerSection::CompanyOs },
+    // --- Company OS: programmable pages + action/audit machinery ---
+    LedgerContract { ledger: "company_os_custom_page_definitions.jsonl", object_type: "company_os_custom_page_definition", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_custom_page_packages.jsonl", object_type: "company_os_custom_page_package", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_action_commands.jsonl", object_type: "company_os_action_command", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_action_policy_definitions.jsonl", object_type: "company_os_action_policy_definition", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_audit_events.jsonl", object_type: "company_os_audit_event", section: LedgerSection::CompanyOs },
+    LedgerContract { ledger: "company_os_action_audit_reservations.jsonl", object_type: "company_os_action_audit_reservation", section: LedgerSection::CompanyOs },
+    // --- Mission / Wave coordination ---
+    LedgerContract { ledger: "missions.jsonl", object_type: "mission", section: LedgerSection::MissionCoordination },
+    LedgerContract { ledger: "mission_log.jsonl", object_type: "mission_log_entry", section: LedgerSection::MissionCoordination },
+    LedgerContract { ledger: "waves.jsonl", object_type: "legacy_wave", section: LedgerSection::MissionCoordination },
+    // --- AgentIdentity compatibility rows ---
+    LedgerContract { ledger: "members.jsonl", object_type: "legacy_member_identity", section: LedgerSection::AgentIdentityCompatibility },
+    LedgerContract { ledger: "agents.jsonl", object_type: "legacy_agent_identity", section: LedgerSection::AgentIdentityCompatibility },
+    LedgerContract { ledger: "agent_identities.jsonl", object_type: "agent_identity_compatibility_row", section: LedgerSection::AgentIdentityCompatibility },
+    LedgerContract { ledger: "agent_events.jsonl", object_type: "legacy_agent_event", section: LedgerSection::AgentIdentityCompatibility },
+    LedgerContract { ledger: "agent_runtimes.jsonl", object_type: "legacy_agent_runtime", section: LedgerSection::AgentIdentityCompatibility },
+    // --- Retired read-only history sections ---
+    LedgerContract { ledger: "team_messages.jsonl", object_type: "team_message_projection", section: LedgerSection::RetiredHistory },
+    LedgerContract { ledger: "provider_dispatch_events.jsonl", object_type: "provider_dispatch_event", section: LedgerSection::RetiredHistory },
+];
+
+/// Why a location is excluded from the archive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExclusionReason {
+    /// Secret/token-bearing file (credentials, keys, env files). Never read
+    /// into the archive.
+    SecretFile,
+    /// Provider-native session transcripts; the provider's own store is the
+    /// sole transcript authority and is never copied (ADR 0032).
+    ProviderNativeTranscript,
+    /// Provider runtime working state (may embed environment or transcripts).
+    ProviderNativeRuntimeState,
+    /// Harness-authored prompt text; unstructured and may embed secrets.
+    UnstructuredPromptContent,
+    /// IPC endpoints and lock files; meaningless outside the live machine.
+    EphemeralIpcOrLock,
+    /// Current (not retired) Remote Fabric / collaboration state: outside the
+    /// legacy Company OS retirement scope but listed so deletion stages can
+    /// see the full surface.
+    OutOfScopeCurrentState,
+}
+
+impl ExclusionReason {
+    fn label(self) -> &'static str {
+        match self {
+            Self::SecretFile => "secret_file",
+            Self::ProviderNativeTranscript => "provider_native_transcript",
+            Self::ProviderNativeRuntimeState => "provider_native_runtime_state",
+            Self::UnstructuredPromptContent => "unstructured_prompt_content",
+            Self::EphemeralIpcOrLock => "ephemeral_ipc_or_lock",
+            Self::OutOfScopeCurrentState => "out_of_scope_current_state",
+        }
+    }
+}
+
+/// One exclusion-contract rule, matched against a store's top-level entries.
+/// The legacy ledgers are all top-level files, so top-level matching covers
+/// the whole export surface; everything under an excluded directory inherits
+/// its exclusion.
+struct ExclusionRule {
+    name: &'static str,
+    is_dir: bool,
+    reason: ExclusionReason,
+}
+
+const EXCLUSION_CONTRACT: &[ExclusionRule] = &[
+    ExclusionRule { name: "provider-sessions", is_dir: true, reason: ExclusionReason::ProviderNativeTranscript },
+    ExclusionRule { name: "runtimes", is_dir: true, reason: ExclusionReason::ProviderNativeRuntimeState },
+    ExclusionRule { name: "prompts", is_dir: true, reason: ExclusionReason::UnstructuredPromptContent },
+    ExclusionRule { name: "remote-fabric", is_dir: true, reason: ExclusionReason::OutOfScopeCurrentState },
+    ExclusionRule { name: "collaboration-v1", is_dir: true, reason: ExclusionReason::OutOfScopeCurrentState },
+    ExclusionRule { name: ".env", is_dir: false, reason: ExclusionReason::SecretFile },
+    ExclusionRule { name: "secrets.json", is_dir: false, reason: ExclusionReason::SecretFile },
+    ExclusionRule { name: "tokens.json", is_dir: false, reason: ExclusionReason::SecretFile },
+    ExclusionRule { name: "auth.json", is_dir: false, reason: ExclusionReason::SecretFile },
+    ExclusionRule { name: "credentials.json", is_dir: false, reason: ExclusionReason::SecretFile },
+    ExclusionRule { name: "daemon.sock", is_dir: false, reason: ExclusionReason::EphemeralIpcOrLock },
+    ExclusionRule { name: ".registry.lock", is_dir: false, reason: ExclusionReason::EphemeralIpcOrLock },
+];
+
+/// Name-pattern exclusions beyond exact top-level names: `.env.*`,
+/// `*.token`, `*.key`, `*.pem`, `*.sock`.
+fn exclusion_for_name(name: &str, is_dir: bool) -> Option<ExclusionReason> {
+    for rule in EXCLUSION_CONTRACT {
+        if rule.name == name && rule.is_dir == is_dir {
+            return Some(rule.reason);
+        }
+    }
+    if is_dir {
+        return None;
+    }
+    if name.starts_with(".env.")
+        || name.ends_with(".token")
+        || name.ends_with(".key")
+        || name.ends_with(".pem")
+    {
+        return Some(ExclusionReason::SecretFile);
+    }
+    if name.ends_with(".sock") || name.ends_with(".lock") {
+        return Some(ExclusionReason::EphemeralIpcOrLock);
+    }
+    None
+}
+
+/// Control-plane enumeration inputs archived alongside the ledgers so the
+/// store list in the manifest is auditable offline. These are registry and
+/// marker files only; none of them carries secrets.
+const CONTROL_PLANE_REGISTRIES: &[(&str, &str)] = &[
+    ("projects/registry.json", "registries/projects.registry.json"),
+    ("companies/registry.json", "registries/companies.registry.json"),
+    (
+        "execution-spaces/registry.json",
+        "registries/execution-spaces.registry.json",
+    ),
+];
+
+const CONTROL_PLANE_MARKERS: &[&str] = &[
+    "ACTIVE_PROJECT",
+    "ACTIVE_COMPANY",
+    "ACTIVE_SPACE",
+    "NODE_ID",
+];
+
 /// Create one immutable archive of the retired Company OS record surface.
 /// Every source store is only ever opened for read; nothing is deleted.
 pub fn export_archive(firm_home: &Path, output: &Path) -> Result<ExportSummary, String> {
@@ -151,8 +360,8 @@ pub fn export_archive(firm_home: &Path, output: &Path) -> Result<ExportSummary, 
             output.display()
         ));
     }
-    reject_output_inside_firm_home(firm_home, output)?;
     let stores = enumerate_stores(firm_home)?;
+    reject_output_inside_sources(firm_home, &stores, output)?;
 
     let parent = output
         .parent()
@@ -177,7 +386,16 @@ pub fn export_archive(firm_home: &Path, output: &Path) -> Result<ExportSummary, 
         keep: false,
     };
 
+    // Snapshot exactly what the export reads (contracted ledgers and
+    // control-plane files, plus each store's top-level entry names) so a
+    // source that moves mid-export discards the staging directory instead of
+    // publishing a mixed-moment archive. Excluded locations are listed by
+    // name only; their content is never read, hashed, or archived.
+    let before = snapshot_inputs(&stores, firm_home)?;
+
     let mut files: Vec<ManifestFile> = Vec::new();
+    archive_control_plane_files(firm_home, &staging.path, &mut files)?;
+
     let mut manifest_stores: Vec<ManifestStore> = Vec::new();
     let mut ledgers_present = 0_u64;
     let mut total_rows = 0_u64;
@@ -195,8 +413,12 @@ pub fn export_archive(firm_home: &Path, output: &Path) -> Result<ExportSummary, 
             .count() as u64;
         manifest_stores.push(archived);
     }
-    files.sort_by(|a, b| a.path.cmp(&b.path));
 
+    // Re-read every input only after all reads; a difference means the
+    // archive could mix rows from different moments.
+    ensure_inputs_unchanged(&before, &stores, firm_home)?;
+
+    files.sort_by(|a, b| a.path.cmp(&b.path));
     let totals = ManifestTotals {
         stores: manifest_stores.len() as u64,
         ledgers_present,
@@ -215,6 +437,14 @@ pub fn export_archive(firm_home: &Path, output: &Path) -> Result<ExportSummary, 
             .as_millis(),
         firm_home: canonical_string(firm_home),
         stores: manifest_stores,
+        exclusion_contract: EXCLUSION_CONTRACT
+            .iter()
+            .map(|rule| ExclusionContractEcho {
+                name: rule.name.into(),
+                is_dir: rule.is_dir,
+                reason: rule.reason.label().into(),
+            })
+            .collect(),
         files,
         totals,
     };
@@ -530,25 +760,252 @@ fn child_directories(dir: &Path) -> Result<Vec<PathBuf>, String> {
 /// directory and return its manifest section.
 fn archive_store(
     store: &SourceStore,
-    _archive_root: &Path,
-    _files: &mut Vec<ManifestFile>,
+    archive_root: &Path,
+    files: &mut Vec<ManifestFile>,
 ) -> Result<ManifestStore, String> {
     if store.present {
         reject_symlink_or_non_directory(&store.root, "enumerated source store")?;
     }
-    // DOC-108 increment 3 wires the ledger contract + secret exclusion in.
+    let prefix = format!("stores/{}", store.id);
+    let mut ledgers = Vec::new();
+    for contract in LEDGER_CONTRACT {
+        let source_path = store.root.join(contract.ledger);
+        let (bytes, present) = if store.present && source_path.exists() {
+            let metadata = fs::symlink_metadata(&source_path)
+                .map_err(|e| format!("inspect ledger {}: {e}", source_path.display()))?;
+            if metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "legacy ledger must not be a symlink: {}",
+                    source_path.display()
+                ));
+            }
+            if !metadata.is_file() {
+                return Err(format!(
+                    "legacy ledger is not a regular file: {}",
+                    source_path.display()
+                ));
+            }
+            (
+                fs::read(&source_path)
+                    .map_err(|e| format!("read {}: {e}", source_path.display()))?,
+                true,
+            )
+        } else {
+            (Vec::new(), false)
+        };
+        // Every preserved row must parse as JSON; an archive of unparseable
+        // bytes would fail the restore-read proof later, so fail the export
+        // loudly instead of archiving garbage.
+        let rows = crate::legacy_export::jsonl_records(
+            &bytes,
+            &format!("{}/{}", store.id, contract.ledger),
+        )?
+        .len() as u64;
+        let archive_path = format!("{prefix}/ledgers/{}", contract.ledger);
+        write_archive_file(archive_root, &archive_path, &bytes)?;
+        let sha256 = sha256_hex(&bytes);
+        files.push(ManifestFile {
+            path: archive_path.clone(),
+            category: "legacy_ledger".into(),
+            sha256: sha256.clone(),
+            bytes: bytes.len() as u64,
+            line_count: physical_line_count(&bytes),
+            rows: Some(rows),
+            source_path: Some(source_path.display().to_string()),
+        });
+        ledgers.push(ManifestLedger {
+            ledger: contract.ledger.into(),
+            section: contract.section.label().into(),
+            object_type: contract.object_type.into(),
+            schema_version: contract.section.schema_version().into(),
+            source_path: source_path.display().to_string(),
+            present,
+            rows,
+            bytes: bytes.len() as u64,
+            sha256,
+            archive_path,
+        });
+    }
+    let excluded_locations = if store.present {
+        excluded_locations_for_store(&store.root)?
+    } else {
+        Vec::new()
+    };
     Ok(ManifestStore {
         id: store.id.clone(),
         kind: store.kind.into(),
         path: canonical_string(&store.root),
         present: store.present,
         identity: store.identity.clone(),
-        ledgers: Vec::new(),
-        excluded_locations: Vec::new(),
+        ledgers,
+        excluded_locations,
     })
 }
 
-fn reject_output_inside_firm_home(firm_home: &Path, output: &Path) -> Result<(), String> {
+/// List the store's top-level entries that match the exclusion contract.
+/// Names only: excluded content is never opened.
+fn excluded_locations_for_store(root: &Path) -> Result<Vec<ExcludedLocation>, String> {
+    let mut excluded = Vec::new();
+    let read_dir = fs::read_dir(root)
+        .map_err(|e| format!("read source store {}: {e}", root.display()))?;
+    for entry in read_dir {
+        let entry = entry.map_err(|e| format!("read entry in {}: {e}", root.display()))?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| format!("non-UTF-8 entry name in {}", root.display()))?;
+        let metadata = fs::symlink_metadata(root.join(&name))
+            .map_err(|e| format!("inspect {}/{}: {e}", root.display(), name))?;
+        let is_dir = metadata.is_dir();
+        if let Some(reason) = exclusion_for_name(&name, is_dir) {
+            excluded.push(ExcludedLocation {
+                path: root.join(&name).display().to_string(),
+                reason: reason.label().into(),
+                present: true,
+            });
+        }
+    }
+    excluded.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(excluded)
+}
+
+/// Archive the Firm-home control-plane registries and markers that drove the
+/// store enumeration, so the manifest's store list is auditable offline.
+fn archive_control_plane_files(
+    firm_home: &Path,
+    archive_root: &Path,
+    files: &mut Vec<ManifestFile>,
+) -> Result<(), String> {
+    for (source_relative, archive_relative) in CONTROL_PLANE_REGISTRIES {
+        let source = firm_home.join(source_relative);
+        if !source.is_file() {
+            continue;
+        }
+        let bytes =
+            fs::read(&source).map_err(|e| format!("read {}: {e}", source.display()))?;
+        // Registries are JSON documents, not JSONL ledgers; record rows as
+        // absent and keep byte/line accounting exact.
+        write_archive_file(archive_root, archive_relative, &bytes)?;
+        files.push(ManifestFile {
+            path: (*archive_relative).into(),
+            category: "control_plane_registry".into(),
+            sha256: sha256_hex(&bytes),
+            bytes: bytes.len() as u64,
+            line_count: physical_line_count(&bytes),
+            rows: None,
+            source_path: Some(source.display().to_string()),
+        });
+    }
+    for marker in CONTROL_PLANE_MARKERS {
+        let source = firm_home.join(marker);
+        if !source.is_file() {
+            continue;
+        }
+        let bytes =
+            fs::read(&source).map_err(|e| format!("read {}: {e}", source.display()))?;
+        let archive_relative = format!("markers/{marker}");
+        write_archive_file(archive_root, &archive_relative, &bytes)?;
+        files.push(ManifestFile {
+            path: archive_relative,
+            category: "control_plane_marker".into(),
+            sha256: sha256_hex(&bytes),
+            bytes: bytes.len() as u64,
+            line_count: physical_line_count(&bytes),
+            rows: None,
+            source_path: Some(source.display().to_string()),
+        });
+    }
+    Ok(())
+}
+
+/// Mutation-detection snapshot over exactly what the export reads: the
+/// contracted ledger bytes and control-plane files, plus each present store's
+/// sorted top-level entry names (so a store gaining or losing entries
+/// mid-export is caught even when the changed entry is not a contracted
+/// ledger). Excluded locations are never opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InputSnapshot {
+    ledger_files: Vec<(PathBuf, u64, String)>,
+    control_plane_files: Vec<(PathBuf, u64, String)>,
+    store_entry_names: Vec<(PathBuf, Vec<String>)>,
+}
+
+fn snapshot_inputs(stores: &[SourceStore], firm_home: &Path) -> Result<InputSnapshot, String> {
+    let mut ledger_files = Vec::new();
+    let mut store_entry_names = Vec::new();
+    for store in stores {
+        if !store.present {
+            continue;
+        }
+        let mut names = Vec::new();
+        let read_dir = fs::read_dir(&store.root)
+            .map_err(|e| format!("snapshot read store {}: {e}", store.root.display()))?;
+        for entry in read_dir {
+            let entry =
+                entry.map_err(|e| format!("snapshot read entry in {}: {e}", store.root.display()))?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| format!("non-UTF-8 entry name in {}", store.root.display()))?;
+            names.push(name);
+        }
+        names.sort();
+        store_entry_names.push((store.root.clone(), names));
+        for contract in LEDGER_CONTRACT {
+            let path = store.root.join(contract.ledger);
+            if !path.is_file() {
+                continue;
+            }
+            let bytes =
+                fs::read(&path).map_err(|e| format!("snapshot read {}: {e}", path.display()))?;
+            ledger_files.push((path, bytes.len() as u64, sha256_hex(&bytes)));
+        }
+    }
+    ledger_files.sort();
+    let mut control_plane_files = Vec::new();
+    for (relative, _) in CONTROL_PLANE_REGISTRIES {
+        let path = firm_home.join(relative);
+        if path.is_file() {
+            let bytes =
+                fs::read(&path).map_err(|e| format!("snapshot read {}: {e}", path.display()))?;
+            control_plane_files.push((path, bytes.len() as u64, sha256_hex(&bytes)));
+        }
+    }
+    for marker in CONTROL_PLANE_MARKERS {
+        let path = firm_home.join(marker);
+        if path.is_file() {
+            let bytes =
+                fs::read(&path).map_err(|e| format!("snapshot read {}: {e}", path.display()))?;
+            control_plane_files.push((path, bytes.len() as u64, sha256_hex(&bytes)));
+        }
+    }
+    control_plane_files.sort();
+    Ok(InputSnapshot {
+        ledger_files,
+        control_plane_files,
+        store_entry_names,
+    })
+}
+
+fn ensure_inputs_unchanged(
+    before: &InputSnapshot,
+    stores: &[SourceStore],
+    firm_home: &Path,
+) -> Result<(), String> {
+    let after = snapshot_inputs(stores, firm_home)?;
+    if &after != before {
+        return Err(
+            "source stores changed during export; refusing mixed-moment archive".into(),
+        );
+    }
+    Ok(())
+}
+
+fn reject_output_inside_sources(
+    firm_home: &Path,
+    stores: &[SourceStore],
+    output: &Path,
+) -> Result<(), String> {
     let parent = output
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -561,6 +1018,21 @@ fn reject_output_inside_firm_home(firm_home: &Path, output: &Path) -> Result<(),
             "archive destination must be outside the Firm home: {}",
             output.display()
         ));
+    }
+    // Repo-local compatibility stores live outside the Firm home, so they
+    // need their own containment check.
+    for store in stores {
+        if !store.present {
+            continue;
+        }
+        let root = fs::canonicalize(&store.root)
+            .map_err(|e| format!("canonicalize source store {}: {e}", store.root.display()))?;
+        if parent.starts_with(&root) {
+            return Err(format!(
+                "archive destination must be outside every enumerated source store: {}",
+                output.display()
+            ));
+        }
     }
     Ok(())
 }
@@ -736,5 +1208,207 @@ mod tests {
         );
         let error = enumerate_stores(&home).expect_err("unsafe id must fail");
         assert!(error.contains("unsafe archive store source id"), "{error}");
+    }
+
+    #[test]
+    fn exclusion_contract_matches_names_not_content() {
+        // Directory rules.
+        assert_eq!(
+            exclusion_for_name("provider-sessions", true),
+            Some(ExclusionReason::ProviderNativeTranscript)
+        );
+        assert_eq!(
+            exclusion_for_name("runtimes", true),
+            Some(ExclusionReason::ProviderNativeRuntimeState)
+        );
+        // A file named like an excluded directory is not excluded by it.
+        assert_eq!(exclusion_for_name("provider-sessions", false), None);
+        // Secret files: exact and pattern-based.
+        assert_eq!(
+            exclusion_for_name(".env", false),
+            Some(ExclusionReason::SecretFile)
+        );
+        assert_eq!(
+            exclusion_for_name(".env.local", false),
+            Some(ExclusionReason::SecretFile)
+        );
+        assert_eq!(
+            exclusion_for_name("node.key", false),
+            Some(ExclusionReason::SecretFile)
+        );
+        assert_eq!(
+            exclusion_for_name("api.token", false),
+            Some(ExclusionReason::SecretFile)
+        );
+        assert_eq!(
+            exclusion_for_name("cert.pem", false),
+            Some(ExclusionReason::SecretFile)
+        );
+        // IPC / locks.
+        assert_eq!(
+            exclusion_for_name("daemon.sock", false),
+            Some(ExclusionReason::EphemeralIpcOrLock)
+        );
+        assert_eq!(
+            exclusion_for_name("node-fabric.lock", false),
+            Some(ExclusionReason::EphemeralIpcOrLock)
+        );
+        // Contract ledgers and ordinary current ledgers are never excluded.
+        assert_eq!(exclusion_for_name("company_os_documents.jsonl", false), None);
+        assert_eq!(exclusion_for_name("missions.jsonl", false), None);
+        assert_eq!(exclusion_for_name("work_operations.jsonl", false), None);
+        assert_eq!(exclusion_for_name("metadata.json", false), None);
+    }
+
+    /// Seed a store with contract ledgers, excluded locations, and a
+    /// non-contract non-excluded ledger.
+    fn seed_company_os_surface(home: &Path) {
+        let store = home.join("companies/acme");
+        fs::write(
+            store.join("company_os_documents.jsonl"),
+            b"{\"id\":\"doc-1\",\"title\":\"One\"}\n{\"id\":\"doc-2\",\"title\":\"Two\"}\n",
+        )
+        .expect("documents");
+        fs::write(
+            store.join("company_os_blocks.jsonl"),
+            b"{\"id\":\"blk-1\",\"document_id\":\"doc-1\"}\n",
+        )
+        .expect("blocks");
+        fs::write(
+            store.join("missions.jsonl"),
+            b"{\"id\":\"mission-1\",\"title\":\"M\"}\n",
+        )
+        .expect("missions");
+        fs::write(
+            store.join("team_messages.jsonl"),
+            b"{\"id\":\"tm-1\",\"body\":\"hi\"}\n",
+        )
+        .expect("team messages");
+        // Present-but-excluded locations (content must never be archived).
+        fs::create_dir_all(store.join("provider-sessions/session-1")).expect("provider-sessions");
+        fs::write(
+            store.join("provider-sessions/session-1/codex.stream-json.ndjson"),
+            b"{\"type\":\"transcript\"}\n",
+        )
+        .expect("transcript");
+        fs::create_dir_all(store.join("runtimes/runtime-1")).expect("runtimes");
+        fs::write(store.join(".env"), b"TOKEN=never-exported\n").expect(".env");
+        fs::write(store.join("tokens.json"), b"{\"api\":\"never-exported\"}\n").expect("tokens");
+        // Non-contract, non-excluded current ledger: neither archived nor
+        // listed as excluded.
+        fs::write(store.join("teams.jsonl"), b"{\"id\":\"team-1\"}\n").expect("teams");
+    }
+
+    #[test]
+    fn export_archives_contract_preserves_bytes_and_excludes_secrets() {
+        let root = TempRoot::new("export-surface");
+        let (home, _repo) = seed_home(&root.0);
+        seed_company_os_surface(&home);
+        fs::write(home.join("NODE_ID"), b"node-1\n").expect("node id");
+        let output = root.0.join("archive-out");
+
+        let summary = export_archive(&home, &output).expect("export");
+        assert_eq!(summary.format, "legacy-company-os-v1");
+        assert_eq!(summary.source_revision.len(), 40);
+        assert!(summary.stores >= 5, "seeded kinds: {}", summary.stores);
+
+        // Byte-exact preservation of a seeded ledger.
+        assert_eq!(
+            fs::read(output.join("stores/company-acme/ledgers/company_os_documents.jsonl"))
+                .expect("archived documents"),
+            b"{\"id\":\"doc-1\",\"title\":\"One\"}\n{\"id\":\"doc-2\",\"title\":\"Two\"}\n"
+        );
+        // Absent contract ledgers are still enumerated as empty files.
+        assert_eq!(
+            fs::read(output.join("stores/company-acme/ledgers/company_os_views.jsonl"))
+                .expect("archived empty views"),
+            b""
+        );
+
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(output.join("manifest.json")).expect("manifest"),
+        )
+        .expect("manifest json");
+        let stores = manifest["stores"].as_array().unwrap();
+        let company = stores
+            .iter()
+            .find(|s| s["id"] == "company-acme")
+            .expect("company store");
+        let ledgers = company["ledgers"].as_array().unwrap();
+        assert_eq!(ledgers.len(), LEDGER_CONTRACT.len());
+        let documents = ledgers
+            .iter()
+            .find(|l| l["ledger"] == "company_os_documents.jsonl")
+            .unwrap();
+        assert_eq!(documents["present"], true);
+        assert_eq!(documents["rows"], 2);
+        assert_eq!(documents["section"], "company_os");
+        assert_eq!(documents["object_type"], "company_os_document");
+        assert_eq!(documents["schema_version"], "company-os-ledger-v1");
+        assert!(documents["source_path"].as_str().unwrap().starts_with('/'));
+        let waves = ledgers.iter().find(|l| l["ledger"] == "waves.jsonl").unwrap();
+        assert_eq!(waves["present"], false);
+        assert_eq!(waves["rows"], 0);
+        let team_messages = ledgers
+            .iter()
+            .find(|l| l["ledger"] == "team_messages.jsonl")
+            .unwrap();
+        assert_eq!(team_messages["section"], "retired_history");
+        assert_eq!(team_messages["rows"], 1);
+
+        // Excluded locations are listed with reasons; their content is absent.
+        let excluded = company["excluded_locations"].as_array().unwrap();
+        let reasons: std::collections::BTreeMap<&str, &str> = excluded
+            .iter()
+            .map(|e| {
+                (
+                    e["path"].as_str().unwrap().rsplit('/').next().unwrap(),
+                    e["reason"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(reasons["provider-sessions"], "provider_native_transcript");
+        assert_eq!(reasons["runtimes"], "provider_native_runtime_state");
+        assert_eq!(reasons[".env"], "secret_file");
+        assert_eq!(reasons["tokens.json"], "secret_file");
+        let archived_text = fs::read_to_string(output.join("manifest.json")).unwrap();
+        assert!(!archived_text.contains("never-exported"));
+        assert!(!output
+            .join("stores/company-acme/ledgers/teams.jsonl")
+            .exists());
+        assert!(!output.join("stores/company-acme/provider-sessions").exists());
+
+        // Control-plane markers are archived for offline audit.
+        assert_eq!(
+            fs::read(output.join("markers/NODE_ID")).expect("marker"),
+            b"node-1\n"
+        );
+        // Sources are untouched.
+        assert_eq!(
+            fs::read(home.join("companies/acme/company_os_documents.jsonl")).unwrap(),
+            b"{\"id\":\"doc-1\",\"title\":\"One\"}\n{\"id\":\"doc-2\",\"title\":\"Two\"}\n"
+        );
+        // Skeleton verify accepts the archive (full contract checks land
+        // next). Canonicalize first: the verifier refuses symlinked
+        // ancestors, and the macOS temp root lives under /var -> /private/var.
+        let canonical_output = fs::canonicalize(&output).expect("canonical archive path");
+        verify_archive(&canonical_output).expect("verify skeleton");
+    }
+
+    #[test]
+    fn export_fails_when_source_moves_mid_export() {
+        let root = TempRoot::new("export-drift");
+        let (home, _repo) = seed_home(&root.0);
+        seed_company_os_surface(&home);
+        let stores = enumerate_stores(&home).expect("enumerate");
+        let before = snapshot_inputs(&stores, &home).expect("snapshot");
+        fs::write(
+            home.join("companies/acme/company_os_documents.jsonl"),
+            b"{\"id\":\"doc-3\"}\n",
+        )
+        .expect("drift");
+        let error = ensure_inputs_unchanged(&before, &stores, &home)
+            .expect_err("drift must fail the export");
+        assert!(error.contains("refusing mixed-moment archive"), "{error}");
     }
 }
