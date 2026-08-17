@@ -230,6 +230,13 @@ pub struct CollaborationMessageAuthority {
 /// This authority proves that one exact active TeamMembership and one exact
 /// local AgentSession/NodeDaemon generation authored the Message. It does not
 /// convey Work ownership and cannot authorize a WorkDelegation effect.
+///
+/// The default target is the peer Team's shared inbox (`team-inbox:` Team
+/// subscription). When the three `target_membership_*`/`target_agent_member_id`
+/// fields are present, the authority instead targets one exact peer
+/// TeamMembership through its durable direct subscription, and the single
+/// created delivery is already bound to that TeamMembership/AgentMember; all
+/// three fields are set or all are absent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PeerTeamMessageAdmissionAuthority {
@@ -249,6 +256,12 @@ pub struct PeerTeamMessageAdmissionAuthority {
     pub target_team_id: String,
     pub target_team_revision: u64,
     pub target_node_id: String,
+    #[serde(default)]
+    pub target_membership_id: Option<String>,
+    #[serde(default)]
+    pub target_membership_generation: Option<u64>,
+    #[serde(default)]
+    pub target_agent_member_id: Option<String>,
     pub source_policy_ref: String,
     pub source_policy_revision: u64,
     pub source_policy_digest: String,

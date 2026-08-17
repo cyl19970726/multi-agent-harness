@@ -8506,7 +8506,7 @@ fn node_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String])
 fn team_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "team create|list|show|rename|add-member|remove-member|activate-member|activate|deactivate|trash|restore",
+        "team create|list|show|rename|add-member|remove-member|activate-member|activate|deactivate|trash|restore|message",
     )?;
     let execution_space_id = resolved
         .execution_space_context
@@ -8752,9 +8752,592 @@ fn team_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String])
             )?;
             print_json(&transitioned.projection)?;
         }
+        "message" => return team_message_command(store, &execution_space_id, &args[1..]),
         other => return Err(CliError::Usage(format!("unknown team command: {other}"))),
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Ordinary peer-Team messaging (DOC-106): flat Team->Team and
+// Team->TeamMembership Messages without WorkDelegation. Team-addressed
+// Messages land in one shared Team Inbox delivery that wakes no Member until
+// one exact membership generation claims it; direct TeamMembership targets
+// are bound at admission. Cross-Node targets ride the remote fabric; a
+// same-Space same-Node target is delivered by the local authoring Store.
+// ---------------------------------------------------------------------------
+
+fn team_message_command(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    args: &[String],
+) -> CliResult<()> {
+    require_subcommand(
+        args,
+        "team message send --from-team <id> --from-member <agent-member-id> --to-team <id> [--to-member <agent-member-id> | --to-membership <membership-id>] --body <markdown> | team message inbox --team <id> [--all] | team message claim --team <id> --delivery-id <id> --membership-id <id>",
+    )?;
+    match args[0].as_str() {
+        "send" => team_message_send(store, execution_space_id, &args[1..]),
+        "inbox" => team_message_inbox(store, execution_space_id, &args[1..]),
+        "claim" => team_message_claim(store, execution_space_id, &args[1..]),
+        other => Err(CliError::Usage(format!(
+            "unknown team message command: {other}; expected send|inbox|claim"
+        ))),
+    }
+}
+
+fn team_message_send(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    args: &[String],
+) -> CliResult<()> {
+    use harness_core::agentfirm_api::{
+        MessageAddressKind, MessageKind, MessageRecipientKind, MessageRecipientRef, ResponseIntent,
+    };
+
+    let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
+    let local_node_id = read_local_node_id()?;
+    let source_team_id = required(args, "--from-team")?;
+    let from_member = required(args, "--from-member")?;
+    let body = required(args, "--body")?;
+    if body.trim().is_empty() {
+        return Err(CliError::Usage("--body must be non-empty Markdown".into()));
+    }
+    let target_team_id = required(args, "--to-team")?;
+    if value(args, "--to-member").is_some() && value(args, "--to-membership").is_some() {
+        return Err(CliError::Usage(
+            "--to-member and --to-membership are mutually exclusive".into(),
+        ));
+    }
+    // Remote route facts are all-or-nothing; a same-Space same-Node target is
+    // authored and delivered locally with no fabric route.
+    let remote_node = value(args, "--to-node");
+    let remote_space = value(args, "--to-space");
+    let remote_company = value(args, "--company");
+    let remote_requested =
+        remote_node.is_some() || remote_space.is_some() || remote_company.is_some();
+    let target_store_for = |space_id: &str| -> CliResult<Option<HarnessStore>> {
+        if space_id == execution_space_id {
+            return Ok(Some(store.clone()));
+        }
+        Ok(execution_space::context_for_id(&firm_home, space_id)
+            .map_err(execution_space_err)?
+            .map(|space| HarnessStore::new(space.store_root)))
+    };
+    let recipient = if value(args, "--to-member").is_none()
+        && value(args, "--to-membership").is_none()
+    {
+        MessageRecipientRef {
+            kind: MessageRecipientKind::Team,
+            id: target_team_id.clone(),
+        }
+    } else {
+        // A direct target is resolved to its exact TeamMembership on the
+        // target Node; the membership generation is never caller-invented.
+        let member_id = if let Some(member) = value(args, "--to-member") {
+            member
+        } else {
+            let membership_id = required(args, "--to-membership")?;
+            let lookup_space = remote_space
+                .clone()
+                .unwrap_or_else(|| execution_space_id.to_string());
+            let target_store = target_store_for(&lookup_space)?.ok_or_else(|| {
+                CliError::Usage(format!(
+                    "target Execution Space {lookup_space} is not registered on this Node; --to-membership requires local resolution"
+                ))
+            })?;
+            let membership = target_store
+                .fabric_team_memberships(&lookup_space)?
+                .into_iter()
+                .find(|membership| membership.id == membership_id)
+                .ok_or_else(|| {
+                    CliError::Usage(format!("target TeamMembership not found: {membership_id}"))
+                })?;
+            if membership.team_id != target_team_id {
+                return Err(CliError::Usage(format!(
+                    "TeamMembership {membership_id} does not belong to target Team {target_team_id}"
+                )));
+            }
+            membership.agent_member_id
+        };
+        MessageRecipientRef {
+            kind: MessageRecipientKind::AgentMember,
+            id: member_id,
+        }
+    };
+    let work_id = value(args, "--work-id");
+    let idempotency_key =
+        value(args, "--idempotency-key").unwrap_or_else(|| generated_id("team-message"));
+    let now_unix_ms = current_unix_ms_u64();
+    let expires_unix_ms = match value(args, "--expires-unix-ms") {
+        Some(raw) => raw
+            .parse::<u64>()
+            .map_err(|_| CliError::Usage("--expires-unix-ms must be an unsigned integer".into()))?,
+        None => now_unix_ms.saturating_add(5 * 60_000),
+    };
+    let remote_transfer = if remote_requested {
+        let (Some(company_id), Some(target_node_id), Some(target_space_id)) =
+            (remote_company, remote_node, remote_space)
+        else {
+            return Err(CliError::Usage(
+                "remote peer-Team routing requires --company, --to-node, and --to-space together"
+                    .into(),
+            ));
+        };
+        if target_node_id == local_node_id {
+            return Err(CliError::Usage(
+                "remote route facts must name a distinct target Node; drop them for a local same-Node target"
+                    .into(),
+            ));
+        }
+        let target_team_revision = match target_store_for(&target_space_id)? {
+            Some(target_store) => target_store
+                .agent_teams(&target_space_id)?
+                .into_iter()
+                .find(|team| team.id == target_team_id)
+                .ok_or_else(|| {
+                    CliError::Usage(format!(
+                        "target Team {target_team_id} is not in target Execution Space {target_space_id}"
+                    ))
+                })?
+                .revision,
+            None => required(args, "--to-team-revision")?
+                .parse::<u64>()
+                .map_err(|_| {
+                    CliError::Usage("--to-team-revision must be an unsigned integer".into())
+                })?,
+        };
+        let target_subscription_revision = match value(args, "--to-subscription-revision") {
+            Some(raw) => Some(raw.parse::<u64>().map_err(|_| {
+                CliError::Usage("--to-subscription-revision must be an unsigned integer".into())
+            })?),
+            None => None,
+        };
+        Some(fabric_runtime::QueueCollaborationMessageRequest {
+            company_id,
+            target_team_id: target_team_id.clone(),
+            target_team_revision,
+            target_node_id,
+            target_execution_space_id: target_space_id,
+            target_subscription_revision,
+            expected_delegation_revision: 0,
+            expires_unix_ms,
+        })
+    } else {
+        None
+    };
+    let draft = harness_core::agentfirm_api::MessageDraft {
+        address_kind: match recipient.kind {
+            MessageRecipientKind::Team => MessageAddressKind::TeamChannel,
+            _ => MessageAddressKind::DirectAgent,
+        },
+        target_ref: recipient.clone(),
+        recipients: vec![recipient],
+        team_id: Some(source_team_id.clone()),
+        team_run_id: None,
+        work_id,
+        collaboration_scope: Some(harness_core::collaboration::CollaborationScope {
+            source_team_id: source_team_id.clone(),
+            target_team_id: target_team_id.clone(),
+            delegation_id: None,
+            expected_delegation_revision: None,
+            source_work_ref: None,
+            target_work_ref: None,
+        }),
+        kind: if value(args, "--causation-id").is_some() {
+            MessageKind::Reply
+        } else {
+            MessageKind::Message
+        },
+        body,
+        correlation_id: value(args, "--correlation-id")
+            .unwrap_or_else(|| generated_id("correlation")),
+        causation_id: value(args, "--causation-id"),
+        response_intent: if has_flag(args, "--response-required") {
+            ResponseIntent::ResponseRequired
+        } else {
+            ResponseIntent::Informational
+        },
+        evidence_refs: many(args, "--evidence-ref"),
+        schema_version: 1,
+    };
+    let actor = harness_core::agentfirm_api::ActorRef {
+        kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+        id: from_member.clone(),
+    };
+    let resolved_peer = resolve_peer_team_message_admission_authority(
+        store,
+        &firm_home,
+        execution_space_id,
+        &local_node_id,
+        &actor,
+        &draft,
+        remote_transfer.as_ref(),
+    )
+    .map_err(CliError::Usage)?;
+    let lease = store
+        .latest_node_daemon_lease(&local_node_id)?
+        .filter(|lease| {
+            lease.status == NodeDaemonLeaseStatus::Active
+                && lease.expires_unix_ms > current_unix_ms_u64()
+        })
+        .ok_or_else(|| CliError::Usage("NODE_DAEMON_UNAVAILABLE".into()))?;
+    let payload = serde_json::json!({
+        "draft": draft,
+        "remote_transfer": remote_transfer,
+        "message_admission_authority":
+            harness_core::collaboration::MessageAdmissionAuthority::PeerTeam(resolved_peer.authority.clone()),
+        "delegation_authority": serde_json::Value::Null,
+    });
+    let command = harness_core::agentfirm_api::ControlCommandEnvelope {
+        id: format!("runtime-command:{idempotency_key}"),
+        execution_space_id: execution_space_id.to_string(),
+        target_node_id: local_node_id.clone(),
+        target_node_daemon_id: lease.daemon_id.clone(),
+        target_node_daemon_generation: lease.generation,
+        authenticated_actor: actor.clone(),
+        command: harness_core::agentfirm_api::RuntimeCommandKind::AuthorMessage,
+        required_capability: "message.author".into(),
+        idempotency_key: idempotency_key.clone(),
+        expected_version: 0,
+        expires_unix_ms,
+        binding: Default::default(),
+        precondition: Default::default(),
+        postcondition: runtime_command_postcondition_for(
+            harness_core::agentfirm_api::RuntimeCommandKind::AuthorMessage,
+        ),
+        payload_fingerprint: harness_store::canonical_json_fingerprint(&payload),
+        payload,
+        // The replay fingerprint binds the immutable request, not a sampled
+        // wall clock; real accepted/settled timestamps live on the durable
+        // RuntimeCommand record.
+        issued_at: format!("runtime-command:{idempotency_key}"),
+    };
+    let response =
+        supervisor_daemon::runtime_command_via_socket(&firm_home, &local_node_id, &command)?;
+    if response["ok"].as_bool() != Some(true) {
+        let daemon_error = response["error"].as_str().unwrap_or("unknown error");
+        // A resubmitted key arrives with a fresh expiry and therefore a new
+        // envelope fingerprint. Read the original accepted Message back and
+        // return it only when the recorded semantics are byte-identical to
+        // this intent; genuine semantic drift stays a hard conflict.
+        if daemon_error.contains("IDEMPOTENCY_KEY_REUSED") {
+            let message_id = format!("message:{idempotency_key}");
+            let original = store
+                .fabric_messages(execution_space_id)?
+                .into_iter()
+                .find(|message| message.id == message_id);
+            let draft_fingerprint = |message: &harness_core::agentfirm_api::Message| {
+                harness_store::canonical_json_fingerprint(&serde_json::json!({
+                    "sender_actor_ref": message.sender_actor_ref,
+                    "sender_agent_member_id": message.sender_agent_member_id,
+                    "address_kind": message.address_kind,
+                    "target_ref": message.target_ref,
+                    "recipients": message.recipients,
+                    "team_id": message.team_id,
+                    "work_id": message.work_id,
+                    "collaboration_scope": message.collaboration_scope,
+                    "kind": message.kind,
+                    "body": message.body,
+                    "correlation_id": message.correlation_id,
+                    "causation_id": message.causation_id,
+                    "response_intent": message.response_intent,
+                    "evidence_refs": message.evidence_refs,
+                }))
+            };
+            if let Some(original) = original {
+                let intended = draft_fingerprint(&original);
+                let draft_as_message_intent =
+                    harness_store::canonical_json_fingerprint(&serde_json::json!({
+                        "sender_actor_ref": actor,
+                        "sender_agent_member_id": Some(actor.id.clone()),
+                        "address_kind": draft.address_kind,
+                        "target_ref": draft.target_ref,
+                        "recipients": draft.recipients,
+                        "team_id": draft.team_id,
+                        "work_id": draft.work_id,
+                        "collaboration_scope": draft.collaboration_scope,
+                        "kind": draft.kind,
+                        "body": draft.body,
+                        "correlation_id": draft.correlation_id,
+                        "causation_id": draft.causation_id,
+                        "response_intent": draft.response_intent,
+                        "evidence_refs": draft.evidence_refs,
+                    }));
+                if intended == draft_as_message_intent {
+                    // Authoring replayed; the remote route is (re)queued
+                    // idempotently so a prior crash between author and queue
+                    // still reaches the target Node exactly once.
+                    if resolved_peer.requires_remote_route {
+                        let request =
+                            remote_transfer.expect("remote route requires its request facts");
+                        let queued = fabric_runtime::queue_collaboration_message(
+                            &firm_home,
+                            execution_space_id,
+                            &local_node_id,
+                            &actor,
+                            &idempotency_key,
+                            &original,
+                            &request,
+                            harness_core::collaboration::MessageAdmissionAuthority::PeerTeam(
+                                resolved_peer.authority.clone(),
+                            ),
+                            current_unix_ms_u64(),
+                        )
+                        .map_err(|error| {
+                            CliError::Usage(format!("REMOTE_ROUTE_FAILED: {}", error.message))
+                        })?;
+                        return print_json(&serde_json::json!({
+                            "message": original,
+                            "remote_transfer": queued,
+                            "replayed": true,
+                        }));
+                    }
+                    let deliveries = store
+                        .fabric_message_deliveries(execution_space_id)?
+                        .into_iter()
+                        .filter(|delivery| delivery.message_id == original.id)
+                        .collect::<Vec<_>>();
+                    return print_json(&serde_json::json!({
+                        "message": original,
+                        "deliveries": deliveries,
+                        "replayed": true,
+                    }));
+                }
+            }
+        }
+        return Err(CliError::Usage(format!(
+            "NodeDaemon rejected the peer-Team Message: {daemon_error}"
+        )));
+    }
+    let message =
+        serde_json::from_value::<harness_core::agentfirm_api::Message>(response["result"].clone())?;
+    if resolved_peer.requires_remote_route {
+        let request = remote_transfer.expect("remote route requires its request facts");
+        let queued = fabric_runtime::queue_collaboration_message(
+            &firm_home,
+            execution_space_id,
+            &local_node_id,
+            &actor,
+            &idempotency_key,
+            &message,
+            &request,
+            harness_core::collaboration::MessageAdmissionAuthority::PeerTeam(
+                resolved_peer.authority.clone(),
+            ),
+            current_unix_ms_u64(),
+        )
+        .map_err(|error| CliError::Usage(format!("REMOTE_ROUTE_FAILED: {}", error.message)))?;
+        return print_json(&serde_json::json!({
+            "message": message,
+            "admission": resolved_peer.authority,
+            "remote_transfer": queued,
+        }));
+    }
+    let deliveries = store
+        .fabric_message_deliveries(execution_space_id)?
+        .into_iter()
+        .filter(|delivery| delivery.message_id == message.id)
+        .collect::<Vec<_>>();
+    print_json(&serde_json::json!({
+        "message": message,
+        "admission": resolved_peer.authority,
+        "deliveries": deliveries,
+    }))
+}
+
+/// Shared Team Inbox read: Team-subject canonical deliveries joined with their
+/// immutable Messages. This is a projection only; the delivery state machine
+/// is never mutated by a read.
+pub(crate) fn team_inbox_projection(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    team_id: &str,
+    include_all: bool,
+) -> CliResult<serde_json::Value> {
+    let subscription_id = format!("team-inbox:{team_id}");
+    let subscription = store
+        .fabric_message_subscriptions(execution_space_id)?
+        .into_iter()
+        .find(|subscription| subscription.id == subscription_id)
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "Team {team_id} has no durable Team Inbox subscription"
+            ))
+        })?;
+    let messages = store
+        .fabric_messages(execution_space_id)?
+        .into_iter()
+        .map(|message| (message.id.clone(), message))
+        .collect::<BTreeMap<_, _>>();
+    let mut deliveries = store
+        .fabric_message_deliveries(execution_space_id)?
+        .into_iter()
+        .filter(|delivery| {
+            delivery.subscription_id == subscription_id
+                && delivery.recipient_kind == harness_core::agentfirm_api::MessageSubjectKind::Team
+                && delivery.target_team_id.as_deref() == Some(team_id)
+        })
+        .collect::<Vec<_>>();
+    deliveries.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let items = deliveries
+        .into_iter()
+        .filter(|delivery| {
+            include_all
+                || matches!(
+                    delivery.status,
+                    harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Queued
+                )
+        })
+        .map(|delivery| {
+            let message = messages.get(&delivery.message_id);
+            serde_json::json!({
+                "delivery_id": delivery.id,
+                "delivery_version": delivery.version,
+                "delivery_status": delivery.status,
+                "attempt": delivery.attempt,
+                "claim_id": delivery.claim_id,
+                "claimed_node_daemon_generation": delivery.claimed_node_daemon_generation,
+                "resolved_team_membership_id": delivery.resolved_team_membership_id,
+                "recipient_agent_member_id": delivery.recipient_agent_member_id,
+                "subscription_id": delivery.subscription_id,
+                "subscription_revision": delivery.subscription_revision,
+                "message_id": delivery.message_id,
+                "message": message.map(|message| serde_json::json!({
+                    "kind": message.kind,
+                    "body": message.body,
+                    "body_digest": message.body_digest,
+                    "content_fingerprint": message.content_fingerprint,
+                    "sender_actor_ref": message.sender_actor_ref,
+                    "sender_agent_member_id": message.sender_agent_member_id,
+                    "sender_session_id": message.sender_session_id,
+                    "source_team_id": message.team_id,
+                    "source_execution_space_id": message.source_execution_space_id,
+                    "source_node_id": message.source_node_id,
+                    "collaboration_scope": message.collaboration_scope,
+                    "correlation_id": message.correlation_id,
+                    "causation_id": message.causation_id,
+                    "work_id": message.work_id,
+                    "response_intent": message.response_intent,
+                    "evidence_refs": message.evidence_refs,
+                    "created_at": message.created_at,
+                })),
+                "created_at": delivery.created_at,
+                "updated_at": delivery.updated_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({
+        "team_id": team_id,
+        "subscription": subscription,
+        "item_count": items.len(),
+        "items": items,
+    }))
+}
+
+fn team_message_inbox(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    args: &[String],
+) -> CliResult<()> {
+    let team_id = required(args, "--team")?;
+    let team = store
+        .agent_teams(execution_space_id)?
+        .into_iter()
+        .find(|team| team.id == team_id)
+        .ok_or_else(|| CliError::Usage(format!("team not found: {team_id}")))?;
+    let inbox =
+        team_inbox_projection(store, execution_space_id, &team.id, has_flag(args, "--all"))?;
+    if has_flag(args, "--json") {
+        print_json(&inbox)?;
+    } else {
+        for item in inbox["items"].as_array().into_iter().flatten() {
+            let sender = item["message"]["sender_agent_member_id"]
+                .as_str()
+                .unwrap_or("unknown");
+            let source_team = item["message"]["collaboration_scope"]["source_team_id"]
+                .as_str()
+                .or_else(|| item["message"]["source_team_id"].as_str())
+                .unwrap_or("unknown");
+            let first_line = item["message"]["body"]
+                .as_str()
+                .and_then(|body| body.lines().next())
+                .unwrap_or_default();
+            println!(
+                "{}\t{}\tfrom={}@{}\t{}\t{}",
+                item["delivery_id"].as_str().unwrap_or_default(),
+                item["delivery_status"].as_str().unwrap_or("unknown"),
+                sender,
+                source_team,
+                item["message"]["correlation_id"]
+                    .as_str()
+                    .unwrap_or_default(),
+                first_line,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn team_message_claim(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    args: &[String],
+) -> CliResult<()> {
+    let team_id = required(args, "--team")?;
+    let delivery_id = required(args, "--delivery-id")?;
+    let membership_id = required(args, "--membership-id")?;
+    let team = store
+        .agent_teams(execution_space_id)?
+        .into_iter()
+        .find(|team| team.id == team_id)
+        .ok_or_else(|| CliError::Usage(format!("team not found: {team_id}")))?;
+    let membership = store
+        .fabric_team_memberships(execution_space_id)?
+        .into_iter()
+        .find(|membership| {
+            membership.id == membership_id
+                && membership.team_id == team.id
+                && membership.state == harness_core::agentfirm_api::TeamMembershipStatus::Active
+        })
+        .ok_or_else(|| {
+            CliError::Usage(format!("active TeamMembership not found: {membership_id}"))
+        })?;
+    let lease = store
+        .latest_node_daemon_lease(&team.node_id)?
+        .filter(|lease| {
+            lease.status == NodeDaemonLeaseStatus::Active
+                && lease.expires_unix_ms > current_unix_ms_u64()
+        })
+        .ok_or_else(|| CliError::Usage("NODE_DAEMON_UNAVAILABLE".into()))?;
+    let claim_id = value(args, "--claim-id").unwrap_or_else(|| generated_id("team-inbox-claim"));
+    let claim = harness_core::agentfirm_api::TeamMessageDeliveryClaim {
+        claim_id: claim_id.clone(),
+        team_membership_id: membership.id.clone(),
+        membership_generation: membership.membership_generation,
+        node_daemon_generation: lease.generation,
+        claim_expires_at: format!(
+            "unix-ms:{}",
+            current_unix_ms_u64().saturating_add(15 * 60_000)
+        ),
+    };
+    let claimed = store.claim_team_message_delivery(
+        &canonical_delivery_context(
+            execution_space_id,
+            &lease.daemon_id,
+            "node_daemon.team_message.claim",
+            claim_id,
+            0,
+        ),
+        &delivery_id,
+        &claim,
+        &now_string(),
+    )?;
+    print_json(&claimed.projection)
 }
 
 // ---------------------------------------------------------------------------
@@ -28562,14 +29145,28 @@ struct RuntimeAuthorMessageIntent {
     remote_transfer: Option<fabric_runtime::QueueCollaborationMessageRequest>,
 }
 
+/// Server-resolved peer-Team Message admission. The authority's target half is
+/// always read from the durable target subscription when the target Execution
+/// Space is registered on this Node; a genuinely remote target requires the
+/// caller's exact subscription revision and is fenced fail-closed by the
+/// target Node before any delivery mutation. `requires_remote_route` is true
+/// only when the target Team is placed on a distinct Node.
+#[derive(Debug)]
+pub(crate) struct ResolvedPeerTeamMessage {
+    pub(crate) authority: harness_core::collaboration::PeerTeamMessageAdmissionAuthority,
+    pub(crate) requires_remote_route: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn resolve_peer_team_message_admission_authority(
     store: &HarnessStore,
+    firm_home: &std::path::Path,
     execution_space_id: &str,
     local_node_id: &str,
-    credential: &AgentFirmHttpCredential,
+    actor: &harness_core::agentfirm_api::ActorRef,
     draft: &harness_core::agentfirm_api::MessageDraft,
-    request: &fabric_runtime::QueueCollaborationMessageRequest,
-) -> Result<harness_core::collaboration::PeerTeamMessageAdmissionAuthority, String> {
+    request: Option<&fabric_runtime::QueueCollaborationMessageRequest>,
+) -> Result<ResolvedPeerTeamMessage, String> {
     use harness_core::agentfirm_api::{
         ActorKind, AgentSessionStatus, MessageRecipientKind, TeamMembershipStatus,
     };
@@ -28583,25 +29180,85 @@ fn resolve_peer_team_message_admission_authority(
         .team_id
         .as_deref()
         .ok_or_else(|| "peer-Team Message requires its source Team".to_string())?;
-    if credential.actor.kind != ActorKind::AgentMember
+    if actor.kind != ActorKind::AgentMember
         || scope.source_team_id != source_team_id
-        || scope.target_team_id != request.target_team_id
+        || scope.source_team_id == scope.target_team_id
         || scope.delegation_id.is_some()
         || scope.expected_delegation_revision.is_some()
         || scope.source_work_ref.is_some()
         || scope.target_work_ref.is_some()
-        || draft.work_id.is_some()
         || draft.recipients.len() != 1
-        || draft.recipients[0].kind != MessageRecipientKind::Team
-        || draft.recipients[0].id != request.target_team_id
         || draft.target_ref != draft.recipients[0]
-        || source_team_id == request.target_team_id
     {
         return Err(
-            "ordinary peer-Team admission requires one Team subject and cannot carry WorkDelegation authority"
+            "ordinary peer-Team admission requires one exact recipient and cannot carry WorkDelegation authority"
                 .into(),
         );
     }
+    // A Work link is context only; the Store validates that it names a current
+    // Work of the source Team. Delegation-scoped Work references stay closed.
+    let member_target_id = match draft.recipients[0].kind {
+        MessageRecipientKind::Team if draft.recipients[0].id == scope.target_team_id => None,
+        MessageRecipientKind::AgentMember => Some(draft.recipients[0].id.clone()),
+        _ => {
+            return Err(
+                "ordinary peer-Team admission targets one peer Team or one peer TeamMembership"
+                    .into(),
+            )
+        }
+    };
+    // Target topology: route facts come from the remote transfer request, or
+    // from the same-Space durable Team when the caller authors locally.
+    let (target_execution_space_id, target_node_id, caller_team_revision) = match request {
+        Some(request) => {
+            if scope.target_team_id != request.target_team_id {
+                return Err("peer-Team route target disagrees with the CollaborationScope".into());
+            }
+            if request.target_node_id == local_node_id {
+                return Err(if request.target_execution_space_id == execution_space_id {
+                    "peer-Team route facts describe this Node and Execution Space; author locally without remote_transfer"
+                        .into()
+                } else {
+                    "peer-Team fabric routing requires a distinct target Node; same-Node cross-Execution-Space targets are not routable"
+                        .into()
+                });
+            }
+            (
+                request.target_execution_space_id.clone(),
+                request.target_node_id.clone(),
+                Some(request.target_team_revision),
+            )
+        }
+        None => {
+            let target_teams = store
+                .agent_teams(execution_space_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .filter(|team| team.id == scope.target_team_id)
+                .collect::<Vec<_>>();
+            let [target_team] = target_teams.as_slice() else {
+                return Err(
+                    "peer-Team target Team is not in this Execution Space; supply exact remote_transfer route facts for a remote Node"
+                        .into(),
+                );
+            };
+            if target_team.status != harness_core::AgentTeamStatus::Active {
+                return Err("peer-Team target Team is not Active".into());
+            }
+            if target_team.node_id != local_node_id {
+                return Err(
+                    "peer-Team target Team is placed on another Node; supply exact remote_transfer route facts"
+                        .into(),
+                );
+            }
+            (
+                execution_space_id.to_string(),
+                local_node_id.to_string(),
+                None,
+            )
+        }
+    };
+    let requires_remote_route = request.is_some();
     let source_teams = store
         .agent_teams(execution_space_id)
         .map_err(|error| error.to_string())?
@@ -28623,7 +29280,7 @@ fn resolve_peer_team_message_admission_authority(
         .into_iter()
         .filter(|membership| {
             membership.team_id == source_team_id
-                && membership.agent_member_id == credential.actor.id
+                && membership.agent_member_id == actor.id
                 && membership.node_id == local_node_id
                 && membership.state == TeamMembershipStatus::Active
         })
@@ -28638,7 +29295,7 @@ fn resolve_peer_team_message_admission_authority(
         .map_err(|error| error.to_string())?
         .into_iter()
         .filter(|session| {
-            session.agent_member_id == credential.actor.id
+            session.agent_member_id == actor.id
                 && session.node_id == local_node_id
                 && session.lifecycle != AgentSessionStatus::Closed
         })
@@ -28648,31 +29305,190 @@ fn resolve_peer_team_message_admission_authority(
     }
     let membership = &memberships[0];
     let session = &sessions[0];
+    // The authoring session must be a child of the exact current NodeDaemon
+    // generation; otherwise the daemon cannot honestly bind this author.
+    let lease = store
+        .latest_node_daemon_lease(local_node_id)
+        .map_err(|error| error.to_string())?
+        .filter(|lease| {
+            lease.status == harness_core::NodeDaemonLeaseStatus::Active
+                && lease.expires_unix_ms > current_unix_ms_u64()
+        })
+        .ok_or_else(|| {
+            "peer-Team authoring requires the current active NodeDaemon lease on this Node"
+                .to_string()
+        })?;
+    if session.node_daemon_id != lease.daemon_id
+        || session.node_daemon_generation != lease.generation
+    {
+        return Err(
+            "peer-Team author session is not bound to the exact current NodeDaemon generation"
+                .into(),
+        );
+    }
+    // Read the durable target subscription from the target Store whenever it
+    // is registered on this Node. Never hardcode a subscription revision: the
+    // target fence advances on every target Team lifecycle transition.
+    let target_store = if target_execution_space_id == execution_space_id {
+        Some(store.clone())
+    } else {
+        match execution_space::context_for_id(firm_home, &target_execution_space_id)
+            .map_err(|error| error.to_string())?
+        {
+            Some(space) => Some(HarnessStore::new(space.store_root)),
+            None => None,
+        }
+    };
     let source_policy_ref = "peer-team-message-admission.v1".to_string();
     let source_policy_revision = 1;
     let source_required_capability = "message.peer_team.author".to_string();
-    let target_subscription_id = format!("team-inbox:{}", request.target_team_id);
-    let target_subscription_revision = 1;
-    let target_authorization_policy_ref = "collaboration.peer_message_deliver".to_string();
-    let target_policy_revision = 1;
     let target_required_capability = "collaboration.peer_message_deliver".to_string();
+    let (
+        target_team_revision,
+        target_membership_id,
+        target_membership_generation,
+        target_agent_member_id,
+        target_subscription_id,
+        target_subscription_revision,
+        target_authorization_policy_ref,
+        target_policy_revision,
+    );
+    if let Some(target_store) = target_store.as_ref() {
+        let target_teams = target_store
+            .agent_teams(&target_execution_space_id)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|team| team.id == scope.target_team_id)
+            .collect::<Vec<_>>();
+        let [target_team] = target_teams.as_slice() else {
+            return Err("peer-Team target Team is missing or ambiguous on its Node".into());
+        };
+        if target_team.status != harness_core::AgentTeamStatus::Active
+            || target_team.node_id != target_node_id
+        {
+            return Err("peer-Team target Team is not Active on the claimed target Node".into());
+        }
+        if let Some(caller_revision) = caller_team_revision {
+            if caller_revision != target_team.revision {
+                return Err(format!(
+                    "peer-Team caller target Team revision {caller_revision} is stale; current revision is {}",
+                    target_team.revision
+                ));
+            }
+        }
+        target_team_revision = target_team.revision;
+        let subscriptions = target_store
+            .fabric_message_subscriptions(&target_execution_space_id)
+            .map_err(|error| error.to_string())?;
+        let subscription = match member_target_id.as_deref() {
+            None => {
+                target_membership_id = None;
+                target_membership_generation = None;
+                target_agent_member_id = None;
+                target_subscription_id = format!("team-inbox:{}", scope.target_team_id);
+                target_authorization_policy_ref = "collaboration.peer_message_deliver".to_string();
+                subscriptions
+                    .iter()
+                    .filter(|subscription| subscription.id == target_subscription_id)
+                    .collect::<Vec<_>>()
+            }
+            Some(member_id) => {
+                let target_memberships = target_store
+                    .fabric_team_memberships(&target_execution_space_id)
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .filter(|membership| {
+                        membership.team_id == scope.target_team_id
+                            && membership.agent_member_id == member_id
+                            && membership.node_id == target_node_id
+                            && membership.state == TeamMembershipStatus::Active
+                    })
+                    .collect::<Vec<_>>();
+                let [target_membership] = target_memberships.as_slice() else {
+                    return Err(
+                        "peer-Team direct target must resolve to one exact active target TeamMembership"
+                            .into(),
+                    );
+                };
+                target_membership_id = Some(target_membership.id.clone());
+                target_membership_generation = Some(target_membership.membership_generation);
+                target_agent_member_id = Some(member_id.to_string());
+                target_subscription_id = format!("direct:{}:{}", member_id, target_membership.id);
+                target_authorization_policy_ref = "team.direct.active-members".to_string();
+                subscriptions
+                    .iter()
+                    .filter(|subscription| subscription.id == target_subscription_id)
+                    .collect::<Vec<_>>()
+            }
+        };
+        let [subscription] = subscription.as_slice() else {
+            return Err(
+                "peer-Team durable target subscription is missing or ambiguous on its Node".into(),
+            );
+        };
+        if subscription.status != harness_core::agentfirm_api::MessageSubscriptionStatus::Active {
+            return Err("peer-Team durable target subscription is not Active".into());
+        }
+        target_subscription_revision = subscription.revision;
+        target_policy_revision = subscription.policy_revision;
+    } else {
+        // The target Store is not visible from this Node. Only a Team target
+        // can ride caller-declared route facts; a direct TeamMembership target
+        // needs the durable membership generation, which is never guessed.
+        if member_target_id.is_some() {
+            return Err(
+                "peer-Team direct TeamMembership targets require the target Execution Space registered on this Node"
+                    .into(),
+            );
+        }
+        let subscription_revision = request
+            .and_then(|request| request.target_subscription_revision)
+            .filter(|revision| *revision > 0)
+            .ok_or_else(|| {
+                "peer-Team remote target requires the caller's current target subscription revision; the target Node fences staleness fail-closed"
+                    .to_string()
+            })?;
+        target_team_revision = caller_team_revision.unwrap_or(0);
+        if target_team_revision == 0 {
+            return Err("peer-Team remote target requires the current target Team revision".into());
+        }
+        target_membership_id = None;
+        target_membership_generation = None;
+        target_agent_member_id = None;
+        target_subscription_id = format!("team-inbox:{}", scope.target_team_id);
+        target_subscription_revision = subscription_revision;
+        target_authorization_policy_ref = "collaboration.peer_message_deliver".to_string();
+        // The team-inbox policy revision is a creation-time protocol constant
+        // of the current build; the target recomputes and fences the digest.
+        target_policy_revision = 1;
+    }
     let mut authority = PeerTeamMessageAdmissionAuthority {
-        company_id: request.company_id.clone(),
+        company_id: match request {
+            Some(request) => request.company_id.clone(),
+            None => company_store::active_company_id(firm_home)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| {
+                    "local peer-Team authoring requires an active Company or an explicit remote_transfer Company".to_string()
+                })?,
+        },
         source_execution_space_id: execution_space_id.into(),
         source_team_id: source_team_id.into(),
         source_team_revision: source_team.revision,
         source_membership_id: membership.id.clone(),
         source_membership_generation: membership.membership_generation,
-        source_agent_member_id: credential.actor.id.clone(),
+        source_agent_member_id: actor.id.clone(),
         source_session_id: session.id.clone(),
         source_session_generation: session.runtime_generation,
         source_node_id: local_node_id.into(),
         source_node_daemon_id: session.node_daemon_id.clone(),
         source_node_daemon_generation: session.node_daemon_generation,
-        target_execution_space_id: request.target_execution_space_id.clone(),
-        target_team_id: request.target_team_id.clone(),
-        target_team_revision: request.target_team_revision,
-        target_node_id: request.target_node_id.clone(),
+        target_execution_space_id,
+        target_team_id: scope.target_team_id.clone(),
+        target_team_revision,
+        target_node_id,
+        target_membership_id,
+        target_membership_generation,
+        target_agent_member_id,
         source_policy_ref,
         source_policy_revision,
         source_policy_digest: String::new(),
@@ -28688,7 +29504,10 @@ fn resolve_peer_team_message_admission_authority(
     authority.source_policy_digest = harness_store::peer_team_source_policy_digest(&authority);
     authority.target_policy_digest = harness_store::peer_team_target_policy_digest(&authority);
     authority.authority_digest = harness_store::peer_team_message_authority_digest(&authority);
-    Ok(authority)
+    Ok(ResolvedPeerTeamMessage {
+        authority,
+        requires_remote_route,
+    })
 }
 
 fn runtime_command_capability(
@@ -29208,23 +30027,27 @@ fn handle_http_connection(
                         return Ok(());
                     }
                 };
-                let (message_admission_authority, delegation_authority) = if let Some(
-                    remote_transfer,
-                ) =
-                    intent.remote_transfer.as_ref()
-                {
-                    if intent
-                        .draft
-                        .collaboration_scope
-                        .as_ref()
+                let (message_admission_authority, delegation_authority) = {
+                    let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
+                    let local_node_id = read_local_node_id()?;
+                    let scope = intent.draft.collaboration_scope.as_ref();
+                    let delegation_scoped = scope
                         .and_then(|scope| scope.delegation_id.as_ref())
-                        .is_some()
-                    {
+                        .is_some();
+                    if delegation_scoped {
+                        let Some(remote_transfer) = intent.remote_transfer.as_ref() else {
+                            write_http_json(
+                                &mut stream,
+                                "400 Bad Request",
+                                &serde_json::json!({"ok":false,"error":{"code":"INVALID_PAYLOAD","message":"Delegation-scoped cross-node Message requires exact remote_transfer route facts"}}),
+                            )?;
+                            return Ok(());
+                        };
                         match fabric_runtime::resolve_collaboration_message_authority(
                                 &store_owned,
-                                &execution_space::firm_home().map_err(execution_space_err)?,
+                                &firm_home,
                                 &project_id,
-                                &read_local_node_id()?,
+                                &local_node_id,
                                 &credential,
                                 &intent.draft,
                                 remote_transfer,
@@ -29242,17 +30065,21 @@ fn handle_http_connection(
                                     return Ok(());
                                 }
                             }
-                    } else {
+                    } else if scope.is_some() {
+                        // Ordinary peer-Team admission runs with or without a
+                        // remote route: a same-Space same-Node target is
+                        // delivered by the local authoring Store directly.
                         match resolve_peer_team_message_admission_authority(
                                 &store_owned,
+                                &firm_home,
                                 &project_id,
-                                &read_local_node_id()?,
-                                &credential,
+                                &local_node_id,
+                                &credential.actor,
                                 &intent.draft,
-                                remote_transfer,
+                                intent.remote_transfer.as_ref(),
                             ) {
-                                Ok(authority) => (
-                                    Some(harness_core::collaboration::MessageAdmissionAuthority::PeerTeam(authority)),
+                                Ok(resolved) => (
+                                    Some(harness_core::collaboration::MessageAdmissionAuthority::PeerTeam(resolved.authority)),
                                     None,
                                 ),
                                 Err(message) => {
@@ -29264,9 +30091,17 @@ fn handle_http_connection(
                                     return Ok(());
                                 }
                             }
+                    } else {
+                        if intent.remote_transfer.is_some() {
+                            write_http_json(
+                                &mut stream,
+                                "400 Bad Request",
+                                &serde_json::json!({"ok":false,"error":{"code":"INVALID_PAYLOAD","message":"remote_transfer requires a CollaborationScope on the Message draft"}}),
+                            )?;
+                            return Ok(());
+                        }
+                        (None, None)
                     }
-                } else {
-                    (None, None)
                 };
                 let target_node_id = intent
                     .draft
@@ -29789,7 +30624,7 @@ fn handle_http_connection(
                             &firm_home,
                             &project_id,
                             &envelope.target_node_id,
-                            &credential,
+                            &credential.actor,
                             &envelope.idempotency_key,
                             &message,
                             &request,
@@ -42142,6 +42977,11 @@ team-run dispatch-host --id <id> [--min-age-s <n>] [--timeout-ms <n>]
 team-run events     --id <id> [--after-seq <n>] [--json]
 team-run board-summary --id <id>
 team-run recover    --id <id> [--json]
+team message send   --from-team <id> --from-member <id> --to-team <id>
+                    [--to-member <id> | --to-membership <id>] --body <md>
+                    [--company <id> --to-node <id> --to-space <id>]
+team message inbox  --team <id> [--all] [--json]
+team message claim  --team <id> --delivery-id <id> --membership-id <id>
 "#;
 
 const CHEATSHEET_WORK: &str = r#"work create --team-run-id <id> --title <text> --completion-criteria <text>
@@ -42204,6 +43044,8 @@ mission show --id <id>
 mission update-context --id <id> --context <text>
 team create --name <text> --description <text> --mission-id <id>
   --host-agent-id <id> --node-id <uuid> [--member <id>]
+team message send --from-team <id> --from-member <id> --to-team <id> --body <md>
+team message inbox --team <id> [--all]
 mission close --id <id> --outcome <text>
 mission log append --mission-id <id>
   --kind judgment|replan|recovery|closeout_evidence --body <md>
@@ -42238,6 +43080,18 @@ fn print_help() {
   member-run show --id <member-run-id> [--json]
   member-run open-native --id <member-run-id> [--print-only] [--json]
   team create|list|show|rename|add-member|remove-member|close|archive
+  team message send --from-team <id> --from-member <agent-member-id> --to-team <id>
+                   [--to-member <agent-member-id> | --to-membership <membership-id>]
+                   --body <markdown> [--work-id <id>] [--correlation-id <id>] [--causation-id <id>]
+                   [--company <id> --to-node <node> --to-space <id> [--to-subscription-revision <n>]]
+      Ordinary peer-Team Message without WorkDelegation. A Team target lands in
+      the shared Team Inbox without waking Members; a Member target binds one
+      exact TeamMembership. Remote route facts are all-or-nothing.
+  team message inbox --team <id> [--all] [--json]
+      Read the shared Team Inbox (default: unclaimed queued deliveries).
+  team message claim --team <id> --delivery-id <id> --membership-id <id> [--claim-id <id>]
+      Claim one queued Team Inbox delivery for one exact active TeamMembership
+      generation under the current NodeDaemon generation.
   org member create|converge|list|show
   org bootstrap-lead|host|cutover-audit
   member providers [--fail-on-review]
@@ -50276,6 +51130,617 @@ package:com.tencent.mm
     fn temp_store(label: &str) -> (HarnessStore, PathBuf) {
         let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id(label)));
         (HarnessStore::new(&root), root)
+    }
+
+    // ------------------------------------------------------------------
+    // Peer-Team messaging (DOC-106) surface fixtures and tests.
+    // ------------------------------------------------------------------
+
+    struct PeerMessagingFixture {
+        store: HarnessStore,
+        root: PathBuf,
+        firm_home: PathBuf,
+        node_id: String,
+        source_team_id: String,
+        target_team_id: String,
+        sender_member_id: String,
+        target_member_id: String,
+    }
+
+    impl PeerMessagingFixture {
+        fn new(tag: &str) -> Self {
+            let (store, root) = temp_store(tag);
+            let firm_home =
+                std::env::temp_dir().join(format!("harness-cli-home-{}", generated_id(tag)));
+            std::fs::create_dir_all(&firm_home).expect("firm home");
+            company_store::register_and_activate(&firm_home, "company-test", "Test Company", "t1")
+                .expect("active Company");
+            let node_id = "11111111-1111-4111-8111-111111111111".to_string();
+            let space_id = "space-test";
+            store.init().expect("store init");
+            store
+                .insert_execution_node(&harness_core::ExecutionNode {
+                    id: node_id.clone(),
+                    display_name: "local".into(),
+                    status: harness_core::ExecutionNodeStatus::Active,
+                    created_at: "t1".into(),
+                    updated_at: "t1".into(),
+                })
+                .expect("insert ExecutionNode");
+            store
+                .register_node_project(
+                    &harness_core::NodeProjectRegistration {
+                        node_id: node_id.clone(),
+                        execution_space_id: space_id.into(),
+                        project_binding_id: "project-1".into(),
+                        status: harness_core::NodeProjectRegistrationStatus::Active,
+                        created_at: "t1".into(),
+                        updated_at: "t1".into(),
+                    },
+                    space_id,
+                )
+                .expect("register Node project");
+            store
+                .acquire_node_daemon_lease(
+                    &node_id,
+                    "daemon-1",
+                    "instance-1",
+                    current_unix_ms_u64(),
+                    3_600_000,
+                )
+                .expect("daemon lease");
+            let creator = harness_core::agentfirm_api::ActorRef {
+                kind: harness_core::agentfirm_api::ActorKind::Human,
+                id: "operator".into(),
+            };
+            let member_context = |id: &str| harness_core::agentfirm_api::MutationContext {
+                execution_space_id: space_id.into(),
+                authenticated_actor: creator.clone(),
+                authority_actor: None,
+                command_name: "unit_test.agent_member.create".into(),
+                idempotency_key: format!("unit-test-member:{id}"),
+                expected_version: 0,
+                request_fingerprint: None,
+            };
+            for id in ["sender-member", "target-member"] {
+                store
+                    .create_trust_agent_member(
+                        &member_context(id),
+                        harness_core::agentfirm_api::AgentMember {
+                            id: id.into(),
+                            name: id.into(),
+                            description: "peer messaging fixture".into(),
+                            role: "host".into(),
+                            capabilities: Vec::new(),
+                            skill_refs: Vec::new(),
+                            provider_profile_ref: Some("codex".into()),
+                            model_preference: None,
+                            workspace_policy: "managed-worktree".into(),
+                            permission_ceiling:
+                                harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite,
+                            organization_status:
+                                harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active,
+                            version: 1,
+                            created_by: creator.clone(),
+                            created_at: "t1".into(),
+                            updated_at: "t1".into(),
+                        },
+                    )
+                    .expect("create AgentMember");
+            }
+            let team_context = |key: &str| harness_core::agentfirm_api::MutationContext {
+                execution_space_id: space_id.into(),
+                authenticated_actor: creator.clone(),
+                authority_actor: None,
+                command_name: "unit_test.agent_team.create".into(),
+                idempotency_key: key.into(),
+                expected_version: 0,
+                request_fingerprint: None,
+            };
+            let create_team = |store: &HarnessStore, team_id: &str, host_id: &str| {
+                store
+                    .create_agent_team(
+                        &team_context(&format!("unit-test-team:{team_id}")),
+                        AgentTeam {
+                            id: team_id.into(),
+                            name: team_id.into(),
+                            description: "peer messaging fixture".into(),
+                            node_id: node_id.clone(),
+                            status: AgentTeamStatus::Active,
+                            revision: 1,
+                            legacy_mission_id: Some(format!("mission-{team_id}")),
+                            trashed_at: None,
+                            mission_id: format!("mission-{team_id}"),
+                            host_agent_id: host_id.into(),
+                            member_ids: Vec::new(),
+                            created_at: "t1".into(),
+                            updated_at: "t1".into(),
+                        },
+                        vec![harness_core::agentfirm_api::TeamMembership {
+                            id: format!("membership:{team_id}:{host_id}"),
+                            team_id: team_id.into(),
+                            agent_member_id: host_id.into(),
+                            node_id: node_id.clone(),
+                            role: harness_core::agentfirm_api::TeamMembershipRole::Host,
+                            state: harness_core::agentfirm_api::TeamMembershipStatus::Active,
+                            membership_generation: 1,
+                            default_subscription_refs: Vec::new(),
+                            created_by: creator.clone(),
+                            revision: 1,
+                            joined_at: "t1".into(),
+                            left_at: None,
+                        }],
+                    )
+                    .expect("create AgentTeam");
+            };
+            create_team(&store, "source-team", "sender-member");
+            create_team(&store, "target-team", "target-member");
+            store
+                .create_agent_session(
+                    &harness_core::agentfirm_api::MutationContext {
+                        execution_space_id: space_id.into(),
+                        authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                            kind: harness_core::agentfirm_api::ActorKind::Service,
+                            id: "daemon-1".into(),
+                        },
+                        authority_actor: None,
+                        command_name: "unit_test.session.create".into(),
+                        idempotency_key: "unit-test-session:sender".into(),
+                        expected_version: 0,
+                        request_fingerprint: None,
+                    },
+                    harness_core::agentfirm_api::AgentSession {
+                        id: "session-sender".into(),
+                        agent_member_id: "sender-member".into(),
+                        node_id: node_id.clone(),
+                        execution_space_id: space_id.into(),
+                        node_daemon_id: "daemon-1".into(),
+                        node_daemon_generation: 1,
+                        provider_kind: "codex".into(),
+                        provider_profile_ref: "codex-default".into(),
+                        permission_envelope_ref: "permission-default".into(),
+                        effective_permission_ceiling:
+                            harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite,
+                        lifecycle: harness_core::agentfirm_api::AgentSessionStatus::Idle,
+                        runtime_generation: 1,
+                        control_state: harness_core::agentfirm_api::AgentSessionControlState {
+                            driver_generation: 1,
+                            driver_ref: harness_core::agentfirm_api::RuntimeDriverRef::NodeDaemon {
+                                node_daemon_id: "daemon-1".into(),
+                                node_daemon_generation: 1,
+                            },
+                            composition_fingerprint: Some("composition:test".into()),
+                            capability_fingerprint: Some("capability:test".into()),
+                            ..Default::default()
+                        },
+                        native_session_ref: None,
+                        current_turn_id: None,
+                        queued_input_count: 0,
+                        version: 1,
+                        opened_at: "t1".into(),
+                        last_active_at: "t1".into(),
+                        closed_at: None,
+                    },
+                )
+                .expect("sender AgentSession");
+            Self {
+                store,
+                root,
+                firm_home,
+                node_id,
+                source_team_id: "source-team".into(),
+                target_team_id: "target-team".into(),
+                sender_member_id: "sender-member".into(),
+                target_member_id: "target-member".into(),
+            }
+        }
+
+        fn team_draft(&self, body: &str) -> harness_core::agentfirm_api::MessageDraft {
+            let recipient = harness_core::agentfirm_api::MessageRecipientRef {
+                kind: harness_core::agentfirm_api::MessageRecipientKind::Team,
+                id: self.target_team_id.clone(),
+            };
+            harness_core::agentfirm_api::MessageDraft {
+                address_kind: harness_core::agentfirm_api::MessageAddressKind::TeamChannel,
+                target_ref: recipient.clone(),
+                recipients: vec![recipient],
+                team_id: Some(self.source_team_id.clone()),
+                team_run_id: None,
+                work_id: None,
+                collaboration_scope: Some(harness_core::collaboration::CollaborationScope {
+                    source_team_id: self.source_team_id.clone(),
+                    target_team_id: self.target_team_id.clone(),
+                    delegation_id: None,
+                    expected_delegation_revision: None,
+                    source_work_ref: None,
+                    target_work_ref: None,
+                }),
+                kind: harness_core::agentfirm_api::MessageKind::Message,
+                body: body.into(),
+                correlation_id: "correlation-test".into(),
+                causation_id: None,
+                response_intent: harness_core::agentfirm_api::ResponseIntent::Informational,
+                evidence_refs: Vec::new(),
+                schema_version: 1,
+            }
+        }
+
+        fn sender_actor(&self) -> harness_core::agentfirm_api::ActorRef {
+            harness_core::agentfirm_api::ActorRef {
+                kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+                id: self.sender_member_id.clone(),
+            }
+        }
+
+        fn cleanup(&self) {
+            std::fs::remove_dir_all(&self.root).expect("cleanup store root");
+            std::fs::remove_dir_all(&self.firm_home).expect("cleanup firm home");
+        }
+    }
+
+    #[test]
+    fn peer_message_resolver_reads_current_target_subscription_revision() {
+        let fixture = PeerMessagingFixture::new("peer-resolver-current-revision");
+        let draft = fixture.team_draft("hello peer team");
+        let resolved = resolve_peer_team_message_admission_authority(
+            &fixture.store,
+            &fixture.firm_home,
+            "space-test",
+            &fixture.node_id,
+            &fixture.sender_actor(),
+            &draft,
+            None,
+        )
+        .expect("local peer resolution");
+        assert!(!resolved.requires_remote_route);
+        assert_eq!(resolved.authority.company_id, "company-test");
+        assert_eq!(resolved.authority.target_subscription_revision, 1);
+        assert_eq!(
+            resolved.authority.target_subscription_id,
+            "team-inbox:target-team"
+        );
+        assert_eq!(
+            resolved.authority.source_membership_id,
+            "membership:source-team:sender-member"
+        );
+        assert_eq!(resolved.authority.source_session_id, "session-sender");
+
+        // The availability trap: a target Team lifecycle transition advances
+        // the durable subscription revision; re-resolution must read the
+        // current revision instead of freezing a hardcoded one.
+        let host_membership = fixture
+            .store
+            .fabric_team_memberships("space-test")
+            .expect("memberships")
+            .into_iter()
+            .find(|membership| {
+                membership.team_id == "target-team"
+                    && membership.role == harness_core::agentfirm_api::TeamMembershipRole::Host
+            })
+            .expect("target host membership");
+        let operator = harness_core::agentfirm_api::MutationContext {
+            execution_space_id: "space-test".into(),
+            authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                kind: harness_core::agentfirm_api::ActorKind::Human,
+                id: "operator".into(),
+            },
+            authority_actor: None,
+            command_name: "unit_test.team.lifecycle".into(),
+            idempotency_key: "unit-test-team-off".into(),
+            expected_version: 1,
+            request_fingerprint: None,
+        };
+        fixture
+            .store
+            .transition_agent_team(
+                &operator,
+                "target-team",
+                harness_core::AgentTeamStatus::Inactive,
+                "t-off",
+            )
+            .expect("deactivate target team");
+        resolve_peer_team_message_admission_authority(
+            &fixture.store,
+            &fixture.firm_home,
+            "space-test",
+            &fixture.node_id,
+            &fixture.sender_actor(),
+            &draft,
+            None,
+        )
+        .expect_err("a Paused target Team Inbox is not admissible");
+        fixture
+            .store
+            .activate_team_membership(
+                &harness_core::agentfirm_api::MutationContext {
+                    idempotency_key: "unit-test-host-on".into(),
+                    expected_version: host_membership.revision + 1,
+                    ..operator.clone()
+                },
+                &host_membership.id,
+                "t-host-on",
+            )
+            .expect("reactivate target host membership");
+        fixture
+            .store
+            .transition_agent_team(
+                &harness_core::agentfirm_api::MutationContext {
+                    idempotency_key: "unit-test-team-on".into(),
+                    expected_version: 2,
+                    ..operator
+                },
+                "target-team",
+                harness_core::AgentTeamStatus::Active,
+                "t-on",
+            )
+            .expect("reactivate target team");
+        let resolved = resolve_peer_team_message_admission_authority(
+            &fixture.store,
+            &fixture.firm_home,
+            "space-test",
+            &fixture.node_id,
+            &fixture.sender_actor(),
+            &draft,
+            None,
+        )
+        .expect("re-resolution after lifecycle");
+        assert_eq!(resolved.authority.target_subscription_revision, 3);
+        assert_eq!(resolved.authority.target_team_revision, 3);
+        // The frozen authority passes the same Store fence the target applies.
+        fixture
+            .store
+            .revalidate_peer_team_delivery_subscription("space-test", &resolved.authority)
+            .expect("resolved authority revalidates against the durable subscription");
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn peer_message_resolver_binds_direct_membership_targets() {
+        let fixture = PeerMessagingFixture::new("peer-resolver-member-target");
+        let mut draft = fixture.team_draft("hello one member");
+        let recipient = harness_core::agentfirm_api::MessageRecipientRef {
+            kind: harness_core::agentfirm_api::MessageRecipientKind::AgentMember,
+            id: fixture.target_member_id.clone(),
+        };
+        draft.address_kind = harness_core::agentfirm_api::MessageAddressKind::DirectAgent;
+        draft.target_ref = recipient.clone();
+        draft.recipients = vec![recipient];
+        let resolved = resolve_peer_team_message_admission_authority(
+            &fixture.store,
+            &fixture.firm_home,
+            "space-test",
+            &fixture.node_id,
+            &fixture.sender_actor(),
+            &draft,
+            None,
+        )
+        .expect("direct member resolution");
+        assert_eq!(
+            resolved.authority.target_membership_id.as_deref(),
+            Some("membership:target-team:target-member")
+        );
+        assert_eq!(resolved.authority.target_membership_generation, Some(1));
+        assert_eq!(
+            resolved.authority.target_agent_member_id.as_deref(),
+            Some("target-member")
+        );
+        assert_eq!(
+            resolved.authority.target_subscription_id,
+            "direct:target-member:membership:target-team:target-member"
+        );
+        assert_eq!(
+            resolved.authority.target_authorization_policy_ref,
+            "team.direct.active-members"
+        );
+        fixture
+            .store
+            .revalidate_peer_team_delivery_subscription("space-test", &resolved.authority)
+            .expect("direct authority revalidates");
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn peer_message_resolver_fences_remote_topology_and_revisions() {
+        let fixture = PeerMessagingFixture::new("peer-resolver-remote-fences");
+        let draft = fixture.team_draft("hello remote team");
+        let request = |node: &str, space: &str, subscription_revision: Option<u64>| {
+            fabric_runtime::QueueCollaborationMessageRequest {
+                company_id: "company-test".into(),
+                target_team_id: fixture.target_team_id.clone(),
+                target_team_revision: 1,
+                target_node_id: node.into(),
+                target_execution_space_id: space.into(),
+                target_subscription_revision: subscription_revision,
+                expected_delegation_revision: 0,
+                expires_unix_ms: current_unix_ms_u64() + 60_000,
+            }
+        };
+        // Same-Node route facts are rejected: the fabric never loops back.
+        resolve_peer_team_message_admission_authority(
+            &fixture.store,
+            &fixture.firm_home,
+            "space-test",
+            &fixture.node_id,
+            &fixture.sender_actor(),
+            &draft,
+            Some(&request(&fixture.node_id, "space-remote", Some(1))),
+        )
+        .expect_err("same-Node cross-Space routing is closed");
+        // A genuinely remote target needs the caller's current target
+        // subscription revision; nothing is hardcoded or guessed.
+        resolve_peer_team_message_admission_authority(
+            &fixture.store,
+            &fixture.firm_home,
+            "space-test",
+            &fixture.node_id,
+            &fixture.sender_actor(),
+            &draft,
+            Some(&request("node-remote", "space-remote", None)),
+        )
+        .expect_err("remote resolution without the subscription revision fails closed");
+        let resolved = resolve_peer_team_message_admission_authority(
+            &fixture.store,
+            &fixture.firm_home,
+            "space-test",
+            &fixture.node_id,
+            &fixture.sender_actor(),
+            &draft,
+            Some(&request("node-remote", "space-remote", Some(7))),
+        )
+        .expect("remote resolution with caller-declared subscription revision");
+        assert!(resolved.requires_remote_route);
+        assert_eq!(resolved.authority.target_subscription_revision, 7);
+        assert_eq!(resolved.authority.target_node_id, "node-remote");
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn team_inbox_projection_lists_queued_then_all_with_claim_binding() {
+        use sha2::Digest;
+        let fixture = PeerMessagingFixture::new("peer-inbox-projection");
+        let draft = fixture.team_draft("hello peer team");
+        let resolved = resolve_peer_team_message_admission_authority(
+            &fixture.store,
+            &fixture.firm_home,
+            "space-test",
+            &fixture.node_id,
+            &fixture.sender_actor(),
+            &draft,
+            None,
+        )
+        .expect("local peer resolution");
+        let recipient = harness_core::agentfirm_api::MessageRecipientRef {
+            kind: harness_core::agentfirm_api::MessageRecipientKind::Team,
+            id: fixture.target_team_id.clone(),
+        };
+        let mut message = harness_core::agentfirm_api::Message {
+            id: "message:peer-inbox".into(),
+            source_execution_space_id: "space-test".into(),
+            source_node_id: fixture.node_id.clone(),
+            source_node_daemon_id: "daemon-1".into(),
+            source_authority_generation: 1,
+            sender_actor_ref: fixture.sender_actor(),
+            sender_agent_member_id: Some(fixture.sender_member_id.clone()),
+            sender_session_id: Some("session-sender".into()),
+            address_kind: harness_core::agentfirm_api::MessageAddressKind::TeamChannel,
+            target_ref: recipient.clone(),
+            recipients: vec![recipient],
+            team_id: Some(fixture.source_team_id.clone()),
+            team_run_id: None,
+            work_id: None,
+            collaboration_scope: draft.collaboration_scope.clone(),
+            kind: harness_core::agentfirm_api::MessageKind::Message,
+            body: draft.body.clone(),
+            body_digest: String::new(),
+            correlation_id: draft.correlation_id.clone(),
+            causation_id: None,
+            response_intent: harness_core::agentfirm_api::ResponseIntent::Informational,
+            evidence_refs: Vec::new(),
+            content_fingerprint: String::new(),
+            schema_version: 1,
+            idempotency_key: "peer-inbox".into(),
+            created_at: "t-peer-inbox".into(),
+        };
+        message.body_digest = format!("sha256:{:x}", sha2::Sha256::digest(message.body.as_bytes()));
+        message.content_fingerprint = harness_store::message_content_fingerprint(&message);
+        fixture
+            .store
+            .author_message_with_admission_authority(
+                &harness_core::agentfirm_api::MutationContext {
+                    execution_space_id: "space-test".into(),
+                    authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                        kind: harness_core::agentfirm_api::ActorKind::Service,
+                        id: "daemon-1".into(),
+                    },
+                    authority_actor: None,
+                    command_name: "unit_test.message.author".into(),
+                    idempotency_key: "peer-inbox".into(),
+                    expected_version: 0,
+                    request_fingerprint: None,
+                },
+                message.clone(),
+                Some(
+                    &harness_core::collaboration::MessageAdmissionAuthority::PeerTeam(
+                        resolved.authority.clone(),
+                    ),
+                ),
+            )
+            .expect("author peer message");
+
+        // One queued Team Inbox delivery; the Member fan-out never happens.
+        let inbox = team_inbox_projection(&fixture.store, "space-test", "target-team", false)
+            .expect("team inbox projection");
+        assert_eq!(inbox["item_count"], serde_json::json!(1));
+        let item = &inbox["items"][0];
+        assert_eq!(item["delivery_status"], "queued");
+        assert_eq!(item["resolved_team_membership_id"], serde_json::Value::Null);
+        assert_eq!(item["message"]["sender_agent_member_id"], "sender-member");
+        assert_eq!(
+            item["message"]["collaboration_scope"]["source_team_id"],
+            "source-team"
+        );
+        assert_eq!(
+            item["message"]["collaboration_scope"]["target_team_id"],
+            "target-team"
+        );
+        assert_eq!(item["message"]["correlation_id"], "correlation-test");
+        assert_eq!(item["message"]["body"], "hello peer team");
+
+        // Claim binds one exact membership generation; the read view then
+        // shows the binding without implying provider receipt or acceptance.
+        let target_membership = fixture
+            .store
+            .fabric_team_memberships("space-test")
+            .expect("memberships")
+            .into_iter()
+            .find(|membership| {
+                membership.team_id == "target-team"
+                    && membership.state == harness_core::agentfirm_api::TeamMembershipStatus::Active
+            })
+            .expect("active target membership");
+        let claimed = fixture
+            .store
+            .claim_team_message_delivery(
+                &canonical_delivery_context(
+                    "space-test",
+                    "daemon-1",
+                    "node_daemon.team_message.claim",
+                    "peer-inbox-claim".into(),
+                    0,
+                ),
+                item["delivery_id"].as_str().expect("delivery id"),
+                &harness_core::agentfirm_api::TeamMessageDeliveryClaim {
+                    claim_id: "peer-inbox-claim".into(),
+                    team_membership_id: target_membership.id.clone(),
+                    membership_generation: target_membership.membership_generation,
+                    node_daemon_generation: 1,
+                    claim_expires_at: "t-expiry".into(),
+                },
+                "t-claim",
+            )
+            .expect("claim team inbox delivery");
+        assert!(!claimed.replayed);
+        let inbox = team_inbox_projection(&fixture.store, "space-test", "target-team", false)
+            .expect("queued-only projection");
+        assert_eq!(
+            inbox["item_count"],
+            serde_json::json!(0),
+            "claimed deliveries leave the actionable queue"
+        );
+        let inbox = team_inbox_projection(&fixture.store, "space-test", "target-team", true)
+            .expect("full projection");
+        assert_eq!(inbox["item_count"], serde_json::json!(1));
+        let item = &inbox["items"][0];
+        assert_eq!(item["delivery_status"], "routed");
+        assert_eq!(
+            item["resolved_team_membership_id"].as_str(),
+            Some(target_membership.id.as_str())
+        );
+        assert_eq!(
+            item["recipient_agent_member_id"].as_str(),
+            Some(target_membership.agent_member_id.as_str())
+        );
+        fixture.cleanup();
     }
 
     fn durable_store_file_bytes(store: &HarnessStore) -> BTreeMap<String, Vec<u8>> {

@@ -142,8 +142,15 @@ Public callers cannot submit retention anchors.
 - OperatorView reports Node-local outbox/inbox depth, oldest age, current
   gateway generation, Control Plane-derived health, reconcile lag and exact
   recovery inventory. Local journal presence never implies remote health.
+- `firm team message send|inbox|claim` authors and reads ordinary peer-Team
+  Messages through the source NodeDaemon RuntimeCommand; the shared Team Inbox
+  projection is served read-only at `GET /v1/views/team-inbox/<team-id>` and
+  via the MCP `team_inbox_list` tool. Direct TeamMembership targets bind one
+  durable delivery at admission; Team targets stay queued until one exact
+  membership generation claims them.
 
 The executable contracts are
 `crates/firm-store/tests/cross_machine_collaboration.rs`,
-`crates/firm-fabric/tests/fabric_contract.rs`, and
+`crates/firm-fabric/tests/fabric_contract.rs`,
+`crates/firm-cli/tests/team_peer_messaging.rs`, and
 `scripts/check-collaboration-foundation.mjs`.

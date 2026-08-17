@@ -424,15 +424,30 @@ pub fn peer_team_source_policy_digest(authority: &PeerTeamMessageAdmissionAuthor
         "target_team_id": authority.target_team_id,
         "target_team_revision": authority.target_team_revision,
         "target_node_id": authority.target_node_id,
+        "target_membership_id": authority.target_membership_id,
+        "target_membership_generation": authority.target_membership_generation,
+        "target_agent_member_id": authority.target_agent_member_id,
         "policy_ref": authority.source_policy_ref,
         "policy_revision": authority.source_policy_revision,
         "required_capability": authority.source_required_capability,
     }))
 }
 
-/// Digest the target durable Team-subject subscription policy half of a
-/// peer-Team Message authority. It grants no source authoring authority.
+/// Digest the target durable subscription policy half of a peer-Team Message
+/// authority. It grants no source authoring authority. A Team target freezes
+/// the `team-inbox:` policy shape; a direct TeamMembership target freezes the
+/// `direct:` subscription policy shape, matching what team/membership
+/// admission originally stored.
 pub fn peer_team_target_policy_digest(authority: &PeerTeamMessageAdmissionAuthority) -> String {
+    if authority.target_membership_id.is_some() {
+        // Byte-equal to the durable `direct:` subscription policy digest
+        // written by membership admission; exact recipient binding is fenced
+        // by the subscription id, membership_ref, and generation checks.
+        return canonical_json_fingerprint(&serde_json::json!({
+            "team_id": authority.target_team_id,
+            "kind": "direct_from_active_team_members",
+        }));
+    }
     canonical_json_fingerprint(&serde_json::json!({
         "team_id": authority.target_team_id,
         "target_node_id": authority.target_node_id,
@@ -463,6 +478,9 @@ pub fn peer_team_message_authority_digest(authority: &PeerTeamMessageAdmissionAu
         "target_team_id": authority.target_team_id,
         "target_team_revision": authority.target_team_revision,
         "target_node_id": authority.target_node_id,
+        "target_membership_id": authority.target_membership_id,
+        "target_membership_generation": authority.target_membership_generation,
+        "target_agent_member_id": authority.target_agent_member_id,
         "source_policy_ref": authority.source_policy_ref,
         "source_policy_revision": authority.source_policy_revision,
         "source_policy_digest": authority.source_policy_digest,
@@ -578,7 +596,10 @@ fn team_inbox_subscription(
     }
 }
 
-fn message_content_fingerprint(message: &Message) -> String {
+/// Digest the immutable content fields of an authored Message. The source
+/// NodeDaemon, target persistence, and read projections all recompute this
+/// exact shape; it is the cross-process content identity of the Message.
+pub fn message_content_fingerprint(message: &Message) -> String {
     canonical_json_fingerprint(&serde_json::json!({
         "sender_actor_ref": message.sender_actor_ref,
         "sender_agent_member_id": message.sender_agent_member_id,
@@ -8589,6 +8610,11 @@ impl HarnessStore {
         }
         let mut delivery_rows = Vec::new();
         let mut delivered_subjects = BTreeSet::new();
+        // A peer-Team direct Message binds the recipient membership in the
+        // collaboration target Team, not the source Team (the author's scope).
+        // Same-Space peer authoring resolves the target direct subscription in
+        // this store; a remote target leaves delivery creation to its own Node.
+        let peer_target_team_id = peer_authority.map(|authority| authority.target_team_id.as_str());
         for recipient in &message.recipients {
             let matching = subscriptions.iter().filter(|subscription| {
                 subscription.status == MessageSubscriptionStatus::Active
@@ -8604,7 +8630,8 @@ impl HarnessStore {
                                                 membership.id == membership_id
                                                     && membership.state
                                                         == TeamMembershipStatus::Active
-                                                    && membership.team_id == team_id
+                                                    && membership.team_id
+                                                        == peer_target_team_id.unwrap_or(team_id)
                                             })
                                         },
                                     )
@@ -8771,15 +8798,46 @@ impl HarnessStore {
             })
             .count()
             == 1;
+        let member_target = authority.target_membership_id.is_some()
+            || authority.target_membership_generation.is_some()
+            || authority.target_agent_member_id.is_some();
+        let member_target_complete = authority.target_membership_id.is_some()
+            && authority.target_membership_generation.is_some()
+            && authority.target_agent_member_id.is_some();
         let exact_team_recipient = message.recipients.len() == 1
             && message.recipients[0].kind == MessageRecipientKind::Team
             && message.recipients[0].id == authority.target_team_id
             && message.target_ref == message.recipients[0];
+        let exact_member_recipient = message.recipients.len() == 1
+            && message.recipients[0].kind == MessageRecipientKind::AgentMember
+            && Some(message.recipients[0].id.as_str())
+                == authority.target_agent_member_id.as_deref()
+            && message.target_ref == message.recipients[0];
+        let exact_target_subscription = if member_target {
+            member_target_complete
+                && authority.target_membership_generation != Some(0)
+                && authority.target_authorization_policy_ref == "team.direct.active-members"
+                && authority.target_subscription_id
+                    == format!(
+                        "direct:{}:{}",
+                        authority
+                            .target_agent_member_id
+                            .as_deref()
+                            .unwrap_or_default(),
+                        authority
+                            .target_membership_id
+                            .as_deref()
+                            .unwrap_or_default()
+                    )
+                && exact_member_recipient
+        } else {
+            authority.target_authorization_policy_ref == "collaboration.peer_message_deliver"
+                && authority.target_subscription_id
+                    == format!("team-inbox:{}", authority.target_team_id)
+                && exact_team_recipient
+        };
         if authority.source_required_capability != "message.peer_team.author"
             || authority.target_required_capability != "collaboration.peer_message_deliver"
-            || authority.target_authorization_policy_ref != "collaboration.peer_message_deliver"
-            || authority.target_subscription_id
-                != format!("team-inbox:{}", authority.target_team_id)
             || authority.target_subscription_revision == 0
             || authority.source_policy_revision == 0
             || authority.target_policy_revision == 0
@@ -8804,14 +8862,13 @@ impl HarnessStore {
             || message.sender_actor_ref.kind != ActorKind::AgentMember
             || message.sender_actor_ref.id != authority.source_agent_member_id
             || message.team_id.as_deref() != Some(authority.source_team_id.as_str())
-            || message.work_id.is_some()
             || scope.source_team_id != authority.source_team_id
             || scope.target_team_id != authority.target_team_id
             || scope.delegation_id.is_some()
             || scope.expected_delegation_revision.is_some()
             || scope.source_work_ref.is_some()
             || scope.target_work_ref.is_some()
-            || !exact_team_recipient
+            || !exact_target_subscription
             || !exact_membership
             || !exact_session
             || !exact_active_member
@@ -8824,19 +8881,60 @@ impl HarnessStore {
                 None,
             ));
         }
+        // A Message Work link is context only (DOC-106): it cannot assign,
+        // accept, close, or transfer Work. When present it must resolve to a
+        // current Work accountable to the source Team so the author cannot
+        // invent cross-Team provenance.
+        if let Some(work_id) = message.work_id.as_deref() {
+            let work_matches = self.latest_works()?.into_iter().any(|work| {
+                work.id == work_id
+                    && work.accountable_team_id.as_deref()
+                        == Some(authority.source_team_id.as_str())
+            });
+            if !work_matches {
+                return Err(trust_error(
+                    TrustErrorCode::UnauthorizedActor,
+                    "peer-Team Message Work link must name a current Work of the source Team",
+                    "message",
+                    &message.id,
+                    None,
+                ));
+            }
+        }
+        // When source and target share this Execution Space, the target fence
+        // is revalidated against the same durable store at author time; a
+        // genuinely remote target revalidates on its own Node before any
+        // delivery mutation.
+        if authority.target_execution_space_id == context.execution_space_id {
+            self.revalidate_peer_team_delivery_subscription(
+                &context.execution_space_id,
+                authority,
+            )?;
+        }
         Ok(())
     }
 
     /// Revalidate the target half of a frozen peer-Team authority against the
-    /// durable Team-subject subscription. This grants target delivery only;
+    /// durable target subscription. A Team target revalidates the shared
+    /// `team-inbox:` Team-subject subscription; a direct TeamMembership target
+    /// revalidates that membership's durable `direct:` subscription plus the
+    /// exact membership generation. This grants target delivery only;
     /// callers must separately prove source admission before route creation.
     pub fn revalidate_peer_team_delivery_subscription(
         &self,
         execution_space_id: &str,
         authority: &PeerTeamMessageAdmissionAuthority,
     ) -> StoreResult<MessageSubscription> {
+        let member_target = authority.target_membership_id.is_some()
+            || authority.target_membership_generation.is_some()
+            || authority.target_agent_member_id.is_some();
+        let expected_policy_ref = if member_target {
+            "team.direct.active-members"
+        } else {
+            "collaboration.peer_message_deliver"
+        };
         if authority.target_required_capability != "collaboration.peer_message_deliver"
-            || authority.target_authorization_policy_ref != "collaboration.peer_message_deliver"
+            || authority.target_authorization_policy_ref != expected_policy_ref
             || authority.target_execution_space_id != execution_space_id
         {
             return Err(trust_error(
@@ -8869,16 +8967,27 @@ impl HarnessStore {
         let team = &teams[0];
         let subscription = &subscriptions[0];
         let expected_policy_digest = peer_team_target_policy_digest(authority);
+        let subscription_matches = if member_target {
+            subscription.subscriber_kind == MessageSubjectKind::AgentMember
+                && Some(subscription.subscriber_ref.as_str())
+                    == authority.target_agent_member_id.as_deref()
+                && subscription.membership_ref.as_deref()
+                    == authority.target_membership_id.as_deref()
+                && subscription.source_kind == MessageSubscriptionKind::Agent
+                && subscription.source_ref == "active_team_members"
+        } else {
+            subscription.subscriber_kind == MessageSubjectKind::Team
+                && subscription.subscriber_ref == authority.target_team_id
+                && subscription.source_kind == MessageSubscriptionKind::AllAuthorized
+                && subscription.source_ref == "authorized_peer_teams"
+                && subscription.membership_ref.is_none()
+        };
         if team.status != AgentTeamStatus::Active
             || team.node_id != authority.target_node_id
             || team.revision != authority.target_team_revision
-            || subscription.subscriber_kind != MessageSubjectKind::Team
-            || subscription.subscriber_ref != authority.target_team_id
+            || !subscription_matches
             || subscription.target_team_id.as_deref() != Some(authority.target_team_id.as_str())
             || subscription.target_node_id != authority.target_node_id
-            || subscription.source_kind != MessageSubscriptionKind::AllAuthorized
-            || subscription.source_ref != "authorized_peer_teams"
-            || subscription.membership_ref.is_some()
             || subscription.status != MessageSubscriptionStatus::Active
             || subscription.revision != authority.target_subscription_revision
             || subscription.authorization_policy_ref != authority.target_authorization_policy_ref
@@ -8893,6 +9002,39 @@ impl HarnessStore {
                 &authority.target_subscription_id,
                 Some(subscription.revision),
             ));
+        }
+        if member_target {
+            let members = self
+                .trust_agent_members(execution_space_id)?
+                .into_iter()
+                .filter(|member| {
+                    Some(member.id.as_str()) == authority.target_agent_member_id.as_deref()
+                        && member.organization_status == AgentMemberOrganizationStatus::Active
+                })
+                .count();
+            let memberships = self
+                .fabric_team_memberships(execution_space_id)?
+                .into_iter()
+                .filter(|membership| {
+                    Some(membership.id.as_str()) == authority.target_membership_id.as_deref()
+                        && membership.team_id == authority.target_team_id
+                        && membership.node_id == authority.target_node_id
+                        && Some(membership.agent_member_id.as_str())
+                            == authority.target_agent_member_id.as_deref()
+                        && Some(membership.membership_generation)
+                            == authority.target_membership_generation
+                        && membership.state == TeamMembershipStatus::Active
+                })
+                .count();
+            if members != 1 || memberships != 1 {
+                return Err(trust_error(
+                    TrustErrorCode::MemberRunGenerationFenced,
+                    "peer-Team direct delivery requires one exact active target TeamMembership generation",
+                    "message_subscription",
+                    &authority.target_subscription_id,
+                    Some(subscription.revision),
+                ));
+            }
         }
         Ok(subscription.clone())
     }
@@ -9177,10 +9319,18 @@ impl HarnessStore {
                     None,
                 )
             })?;
-            let exact_team_recipient = message.recipients.len() == 1
-                && message.recipients[0].kind == MessageRecipientKind::Team
-                && message.recipients[0].id == authority.target_team_id
-                && message.target_ref == message.recipients[0];
+            let exact_recipient = if authority.target_membership_id.is_some() {
+                message.recipients.len() == 1
+                    && message.recipients[0].kind == MessageRecipientKind::AgentMember
+                    && Some(message.recipients[0].id.as_str())
+                        == authority.target_agent_member_id.as_deref()
+                    && message.target_ref == message.recipients[0]
+            } else {
+                message.recipients.len() == 1
+                    && message.recipients[0].kind == MessageRecipientKind::Team
+                    && message.recipients[0].id == authority.target_team_id
+                    && message.target_ref == message.recipients[0]
+            };
             if authority.authority_digest != peer_team_message_authority_digest(authority)
                 || authority.source_policy_digest != peer_team_source_policy_digest(authority)
                 || authority.target_policy_digest != peer_team_target_policy_digest(authority)
@@ -9199,7 +9349,6 @@ impl HarnessStore {
                 || message.sender_session_id.as_deref()
                     != Some(authority.source_session_id.as_str())
                 || message.team_id.as_deref() != Some(authority.source_team_id.as_str())
-                || message.work_id.is_some()
                 || scope.target_team_id != authority.target_team_id
                 || scope.delegation_id.is_some()
                 || scope.expected_delegation_revision.is_some()
@@ -9238,7 +9387,7 @@ impl HarnessStore {
                     != Some(&authority.target_team_revision.to_string())
                 || operation.authorization_context.get("required_capability")
                     != Some(&authority.target_required_capability)
-                || !exact_team_recipient
+                || !exact_recipient
             {
                 return Err(trust_error(
                     TrustErrorCode::UnauthorizedActor,
@@ -9288,18 +9437,30 @@ impl HarnessStore {
                         None,
                     )
                 })?;
+            // A Team target stays unresolved in the shared Team Inbox until one
+            // exact membership generation claims it; a direct TeamMembership
+            // target is bound at admission and needs no claim.
+            let member_bound = authority.target_membership_id.is_some();
             vec![CanonicalMessageDelivery {
                 id: format!("{}:{}", message.id, subscription.id),
                 message_id: message.id.clone(),
                 subscription_id: subscription.id.clone(),
                 subscription_revision: subscription.revision,
                 subscription_policy_digest: subscription.policy_digest.clone(),
-                recipient_kind: MessageSubjectKind::Team,
-                recipient_ref: authority.target_team_id.clone(),
+                recipient_kind: if member_bound {
+                    MessageSubjectKind::AgentMember
+                } else {
+                    MessageSubjectKind::Team
+                },
+                recipient_ref: if member_bound {
+                    authority.target_agent_member_id.clone().unwrap_or_default()
+                } else {
+                    authority.target_team_id.clone()
+                },
                 target_team_id: Some(authority.target_team_id.clone()),
                 target_node_id: target_node_id.into(),
-                resolved_team_membership_id: None,
-                recipient_agent_member_id: None,
+                resolved_team_membership_id: authority.target_membership_id.clone(),
+                recipient_agent_member_id: authority.target_agent_member_id.clone(),
                 recipient_session_id: None,
                 recipient_session_generation: None,
                 status: CanonicalMessageDeliveryStatus::Queued,
@@ -11730,17 +11891,6 @@ mod tests {
             .unwrap();
         let source_policy_ref = "peer-team-message-admission.v1".to_string();
         let source_required_capability = "message.peer_team.author".to_string();
-        let source_policy_digest = canonical_json_fingerprint(&serde_json::json!({
-            "company_id": "company-test",
-            "source_team_id": source_team.id,
-            "target_execution_space_id": "space-test",
-            "target_team_id": target_team.id,
-            "target_team_revision": target_team.revision,
-            "target_node_id": target_team.node_id,
-            "policy_ref": source_policy_ref,
-            "policy_revision": 1,
-            "required_capability": source_required_capability,
-        }));
         let mut peer = PeerTeamMessageAdmissionAuthority {
             company_id: "company-test".into(),
             source_execution_space_id: "space-test".into(),
@@ -11758,18 +11908,27 @@ mod tests {
             target_team_id: target_team.id.clone(),
             target_team_revision: target_team.revision,
             target_node_id: target_team.node_id.clone(),
+            target_membership_id: None,
+            target_membership_generation: None,
+            target_agent_member_id: None,
             source_policy_ref,
             source_policy_revision: 1,
-            source_policy_digest,
+            source_policy_digest: String::new(),
             source_required_capability,
             target_subscription_id: target_subscription.id.clone(),
             target_subscription_revision: target_subscription.revision,
             target_authorization_policy_ref: target_subscription.authorization_policy_ref.clone(),
             target_policy_revision: target_subscription.policy_revision,
-            target_policy_digest: target_subscription.policy_digest.clone(),
+            target_policy_digest: String::new(),
             target_required_capability: "collaboration.peer_message_deliver".into(),
             authority_digest: String::new(),
         };
+        peer.source_policy_digest = peer_team_source_policy_digest(&peer);
+        peer.target_policy_digest = peer_team_target_policy_digest(&peer);
+        assert_eq!(
+            peer.target_policy_digest, target_subscription.policy_digest,
+            "the frozen target policy digest is byte-equal to the durable subscription digest"
+        );
         peer.authority_digest = peer_team_message_authority_digest(&peer);
         store
             .revalidate_peer_team_delivery_subscription("space-test", &peer)
@@ -12102,6 +12261,606 @@ mod tests {
             claimed.projection.recipient_agent_member_id.as_deref(),
             Some("fixture-host")
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn peer_authority_fixture(
+        company_id: &str,
+        source_team: &firm_core::AgentTeam,
+        source_membership: &TeamMembership,
+        source_member_id: &str,
+        source_session_id: &str,
+        target_team: &firm_core::AgentTeam,
+        target_subscription: &MessageSubscription,
+        member_target: Option<&TeamMembership>,
+    ) -> PeerTeamMessageAdmissionAuthority {
+        let mut authority = PeerTeamMessageAdmissionAuthority {
+            company_id: company_id.into(),
+            source_execution_space_id: "space-test".into(),
+            source_team_id: source_team.id.clone(),
+            source_team_revision: source_team.revision,
+            source_membership_id: source_membership.id.clone(),
+            source_membership_generation: source_membership.membership_generation,
+            source_agent_member_id: source_member_id.into(),
+            source_session_id: source_session_id.into(),
+            source_session_generation: 1,
+            source_node_id: source_team.node_id.clone(),
+            source_node_daemon_id: "daemon-1".into(),
+            source_node_daemon_generation: 1,
+            target_execution_space_id: "space-test".into(),
+            target_team_id: target_team.id.clone(),
+            target_team_revision: target_team.revision,
+            target_node_id: target_team.node_id.clone(),
+            target_membership_id: member_target.map(|membership| membership.id.clone()),
+            target_membership_generation: member_target
+                .map(|membership| membership.membership_generation),
+            target_agent_member_id: member_target
+                .map(|membership| membership.agent_member_id.clone()),
+            source_policy_ref: "peer-team-message-admission.v1".into(),
+            source_policy_revision: 1,
+            source_policy_digest: String::new(),
+            source_required_capability: "message.peer_team.author".into(),
+            target_subscription_id: target_subscription.id.clone(),
+            target_subscription_revision: target_subscription.revision,
+            target_authorization_policy_ref: target_subscription.authorization_policy_ref.clone(),
+            target_policy_revision: target_subscription.policy_revision,
+            target_policy_digest: String::new(),
+            target_required_capability: "collaboration.peer_message_deliver".into(),
+            authority_digest: String::new(),
+        };
+        authority.source_policy_digest = peer_team_source_policy_digest(&authority);
+        authority.target_policy_digest = peer_team_target_policy_digest(&authority);
+        authority.authority_digest = peer_team_message_authority_digest(&authority);
+        authority
+    }
+
+    fn peer_message_fixture(
+        id: &str,
+        source_team: &firm_core::AgentTeam,
+        sender_member_id: &str,
+        sender_session_id: &str,
+        recipient: firm_core::agentfirm_api::MessageRecipientRef,
+        work_id: Option<&str>,
+    ) -> Message {
+        let mut message = Message {
+            id: id.into(),
+            source_execution_space_id: "space-test".into(),
+            source_node_id: source_team.node_id.clone(),
+            source_node_daemon_id: "daemon-1".into(),
+            source_authority_generation: 1,
+            sender_actor_ref: ActorRef {
+                kind: ActorKind::AgentMember,
+                id: sender_member_id.into(),
+            },
+            sender_agent_member_id: Some(sender_member_id.into()),
+            sender_session_id: Some(sender_session_id.into()),
+            address_kind: match recipient.kind {
+                MessageRecipientKind::Team => {
+                    firm_core::agentfirm_api::MessageAddressKind::TeamChannel
+                }
+                _ => firm_core::agentfirm_api::MessageAddressKind::DirectAgent,
+            },
+            target_ref: recipient.clone(),
+            recipients: vec![recipient],
+            team_id: Some(source_team.id.clone()),
+            team_run_id: None,
+            work_id: work_id.map(str::to_string),
+            collaboration_scope: Some(firm_core::collaboration::CollaborationScope {
+                source_team_id: source_team.id.clone(),
+                target_team_id: "target-team".into(),
+                delegation_id: None,
+                expected_delegation_revision: None,
+                source_work_ref: None,
+                target_work_ref: None,
+            }),
+            kind: firm_core::agentfirm_api::MessageKind::Message,
+            body: format!("ordinary peer conversation {id}"),
+            body_digest: String::new(),
+            correlation_id: format!("correlation-{id}"),
+            causation_id: None,
+            response_intent: firm_core::agentfirm_api::ResponseIntent::Informational,
+            evidence_refs: Vec::new(),
+            content_fingerprint: String::new(),
+            schema_version: 1,
+            idempotency_key: id.into(),
+            created_at: format!("t-{id}"),
+        };
+        message.body_digest = format!("sha256:{:x}", Sha256::digest(message.body.as_bytes()));
+        message.content_fingerprint = message_content_fingerprint(&message);
+        message
+    }
+
+    fn seed_peer_message_scope(
+        store: &HarnessStore,
+    ) -> (
+        firm_core::AgentTeam,
+        firm_core::AgentTeam,
+        TeamMembership,
+        TeamMembership,
+    ) {
+        store
+            .migrate_legacy_agent_identity_same_id(
+                &context("operator", "identity.migrate", "peer-sender", 0),
+                identity("remote-sender"),
+            )
+            .unwrap();
+        store
+            .create_agent_session(
+                &service_context("session.create", "peer-sender-session", 0),
+                session("session-peer-sender", "remote-sender"),
+            )
+            .unwrap();
+        append_runtime_team(store, "source-team", "source-peer-run");
+        append_runtime_team(store, "target-team", "target-peer-run");
+        let source_team = store
+            .agent_teams("space-test")
+            .unwrap()
+            .into_iter()
+            .find(|team| team.id == "source-team")
+            .unwrap();
+        let target_team = store
+            .agent_teams("space-test")
+            .unwrap()
+            .into_iter()
+            .find(|team| team.id == "target-team")
+            .unwrap();
+        let source_membership = store
+            .team_host_membership("space-test", "source-team", true)
+            .unwrap();
+        let target_membership = store
+            .team_host_membership("space-test", "target-team", true)
+            .unwrap();
+        (
+            source_team,
+            target_team,
+            source_membership,
+            target_membership,
+        )
+    }
+
+    #[test]
+    fn peer_team_direct_membership_target_binds_one_delivery_without_claim() {
+        let (store, root) = fabric_store();
+        let (source_team, target_team, source_membership, target_membership) =
+            seed_peer_message_scope(&store);
+        let direct_subscription = store
+            .fabric_message_subscriptions("space-test")
+            .unwrap()
+            .into_iter()
+            .find(|subscription| {
+                subscription.id
+                    == format!(
+                        "direct:{}:{}",
+                        target_membership.agent_member_id, target_membership.id
+                    )
+            })
+            .expect("durable direct subscription");
+        let authority = peer_authority_fixture(
+            "company-test",
+            &source_team,
+            &source_membership,
+            "remote-sender",
+            "session-peer-sender",
+            &target_team,
+            &direct_subscription,
+            Some(&target_membership),
+        );
+        assert_eq!(
+            authority.target_policy_digest, direct_subscription.policy_digest,
+            "direct target policy digest is byte-equal to the durable subscription digest"
+        );
+        store
+            .revalidate_peer_team_delivery_subscription("space-test", &authority)
+            .expect("direct target subscription independently revalidates");
+
+        let message = peer_message_fixture(
+            "peer-direct-message",
+            &source_team,
+            "remote-sender",
+            "session-peer-sender",
+            firm_core::agentfirm_api::MessageRecipientRef {
+                kind: MessageRecipientKind::AgentMember,
+                id: target_membership.agent_member_id.clone(),
+            },
+            None,
+        );
+        store
+            .author_message_with_admission_authority(
+                &service_context("message.author", "peer-direct-message", 0),
+                message.clone(),
+                Some(&MessageAdmissionAuthority::PeerTeam(authority.clone())),
+            )
+            .expect("same-Space direct peer authoring");
+        let deliveries = store
+            .fabric_message_deliveries("space-test")
+            .unwrap()
+            .into_iter()
+            .filter(|delivery| delivery.message_id == message.id)
+            .collect::<Vec<_>>();
+        assert_eq!(deliveries.len(), 1, "exactly one bound delivery");
+        let delivery = &deliveries[0];
+        assert_eq!(delivery.recipient_kind, MessageSubjectKind::AgentMember);
+        assert_eq!(
+            delivery.recipient_agent_member_id.as_deref(),
+            Some(target_membership.agent_member_id.as_str())
+        );
+        assert_eq!(
+            delivery.resolved_team_membership_id.as_deref(),
+            Some(target_membership.id.as_str())
+        );
+        assert_eq!(delivery.status, CanonicalMessageDeliveryStatus::Queued);
+        assert_eq!(delivery.recipient_session_id, None);
+        assert_eq!(delivery.subscription_id, direct_subscription.id);
+
+        // A member-bound delivery is already resolved; the Team Inbox claim
+        // path must reject it with zero side effects.
+        let before = store.canonical_operations().unwrap();
+        store
+            .claim_team_message_delivery(
+                &service_context("message.team_claim", "peer-direct-claim", 0),
+                &delivery.id,
+                &TeamMessageDeliveryClaim {
+                    claim_id: "peer-direct-claim".into(),
+                    team_membership_id: target_membership.id.clone(),
+                    membership_generation: target_membership.membership_generation,
+                    node_daemon_generation: 1,
+                    claim_expires_at: "t-expiry".into(),
+                },
+                "t-claim",
+            )
+            .expect_err("a member-bound delivery is not Team-claimable");
+        assert_eq!(store.canonical_operations().unwrap(), before);
+
+        // A stale target membership generation is fenced before any delivery.
+        let mut stale = authority.clone();
+        stale.target_membership_generation = Some(target_membership.membership_generation + 1);
+        stale.source_policy_digest = peer_team_source_policy_digest(&stale);
+        stale.target_policy_digest = peer_team_target_policy_digest(&stale);
+        stale.authority_digest = peer_team_message_authority_digest(&stale);
+        store
+            .revalidate_peer_team_delivery_subscription("space-test", &stale)
+            .expect_err("stale membership generation is fenced");
+
+        // A recipient that disagrees with the frozen authority cannot author.
+        let cross_wired = peer_message_fixture(
+            "peer-direct-cross-wired",
+            &source_team,
+            "remote-sender",
+            "session-peer-sender",
+            firm_core::agentfirm_api::MessageRecipientRef {
+                kind: MessageRecipientKind::AgentMember,
+                id: "remote-sender".into(),
+            },
+            None,
+        );
+        let before = store.canonical_operations().unwrap();
+        store
+            .author_message_with_admission_authority(
+                &service_context("message.author", "peer-direct-cross-wired", 0),
+                cross_wired,
+                Some(&MessageAdmissionAuthority::PeerTeam(authority.clone())),
+            )
+            .expect_err("recipient cannot diverge from the frozen direct target");
+        assert_eq!(store.canonical_operations().unwrap(), before);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn peer_team_target_subscription_revision_advances_with_team_lifecycle() {
+        let (store, root) = fabric_store();
+        let (source_team, target_team, source_membership, _target_membership) =
+            seed_peer_message_scope(&store);
+        let subscription_id = format!("team-inbox:{}", target_team.id);
+        let subscription_at = |store: &HarnessStore| {
+            store
+                .fabric_message_subscriptions("space-test")
+                .unwrap()
+                .into_iter()
+                .find(|subscription| subscription.id == subscription_id)
+                .expect("team inbox subscription")
+        };
+        let team_at = |store: &HarnessStore| {
+            store
+                .agent_teams("space-test")
+                .unwrap()
+                .into_iter()
+                .find(|team| team.id == "target-team")
+                .expect("target team")
+        };
+        let authority_at = |store: &HarnessStore| {
+            let target_team = team_at(store);
+            let subscription = subscription_at(store);
+            peer_authority_fixture(
+                "company-test",
+                &source_team,
+                &source_membership,
+                "remote-sender",
+                "session-peer-sender",
+                &target_team,
+                &subscription,
+                None,
+            )
+        };
+        let initial = authority_at(&store);
+        assert_eq!(initial.target_subscription_revision, 1);
+        store
+            .revalidate_peer_team_delivery_subscription("space-test", &initial)
+            .expect("current subscription revision revalidates");
+
+        // Team lifecycle transitions advance the durable subscription
+        // revision; an authority frozen at the old revision is permanently
+        // stale and must be re-resolved from the Store.
+        store
+            .transition_agent_team(
+                &context(
+                    "fixture-host",
+                    "team.lifecycle.transition",
+                    "target-team-off",
+                    1,
+                ),
+                &target_team.id,
+                firm_core::AgentTeamStatus::Inactive,
+                "t-off",
+            )
+            .unwrap();
+        assert_eq!(subscription_at(&store).revision, 2);
+        store
+            .revalidate_peer_team_delivery_subscription("space-test", &initial)
+            .expect_err("deactivated Team admits no new peer delivery");
+        // Reactivation restores the Host membership generation first, then the
+        // Team; the subscription revision advances again.
+        let host_membership = store
+            .fabric_team_memberships("space-test")
+            .unwrap()
+            .into_iter()
+            .find(|membership| {
+                membership.team_id == "target-team" && membership.role == TeamMembershipRole::Host
+            })
+            .unwrap();
+        store
+            .activate_team_membership(
+                &context(
+                    "fixture-host",
+                    "team.membership.activate",
+                    "target-team-host-on",
+                    host_membership.revision,
+                ),
+                &host_membership.id,
+                "t-host-on",
+            )
+            .unwrap();
+        store
+            .transition_agent_team(
+                &context(
+                    "fixture-host",
+                    "team.lifecycle.transition",
+                    "target-team-on",
+                    2,
+                ),
+                &target_team.id,
+                firm_core::AgentTeamStatus::Active,
+                "t-on",
+            )
+            .unwrap();
+        assert_eq!(subscription_at(&store).revision, 3);
+        store
+            .revalidate_peer_team_delivery_subscription("space-test", &initial)
+            .expect_err("the revision-1 authority stays stale after reactivation");
+
+        let current = authority_at(&store);
+        assert_eq!(current.target_subscription_revision, 3);
+        assert_eq!(current.target_team_revision, team_at(&store).revision);
+        store
+            .revalidate_peer_team_delivery_subscription("space-test", &current)
+            .expect("re-resolved current subscription revision revalidates");
+        let message = peer_message_fixture(
+            "peer-after-reactivation",
+            &source_team,
+            "remote-sender",
+            "session-peer-sender",
+            firm_core::agentfirm_api::MessageRecipientRef {
+                kind: MessageRecipientKind::Team,
+                id: "target-team".into(),
+            },
+            None,
+        );
+        store
+            .author_message_with_admission_authority(
+                &service_context("message.author", "peer-after-reactivation", 0),
+                message.clone(),
+                Some(&MessageAdmissionAuthority::PeerTeam(current)),
+            )
+            .expect("authoring resumes under the current subscription revision");
+        let delivery = store
+            .fabric_message_deliveries("space-test")
+            .unwrap()
+            .into_iter()
+            .find(|delivery| delivery.message_id == message.id)
+            .expect("one Team Inbox delivery");
+        assert_eq!(delivery.subscription_revision, 3);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn peer_team_claim_replays_exactly_and_resolved_delivery_rejects_new_claims() {
+        let (store, root) = fabric_store();
+        let (source_team, target_team, source_membership, _target_membership) =
+            seed_peer_message_scope(&store);
+        let target_subscription = store
+            .fabric_message_subscriptions("space-test")
+            .unwrap()
+            .into_iter()
+            .find(|subscription| subscription.id == "team-inbox:target-team")
+            .unwrap();
+        let authority = peer_authority_fixture(
+            "company-test",
+            &source_team,
+            &source_membership,
+            "remote-sender",
+            "session-peer-sender",
+            &target_team,
+            &target_subscription,
+            None,
+        );
+        let message = peer_message_fixture(
+            "peer-claim-replay",
+            &source_team,
+            "remote-sender",
+            "session-peer-sender",
+            firm_core::agentfirm_api::MessageRecipientRef {
+                kind: MessageRecipientKind::Team,
+                id: "target-team".into(),
+            },
+            None,
+        );
+        store
+            .author_message_with_admission_authority(
+                &service_context("message.author", "peer-claim-replay", 0),
+                message.clone(),
+                Some(&MessageAdmissionAuthority::PeerTeam(authority)),
+            )
+            .unwrap();
+        let delivery = store
+            .fabric_message_deliveries("space-test")
+            .unwrap()
+            .into_iter()
+            .find(|delivery| delivery.message_id == message.id)
+            .unwrap();
+        let claim = TeamMessageDeliveryClaim {
+            claim_id: "peer-claim-exact".into(),
+            team_membership_id: store
+                .team_host_membership("space-test", "target-team", true)
+                .unwrap()
+                .id,
+            membership_generation: 1,
+            node_daemon_generation: 1,
+            claim_expires_at: "t-expiry".into(),
+        };
+        let claimed = store
+            .claim_team_message_delivery(
+                &service_context("message.team_claim", "peer-claim-exact", 0),
+                &delivery.id,
+                &claim,
+                "t-claim",
+            )
+            .unwrap();
+        assert!(!claimed.replayed);
+        // An exact retry returns the original result without a new operation.
+        let replayed = store
+            .claim_team_message_delivery(
+                &service_context("message.team_claim", "peer-claim-exact", 0),
+                &delivery.id,
+                &claim,
+                "t-claim",
+            )
+            .unwrap();
+        assert!(replayed.replayed);
+        assert_eq!(replayed.projection.version, claimed.projection.version);
+        assert_eq!(
+            store
+                .canonical_operations()
+                .unwrap()
+                .iter()
+                .filter(|operation| operation.event.aggregate_kind == "team_message_delivery_claim")
+                .count(),
+            1
+        );
+        // A different claim on the resolved delivery is side-effect free.
+        let before = store.canonical_operations().unwrap();
+        store
+            .claim_team_message_delivery(
+                &service_context("message.team_claim", "peer-claim-second", 0),
+                &delivery.id,
+                &TeamMessageDeliveryClaim {
+                    claim_id: "peer-claim-second".into(),
+                    ..claim
+                },
+                "t-claim-2",
+            )
+            .expect_err("a resolved Team delivery cannot be claimed twice");
+        assert_eq!(store.canonical_operations().unwrap(), before);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn peer_team_message_work_link_is_context_bound_to_the_source_team() {
+        let (store, root) = fabric_store();
+        let (source_team, target_team, source_membership, _target_membership) =
+            seed_peer_message_scope(&store);
+        let work = insert_runtime_work(&store, "work-context-1", "source-team", "source-peer-run");
+        let target_subscription = store
+            .fabric_message_subscriptions("space-test")
+            .unwrap()
+            .into_iter()
+            .find(|subscription| subscription.id == "team-inbox:target-team")
+            .unwrap();
+        let authority = peer_authority_fixture(
+            "company-test",
+            &source_team,
+            &source_membership,
+            "remote-sender",
+            "session-peer-sender",
+            &target_team,
+            &target_subscription,
+            None,
+        );
+        let message = peer_message_fixture(
+            "peer-work-context",
+            &source_team,
+            "remote-sender",
+            "session-peer-sender",
+            firm_core::agentfirm_api::MessageRecipientRef {
+                kind: MessageRecipientKind::Team,
+                id: "target-team".into(),
+            },
+            Some(&work.id),
+        );
+        store
+            .author_message_with_admission_authority(
+                &service_context("message.author", "peer-work-context", 0),
+                message.clone(),
+                Some(&MessageAdmissionAuthority::PeerTeam(authority.clone())),
+            )
+            .expect("a context-only Work link of the source Team is preserved");
+        let stored = store
+            .fabric_messages("space-test")
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == message.id)
+            .unwrap();
+        assert_eq!(stored.work_id.as_deref(), Some(work.id.as_str()));
+        // The Work itself is untouched: no operation, delivery, or phase change.
+        assert_eq!(
+            store
+                .latest_works()
+                .unwrap()
+                .into_iter()
+                .find(|w| w.id == work.id)
+                .map(|w| w.version),
+            Some(work.version)
+        );
+
+        let foreign = peer_message_fixture(
+            "peer-work-context-foreign",
+            &source_team,
+            "remote-sender",
+            "session-peer-sender",
+            firm_core::agentfirm_api::MessageRecipientRef {
+                kind: MessageRecipientKind::Team,
+                id: "target-team".into(),
+            },
+            Some("work-that-does-not-exist"),
+        );
+        let before = store.canonical_operations().unwrap();
+        store
+            .author_message_with_admission_authority(
+                &service_context("message.author", "peer-work-context-foreign", 0),
+                foreign,
+                Some(&MessageAdmissionAuthority::PeerTeam(authority)),
+            )
+            .expect_err("a Work link must name a current Work of the source Team");
+        assert_eq!(store.canonical_operations().unwrap(), before);
         fs::remove_dir_all(root).unwrap();
     }
 

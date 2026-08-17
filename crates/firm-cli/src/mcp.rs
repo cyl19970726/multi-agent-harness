@@ -215,6 +215,7 @@ pub(crate) fn call_tool(
         "team_run_board_summary" => tool_team_run_board_summary(store, &arguments),
         "team_run_host_inbox" => tool_team_run_host_inbox(store, &arguments),
         "team_run_inbox" => tool_team_run_inbox(store, &arguments),
+        "team_inbox_list" => tool_team_inbox_list(store, resolved, &arguments),
         "team_run_answer_message" => tool_team_run_answer_message(store, &arguments),
         "team_run_steer_member" => tool_team_run_steer_member(store, &arguments),
         "team_run_interrupt_member" => tool_team_run_interrupt_member(store, &arguments),
@@ -1445,6 +1446,28 @@ fn tool_team_run_inbox(store: &HarnessStore, arguments: &Value) -> Result<Value,
     Ok(json!({"messages": messages}))
 }
 
+/// `team_inbox_list` — read the shared Team Inbox projection (DOC-106):
+/// Team-subject canonical deliveries joined with their immutable Messages.
+/// Read-only; claiming stays on the canonical store mutation path.
+fn tool_team_inbox_list(
+    store: &HarnessStore,
+    resolved: &crate::ResolvedStore,
+    arguments: &Value,
+) -> Result<Value, String> {
+    let team_id = required_str(arguments, "team_id")?;
+    let include_all = arguments
+        .get("all")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let execution_space_id = resolved
+        .execution_space_context
+        .as_ref()
+        .map(|space| space.id.clone())
+        .ok_or_else(|| "team_inbox_list requires an explicit Execution Space".to_string())?;
+    crate::team_inbox_projection(store, &execution_space_id, team_id, include_all)
+        .map_err(|error| error.to_string())
+}
+
 /// `team_run_host_inbox` — aggregate canonical Host mail only for TeamRuns
 /// bound to the exact provider-native Host thread.
 fn tool_team_run_host_inbox(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
@@ -1862,6 +1885,18 @@ fn tool_definitions() -> Value {
                     "all": {"type": "boolean", "default": false}
                 },
                 "required": ["team_run_id", "member_run_id"]
+            }
+        },
+        {
+            "name": "team_inbox_list",
+            "description": "Read one AgentTeam's shared Team Inbox (DOC-106): Team-subject canonical MessageDeliveries joined with their immutable Messages, including delivery status, claim binding, correlation, and author/source-Team provenance. Team-addressed peer Messages land here without waking every Member until one exact TeamMembership generation claims the delivery. Read-only; by default returns unclaimed queued items, all=true includes the full delivery history.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_id": {"type": "string", "description": "Exact AgentTeam id."},
+                    "all": {"type": "boolean", "default": false}
+                },
+                "required": ["team_id"]
             }
         },
         {

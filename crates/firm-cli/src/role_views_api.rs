@@ -1268,6 +1268,8 @@ pub(crate) fn handle_get(
             identity,
             query.company.as_deref(),
         )
+    } else if let Some(team_id) = path.strip_prefix("/v1/views/team-inbox/") {
+        team_inbox_view(current_space_id, current, team_id, &query, identity)
     } else if let Some(route_ref) = path.strip_prefix("/v1/views/agent-workspace/") {
         agent_workspace_view(current_space_id, current, route_ref, &query, identity)
     } else if let Some(member_run_id) = path.strip_prefix("/v1/views/member-workbench/") {
@@ -2540,6 +2542,74 @@ fn host_session_mode(run: Option<&AgentTeamRun>) -> &'static str {
         }
         _ => "unbound",
     }
+}
+
+/// Shared Team Inbox (DOC-106): a read-only projection over the durable
+/// `team-inbox:` MessageSubscription and its Team-subject canonical
+/// deliveries, joined with the immutable Messages. Delivery status, claim
+/// binding, correlation, and author/Team provenance are carried for the
+/// operator surface; no delivery is mutated by this read.
+fn team_inbox_view(
+    space_id: &str,
+    store: &HarnessStore,
+    team_id: &str,
+    query: &Query,
+    identity: Option<&ReadIdentity>,
+) -> ViewResult {
+    let facts = Facts::read(space_id, store)
+        .map_err(|e| ("500 Internal Server Error", "ROLE_VIEW_BUILD_FAILED", e))?;
+    let team = facts.teams.iter().find(|team| team.id == team_id).ok_or((
+        "404 Not Found",
+        "TEAM_NOT_FOUND",
+        team_id.to_string(),
+    ))?;
+    let exact_host_identity = identity.is_some_and(|identity| {
+        (identity.actor.kind == ActorKind::AgentMember && identity.actor.id == team.host_agent_id)
+            || identity
+                .authority_actors
+                .iter()
+                .any(|actor| actor.kind == ActorKind::AgentMember && actor.id == team.host_agent_id)
+    });
+    let team_member_identity = identity.is_some_and(|identity| {
+        identity.actor.kind == ActorKind::AgentMember
+            && (identity.actor.id == team.host_agent_id
+                || team.member_ids.contains(&identity.actor.id))
+    }) || exact_host_identity;
+    if !team_member_identity {
+        return Err((
+            "403 Forbidden",
+            "NOT_AUTHORIZED",
+            "TeamInbox requires a Team-scoped AgentMember identity".into(),
+        ));
+    }
+    let inbox = crate::team_inbox_projection(store, space_id, team_id, true).map_err(|e| {
+        (
+            "500 Internal Server Error",
+            "ROLE_VIEW_BUILD_FAILED",
+            e.to_string(),
+        )
+    })?;
+    let mut items = inbox["items"].as_array().cloned().unwrap_or_default();
+    items.truncate(query.limit);
+    let data = json!({
+        "team": {
+            "team_id": team.id,
+            "display_name": team.name,
+            "team_revision": facts.team_revisions.get(&team.id).copied().unwrap_or(0),
+            "mission_id": team.mission_id,
+            "host_agent_id": team.host_agent_id,
+            "node_id": team.node_id,
+            "status": enum_string(&team.status),
+        },
+        "subscription": inbox["subscription"],
+        "items": items,
+        "page": {
+            "as_of_event_sequence": facts.sequence,
+            "item_count": items.len(),
+            "next_cursor": null,
+        },
+    });
+    Ok(envelope("team_inbox", &facts, data, vec![], vec![]))
 }
 
 fn agent_workspace_view(
