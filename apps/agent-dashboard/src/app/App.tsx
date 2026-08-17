@@ -289,15 +289,18 @@ export function App() {
       const controller = new AbortController();
       resyncAbortControllerRef.current = controller;
       try {
-        // Resolve a team definition id (team-xxx, not team-run-xxx) to its
-        // latest team-run id before calling fetchTeamRunSnapshot so the
-        // backend receives a valid team-run id from the very first request.
-        let effectiveTeamId = selection.teamId;
+        // Resolve a durable team id (team-xxx, not team-run-xxx) to its latest
+        // team-run id before calling fetchTeamRunSnapshot so the backend
+        // receives a valid team-run id for the bounded read. The selection keeps
+        // the durable Team id — navigation is durable, the bounded TeamRun read
+        // is an internal projection detail. A Team with no runs yet reads the
+        // full snapshot so it remains visible with no active runtime.
+        let boundedRunId: string | null = null;
         if (
           selection.surface === "team" &&
-          effectiveTeamId &&
-          effectiveTeamId.startsWith("team-") &&
-          !effectiveTeamId.startsWith("team-run-")
+          selection.teamId &&
+          selection.teamId.startsWith("team-") &&
+          !selection.teamId.startsWith("team-run-")
         ) {
           try {
             const fullSnapshot = await fetchSnapshot(
@@ -307,26 +310,21 @@ export function App() {
               space,
               controller.signal,
             );
-            const matchingRun = (fullSnapshot.team_runs ?? [])
-              .filter((run) => run.agent_team_id === effectiveTeamId)
-              .sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""))[0];
-            if (matchingRun) {
-              effectiveTeamId = matchingRun.id;
-              setSelection((prev) =>
-                prev.teamId === selection.teamId
-                  ? { ...prev, teamId: effectiveTeamId }
-                  : prev,
-              );
-            }
+            boundedRunId = (fullSnapshot.team_runs ?? [])
+              .filter((run) => run.agent_team_id === selection.teamId)
+              .sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""))[0]?.id ?? null;
           } catch {
-            // Resolution failed; leave effectiveTeamId as-is so
-            // fetchTeamRunSnapshot surfaces the real error.
+            // Resolution failed; fall back to the full snapshot so the durable
+            // Team surface still renders its authenticated RoleView.
           }
+        } else if (selection.surface === "team" && selection.teamId) {
+          // Historical team-run deep link: the bounded read stays run-scoped.
+          boundedRunId = selection.teamId;
         }
-        const next = selection.surface === "team" && effectiveTeamId
+        const next = boundedRunId
           ? await fetchTeamRunSnapshot(
               baseUrl,
-              effectiveTeamId,
+              boundedRunId,
               project,
               company,
               space,
@@ -782,26 +780,6 @@ export function App() {
     ],
   );
 
-  const handleSelectCompany = useCallback(
-    (companyId: string) => {
-      if (companyId === selectedCompanyId) return;
-      setSelectorRecoveryNotice(null);
-      moveStreamBoundary(streamSelectionKey(selectedSpaceId, selectedProjectId, companyId));
-      setSelectedCompanyId(companyId);
-      setIsLoading(true);
-      setSnapshot(emptySnapshot);
-      // The selected Company is browser-tab scope. Changing it must never call
-      // /v1/companies/switch, which mutates the CLI/server default for every tab.
-      // The scoped load effect observes selectedCompanyId and performs the read.
-    },
-    [
-      moveStreamBoundary,
-      selectedCompanyId,
-      selectedProjectId,
-      selectedSpaceId,
-    ],
-  );
-
   const handleSelectSpace = useCallback(
     (spaceId: string) => {
       if (spaceId === selectedSpaceId) return;
@@ -1145,13 +1123,11 @@ export function App() {
         apiUrl={apiUrl}
         isLoading={isLoading}
         model={model}
-        companies={companies}
         projects={projects}
         spaces={spaces}
         selectedCompanyId={selectedCompanyId}
         selectedProjectId={selectedProjectId}
         selectedSpaceId={selectedSpaceId}
-        onSelectCompany={handleSelectCompany}
         onSelectProject={handleSelectProject}
         onSelectSpace={handleSelectSpace}
         onApiUrlChange={setApiUrl}

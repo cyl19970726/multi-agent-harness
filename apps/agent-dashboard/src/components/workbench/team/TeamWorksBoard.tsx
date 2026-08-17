@@ -13,12 +13,48 @@ type OwnerFilter = "all" | "unassigned" | string;
 type AttentionFilter = "all" | "blocked" | "review";
 type ConditionFilter = "all" | string;
 type PriorityFilter = "all" | string;
-const LANES = [
-  { id: "open", label: "Open", matches: (work: WorkSummary) => work.phase === "open" },
-  { id: "active", label: "Active", matches: (work: WorkSummary) => work.phase === "active" },
-  { id: "review", label: "Review", matches: (work: WorkSummary) => work.phase === "review" },
-  { id: "closed", label: "Closed", matches: (work: WorkSummary) => work.phase === "closed" },
-] as const;
+
+interface AssigneeGroup {
+  id: string;
+  label: string;
+  works: WorkSummary[];
+}
+
+/**
+ * DOC-106 Team Work projection: group each Work exactly once under Host, the
+ * assigned Member, or Unassigned. The assignee is the TeamMembership
+ * (`assignee_kind`/`assignee_membership_id`); legacy rows that only carry
+ * `owner_actor_ref` fall back to that actor id. Lifecycle phase stays on the
+ * card itself via PhaseMark — it is no longer the grouping axis.
+ */
+function buildAssigneeGroups(works: WorkSummary[], membersById: Map<string, MemberCapacitySummary>): AssigneeGroup[] {
+  const host: WorkSummary[] = [];
+  const unassigned: WorkSummary[] = [];
+  const byMember = new Map<string, WorkSummary[]>();
+  for (const work of works) {
+    const kind = work.assignee_kind;
+    // Key member groups by the durable AgentMember id so labels resolve
+    // through membersById and the owner filter matches the same identity.
+    const memberKey = work.assignee_ref?.agent_member_id ?? work.assignee_membership_id ?? work.owner_actor_ref?.id ?? null;
+    if (kind === "host") {
+      host.push(work);
+    } else if (kind === "member" || (kind == null && memberKey)) {
+      const key = memberKey ?? work.work_id;
+      byMember.set(key, [...(byMember.get(key) ?? []), work]);
+    } else {
+      unassigned.push(work);
+    }
+  }
+  const groups: AssigneeGroup[] = [];
+  if (host.length) groups.push({ id: "host", label: "Host", works: host });
+  for (const [key, groupWorks] of [...byMember.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const member = membersById.get(key) ?? [...membersById.values()].find((candidate) => candidate.current_member_run_ref === key);
+    const display = member?.display_name ?? groupWorks[0]?.assignee_ref?.display_name ?? key;
+    groups.push({ id: `member:${key}`, label: display, works: groupWorks });
+  }
+  groups.push({ id: "unassigned", label: "Unassigned", works: unassigned });
+  return groups;
+}
 
 function memberLabel(member: MemberCapacitySummary | undefined, fallback?: string | null) {
   return member?.display_name || fallback || "Unassigned";
@@ -56,10 +92,11 @@ export function TeamWorksBoard({ works, members, selectedWorkId, onSelectWork, o
   const focusReturnWorkId = useRef<string>();
   const selected = works.find((work) => work.work_id === selectedWorkId);
   const membersById = useMemo(() => new Map(members.map((member) => [member.agent_member_ref.id, member])), [members]);
+  const ownerIdentity = (work: WorkSummary) => work.assignee_ref?.agent_member_id ?? work.assignee_membership_id ?? work.owner_actor_ref?.id ?? null;
   const conditions = useMemo(() => Array.from(new Set(works.map((work) => work.condition?.trim()).filter((value): value is string => Boolean(value)))), [works]);
   const priorities = useMemo(() => Array.from(new Set(works.map((work) => work.priority?.trim()).filter((value): value is string => Boolean(value)))), [works]);
   const visible = works.filter((work) => {
-    const ownerMatch = owner === "all" || (owner === "unassigned" ? !work.owner_actor_ref : work.owner_actor_ref?.id === owner);
+    const ownerMatch = owner === "all" || (owner === "unassigned" ? !ownerIdentity(work) : ownerIdentity(work) === owner || work.owner_actor_ref?.id === owner);
     const attentionMatch = attention === "all" || (attention === "blocked" ? work.condition === "blocked" : work.phase === "review");
     const conditionMatch = condition === "all" || work.condition === condition;
     const priorityMatch = priority === "all" || work.priority === priority;
@@ -125,6 +162,7 @@ export function TeamWorksBoard({ works, members, selectedWorkId, onSelectWork, o
     return () => document.removeEventListener("keydown",handleKeyDown);
   },[compactSheet,filtersOpen]);
 
+  const assigneeGroups = useMemo(() => buildAssigneeGroups(visible, membersById), [visible, membersById]);
   const updateFilters = (next:Partial<{owner:OwnerFilter;attention:AttentionFilter;query:string}>) => {
     const filters={owner:next.owner ?? owner,attention:next.attention ?? attention,query:next.query ?? query};
     if(onFiltersChange)onFiltersChange(filters);else {setLocalOwner(filters.owner);setLocalAttention(filters.attention);setLocalQuery(filters.query);}
@@ -135,7 +173,7 @@ export function TeamWorksBoard({ works, members, selectedWorkId, onSelectWork, o
   return (
     <section aria-labelledby="team-works-title" data-testid="role-view-team-works">
       <header className="flex flex-wrap items-end justify-between gap-2 pt-4 lg:hidden">
-        <div><h2 id="team-works-title" className="text-base font-semibold">Shared Works</h2><p className="text-xs text-muted-foreground">Durable responsibility grouped by canonical lifecycle.</p></div>
+        <div><h2 id="team-works-title" className="text-base font-semibold">Shared Works</h2><p className="text-xs text-muted-foreground">Durable responsibility grouped by accountable Host, Member or Unassigned.</p></div>
         <Button ref={filterTriggerRef} size="sm" variant="secondary" className="min-h-11 sm:min-h-0" aria-expanded={filtersOpen} aria-controls="team-work-filters" onClick={() => filtersOpen ? closeFilters() : setFiltersOpen(true)}><ListFilter className="size-3.5" /> Filters</Button>
       </header>
 
@@ -151,15 +189,12 @@ export function TeamWorksBoard({ works, members, selectedWorkId, onSelectWork, o
 
       {visible.length ? <>
       {priorityWork && <section className="mt-3 border-y border-border py-3 lg:hidden" aria-labelledby="priority-work-title"><div className="mb-2 flex items-center gap-2"><Flag className="size-3.5 text-primary"/><h3 id="priority-work-title" className="text-[10px] font-semibold uppercase tracking-[.13em]">Attention preview</h3><span className="ml-auto text-[9px] text-muted-foreground">Display ordering · canonical phase below</span></div><WorkCard work={priorityWork} ownerMember={priorityWork.owner_actor_ref ? membersById.get(priorityWork.owner_actor_ref.id) : undefined} selected={selectedWorkId === priorityWork.work_id} onSelect={onSelectWork} register={(node) => { if (node) workCardRefs.current.set(priorityWork.work_id,node); else workCardRefs.current.delete(priorityWork.work_id); }} prominent/></section>}
-      <div className="mt-2 grid gap-x-4 lg:hidden md:grid-cols-2" data-testid="team-work-mobile-phases">{LANES.map((lane) => { const laneWorks=visible.filter(lane.matches); return <details key={lane.id} className="border-b border-border" open><summary className="flex min-h-11 cursor-pointer list-none items-center text-xs font-semibold uppercase tracking-[.1em]"><span>{lane.label}</span><span className="ml-auto tabular-nums text-muted-foreground">{laneWorks.length}</span></summary><div className="space-y-2 pb-3">{lane.id === "open" && <OpenGroupCounts works={laneWorks}/>} {laneWorks.map((work) => <WorkCard key={work.work_id} work={work} ownerMember={work.owner_actor_ref ? membersById.get(work.owner_actor_ref.id) : undefined} selected={selectedWorkId === work.work_id} onSelect={onSelectWork} register={(node) => { if(node) workCardRefs.current.set(work.work_id,node); else workCardRefs.current.delete(work.work_id); }}/>)}</div></details>;})}</div>
-      <div className="hidden grid-cols-4 items-start bg-[color-mix(in_srgb,var(--secondary)_30%,transparent)] lg:grid" data-testid="team-work-lanes">{LANES.map((lane) => {
-        const laneWorks = visible.filter(lane.matches);
-        const orderedLaneWorks = lane.id === "open" ? [...laneWorks].sort((left,right) => Number(Boolean(left.owner_actor_ref)) - Number(Boolean(right.owner_actor_ref))) : laneWorks;
-        return <section key={lane.id} data-work-lane={lane.id} className="min-w-0 border-l border-border px-3 py-4 first:border-l-0"><header className="mb-3 flex items-center border-b border-border pb-2"><h3 className="company-editorial-title text-[17px] uppercase tracking-[.07em]">{lane.label}</h3><span className="ml-2 text-xs tabular-nums text-muted-foreground">{laneWorks.length}</span></header><div className="grid content-start gap-3">{orderedLaneWorks.map((work,index) => {
-          const ownerMember = work.owner_actor_ref ? membersById.get(work.owner_actor_ref.id) : undefined;
-          const firstAssigned = lane.id === "open" && Boolean(work.owner_actor_ref) && (index === 0 || !orderedLaneWorks[index-1]?.owner_actor_ref);
-          return <div key={work.work_id} className="contents">{lane.id === "open" && (index === 0 || firstAssigned) && <p className="px-1 pt-1 text-[9px] font-semibold uppercase tracking-[.12em] text-muted-foreground">{work.owner_actor_ref ? "Assigned" : "Unassigned"}</p>}<WorkCard work={work} ownerMember={ownerMember} selected={selectedWorkId === work.work_id} onSelect={onSelectWork} register={(node) => { if(node) workCardRefs.current.set(work.work_id,node); else workCardRefs.current.delete(work.work_id); }}/></div>;
-        })}{!laneWorks.length && <p className="py-4 text-center text-[10px] text-muted-foreground">No {lane.label.toLowerCase()} Work</p>}</div></section>;
+      <div className="mt-2 grid gap-x-4 lg:hidden md:grid-cols-2" data-testid="team-work-mobile-phases">{assigneeGroups.map((group) => <details key={group.id} className="border-b border-border" open><summary className="flex min-h-11 cursor-pointer list-none items-center text-xs font-semibold uppercase tracking-[.1em]"><span>{group.label}</span><span className="ml-auto tabular-nums text-muted-foreground">{group.works.length}</span></summary><div className="space-y-2 pb-3">{group.works.map((work) => <WorkCard key={work.work_id} work={work} ownerMember={ownerIdentity(work) ? membersById.get(ownerIdentity(work)!) : undefined} selected={selectedWorkId === work.work_id} onSelect={onSelectWork} register={(node) => { if(node) workCardRefs.current.set(work.work_id,node); else workCardRefs.current.delete(work.work_id); }}/>)}</div></details>)}</div>
+      <div className="hidden items-start bg-[color-mix(in_srgb,var(--secondary)_30%,transparent)] lg:grid" style={{gridTemplateColumns:`repeat(${Math.max(assigneeGroups.length,1)},minmax(0,1fr))`}} data-testid="team-work-lanes">{assigneeGroups.map((group) => {
+        return <section key={group.id} data-assignee-group={group.id} className="min-w-0 border-l border-border px-3 py-4 first:border-l-0"><header className="mb-3 flex items-center border-b border-border pb-2"><h3 className="company-editorial-title text-[17px] uppercase tracking-[.07em]">{group.label}</h3><span className="ml-2 text-xs tabular-nums text-muted-foreground">{group.works.length}</span></header><div className="grid content-start gap-3">{group.works.map((work) => {
+          const ownerMember = ownerIdentity(work) ? membersById.get(ownerIdentity(work)!) : undefined;
+          return <WorkCard key={work.work_id} work={work} ownerMember={ownerMember} selected={selectedWorkId === work.work_id} onSelect={onSelectWork} register={(node) => { if(node) workCardRefs.current.set(work.work_id,node); else workCardRefs.current.delete(work.work_id); }}/>;
+        })}{!group.works.length && <p className="py-4 text-center text-[10px] text-muted-foreground">No {group.label.toLowerCase()} Work</p>}</div></section>;
       })}</div></> : <div className="mt-3 border-y border-dashed border-border px-5 py-12 text-center"><CircleSlash className="mx-auto size-6 text-muted-foreground"/><h3 className="mt-3 text-sm font-medium">{works.length ? "No Work matches these filters" : "This Team has no durable Work yet"}</h3><p className="mt-1 text-xs text-muted-foreground">{works.length ? "Reset the filters to return to the Team's full responsibility view." : "Open Host tools to create the first Work or coordinate with an available member."}</p>{filtersApplied ? <Button className="mt-4" size="sm" variant="secondary" onClick={clearFilters}>Reset filters</Button> : onOpenHostTools ? <Button className="mt-4" size="sm" onClick={onOpenHostTools}><ShieldCheck className="size-3.5"/>Open Host tools</Button> : null}</div>}
 
       {selected && <div className="fixed inset-0 z-50 bg-foreground/15 lg:static lg:z-auto lg:mt-3 lg:bg-transparent" onMouseDown={(event) => { if (compactSheet && event.target === event.currentTarget) onSelectWork(undefined); }}><aside ref={sheetRef} role="dialog" aria-modal={compactSheet || undefined} aria-labelledby="selected-work-title" data-testid="role-view-work-sheet" className="agent-team-sheet-enter absolute inset-x-0 bottom-0 max-h-[88dvh] overflow-y-auto rounded-t-xl border border-border bg-background p-4 shadow-xl lg:static lg:max-h-none lg:w-full lg:rounded-xl lg:shadow-none lg:animate-none">
@@ -173,7 +208,6 @@ export function TeamWorksBoard({ works, members, selectedWorkId, onSelectWork, o
 
 function CircleDotLabel({ text }: { text: string }) { return <span className="min-w-0 truncate">{text}</span>; }
 function workAttentionRank(work:WorkSummary) { return (work.condition === "blocked" ? 100 : 0) + (work.phase === "review" ? 80 : work.phase === "active" ? 40 : work.phase === "open" ? 20 : 0) + (work.priority === "critical" ? 12 : work.priority === "high" ? 8 : 0); }
-function OpenGroupCounts({works}:{works:WorkSummary[]}) { const assigned=works.filter((work) => work.owner_actor_ref).length; return <div className="grid grid-cols-2 gap-px border-y border-border py-2 text-[10px]"><span>Unassigned <b className="ml-1">{works.length-assigned}</b></span><span>Assigned <b className="ml-1">{assigned}</b></span></div>; }
 function WorkCard({work,ownerMember,selected,onSelect,register,prominent=false}:{work:WorkSummary;ownerMember?:MemberCapacitySummary;selected:boolean;onSelect:(id:string)=>void;register:(node:HTMLButtonElement|null)=>void;prominent?:boolean}) { return <button ref={register} type="button" {...(prominent ? {"data-priority-work":work.work_id} : {"data-work-card":work.work_id})} onClick={() => onSelect(work.work_id)} className={cn("agent-team-panel min-w-0 rounded-[10px] p-3.5 text-left hover:-translate-y-px hover:border-primary/25 hover:shadow-[0_10px_28px_rgb(83_57_38_/_0.065)]",selected && "agent-team-selected",prominent && "w-full bg-accent/35")}><div className="flex flex-wrap items-center justify-between gap-2"><PhaseMark work={work}/><span className="text-[9px] font-semibold uppercase tracking-[.09em] text-muted-foreground">{work.priority}</span></div><h4 className="company-editorial-title mt-2.5 break-words text-[17px] leading-[1.18]">{work.title || work.work_id}</h4><p className="mt-1 line-clamp-2 text-[12px] leading-[1.45] text-muted-foreground">{work.completion_criteria_markdown || "No projected completion criteria."}</p><div className="mt-3 grid grid-cols-3 gap-2 text-[10px] text-muted-foreground"><span className="flex items-center gap-1.5"><FileCheck2 className="size-3.5"/>{work.artifact_refs.length + work.check_refs.length} evidence</span><span className="flex items-center gap-1.5"><CheckCircle2 className="size-3.5"/>gates {work.gate_summary.passed}/{work.gate_summary.required}</span><span className="text-right">rev {work.work_revision}</span></div><div className="mt-3 flex min-w-0 items-center gap-2 border-t border-border/75 pt-2.5 text-[10px] text-muted-foreground">{ownerMember ? <><Avatar name={ownerMember.display_name} identity={`${ownerMember.agent_member_ref.id} ${ownerMember.role}`} size="xs" tone={ownerMember.runtime_state === "running" ? "running" : ownerMember.capacity === "available" ? "good" : "idle"}/><CircleDotLabel text={memberLabel(ownerMember)}/></> : <><Users className="size-3.5"/>Unassigned</>}<span className="ml-auto flex items-center gap-1.5 font-medium"><WorkStateMark work={work}/></span></div></button>; }
 function PhaseMark({work}:{work:WorkSummary}) { const tone=work.condition === "blocked" ? "bad" : work.phase === "review" ? "warn" : work.phase === "active" ? "running" : work.phase === "closed" && work.resolution === "accepted" ? "good" : undefined; const label=work.condition !== "normal" ? work.condition : work.phase === "closed" && work.resolution ? work.resolution : work.phase; return <span className={tone ? "agent-team-state-label" : "agent-team-phase-label"} data-tone={tone}>{label.replace(/_/g," ")}</span>; }
 function WorkStateMark({work}:{work:WorkSummary}) { if(work.condition === "blocked")return <><CircleSlash className="size-3.5 text-status-bad"/><span className="text-status-bad">Blocked</span></>; if(work.phase === "closed" && work.resolution)return <><CheckCircle2 className={cn("size-3.5",work.resolution === "accepted" ? "text-status-good" : work.resolution === "failed" ? "text-status-bad" : "text-muted-foreground")}/><span className={work.resolution === "accepted" ? "text-status-good" : work.resolution === "failed" ? "text-status-bad" : "text-muted-foreground"}>{work.resolution[0].toUpperCase()+work.resolution.slice(1)}</span></>; if(work.phase === "review")return <><CheckCircle2 className="size-3.5 text-status-warn"/><span className="text-status-warn">Awaiting review</span></>; if(work.gate_summary.required > 0 && work.gate_summary.passed === work.gate_summary.required)return <><CheckCircle2 className="size-3.5 text-status-good"/><span className="text-status-good">Gates satisfied</span></>; return <><CheckCircle2 className="size-3.5 text-muted-foreground"/><span className="text-muted-foreground">{work.phase === "active" ? "In execution" : "Ready for responsibility"}</span></>; }

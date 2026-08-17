@@ -1,10 +1,16 @@
 {
   "schema_version":"agentfirm.role_view_surface_migration.v1",
   "surfaces":[
-    {"legacy":"TeamWarRoom","disposition":"thin-shell","canonical":"TeamWorkspace"},
-    {"legacy":"MemberRunFocus","disposition":"thin-shell","canonical":"MemberWorkbench"},
-    {"legacy":"StandingAgentFocus","disposition":"delete","canonical":"MemberWorkbench"},
-    {"legacy":"CompanyOsWorkOperations","disposition":"delete","canonical":"CompanyWorkIndex"}
+    {"legacy":"TeamWarRoom","disposition":"delete","canonical":"TeamWorkspace"},
+    {"legacy":"MemberRunFocus","disposition":"delete","canonical":"AgentConversationWorkspace"},
+    {"legacy":"StandingAgentFocus","disposition":"delete","canonical":"AgentConversationWorkspace"},
+    {"legacy":"CompanyOsWorkOperations","disposition":"delete","canonical":"GlobalWorkIndex"},
+    {"legacy":"CompanyWorkIndex","disposition":"delete","canonical":"GlobalWorkIndex"},
+    {"legacy":"Missions","disposition":"delete","canonical":"AgentTeamsHome"},
+    {"legacy":"MemberRuns","disposition":"delete","canonical":"TeamWorkspace"},
+    {"legacy":"MemberWorkbench","disposition":"delete","canonical":"AgentConversationWorkspace"},
+    {"legacy":"TeamWorks","disposition":"delete","canonical":"TeamWorkspace"},
+    {"legacy":"AgentTeamOrganization","disposition":"delete","canonical":"AgentTeamsHome"}
   ],
   "retired_tests":[
     {"path":"apps/agent-dashboard/tests/team-war-room-first-viewport-check.mjs","disposition":"inactive-historical","replacement":"local-agentfirm-product-loop-browser-check.mjs"},
@@ -12,7 +18,15 @@
     {"path":"apps/agent-dashboard/tests/team-deep-link-large-store-browser-check.mjs","disposition":"inactive-historical","replacement":"local-agentfirm-product-loop-browser-check.mjs"},
     {"path":"apps/agent-dashboard/tests/workbench-visual-fixture-check.mjs","disposition":"inactive-historical","replacement":"role-view-contract-check.mjs"},
     {"path":"apps/agent-dashboard/tests/operator-controls-check.mjs","disposition":"inactive-historical","replacement":"local-agentfirm-product-loop.mjs"},
-    {"path":"apps/agent-dashboard/tests/operator-console-browser-check.mjs","disposition":"inactive-historical","replacement":"local-agentfirm-product-loop-browser-check.mjs"}
+    {"path":"apps/agent-dashboard/tests/operator-console-browser-check.mjs","disposition":"inactive-historical","replacement":"local-agentfirm-product-loop-browser-check.mjs"},
+    {"path":"apps/agent-dashboard/tests/team-selectors-check.mjs","disposition":"inactive-historical","replacement":"local-agentfirm-product-loop.mjs"},
+    {"path":"apps/agent-dashboard/tests/company-os-docs-check.mjs","disposition":"inactive-historical","replacement":"dashboard-real-store-browser-check.mjs"},
+    {"path":"apps/agent-dashboard/tests/company-os-docs-v2-check.mjs","disposition":"inactive-historical","replacement":"dashboard-real-store-browser-check.mjs"},
+    {"path":"apps/agent-dashboard/tests/company-os-docs-v2-store-live-check.mjs","disposition":"inactive-historical","replacement":"dashboard-real-store-browser-check.mjs"},
+    {"path":"apps/agent-dashboard/tests/company-os-operations-check.mjs","disposition":"inactive-historical","replacement":"local-agentfirm-product-loop.mjs"},
+    {"path":"apps/agent-dashboard/tests/company-os-runtime-check.mjs","disposition":"inactive-historical","replacement":"local-agentfirm-product-loop.mjs"},
+    {"path":"apps/agent-dashboard/tests/company-os-navigation-check.mjs","disposition":"inactive-historical","replacement":"local-agentfirm-product-loop-browser-check.mjs"},
+    {"path":"apps/agent-dashboard/tests/company-os-wanchengwanling-custom-page-check.mjs","disposition":"inactive-historical","replacement":"local-agentfirm-product-loop.mjs"}
   ],
   "event_policy":"SSE carries invalidation only; every responsibility surface refetches its RoleView"
 }

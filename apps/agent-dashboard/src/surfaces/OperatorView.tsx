@@ -60,7 +60,7 @@ export function OperatorView({
           <div className="mb-2 flex items-center gap-2 text-xs uppercase tracking-[.16em] text-primary">
             <ServerCog className="size-4" /> Machine authority
           </div>
-          <h1 className="text-2xl font-semibold">Operator View</h1>
+          <h1 className="text-2xl font-semibold">Nodes</h1>
           <p className="text-sm text-muted-foreground">
             Daemon, Remote Fabric, delivery and recovery truth. No Work acceptance.
           </p>

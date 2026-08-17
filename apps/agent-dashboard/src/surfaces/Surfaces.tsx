@@ -392,8 +392,7 @@ function ConfigRow({ label, value, mono = false }: { label: string; value: strin
   );
 }
 
-export function DebugSurface({ model, sourceLabel }: { model: WorkbenchModel; sourceLabel: string }) {
-  const snapshot = model.snapshot;
+export function DebugSurface({ model, sourceLabel }: { model: WorkbenchModel; sourceLabel: string }) {  const snapshot = model.snapshot;
   const rows = [
     ["Source", sourceLabel],
     ["Generated", snapshot.generated_at ?? "unknown"],
@@ -416,5 +415,81 @@ export function DebugSurface({ model, sourceLabel }: { model: WorkbenchModel; so
         </CardContent>
       </Card>
     </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Secondary platform surfaces (DOC-107 retained secondary navigation)  */
+/* ------------------------------------------------------------------ */
+
+function PlatformPage({ icon: Icon, title, children }: { icon: typeof Users; title: string; children: React.ReactNode }) {
+  return (
+    <main className="h-full overflow-auto bg-background p-5 sm:p-8">
+      <div className="mx-auto max-w-3xl rounded-lg border border-border bg-card p-6">
+        <Icon className="size-5 text-primary" aria-hidden />
+        <h1 className="mt-4 text-2xl font-semibold tracking-tight">{title}</h1>
+        {children}
+      </div>
+    </main>
+  );
+}
+
+export function ProvidersSurface() {
+  return (
+    <PlatformPage icon={TerminalSquare} title="Providers">
+      <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
+        Provider runtimes remain an execution capability. Provider capability and
+        admission truth are reviewed per Node on the Nodes surface; this page stays a
+        stable shell until a governed provider catalog contract exists.
+      </p>
+      <p className="mt-6 rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
+        Platform shell only · provider review and admission run through the authenticated Node RoleView.
+      </p>
+    </PlatformPage>
+  );
+}
+
+export function SettingsSurface() {
+  return (
+    <PlatformPage icon={Bot} title="Settings">
+      <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
+        Access, policy, and execution settings stay separated by authority boundary.
+        Connection controls live in the header; no mutable settings are represented here yet.
+      </p>
+      <p className="mt-6 rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
+        Platform shell only · no fake settings state is rendered.
+      </p>
+    </PlatformPage>
+  );
+}
+
+/** Read-only Project Binding list. Switching stays in the header picker so the
+ * page never becomes a second mutation path. */
+export function ProjectsSurface({ projects, selectedProjectId }: { projects: { id: string; kind?: string; project_root?: string; skill_discovery_boundary?: string | null }[]; selectedProjectId: string }) {
+  return (
+    <PlatformPage icon={TerminalSquare} title="Projects / Workspaces">
+      <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
+        Project Bindings identify where providers execute and discover instructions, Skills and MCP
+        configuration. They never own Mission, Agent Team, or Workflow coordination storage.
+      </p>
+      {projects.length ? (
+        <ul className="mt-5 divide-y divide-border rounded-md border border-border">
+          {projects.map((project) => (
+            <li key={project.id} className="px-3 py-2.5">
+              <div className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate text-sm font-medium">{project.id}</span>
+                {project.id === selectedProjectId && <Badge tone="good">active</Badge>}
+                {project.kind === "global" && <Badge>global</Badge>}
+              </div>
+              <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{project.project_root ?? "root not projected"}</p>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-5 rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
+          No Project Binding registry is projected by this backend. Switch projects from the header picker when it is available.
+        </p>
+      )}
+    </PlatformPage>
   );
 }

@@ -152,14 +152,16 @@ export interface AgentTeam {
   id: string;
   name?: string;
   description?: string;
-  /** The one Mission this flat Team executes. */
-  mission_id: string;
-  /** Durable Host Agent identity for this Team. */
-  host_agent_id: string;
   /** Immutable machine placement for every Member in the Team. */
   node_id: string;
+  /** Team identity revision; membership and runtime revisions stay independent. */
+  revision?: number;
   status?: "active" | "closed" | "archived";
-  member_ids?: string[];
+  /** Optional read-only provenance for a pre-vNext Mission-owned Team. Never identity authority. */
+  legacy_mission_id?: string | null;
+  trashed_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface Message {
@@ -252,7 +254,7 @@ export type MissionStatus =
   | "completed"
   | "cancelled";
 
-/** Durable intent container. Its AgentTeam is resolved by Team.mission_id. */
+/** Durable intent container. Its AgentTeam relation survives only as optional legacy provenance. */
 export interface Mission {
   id: string;
   title: string;
@@ -768,14 +770,16 @@ export interface AgentSession {
 export interface TeamMembership {
   id: string;
   team_id: string;
-  team_run_id: string;
-  agent_identity_id: string;
+  /** Durable AgentMember identity (legacy payloads may spell it agent_identity_id). */
+  agent_member_id?: string;
+  agent_identity_id?: string;
   node_id: string;
-  role_snapshot: string;
-  status: "active" | "left" | "revoked";
-  version: number;
+  role: "host" | "member" | "observer" | string;
+  state: "invited" | "active" | "leaving" | "inactive" | string;
+  membership_generation?: number;
+  revision?: number;
   joined_at: string;
-  ended_at?: string | null;
+  left_at?: string | null;
 }
 
 export interface WorkExecutionBinding {
@@ -858,7 +862,7 @@ export interface Work {
   version: number;
   created_at: string;
   updated_at: string;
-  /** Optional deadline (§4.1). Rendered in the Company Work view when present. */
+  /** Optional deadline (§4.1). Rendered in the Global Work view when present. */
   due_at?: string | null;
 }
 

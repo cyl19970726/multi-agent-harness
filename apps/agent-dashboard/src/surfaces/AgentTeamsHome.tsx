@@ -24,7 +24,7 @@ import { TEAM_MEMBER_PROVIDER_MODES } from "@/lib/provider";
 import { createTeam, createTeamRun, startTeamRun, type TeamRunMemberSpec } from "../api/actions";
 import type { SelectionState } from "../app/selection";
 import type { WorkbenchModel } from "../model/readModel";
-import type { AgentTeam, MemberRun, Mission, ProviderLaunchProfile, TeamRun } from "../types";
+import type { AgentTeam, MemberRun, ProviderLaunchProfile, TeamMembership, TeamRun } from "../types";
 
 interface AgentTeamsHomeProps {
   model: WorkbenchModel;
@@ -34,61 +34,53 @@ interface AgentTeamsHomeProps {
   onAction?: (path: string, body?: unknown) => Promise<boolean>;
 }
 
-interface NativeAttempt {
-  run: TeamRun;
-  team?: AgentTeam;
-  mission?: Mission;
-  members: MemberRun[];
+interface TeamCardModel {
+  team: AgentTeam;
+  latestRun?: TeamRun;
+  latestRunMembers: MemberRun[];
+  hostMembership?: TeamMembership;
+  activeMemberships: TeamMembership[];
 }
 
-/** Native entry point for flat, Mission-owned Agent Teams and their attempts. */
+/** Native entry point for durable, flat Agent Teams and their runtime attempts. */
 export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = false, loading = false, onAction }: AgentTeamsHomeProps) {
   const snapshot = model.snapshot;
   const [teamOpen, setTeamOpen] = useState(false);
   const [runDialogTeam, setRunDialogTeam] = useState<AgentTeam | undefined>();
-  const missions = new Map((snapshot.missions ?? []).map((mission) => [mission.id, mission]));
-  const teams = new Map((snapshot.teams ?? []).map((team) => [team.id, team]));
+  const teams = [...(snapshot.teams ?? [])]
+    .sort((left, right) => timestamp(right.updated_at ?? right.created_at) - timestamp(left.updated_at ?? left.created_at));
+  const memberships = snapshot.team_memberships ?? [];
+  const agentMemberNames = new Map<string, string>();
+  for (const member of snapshot.agent_members ?? []) agentMemberNames.set(member.id, member.name ?? member.id);
+  for (const member of snapshot.members ?? []) {
+    if (!agentMemberNames.has(member.id)) agentMemberNames.set(member.id, member.name ?? member.id);
+  }
+  const memberName = (id?: string | null) => (id ? agentMemberNames.get(id) ?? id : "—");
+  const membershipIdentity = (membership: TeamMembership) => membership.agent_member_id ?? membership.agent_identity_id ?? membership.id;
   const membersByRun = groupBy(snapshot.member_runs ?? [], (member) => member.team_run_id);
-  const attempts = (snapshot.team_runs ?? [])
-    .flatMap((run): NativeAttempt[] => {
-      const team = teams.get(run.agent_team_id);
-      if (!team) return [];
-      const mission = missions.get(team.mission_id);
-      if (!mission) return [];
-      return [{ run, team, mission, members: membersByRun.get(run.id) ?? [] }];
-    })
-    .sort((left, right) => timestamp(right.run.updated_at ?? right.run.created_at) - timestamp(left.run.updated_at ?? left.run.created_at));
-
-  // A durable team with no runs yet never appears as an attempt card, so it
-  // gets its own row — otherwise a freshly created team would be invisible
-  // here and could never receive its first run from the console.
-  const teamsWithRuns = new Set(attempts.map((attempt) => attempt.team?.id).filter(Boolean));
-  const teamsWithoutRuns = [...teams.values()].filter((team) => !teamsWithRuns.has(team.id));
-
-  // Attempts of the same team are numbered chronologically so repeated team
-  // names on this page read as attempts, not duplicated teams.
-  const attemptNumberByRun = new Map<string, number>();
-  const attemptTotalByTeam = new Map<string, number>();
-  {
-    const runsByTeam = new Map<string, TeamRun[]>();
-    for (const attempt of attempts) {
-      const teamKey = attempt.team?.id;
-      if (!teamKey) continue;
-      runsByTeam.set(teamKey, [...(runsByTeam.get(teamKey) ?? []), attempt.run]);
-    }
-    for (const [teamKey, runs] of runsByTeam) {
-      attemptTotalByTeam.set(teamKey, runs.length);
-      runs.slice().reverse().forEach((run, index) => attemptNumberByRun.set(run.id, index + 1));
-    }
+  const latestRunByTeam = new Map<string, TeamRun>();
+  for (const run of (snapshot.team_runs ?? [])
+    .slice()
+    .sort((left, right) => timestamp(right.updated_at ?? right.created_at) - timestamp(left.updated_at ?? left.created_at))) {
+    if (!latestRunByTeam.has(run.agent_team_id)) latestRunByTeam.set(run.agent_team_id, run);
   }
 
-  // The per-team "New run" affordance lives on that team's latest run card only,
-  // so repeated attempts never duplicate the control.
-  const latestRunIdByTeam = new Map<string, string>();
-  for (const attempt of attempts) {
-    const teamKey = attempt.team?.id;
-    if (teamKey && !latestRunIdByTeam.has(teamKey)) latestRunIdByTeam.set(teamKey, attempt.run.id);
-  }
+  // Durable cards: one card per Team, never per run. The Team is the durable
+  // execution identity; a TeamRun is only the latest runtime attempt shown as
+  // secondary metadata. Membership (role/state) comes from TeamMembership,
+  // never from legacy roster fields.
+  const cards: TeamCardModel[] = teams.map((team) => {
+    const teamMemberships = memberships.filter((membership) => membership.team_id === team.id);
+    const activeMemberships = teamMemberships.filter((membership) => membership.state === "active");
+    const latestRun = latestRunByTeam.get(team.id);
+    return {
+      team,
+      latestRun,
+      latestRunMembers: latestRun ? membersByRun.get(latestRun.id) ?? [] : [],
+      hostMembership: teamMemberships.find((membership) => membership.role === "host" && membership.state === "active"),
+      activeMemberships,
+    };
+  });
   const durableMembers = snapshot.members ?? [];
   const executionNodes = snapshot.execution_nodes ?? [];
   const nodeRegistrations = snapshot.node_project_registrations ?? [];
@@ -103,8 +95,9 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
           </p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight text-foreground">Agent Teams</h1>
           <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-            Flat Mission-owned teams and their runtime attempts. Open a run to
-            inspect members, assignments, native sessions, pressure, and controls.
+            Durable, flat Agent Teams pinned to one Node. Open a Team to inspect
+            members, Work, native sessions, pressure, and controls; runtime
+            attempts are secondary metadata on the card.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -117,13 +110,6 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
           >
             <Plus className="size-3.5" /> New Agent Team
           </Button>
-          <button
-            type="button"
-            onClick={() => onSelectionChange({ surface: "missions", missionId: undefined, teamId: undefined })}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-2 text-xs font-medium text-foreground transition-colors hover:border-primary/30 hover:bg-primary/[0.035]"
-          >
-            Open Missions <ArrowRight className="size-3.5" />
-          </button>
         </div>
       </header>
 
@@ -156,40 +142,38 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
         </div>
       </section>
 
-      {attempts.length === 0 && teamsWithoutRuns.length === 0 && loading ? (
+      {cards.length === 0 && loading ? (
         <p role="status" className="mt-6 rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">Loading Agent Teams…</p>
-      ) : attempts.length === 0 ? (
+      ) : cards.length === 0 ? (
         <div className="pt-6">
           <EmptyState
             icon={Users}
-            title="No Agent Team runs"
-            description="Create one flat Agent Team for a Mission, then create its first TeamRun."
+            title="No Agent Teams"
+            description="Create one durable flat Agent Team on one Node, then start its first runtime attempt."
           />
         </div>
       ) : (
-        <section className="pt-5" aria-label="Agent Team attempts">
+        <section className="pt-5" aria-label="Agent Teams">
           <div className="grid gap-3 lg:grid-cols-2">
-            {attempts.map(({ run, team, mission, members }) => {
-              const tone = runTone(run.status);
-              const pressure = members.filter((member) => ["blocked", "failed", "waiting", "reviewing", "disconnected"].includes(member.status ?? ""));
-              const attemptTotal = team ? attemptTotalByTeam.get(team.id) : undefined;
-              const attemptNumber = attemptNumberByRun.get(run.id);
-              const openRun = () => onSelectionChange({ surface: "team", teamId: run.id, memberRunId: undefined });
-              const showNewRun = Boolean(team) && latestRunIdByTeam.get(team?.id ?? "") === run.id;
+            {cards.map(({ team, latestRun, latestRunMembers, hostMembership, activeMemberships }) => {
+              const tone = team.trashed_at ? "idle" : latestRun ? runTone(latestRun.status) : "idle";
+              const pressure = latestRunMembers.filter((member) => ["blocked", "failed", "waiting", "reviewing", "disconnected"].includes(member.status ?? ""));
+              const openTeam = () => onSelectionChange({ surface: "team", teamId: team.id, memberRunId: undefined });
+              const canRun = !team.trashed_at && team.status !== "closed" && team.status !== "archived";
               return (
                 // A div-with-role instead of <button> so the per-team "New run"
                 // affordance can live on the card without nesting interactive
                 // elements.
                 <div
-                  key={run.id}
+                  key={team.id}
                   role="button"
                   tabIndex={0}
-                  onClick={openRun}
+                  onClick={openTeam}
                   onKeyDown={(event) => {
                     if (event.target !== event.currentTarget) return;
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
-                      openRun();
+                      openTeam();
                     }
                   }}
                   className={cn(
@@ -204,17 +188,22 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="flex min-w-0 items-center gap-2">
-                        <span className="truncate text-sm font-semibold text-foreground">{team?.name ?? run.objective}</span>
-                        <Badge tone={tone}>{run.status ?? "unknown"}</Badge>
-                        {(attemptTotal ?? 0) > 1 && attemptNumber && <Badge tone="muted">Attempt {attemptNumber} of {attemptTotal}</Badge>}
+                        <span className="truncate text-sm font-semibold text-foreground">{team.name ?? team.id}</span>
+                        {team.trashed_at
+                          ? <Badge tone="muted">trashed</Badge>
+                          : latestRun
+                            ? <Badge tone={tone}>{latestRun.status ?? "unknown"}</Badge>
+                            : <Badge tone="muted">no runs yet</Badge>}
+                        {team.status && team.status !== "active" && <Badge tone="warn">{team.status}</Badge>}
                       </span>
                       <span className="mt-1 block truncate text-xs text-muted-foreground">
-                        {mission
-                          ? `${mission.title} · Mission-scoped`
-                          : "Mission relation unavailable"}
+                        Host · {hostMembership ? memberName(membershipIdentity(hostMembership)) : "—"}
+                        {" · "}{activeMemberships.length} active {activeMemberships.length === 1 ? "member" : "members"}
                       </span>
                       <span className="mt-1 block truncate text-[11px] text-muted-foreground">
-                        Host Agent · {teamLeadLabel(team?.host_agent_id)}
+                        {latestRun
+                          ? `Latest attempt: ${latestRun.status ?? "unknown"} · ${formatRelative(latestRun.updated_at ?? latestRun.created_at)}`
+                          : "No runtime attempts yet"}
                       </span>
                     </span>
                     <ArrowRight className="mt-2 size-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
@@ -222,7 +211,7 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
 
                   <div className="mt-4 flex items-center justify-between gap-3 border-t border-border/60 pt-3">
                     <span className="flex min-w-0 items-center">
-                      {members.slice(0, 4).map((member, index) => (
+                      {latestRunMembers.slice(0, 4).map((member, index) => (
                         <span key={member.id} className={cn("rounded-full ring-2 ring-card", index > 0 && "-ml-2")}>
                           <Avatar
                             name={member.name ?? member.id}
@@ -232,20 +221,19 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
                         </span>
                       ))}
                       <span className="ml-2 text-[11px] text-muted-foreground">
-                        {members.length} {members.length === 1 ? "member" : "members"}
+                        {latestRun ? `${latestRunMembers.length} in latest attempt` : "no attempt roster"}
                       </span>
                     </span>
                     <span className="flex min-w-0 items-center gap-2 text-[11px]">
                       {pressure.length > 0 && <span className="shrink-0 font-medium text-status-warn">{pressure.length} need attention</span>}
-                      <span className="truncate text-muted-foreground">{formatRelative(run.updated_at ?? run.created_at)}</span>
-                      {showNewRun && (
+                      {canRun && (
                         <button
                           type="button"
                           disabled={!actionsEnabled}
                           title={actionsEnabled ? "Create another run of this team" : "Connect a live source to enable actions"}
                           onClick={(event) => {
                             event.stopPropagation();
-                            if (team) setRunDialogTeam(team);
+                            setRunDialogTeam(team);
                           }}
                           className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-background px-2 py-1 font-medium text-foreground transition-colors hover:border-primary/30 hover:bg-primary/[0.035] disabled:cursor-default disabled:text-muted-foreground"
                         >
@@ -257,33 +245,6 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
                 </div>
               );
             })}
-          </div>
-        </section>
-      )}
-
-      {teamsWithoutRuns.length > 0 && (
-        <section className="pt-5" aria-label="Teams without runs">
-          <h2 className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-            Teams without a run yet
-          </h2>
-          <div className="mt-2 divide-y divide-border/60 overflow-hidden rounded-xl border border-border/80 bg-card/65">
-            {teamsWithoutRuns.map((team) => (
-              <div key={team.id} className="flex min-w-0 items-center gap-3 px-4 py-3">
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-semibold text-foreground">{team.name}</span>
-                  <span className="mt-0.5 block truncate text-xs text-muted-foreground">{team.description || "No description"}</span>
-                </span>
-                <button
-                  type="button"
-                  disabled={!actionsEnabled}
-                  title={actionsEnabled ? "Create the first run of this team" : "Connect a live source to enable actions"}
-                  onClick={() => setRunDialogTeam(team)}
-                  className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-background px-2 py-1 font-medium text-foreground transition-colors hover:border-primary/30 hover:bg-primary/[0.035] disabled:cursor-default disabled:text-muted-foreground"
-                >
-                  <Plus className="size-3" /> New run
-                </button>
-              </div>
-            ))}
           </div>
         </section>
       )}
@@ -341,13 +302,13 @@ function TeamDialog({
     }
   }, [open]);
 
-  const valid = Boolean(name.trim() && description.trim() && missionId.trim() && nodeId.trim() && leadAgentId);
+  const valid = Boolean(name.trim() && description.trim() && nodeId.trim() && leadAgentId);
   const submit = () => {
     if (!valid) return;
     const descriptor = createTeam({
       name: name.trim(),
       description: description.trim(),
-      missionId: missionId.trim(),
+      legacyMissionId: missionId.trim() || undefined,
       nodeId: nodeId.trim(),
       hostAgentId: leadAgentId,
       memberIds,
@@ -360,7 +321,7 @@ function TeamDialog({
     <Dialog
       open={open}
       title="New Agent Team"
-      description="Create the one flat AgentTeam for a Mission on one Node. Runs are created from it separately."
+      description="Create one durable flat AgentTeam on one Node. Runtime attempts are created from it separately."
       onClose={onClose}
     >
       <form
@@ -376,7 +337,7 @@ function TeamDialog({
         <Field label="Description" required hint="Purpose of the team, shown on its cards and runs.">
           {(id) => <TextArea id={id} value={description} onChange={(event) => setDescription(event.target.value)} />}
         </Field>
-        <Field label="Mission ID" required hint="One Team equals one Mission; this relation is immutable.">
+        <Field label="Legacy Mission ID" hint="Optional read-only migration provenance for a pre-vNext Mission-owned Team. New Teams never require it.">
           {(id) => <TextInput id={id} value={missionId} onChange={(event) => setMissionId(event.target.value)} />}
         </Field>
         <Field label="Node ID" required hint="Stable UUID of the machine that owns every Member in this Team.">
@@ -463,8 +424,13 @@ function RunDialog({
   onClose: () => void;
 }) {
   const durableMembers = model.snapshot.members ?? [];
-  const resolvedMembers = (team.member_ids ?? [])
-    .map((id) => durableMembers.find((member) => member.id === id))
+  // The roster derives from active TeamMembership records (roster authority),
+  // resolving each to its durable Agent Member launch profile.
+  const activeMemberships = (model.snapshot.team_memberships ?? []).filter(
+    (membership) => membership.team_id === team.id && membership.state === "active" && membership.role !== "observer",
+  );
+  const resolvedMembers = activeMemberships
+    .map((membership) => durableMembers.find((member) => member.id === (membership.agent_member_id ?? membership.agent_identity_id)))
     .filter((member): member is ProviderLaunchProfile => Boolean(member));
   // Runs that already existed when the dialog opened; anything newer with this
   // team id is the run this dialog created.
@@ -560,7 +526,7 @@ function RunDialog({
             {() =>
               resolvedMembers.length === 0 ? (
                 <p className="text-[11px] text-muted-foreground">
-                  This team definition has no durable members; the run starts empty and members can be added from its War Room.
+                  This team definition has no durable members; the run starts empty and members can be added from its Team Workspace.
                 </p>
               ) : (
                 <div className="space-y-1.5 rounded-md border border-border bg-background/60 p-2">
@@ -622,9 +588,9 @@ function RunDialog({
           <p className="rounded-md border border-border bg-muted/35 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
             {createdRun
               ? phase === "started"
-                ? "Start dispatched. The run executes in the background; watch it from its War Room."
-                : "Run created — it is not running yet. Start it now or open its War Room."
-              : "Run created — waiting for the refreshed snapshot to show it. If it does not appear, open the team's latest War Room and start it there."}
+                ? "Start dispatched. The run executes in the background; watch it from its Team Workspace."
+                : "Run created — it is not running yet. Start it now or open its Team Workspace."
+              : "Run created — waiting for the refreshed snapshot to show it. If it does not appear, open the Team's workspace and start it there."}
           </p>
           <div className="flex flex-wrap justify-end gap-2">
             <Button variant="secondary" size="sm" type="button" onClick={onClose}>Close</Button>
@@ -634,11 +600,11 @@ function RunDialog({
                 size="sm"
                 type="button"
                 onClick={() => {
-                  onSelectionChange({ surface: "team", teamId: createdRun.id, memberRunId: undefined });
+                  onSelectionChange({ surface: "team", teamId: team.id, memberRunId: undefined });
                   onClose();
                 }}
               >
-                Open War Room
+                Open Team Workspace
               </Button>
             )}
             {phase === "created" && (
@@ -697,10 +663,6 @@ function timestamp(value?: string | null): number {
   return Date.parse(value) || 0;
 }
 
-function teamLeadLabel(leadAgentId?: string | null): string {
-  if (!leadAgentId || leadAgentId === "host") return "Current Host Agent";
-  return leadAgentId;
-}
 
 function formatRelative(value?: string | null): string {
   const time = timestamp(value);

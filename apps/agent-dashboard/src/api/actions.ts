@@ -94,7 +94,8 @@ export function operatorMessage(params: {
 export function createTeam(params: {
   name: string;
   description: string;
-  missionId: string;
+  /** Optional migration provenance for a pre-vNext Mission-owned Team. */
+  legacyMissionId?: string;
   hostAgentId: string;
   nodeId: string;
   memberIds?: string[];
@@ -102,10 +103,12 @@ export function createTeam(params: {
   const body: Record<string, unknown> = {
     name: params.name,
     description: params.description,
-    mission_id: params.missionId,
     host_agent_id: params.hostAgentId,
     node_id: params.nodeId,
   };
+  if (params.legacyMissionId) {
+    body.legacy_mission_id = params.legacyMissionId;
+  }
   if (params.memberIds && params.memberIds.length) {
     body.member = params.memberIds;
   }
