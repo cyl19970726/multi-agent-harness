@@ -600,7 +600,7 @@ function RunDialog({
                 size="sm"
                 type="button"
                 onClick={() => {
-                  onSelectionChange({ surface: "team", teamId: createdRun.id, memberRunId: undefined });
+                  onSelectionChange({ surface: "team", teamId: team.id, memberRunId: undefined });
                   onClose();
                 }}
               >

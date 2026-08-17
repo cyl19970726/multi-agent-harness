@@ -33,7 +33,9 @@ function buildAssigneeGroups(works: WorkSummary[], membersById: Map<string, Memb
   const byMember = new Map<string, WorkSummary[]>();
   for (const work of works) {
     const kind = work.assignee_kind;
-    const memberKey = work.assignee_membership_id ?? work.owner_actor_ref?.id ?? null;
+    // Key member groups by the durable AgentMember id so labels resolve
+    // through membersById and the owner filter matches the same identity.
+    const memberKey = work.assignee_ref?.agent_member_id ?? work.assignee_membership_id ?? work.owner_actor_ref?.id ?? null;
     if (kind === "host") {
       host.push(work);
     } else if (kind === "member" || (kind == null && memberKey)) {
@@ -90,6 +92,7 @@ export function TeamWorksBoard({ works, members, selectedWorkId, onSelectWork, o
   const focusReturnWorkId = useRef<string>();
   const selected = works.find((work) => work.work_id === selectedWorkId);
   const membersById = useMemo(() => new Map(members.map((member) => [member.agent_member_ref.id, member])), [members]);
+  const ownerIdentity = (work: WorkSummary) => work.assignee_ref?.agent_member_id ?? work.assignee_membership_id ?? work.owner_actor_ref?.id ?? null;
   const conditions = useMemo(() => Array.from(new Set(works.map((work) => work.condition?.trim()).filter((value): value is string => Boolean(value)))), [works]);
   const priorities = useMemo(() => Array.from(new Set(works.map((work) => work.priority?.trim()).filter((value): value is string => Boolean(value)))), [works]);
   const visible = works.filter((work) => {
@@ -160,7 +163,6 @@ export function TeamWorksBoard({ works, members, selectedWorkId, onSelectWork, o
   },[compactSheet,filtersOpen]);
 
   const assigneeGroups = useMemo(() => buildAssigneeGroups(visible, membersById), [visible, membersById]);
-  const ownerIdentity = (work: WorkSummary) => work.assignee_membership_id ?? work.owner_actor_ref?.id ?? null;
   const updateFilters = (next:Partial<{owner:OwnerFilter;attention:AttentionFilter;query:string}>) => {
     const filters={owner:next.owner ?? owner,attention:next.attention ?? attention,query:next.query ?? query};
     if(onFiltersChange)onFiltersChange(filters);else {setLocalOwner(filters.owner);setLocalAttention(filters.attention);setLocalQuery(filters.query);}

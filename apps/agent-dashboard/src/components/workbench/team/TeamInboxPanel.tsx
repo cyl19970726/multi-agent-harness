@@ -34,7 +34,7 @@ function InboxRow({ item, teamId, onOpenWork }: { item: TeamInboxItem; teamId: s
         </span>
       </div>
       <p className="mt-1.5 line-clamp-2 break-words text-[12px] leading-[1.45] text-foreground">
-        {message?.body?.trim() || "（无正文摘要）"}
+        {message?.body?.trim() || "No body summary."}
       </p>
       <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
         <span>author · {message?.sender_actor_ref?.display_name ?? message?.sender_actor_ref?.id ?? "unknown"}</span>

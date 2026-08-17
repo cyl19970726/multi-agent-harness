@@ -254,7 +254,7 @@ export type MissionStatus =
   | "completed"
   | "cancelled";
 
-/** Durable intent container. Its AgentTeam is resolved by Team.mission_id. */
+/** Durable intent container. Its AgentTeam relation survives only as optional legacy provenance. */
 export interface Mission {
   id: string;
   title: string;
@@ -862,7 +862,7 @@ export interface Work {
   version: number;
   created_at: string;
   updated_at: string;
-  /** Optional deadline (§4.1). Rendered in the Company Work view when present. */
+  /** Optional deadline (§4.1). Rendered in the Global Work view when present. */
   due_at?: string | null;
 }
 
