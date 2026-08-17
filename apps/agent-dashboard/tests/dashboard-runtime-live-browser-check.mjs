@@ -612,7 +612,7 @@ try {
   const operatorPage = await operatorContext.newPage();
   await operatorPage.addInitScript(({capabilityToken})=>{window.__AGENTFIRM_BOOTSTRAP__={capabilityToken}}, {capabilityToken:operatorAgentFirmToken});
   await operatorPage.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"operator",node:liveNode.id})}`, {waitUntil:"domcontentloaded"});
-  await operatorPage.getByRole("heading", {name:"Operator View"}).waitFor();
+  await operatorPage.getByRole("heading", {name:"Nodes"}).waitFor();
   await waitForText(operatorPage, "daemon_lease");
   check(await operatorPage.getByRole("button", {name:"diagnose",exact:true}).count()===1,
     "real Operator RoleView is populated with server-derived diagnostics/actions");
