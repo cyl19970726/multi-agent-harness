@@ -24,7 +24,7 @@ The suite currently expands to:
 | --- | --- | --- |
 | [`company-business-project-bootstrap`](../../../skills/company-business-project-bootstrap/SKILL.md) | High-level commercial-project bootstrap across Docs IA/page contracts, Work, Org, Finance, external software/social sources, and custom pages | procedural orchestration skill |
 | [`company-docs-operator`](../../../skills/company-docs-operator/SKILL.md) | Docs: Document, Block, page contract, TypedRecord, Relation, View, BusinessModule, custom page metadata | dedicated `firm company docs ...` CLI implemented |
-| [`company-work-operator`](../../../skills/company-work-operator/SKILL.md) | Unified Work: read-only Company aggregate, native TeamWork lifecycle, reports, gates, decisions, and Milestone refs | `firm company work list/query/milestone` for Company views; `firm team-run work ...` for all mutations |
+| [`company-work-operator`](../../../skills/company-work-operator/SKILL.md) | Unified Work: read-only Global aggregate, native TeamWork lifecycle, reports, gates, decisions, and Milestone refs | `firm work list` for the Global view; `firm company work milestone ...` for Milestones; `firm team-run work ...` for all mutations |
 | [`company-org-operator`](../../../skills/company-org-operator/SKILL.md) | Organization: Human, Agent Membership, OrgUnit, role, permission, lifecycle and actor refs for Docs page context | dedicated flat `firm company org ...` plus nested `actor/unit/membership ...` baseline CLI implemented; proposal/promotion/grant-revoke workflows remain planned |
 | [`company-module-designer`](../../../skills/company-module-designer/SKILL.md) | Business module design, page contracts, frontend surface intent, and governance proposal | procedural design skill |
 | [`company-page-builder`](../../../skills/company-page-builder/SKILL.md) | Code-declared custom page design/implementation from approved page contracts, visual expected images, and actual verification | procedural page-building skill |
@@ -98,7 +98,7 @@ firm company migrate-from-project --from-project <project-id|path> --id <company
 firm company migrate-from-project --from-project <project-id|path> --id <company-id> --verify-only
 harness --company <company-id> company migrations
 harness --company <company-id> company docs query --document <doc-id>
-HARNESS_COMPANY=<company-id> firm company work list
+HARNESS_COMPANY=<company-id> firm work list
 ```
 
 If no Company is selected, current commands still fall back to the
@@ -324,7 +324,7 @@ artifact_refs / check_refs
 
 ### Completion rule
 
-The skill is complete only when `firm company work query` can rediscover the
+The skill is complete only when `firm work list` can rediscover the
 same native Work id/revision and the authoritative `firm team-run work show`
 record explains its lifecycle, report, evidence, gates, and decision. A
 document paragraph, chat message, fixture, or visual page alone is not a

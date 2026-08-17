@@ -5,7 +5,7 @@ the canonical Execution Space Store; they are not new ledgers or lifecycles.
 
 | Responsibility | Endpoint |
 | --- | --- |
-| Company aggregate | `GET /v1/views/company-work` |
+| Global aggregate | `GET /v1/views/global-work` |
 | Team shared workspace | `GET /v1/views/team-workspace/{team_id}` |
 | Host coordination | `GET /v1/views/host-console/{team_id}` |
 | Member execution | `GET /v1/views/member-workbench/{member_run_id}` |

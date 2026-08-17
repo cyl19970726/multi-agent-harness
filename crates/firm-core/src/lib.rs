@@ -4967,13 +4967,23 @@ pub struct GitHubLink {
 pub struct Work {
     pub id: String,
     pub team_run_id: String,
-    /// Durable AgentTeam scope (ADR 0052). `None` reads as a compatibility
-    /// TeamRun-scoped Work written before the Team-scope promotion slice.
+    /// Durable accountable AgentTeam (DOC-106). Required for every current
+    /// write; `alias = "team_id"` reads pre-cutover rows under the same value.
+    /// Rows with neither field are legacy TeamRun-scoped compatibility rows:
+    /// they stay readable for evidence, but no current mutation is accepted
+    /// until `migrate_work_responsibility` binds them to one durable Team.
     /// When set, `team_run_id` names only the current execution attempt: the
     /// Work's responsibility survives that TeamRun's completion and a later
-    /// execution attempt rebinds `team_run_id` without changing `team_id`.
+    /// execution attempt rebinds `team_run_id` without changing
+    /// `accountable_team_id`.
+    #[serde(default, alias = "team_id")]
+    pub accountable_team_id: Option<String>,
+    /// Durable assignee: exactly one TeamMembership of the accountable Team,
+    /// never a MemberRun (DOC-106). Assignment does not require a running
+    /// provider process; an Inactive membership or Detached runtime retains
+    /// responsibility while receiving no new automatic execution authority.
     #[serde(default)]
-    pub team_id: Option<String>,
+    pub assignee_membership_id: Option<String>,
     /// Same-TeamRun hierarchy only. Cross-Team delegation uses
     /// [`WorkDelegation`].
     #[serde(default)]
@@ -4985,8 +4995,10 @@ pub struct Work {
     pub condition: WorkCondition,
     #[serde(default)]
     pub resolution: Option<WorkResolution>,
-    /// Stable ProviderLaunchProfile/slot identity. Runtime generations bind through
-    /// `active_member_run_id`.
+    /// Stable AgentMember identity of the assignee. This is a derived mirror
+    /// of `assignee_membership_id`'s `agent_member_id` kept for provenance and
+    /// display; the membership id is the assignee authority (DOC-106).
+    /// Runtime generations bind through `active_member_run_id`.
     #[serde(default)]
     pub owner_member_id: Option<String>,
     #[serde(default)]
@@ -5074,20 +5086,21 @@ impl Work {
         self.is_claim_ready(works)
     }
 
-    /// Whether this Work carries a durable AgentTeam scope (ADR 0052) rather
-    /// than only a compatibility TeamRun scope.
+    /// Whether this Work carries a durable accountable AgentTeam (DOC-106)
+    /// rather than only a compatibility TeamRun scope.
     pub fn is_team_scoped(&self) -> bool {
-        self.team_id.is_some()
+        self.accountable_team_id.is_some()
     }
 
-    /// Assigned/unassigned is a derived view over `owner_member_id`, never a
-    /// stored lifecycle of its own (ADR 0050/0051).
+    /// Assigned/unassigned is a derived view over the assignee responsibility
+    /// fields (`assignee_membership_id`, mirrored by `owner_member_id`), never
+    /// a stored lifecycle of its own and never a runtime fact (DOC-106).
     pub fn is_assigned(&self) -> bool {
-        self.owner_member_id.is_some()
+        self.assignee_membership_id.is_some() || self.owner_member_id.is_some()
     }
 
     pub fn is_unassigned(&self) -> bool {
-        self.owner_member_id.is_none()
+        !self.is_assigned()
     }
 }
 
@@ -5095,6 +5108,14 @@ impl Validate for Work {
     fn validate(&self) -> Result<(), ValidationError> {
         require_non_empty(&self.id, "Work.id")?;
         require_non_empty(&self.team_run_id, "Work.team_run_id")?;
+        // DOC-106: the accountable Team is required authority on every current
+        // Work write. Legacy TeamRun-scoped rows stay readable through serde
+        // but cannot take new mutations until responsibility migration binds
+        // them to one durable Team.
+        require_non_empty(
+            self.accountable_team_id.as_deref().unwrap_or_default(),
+            "Work.accountable_team_id",
+        )?;
         require_non_empty(&self.title, "Work.title")?;
         require_non_empty(
             &self.completion_criteria_markdown,
@@ -5106,8 +5127,11 @@ impl Validate for Work {
         require_non_empty(&self.updated_at, "Work.updated_at")?;
 
         for (value, field) in [
-            (self.team_id.as_deref(), "Work.team_id"),
             (self.parent_work_id.as_deref(), "Work.parent_work_id"),
+            (
+                self.assignee_membership_id.as_deref(),
+                "Work.assignee_membership_id",
+            ),
             (self.owner_member_id.as_deref(), "Work.owner_member_id"),
             (
                 self.active_member_run_id.as_deref(),
@@ -5300,6 +5324,47 @@ pub struct WorkOperation {
     /// state and its cross-Team responsibility projection.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delegation_revisions: Vec<WorkDelegationRevision>,
+}
+
+/// Resolution outcome for one migrated responsibility field (DOC-106). The
+/// migration never guesses: an ambiguous or missing target is reported and
+/// the Work keeps its prior field state for manual reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum WorkResponsibilityResolution {
+    /// The field already carried the canonical value; no write was needed.
+    AlreadyCanonical,
+    /// The field resolved to exactly one durable target and was written.
+    Resolved { value: String },
+    /// The Work has no assignee; nothing to resolve.
+    Unassigned,
+    /// Resolution was ambiguous or impossible; nothing was written for this
+    /// field and the reason is recorded for operator reconciliation.
+    Unresolved { reason: String },
+}
+
+/// Per-Work outcome of one responsibility migration pass.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkResponsibilityMigrationEntry {
+    pub work_id: String,
+    pub from_version: u64,
+    /// Present only when a migration WorkOperation was appended.
+    #[serde(default)]
+    pub to_version: Option<u64>,
+    pub accountable_team: WorkResponsibilityResolution,
+    pub assignee: WorkResponsibilityResolution,
+}
+
+/// Append-only migration report. Work IDs, versions, Operation/Event history,
+/// provenance, reports, evidence, gates and decisions are preserved; the only
+/// writes are new `Updated` WorkOperations carrying the resolved
+/// `accountable_team_id`/`assignee_membership_id` fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkResponsibilityMigrationReport {
+    pub execution_space_id: String,
+    pub migrated_work_ids: Vec<String>,
+    pub entries: Vec<WorkResponsibilityMigrationEntry>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -7399,7 +7464,8 @@ fn work_prerequisite_satisfaction_is_distinct_from_claim_readiness() {
         Work {
             id: id.into(),
             team_run_id: "team-1".into(),
-            team_id: None,
+            accountable_team_id: None,
+            assignee_membership_id: None,
             created_by_member_id: None,
             parent_work_id: None,
             title: id.into(),

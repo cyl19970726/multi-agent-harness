@@ -2005,6 +2005,7 @@ fn run() -> CliResult<()> {
         "member-trust" => member_trust_command(&store, &resolved, &args[1..])?,
         "provider" => provider_command(&store, &resolved, &args[1..])?,
         "company" => company_command(&store, &args[1..])?,
+        "work" => global_work_command(&args[1..])?,
         "dashboard" => dashboard_command(&store, &resolved, &args[1..])?,
         "workflow" => workflow_command(&store, resolved.context.as_ref(), &args[1..])?,
         "hook" => hook_command(&store, &args[1..])?,
@@ -3553,67 +3554,82 @@ fn company_finance_transition_payment_command(
 }
 
 fn company_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company work list|query|milestone")?;
+    require_subcommand(args, "company work milestone")?;
     match args[0].as_str() {
-        "list" => company_work_list_command(store, &args[1..]),
-        "query" => company_work_query_command(store, &args[1..]),
+        "list" | "query" => Err(CliError::Usage(
+            "`harness company work list|query` was replaced by the Global Work view (DOC-106): use `harness work list` (CLI) or GET /v1/views/global-work (API). The one Work/WorkOperation authority is unchanged; no Company ledger exists."
+                .into(),
+        )),
         "milestone" => company_work_milestone_command(store, &args[1..]),
         other => Err(CliError::Usage(format!(
-            "unknown company work command: {other}; Company Work is read-only; use team-run work for mutations"
+            "unknown company work command: {other}; Company Work Milestones remain; Global Work reads moved to `harness work list`"
         ))),
     }
 }
 
-fn company_work_list_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let body = company_work_query_body(args);
-    let projection = company_work_projection_value(store, &body)?;
-    print_json(&serde_json::json!({
-        "ok": true,
-        "result": projection,
-        "command": "harness company work list",
-        "boundaries": company_work_read_boundaries()
-    }))
-}
-
-fn company_work_query_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let work_id = required(args, "--work")?;
-    let projection = company_work_projection_value(store, &serde_json::json!({}))?;
-    let conflicts = projection["conflicts"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    if let Some(conflict) = conflicts.iter().find(|conflict| {
-        conflict.get("work_id").and_then(serde_json::Value::as_str) == Some(work_id.as_str())
-    }) {
-        return Err(CliError::Usage(format!(
-            "Work {work_id} is ambiguous across Execution Spaces: {}",
-            serde_json::to_string(conflict)?
-        )));
+/// Global Work CLI (DOC-106): the same one read projection served at
+/// `/v1/views/global-work`, computed in process over every local Execution
+/// Space store. Read-only; there is no aggregate writer and no Company ledger.
+fn global_work_command(args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "work list")?;
+    match args[0].as_str() {
+        "list" => {
+            let execution_spaces = execution_space::firm_home()
+                .ok()
+                .and_then(|firm_home| execution_space::list_spaces(&firm_home).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|space| (space.id, HarnessStore::new(space.store_root)))
+                .collect::<Vec<_>>();
+            let mut target = "/v1/views/global-work".to_string();
+            let mut params = Vec::new();
+            for (flag, key) in [
+                ("--team-id", "team_id"),
+                ("--mission-id", "mission_id"),
+                ("--node-id", "node_id"),
+                ("--host-id", "host_id"),
+                ("--member-id", "member_id"),
+                ("--assignee-membership-id", "assignee_membership_id"),
+                ("--assignee-kind", "assignee_kind"),
+                ("--phase", "phase"),
+                ("--condition", "condition"),
+                ("--resolution", "resolution"),
+                ("--priority", "priority"),
+                ("--module-id", "module_id"),
+            ] {
+                for selected in many(args, flag) {
+                    params.push(format!("{key}={selected}"));
+                }
+            }
+            if let Some(limit) = value(args, "--limit") {
+                params.push(format!("limit={limit}"));
+            }
+            if let Some(cursor) = value(args, "--cursor") {
+                params.push(format!("cursor={cursor}"));
+            }
+            if !params.is_empty() {
+                target.push('?');
+                target.push_str(&params.join("&"));
+            }
+            let view = role_views_api::global_work_view_json(&execution_spaces, &target)
+                .map_err(CliError::Usage)?;
+            print_json(&serde_json::json!({
+                "ok": true,
+                "result": view,
+                "command": "harness work list",
+                "boundaries": {
+                    "authority": "Work/WorkOperation kernel",
+                    "global_work_kind": "cross_execution_space_read_projection",
+                    "global_work_creates_second_object": false,
+                    "replaces": "company work list|query and /v1/views/company-work",
+                    "mutation_route": "team-run work assign --membership-id (CAS) and team-run work commands",
+                }
+            }))
+        }
+        other => Err(CliError::Usage(format!(
+            "unknown work command: {other}; usage: harness work list [--team-id|--assignee-membership-id|--assignee-kind|--member-id|--phase|--condition|--resolution|--priority|--module-id|--limit|--cursor]"
+        ))),
     }
-    let work = projection["works"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|candidate| {
-            candidate.get("id").and_then(serde_json::Value::as_str) == Some(work_id.as_str())
-        })
-        .cloned()
-        .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
-    let milestones = store
-        .latest_milestones()?
-        .into_iter()
-        .filter(|milestone| milestone.work_refs.contains(&work_id))
-        .collect::<Vec<_>>();
-    print_json(&serde_json::json!({
-        "ok": true,
-        "result": {
-            "work": work,
-            "route": projection["routes"].get(&work_id),
-            "milestones": milestones,
-            "boundaries": company_work_read_boundaries()
-        },
-        "command": "harness company work query"
-    }))
 }
 
 fn company_work_milestone_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -6593,66 +6609,6 @@ fn company_actor_refs_json(ids: &[String], kind: &str) -> CliResult<Vec<serde_js
     ids.iter()
         .map(|id| company_actor_ref_json(kind, id))
         .collect()
-}
-
-fn company_work_query_body(args: &[String]) -> serde_json::Value {
-    serde_json::json!({
-        "team_ids": many(args, "--team-id"),
-        "team_run_ids": many(args, "--team-run-id"),
-        "phases": many(args, "--phase"),
-        "conditions": many(args, "--condition"),
-        "resolutions": many(args, "--resolution"),
-        "owner_member_ids": many(args, "--owner-member-id"),
-    })
-}
-
-fn company_work_projection_value(
-    store: &HarnessStore,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    let execution_spaces = execution_space::firm_home()
-        .ok()
-        .and_then(|firm_home| execution_space::list_spaces(&firm_home).ok())
-        .unwrap_or_default()
-        .into_iter()
-        .map(|space| (space.id, HarnessStore::new(space.store_root)))
-        .collect::<Vec<_>>();
-    let selected_execution_store = execution_spaces.first().map(|(_, store)| store);
-    let response = company_os_api::handle_post_with_execution(
-        store,
-        selected_execution_store,
-        (!execution_spaces.is_empty()).then_some(execution_spaces.as_slice()),
-        "/v1/company-os/work-query",
-        body,
-        None,
-    )
-    .ok_or_else(|| CliError::Usage("Company OS work query is unavailable".into()))?;
-    if response.body.get("ok").and_then(|value| value.as_bool()) != Some(true) {
-        let detail = response
-            .body
-            .get("detail")
-            .and_then(|value| value.as_str())
-            .unwrap_or("Company OS work query failed");
-        return Err(CliError::Usage(detail.to_string()));
-    }
-    Ok(response.body["result"].clone())
-}
-
-fn company_work_read_boundaries() -> serde_json::Value {
-    serde_json::json!({
-        "authority": "TeamWork",
-        "company_work_kind": "cross_execution_space_read_projection",
-        "company_work_creates_second_object": false,
-        "milestones_reference_work_ids": true,
-        "docs_side_effects": false,
-        "finance_side_effects": false,
-        "organization_side_effects": false,
-        "execution_side_effects": false,
-        "project_object": false,
-        "task_graph": false,
-        "goal_phase": false,
-        "mutation_route": "team-run work"
-    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -13144,7 +13100,8 @@ fn create_team_run(
                 Work {
                     id: generated_id("work"),
                     team_run_id: run_id.clone(),
-                    team_id: None,
+                    accountable_team_id: None,
+                    assignee_membership_id: None,
                     created_by_member_id: None,
                     parent_work_id: None,
                     title: format!("{}: {}", member_run.name, member_run.role),
@@ -13268,7 +13225,8 @@ fn add_team_run_member(
                 Work {
                     id: generated_id("work"),
                     team_run_id: team_run_id.to_string(),
-                    team_id: None,
+                    accountable_team_id: None,
+                    assignee_membership_id: None,
                     created_by_member_id: None,
                     parent_work_id: None,
                     title: format!("{}: {}", member_run.name, member_run.role),
@@ -15983,10 +15941,14 @@ fn github_poll_host_context(run_id: &str, work_id: &str) -> WorkCommandContext {
     }
 }
 
-fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+fn team_run_work_command(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    args: &[String],
+) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|delegate|delegation|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|reconcile-delivery|poll-github-ci",
+        "team-run work list|show|create|delegate|delegation|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|reconcile-delivery|migrate-responsibility|poll-github-ci",
     )?;
     if matches!(args[0].as_str(), "delegate" | "delegation") {
         return Err(CliError::Usage(
@@ -16054,7 +16016,7 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                         .is_some_and(|run_id| work.team_run_id == run_id)
                         || team_id
                             .as_deref()
-                            .is_some_and(|id| work.team_id.as_deref() == Some(id))
+                            .is_some_and(|id| work.accountable_team_id.as_deref() == Some(id))
                 })
                 .filter(|work| phase.is_none_or(|phase| work.phase == phase))
                 .filter(|work| condition.is_none_or(|condition| work.condition == condition))
@@ -16201,7 +16163,8 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             let target_work = Work {
                 id: target_work_id.clone(),
                 team_run_id: target_run.id.clone(),
-                team_id: Some(target_team_id.clone()),
+                accountable_team_id: Some(target_team_id.clone()),
+                assignee_membership_id: None,
                 parent_work_id: None,
                 title: required(args, "--target-title")?,
                 context_markdown: required(args, "--target-context")?,
@@ -16361,7 +16324,8 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             let work = Work {
                 id: value(args, "--work-id").unwrap_or_else(|| generated_id("work")),
                 team_run_id,
-                team_id: None,
+                accountable_team_id: None,
+                assignee_membership_id: None,
                 created_by_member_id: None,
                 parent_work_id: value(args, "--parent-work-id"),
                 title: required(args, "--title")?,
@@ -16392,22 +16356,74 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             print_json(&store.insert_work(work, context)?)
         }
         "assign" => {
-            let member_run_id = required(args, "--member-run-id")?;
-            let work = store.assign_work(
-                &required(args, "--work-id")?,
-                required_work_version(args)?,
-                &member_run_id,
-                host_work_context(args),
-            )?;
-            append_work_event(
-                store,
-                &work,
-                TeamRunEventSourceKind::Host,
-                Some(member_run_id.clone()),
-                "assigned",
-                &format!("Work assigned to {member_run_id}"),
-            )?;
-            print_json(&work)
+            let membership_id = value(args, "--membership-id");
+            let member_run_id = value(args, "--member-run-id");
+            if membership_id.is_some() == member_run_id.is_some() {
+                return Err(CliError::Usage(
+                    "team-run work assign requires exactly one of --membership-id (canonical TeamMembership responsibility, DOC-106) or --member-run-id (legacy runtime-bound assignment)"
+                        .to_string(),
+                ));
+            }
+            if let Some(membership_id) = membership_id {
+                let space_id = resolved
+                    .execution_space_context
+                    .as_ref()
+                    .map(|space| space.id.clone())
+                    .ok_or_else(|| {
+                        CliError::Usage(
+                            "membership assignment requires an explicitly selected --space"
+                                .to_string(),
+                        )
+                    })?;
+                let work = store.assign_work_to_membership(
+                    &required(args, "--work-id")?,
+                    required_work_version(args)?,
+                    &membership_id,
+                    &space_id,
+                    host_work_context(args),
+                )?;
+                append_work_event(
+                    store,
+                    &work,
+                    TeamRunEventSourceKind::Host,
+                    None,
+                    "assigned",
+                    &format!("Work assigned to TeamMembership {membership_id}"),
+                )?;
+                print_json(&work)
+            } else {
+                let member_run_id = member_run_id.unwrap_or_default();
+                let work = store.assign_work(
+                    &required(args, "--work-id")?,
+                    required_work_version(args)?,
+                    &member_run_id,
+                    host_work_context(args),
+                )?;
+                append_work_event(
+                    store,
+                    &work,
+                    TeamRunEventSourceKind::Host,
+                    Some(member_run_id.clone()),
+                    "assigned",
+                    &format!("Work assigned to {member_run_id}"),
+                )?;
+                print_json(&work)
+            }
+        }
+        "migrate-responsibility" => {
+            let space_id = resolved
+                .execution_space_context
+                .as_ref()
+                .map(|space| space.id.clone())
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "responsibility migration requires an explicitly selected --space"
+                            .to_string(),
+                    )
+                })?;
+            let report =
+                store.migrate_work_responsibility(&space_id, host_work_context(args))?;
+            print_json(&report)
         }
         "claim" => {
             let team_run_id = required(args, "--team-run-id")?;
@@ -17353,7 +17369,7 @@ fn team_run_command(
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
-        "work" => team_run_work_command(store, &args[1..])?,
+        "work" => team_run_work_command(store, resolved, &args[1..])?,
         "dispatch-host" => {
             let result = dispatch_headless_host_once(store, resolved, &args[1..])?;
             print_json(&result)?;
@@ -33043,7 +33059,8 @@ fn create_team_work_value(
     let work = Work {
         id: json_string(body, "id").unwrap_or_else(|| generated_id("work")),
         team_run_id: team_run_id.to_string(),
-        team_id: None,
+        accountable_team_id: None,
+        assignee_membership_id: None,
         created_by_member_id: None,
         parent_work_id: optional_json_string(body, "parent_work_id")?,
         title: required_json_string(body, "title")?,
@@ -33126,7 +33143,8 @@ pub(crate) fn create_work_delegation_value(
     let target_work = Work {
         id: target_work_id.clone(),
         team_run_id: target_run.id.clone(),
-        team_id: Some(target_team_id.clone()),
+        accountable_team_id: Some(target_team_id.clone()),
+        assignee_membership_id: None,
         parent_work_id: None,
         title: required_json_string(body, "target_title")?,
         context_markdown: json_string(body, "target_context_markdown").unwrap_or_default(),
@@ -42135,7 +42153,9 @@ const CHEATSHEET_WORK: &str = r#"work create --team-run-id <id> --title <text> -
 work list --team-run-id <id> [--brief] [--since <cursor>]
   [--status <status>] [--member-run-id <id>]
 work show --work-id <id>
-work assign --work-id <id> --expected-version <n> --member-run-id <id> [--idempotency-key <key>]
+work assign --work-id <id> --expected-version <n> --membership-id <id> [--idempotency-key <key>]
+  (canonical TeamMembership responsibility; --member-run-id <id> remains the legacy runtime binding)
+work migrate-responsibility  (append-only DOC-106 cutover of legacy TeamRun-scoped Work)
 work accept --work-id <id> --expected-version <n> [--idempotency-key <key>]
 work request-changes --work-id <id> --expected-version <n> --reason <text> [--idempotency-key <key>]
 work poll-github-ci --team-run-id <id>
@@ -42170,7 +42190,8 @@ work create --team-run-id <id> --title <text> --completion-criteria <text>
   [--github-issue owner/repo#N]
 work list --team-run-id <id> [--brief] [--since <cursor>]
 work show --work-id <id>
-work assign --work-id <id> --expected-version <n> --member-run-id <id>
+work assign --work-id <id> --expected-version <n> --membership-id <id>
+  (canonical TeamMembership responsibility; --member-run-id <id> remains the legacy runtime binding)
 work submit --team-run-id <id> --member-run-id <id> --work-id <id>
   --expected-version <n> --result <text> [--github-pr owner/repo#N]
 work accept --work-id <id> --expected-version <n>
@@ -51006,7 +51027,8 @@ package:com.tencent.mm
                 Work {
                     id: "canonical-supervisor-work".into(),
                     team_run_id: created.team_run.id.clone(),
-                    team_id: Some(created.team_run.agent_team_id.clone()),
+                    accountable_team_id: Some(created.team_run.agent_team_id.clone()),
+                    assignee_membership_id: None,
                     created_by_member_id: None,
                     parent_work_id: None,
                     title: "Deliver canonical Work".into(),
@@ -55015,7 +55037,8 @@ package:com.tencent.mm
                 Work {
                     id: generated_id("work-attn"),
                     team_run_id: bound.id.clone(),
-                    team_id: None,
+                    accountable_team_id: None,
+                    assignee_membership_id: None,
                     created_by_member_id: None,
                     parent_work_id: None,
                     title: "Test attention flow".into(),

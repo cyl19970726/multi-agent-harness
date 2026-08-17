@@ -1,6 +1,8 @@
 {
   "id": "work-1",
   "team_run_id": "team-run-1",
+  "accountable_team_id": "team-1",
+  "assignee_membership_id": null,
   "title": "Build Works",
   "context_markdown": "Implement the core.",
   "completion_criteria_markdown": "Tests pass.",

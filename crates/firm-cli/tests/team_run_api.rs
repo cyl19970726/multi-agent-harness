@@ -426,7 +426,7 @@ fn canonical_submit_work_fixture(
         .find(|work| work.id == work_id)
         .expect("canonical submit Work");
     let team_id = work
-        .team_id
+        .accountable_team_id
         .clone()
         .unwrap_or_else(|| FIXTURE_TEAM_ID.to_string());
     let agent_member_id = work
@@ -520,7 +520,7 @@ fn team_run_json(home: &TempHome, project_id: &str, args: &[&str]) -> serde_json
             .find(|work| work.id == work_id)
             .expect("canonical accept Work");
         let team_id = work
-            .team_id
+            .accountable_team_id
             .clone()
             .unwrap_or_else(|| FIXTURE_TEAM_ID.to_string());
         let report_id = format!("report-{work_id}-v{expected_version}");
@@ -4510,9 +4510,9 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
         ],
     );
     let original_version = work["version"].as_u64().expect("Work version");
-    let original_team_id = work["team_id"]
+    let original_team_id = work["accountable_team_id"]
         .as_str()
-        .expect("durable Work team_id")
+        .expect("durable accountable Work Team")
         .to_string();
     let original_creator = work["created_by_member_id"]
         .as_str()
@@ -4584,7 +4584,7 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
         Some(member_id.as_str())
     );
     assert_eq!(
-        rebound_work.team_id.as_deref(),
+        rebound_work.accountable_team_id.as_deref(),
         Some(original_team_id.as_str())
     );
     assert_eq!(

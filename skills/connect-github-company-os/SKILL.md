@@ -98,7 +98,7 @@ Inspect both sides:
 
 ```bash
 harness --company <company-id> company docs query --document <source-doc-id>
-harness --company <company-id> company work query --work <work-id>
+harness work list --team-id <team-id>
 gh repo view <owner/repo> --json nameWithOwner,defaultBranchRef,url
 gh issue view <number> --repo <owner/repo> --json number,title,state,url,labels,milestone
 gh pr view <number> --repo <owner/repo> \

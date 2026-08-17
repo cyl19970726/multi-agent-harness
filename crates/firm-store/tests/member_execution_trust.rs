@@ -371,7 +371,8 @@ fn seed_team_work(store: &HarnessStore, label: &str, work_id: &str) -> String {
             Work {
                 id: work_id.into(),
                 team_run_id: run.id.clone(),
-                team_id: None,
+                accountable_team_id: None,
+                assignee_membership_id: None,
                 created_by_member_id: None,
                 parent_work_id: None,
                 title: format!("Trust fixture {work_id}"),
@@ -504,7 +505,8 @@ fn seed_team_work_from_run(store: &HarnessStore, run: &AgentTeamRun, work_id: &s
             Work {
                 id: work_id.into(),
                 team_run_id: run.id.clone(),
-                team_id: None,
+                accountable_team_id: None,
+                assignee_membership_id: None,
                 created_by_member_id: None,
                 parent_work_id: None,
                 title: format!("Trust fixture {work_id}"),
@@ -2087,7 +2089,8 @@ fn canonical_acceptance_rolls_up_delegation_in_the_same_operation() {
             Work {
                 id: "target-rollup".into(),
                 team_run_id: target_run.id.clone(),
-                team_id: None,
+                accountable_team_id: None,
+                assignee_membership_id: None,
                 created_by_member_id: None,
                 parent_work_id: None,
                 title: "Delegated target".into(),

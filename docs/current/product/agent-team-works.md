@@ -103,16 +103,20 @@ Every transition reads the latest version and supplies the expected revision.
 Store operations append the Work revision and any condition record, report,
 gate evaluation, decision, and event atomically.
 
-## Company aggregation
+## Global aggregation
 
-`firm company work list/query`:
+`firm work list` (DOC-106; replaces `firm company work list/query`):
 
 - reads native Work from selected or known execution spaces;
-- filters without copying;
+- filters by accountable Team, assignee TeamMembership, phase, condition, resolution, and priority without copying;
 - preserves exact ids and revisions;
-- returns mutation routes to the owning execution space;
-- reports duplicate-id conflicts;
+- routes to durable Team and TeamMembership identifiers;
+- fails closed on duplicate Work ids across stores and reports legacy rows pending responsibility migration;
 - never falls back to a former Company task ledger.
+
+Canonical assignment binds a TeamMembership with an expected Work version
+(`firm team-run work assign --membership-id ...`); responsibility never depends
+on an active MemberRun or runtime.
 
 Milestone `work_refs` point to native Work ids. Milestones do not rewrite Work
 phase, condition, resolution, ownership, report, or gate state.

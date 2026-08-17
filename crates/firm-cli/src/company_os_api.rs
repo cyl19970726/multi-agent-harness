@@ -462,7 +462,7 @@ fn company_work_projection_from_spaces(
         .filter(|work| {
             (query.team_ids.is_empty()
                 || work
-                    .team_id
+                    .accountable_team_id
                     .as_ref()
                     .is_some_and(|id| query.team_ids.contains(id)))
                 && (query.team_run_ids.is_empty() || query.team_run_ids.contains(&work.team_run_id))
@@ -845,7 +845,8 @@ mod projection_tests {
                 harness_core::Work {
                     id: id.to_string(),
                     team_run_id: team_run_id.to_string(),
-                    team_id: None,
+                    accountable_team_id: None,
+                    assignee_membership_id: None,
                     created_by_member_id: None,
                     parent_work_id: None,
                     title: id.to_string(),

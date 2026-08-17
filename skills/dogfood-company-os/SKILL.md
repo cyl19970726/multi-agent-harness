@@ -7,7 +7,7 @@ description: Run Company OS as its own operating system through repeated, eviden
 
 ## AgentFirm local product loop
 
-Company Work is now the cross-Team aggregate at `GET /v1/views/company-work`.
+Global Work is now the cross-Team aggregate at `GET /v1/views/global-work`.
 Drill into the owning Team, then use the Host, Member or Operator responsibility
 view. Do not create a Company-side Work copy and do not fold raw Store ledgers
 in the Dashboard. Record the exact schema/protocol/build handshake with dogfood
@@ -62,7 +62,7 @@ Select Company Store truth independently from execution source code:
 ```bash
 harness company current
 harness --company <company-id> company docs query --document <root-document-id>
-harness --company <company-id> company work list
+harness work list
 harness --company <company-id> company org list
 ```
 

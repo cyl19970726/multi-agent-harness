@@ -2768,7 +2768,7 @@ fn target_work_create_applies_once_through_native_work_authority() {
     let works = target.store.latest_works().unwrap();
     assert_eq!(works.len(), 1);
     assert_eq!(works[0].id, "remote-work:delegation-native-1");
-    assert_eq!(works[0].team_id.as_deref(), Some("team-b"));
+    assert_eq!(works[0].accountable_team_id.as_deref(), Some("team-b"));
 
     for (label, status) in [
         ("closed", AgentTeamStatus::Inactive),

@@ -75,7 +75,7 @@ Work mutations belong to `firm team-run work ...`.
 
 | Capability | Commands | Status | Notes |
 | --- | --- | --- | --- |
-| Company Work read | `company work list`, `company work query` | Implemented | Filters native Work by Team, TeamRun, phase, condition, resolution, and owner; preserves exact ids and revisions. |
+| Global Work read | `work list` | Implemented | Filters the one Work authority by accountable Team, assignee TeamMembership, phase, condition, resolution, priority, and owner; preserves exact ids and revisions. Replaces `company work list/query` (DOC-106). |
 | Native Work intake | `team-run work create` | Implemented | Creates the only executable Work object inside an explicit TeamRun. |
 | Native responsibility | `team-run work assign`, `claim`, `release`, `retarget` | Implemented | Mutates native Work with optimistic revision checks. |
 | Native lifecycle | `team-run work start`, `block`, `resume`, `submit`, `review`, `request-changes`, `accept`, `cancel` | Implemented | Uses phase/condition/resolution and immutable report/gate/decision evidence. |

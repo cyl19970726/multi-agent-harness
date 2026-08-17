@@ -171,7 +171,8 @@ fn base_work(run_id: &str, id: &str) -> Work {
     Work {
         id: id.into(),
         team_run_id: run_id.into(),
-        team_id: None,
+        accountable_team_id: None,
+        assignee_membership_id: None,
         created_by_member_id: None,
         parent_work_id: None,
         title: format!("Work {id}"),

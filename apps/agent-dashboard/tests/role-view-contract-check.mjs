@@ -5,7 +5,7 @@ import Ajv2020 from "ajv/dist/2020.js";
 
 const root=process.cwd();
 const schemaDir=path.join(root,"schemas/role-views/agentfirm.role_views.v1");
-const names=["common","role-view","company-work","team-workspace","host-console","agent-workspace","member-workbench","operator"];
+const names=["common","role-view","global-work","team-workspace","host-console","agent-workspace","member-workbench","operator"];
 const schemas=names.map(name=>JSON.parse(fs.readFileSync(path.join(schemaDir,`${name}.schema.json`),"utf8")));
 const liveProviderActivitySchema=JSON.parse(fs.readFileSync(path.join(root,"schemas/provider-events/live-provider-activity.schema.json"),"utf8"));
 const providerObservationSchema=JSON.parse(fs.readFileSync(path.join(root,"schemas/provider-events/provider-observation.schema.json"),"utf8"));
@@ -22,7 +22,7 @@ for(const name of names.slice(2)){
   assert.equal(validate(fixture),true,`${name} fixture: ${ajv.errorsText(validate.errors)}`);
   const hostile=structuredClone(fixture);
   const closedTarget={
-    "company-work":hostile.data,
+    "global-work":hostile.data,
     "team-workspace":hostile.data.team,
     "host-console":hostile.data.daemon_summary,
     "agent-workspace":hostile.data.selected_agent,
@@ -112,7 +112,7 @@ operatorFixture.allowed_actions=[{kind:"diagnose",target_ref:{kind:"execution_no
 assert.equal(operatorValidate(operatorFixture),false,"only provider admission may carry a tuple binding");
 
 const rust=fs.readFileSync(path.join(root,"crates/firm-cli/src/role_views_api.rs"),"utf8");
-for(const endpoint of ["company-work","team-workspace/","host-console/","agent-workspace/","member-workbench/","operator/"])assert.ok(rust.includes(`/v1/views/${endpoint}`),`missing ${endpoint}`);
+for(const endpoint of ["global-work","team-workspace/","host-console/","agent-workspace/","member-workbench/","operator/"])assert.ok(rust.includes(`/v1/views/${endpoint}`),`missing ${endpoint}`);
 assert.ok(rust.includes("canonical_operations"),"views must use canonical event sequence");
 assert.ok(!/POST \/v1\/views\//.test(rust),"page-specific mutations are forbidden");
 

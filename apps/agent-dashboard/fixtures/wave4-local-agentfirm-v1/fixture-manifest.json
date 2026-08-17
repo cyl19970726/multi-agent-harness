@@ -1,1 +1,1 @@
-{"schema_version":"agentfirm.role_views.v1","source_store_digest":"sha256:deterministic-wave4b-fixture-v1","views":["company-work","team-workspace","host-console","member-workbench","operator"]}
+{"schema_version":"agentfirm.role_views.v1","source_store_digest":"sha256:deterministic-wave4b-fixture-v1","views":["global-work","team-workspace","host-console","member-workbench","operator"]}
