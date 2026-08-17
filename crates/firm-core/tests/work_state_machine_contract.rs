@@ -147,6 +147,7 @@ fn work_json() -> serde_json::Value {
     json!({
         "id": "work-1",
         "team_run_id": "team-run-1",
+        "accountable_team_id": "team-1",
         "title": "Verify canonical lifecycle",
         "context_markdown": "No compatibility status field",
         "completion_criteria_markdown": "All lifecycle invariants hold",

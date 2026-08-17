@@ -44,6 +44,8 @@ impl Query {
             "host_id",
             "member_id",
             "agent_id",
+            "assignee_membership_id",
+            "assignee_kind",
             "phase",
             "condition",
             "resolution",
@@ -845,6 +847,73 @@ fn current_workspace<'a>(facts: &'a Facts, member_run_id: &str) -> Option<&'a Va
         .filter(|value| !matches!(value["lifecycle"].as_str(), Some("archived" | "removed")))
 }
 
+/// DOC-106 responsibility projection: the assignee is one TeamMembership of
+/// the accountable Team (Host/Member), or Unassigned. Legacy rows assigned
+/// before the membership cutover still resolve through `owner_member_id` and
+/// are honestly marked by `membership_id: null`; runtime/MemberRun state never
+/// feeds this projection.
+fn assignee_projection(facts: &Facts, team: &AgentTeam, work: &Work) -> (String, Value) {
+    let display_name = |member_id: Option<&str>| {
+        member_id.and_then(|id| {
+            facts
+                .members
+                .iter()
+                .find(|member| member["id"].as_str() == Some(id))
+                .and_then(|member| member["name"].as_str())
+        })
+    };
+    if let Some(membership_id) = work.assignee_membership_id.as_deref() {
+        let membership = facts
+            .team_memberships
+            .iter()
+            .find(|m| m["id"].as_str() == Some(membership_id));
+        let member_id = membership
+            .and_then(|m| m["agent_member_id"].as_str())
+            .or(work.owner_member_id.as_deref());
+        let role = membership
+            .and_then(|m| m["role"].as_str())
+            .unwrap_or("member");
+        let kind = if role == "host" { "host" } else { "member" };
+        return (
+            kind.to_string(),
+            json!({
+                "kind": kind,
+                "membership_id": membership_id,
+                "membership_state": membership.and_then(|m| m["state"].as_str()),
+                "agent_member_id": member_id,
+                "display_name": display_name(member_id),
+            }),
+        );
+    }
+    if let Some(owner) = work.owner_member_id.as_deref() {
+        let kind = if owner == team.host_agent_id {
+            "host"
+        } else {
+            "member"
+        };
+        return (
+            kind.to_string(),
+            json!({
+                "kind": kind,
+                "membership_id": null,
+                "membership_state": null,
+                "agent_member_id": owner,
+                "display_name": display_name(Some(owner)),
+            }),
+        );
+    }
+    (
+        "unassigned".to_string(),
+        json!({
+            "kind": "unassigned",
+            "membership_id": null,
+            "membership_state": null,
+            "agent_member_id": null,
+            "display_name": null,
+        }),
+    )
+}
+
 fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
     let latest_event = facts
         .work_events
@@ -959,8 +1028,14 @@ fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
                 == Some(&work.id)
         })
         .count();
+    let (assignee_kind, assignee_ref) = assignee_projection(facts, team, work);
     json!({
         "work_id": work.id, "work_revision": work.version, "team_id": team.id, "mission_id": team.mission_id,
+        "accountable_team_id": work.accountable_team_id,
+        "assignee_membership_id": work.assignee_membership_id,
+        "assignee_kind": assignee_kind,
+        "assignee_ref": assignee_ref,
+        "migration_state": if work.accountable_team_id.is_some() { "canonical" } else { "legacy_team_run_scoped" },
         "title":work.title,
         "context_markdown":work.context_markdown,
         "completion_criteria_markdown":work.completion_criteria_markdown,
@@ -1173,8 +1248,8 @@ pub(crate) fn handle_get(
         Ok(value) => value,
         Err(detail) => return Some(error("400 Bad Request", "INVALID_QUERY", detail)),
     };
-    let result = if path == "/v1/views/company-work" {
-        company_view(spaces, &query)
+    let result = if path == "/v1/views/global-work" {
+        global_work_view(spaces, &query)
     } else if let Some(team_id) = path.strip_prefix("/v1/views/team-workspace/") {
         team_view(
             current_space_id,
@@ -1230,7 +1305,22 @@ pub(crate) fn handle_get(
 
 type ViewResult = Result<Value, (&'static str, &'static str, String)>;
 
-fn company_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult {
+/// In-process Global Work read for the CLI (`harness work list`). This is the
+/// identical projection served at `/v1/views/global-work`; there is no second
+/// aggregate implementation or writer.
+pub(crate) fn global_work_view_json(
+    spaces: &[(String, HarnessStore)],
+    target: &str,
+) -> Result<Value, String> {
+    let query = Query::parse(target)?;
+    global_work_view(spaces, &query).map_err(|(_, code, detail)| format!("{code}: {detail}"))
+}
+
+/// The one Global Work read projection (DOC-106): every canonical Work across
+/// the provided Execution Space stores, keyed by durable Team/TeamMembership
+/// identifiers, failing closed on cross-store Work id collisions. It never
+/// writes and never folds a second ledger.
+fn global_work_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult {
     let mut all = Vec::new();
     let mut max_sequence = 0;
     let mut identities = Vec::new();
@@ -1239,6 +1329,7 @@ fn company_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult 
     let mut facet_nodes = BTreeSet::new();
     let mut facet_hosts = BTreeSet::new();
     let mut facet_members = BTreeSet::new();
+    let mut pending_migration = Vec::new();
     let mut ordered_spaces = spaces.iter().collect::<Vec<_>>();
     ordered_spaces.sort_by(|left, right| left.0.cmp(&right.0));
     for (space_id, store) in &ordered_spaces {
@@ -1262,7 +1353,7 @@ fn company_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult 
                 }
             }
             let Some(team) = work
-                .team_id
+                .accountable_team_id
                 .as_deref()
                 .and_then(|id| facts.teams.iter().find(|team| team.id == id))
                 .or_else(|| {
@@ -1275,13 +1366,24 @@ fn company_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult 
                         })
                 })
             else {
+                // A Work with no resolvable accountable Team is a pre-cutover
+                // legacy row. It is never hidden silently: it surfaces in the
+                // view's pending-migration list and skips item projection until
+                // responsibility migration binds it to one durable Team.
+                pending_migration.push(work.id.clone());
                 continue;
             };
+            let summary = work_summary(&facts, team, work);
             if !query.matches("team_id", Some(&team.id))
                 || !query.matches("mission_id", Some(&team.mission_id))
                 || !query.matches("node_id", Some(&team.node_id))
                 || !query.matches("host_id", Some(&team.host_agent_id))
                 || !query.matches("member_id", work.owner_member_id.as_deref())
+                || !query.matches(
+                    "assignee_membership_id",
+                    work.assignee_membership_id.as_deref(),
+                )
+                || !query.matches("assignee_kind", summary["assignee_kind"].as_str())
                 || !query.matches("phase", Some(&enum_string(&work.phase)))
                 || !query.matches("condition", Some(&enum_string(&work.condition)))
                 || !query.matches(
@@ -1292,7 +1394,6 @@ fn company_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult 
             {
                 continue;
             }
-            let summary = work_summary(&facts, team, work);
             if !query.matches(
                 "module_id",
                 summary["module_refs"]
@@ -1429,7 +1530,7 @@ fn company_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult 
         return Err((
             "503 Service Unavailable",
             "SNAPSHOT_UNSTABLE",
-            "Company Work sources changed during projection; retry the read".into(),
+            "Global Work sources changed during projection; retry the read".into(),
         ));
     }
     let facets = |field: &str| {
@@ -1442,7 +1543,7 @@ fn company_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult 
         values
     };
     let facts = Facts {
-        space_id: "company".into(),
+        space_id: "global".into(),
         store_identity: identities.join("|"),
         sequence: max_sequence,
         work_sequence: 0,
@@ -1471,11 +1572,26 @@ fn company_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult 
         work_events: vec![],
         side: vec![],
     };
+    pending_migration.sort();
+    pending_migration.dedup();
+    let migration_attention = if pending_migration.is_empty() {
+        Vec::new()
+    } else {
+        vec![json!({
+            "kind":"legacy_work_pending_migration",
+            "severity":"warning",
+            "source_ref":{"kind":"work","id":pending_migration.first().cloned().unwrap_or_default()},
+            "reason_code":"work_missing_accountable_team",
+            "first_seen_at":now(),
+            "last_seen_at":now(),
+            "recommended_action":"Run `harness team-run work migrate-responsibility` to bind legacy TeamRun-scoped Work to one durable Team; ambiguous rows fail closed for manual reconciliation",
+        })]
+    };
     Ok(envelope(
-        "company_work",
+        "global_work",
         &facts,
-        json!({"query":query.values,"sort":[{"field":"updated_at","direction":"desc"},{"field":"work_id","direction":"asc"}],"items":page_items,"page":{"as_of_event_sequence":max_sequence,"item_count":all.len(),"next_cursor":next,"snapshot_vector":snapshot_vector},"facets":{"teams":facets("team_id"),"missions":facets("mission_id"),"nodes":facet_nodes,"hosts":facet_hosts,"members":facet_members,"phases":facets("phase"),"conditions":facets("condition"),"resolutions":facets("resolution"),"modules":all.iter().flat_map(|v|v["module_refs"].as_array().into_iter().flatten()).filter_map(Value::as_str).collect::<BTreeSet<_>>(),"gate_states":["passed","failed","pending","waived","stale"]}}),
-        vec![],
+        json!({"query":query.values,"sort":[{"field":"updated_at","direction":"desc"},{"field":"work_id","direction":"asc"}],"items":page_items,"page":{"as_of_event_sequence":max_sequence,"item_count":all.len(),"next_cursor":next,"snapshot_vector":snapshot_vector},"pending_migration_work_ids":pending_migration,"facets":{"teams":facets("team_id"),"missions":facets("mission_id"),"nodes":facet_nodes,"hosts":facet_hosts,"members":facet_members,"phases":facets("phase"),"conditions":facets("condition"),"resolutions":facets("resolution"),"modules":all.iter().flat_map(|v|v["module_refs"].as_array().into_iter().flatten()).filter_map(Value::as_str).collect::<BTreeSet<_>>(),"gate_states":["passed","failed","pending","waived","stale"]}}),
+        migration_attention,
         vec![],
     ))
 }
@@ -1689,7 +1805,8 @@ fn team_view(
         .works
         .iter()
         .filter(|w| {
-            w.team_id.as_deref() == Some(resolved_team_id) || run_id == Some(w.team_run_id.as_str())
+            w.accountable_team_id.as_deref() == Some(resolved_team_id)
+                || run_id == Some(w.team_run_id.as_str())
         })
         .map(|w| work_summary(&facts, team, w))
         .collect::<Vec<_>>();
@@ -2975,24 +3092,44 @@ fn member_view(
         .find(|r| r.id == team_run_id)
         .and_then(|r| facts.teams.iter().find(|t| t.id == r.agent_team_id))
         .ok_or(("404 Not Found", "TEAM_NOT_FOUND", team_run_id.to_string()))?;
+    // DOC-106: Member responsibility follows the assignee TeamMembership, not
+    // a MemberRun or runtime. Legacy rows still resolve through the mirrored
+    // owner identity until responsibility migration binds their membership.
+    let my_membership_ids = facts
+        .team_memberships
+        .iter()
+        .filter(|membership| {
+            membership["agent_member_id"].as_str() == Some(member_id)
+                && membership["team_id"].as_str() == Some(team.id.as_str())
+        })
+        .filter_map(|membership| membership["id"].as_str())
+        .collect::<BTreeSet<_>>();
+    let in_team_scope = |work: &&Work| {
+        work.accountable_team_id.as_deref() == Some(team.id.as_str())
+            || work.team_run_id == team_run_id
+    };
+    let assigned_to_member = |work: &&Work| {
+        work.assignee_membership_id
+            .as_deref()
+            .is_some_and(|id| my_membership_ids.contains(id))
+            || work.owner_member_id.as_deref() == Some(member_id)
+    };
     let team_work_ids = facts
         .works
         .iter()
-        .filter(|work| work.team_run_id == team_run_id)
+        .filter(|work| in_team_scope(work))
         .map(|work| work.id.as_str())
         .collect::<BTreeSet<_>>();
     let my = facts
         .works
         .iter()
-        .filter(|w| w.team_run_id == team_run_id && w.owner_member_id.as_deref() == Some(member_id))
+        .filter(|w| in_team_scope(w) && assigned_to_member(w))
         .map(|w| work_summary(&facts, team, w))
         .collect::<Vec<_>>();
     let member_work_ids = facts
         .works
         .iter()
-        .filter(|work| {
-            work.team_run_id == team_run_id && work.owner_member_id.as_deref() == Some(member_id)
-        })
+        .filter(|work| in_team_scope(work) && assigned_to_member(work))
         .map(|work| work.id.clone())
         .collect::<BTreeSet<_>>();
     let collaboration = collaboration_projection(company_id, &team.id, Some(&member_work_ids));
@@ -3000,7 +3137,7 @@ fn member_view(
         .works
         .iter()
         .filter(|w| {
-            w.team_run_id == team_run_id
+            in_team_scope(w)
                 && w.phase == WorkPhase::Open
                 && w.condition == WorkCondition::Normal
                 && (w.eligible_member_ids.is_empty()
@@ -3525,18 +3662,24 @@ mod tests {
     use std::path::PathBuf;
     #[test]
     fn query_is_closed_and_bounded() {
-        assert!(Query::parse("/v1/views/company-work?limit=201").is_err());
-        assert!(Query::parse("/v1/views/company-work?mystery=x").is_err());
+        assert!(Query::parse("/v1/views/global-work?limit=201").is_err());
+        assert!(Query::parse("/v1/views/global-work?mystery=x").is_err());
         assert_eq!(
-            Query::parse("/v1/views/company-work?team_id=a&team_id=b")
+            Query::parse("/v1/views/global-work?team_id=a&team_id=b")
                 .unwrap()
                 .values["team_id"],
             ["a", "b"]
         );
+        assert_eq!(
+            Query::parse("/v1/views/global-work?assignee_kind=unassigned")
+                .unwrap()
+                .values["assignee_kind"],
+            ["unassigned"]
+        );
     }
 
     #[test]
-    fn empty_company_view_is_zero_match_and_read_only() {
+    fn empty_global_view_is_zero_match_and_read_only() {
         let root = PathBuf::from(format!(
             "/tmp/agentfirm-role-view-purity-{}",
             std::process::id()
@@ -3545,8 +3688,11 @@ mod tests {
             std::fs::remove_dir_all(&root).unwrap();
         }
         let stores = vec![("space-empty".to_string(), HarnessStore::new(&root))];
-        let view = company_view(&stores, &Query::parse("/v1/views/company-work").unwrap()).unwrap();
+        let view =
+            global_work_view(&stores, &Query::parse("/v1/views/global-work").unwrap()).unwrap();
+        assert_eq!(view["view_kind"], json!("global_work"));
         assert_eq!(view["data"]["items"], json!([]));
+        assert_eq!(view["data"]["pending_migration_work_ids"], json!([]));
         assert_eq!(view["data"]["page"]["next_cursor"], Value::Null);
         assert!(
             !root.exists(),

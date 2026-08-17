@@ -778,7 +778,7 @@ impl HarnessStore {
                     None,
                 )
             })?;
-        if work.team_id.as_deref() != Some(team_id) || work.version != work_revision {
+        if work.accountable_team_id.as_deref() != Some(team_id) || work.version != work_revision {
             return Err(trust_error(
                 TrustErrorCode::WorkRevisionStale,
                 "Team-scoped Work authority or exact Work revision does not match",
@@ -2460,7 +2460,7 @@ impl HarnessStore {
                     )
                 })?;
             if work.team_run_id != message.team_run_id
-                || work.team_id.as_deref() != Some(team.id.as_str())
+                || work.accountable_team_id.as_deref() != Some(team.id.as_str())
             {
                 return Err(trust_error(
                     TrustErrorCode::UnauthorizedActor,
@@ -8196,7 +8196,7 @@ impl HarnessStore {
             || session.runtime_generation != binding.agent_session_generation
             || session.lifecycle == AgentSessionStatus::Closed
             || work.version != binding.work_revision
-            || work.team_id.as_deref() != Some(membership.team_id.as_str())
+            || work.accountable_team_id.as_deref() != Some(membership.team_id.as_str())
             || binding.team_id != membership.team_id
         {
             return Err(trust_error(
@@ -8504,7 +8504,7 @@ impl HarnessStore {
                 && authority.source_work_ref.placement_generation == 1
                 && authority.source_work_ref.team_revision == source_team_revision
                 && source_work.id == authority.source_work_ref.work_id
-                && source_work.team_id.as_deref()
+                && source_work.accountable_team_id.as_deref()
                     == Some(authority.source_work_ref.team_id.as_str())
                 && source_work.version == authority.source_work_ref.work_revision;
             let current_owner_bindings = self
@@ -9155,7 +9155,7 @@ impl HarnessStore {
                 || target_team.node_id != target_node_id
                 || target_team_revision != authority.target_placement.team_revision
                 || target_team.id != authority.target_work_ref.team_id
-                || target_work.team_id.as_deref() != Some(target_team.id.as_str())
+                || target_work.accountable_team_id.as_deref() != Some(target_team.id.as_str())
                 || target_work.id != authority.target_work_ref.work_id
                 || target_work.version != authority.target_work_ref.work_revision
             {
@@ -11557,7 +11557,8 @@ mod tests {
                 firm_core::Work {
                     id: id.into(),
                     team_run_id: team_run_id.into(),
-                    team_id: Some(team_id.into()),
+                    accountable_team_id: Some(team_id.into()),
+                    assignee_membership_id: None,
                     parent_work_id: None,
                     title: format!("runtime binding {id}"),
                     context_markdown: "runtime authority test".into(),

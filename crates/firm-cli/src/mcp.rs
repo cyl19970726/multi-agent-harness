@@ -558,7 +558,8 @@ fn tool_team_run_work_create(store: &HarnessStore, arguments: &Value) -> Result<
     let work = Work {
         id: optional_non_empty_str(arguments, "id")?.unwrap_or_else(|| generated_id("work")),
         team_run_id: team_run_id.to_string(),
-        team_id: None,
+        accountable_team_id: None,
+        assignee_membership_id: None,
         created_by_member_id: None,
         parent_work_id: optional_non_empty_str(arguments, "parent_work_id")?,
         title: required_non_empty_str(arguments, "title")?.to_string(),

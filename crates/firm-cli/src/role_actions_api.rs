@@ -46,7 +46,14 @@ enum RoleActionIntent {
         priority: WorkPriority,
     },
     AssignWork {
-        member_run_id: String,
+        /// Canonical DOC-106 assignee: one TeamMembership of the Work's
+        /// accountable Team. Takes precedence over the legacy MemberRun target.
+        #[serde(default)]
+        membership_id: Option<String>,
+        /// Legacy runtime-bound assignment target. Deprecated by
+        /// `membership_id`; retained for the pre-cutover MemberRun plane.
+        #[serde(default)]
+        member_run_id: Option<String>,
     },
     RebindWork {
         member_run_id: String,
@@ -2281,7 +2288,7 @@ fn execute_work_record_action(
         )
     })?;
     let current = current_canonical_work(store, &auth.execution_space_id, work_id)?;
-    if current.team_id.as_deref() != Some(team_id) {
+    if current.accountable_team_id.as_deref() != Some(team_id) {
         return Err(encoded_error(
             "UNAUTHORIZED_ACTOR",
             "Work does not belong to the addressed Team",
@@ -3747,7 +3754,9 @@ pub fn execute(
             return Ok(replay);
         }
         let work = current_canonical_work(store, &auth.execution_space_id, work_id)?;
-        if work.team_id.as_deref() != Some(team_id) || work.version != auth.expected_version {
+        if work.accountable_team_id.as_deref() != Some(team_id)
+            || work.version != auth.expected_version
+        {
             return Err(encoded_error(
                 "VERSION_CONFLICT",
                 "accept requires the exact current Team-scoped Work revision",
@@ -3984,7 +3993,8 @@ pub fn execute(
                 Work {
                     id: work_id,
                     team_run_id: route.team_run_id.to_string(),
-                    team_id: Some(team.id.clone()),
+                    accountable_team_id: Some(team.id.clone()),
+                    assignee_membership_id: None,
                     parent_work_id,
                     title,
                     context_markdown,
@@ -4056,14 +4066,38 @@ pub fn execute(
                 ));
             }
             match (operation, intent) {
-                ("assign", RoleActionIntent::AssignWork { member_run_id }) => {
+                (
+                    "assign",
+                    RoleActionIntent::AssignWork {
+                        membership_id,
+                        member_run_id,
+                    },
+                ) => {
                     let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;
-                    store.assign_work(
-                        work_id,
-                        auth.expected_version,
-                        &member_run_id,
-                        host_context(&auth, host_id, false),
-                    )?
+                    match (membership_id, member_run_id) {
+                        (Some(membership_id), _) => store.assign_work_to_membership(
+                            work_id,
+                            auth.expected_version,
+                            &membership_id,
+                            &auth.execution_space_id,
+                            host_context(&auth, host_id, false),
+                        )?,
+                        (None, Some(member_run_id)) => store.assign_work(
+                            work_id,
+                            auth.expected_version,
+                            &member_run_id,
+                            host_context(&auth, host_id, false),
+                        )?,
+                        (None, None) => {
+                            return Err(encoded_error(
+                                "INVALID_STATE_TRANSITION",
+                                "assign_work requires membership_id (canonical TeamMembership responsibility) or the legacy member_run_id target",
+                                "work",
+                                work_id,
+                                None,
+                            ))
+                        }
+                    }
                 }
                 ("rebind", RoleActionIntent::RebindWork { member_run_id }) => {
                     let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;

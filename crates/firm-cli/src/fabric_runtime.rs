@@ -1339,7 +1339,7 @@ pub(crate) fn resolve_collaboration_message_authority(
                 "Delegation source Work is not current in this Execution Space",
             )
         })?;
-    let source_team_id = source_work.team_id.as_deref().ok_or_else(|| {
+    let source_team_id = source_work.accountable_team_id.as_deref().ok_or_else(|| {
         FabricError::none(
             FabricErrorCode::UnauthorizedActor,
             "Delegation source Work is not Team-bound",
@@ -1631,7 +1631,7 @@ pub(crate) fn queue_collaboration_proposal(
                 "source Work does not exist",
             )
         })?;
-    let team_id = work.team_id.clone().ok_or_else(|| {
+    let team_id = work.accountable_team_id.clone().ok_or_else(|| {
         FabricError::none(
             FabricErrorCode::InvalidPayload,
             "source Work is not bound to a canonical AgentTeam",
@@ -2081,7 +2081,7 @@ pub(crate) fn queue_remote_fact_publication(
         &fact_work_id,
         fact_work_revision,
     )?;
-    let team_id = work.team_id.clone().ok_or_else(|| {
+    let team_id = work.accountable_team_id.clone().ok_or_else(|| {
         FabricError::none(
             FabricErrorCode::InvalidPayload,
             "native target Work is not Team-bound",
@@ -2114,7 +2114,7 @@ pub(crate) fn queue_remote_fact_publication(
         })
         .count()
         == 1;
-    if current_work.team_id.as_deref() != Some(team.id.as_str())
+    if current_work.accountable_team_id.as_deref() != Some(team.id.as_str())
         || current_work.version < work.version
         || team.node_id != local_node_id
         || current_work.owner_member_id.as_deref() != Some(credential.actor.id.as_str())

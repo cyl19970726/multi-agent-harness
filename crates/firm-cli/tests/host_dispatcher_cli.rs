@@ -91,7 +91,8 @@ fn dispatch_host_resumes_exact_kimi_session_and_releases_lease() {
             Work {
                 id: "work-review".into(),
                 team_run_id: run.id.clone(),
-                team_id: None,
+                accountable_team_id: None,
+                assignee_membership_id: None,
                 parent_work_id: None,
                 title: "Review exact Host dispatch".into(),
                 context_markdown: String::new(),

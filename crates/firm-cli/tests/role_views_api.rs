@@ -1913,22 +1913,21 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
             .iter()
             .any(|item| item["reason_code"] == "multiple_active_member_runs")));
 
-    let company_route = format!("/v1/views/company-work?project={project_id}");
-    let (status, company) =
-        serve.get_json_with_headers(&company_route, &[("X-AgentFirm-Token", TOKEN)]);
-    assert_eq!(status, 200, "Company RoleView: {company}");
-    assert!(company["data"]["items"]
-        .as_array()
-        .is_some_and(|items| items
-            .iter()
-            .any(|work| work["work_id"] == "work-store-live-1")));
-    let snapshot_vector = company["data"]["page"]["snapshot_vector"]
+    let global_route = format!("/v1/views/global-work?project={project_id}");
+    let (status, global) =
+        serve.get_json_with_headers(&global_route, &[("X-AgentFirm-Token", TOKEN)]);
+    assert_eq!(status, 200, "Global Work RoleView: {global}");
+    assert_eq!(global["view_kind"], "global_work");
+    assert!(global["data"]["items"].as_array().is_some_and(|items| items
+        .iter()
+        .any(|work| work["work_id"] == "work-store-live-1")));
+    let snapshot_vector = global["data"]["page"]["snapshot_vector"]
         .as_array()
         .expect("snapshot vector");
     assert_eq!(
         snapshot_vector.len(),
         2,
-        "Company cursor must bind every space"
+        "Global Work cursor must bind every space"
     );
     assert!(snapshot_vector
         .iter()
@@ -1965,6 +1964,29 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert!(projected_work["eligible_member_ids"].is_array());
     assert!(projected_work["artifact_refs"].is_array());
     assert!(projected_work["latest_event"].is_object());
+    // DOC-106: every RoleView reads the one Work/WorkOperation authority, so
+    // the same Work id carries the identical revision everywhere.
+    let global_work = global["data"]["items"]
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|work| work["work_id"] == "work-store-live-1")
+        })
+        .expect("Global Work row");
+    assert_eq!(
+        global_work["work_revision"], projected_work["work_revision"],
+        "Global and Team projections must carry the identical Work revision"
+    );
+    assert_eq!(
+        global_work["accountable_team_id"],
+        serde_json::json!(team.id)
+    );
+    assert_eq!(
+        projected_work["accountable_team_id"],
+        global_work["accountable_team_id"]
+    );
+    assert!(projected_work["assignee_ref"].is_object());
     assert!(team_view["data"]["members"]
         .as_array()
         .is_some_and(|members| members.iter().all(|member| {
@@ -3664,18 +3686,23 @@ fn role_views_require_local_capability_and_gets_are_store_pure() {
         &[],
         &[("AGENTFIRM_HTTP_CREDENTIALS_JSON", credentials.as_str())],
     );
-    let route = format!("/v1/views/company-work?project={project_id}");
+    let route = format!("/v1/views/global-work?project={project_id}");
     let (status, denied) = serve.get_json(&route);
     assert_eq!(status, 401, "unauthenticated RoleView: {denied}");
     assert_eq!(denied["error"]["code"], "NOT_AUTHORIZED");
 
     let before = ledger_digest(serve.fixture_store_root());
-    let (status, company) = serve.get_json_with_headers(&route, &[("X-AgentFirm-Token", TOKEN)]);
-    assert_eq!(status, 200, "Company RoleView: {company}");
-    assert_eq!(company["schema_version"], "agentfirm.role_views.v1");
-    assert_eq!(company["data"]["items"], serde_json::json!([]));
+    let (status, global) = serve.get_json_with_headers(&route, &[("X-AgentFirm-Token", TOKEN)]);
+    assert_eq!(status, 200, "Global Work RoleView: {global}");
+    assert_eq!(global["view_kind"], "global_work");
+    assert_eq!(global["schema_version"], "agentfirm.role_views.v1");
+    assert_eq!(global["data"]["items"], serde_json::json!([]));
     assert_eq!(
-        company["data"]["page"]["next_cursor"],
+        global["data"]["pending_migration_work_ids"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        global["data"]["page"]["next_cursor"],
         serde_json::Value::Null
     );
     assert_eq!(
@@ -3690,6 +3717,9 @@ fn role_views_require_local_capability_and_gets_are_store_pure() {
         "/v1/views/agent-workspace/missing",
         "/v1/views/member-workbench/missing",
         "/v1/views/operator/missing",
+        // Retired by the Global Work cutover (DOC-106): the Company Work view
+        // name no longer resolves.
+        "/v1/views/company-work",
     ] {
         let route = format!("{path}?project={project_id}");
         let (status, body) = serve.get_json_with_headers(&route, &[("X-AgentFirm-Token", TOKEN)]);

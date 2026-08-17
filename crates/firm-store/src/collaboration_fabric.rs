@@ -971,7 +971,8 @@ pub fn apply_collaboration_target_operation(
             Work {
                 id: work_id.clone(),
                 team_run_id: run.id.clone(),
-                team_id: Some(team.id.clone()),
+                accountable_team_id: Some(team.id.clone()),
+                assignee_membership_id: None,
                 parent_work_id: None,
                 title: payload.requested_outcome,
                 context_markdown: format!(

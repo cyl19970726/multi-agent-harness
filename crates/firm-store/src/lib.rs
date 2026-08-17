@@ -268,7 +268,7 @@ fn work_delegation_request_fingerprint(
         "target_work": {
             "id": target_work.id,
             "team_run_id": target_work.team_run_id,
-            "team_id": target_work.team_id,
+            "team_id": target_work.accountable_team_id,
             "parent_work_id": target_work.parent_work_id,
             "title": target_work.title,
             "context_markdown": target_work.context_markdown,
@@ -2517,15 +2517,15 @@ impl HarnessStore {
             )));
         }
         let run_team_id = durable_team_id(&team_run);
-        match (work.team_id.as_deref(), run_team_id) {
+        match (work.accountable_team_id.as_deref(), run_team_id) {
             (Some(work_team_id), Some(run_team_id)) if work_team_id != run_team_id => {
                 return Err(StoreError::Conflict(format!(
-                    "TEAM_SCOPE_MISMATCH: Work names AgentTeam {work_team_id}, but TeamRun {} belongs to {run_team_id}",
+                    "TEAM_SCOPE_MISMATCH: Work names accountable AgentTeam {work_team_id}, but TeamRun {} belongs to {run_team_id}",
                     team_run.id
                 )));
             }
             (Some(_), Some(_)) => {}
-            (None, Some(run_team_id)) => work.team_id = Some(run_team_id.to_string()),
+            (None, Some(run_team_id)) => work.accountable_team_id = Some(run_team_id.to_string()),
             (Some(_), None) => {
                 return Err(StoreError::Conflict(format!(
                     "TEAM_SCOPE_UNAVAILABLE: TeamRun {} has no durable AgentTeam identity",
@@ -2579,6 +2579,10 @@ impl HarnessStore {
                 ));
             }
             work.owner_member_id = Some(stable_identity);
+            work.assignee_membership_id = self.resolve_assignee_membership_id_unlocked(
+                work.accountable_team_id.as_deref(),
+                work.owner_member_id.as_deref().unwrap_or_default(),
+            )?;
         }
         work.created_by_actor = context.performed_by_actor.clone();
         match context.performed_by_actor.kind {
@@ -2770,7 +2774,7 @@ impl HarnessStore {
                     .to_string(),
             ));
         }
-        let source_team_id = source.team_id.clone().ok_or_else(|| {
+        let source_team_id = source.accountable_team_id.clone().ok_or_else(|| {
             StoreError::Conflict(
                 "DELEGATION_STALE_SOURCE: source Work has no AgentTeam provenance".to_string(),
             )
@@ -2809,12 +2813,16 @@ impl HarnessStore {
                         existing.source_work_ref.work_id
                     ))
                 })?;
-            let existing_source_team = existing_source.team_id.as_ref().ok_or_else(|| {
-                StoreError::Conflict(format!(
-                    "DELEGATION_CORRUPT: source Work {} has no AgentTeam provenance",
-                    existing_source.id
-                ))
-            })?;
+            let existing_source_team =
+                existing_source
+                    .accountable_team_id
+                    .as_ref()
+                    .ok_or_else(|| {
+                        StoreError::Conflict(format!(
+                            "DELEGATION_CORRUPT: source Work {} has no AgentTeam provenance",
+                            existing_source.id
+                        ))
+                    })?;
             outgoing
                 .entry(existing_source_team.clone())
                 .or_default()
@@ -2836,7 +2844,7 @@ impl HarnessStore {
             }
         }
 
-        target_work.team_id = Some(target_team.id.clone());
+        target_work.accountable_team_id = Some(target_team.id.clone());
         target_work.parent_work_id = None;
         target_work.phase = WorkPhase::Open;
         target_work.condition = WorkCondition::Normal;
@@ -2970,9 +2978,115 @@ impl HarnessStore {
         let mut next = current.clone();
         next.owner_member_id = Some(owner_id);
         next.active_member_run_id = Some(member.id.clone());
+        // Keep the DOC-106 assignee authority populated when exactly one
+        // TeamMembership binds this (Team, AgentMember); legacy stores without
+        // membership fabric stay honestly unresolved for the migration pass.
+        next.assignee_membership_id = self.resolve_assignee_membership_id_unlocked(
+            next.accountable_team_id.as_deref(),
+            next.owner_member_id.as_deref().unwrap_or_default(),
+        )?;
         next.version += 1;
         next.updated_at = context.created_at.clone();
         self.append_work_transition_unlocked(current, next, WorkEventKind::Assigned, context)
+    }
+
+    /// Assign or reassign Work responsibility to exactly one TeamMembership of
+    /// the Work's accountable Team (DOC-106). This is the canonical
+    /// responsibility mutation: it fences on the expected Work version, never
+    /// requires a running provider process, and never creates execution
+    /// authority. A Paused AgentMember or Inactive TeamMembership may hold
+    /// responsibility; automatic execution authority begins only with a later
+    /// exact WorkExecutionBinding against the new revision.
+    pub fn assign_work_to_membership(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        membership_id: &str,
+        execution_space_id: &str,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        if let Some(existing) = self.idempotent_work_operation_unlocked(
+            &context.idempotency_key,
+            work_id,
+            WorkEventKind::Assigned,
+        )? {
+            return Ok(existing.work);
+        }
+        require_host_actor(&context.performed_by_actor)?;
+        let current = self.current_work_unlocked(work_id, expected_version)?;
+        if current.is_terminal() {
+            return Err(StoreError::Conflict(format!(
+                "work {work_id} is terminal and cannot be reassigned"
+            )));
+        }
+        let team_id = current.accountable_team_id.clone().ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "WORK_NOT_TEAM_SCOPED: run responsibility migration for Work {work_id} before membership assignment"
+            ))
+        })?;
+        if current.assignee_membership_id.as_deref() == Some(membership_id) {
+            return Err(StoreError::Conflict(format!(
+                "WORK_ALREADY_ASSIGNED: Work {work_id} is already assigned to TeamMembership {membership_id}"
+            )));
+        }
+        self.ensure_deliveries_reassignable_unlocked(&current)?;
+        let membership = self
+            .fabric_team_memberships(execution_space_id)?
+            .into_iter()
+            .find(|membership| membership.id == membership_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "TEAM_MEMBERSHIP_NOT_FOUND: TeamMembership {membership_id} does not exist"
+                ))
+            })?;
+        if membership.team_id != team_id {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_SCOPE_MISMATCH: TeamMembership {membership_id} belongs to Team {}, not the Work's accountable Team {team_id}",
+                membership.team_id
+            )));
+        }
+        if membership.role == firm_core::agentfirm_api::TeamMembershipRole::Observer {
+            return Err(StoreError::Conflict(format!(
+                "ASSIGNEE_ROLE_INVALID: Observer TeamMembership {membership_id} cannot hold Work responsibility"
+            )));
+        }
+        // Automatic execution authority requires both an Active membership and
+        // an Active AgentMember; everything else holds responsibility dormant.
+        let agent_member_active = self
+            .trust_agent_members(execution_space_id)?
+            .into_iter()
+            .find(|member| member.id == membership.agent_member_id)
+            .is_some_and(|member| {
+                member.organization_status
+                    == firm_core::agentfirm_api::AgentMemberOrganizationStatus::Active
+            });
+        let automatic_execution_authority = membership.state
+            == firm_core::agentfirm_api::TeamMembershipStatus::Active
+            && agent_member_active;
+        let mut next = current.clone();
+        next.assignee_membership_id = Some(membership.id.clone());
+        next.owner_member_id = Some(membership.agent_member_id.clone());
+        // Responsibility moves; any legacy runtime binding of the previous
+        // assignee is fenced off. The transition appends no delivery because
+        // the new projection carries no runtime binding.
+        let cleared_member_run_id = next.active_member_run_id.take();
+        next.version += 1;
+        next.updated_at = context.created_at.clone();
+        self.append_work_transition_with_payload_unlocked(
+            current,
+            next,
+            WorkEventKind::Assigned,
+            context,
+            serde_json::json!({
+                "assignee_membership_id": membership.id,
+                "assignee_agent_member_id": membership.agent_member_id,
+                "assignee_membership_state": membership.state,
+                "automatic_execution_authority": automatic_execution_authority,
+                "cleared_active_member_run_id": cleared_member_run_id,
+            }),
+        )
     }
 
     /// Rebind non-terminal Work to a replacement runtime generation of the
@@ -3136,8 +3250,8 @@ impl HarnessStore {
         }
         let current = self.current_work_unlocked(work_id, expected_version)?;
         let mut recovered_fields = Vec::new();
-        if raw_current.work.team_id.is_none() && current.team_id.is_some() {
-            recovered_fields.push("team_id");
+        if raw_current.work.accountable_team_id.is_none() && current.accountable_team_id.is_some() {
+            recovered_fields.push("accountable_team_id");
         }
         if raw_current.work.created_by_member_id.is_none() && current.created_by_member_id.is_some()
         {
@@ -3207,9 +3321,9 @@ impl HarnessStore {
                 current.team_run_id
             )));
         }
-        let team_id = current.team_id.clone().ok_or_else(|| {
+        let team_id = current.accountable_team_id.clone().ok_or_else(|| {
             StoreError::Conflict(format!(
-                "WORK_NOT_TEAM_SCOPED: promote Work {work_id} before retargeting execution"
+                "WORK_NOT_TEAM_SCOPED: run responsibility migration for Work {work_id} before retargeting execution"
             ))
         })?;
         if current.team_run_id == successor_team_run_id {
@@ -3375,6 +3489,10 @@ impl HarnessStore {
         let mut next = current.clone();
         next.owner_member_id = Some(owner_id);
         next.active_member_run_id = Some(member.id.clone());
+        next.assignee_membership_id = self.resolve_assignee_membership_id_unlocked(
+            next.accountable_team_id.as_deref(),
+            next.owner_member_id.as_deref().unwrap_or_default(),
+        )?;
         next.phase = WorkPhase::Active;
         next.condition = WorkCondition::Normal;
         next.resolution = None;
@@ -4172,7 +4290,10 @@ impl HarnessStore {
                 "work {work_id} must be open to release"
             )));
         }
-        if current.active_member_run_id.is_none() || current.owner_member_id.is_none() {
+        if current.active_member_run_id.is_none()
+            && current.owner_member_id.is_none()
+            && current.assignee_membership_id.is_none()
+        {
             return Err(StoreError::Conflict(format!(
                 "work {work_id} is already unassigned"
             )));
@@ -4192,6 +4313,7 @@ impl HarnessStore {
         let mut next = current.clone();
         next.owner_member_id = None;
         next.active_member_run_id = None;
+        next.assignee_membership_id = None;
         next.version += 1;
         next.updated_at = context.created_at.clone();
         self.append_work_transition_unlocked(current, next, WorkEventKind::Released, context)
@@ -5003,11 +5125,11 @@ impl HarnessStore {
                     "owner_member_id does not match active ProviderRuntimeProjection stable identity".to_string(),
                 ));
             }
-        } else if work.owner_member_id.is_some() {
-            return Err(StoreError::Conflict(
-                "owned Work requires an active_member_run_id binding".to_string(),
-            ));
         }
+        // DOC-106: responsibility never depends on an active MemberRun or
+        // runtime. `assignee_membership_id` (mirrored by `owner_member_id`) is
+        // durable and survives Close/Reopen; only the transient execution
+        // binding above is runtime-fenced.
         Ok(())
     }
 
@@ -5027,6 +5149,267 @@ impl HarnessStore {
             )));
         }
         Ok(())
+    }
+
+    /// Resolve the assignee TeamMembership for one (accountable Team,
+    /// AgentMember) pair without ever guessing. Exactly one Active membership
+    /// binds; with no Active row exactly one historical membership binds; zero
+    /// rows, multiple Active rows, multiple historical rows, or a multi-space
+    /// trust fabric resolve to `None` and stay visible for the responsibility
+    /// migration report instead of being silently inferred.
+    fn resolve_assignee_membership_id_unlocked(
+        &self,
+        accountable_team_id: Option<&str>,
+        agent_member_id: &str,
+    ) -> StoreResult<Option<String>> {
+        let Some(team_id) = accountable_team_id else {
+            return Ok(None);
+        };
+        if agent_member_id.is_empty() {
+            return Ok(None);
+        }
+        let spaces = self.canonical_execution_space_ids()?;
+        let [space_id] = spaces.as_slice() else {
+            return Ok(None);
+        };
+        let matching = self
+            .fabric_team_memberships(space_id)?
+            .into_iter()
+            .filter(|membership| {
+                membership.team_id == team_id && membership.agent_member_id == agent_member_id
+            })
+            .collect::<Vec<_>>();
+        let active = matching
+            .iter()
+            .filter(|membership| {
+                membership.state == firm_core::agentfirm_api::TeamMembershipStatus::Active
+            })
+            .collect::<Vec<_>>();
+        if active.len() == 1 {
+            return Ok(Some(active[0].id.clone()));
+        }
+        if active.is_empty() && matching.len() == 1 {
+            return Ok(Some(matching[0].id.clone()));
+        }
+        Ok(None)
+    }
+
+    /// Versioned, append-only responsibility migration (DOC-106). Each legacy
+    /// Work gains its durable `accountable_team_id` (resolved through its
+    /// TeamRun) and, where one exact TeamMembership exists, its
+    /// `assignee_membership_id`. Every resolution is reported; ambiguous or
+    /// missing targets fail closed per field and are never guessed. Work IDs,
+    /// versions, Operation/Event history, provenance, reports, evidence, gates
+    /// and decisions are preserved: the only writes are new `Updated`
+    /// WorkOperations appended to the same `work_operations.jsonl` authority.
+    pub fn migrate_work_responsibility(
+        &self,
+        execution_space_id: &str,
+        context: WorkCommandContext,
+    ) -> StoreResult<firm_core::WorkResponsibilityMigrationReport> {
+        use firm_core::{
+            WorkResponsibilityMigrationEntry, WorkResponsibilityMigrationReport,
+            WorkResponsibilityResolution,
+        };
+
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        require_host_actor(&context.performed_by_actor)?;
+        // The recovered fold fails closed on provenance conflicts, so the
+        // migration never builds on an ambiguous projection.
+        let works = self.latest_works_unlocked()?;
+        let runs = self.team_runs()?;
+        let teams = self.latest_teams()?;
+        let memberships = self.fabric_team_memberships(execution_space_id)?;
+        let mut entries = Vec::new();
+        let mut migrated_work_ids = Vec::new();
+        for work in works.values() {
+            let accountable_team = match work.accountable_team_id.as_deref() {
+                Some(team_id) if teams.contains_key(team_id) => {
+                    WorkResponsibilityResolution::AlreadyCanonical
+                }
+                Some(team_id) => WorkResponsibilityResolution::Unresolved {
+                    reason: format!("accountable AgentTeam {team_id} not found in this store"),
+                },
+                None => match runs.iter().find(|run| run.id == work.team_run_id) {
+                    Some(run) if !run.agent_team_id.is_empty() => {
+                        if teams.contains_key(&run.agent_team_id) {
+                            WorkResponsibilityResolution::Resolved {
+                                value: run.agent_team_id.clone(),
+                            }
+                        } else {
+                            WorkResponsibilityResolution::Unresolved {
+                                    reason: format!(
+                                        "TeamRun {} resolves to AgentTeam {} which is not present in this store",
+                                        run.id, run.agent_team_id
+                                    ),
+                                }
+                        }
+                    }
+                    Some(run) => WorkResponsibilityResolution::Unresolved {
+                        reason: format!("TeamRun {} has no durable AgentTeam identity", run.id),
+                    },
+                    None => WorkResponsibilityResolution::Unresolved {
+                        reason: format!(
+                            "TeamRun {} not found; cannot resolve the accountable Team",
+                            work.team_run_id
+                        ),
+                    },
+                },
+            };
+            let resolved_team_id = match &accountable_team {
+                WorkResponsibilityResolution::AlreadyCanonical => work.accountable_team_id.clone(),
+                WorkResponsibilityResolution::Resolved { value } => Some(value.clone()),
+                _ => None,
+            };
+            let assignee = match (
+                work.assignee_membership_id.as_deref(),
+                work.owner_member_id.as_deref(),
+            ) {
+                (Some(membership_id), _) => {
+                    match memberships
+                        .iter()
+                        .find(|membership| membership.id == membership_id)
+                    {
+                        Some(membership)
+                            if Some(membership.team_id.as_str())
+                                == resolved_team_id.as_deref() =>
+                        {
+                            WorkResponsibilityResolution::AlreadyCanonical
+                        }
+                        Some(membership) => WorkResponsibilityResolution::Unresolved {
+                            reason: format!(
+                                "assignee TeamMembership {membership_id} belongs to Team {}, not the accountable Team {}",
+                                membership.team_id,
+                                resolved_team_id.as_deref().unwrap_or("<unresolved>")
+                            ),
+                        },
+                        None => WorkResponsibilityResolution::Unresolved {
+                            reason: format!(
+                                "assignee TeamMembership {membership_id} not found in Execution Space {execution_space_id}"
+                            ),
+                        },
+                    }
+                }
+                (None, None) => WorkResponsibilityResolution::Unassigned,
+                (None, Some(owner)) => match resolved_team_id.as_deref() {
+                    None => WorkResponsibilityResolution::Unresolved {
+                        reason: "accountable Team is unresolved; assignee cannot be derived safely"
+                            .to_string(),
+                    },
+                    Some(team_id) => {
+                        let matching = memberships
+                            .iter()
+                            .filter(|membership| {
+                                membership.team_id == team_id && membership.agent_member_id == owner
+                            })
+                            .collect::<Vec<_>>();
+                        let active = matching
+                            .iter()
+                            .filter(|membership| {
+                                membership.state
+                                    == firm_core::agentfirm_api::TeamMembershipStatus::Active
+                            })
+                            .collect::<Vec<_>>();
+                        if active.len() == 1 {
+                            WorkResponsibilityResolution::Resolved {
+                                value: active[0].id.clone(),
+                            }
+                        } else if active.is_empty() && matching.len() == 1 {
+                            WorkResponsibilityResolution::Resolved {
+                                value: matching[0].id.clone(),
+                            }
+                        } else if matching.is_empty() {
+                            WorkResponsibilityResolution::Unresolved {
+                                reason: format!(
+                                    "no TeamMembership binds AgentMember {owner} in Team {team_id}"
+                                ),
+                            }
+                        } else {
+                            WorkResponsibilityResolution::Unresolved {
+                                reason: format!(
+                                    "ambiguous: {} TeamMemberships ({} Active) bind AgentMember {owner} in Team {team_id}",
+                                    matching.len(),
+                                    active.len()
+                                ),
+                            }
+                        }
+                    }
+                },
+            };
+            let needs_team_write = matches!(
+                accountable_team,
+                WorkResponsibilityResolution::Resolved { .. }
+            );
+            let needs_assignee_write =
+                matches!(assignee, WorkResponsibilityResolution::Resolved { .. });
+            let mut to_version = None;
+            if needs_team_write || needs_assignee_write {
+                self.ensure_work_event_id_available_unlocked(&format!(
+                    "{}:{}",
+                    context.event_id, work.id
+                ))?;
+                let mut next = work.clone();
+                if let WorkResponsibilityResolution::Resolved { value } = &accountable_team {
+                    next.accountable_team_id = Some(value.clone());
+                }
+                if let WorkResponsibilityResolution::Resolved { value } = &assignee {
+                    next.assignee_membership_id = Some(value.clone());
+                }
+                next.version += 1;
+                next.updated_at = context.created_at.clone();
+                let operation = WorkOperation {
+                    event: WorkEvent {
+                        id: format!("{}:{}", context.event_id, work.id),
+                        team_run_id: work.team_run_id.clone(),
+                        work_id: work.id.clone(),
+                        sequence: self
+                            .work_operations_unlocked()?
+                            .iter()
+                            .filter(|operation| operation.work.id == work.id)
+                            .count() as u64
+                            + 1,
+                        kind: WorkEventKind::Updated,
+                        expected_version: work.version,
+                        resulting_version: next.version,
+                        performed_by_actor: context.performed_by_actor.clone(),
+                        authority_actor: context.authority_actor.clone(),
+                        causation_ref: context.causation_ref.clone(),
+                        idempotency_key: format!("{}:{}", context.idempotency_key, work.id),
+                        payload: serde_json::json!({
+                            "responsibility_migration": true,
+                            "accountable_team": accountable_team,
+                            "assignee": assignee,
+                        }),
+                        created_at: context.created_at.clone(),
+                    },
+                    work: next,
+                    condition_records: Vec::new(),
+                    reports: Vec::new(),
+                    evidence_records: Vec::new(),
+                    decisions: Vec::new(),
+                    deliveries: Vec::new(),
+                    delivery_updates: Vec::new(),
+                    delegation_revisions: Vec::new(),
+                };
+                self.append_work_operation_unlocked(&operation)?;
+                to_version = Some(work.version + 1);
+                migrated_work_ids.push(work.id.clone());
+            }
+            entries.push(WorkResponsibilityMigrationEntry {
+                work_id: work.id.clone(),
+                from_version: work.version,
+                to_version,
+                accountable_team,
+                assignee,
+            });
+        }
+        Ok(WorkResponsibilityMigrationReport {
+            execution_space_id: execution_space_id.to_string(),
+            migrated_work_ids,
+            entries,
+            created_at: context.created_at,
+        })
     }
 
     fn initial_work_deliveries_unlocked(
@@ -5465,14 +5848,19 @@ impl HarnessStore {
         let mut recovered = Vec::new();
         for mut operation in self.work_operations_unlocked()? {
             let work_id = operation.work.id.clone();
-            match (team_ids.get(&work_id), operation.work.team_id.as_deref()) {
+            match (
+                team_ids.get(&work_id),
+                operation.work.accountable_team_id.as_deref(),
+            ) {
                 (Some(expected), Some(actual)) if expected != actual => {
                     return Err(StoreError::Conflict(format!(
-                        "WORK_PROJECTION_PROVENANCE_CONFLICT: Work {work_id} changed team_id from {expected} to {actual} in event {}",
+                        "WORK_PROJECTION_PROVENANCE_CONFLICT: Work {work_id} changed accountable_team_id from {expected} to {actual} in event {}",
                         operation.event.id
                     )));
                 }
-                (Some(expected), None) => operation.work.team_id = Some(expected.clone()),
+                (Some(expected), None) => {
+                    operation.work.accountable_team_id = Some(expected.clone())
+                }
                 (None, Some(actual)) => {
                     team_ids.insert(work_id.clone(), actual.to_string());
                 }
@@ -5594,9 +5982,11 @@ impl HarnessStore {
             .latest_works_unlocked()?
             .remove(operation.work.id.as_str())
         {
-            if current.team_id.is_some() && operation.work.team_id != current.team_id {
+            if current.accountable_team_id.is_some()
+                && operation.work.accountable_team_id != current.accountable_team_id
+            {
                 return Err(StoreError::Conflict(format!(
-                    "WORK_PROJECTION_PROVENANCE_REGRESSION: Work {} event {} would drop or change team_id",
+                    "WORK_PROJECTION_PROVENANCE_REGRESSION: Work {} event {} would drop or change accountable_team_id",
                     operation.work.id, operation.event.id
                 )));
             }
@@ -8559,7 +8949,10 @@ fn node_project_registration_key(
 }
 
 fn works_share_scope(left: &Work, right: &Work) -> bool {
-    match (left.team_id.as_deref(), right.team_id.as_deref()) {
+    match (
+        left.accountable_team_id.as_deref(),
+        right.accountable_team_id.as_deref(),
+    ) {
         (Some(left), Some(right)) => left == right,
         (None, None) => left.team_run_id == right.team_run_id,
         _ => false,
@@ -11209,7 +11602,8 @@ mod tests {
                 Work {
                     id: format!("work-{run_id}"),
                     team_run_id: run_id.into(),
-                    team_id: None,
+                    accountable_team_id: None,
+                    assignee_membership_id: None,
                     parent_work_id: None,
                     title: "deliver exact Host attention".into(),
                     context_markdown: String::new(),
@@ -14159,7 +14553,8 @@ mod tests {
         Work {
             id: id.into(),
             team_run_id: run_id.into(),
-            team_id: None,
+            accountable_team_id: None,
+            assignee_membership_id: None,
             created_by_member_id: None,
             parent_work_id: None,
             title: format!("Implement Work core — {id}"),
@@ -14467,7 +14862,7 @@ mod tests {
         assert_eq!(created.version, 1);
         assert_eq!(created.target_work_ref.work_id, target.id);
         assert_eq!(
-            target.team_id.as_deref(),
+            target.accountable_team_id.as_deref(),
             Some(run_b.agent_team_id.as_str())
         );
         assert_eq!(
@@ -15915,7 +16310,7 @@ mod tests {
             )
             .expect("higher same-id generation must fence and redeliver Work");
         assert_eq!(rebound.active_member_run_id, created.active_member_run_id);
-        assert_eq!(rebound.team_id, created.team_id);
+        assert_eq!(rebound.accountable_team_id, created.accountable_team_id);
         assert_eq!(rebound.created_by_member_id, created.created_by_member_id);
         let operation = store
             .work_operations()
@@ -15972,7 +16367,10 @@ mod tests {
                 ),
             )
             .expect("Member creates Team-scoped Work");
-        assert_eq!(created.team_id.as_deref(), Some(run.agent_team_id.as_str()));
+        assert_eq!(
+            created.accountable_team_id.as_deref(),
+            Some(run.agent_team_id.as_str())
+        );
         assert_eq!(
             created.created_by_member_id,
             Some(member.agent_member_id.clone())
@@ -15997,7 +16395,9 @@ mod tests {
         );
         let mut sparse_work = created.clone();
         sparse_work.active_member_run_id = Some(replacement.id.clone());
-        sparse_work.team_id = None;
+        // Keep the accountable Team so the row passes the DOC-106 required-field
+        // validation; the provenance regression under test is the dropped
+        // creator provenance below.
         sparse_work.created_by_member_id = None;
         sparse_work.version += 1;
         sparse_work.updated_at = rebound_context.created_at.clone();
@@ -16042,13 +16442,18 @@ mod tests {
         let sparse_projection = sparse_json["work"]
             .as_object_mut()
             .expect("Work projection object");
-        sparse_projection.remove("team_id");
+        sparse_projection.remove("accountable_team_id");
         sparse_projection.remove("created_by_member_id");
         store
             .append_jsonl("work_operations.jsonl", &sparse_json)
             .expect("simulate stale mixed-version append");
         let raw = store.work_operations().expect("raw WorkOperations");
-        assert!(raw.last().expect("sparse rebound").work.team_id.is_none());
+        assert!(raw
+            .last()
+            .expect("sparse rebound")
+            .work
+            .accountable_team_id
+            .is_none());
         assert!(raw
             .last()
             .expect("sparse rebound")
@@ -16057,7 +16462,7 @@ mod tests {
             .is_none());
 
         let recovered = store.latest_works().expect("recovered Works").remove(0);
-        assert_eq!(recovered.team_id, created.team_id);
+        assert_eq!(recovered.accountable_team_id, created.accountable_team_id);
         assert_eq!(recovered.created_by_member_id, created.created_by_member_id);
         let repair_context = host_work_context(
             "event-reconcile-sparse-rebound",
@@ -16076,7 +16481,7 @@ mod tests {
             repaired.active_member_run_id.as_deref(),
             Some(replacement.id.as_str())
         );
-        assert_eq!(repaired.team_id, created.team_id);
+        assert_eq!(repaired.accountable_team_id, created.accountable_team_id);
         assert_eq!(repaired.created_by_member_id, created.created_by_member_id);
         assert_eq!(
             store
