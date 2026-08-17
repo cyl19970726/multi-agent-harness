@@ -1027,6 +1027,109 @@ struct SourceStore {
     identity: Option<serde_json::Value>,
 }
 
+/// Read-only view over the retired Company Store registry (DOC-108). This is
+/// the export path's only dependence on the registry format — the writers and
+/// the CLI/serve selection layer are gone; the reader stays so historical
+/// Company Stores remain enumerable for export/verify.
+mod retired_company_registry {
+    use std::path::{Path, PathBuf};
+
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct CompanyContext {
+        pub id: String,
+        pub name: String,
+        pub store_root: PathBuf,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct CompanyRegistryEntry {
+        id: String,
+        name: String,
+        store_root: PathBuf,
+    }
+
+    #[derive(Debug, Clone, Default, Deserialize)]
+    struct CompanyRegistry {
+        #[serde(default)]
+        companies: Vec<CompanyRegistryEntry>,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct CompanyMetadata {
+        company_id: String,
+        name: String,
+    }
+
+    fn companies_dir(firm_home: &Path) -> PathBuf {
+        firm_home.join("companies")
+    }
+
+    fn read_metadata(store_root: &Path) -> Result<Option<CompanyMetadata>, String> {
+        let path = store_root.join("metadata.json");
+        match std::fs::read_to_string(&path) {
+            Ok(text) => serde_json::from_str(&text)
+                .map(Some)
+                .map_err(|e| format!("parse {}: {e}", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("read {}: {e}", path.display())),
+        }
+    }
+
+    /// Merge registry entries and on-disk stores with metadata.json, deduped
+    /// by id and sorted for a stable export manifest.
+    pub fn list_companies(firm_home: &Path) -> Result<Vec<CompanyContext>, String> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let registry_file = companies_dir(firm_home).join("registry.json");
+        match std::fs::read_to_string(&registry_file) {
+            Ok(text) if !text.trim().is_empty() => {
+                let registry: CompanyRegistry = serde_json::from_str(&text)
+                    .map_err(|e| format!("parse {}: {e}", registry_file.display()))?;
+                for entry in registry.companies {
+                    if seen.insert(entry.id.clone()) {
+                        out.push(CompanyContext {
+                            id: entry.id,
+                            name: entry.name,
+                            store_root: entry.store_root,
+                        });
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("read {}: {e}", registry_file.display())),
+        }
+
+        if let Ok(read_dir) = std::fs::read_dir(companies_dir(firm_home)) {
+            for dir_entry in read_dir.flatten() {
+                if !dir_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    continue;
+                }
+                let id = match dir_entry.file_name().into_string() {
+                    Ok(name) => name,
+                    Err(_) => continue,
+                };
+                if seen.contains(&id) {
+                    continue;
+                }
+                let store_root = dir_entry.path();
+                if let Ok(Some(meta)) = read_metadata(&store_root) {
+                    seen.insert(id);
+                    out.push(CompanyContext {
+                        id: meta.company_id,
+                        name: meta.name,
+                        store_root,
+                    });
+                }
+            }
+        }
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(out)
+    }
+}
+
 /// Enumerate every source record store under the resolved Firm home: Company
 /// Stores, Execution Space stores, project-derived compatibility stores,
 /// repo-local compatibility stores (`<project_root>/.harness`), and machine
@@ -1047,7 +1150,7 @@ fn enumerate_stores(firm_home: &Path) -> Result<Vec<SourceStore>, String> {
 
     // 1. Company Stores (ADR 0040): the company layer merges registry entries
     //    and on-disk stores with metadata.json.
-    for ctx in crate::company_store::list_companies(firm_home)
+    for ctx in retired_company_registry::list_companies(firm_home)
         .map_err(|e| format!("enumerate Company Stores: {e}"))?
     {
         let identity = store_identity(&ctx.store_root);
