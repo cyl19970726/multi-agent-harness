@@ -272,7 +272,7 @@ export interface LatestTeamRunSummary {
   id:string; status:string; created_at:string|null; completed_at:string|null; execution_node_id:string|null;
   execution_root:string|null; project_binding_id:string|null; previous_run_id:string|null;
 }
-export interface CompanyWorkIndexData {
+export interface GlobalWorkIndexData {
   query: Record<string, string[]>; sort: Array<{field: string; direction: string}>; items: WorkSummary[];
   page: { as_of_event_sequence: number; item_count: number; next_cursor: string | null; snapshot_vector:Array<{execution_space_id:string;store_identity:string;trust_store_sequence:number;work_operation_count:number;team_row_count:number;team_run_row_count:number}> };
   pending_migration_work_ids: string[];

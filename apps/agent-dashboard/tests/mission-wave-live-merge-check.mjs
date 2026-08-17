@@ -78,10 +78,10 @@ async function main() {
     streamSelectionKey,
   } = await loadApi();
   const actions = await loadActions();
-  const [missionSource, selectionSource] = await Promise.all([
-    readFile(join(here, "..", "src", "surfaces", "Missions.tsx"), "utf8"),
-    readFile(join(here, "..", "src", "app", "selection.ts"), "utf8"),
-  ]);
+  // The Mission console surface is retired (DOC-107); its Wave-isolation
+  // assertions retired with it. Wave deep-link hygiene is still enforced on
+  // the retained navigation contract in selection.ts below.
+  const selectionSource = await readFile(join(here, "..", "src", "app", "selection.ts"), "utf8");
 
   const createRun = actions.createTeamRun({
     objective: "current Mission runtime",
@@ -103,16 +103,6 @@ async function main() {
     ok("Provider answer sends only response content and leaves Host identity to transport authentication");
   } else {
     bad("Provider answer still emitted caller-selected identity or retired plan context");
-  }
-
-  if (missionSource.includes("snapshot.legacy_waves")
-      && missionSource.includes("data-legacy-wave-history")
-      && !missionSource.includes("readyToClose")
-      && !missionSource.includes("selectedWave")
-      && !missionSource.includes("waveId:")) {
-    ok("Mission detail isolates Legacy Wave rows and never uses them for current actions or closeout");
-  } else {
-    bad("Mission detail still lets Legacy Wave state affect the current surface");
   }
 
   if (selectionSource.includes('params.delete("wave")')

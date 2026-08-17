@@ -117,13 +117,6 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
           >
             <Plus className="size-3.5" /> New Agent Team
           </Button>
-          <button
-            type="button"
-            onClick={() => onSelectionChange({ surface: "missions", missionId: undefined, teamId: undefined })}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-2 text-xs font-medium text-foreground transition-colors hover:border-primary/30 hover:bg-primary/[0.035]"
-          >
-            Open Missions <ArrowRight className="size-3.5" />
-          </button>
         </div>
       </header>
 

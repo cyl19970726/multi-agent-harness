@@ -1,33 +1,26 @@
-import { lazy, Suspense, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import {
-  BookOpen,
   BriefcaseBusiness,
   Bug,
-  Building2,
-  CheckCircle2,
   ChevronDown,
-  Coins,
   FolderGit2,
   Globe,
-  Home,
   Menu,
   Pause,
   Play,
-  Plug,
   RefreshCw,
   Search,
-  Settings2,
   ServerCog,
+  Settings2,
   ShieldAlert,
   Sparkles,
-  Target,
   Users,
   Workflow,
+  Wrench,
   X,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -35,32 +28,26 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Kbd, MonoId, StatusDot } from "@/components/workbench/atoms";
+import { Kbd, StatusDot } from "@/components/workbench/atoms";
 import { ProvenanceFooter } from "@/components/workbench/ProvenanceFooter";
 
 import type { WorkbenchModel } from "../model/readModel";
 import type { RoleActionExecutor } from "../model/roleViews";
-import type { Company, ExecutionSpace, Project } from "../types";
+import type { ExecutionSpace, Project } from "../types";
 import {
   AgentDetail,
   AgentsList,
   DebugSurface,
+  ProjectsSurface,
+  ProvidersSurface,
+  SettingsSurface,
 } from "../surfaces/Surfaces";
 import { WorkflowRunDetail, WorkflowsList } from "../surfaces/Workflows";
 import { AgentTeamsHome } from "../surfaces/AgentTeamsHome";
-import { MissionsSurface } from "../surfaces/Missions";
-import { CompanyWorkIndex } from "../surfaces/CompanyWorkIndex";
+import { GlobalWorkIndex } from "../surfaces/GlobalWorkIndex";
 import { TeamWorkspace } from "../surfaces/TeamWorkspace";
 import { AgentConversationWorkspace } from "../surfaces/AgentConversationWorkspace";
 import { OperatorView } from "../surfaces/OperatorView";
-import { isCompanyOsSurface, resolveCompanyOsRouteData } from "../company-os/routeMeta";
-import { DocsV2Surface } from "../company-os/docs/DocsV2Surface";
-
-/** Company OS page tree is large; keep it out of the initial workbench chunk
- * and load it when a Company OS surface is actually opened. */
-const CompanyOsRouter = lazy(() =>
-  import("../company-os/CompanyOsRouter").then((module) => ({ default: module.CompanyOsRouter })),
-);
 import type { SelectionState, SurfaceId } from "./selection";
 import { freshnessDomains, type DomainFreshness, type FreshnessDomain } from "./freshness";
 
@@ -73,18 +60,16 @@ interface WorkbenchShellProps {
   projects: Project[];
   /** Independent Mission/Team/Workflow coordination namespaces. */
   spaces: ExecutionSpace[];
-  /** Known Company Stores for the header picker; empty in raw-store mode. */
-  companies: Company[];
   /** The currently-selected project id ("" before one is chosen/adopted). */
   selectedProjectId: string;
   selectedSpaceId: string;
-  /** The currently-selected Company Store id for Company OS truth. */
+  /** Company scope still scopes authenticated RoleView reads (collaboration
+   * projection); there is deliberately no Company picker or Company context
+   * in navigation any more (DOC-107). */
   selectedCompanyId: string;
   /** Switch the active project: re-points the scoped snapshot + SSE stream. */
   onSelectProject: (projectId: string) => void;
   onSelectSpace: (spaceId: string) => void;
-  /** Switch the active Company Store without changing the execution project. */
-  onSelectCompany: (companyId: string) => void;
   onApiUrlChange: (value: string) => void;
   onRefresh: () => void;
   onSelectionChange: (selection: SelectionState) => void;
@@ -112,26 +97,18 @@ interface NavigationItem {
   icon: typeof Users;
 }
 
-const navigationGroups: Array<{ label: "PRIMARY" | "OPERATIONS" | "EXECUTION" | "PLATFORM"; items: NavigationItem[] }> = [
+/** Retained navigation (DOC-107): primary Global Work / Agent Teams / Nodes,
+ * secondary Providers / Projects / Settings. Team Workspace, Host Console,
+ * Agent Workspace, Workflows and Diagnostics remain deep-linkable off-rail. */
+const navigationGroups: Array<{ label: "PRIMARY" | "SECONDARY"; items: NavigationItem[] }> = [
   { label: "PRIMARY", items: [
-    { id: "home", label: "Home", icon: Home },
-    { id: "docs", label: "Docs", icon: BookOpen },
-    { id: "organization", label: "Organization", icon: Building2 },
-  ] },
-  { label: "OPERATIONS", items: [
-    { id: "work", label: "Work", icon: BriefcaseBusiness },
-    { id: "approvals", label: "Approvals", icon: CheckCircle2 },
-    { id: "finance", label: "Finance", icon: Coins },
-  ] },
-  { label: "EXECUTION", items: [
-    { id: "missions", label: "Missions", icon: Target },
-    { id: "workflows", label: "Workflows", icon: Workflow },
+    { id: "work", label: "Global Work", icon: BriefcaseBusiness },
     { id: "team", label: "Agent Teams", icon: Users },
-    { id: "operator", label: "Operator", icon: ServerCog },
+    { id: "operator", label: "Nodes", icon: ServerCog },
   ] },
-  { label: "PLATFORM", items: [
-    { id: "providers", label: "Providers", icon: Globe },
-    { id: "plugins", label: "Plugins", icon: Plug },
+  { label: "SECONDARY", items: [
+    { id: "providers", label: "Providers", icon: Wrench },
+    { id: "projects", label: "Projects", icon: FolderGit2 },
     { id: "settings", label: "Settings", icon: Settings2 },
   ] },
 ];
@@ -143,6 +120,8 @@ const mobileMoreGroups = navigationGroups.slice(1);
 /**
  * Surfaces reachable in code but intentionally off the primary rail:
  * - agent detail: the Agents surface with a selected agent (?agent=<id>)
+ * - workflows: execution capability retained pending an explicit retirement
+ *   decision; reachable through ?surface=workflows / ?workflowRun=<id>
  * - debug: moved behind a TopBar button
  */
 
@@ -150,13 +129,11 @@ export function WorkbenchShell({
   apiUrl,
   isLoading,
   model,
-  companies,
   projects,
   spaces,
-  selectedCompanyId,
   selectedProjectId,
   selectedSpaceId,
-  onSelectCompany,
+  selectedCompanyId,
   onSelectProject,
   onSelectSpace,
   onApiUrlChange,
@@ -196,13 +173,10 @@ export function WorkbenchShell({
           contextLabel={nativeContextLabel(model, selection)}
           isLoading={isLoading}
           model={model}
-          companies={companies}
           projects={projects}
           spaces={spaces}
-          selectedCompanyId={selectedCompanyId}
           selectedProjectId={selectedProjectId}
           selectedSpaceId={selectedSpaceId}
-          onSelectCompany={onSelectCompany}
           onSelectProject={onSelectProject}
           onSelectSpace={onSelectSpace}
           onApiUrlChange={onApiUrlChange}
@@ -210,14 +184,9 @@ export function WorkbenchShell({
           sourceError={sourceError}
           sourceLabel={sourceLabel}
           domainFreshness={domainFreshness}
-          prototypeMode={
-            isCompanyOsSurface(selection.surface)
-            && !(isLoading && actionsEnabled && !model.snapshot.company_os)
-            && resolveCompanyOsRouteData(model).mode !== "store-live"
-          }
           debugActive={selection.surface === "debug"}
           onToggleDebug={() =>
-            updateSelection({ surface: selection.surface === "debug" ? "home" : "debug" })
+            updateSelection({ surface: selection.surface === "debug" ? "work" : "debug" })
           }
           pollEnabled={pollEnabled}
           canPoll={canPoll}
@@ -240,6 +209,7 @@ export function WorkbenchShell({
                 projectBindingId={selectedProjectId}
                 executionSpaceId={selectedSpaceId}
                 companyId={selectedCompanyId}
+                projects={projects}
                 isLoading={isLoading}
               />
             );
@@ -248,11 +218,8 @@ export function WorkbenchShell({
             // ActionErrorBanner via the column, with no fragile calc). Every
             // other surface keeps the centered, padded, scrollable document.
             const fullBleed =
-              isCompanyOsSurface(selection.surface) ||
               (selection.surface === "agents" && Boolean(selection.memberId)) ||
-              (selection.surface === "team" && Boolean(selection.teamId || selection.memberRunId)) ||
-              (selection.surface === "missions" && Boolean(selection.missionId)) ||
-              selection.surface === "docs";
+              (selection.surface === "team" && Boolean(selection.teamId || selection.memberRunId));
             return fullBleed ? (
               <div className="flex h-full min-h-0 flex-1">{surface}</div>
             ) : (
@@ -298,14 +265,10 @@ function TopBar({
   currentSurface,
   contextLabel,
   isLoading,
-  model,
-  companies,
   projects,
   spaces,
-  selectedCompanyId,
   selectedProjectId,
   selectedSpaceId,
-  onSelectCompany,
   onSelectProject,
   onSelectSpace,
   onApiUrlChange,
@@ -318,22 +281,19 @@ function TopBar({
   pollEnabled,
   canPoll,
   onTogglePoll,
-  prototypeMode,
 }: Omit<
   WorkbenchShellProps,
-  "selection" | "onSelectionChange" | "actionsEnabled" | "onAction" | "onRoleAction"
+  "selection" | "onSelectionChange" | "actionsEnabled" | "onAction" | "onRoleAction" | "selectedCompanyId"
 > & {
   currentSurface: string;
   contextLabel: string;
   debugActive: boolean;
   onToggleDebug: () => void;
-  prototypeMode: boolean;
 }) {
   // Product freshness is explicit: socket-open alone does not earn Live.
   const transportStreaming = sourceLabel === "Live";
   const transportOnline = ["Live", "Reconnecting", "Stale"].includes(sourceLabel);
-  const isStreaming = !prototypeMode && transportStreaming;
-  const displayedSourceLabel = prototypeMode ? "prototype fixture" : sourceLabel;
+  const isStreaming = transportStreaming;
   return (
     <header className="flex h-[58px] min-w-0 shrink-0 items-center gap-2 border-b border-border bg-card/80 px-3 backdrop-blur-md lg:gap-3">
       <div className="flex min-w-0 shrink items-center gap-2.5">
@@ -356,11 +316,6 @@ function TopBar({
           selectedSpaceId={selectedSpaceId}
           onSelectSpace={onSelectSpace}
         />
-        <CompanyPicker
-          companies={companies}
-          selectedCompanyId={selectedCompanyId}
-          onSelectCompany={onSelectCompany}
-        />
       </div>
 
       <div className="mx-1 hidden min-w-0 flex-1 justify-center lg:mx-2 lg:flex">
@@ -379,12 +334,11 @@ function TopBar({
       <div className="ml-auto flex shrink-0 items-center gap-2">
         <DomainFreshnessStrip
           freshness={domainFreshness}
-          prototypeMode={prototypeMode}
           sourceError={sourceError}
-          runtimeLabel={displayedSourceLabel}
+          runtimeLabel={sourceLabel}
           runtimePulse={isStreaming}
         />
-        {!prototypeMode && <Tooltip>
+        <Tooltip>
           <TooltipTrigger asChild>
             <button
               type="button"
@@ -409,8 +363,8 @@ function TopBar({
                 ? "Stop auto-refresh (~5s)"
                 : "Auto-refresh every ~5s"}
           </TooltipContent>
-        </Tooltip>}
-        {!prototypeMode && <Tooltip>
+        </Tooltip>
+        <Tooltip>
           <TooltipTrigger asChild>
             <button
               type="button"
@@ -428,12 +382,12 @@ function TopBar({
           <TooltipContent side="bottom">
             {debugActive ? "Close raw snapshot" : "Open raw snapshot"}
           </TooltipContent>
-        </Tooltip>}
+        </Tooltip>
         {/* The dashboard auto-connects to the default harness on load and
             auto-retries while offline, so there is no "Load live" button. The
             URL field + a manual Reconnect appear only when not connected (e.g.
             to point at a non-default backend or recover from an outage). */}
-        {!prototypeMode && !transportOnline && (
+        {!transportOnline && (
           <>
             <input
               aria-label="Harness API URL"
@@ -520,7 +474,7 @@ function SpacePicker({
       <TooltipTrigger asChild>
         <label className="relative ml-1 hidden items-center sm:flex" aria-label="Execution Space">
           <span className="pointer-events-none absolute left-2 text-primary">
-            <Target className="size-3.5" />
+            <ServerCog className="size-3.5" />
           </span>
           <select
             aria-label="Active execution space"
@@ -535,61 +489,13 @@ function SpacePicker({
               </option>
             ))}
           </select>
-          <ChevronDown className="pointer-events-none absolute right-2 size-3.5 text-muted-foreground" />
+          <ChevronDown className="pointer-events-none absolute right-2 size-3.5 text-primary" />
         </label>
       </TooltipTrigger>
       <TooltipContent className="max-w-[36rem] space-y-1">
         <p><span className="text-muted-foreground">Execution coordination:</span> Mission / Mission Log / AgentTeam / Workflow</p>
         <p><span className="text-muted-foreground">Store:</span> <span className="font-mono">{selected.store_root}</span></p>
         <p><span className="text-muted-foreground">Default binding:</span> <span className="font-mono">{selected.default_project_binding_id ?? "none"}</span></p>
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
-function CompanyPicker({
-  companies,
-  selectedCompanyId,
-  onSelectCompany,
-}: {
-  companies: Company[];
-  selectedCompanyId: string;
-  onSelectCompany: (companyId: string) => void;
-}) {
-  const selected = companies.find((company) => company.id === selectedCompanyId);
-  if (!selected) return null;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <label className="relative ml-1 hidden items-center md:flex" aria-label="Company Store">
-          <span className="pointer-events-none absolute left-2 text-muted-foreground">
-            <Building2 className="size-3.5" />
-          </span>
-          <select
-            aria-label="Active company"
-            value={selectedCompanyId}
-            disabled={companies.length === 1}
-            onChange={(event) => onSelectCompany(event.target.value)}
-            className="h-8 max-w-[210px] appearance-none truncate rounded-md border border-border bg-background/50 pl-7 pr-7 text-[11px] text-foreground outline-none transition-colors hover:border-input focus:border-ring disabled:opacity-100"
-          >
-            {companies.map((company) => (
-              <option key={company.id} value={company.id}>
-                {companyLabel(company)}
-              </option>
-            ))}
-          </select>
-          <ChevronDown className="pointer-events-none absolute right-2 size-3.5 text-muted-foreground" />
-        </label>
-      </TooltipTrigger>
-      <TooltipContent className="max-w-[36rem] space-y-1">
-        <p>
-          <span className="text-muted-foreground">Company truth store:</span>{" "}
-          <span className="font-mono">{selected.store_root}</span>
-        </p>
-        <p>
-          <span className="text-muted-foreground">Boundary:</span>{" "}
-          Docs / Work / Organization / Finance. Project execution remains selected separately.
-        </p>
       </TooltipContent>
     </Tooltip>
   );
@@ -602,11 +508,6 @@ function projectLabel(project: Project): string {
   return project.id;
 }
 
-function companyLabel(company: Company): string {
-  const name = company.name?.trim();
-  return name ? `${name} (${company.id})` : company.id;
-}
-
 const freshnessLabels: Record<FreshnessDomain, string> = {
   works: "Works",
   docs: "Docs",
@@ -616,13 +517,11 @@ const freshnessLabels: Record<FreshnessDomain, string> = {
 
 function DomainFreshnessStrip({
   freshness,
-  prototypeMode,
   runtimeLabel,
   runtimePulse,
   sourceError,
 }: {
   freshness: DomainFreshness;
-  prototypeMode: boolean;
   runtimeLabel: string;
   runtimePulse: boolean;
   sourceError: string | null;
@@ -634,7 +533,7 @@ function DomainFreshnessStrip({
       className="flex min-w-0 items-center gap-1 rounded-md border border-border bg-background/50 px-1 py-1"
     >
       {freshnessDomains.map((domain) => {
-        const status = prototypeMode ? "offline" : freshness[domain];
+        const status = freshness[domain];
         const label = domain === "runtime" ? runtimeLabel : statusLabel(status);
         const tone = sourceError || status === "stale"
           ? "warn"
@@ -679,49 +578,35 @@ function AppRail({
   onSelectionChange: (selection: Partial<SelectionState>) => void;
   compact?: boolean;
 }) {
+  // The context block follows the selected durable Team (never a TeamRun
+  // attempt). A historical run-id deep link resolves to its owning Team first.
   const selectedRun = (model.snapshot.team_runs ?? []).find((run) => run.id === selection.teamId);
   const selectedTeam = (model.snapshot.teams ?? []).find(
-    (team) => team.id === selectedRun?.agent_team_id,
-  );
-  const missionId = selection.missionId ?? selectedTeam?.mission_id;
-  const mission = (model.snapshot.missions ?? []).find((item) => item.id === missionId);
-  const missionTeamIds = new Set((model.snapshot.teams ?? [])
-    .filter((team) => team.mission_id === missionId)
-    .map((team) => team.id));
-  const contextRun = selectedRun ?? [...(model.snapshot.team_runs ?? [])]
-    .filter((run) => missionTeamIds.has(run.agent_team_id))
-    .sort((left, right) => (right.created_at ?? "").localeCompare(left.created_at ?? ""))[0];
+    (team) => team.id === (selection.teamId ?? selectedRun?.agent_team_id),
+  ) ?? (model.snapshot.teams ?? []).find((team) => team.id === selectedRun?.agent_team_id);
+  const latestRun = selectedTeam
+    ? [...(model.snapshot.team_runs ?? [])]
+        .filter((run) => run.agent_team_id === selectedTeam.id)
+        .sort((left, right) => (right.created_at ?? "").localeCompare(left.created_at ?? ""))[0]
+    : undefined;
   const contextMembers = (model.snapshot.member_runs ?? []).filter(
-    (member) => member.team_run_id === contextRun?.id,
+    (member) => member.team_run_id === latestRun?.id,
   );
-  const companyContext = isCompanyOsSurface(selection.surface);
-  const selectedCompanySurface = navItems.find((item) => item.id === selection.surface);
 
   function navigate(id: SurfaceId) {
     onSelectionChange({
       surface: id,
-      documentId: undefined,
-      agentMembershipId: undefined,
-      personId: undefined,
-      proposalId: undefined,
-      approvalId: undefined,
-      moduleId: undefined,
       memberId: undefined,
       memberRunId: undefined,
       teamId: undefined,
-          workflowRunId: undefined,
-          orgView: undefined,
-          orgTeamId: undefined,
-          orgExpanded: undefined,
-          workView: undefined,
-          teamWorkId: undefined,
-          workTeamId: undefined,
-          workHostId: undefined,
-          workMemberId: undefined,
-          workStatus: undefined,
-          workPriority: undefined,
-          workSource: undefined,
-          workDemand: undefined,
+      workflowRunId: undefined,
+      teamWorkId: undefined,
+      workTeamId: undefined,
+      workHostId: undefined,
+      workMemberId: undefined,
+      workAssignee: undefined,
+      workStatus: undefined,
+      workPriority: undefined,
     });
   }
 
@@ -729,12 +614,12 @@ function AppRail({
     <>
       <aside className={cn("hidden h-full w-[14.5rem] shrink-0 flex-col border-r border-sidebar-border bg-sidebar xl:flex", compact && "xl:hidden")}>
         <div className="flex h-[58px] shrink-0 items-center gap-2.5 border-b border-border px-4">
-          <div className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground shadow-sm">
-            <Building2 className="size-4" />
+          <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground shadow-sm">
+            <Users className="size-4" />
           </div>
           <div className="min-w-0">
-            <p className="text-[13px] font-semibold tracking-tight">Company OS</p>
-            <p className="text-[10px] text-muted-foreground">Docs · organization · execution</p>
+            <p className="text-[13px] font-semibold tracking-tight">Star Harness</p>
+            <p className="text-[10px] text-muted-foreground">Global Work · Agent Teams · Nodes</p>
           </div>
         </div>
 
@@ -772,49 +657,31 @@ function AppRail({
 
             <section className="space-y-1.5">
               <p className="px-2.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                {companyContext ? "Company context" : "Active context"}
+                Active Team
               </p>
-              {companyContext ? (
-                <div className="rounded-lg border border-border/70 bg-background/55 px-3 py-3">
-                  <p className="text-[11px] font-semibold text-foreground">
-                    {selectedCompanySurface?.label ?? "Company OS"}
-                  </p>
-                  <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
-                    Docs holds context, Organization holds authority, Work holds commitments, and Finance records monetary effects.
-                  </p>
-                </div>
-              ) : mission ? (
+              {selectedTeam ? (
                 <div className="space-y-0.5">
                   <ContextTreeButton
                     depth={0}
-                    icon={<Target className="size-3.5" />}
-                    label={`Mission: ${mission.title}`}
-                    active={selection.surface === "missions" && selection.missionId === mission.id}
-                    onClick={() => onSelectionChange({ surface: "missions", missionId: mission.id, teamId: undefined, memberRunId: undefined })}
+                    icon={<Users className="size-3.5" />}
+                    label={selectedTeam.name ?? selectedTeam.id}
+                    active={selection.surface === "team" && !selection.memberRunId}
+                    onClick={() => onSelectionChange({ surface: "team", teamId: selectedTeam.id, memberRunId: undefined })}
                   />
-                  {contextRun && (
-                    <ContextTreeButton
-                      depth={1}
-                      icon={<Users className="size-3.5" />}
-                      label="Agent Team"
-                      active={selection.surface === "team" && selection.teamId === contextRun.id && !selection.memberRunId}
-                      onClick={() => onSelectionChange({ surface: "team", teamId: contextRun.id, memberRunId: undefined })}
-                    />
-                  )}
                   {contextMembers.map((member) => (
                     <ContextTreeButton
                       key={member.id}
-                      depth={2}
+                      depth={1}
                       icon={<StatusDot tone={member.status === "blocked" || member.status === "failed" ? "bad" : member.status === "running" ? "running" : member.status === "completed" ? "good" : "idle"} />}
                       label={member.name ?? member.id}
                       active={selection.memberRunId === member.id}
-                      onClick={() => onSelectionChange({ surface: "team", teamId: contextRun?.id, memberRunId: member.id })}
+                      onClick={() => onSelectionChange({ surface: "team", teamId: selectedTeam.id, memberRunId: member.id })}
                     />
                   ))}
                 </div>
               ) : (
                 <p className="px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground">
-                  Open a Mission to keep its Team, runs, and Members in reach.
+                  Open a durable Agent Team to keep its members in reach.
                 </p>
               )}
             </section>
@@ -827,8 +694,8 @@ function AppRail({
         "hidden h-full shrink-0 flex-col items-center border-r border-sidebar-border bg-sidebar py-3 sm:flex",
         compact ? "member-focus-rail w-20 xl:flex" : "w-16 xl:hidden",
       )}>
-        <div className={cn("grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground shadow-sm", compact && "member-focus-brand")} aria-label="Company OS">
-          {compact ? <Sparkles className="size-[19px]" /> : <Building2 className="size-4" />}
+        <div className={cn("grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground shadow-sm", compact && "member-focus-brand")} aria-label="Star Harness">
+          {compact ? <Sparkles className="size-[19px]" /> : <Users className="size-4" />}
         </div>
         <nav aria-label="Compact product navigation" className="mt-4 flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto px-2">
           {navigationGroups.map((group, index) => (
@@ -858,19 +725,19 @@ function AppRail({
             </div>
           ))}
         </nav>
-        {mission && (
+        {selectedTeam && (
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 type="button"
-                aria-label={`Active Mission: ${mission.title}`}
-                onClick={() => onSelectionChange({ surface: "missions", missionId: mission.id })}
+                aria-label={`Active Team: ${selectedTeam.name ?? selectedTeam.id}`}
+                onClick={() => onSelectionChange({ surface: "team", teamId: selectedTeam.id, memberRunId: undefined })}
                 className="mb-2 grid size-10 place-items-center rounded-lg border border-primary/20 bg-primary/5 text-primary"
               >
-                <Target className="size-[18px]" />
+                <Users className="size-[18px]" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="right">{mission.title}</TooltipContent>
+            <TooltipContent side="right">{selectedTeam.name ?? selectedTeam.id}</TooltipContent>
           </Tooltip>
         )}
       </aside>
@@ -950,6 +817,7 @@ function SurfaceSwitch({
   projectBindingId,
   executionSpaceId,
   companyId,
+  projects,
   isLoading,
 }: {
   model: WorkbenchModel;
@@ -964,6 +832,7 @@ function SurfaceSwitch({
   projectBindingId: string;
   executionSpaceId: string;
   companyId: string;
+  projects: Project[];
   isLoading: boolean;
 }) {
   // Content-derived snapshot revision: generated_at, ambient Supervisor lease
@@ -986,41 +855,10 @@ function SurfaceSwitch({
     projectBindingId,
     executionSpaceId,
   };
-  if (selection.surface === "docs-v2" || (selection.surface === "docs" && selection.documentId)) {
-    // AI-first Docs v2 (ADR 0054, retirement stage R2): the document focus of
-    // both docs surfaces renders through the store-live v2 page endpoint
-    // (legacy ledger documents appear as honest read-only legacy
-    // projections). No snapshot projection or fixture fallback participates.
-    return (
-      <DocsV2Surface
-        apiUrl={apiUrl}
-        selection={selection}
-        company={companyId}
-        project={projectBindingId}
-        space={executionSpaceId}
-        onSelectionChange={onSelectionChange}
-      />
-    );
-  }
   if (selection.surface === "work") {
-    return <CompanyWorkIndex apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} refreshKey={snapshotContentRevision} selection={selection} onSelectionChange={onSelectionChange} />;
-  }
-  if (isCompanyOsSurface(selection.surface)) {
-    const livePending = isLoading || (actionsEnabled && !model.snapshot.company_os);
-    return (
-      <Suspense fallback={<div className="grid h-full place-items-center text-sm text-muted-foreground">Loading Company OS…</div>}>
-        <CompanyOsRouter model={model} selection={selection} actionsEnabled={actionsEnabled} livePending={livePending} snapshotLoading={isLoading} sourceLabel={sourceLabel} onAction={onAction} onSelectionChange={onSelectionChange} />
-      </Suspense>
-    );
+    return <GlobalWorkIndex apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} refreshKey={snapshotContentRevision} selection={selection} onSelectionChange={onSelectionChange} teams={model.snapshot.teams ?? []} />;
   }
   switch (selection.surface) {
-    case "missions":
-      return (
-        <MissionsSurface
-          {...shared}
-          missionId={selection.missionId}
-        />
-      );
     case "workflows":
       // One surface, self-splitting on the selected run (mirror of agents/memberId).
       return selection.workflowRunId ? (
@@ -1044,6 +882,12 @@ function SurfaceSwitch({
         ? <OperatorView apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} nodeId={nodeId} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} />
         : <div role={isLoading ? "status" : undefined} className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">{isLoading ? "Loading Execution Nodes…" : "No Execution Node is registered."}</div>;
     }
+    case "providers":
+      return <ProvidersSurface />;
+    case "projects":
+      return <ProjectsSurface projects={projects} selectedProjectId={projectBindingId} />;
+    case "settings":
+      return <SettingsSurface />;
     case "debug":
       return <DebugSurface model={model} sourceLabel={sourceLabel} />;
     case "agents":
@@ -1062,17 +906,11 @@ function SurfaceSwitch({
 const offRailLabels: Partial<Record<SurfaceId, string>> = {
   team: "Agent Team",
   agents: "Execution agent",
+  workflows: "Workflows",
   debug: "Debug",
 };
 
 function nativeContextLabel(model: WorkbenchModel, selection: SelectionState): string {
-  if (selection.surface === "missions") {
-    const mission = (model.snapshot.missions ?? []).find(
-      (candidate) => candidate.id === selection.missionId,
-    );
-    return mission?.title ?? "Mission control";
-  }
-
   if (selection.surface === "team") {
     const memberRun = (model.snapshot.member_runs ?? []).find(
       (candidate) => candidate.id === selection.memberRunId,
@@ -1081,42 +919,24 @@ function nativeContextLabel(model: WorkbenchModel, selection: SelectionState): s
       (candidate) => candidate.id === (selection.teamId ?? memberRun?.team_run_id),
     );
     const team = (model.snapshot.teams ?? []).find(
-      (candidate) => candidate.id === run?.agent_team_id,
+      (candidate) => candidate.id === (selection.teamId ?? run?.agent_team_id),
     );
-    const mission = team?.mission_id
-      ? (model.snapshot.missions ?? []).find((candidate) => candidate.id === team.mission_id)
-      : undefined;
-    return memberRun?.name ?? mission?.title ?? (run ? "Team attempt" : "Agent Team attempts");
+    return memberRun?.name ?? team?.name ?? (team ? "Agent Team" : "Agent Teams");
   }
 
   switch (selection.surface) {
-    case "home":
-      return "Company attention";
-    case "organization":
-      if (selection.personId === "actor-human-brand-owner") return "Brand Owner";
-      if (selection.agentMembershipId === "actor-agent-document-architecture") return "Document Architecture Agent";
-      if (selection.proposalId === "governance-proposal-trademark-management") return "Create Trademark Management module";
-      return selection.personId ?? selection.agentMembershipId ?? selection.proposalId ?? "Mixed organization";
     case "work":
-      return selection.teamWorkId ?? "Company work";
-    case "approvals":
-      return selection.approvalId === "approval-trademark-filing-fee-cn-2026-018"
-        ? "Approve trademark filing fee"
-        : selection.approvalId ?? "Approval inbox";
-    case "finance":
-      return "Financial records";
+      return selection.teamWorkId ?? "All Team Work";
+    case "operator":
+      return selection.nodeId ?? "Machine daemons";
     case "providers":
-    case "plugins":
+    case "projects":
     case "settings":
       return "Platform";
     case "agents":
-      return "Execution compatibility";
+      return "Execution directory";
     case "workflows":
       return "Dynamic workflows";
-    case "docs":
-      if (selection.documentId === "document-brand-a-content-operating-plan") return "Brand A content operating plan";
-      if (selection.moduleId === "module-trademark-management") return "Trademark Management";
-      return selection.documentId ?? selection.moduleId ?? "Operating knowledge";
     case "debug":
       return "Diagnostics";
     default:
