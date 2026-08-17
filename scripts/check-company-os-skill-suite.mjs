@@ -1,3 +1,10 @@
+// INACTIVE HISTORICAL (DOC-108 Stage B): this gate exercised the retired
+// legacy CompanyOS surface and is removed from every pipeline. Kept as
+// source-only history per the inactive-historical convention (file kept,
+// removed from pipelines, named replacement) — see
+// docs/current/operations/operations.md.
+// Replacement: check:star-harness-plugin for the retained skills
+
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";

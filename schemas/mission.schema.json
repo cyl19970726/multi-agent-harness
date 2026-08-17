@@ -2,20 +2,50 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agent-harness.local/schemas/mission.schema.json",
   "title": "Mission",
-  "description": "The current durable intent and lifecycle object. Host judgment, replanning, recovery, and closeout evidence are appended as MissionLogEntry records rather than modeled as Waves.",
-  "x-agentfirm-authority": "current",
+  "description": "The retired durable intent and lifecycle object (DOC-108). Historical rows remain readable and exportable through `harness mission list|show|log show` and `harness legacy-company-os export|verify`; no writer path exists on any surface. Current coordination uses durable AgentTeam, Team-run Work, and identity-first Message delivery.",
+  "x-agentfirm-authority": "legacy-historical-read-only",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "title", "objective", "status", "created_at", "updated_at"],
+  "required": [
+    "id",
+    "title",
+    "objective",
+    "status",
+    "created_at",
+    "updated_at"
+  ],
   "properties": {
-    "id": { "type": "string", "minLength": 1 },
-    "title": { "type": "string", "minLength": 1 },
-    "objective": { "type": "string", "minLength": 1 },
-    "context": { "type": "string" },
-    "desired_outcome": { "type": ["string", "null"], "minLength": 1 },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1
+    },
+    "context": {
+      "type": "string"
+    },
+    "desired_outcome": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
     "status": {
       "type": "string",
-      "enum": ["planned", "running", "blocked", "completed", "cancelled"]
+      "enum": [
+        "planned",
+        "running",
+        "blocked",
+        "completed",
+        "cancelled"
+      ]
     },
     "wave_ids": {
       "description": "Legacy ADR 0051 compatibility only. Historical Mission rows may retain their Wave identifiers for read/export, but current Mission writes MUST omit this field and append MissionLogEntry records instead.",
@@ -24,12 +54,42 @@
       "x-agentfirm-authority": "legacy-historical-read-only",
       "type": "array",
       "uniqueItems": true,
-      "items": { "type": "string", "minLength": 1 }
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
-    "outcome_summary": { "type": ["string", "null"], "minLength": 1 },
-    "completed_by": { "type": ["string", "null"], "minLength": 1 },
-    "created_at": { "type": "string", "minLength": 1 },
-    "updated_at": { "type": "string", "minLength": 1 },
-    "completed_at": { "type": ["string", "null"], "minLength": 1 }
-  }
+    "outcome_summary": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "completed_by": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "updated_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "completed_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    }
+  },
+  "deprecated": true,
+  "readOnly": true,
+  "x-agentfirm-new-writes": false
 }
