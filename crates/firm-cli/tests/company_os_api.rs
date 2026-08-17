@@ -71,23 +71,29 @@ fn company_os_writers_are_retired_with_explicit_410() {
 }
 
 #[test]
-fn company_os_work_query_stays_a_read_only_legacy_projection() {
-    let (_home, serve) = serve("company-os-work-query-read");
+fn company_os_reads_are_retired_with_the_module() {
+    let (_home, serve) = serve("company-os-retired-reads");
 
-    let (status, query) = post(
-        &serve,
-        "/v1/company-os/work-query",
-        &json!({
-            "phases": ["active"],
-            "conditions": ["normal"]
-        }),
-    );
-    assert_eq!(status, 200, "{query}");
-    assert_eq!(query["result"]["query"]["phases"], json!(["active"]));
-
-    let (status, projection) = serve.get_json("/v1/company-os/work-projection");
-    assert_eq!(status, 200, "{projection}");
-    assert_eq!(projection["result"]["authority"], "team_work");
-    assert_eq!(projection["result"]["read_only"], true);
-    assert_eq!(projection["result"]["works"], json!([]));
+    // The read-shaped work-query and the read projections retired with the
+    // module (DOC-108 Stage B step 4): the read-only successor aggregate is
+    // the Global Work RoleView (`/v1/views/global-work`, `harness work list`).
+    for (method, path) in [
+        ("POST", "/v1/company-os/work-query"),
+        ("GET", "/v1/company-os/work-projection"),
+        ("GET", "/v1/company-os/works"),
+        ("GET", "/v1/company-os/snapshot"),
+    ] {
+        let (status, body) = match method {
+            "POST" => post(&serve, path, &json!({"phases": ["active"]})),
+            _ => serve.get_json(path),
+        };
+        assert_eq!(status, 410, "{method} {path}: {body}");
+        assert!(
+            body["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("DOC-108"),
+            "{method} {path} detail must name the retirement: {body}"
+        );
+    }
 }
