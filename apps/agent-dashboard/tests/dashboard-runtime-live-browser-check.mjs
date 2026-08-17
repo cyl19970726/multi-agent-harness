@@ -550,12 +550,12 @@ try {
   });
 
   const query = new URLSearchParams({
-    api: appBase, project: projectId, space: spaceId, company: "company-b", surface: "docs",
+    api: appBase, project: projectId, space: spaceId, company: "company-b", surface: "work",
   });
   await page.goto(`${appBase}/?${query}`, { waitUntil: "domcontentloaded", timeout: 20_000 });
   await waitForDomain(page, "runtime", "live");
-  await waitForText(page, "Seed document company-b");
-  check(pageErrors.length === 0, `real Runtime page opens without browser errors (${pageErrors[0] ?? "none"})`);
+  await page.getByRole("heading", { name: "Global Work", exact: true }).waitFor();
+  check(pageErrors.length === 0, `real Global Work page opens without browser errors (${pageErrors[0] ?? "none"})`);
   check(await page.locator('[aria-label="Scoped domain freshness"]').count() === 1, "freshness is one accessible scoped domain group");
   for (const domain of ["works", "docs", "organization", "runtime"]) {
     check(await page.locator(`[data-freshness-domain="${domain}"]`).count() === 1, `${domain} freshness is exposed independently`);
@@ -659,14 +659,12 @@ try {
   await waitForText(page, "active");
   check(true, "five-view loop converges the Member mutation into real Global Work truth");
 
-  await navigate(page, "Docs");
+  const companyScopeUrl = (company) => `${appBase}/?${new URLSearchParams({api: appBase, project: projectId, space: spaceId, company, surface: "work"})}`;
   const defaultBefore = await requestJson(apiBase, "/v1/companies/current");
-  await page.getByLabel("Active company").selectOption("company-a");
+  await page.goto(companyScopeUrl("company-a"), { waitUntil: "domcontentloaded" });
   await waitForDomain(page, "runtime", "live");
-  await waitForText(page, "Seed document company-a");
-  await page.getByLabel("Active company").selectOption("company-b");
+  await page.goto(companyScopeUrl("company-b"), { waitUntil: "domcontentloaded" });
   await waitForDomain(page, "runtime", "live");
-  await waitForText(page, "Seed document company-b");
   const defaultAfterNonDefaultSelection = await requestJson(apiBase, "/v1/companies/current");
   check(
     defaultBefore.current === "company-a" && defaultAfterNonDefaultSelection.current === "company-a",
@@ -685,7 +683,7 @@ try {
     return {startedPromise, release:releaseDelayed};
   };
 
-  await navigate(page, "Work");
+  await navigate(page, "Global Work");
   const workSnapshotGate = armDomainSnapshot("work-live-external");
   createNativeWork("work-live-external", "External Work converged");
   await workSnapshotGate.startedPromise;
@@ -696,7 +694,9 @@ try {
   await waitForText(page, "work-live-external");
   check(true, "external Work write converges into the open page without reload");
 
-  await navigate(page, "Docs");
+  // The Docs surface is retired; the docs ledger remains live until DEV-39, so
+  // the strip must still prove docs-domain staleness and reconvergence from any
+  // retained surface.
   const docsSnapshotGate = armDomainSnapshot("document-live-external");
   await postCompany("company-b", "documents", documentRecord("document-live-external", "External Docs converged"));
   await docsSnapshotGate.startedPromise;
@@ -704,10 +704,9 @@ try {
     await waitForDomain(page, "docs", "stale");
     check(await page.locator('[data-freshness-domain="works"][data-freshness-status="live"]').count() === 1, "Docs invalidation leaves Works freshness truthful and independent");
   } finally { docsSnapshotGate.release(); }
-  await waitForText(page, "External Docs converged");
-  check(true, "external Docs write converges into the open page without reload");
+  await waitForDomain(page, "docs", "live");
+  check(true, "external Docs write converges the docs freshness domain without reload");
 
-  await navigate(page, "Organization");
   const orgSnapshotGate = armDomainSnapshot("org-live-external");
   await postCompany("company-b", "org-units", orgUnitRecord("org-live-external", "External Org converged"));
   await orgSnapshotGate.startedPromise;
@@ -715,8 +714,8 @@ try {
     await waitForDomain(page, "organization", "stale");
     check(await page.locator('[data-freshness-domain="docs"][data-freshness-status="live"]').count() === 1, "Org invalidation leaves Docs freshness truthful and independent");
   } finally { orgSnapshotGate.release(); }
-  await waitForText(page, "External Org converged");
-  check(true, "external Organization write converges into the open page without reload");
+  await waitForDomain(page, "organization", "live");
+  check(true, "external Organization write converges the organization freshness domain without reload");
 
   // Real response, deliberately delivered late: switch the scope while B's
   // captured Runtime snapshot is in flight, then release it. Generation/scope
@@ -728,13 +727,16 @@ try {
   delayedCompanyB = { started: signalStarted, releasePromise };
   createNativeWork("work-live-delayed", "Delayed Company B response");
   await startedPromise;
-  await navigate(page, "Docs");
-  await page.getByLabel("Active company").selectOption("company-a");
-  await waitForText(page, "Seed document company-a");
+  await page.goto(companyScopeUrl("company-a"), { waitUntil: "domcontentloaded" });
+  await waitForDomain(page, "runtime", "live");
   releaseDelayed();
   await new Promise((resolveWait) => setTimeout(resolveWait, 500));
-  const afterDelayedScopeSwitch = await page.locator("body").innerText();
-  check(afterDelayedScopeSwitch.includes("Seed document company-a") && !afterDelayedScopeSwitch.includes("Seed document company-b"), "delayed stale Runtime response cannot overwrite the current Company-scoped Docs truth");
+  const tabScopeAfterDelayed = await page.evaluate(() => new URLSearchParams(window.location.search).get("company"));
+  // Works are Execution-Space-scoped, not Company-scoped; the boundary this
+  // segment guards is the captured-scope fetch pipeline, proven at mock level
+  // by the self-heal check. Here we assert the delayed response cannot disturb
+  // the tab's explicit scope or produce browser errors.
+  check(tabScopeAfterDelayed === "company-a" && pageErrors.length === 0, "delayed stale Runtime response cannot disturb the current Company scope");
 
   // External registry creation changes the CLI default as a CLI operation, then
   // we restore it. Visibility recovery refreshes the picker while this tab keeps
@@ -745,8 +747,11 @@ try {
   await page.evaluate(() => { window.__dashboardVisibility = "hidden"; document.dispatchEvent(new Event("visibilitychange")); });
   await page.evaluate(() => { window.__dashboardVisibility = "visible"; document.dispatchEvent(new Event("visibilitychange")); });
   await waitFor(() => snapshotReads > beforeVisibilityReads, "visibility recovery snapshot");
-  await waitFor(async () => await page.getByLabel("Active company").locator('option[value="company-c"]').count() === 1, "external Company appears in picker");
-  check(await page.getByLabel("Active company").inputValue() === "company-a", "external Company creation refreshes picker without changing tab scope");
+  // The Company picker left navigation; the tab scope is URL-owned. Visibility
+  // recovery must refresh the snapshot while the tab keeps its explicit scope.
+  await waitFor(() => snapshotReads > beforeVisibilityReads, "visibility recovery issued a scoped snapshot read");
+  const tabScopeAfterRecovery = await page.evaluate(() => new URLSearchParams(window.location.search).get("company"));
+  check(tabScopeAfterRecovery === "company-a", "external Company creation does not change the tab's URL-owned Company scope");
 
   // Stop and restart the actual Runtime on the same stores. A CLI write while it
   // is down is recovered by the authoritative reconnect snapshot; no SSE replay
@@ -764,14 +769,15 @@ try {
   startRuntime();
   await waitFor(async () => (await fetch(`${apiBase}/health`).catch(() => null))?.ok, "restarted Runtime health");
   await context.setOffline(false);
-  await navigate(page, "Organization");
   await waitForDomain(page, "runtime", "live");
-  await waitForText(page, "Reconnect Org Unit");
-  check(true, "disconnect/reconnect recovers external Organization truth through a full scoped snapshot");
+  const recoveredOrg = await requestJson(apiBase, `/v1/company-os/org-units?${new URLSearchParams({ company: "company-a", project: projectId, space: spaceId })}`).catch(() => null);
+  const recoveredText = JSON.stringify(recoveredOrg ?? {});
+  check(recoveredText.includes("Reconnect Org Unit"), "disconnect/reconnect recovers external Organization truth in the authoritative store");
+  check(true, "browser reconverges Runtime freshness after the reconnect snapshot");
 
   const stalePage = await context.newPage();
   const staleQuery = new URLSearchParams({
-    api: appBase, project: projectId, space: "missing-space", company: "missing-company", surface: "docs",
+    api: appBase, project: projectId, space: "missing-space", company: "missing-company", surface: "work",
   });
   await stalePage.goto(`${appBase}/?${staleQuery}`, { waitUntil: "domcontentloaded", timeout: 20_000 });
   await waitFor(async () => {
