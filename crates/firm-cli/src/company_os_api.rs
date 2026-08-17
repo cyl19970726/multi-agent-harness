@@ -201,6 +201,12 @@ pub fn handle_post(
 
 /// Handle a Company OS POST path while keeping Company Store writes separate
 /// from the Execution Spaces that own authoritative Work records.
+///
+/// DOC-108 Stage B: every Company OS writer is retired. The read-shaped
+/// `work-query` projection stays as a legacy read; all other POST routes —
+/// `actions/dispatch`, Docs v2 writes, and direct resource appends — fail
+/// with an explicit retired-write 410 on every surface (HTTP and the CLI
+/// `company` adapters share this handler).
 pub fn handle_post_with_execution(
     store: &HarnessStore,
     execution_store: Option<&HarnessStore>,
@@ -224,30 +230,15 @@ pub fn handle_post_with_execution(
             .map_err(ApiError::from)
         })));
     }
-    if let Err(error) = authenticate_write_transport(transport_token) {
-        return Some(error.response());
-    }
-    if path == "/v1/company-os/actions/dispatch" {
-        return Some(finish(dispatch_action(
-            store,
-            execution_store.unwrap_or(store),
-            execution_spaces.unwrap_or(&[]),
-            body,
-        )));
-    }
-    if let Some(response) = docs_v2_post(store, path, body) {
-        return Some(response);
-    }
-    let resource = path.strip_prefix("/v1/company-os/")?;
-    if resource.is_empty() || resource.contains('/') || resource == "snapshot" {
-        return None;
-    }
-    Some(finish(append_resource(
-        store,
-        resource,
-        body,
-        AppendMode::Direct,
-    )))
+    let _ = transport_token;
+    Some(ApiResponse {
+        status: "410 Gone",
+        body: json!({
+            "ok": false,
+            "error": "retired_write_authority",
+            "detail": format!("POST {path} was retired with the legacy CompanyOS cutover (DOC-108): Company OS writers are closed on every surface. Team-scoped Work is authoritative (harness team-run work / /v1/team-runs/*), the Global Work aggregate is read-only, and historical Company data is export/verify-only through `harness legacy-company-os export|verify`."),
+        }),
+    })
 }
 
 fn authenticate_write_transport(token: Option<&str>) -> Result<(), ApiError> {

@@ -70,21 +70,9 @@ fn team_create_persists_and_enforces_flat_identity_and_placement() {
         ("mission-node-check", "Node Check Mission"),
         ("mission-host-check", "Host Check Mission"),
     ] {
-        run_json(
-            &home,
-            &project_id,
-            &[
-                "mission",
-                "create",
-                "--id",
-                id,
-                "--title",
-                title,
-                "--objective",
-                "Exercise flat Team identity",
-                "--json",
-            ],
-        );
+        // DOC-108 retired the Mission writers: legacy Mission provenance is
+        // seeded directly as pre-cutover history.
+        firm_env::seed_historical_mission(&home, &project_id, id, title);
     }
     let node = run_json(&home, &project_id, &["node", "init"]);
     let node_id = node["id"].as_str().expect("node id").to_string();

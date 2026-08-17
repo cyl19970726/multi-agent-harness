@@ -1,3 +1,11 @@
+//! INACTIVE HISTORICAL (DOC-108 Stage B): the Company Store serve routing
+//! and compatibility reads this file exercised are retired; Company OS HTTP
+//! writers return an explicit retired 410 and the reads are removed with the
+//! module. Successor coverage: `tests/legacy_company_os.rs` export/verify and
+//! the Global Work RoleView tests in `tests/role_views_api.rs`.
+//! Kept source-only per the inactive-historical convention.
+#![cfg(any())]
+
 //! Live HTTP coverage for ADR 0042 Company Store selection in `harness serve`.
 
 mod firm_env;

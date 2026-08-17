@@ -42,28 +42,12 @@ fn create_space(home: &TempHome, id: &str, project_binding: &str) {
     assert!(out.status.success(), "space init failed: {out:?}");
 }
 
-/// Create a Mission in a specific Execution Space while independently selecting
-/// the provider Project Binding.
+/// Seed one historical Mission row in a specific Execution Space (DOC-108
+/// retired the `mission create` writer this fixture used; pre-cutover rows
+/// are the only Missions that exist).
 fn create_goal(home: &TempHome, space_id: &str, project_id: &str, goal_id: &str, title: &str) {
-    let out = run_firm(
-        home,
-        home.base(),
-        &[
-            "--project",
-            project_id,
-            "--space",
-            space_id,
-            "mission",
-            "create",
-            "--id",
-            goal_id,
-            "--title",
-            title,
-            "--objective",
-            "Exercise project isolation",
-        ],
-    );
-    assert!(out.status.success(), "mission create failed: {out:?}");
+    let _ = project_id;
+    firm_env::seed_historical_mission(home, space_id, goal_id, title);
 }
 
 fn goal_ids(snapshot: &serde_json::Value) -> Vec<String> {

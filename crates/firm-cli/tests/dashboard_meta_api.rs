@@ -87,15 +87,16 @@ fn seed_team(
         registration.extend(["--execution-space-id", space_id]);
     }
     run(&registration);
-    let mission = run(&[
-        "mission",
-        "create",
-        "--title",
+    // DOC-108 retired the Mission writers; legacy Mission provenance is
+    // seeded directly as pre-cutover history, into the same Execution Space
+    // the Team will live in (the default space when none is selected).
+    let mission_id = format!("mission-meta-{suffix}");
+    firm_env::seed_historical_mission(
+        home,
+        space_id.unwrap_or(project_id),
+        &mission_id,
         &format!("Meta mission {suffix}"),
-        "--objective",
-        "Verify dashboard metadata provenance",
-    ]);
-    let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
+    );
     let host_id = format!("agent-meta-host-{suffix}");
     let host = create_canonical_agent_member(
         home,

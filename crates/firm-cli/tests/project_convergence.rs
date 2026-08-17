@@ -8,7 +8,10 @@
 use std::path::Path;
 
 mod firm_env;
-use firm_env::{current_project_id, current_space_id, run_firm, ServeHandle, TempHome};
+use firm_env::{
+    create_canonical_agent_member, current_project_id, current_space_id, run_firm, ServeHandle,
+    TempHome,
+};
 
 fn init_project(home: &TempHome, name: &str) -> (std::path::PathBuf, String) {
     let root = home.base().join(name);
@@ -88,29 +91,43 @@ fn cli_write_after_switch_is_visible_in_serve_snapshot() {
         serve.post_json("/v1/projects/switch", &serde_json::json!({"project": id_a}));
     assert_eq!(status, 200);
 
-    // CLI from a different cwd creates a Mission; it lands in project A's central store.
+    // CLI from a different cwd creates a durable AgentTeam (DOC-108 retired
+    // the Mission writer this convergence proof used); it lands in project
+    // A's central store through the active Space marker.
     let elsewhere = home.base().join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
+    let host = create_canonical_agent_member(&home, &elsewhere, &id_a, "agent-converge-host", "converge-host", "host", "codex", &[]);
+    assert!(host.status.success(), "host create failed: {host:?}");
+    let node = run_firm(&home, &elsewhere, &["node", "init"]);
+    assert!(node.status.success(), "node init failed: {node:?}");
+    let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node JSON");
+    let node_id = node["id"].as_str().expect("node id");
     let out = run_firm(
         &home,
         &elsewhere,
         &[
-            "mission",
+            "team",
             "create",
             "--id",
-            "converge-mission",
-            "--title",
+            "team-converge",
+            "--name",
             "Converged",
-            "--objective",
+            "--description",
             "Prove project convergence",
+            "--host-agent-id",
+            "agent-converge-host",
+            "--node-id",
+            node_id,
+            "--member",
+            "agent-converge-host",
         ],
     );
-    assert!(out.status.success(), "mission create failed: {out:?}");
+    assert!(out.status.success(), "team create failed: {out:?}");
 
     // serve (started from root_a, default project now A) sees it in its snapshot.
     let (status, snap_a) = serve.get_json(&format!("/v1/snapshot?project={id_a}"));
     assert_eq!(status, 200);
-    let ids: Vec<String> = snap_a["missions"]
+    let ids: Vec<String> = snap_a["teams"]
         .as_array()
         .map(|a| {
             a.iter()
@@ -119,7 +136,7 @@ fn cli_write_after_switch_is_visible_in_serve_snapshot() {
         })
         .unwrap_or_default();
     assert!(
-        ids.contains(&"converge-mission".to_string()),
+        ids.contains(&"team-converge".to_string()),
         "serve snapshot missing the sibling CLI write: {ids:?}"
     );
 }

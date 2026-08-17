@@ -37,26 +37,12 @@ fn create_space(home: &TempHome, id: &str, project_binding: &str) {
     assert!(out.status.success(), "space init failed: {out:?}");
 }
 
+/// DOC-108 retired the Mission writers: Mission rows are pre-cutover history
+/// seeded directly into the Space ledger.
 fn create_mission(home: &TempHome, space_id: &str, project_id: &str, id: &str, objective: &str) {
-    let out = run_firm(
-        home,
-        home.base(),
-        &[
-            "--project",
-            project_id,
-            "--space",
-            space_id,
-            "mission",
-            "create",
-            "--id",
-            id,
-            "--title",
-            id,
-            "--objective",
-            objective,
-        ],
-    );
-    assert!(out.status.success(), "mission create failed: {out:?}");
+    let _ = project_id;
+    let _ = objective;
+    firm_env::seed_historical_mission(home, space_id, id, id);
 }
 
 fn create_team(home: &TempHome, space_id: &str, project_id: &str) -> String {

@@ -1,10 +1,14 @@
-//! End-to-end HTTP acceptance for the Unified Company Work boundary.
+//! Retirement contract for the legacy Company OS HTTP writers (DOC-108
+//! Stage B): every `POST /v1/company-os/*` mutation fails with an explicit
+//! `retired_write_authority` 410, while the read-shaped `work-query`
+//! projection remains a legacy read. The Global Work RoleView and
+//! `harness work` are the successor aggregate; historical Company data is
+//! export/verify-only through `harness legacy-company-os export|verify`.
 
 mod firm_env;
 use firm_env::{run_firm, ServeHandle, TempHome};
 use serde_json::{json, Value};
 
-const NOW: &str = "2026-08-09T10:00:00+08:00";
 const TEST_TOKEN: &str = "company-os-api-test-capability";
 
 fn init_project(home: &TempHome) {
@@ -30,44 +34,45 @@ fn post(serve: &ServeHandle, path: &str, body: &Value) -> (u16, Value) {
     serve.post_json_with_token(path, body, TEST_TOKEN)
 }
 
-fn human_root() -> Value {
-    json!({
-        "actor_type": "human",
-        "actor": {
-            "id": "human-root",
-            "display_name": "Company Root",
-            "title": "Operator",
-            "status": "active",
-            "availability": "available",
-            "membership_refs": [],
-            "responsibility_summary": "Company authority",
-            "permission_policy_refs": ["company_os.admin"],
-            "authority_policy_refs": ["company_os.admin"],
-            "created_at": NOW,
-            "updated_at": NOW
-        }
-    })
-}
+#[test]
+fn company_os_writers_are_retired_with_explicit_410() {
+    let (_home, serve) = serve("company-os-retired-writers");
 
-fn administrative(record: Value) -> Value {
-    json!({
-        "mode": "administrative",
-        "authority": {"actor_type": "human", "actor_id": "human-root"},
-        "record": record
-    })
+    for (path, body) in [
+        ("/v1/company-os/actors", json!({"actor_type": "human", "actor": {"id": "human-root"}})),
+        (
+            "/v1/company-os/milestones",
+            json!({"mode": "administrative", "record": {"id": "milestone-1"}}),
+        ),
+        (
+            "/v1/company-os/actions/dispatch",
+            json!({"action": {"id": "action-1"}}),
+        ),
+        (
+            "/v1/company-os/typed-records",
+            json!({"mode": "administrative", "record": {"id": "record-1"}}),
+        ),
+    ] {
+        let (status, body) = post(&serve, path, &body);
+        assert_eq!(status, 410, "POST {path}: {body}");
+        assert_eq!(
+            body["error"].as_str(),
+            Some("retired_write_authority"),
+            "POST {path}: {body}"
+        );
+        assert!(
+            body["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("DOC-108"),
+            "POST {path} detail must name the retirement: {body}"
+        );
+    }
 }
 
 #[test]
-fn company_work_is_a_read_only_team_work_projection() {
-    let (_home, serve) = serve("company-work-projection");
-    let (status, actor) = post(&serve, "/v1/company-os/actors", &human_root());
-    assert_eq!(status, 200, "{actor}");
-
-    let (status, projection) = serve.get_json("/v1/company-os/work-projection");
-    assert_eq!(status, 200, "{projection}");
-    assert_eq!(projection["result"]["authority"], "team_work");
-    assert_eq!(projection["result"]["read_only"], true);
-    assert_eq!(projection["result"]["works"], json!([]));
+fn company_os_work_query_stays_a_read_only_legacy_projection() {
+    let (_home, serve) = serve("company-os-work-query-read");
 
     let (status, query) = post(
         &serve,
@@ -80,57 +85,9 @@ fn company_work_is_a_read_only_team_work_projection() {
     assert_eq!(status, 200, "{query}");
     assert_eq!(query["result"]["query"]["phases"], json!(["active"]));
 
-    for resource in ["work-items", "assignments"] {
-        let (status, body) = serve.get_json(&format!("/v1/company-os/{resource}"));
-        assert_eq!(status, 404, "GET {resource}: {body}");
-        let (status, body) = post(
-            &serve,
-            &format!("/v1/company-os/{resource}"),
-            &administrative(json!({})),
-        );
-        assert_eq!(status, 404, "POST {resource}: {body}");
-    }
-
-    let (status, snapshot) = serve.get_json("/v1/company-os/snapshot");
-    assert_eq!(status, 200, "{snapshot}");
-    assert!(snapshot["result"].get("work_items").is_none());
-    assert!(snapshot["result"].get("assignments").is_none());
-    assert!(snapshot["result"].get("work_execution_chains").is_none());
-    assert_eq!(snapshot["result"]["work"]["authority"], "team_work");
-}
-
-#[test]
-fn milestone_references_authoritative_work_ids_without_copying_work() {
-    let (_home, serve) = serve("company-work-milestone");
-
-    let (status, actor) = post(&serve, "/v1/company-os/actors", &human_root());
-    assert_eq!(status, 200, "{actor}");
-
-    let milestone = json!({
-        "id": "milestone-release",
-        "title": "Release ready",
-        "outcome": "The accepted TeamWork is released",
-        "status": "active",
-        "accountable_owner": {"actor_type": "human", "actor_id": "human-root"},
-        "source_document_ref": null,
-        "business_module_ref": null,
-        "target_at": null,
-        "acceptance_criteria": ["The authoritative Work is accepted"],
-        "work_refs": ["work-native-1"],
-        "created_at": NOW,
-        "updated_at": NOW,
-        "achieved_at": null
-    });
-    let (status, result) = post(
-        &serve,
-        "/v1/company-os/milestones",
-        &administrative(milestone.clone()),
-    );
-    assert_eq!(status, 200, "{result}");
-    assert_eq!(result["result"], milestone);
-
-    let (status, stored) = serve.get_json("/v1/company-os/milestones/milestone-release");
-    assert_eq!(status, 200, "{stored}");
-    assert_eq!(stored["result"]["work_refs"], json!(["work-native-1"]));
-    assert!(stored["result"].get("work_item_refs").is_none());
+    let (status, projection) = serve.get_json("/v1/company-os/work-projection");
+    assert_eq!(status, 200, "{projection}");
+    assert_eq!(projection["result"]["authority"], "team_work");
+    assert_eq!(projection["result"]["read_only"], true);
+    assert_eq!(projection["result"]["works"], json!([]));
 }

@@ -66,23 +66,12 @@ fn init_project(home: &TempHome, name: &str) -> String {
         registration.status.success(),
         "register failed: {registration:?}"
     );
-    let mission = run_firm(
+    // DOC-108 retired the Mission writers; seed legacy provenance directly.
+    firm_env::seed_historical_mission(
         home,
-        &root,
-        &[
-            "mission",
-            "create",
-            "--id",
-            "mission-github-fixture",
-            "--title",
-            "GitHub linkage mission",
-            "--objective",
-            "Verify GitHub-linked Work",
-        ],
-    );
-    assert!(
-        mission.status.success(),
-        "mission create failed: {mission:?}"
+        &project_id,
+        "mission-github-fixture",
+        "GitHub linkage mission",
     );
     let host = create_canonical_agent_member(
         home,

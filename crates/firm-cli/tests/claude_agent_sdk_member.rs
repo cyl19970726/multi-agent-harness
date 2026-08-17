@@ -152,23 +152,13 @@ fn init_project(home: &TempHome, name: &str) -> String {
         created.status.success(),
         "create canonical SDK Host failed: {created:?}"
     );
-    let mission = run_firm(
+    // DOC-108 retired the Mission writers; legacy Mission provenance is
+    // seeded directly as pre-cutover history.
+    firm_env::seed_historical_mission(
         home,
-        &root,
-        &[
-            "mission",
-            "create",
-            "--id",
-            "claude-sdk-mission",
-            "--title",
-            "Claude SDK deterministic integration",
-            "--objective",
-            "Exercise one persistent Claude Agent SDK member",
-        ],
-    );
-    assert!(
-        mission.status.success(),
-        "create Mission failed: {mission:?}"
+        &project_id,
+        "claude-sdk-mission",
+        "Claude SDK deterministic integration",
     );
     let node = run_firm(home, &root, &["node", "init"]);
     assert!(node.status.success(), "initialize Node failed: {node:?}");

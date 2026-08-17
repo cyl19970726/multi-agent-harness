@@ -57,23 +57,12 @@ fn init_project(home: &TempHome, name: &str) -> String {
         registration.status.success(),
         "register failed: {registration:?}"
     );
-    let mission = run_firm(
+    // DOC-108 retired the Mission writers; seed legacy provenance directly.
+    firm_env::seed_historical_mission(
         home,
-        &root,
-        &[
-            "mission",
-            "create",
-            "--id",
-            "mission-capacity-fixture",
-            "--title",
-            "Provider capacity mission",
-            "--objective",
-            "Verify provider capacity preflight",
-        ],
-    );
-    assert!(
-        mission.status.success(),
-        "mission create failed: {mission:?}"
+        &project_id,
+        "mission-capacity-fixture",
+        "Provider capacity mission",
     );
     let host = create_canonical_agent_member(
         home,

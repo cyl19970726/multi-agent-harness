@@ -52,21 +52,8 @@ fn canonical_agent_member_directly_drives_team_host_and_cutover_audit() {
     );
     assert!(lead.status.success(), "canonical Lead failed: {lead:?}");
 
-    run_json(
-        &home,
-        &project_id,
-        &[
-            "mission",
-            "create",
-            "--id",
-            "mission-root",
-            "--title",
-            "Root Mission",
-            "--objective",
-            "Exercise canonical Host identity",
-            "--json",
-        ],
-    );
+    // DOC-108 retired the Mission writers; seed legacy provenance directly.
+    firm_env::seed_historical_mission(&home, &project_id, "mission-root", "Root Mission");
     let node = run_json(&home, &project_id, &["node", "init"]);
     let node_id = node["id"].as_str().expect("node id");
     run_json(

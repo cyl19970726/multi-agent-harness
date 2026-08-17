@@ -23,7 +23,9 @@ fn init_project(home: &TempHome, name: &str) -> String {
 }
 
 /// Seed the mandatory flat AgentTeam relation used by every AgentTeamRun:
-/// one Mission, one durable Host Agent, and the local ExecutionNode.
+/// one durable Host AgentMember and the local ExecutionNode. No Mission is
+/// created — post-DEV-35 Teams never require one and DOC-108 retired the
+/// Mission writers.
 fn seed_agent_team(home: &TempHome, project_root: &std::path::Path, suffix: &str) -> String {
     let project_id = current_project_id(home);
     let space_id = format!("mcp-space-{suffix}");
@@ -83,25 +85,7 @@ fn seed_agent_team(home: &TempHome, project_root: &std::path::Path, suffix: &str
     );
     assert!(host.status.success(), "host create failed: {host:?}");
 
-    let mission = run_firm(
-        home,
-        project_root,
-        &[
-            "mission",
-            "create",
-            "--title",
-            &format!("MCP Mission {suffix}"),
-            "--objective",
-            "Exercise the MCP AgentTeam contract",
-        ],
-    );
-    assert!(
-        mission.status.success(),
-        "mission create failed: {mission:?}"
-    );
-    let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
-
-    seed_team_for_mission(home, project_root, &mission_id, &host_id, suffix, &[])
+    seed_team_without_mission(home, project_root, &host_id, suffix, &[])
 }
 
 #[cfg(any())]
@@ -193,6 +177,11 @@ fn seed_member_in_active_space_with_provider(
     member_id
 }
 
+/// Historical helper for the source-only `mcp_stdio_agent_team_tools`
+/// migration-evidence test: seeds a Team WITH legacy Mission provenance.
+/// Live tests use `seed_team_without_mission`; DOC-108 retired the Mission
+/// writers this flow depended on.
+#[cfg(any())]
 fn seed_team_for_mission(
     home: &TempHome,
     project_root: &std::path::Path,

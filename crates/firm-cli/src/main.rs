@@ -2004,7 +2004,7 @@ fn run() -> CliResult<()> {
                 return Err(retired_wave_write_error(subcommand));
             }
             return Err(CliError::Usage(
-                "Wave is Legacy-only (ADR 0051). Historical reads moved to `harness legacy wave list|show|history`; current planning uses `harness mission log`.".to_string(),
+                "Wave is Legacy-only (ADR 0051). Historical reads moved to `harness legacy wave list|show|history`; current coordination uses durable AgentTeam, Team-run Work, and identity-first Messages.".to_string(),
             ));
         }
         "team-run" => team_run_command(&store, &resolved, &args[1..])?,
@@ -2119,28 +2119,13 @@ fn retired_surface_error(command: &str) -> CliError {
     ))
 }
 
-fn company_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company <init|list|current|switch|show|migrate-from-project|migrations> | company docs ... | company work list|query|milestone | company org ... | company approval ... | company finance ... | company gateway social readiness")?;
-    match args[0].as_str() {
-        "init" => company_store_init_command(args.get(1..).unwrap_or(&[])),
-        "list" => company_store_list_command(),
-        "current" => company_store_current_command(),
-        "switch" => company_store_switch_command(args.get(1..).unwrap_or(&[])),
-        "show" => company_store_show_command(args.get(1..).unwrap_or(&[])),
-        "migrate-from-project" => {
-            company_store_migrate_from_project_command(args.get(1..).unwrap_or(&[]))
-        }
-        "migrations" => company_store_migrations_command(store),
-        "docs" => company_docs_command(store, &args[1..]),
-        "work" => company_work_command(store, &args[1..]),
-        "org" => company_org_command(store, &args[1..]),
-        "approval" => company_approval_command(store, &args[1..]),
-        "finance" => company_finance_command(store, &args[1..]),
-        "gateway" => company_gateway_command(&args[1..]),
-        other => Err(CliError::Usage(format!(
-            "unknown company command: {other}; usage: harness company <init|list|current|switch|show|migrate-from-project|migrations> | harness company docs ... | harness company work ... | harness company org ... | harness company approval ... | harness company finance ... | harness company gateway ..."
-        ))),
-    }
+fn company_command(_store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    // DOC-108 Stage B: the entire `harness company` tree is retired. The
+    // Company Store registry and its Docs/Organization/Approval/Finance
+    // surfaces are historical, export/verify-only through
+    // `harness legacy-company-os export|verify`.
+    let subcommand = args.first().map(String::as_str).unwrap_or("help");
+    Err(retired_company_error(subcommand))
 }
 
 fn company_gateway_command(args: &[String]) -> CliResult<()> {
@@ -8317,17 +8302,25 @@ fn org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             for team in teams.values() {
                 team.validate()
                     .map_err(|error| CliError::Usage(error.to_string()))?;
-                if !mission_ids.insert(team.mission_id.as_str()) {
-                    return Err(CliError::Usage(format!(
-                        "multiple AgentTeams reference Mission {}",
-                        team.mission_id
-                    )));
-                }
-                if !missions.iter().any(|mission| mission.id == team.mission_id) {
-                    return Err(CliError::Usage(format!(
-                        "AgentTeam {} references missing Mission {}",
-                        team.id, team.mission_id
-                    )));
+                // Mission linkage is optional legacy provenance (DEV-35):
+                // mission-less Teams are the current default and skip the
+                // historical Mission-reference audit entirely.
+                if let Some(mission_id) = team
+                    .legacy_mission_id
+                    .as_deref()
+                    .filter(|mission_id| !mission_id.trim().is_empty())
+                {
+                    if !mission_ids.insert(mission_id) {
+                        return Err(CliError::Usage(format!(
+                            "multiple AgentTeams reference Mission {mission_id}"
+                        )));
+                    }
+                    if !missions.iter().any(|mission| mission.id == mission_id) {
+                        return Err(CliError::Usage(format!(
+                            "AgentTeam {} references missing Mission {}",
+                            team.id, mission_id
+                        )));
+                    }
                 }
                 if !nodes.iter().any(|node| node.id == team.node_id) {
                     return Err(CliError::Usage(format!(
@@ -9399,24 +9392,14 @@ fn team_message_claim(
 // ---------------------------------------------------------------------------
 
 fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "mission create|list|show|update-context|close|log")?;
-    let json = has_flag(args, "--json");
+    require_subcommand(
+        args,
+        "mission list|show|log show (read-only legacy; writers retired by DOC-108)",
+    )?;
     match args[0].as_str() {
         "log" => return mission_log_command(store, &args[1..]),
-        "create" => {
-            let mission = create_mission(
-                store,
-                value(args, "--id"),
-                &required(args, "--title")?,
-                &required(args, "--objective")?,
-                value(args, "--desired-outcome"),
-                value(args, "--context"),
-            )?;
-            if json {
-                print_json(&mission)?;
-            } else {
-                println!("{}", mission.id);
-            }
+        command if retired_mission_write_command(command) => {
+            return Err(retired_mission_write_error(command));
         }
         "list" => print_json(&store.latest_missions()?)?,
         "show" => {
@@ -9428,55 +9411,20 @@ fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 .ok_or_else(|| CliError::Usage(format!("mission not found: {id}")))?;
             print_json(&mission)?;
         }
-        "update-context" => print_json(&revise_mission_context(
-            store,
-            &required(args, "--id")?,
-            &required(args, "--context")?,
-        )?)?,
-        "close" => {
-            let mission = close_mission(
-                store,
-                &required(args, "--id")?,
-                &required(args, "--outcome")?,
-                &value(args, "--completed-by").unwrap_or_else(|| "host".to_string()),
-            )?;
-            if json {
-                print_json(&mission)?;
-            } else {
-                println!("{}\tcompleted", mission.id);
-            }
-        }
         other => return Err(CliError::Usage(format!("unknown mission command: {other}"))),
     }
     Ok(())
 }
 
-/// `mission log append|show` — the ADR 0051 Mission Log: Mission's
-/// append-only judgment record. This absorbs the versioned-memo role Wave
-/// used to play; there is no update/advance/gate here because an
-/// append-only log has nothing to mutate, only entries to add.
+/// `mission log show` — read-only legacy read of the append-only Mission Log
+/// (ADR 0051). `append` was retired with the legacy CompanyOS cutover
+/// (DOC-108): the log is historical provenance, never new current authority.
 fn mission_log_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "mission log append|show")?;
+    require_subcommand(args, "mission log show (append retired by DOC-108)")?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
         "append" => {
-            let entry = create_mission_log_entry(
-                store,
-                &required(args, "--mission-id")?,
-                &required(args, "--kind")?,
-                &required(args, "--body")?,
-                value(args, "--actor"),
-            )?;
-            if json {
-                print_json(&entry)?;
-            } else {
-                println!(
-                    "{}\t#{}\t{}",
-                    entry.mission_id,
-                    entry.revision,
-                    serde_snake_label(&entry.kind)
-                );
-            }
+            return Err(retired_mission_write_error("log-append"));
         }
         "show" => {
             let mission_id = required(args, "--mission-id")?;
@@ -9692,7 +9640,37 @@ pub(crate) fn retired_wave_write_command(command: &str) -> bool {
 
 pub(crate) fn retired_wave_write_error(command: &str) -> CliError {
     CliError::Usage(format!(
-        "`harness wave {command}` was retired with the Mission Log cutover (ADR 0051): Mission absorbs Wave as an append-only judgment log. Use `harness mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <markdown>` instead. Historical rows are read only through `harness legacy wave list|show|history`."
+        "`harness wave {command}` was retired with the Mission Log cutover (ADR 0051), and the Mission Log writers that absorbed it were themselves retired with the legacy CompanyOS cutover (DOC-108). Current coordination uses durable AgentTeam, Team-run Work, and identity-first Message delivery. Historical rows are read only through `harness legacy wave list|show|history` and `harness legacy-company-os export|verify`."
+    ))
+}
+
+/// Mission/Mission Log write commands retired by the DOC-108 legacy
+/// CompanyOS cutover. Mirrors the Wave shim: `mission list|show|log show`
+/// remain functional as read-only legacy reads; `create`, `update-context`,
+/// `close`, and `log append` no longer accept a new write on ANY surface —
+/// CLI, HTTP (`POST /v1/missions`...), or MCP (`mission_create`...) — so
+/// there is exactly one place (this function plus
+/// [`retired_mission_write_command`]) that states the retirement.
+pub(crate) fn retired_mission_write_command(command: &str) -> bool {
+    matches!(command, "create" | "update-context" | "close" | "log-append")
+}
+
+pub(crate) fn retired_mission_write_error(command: &str) -> CliError {
+    CliError::Usage(format!(
+        "`harness mission {command}` was retired with the legacy CompanyOS cutover (DOC-108): Mission is historical provenance, not current authority, and its writers are closed on every surface. Current coordination uses durable AgentTeam (`harness team`), Team-run Work (`harness team-run work`), and identity-first Message delivery. Historical Mission rows stay read-only through `harness mission list|show|log show` and `harness legacy-company-os export|verify`."
+    ))
+}
+
+/// The whole `harness company` surface retired with the DOC-108 legacy
+/// CompanyOS cutover: the Company Store registry, Docs, Organization,
+/// Approval, Finance, and gateway sub-commands are no longer current
+/// authority. Work responsibility is Team-scoped (`harness team-run work`)
+/// with the read-only Global Work aggregate at `harness work list|show`;
+/// historical Company data is export/verify-only through
+/// `harness legacy-company-os export|verify`.
+pub(crate) fn retired_company_error(command: &str) -> CliError {
+    CliError::Usage(format!(
+        "`harness company {command}` was retired with the legacy CompanyOS cutover (DOC-108): the Company Store registry and its Docs/Organization/Approval/Finance writers and reads are closed. Use `harness team`, `harness team-run work`, the read-only Global Work aggregate `harness work list|show`, and `harness legacy-company-os export|verify` for historical data."
     ))
 }
 
@@ -29530,13 +29508,14 @@ fn resolve_peer_team_message_admission_authority(
         target_policy_revision = 1;
     }
     let mut authority = PeerTeamMessageAdmissionAuthority {
+        // DOC-108: ordinary peer-Team messaging must not depend on the
+        // retired Company registry. Without an explicit remote_transfer
+        // Company label, the collaboration scope is the local Execution
+        // Space. The label feeds only the self-consistent admission digests;
+        // remote targets fence against their own inbound policy revision.
         company_id: match request {
             Some(request) => request.company_id.clone(),
-            None => company_store::active_company_id(firm_home)
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| {
-                    "local peer-Team authoring requires an active Company or an explicit remote_transfer Company".to_string()
-                })?,
+            None => format!("space:{execution_space_id}"),
         },
         source_execution_space_id: execution_space_id.into(),
         source_team_id: source_team_id.into(),
@@ -31175,7 +31154,7 @@ fn handle_http_connection(
             &serde_json::json!({
                 "ok": false,
                 "error": "retired_coordination_surface",
-                "detail": "This Goal/GoalPhase/Task Graph API was retired. Use /v1/missions, /v1/missions/{id}/log, /v1/team-runs, or /v1/company-os/*; historical rows are export-only through `harness legacy-goal-task export|verify`."
+                "detail": "This Goal/GoalPhase/Task Graph API was retired. Current coordination uses /v1/teams and /v1/team-runs; historical rows are export-only through `harness legacy-goal-task export|verify`."
             }),
         )?;
         return Ok(());
@@ -32336,45 +32315,44 @@ fn handle_http_action(
             "RETIRED_WRITE_AUTHORITY: legacy local Work/WorkDelegation writers are closed".into(),
         ));
     }
+    // Mission/Mission Log write endpoints retired with the DOC-108 legacy
+    // CompanyOS cutover (same retirement as the `mission
+    // create|update-context|close|log append` CLI commands and the
+    // `mission_*` MCP writer tools — see `retired_mission_write_error`).
+    // Mission rows remain readable history through the CLI legacy reads and
+    // the Stage A export/verify path; no current surface may write them.
     if path == "/v1/missions" {
-        return create_mission_value(store, body);
+        return Err(retired_mission_write_error("create"));
     }
-    if let Some(mission_id) = path
+    if path
         .strip_prefix("/v1/missions/")
         .and_then(|rest| rest.strip_suffix("/close"))
+        .is_some()
     {
-        return close_mission_value(store, mission_id, body);
+        return Err(retired_mission_write_error("close"));
     }
-    if let Some(mission_id) = path
+    if path
         .strip_prefix("/v1/missions/")
         .and_then(|rest| rest.strip_suffix("/teams"))
+        .is_some()
     {
-        let mut team_body = body.clone();
-        let object = team_body.as_object_mut().ok_or_else(|| {
-            CliError::Usage("Mission Team body must be a JSON object".to_string())
-        })?;
-        object.insert(
-            "mission_id".to_string(),
-            serde_json::Value::String(mission_id.to_string()),
-        );
-        let team_value = create_team_value(store, execution_space_id, &team_body)?;
-        return Ok(serde_json::json!({"team": team_value}));
+        return Err(CliError::Usage(
+            "POST /v1/missions/{id}/teams was retired with the legacy CompanyOS cutover (DOC-108): Mission no longer owns Team creation. Create durable Teams directly through POST /v1/teams (or `harness team create`) without Mission provenance.".to_string(),
+        ));
     }
-    if let Some(mission_id) = path
+    if path
         .strip_prefix("/v1/missions/")
         .and_then(|rest| rest.strip_suffix("/context"))
+        .is_some()
     {
-        return Ok(serde_json::to_value(revise_mission_context(
-            store,
-            mission_id,
-            &required_json_string(body, "context")?,
-        )?)?);
+        return Err(retired_mission_write_error("update-context"));
     }
-    if let Some(mission_id) = path
+    if path
         .strip_prefix("/v1/missions/")
         .and_then(|rest| rest.strip_suffix("/log"))
+        .is_some()
     {
-        return append_mission_log_value(store, mission_id, body);
+        return Err(retired_mission_write_error("log-append"));
     }
     if let Some(attention_id) = path
         .strip_prefix("/v1/host-attentions/")
@@ -43068,15 +43046,9 @@ work request-changes --work-id <id> --expected-version <n> --reason <text> [--id
 work poll-github-ci --team-run-id <id>
 "#;
 
-const CHEATSHEET_MISSION: &str = r#"mission create        --title <text> --objective <text> [--id <id>]
-                      [--desired-outcome <text>] [--context <text>] [--json]
-mission show          --id <id>
-mission update-context --id <id> --context <text>
-mission close         --id <id> --outcome <text> [--completed-by <actor>]
-mission log append    --mission-id <id>
-                      --kind judgment|replan|recovery|closeout_evidence
-                      --body <md> [--actor <id>] [--json]
-mission log show       --mission-id <id> [--tail <n>] [--json]
+const CHEATSHEET_MISSION: &str = r#"mission list            (read-only legacy rows; Mission writers retired by DOC-108)
+mission show            --id <id>
+mission log show        --mission-id <id> [--tail <n>] [--json]
 "#;
 
 const CHEATSHEET_ALL: &str = r#"team-run create --objective <text> --agent-team-id <id>
@@ -43105,18 +43077,14 @@ work accept --work-id <id> --expected-version <n>
 work request-changes --work-id <id> --expected-version <n> --reason <text>
 work poll-github-ci --team-run-id <id>
 
-mission create --title <text> --objective <text> [--id <id>]
-  [--context <text>] [--json]
-mission show --id <id>
-mission update-context --id <id> --context <text>
-team create --name <text> --description <text> --mission-id <id>
-  --host-agent-id <id> --node-id <uuid> [--member <id>]
+team create --name <text> --description <text> --host-agent-id <id>
+  --node-id <uuid> [--member <id>] [--legacy-mission-id <id>]
 team message send --from-team <id> --from-member <id> --to-team <id> --body <md>
 team message inbox --team <id> [--all]
-mission close --id <id> --outcome <text>
-mission log append --mission-id <id>
-  --kind judgment|replan|recovery|closeout_evidence --body <md>
+mission list
+mission show --id <id>
 mission log show --mission-id <id> [--tail <n>]
+  (read-only legacy Mission reads; writers retired by DOC-108)
 "#;
 
 fn print_help() {
@@ -43132,9 +43100,8 @@ fn print_help() {
   legacy-goal-task verify --archive <dir>
   legacy-company-os export [--firm-home <dir>] --output <dir>
   legacy-company-os verify --archive <dir>
-  mission create|list|show|update-context|close
-  mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <md>
-  mission log show --mission-id <id> [--tail <n>]
+  mission list|show (read-only legacy rows; Mission writers retired by DOC-108)
+  mission log show --mission-id <id> [--tail <n>] (read-only legacy)
   legacy wave list|show|history (historical reads only)
   team-run create|list|status|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|answer-message|events|complete|cancel
   team-run board-summary --id <team-run-id>
@@ -43175,25 +43142,6 @@ fn print_help() {
                  [--policy strict|advisory] [--actor <id>] [--json]
       An active/selected Execution Space requires the global --project flag;
       FIRM_PROJECT and ambient Project Binding defaults do not authorize admission.
-  company init --id <company-id> [--name <name>]
-  company list | company current | company switch <company-id> | company show [company-id]
-  company migrate-from-project --from-project <project-id|path> --id <company-id> [--name <name>] [--force]
-  company docs query|search|traverse|refs|related|health|source sync|snapshot|diff|change-report
-  company docs module create | page create|read|write|append|search|rename|move|archive|scaffold|verify|publish | page-definition create
-  company docs typed-record append|update|validate | view create|update | relation link|unlink|relink
-  company work list|query
-  company work milestone list|show|create|update|close
-  company finance list|query|propose-commitment|request-approval|decide-approval|transition-commitment|record-payment|transition-payment
-  company finance commitment list|show|propose|transition
-  company finance payment list|show|record
-  company org list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions
-  company org link-execution --authority <human> --actor <agent-membership> --agent-member <id> --execution-space <id> [--replace]
-  company org unlink-execution --authority <human> --actor <agent-membership> [--expect-agent-member <id>]
-  company org actor list|show|create-human|create-agent|update-status|link-execution|unlink-execution
-  company org unit list|show|create|update-status
-  company org membership list|assign|update-status
-  company gateway social readiness [--platform xiaohongshu|douyin|wechat_channels] [--adb adb] [--device <serial>]
-  company approval list|show|request|decide
   workflow list|run|run-script|get-output|patch|gc-worktrees|reap-workers
   dashboard snapshot
   dashboard doctor --team-run-id <id> --api <base-url> [--expected-git-rev <rev>]
@@ -43205,13 +43153,16 @@ fn print_help() {
 
 Retired coordination commands fail explicitly. Historical rows are available only
 through legacy-goal-task export|verify; retired Company OS records through
-legacy-company-os export|verify.
+legacy-company-os export|verify. `harness company ...` and the Mission writers
+(`mission create|update-context|close|log append`, POST /v1/missions*,
+mission_* MCP writers, POST /v1/company-os/*) were retired by DOC-108.
 
 Execution selection is independent: --space/FIRM_SPACE selects coordination
 storage; --project/FIRM_PROJECT selects the provider cwd/config/Skill boundary.
 HARNESS_SPACE and HARNESS_PROJECT remain deprecated compatibility aliases.
 
-Agent Team creation requires one Mission, Host Agent, and ExecutionNode."#
+Agent Team creation requires one Host AgentMember and one ExecutionNode; Mission
+provenance is optional legacy context, never a requirement."#
     );
 }
 #[cfg(test)]
@@ -58331,7 +58282,9 @@ package:com.tencent.mm
             );
         }
         let mission_body = function_body(MAIN_RS_SOURCE, "mission_command");
-        for leaf in ["create", "show", "update-context", "close", "log"] {
+        // Mission writers retired with the legacy CompanyOS cutover
+        // (DOC-108); only the read-only legacy reads remain documented.
+        for leaf in ["list", "show", "log"] {
             assert!(
                 subcommand_is_real(mission_body, leaf),
                 "mission {leaf} is documented in the cheatsheet but is not a \
@@ -58340,7 +58293,7 @@ package:com.tencent.mm
         }
         // `mission log` is its own nested dispatcher (ADR 0051 Mission Log).
         let mission_log_body = function_body(MAIN_RS_SOURCE, "mission_log_command");
-        for leaf in ["append", "show"] {
+        for leaf in ["show"] {
             assert!(
                 subcommand_is_real(mission_log_body, leaf),
                 "mission log {leaf} is documented in the cheatsheet but is not a \
@@ -58355,12 +58308,26 @@ package:com.tencent.mm
             assert!(
                 !CHEATSHEET_MISSION.contains(&format!("wave {retired}")),
                 "CHEATSHEET_MISSION documents retired `wave {retired}`; ADR 0051 retired \
-                 Wave write commands, use `mission log append` instead"
+                 Wave write commands"
             );
             assert!(
                 !CHEATSHEET_ALL.contains(&format!("wave {retired}")),
                 "CHEATSHEET_ALL documents retired `wave {retired}`; ADR 0051 retired \
-                 Wave write commands, use `mission log append` instead"
+                 Wave write commands"
+            );
+        }
+        // Mission writers are likewise absent after DOC-108: the cheatsheets
+        // document only the read-only legacy Mission reads.
+        for retired in ["mission create", "update-context", "mission close", "log append"] {
+            assert!(
+                !CHEATSHEET_MISSION.contains(retired),
+                "CHEATSHEET_MISSION documents retired `{retired}`; DOC-108 retired Mission \
+                 write commands, historical rows stay read-only"
+            );
+            assert!(
+                !CHEATSHEET_ALL.contains(retired),
+                "CHEATSHEET_ALL documents retired `{retired}`; DOC-108 retired Mission \
+                 write commands, historical rows stay read-only"
             );
         }
     }

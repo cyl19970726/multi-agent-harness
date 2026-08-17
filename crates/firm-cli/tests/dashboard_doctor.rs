@@ -37,23 +37,10 @@ fn init_project(home: &TempHome, name: &str) -> (String, String) {
         registration.status.success(),
         "node registration failed: {registration:?}"
     );
-    let mission = run_firm(
-        home,
-        &root,
-        &[
-            "mission",
-            "create",
-            "--title",
-            "Dashboard doctor mission",
-            "--objective",
-            "Verify read-only dashboard/store convergence",
-        ],
-    );
-    assert!(
-        mission.status.success(),
-        "mission create failed: {mission:?}"
-    );
-    let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
+    // DOC-108 retired the Mission writers; legacy Mission provenance is
+    // seeded directly as pre-cutover history.
+    let mission_id = "mission-doctor".to_string();
+    firm_env::seed_historical_mission(home, &project_id, &mission_id, "Dashboard doctor mission");
     let host = create_canonical_agent_member(
         home,
         &root,

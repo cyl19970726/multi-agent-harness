@@ -1,3 +1,11 @@
+//! INACTIVE HISTORICAL (DOC-108 Stage B): the `harness company` registry,
+//! routing, and migration commands this file exercised are retired; every
+//! subcommand now fails with an explicit retired error. The successor
+//! acceptance is the Stage A export/verify contract in
+//! `tests/legacy_company_os.rs` (`harness legacy-company-os export|verify`).
+//! Kept source-only per the inactive-historical convention.
+#![cfg(any())]
+
 //! Integration coverage for ADR 0042 Company Store selection.
 //!
 //! These tests prove the first Company Store slice is not just a registry: once
