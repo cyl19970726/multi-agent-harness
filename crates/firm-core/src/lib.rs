@@ -1716,15 +1716,39 @@ impl Validate for collaboration::MessageAdmissionAuthority {
                     &authority.target_node_id,
                     "PeerTeamMessageAdmissionAuthority.target_node_id",
                 )?;
+                let member_target = authority.target_membership_id.is_some()
+                    || authority.target_membership_generation.is_some()
+                    || authority.target_agent_member_id.is_some();
+                let expected_policy_ref = if member_target {
+                    "team.direct.active-members"
+                } else {
+                    "collaboration.peer_message_deliver"
+                };
                 if authority.source_required_capability != "message.peer_team.author"
                     || authority.target_required_capability != "collaboration.peer_message_deliver"
-                    || authority.target_authorization_policy_ref
-                        != "collaboration.peer_message_deliver"
+                    || authority.target_authorization_policy_ref != expected_policy_ref
                 {
                     return Err(ValidationError::Invalid {
                         field: "PeerTeamMessageAdmissionAuthority.capability",
                         reason:
                             "source authoring and target delivery capabilities must remain distinct",
+                    });
+                }
+                if member_target
+                    && (authority
+                        .target_membership_id
+                        .as_deref()
+                        .is_none_or(str::is_empty)
+                        || authority
+                            .target_agent_member_id
+                            .as_deref()
+                            .is_none_or(str::is_empty)
+                        || authority.target_membership_generation.is_none())
+                {
+                    return Err(ValidationError::Invalid {
+                        field: "PeerTeamMessageAdmissionAuthority.target_membership",
+                        reason:
+                            "a direct TeamMembership target sets the membership id, generation, and AgentMember together",
                     });
                 }
                 if [
@@ -1738,6 +1762,7 @@ impl Validate for collaboration::MessageAdmissionAuthority {
                     authority.target_policy_revision,
                 ]
                 .contains(&0)
+                    || authority.target_membership_generation == Some(0)
                 {
                     return Err(ValidationError::Invalid {
                         field: "PeerTeamMessageAdmissionAuthority.generation",

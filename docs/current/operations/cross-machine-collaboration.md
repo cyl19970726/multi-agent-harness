@@ -48,6 +48,33 @@ operation id, ordering key and terminal receipt. An exact replay must return
 the original result. A changed fingerprint, actor, placement, generation or
 revision must fail closed.
 
+## Operator surface
+
+Ordinary peer Messages are authored and read through the canonical surfaces:
+
+- `firm team message send --from-team <id> --from-member <agent-member-id>
+  --to-team <id> [--to-member <agent-member-id> | --to-membership
+  <membership-id>] --body <markdown>` authors one immutable Message through
+  the source NodeDaemon RuntimeCommand. A Team target lands in the target
+  Team's shared Inbox without waking its Members; a Member target binds one
+  exact TeamMembership at admission. A `--work-id` link is context only and
+  must name a current Work of the source Team. Cross-Node targets add
+  `--company <id> --to-node <node> --to-space <id>` (all-or-nothing); the
+  server re-reads the durable target Team/subscription revision whenever the
+  target Execution Space is registered locally, and otherwise requires the
+  caller's current `--to-subscription-revision <n>`, which the target Node
+  revalidates fail-closed before any delivery mutation.
+- `firm team message inbox --team <id> [--all] [--json]` reads the shared Team
+  Inbox projection: delivery status, claim binding, correlation, and
+  author/source-Team provenance. `GET /v1/views/team-inbox/<team-id>` serves
+  the same projection to an exact Team member identity, and the read-only MCP
+  tool `team_inbox_list` mirrors it.
+- `firm team message claim --team <id> --delivery-id <id> --membership-id
+  <id>` claims one queued Team-subject delivery for one exact active
+  TeamMembership generation under the current NodeDaemon generation. A stale,
+  duplicate, or ambiguous claim has zero side effects; provider dispatch is a
+  later exact-session transition and never implies semantic success.
+
 ## Attention and recovery
 
 Treat these as attention, not success or Work failure:

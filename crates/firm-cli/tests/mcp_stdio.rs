@@ -1282,6 +1282,7 @@ fn mcp_stdio_agent_team_tools() {
             "team_run_inbox",
             "team_run_send_message",
             "team_run_reconcile_delivery",
+            "team_inbox_list",
             "team_run_answer_message",
             "team_run_steer_member",
             "team_run_interrupt_member",

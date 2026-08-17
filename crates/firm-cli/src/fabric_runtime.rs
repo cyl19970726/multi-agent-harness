@@ -1264,6 +1264,12 @@ pub(crate) struct QueueCollaborationMessageRequest {
     pub target_team_revision: u64,
     pub target_node_id: String,
     pub target_execution_space_id: String,
+    /// Caller-declared current revision of the durable target subscription.
+    /// The server overrides it from the target Store whenever the target
+    /// Execution Space is registered on this Node; otherwise it is required
+    /// and the target revalidates it fail-closed before any delivery mutation.
+    #[serde(default)]
+    pub target_subscription_revision: Option<u64>,
     pub expected_delegation_revision: u64,
     pub expires_unix_ms: u64,
 }
@@ -2332,7 +2338,7 @@ pub(crate) fn queue_collaboration_message(
     firm_home: &Path,
     execution_space_id: &str,
     local_node_id: &str,
-    credential: &super::AgentFirmHttpCredential,
+    actor: &harness_core::agentfirm_api::ActorRef,
     idempotency_key: &str,
     message: &harness_core::agentfirm_api::Message,
     request: &QueueCollaborationMessageRequest,
@@ -2348,7 +2354,7 @@ pub(crate) fn queue_collaboration_message(
                 firm_home,
                 execution_space_id,
                 local_node_id,
-                credential,
+                actor,
                 idempotency_key,
                 message,
                 request,
@@ -2363,7 +2369,7 @@ pub(crate) fn queue_collaboration_message(
             "cross-node Message requires CollaborationScope",
         )
     })?;
-    if message.sender_actor_ref != credential.actor
+    if message.sender_actor_ref != *actor
         || message.source_execution_space_id != execution_space_id
         || message.source_node_id != local_node_id
         || message.idempotency_key != idempotency_key
@@ -2402,7 +2408,7 @@ pub(crate) fn queue_collaboration_message(
         protocol_version: "agentfirm.fabric.v1".into(),
         company_id: request.company_id.clone(),
         kind: harness_core::collaboration::RoutedBusinessKind::TeamMessageDeliver,
-        authenticated_actor: credential.actor.clone(),
+        authenticated_actor: actor.clone(),
         source_node_id: local_node_id.into(),
         target_placement,
         expected_revision: request.expected_delegation_revision,
@@ -2449,7 +2455,7 @@ pub(crate) fn queue_collaboration_message(
         &business,
         &harness_store::CollaborationFabricRouteContext {
             authenticated_actor: node_actor.clone(),
-            resolved_business_actor: credential.actor.clone(),
+            resolved_business_actor: actor.clone(),
             source: harness_store::CollaborationFabricSource::Node {
                 source_execution_space_id: execution_space_id.into(),
                 source_gateway_generation: session.gateway_generation,
@@ -2476,14 +2482,14 @@ pub(crate) fn queue_collaboration_message(
 /// `PeerTeamMessageAdmissionAuthority` proves that one exact active source
 /// TeamMembership and one exact local AgentSession/NodeDaemon generation
 /// authored the Message, and the route delivers exactly one Team-addressed
-/// CanonicalMessageDelivery under the durable target Team-subject
-/// subscription. No WorkDelegation is required or consulted.
+/// (or direct TeamMembership-bound) CanonicalMessageDelivery under the durable
+/// target subscription. No WorkDelegation is required or consulted.
 #[allow(clippy::too_many_arguments)]
 fn queue_peer_team_message(
     firm_home: &Path,
     execution_space_id: &str,
     local_node_id: &str,
-    credential: &super::AgentFirmHttpCredential,
+    actor: &harness_core::agentfirm_api::ActorRef,
     idempotency_key: &str,
     message: &harness_core::agentfirm_api::Message,
     request: &QueueCollaborationMessageRequest,
@@ -2496,11 +2502,25 @@ fn queue_peer_team_message(
             "cross-node Message requires CollaborationScope",
         )
     })?;
-    let exact_team_recipient = message.recipients.len() == 1
-        && message.recipients[0].kind == harness_core::agentfirm_api::MessageRecipientKind::Team
-        && message.recipients[0].id == authority.target_team_id
-        && message.target_ref == message.recipients[0];
-    if message.sender_actor_ref != credential.actor
+    let member_target = authority.target_membership_id.is_some()
+        || authority.target_membership_generation.is_some()
+        || authority.target_agent_member_id.is_some();
+    let exact_recipient = if member_target {
+        authority.target_membership_id.is_some()
+            && authority.target_membership_generation.is_some()
+            && message.recipients.len() == 1
+            && message.recipients[0].kind
+                == harness_core::agentfirm_api::MessageRecipientKind::AgentMember
+            && Some(message.recipients[0].id.as_str())
+                == authority.target_agent_member_id.as_deref()
+            && message.target_ref == message.recipients[0]
+    } else {
+        message.recipients.len() == 1
+            && message.recipients[0].kind == harness_core::agentfirm_api::MessageRecipientKind::Team
+            && message.recipients[0].id == authority.target_team_id
+            && message.target_ref == message.recipients[0]
+    };
+    if message.sender_actor_ref != *actor
         || message.sender_actor_ref.kind != harness_core::agentfirm_api::ActorKind::AgentMember
         || message.source_execution_space_id != execution_space_id
         || message.source_node_id != local_node_id
@@ -2508,12 +2528,11 @@ fn queue_peer_team_message(
         || request.target_node_id == local_node_id
         || request.expected_delegation_revision != 0
         || request.expires_unix_ms <= now_unix_ms
-        || !exact_team_recipient
+        || !exact_recipient
         || message.sender_agent_member_id.as_deref()
             != Some(authority.source_agent_member_id.as_str())
         || message.sender_session_id.as_deref() != Some(authority.source_session_id.as_str())
         || message.team_id.as_deref() != Some(authority.source_team_id.as_str())
-        || message.work_id.is_some()
         || scope.source_team_id != authority.source_team_id
         || scope.target_team_id != request.target_team_id
         || scope.delegation_id.is_some()
@@ -2529,7 +2548,7 @@ fn queue_peer_team_message(
     if authority.company_id != request.company_id
         || authority.source_execution_space_id != execution_space_id
         || authority.source_node_id != local_node_id
-        || authority.source_agent_member_id != credential.actor.id
+        || authority.source_agent_member_id != actor.id
         || authority.source_team_revision == 0
         || authority.source_membership_generation == 0
         || authority.source_session_generation == 0
@@ -2578,7 +2597,7 @@ fn queue_peer_team_message(
         protocol_version: "agentfirm.fabric.v1".into(),
         company_id: request.company_id.clone(),
         kind: harness_core::collaboration::RoutedBusinessKind::PeerMessageDeliver,
-        authenticated_actor: credential.actor.clone(),
+        authenticated_actor: actor.clone(),
         source_node_id: local_node_id.into(),
         target_placement,
         expected_revision: authority.target_subscription_revision,
