@@ -79,9 +79,11 @@ const DASHBOARD_SAME_ORIGIN_API_BASE: &str = ".";
 
 fn team_dashboard_url(store: &HarnessStore, resolved: &ResolvedStore, team_run_id: &str) -> String {
     let run = latest_team_run(store, team_run_id).ok();
+    // Legacy Mission provenance is optional: mission-less Teams produce no
+    // `&mission=` selector instead of an empty one.
     let mission_id = run
         .as_ref()
-        .and_then(|run| team_run_mission_id(store, run).ok());
+        .and_then(|run| team_run_mission_id(store, run).ok().flatten());
     let context = mission_id
         .as_deref()
         .map(|mission_id| format!("&mission={mission_id}"))
@@ -1606,7 +1608,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_create",
-            "description": "Create one runtime attempt from a required flat AgentTeam. Mission, ExecutionNode, and Project Binding are derived from the durable Team and selected execution context; members can come from the Team definition.",
+            "description": "Create one runtime attempt from a required flat AgentTeam. ExecutionNode and Project Binding are derived from the durable Team and selected execution context; members can come from the Team definition. Legacy Mission provenance is optional and never required.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,

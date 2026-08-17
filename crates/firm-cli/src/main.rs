@@ -15074,10 +15074,20 @@ fn latest_team_run(store: &HarnessStore, id: &str) -> CliResult<AgentTeamRun> {
         .ok_or_else(|| CliError::Usage(format!("team run not found: {id}")))
 }
 
-pub(crate) fn team_run_mission_id(store: &HarnessStore, run: &AgentTeamRun) -> CliResult<String> {
+/// Resolve the optional legacy Mission provenance of a TeamRun's durable
+/// AgentTeam. Post-DEV-35 Teams never require a Mission, so this returns
+/// `None` for mission-less Teams; the empty-string compatibility projection
+/// is never exposed as an identifier.
+pub(crate) fn team_run_mission_id(
+    store: &HarnessStore,
+    run: &AgentTeamRun,
+) -> CliResult<Option<String>> {
     latest_teams(store)?
         .remove(&run.agent_team_id)
-        .map(|team| team.mission_id)
+        .map(|team| {
+            team.legacy_mission_id
+                .filter(|mission_id| !mission_id.trim().is_empty())
+        })
         .ok_or_else(|| {
             CliError::Usage(format!(
                 "AgentTeam {} for TeamRun {} not found",
@@ -15373,17 +15383,20 @@ fn team_run_recover(
     let supervisor = store.latest_team_supervisor_lease(team_run_id)?;
     let supervisor_current = supervisor.as_ref().is_some_and(is_supervisor_current);
 
-    // Mandatory reader: Mission Log tail (ADR 0051). This must remain before
-    // provider probing or any recovery mutation so a recovering Host re-reads
-    // durable judgment before acting on provider-native state.
+    // Legacy reader: Mission Log tail (ADR 0051). Printed only when the
+    // Team carries legacy Mission provenance; post-DEV-35 mission-less Teams
+    // have no Mission Log to re-read. When present this stays before provider
+    // probing or any recovery mutation so a recovering Host re-reads durable
+    // judgment before acting on provider-native state.
     if !json {
-        let mission_id = team_run_mission_id(store, &run)?;
-        println!("── mission log (last 3) ──");
-        match store.mission_log_tail(&mission_id, 3) {
-            Ok(entries) => println!("{}", format_mission_log_entries_text(&entries)),
-            Err(error) => println!("mission log unavailable: {error}"),
+        if let Some(mission_id) = team_run_mission_id(store, &run)? {
+            println!("── mission log (last 3) ──");
+            match store.mission_log_tail(&mission_id, 3) {
+                Ok(entries) => println!("{}", format_mission_log_entries_text(&entries)),
+                Err(error) => println!("mission log unavailable: {error}"),
+            }
+            println!();
         }
-        println!();
     }
 
     // Recovery must not mutate a ProviderRuntimeProjection generation, reconcile a delivery,
@@ -27510,7 +27523,7 @@ fn member_collaboration_envelope(
         execution_space_id: execution_space_id.map(str::to_string),
         project_id: project_id.map(str::to_string),
         project_selector: project_selector.map(str::to_string),
-        mission_id: Some(team_run_mission_id(&ledger.store, &run)?),
+        mission_id: team_run_mission_id(&ledger.store, &run)?,
         team_run_id: run.id,
         member_run_id: member.id.clone(),
         work_id: None,
