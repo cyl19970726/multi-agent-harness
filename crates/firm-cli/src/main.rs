@@ -33523,54 +33523,6 @@ fn acknowledge_provider_request_as_host(
     Ok(())
 }
 
-/// POST /v1/missions — create native Mission intent from the JSON body.
-fn create_mission_value(
-    store: &HarnessStore,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    Ok(serde_json::to_value(create_mission(
-        store,
-        optional_json_string(body, "id")?,
-        &required_json_string(body, "title")?,
-        &required_json_string(body, "objective")?,
-        optional_json_string(body, "desired_outcome")?,
-        optional_json_string(body, "context")?,
-    )?)?)
-}
-
-/// POST /v1/missions/{id}/close — close durable intent with an explicit
-/// Mission outcome. Legacy Wave rows never gate a new Mission.
-fn close_mission_value(
-    store: &HarnessStore,
-    mission_id: &str,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    Ok(serde_json::to_value(close_mission(
-        store,
-        mission_id,
-        &required_json_string(body, "outcome")?,
-        &optional_json_string(body, "completed_by")?.unwrap_or_else(|| "host".to_string()),
-    )?)?)
-}
-
-/// POST /v1/missions/{id}/log — append one append-only Mission Log entry,
-/// the console-facing replacement for the retired Wave write routes
-/// (ADR 0051): Host plan judgment, replans, recovery notes, and closeout
-/// evidence are recorded here. Same append path as `harness mission log`.
-fn append_mission_log_value(
-    store: &HarnessStore,
-    mission_id: &str,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    Ok(serde_json::to_value(create_mission_log_entry(
-        store,
-        mission_id,
-        &required_json_string(body, "kind")?,
-        &required_json_string(body, "body")?,
-        optional_json_string(body, "actor")?,
-    )?)?)
-}
-
 /// GET /v1/host-attentions?team_run_id=<id> — reconciled latest HostAttention
 /// rows for one TeamRun. The console reads these to show what needs Host
 /// action; transport intake only, nothing here mutates Work.
@@ -51174,8 +51126,8 @@ package:com.tencent.mm
             let firm_home =
                 std::env::temp_dir().join(format!("harness-cli-home-{}", generated_id(tag)));
             std::fs::create_dir_all(&firm_home).expect("firm home");
-            company_store::register_and_activate(&firm_home, "company-test", "Test Company", "t1")
-                .expect("active Company");
+            // DOC-108: no Company registry is seeded; the local peer-message
+            // admission label defaults to the Execution Space scope.
             let node_id = "11111111-1111-4111-8111-111111111111".to_string();
             let space_id = "space-test";
             store.init().expect("store init");
@@ -51414,7 +51366,7 @@ package:com.tencent.mm
         )
         .expect("local peer resolution");
         assert!(!resolved.requires_remote_route);
-        assert_eq!(resolved.authority.company_id, "company-test");
+        assert_eq!(resolved.authority.company_id, "space:space-test");
         assert_eq!(resolved.authority.target_subscription_revision, 1);
         assert_eq!(
             resolved.authority.target_subscription_id,

@@ -413,7 +413,7 @@ impl Drop for McpClient {
 }
 
 #[test]
-fn mcp_current_surface_is_mission_only_and_rejects_legacy_wave_tools() {
+fn mcp_current_surface_is_team_tools_with_retired_mission_and_wave_tombstones() {
     let home = TempHome::new("mcp-mission-only-surface");
     let project_id = init_project(&home, "mcp-mission-only-project");
     let mut mcp = McpClient::spawn(&home, &project_id, &[]);
@@ -432,16 +432,18 @@ fn mcp_current_surface_is_mission_only_and_rejects_legacy_wave_tools() {
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect::<std::collections::BTreeSet<_>>();
-    for current in [
-        "mission_create",
-        "mission_update_context",
-        "mission_close",
-        "mission_list",
-        "team_run_create",
-    ] {
+    for current in ["mission_list", "team_run_create"] {
         assert!(
             names.contains(current),
             "missing current MCP tool {current}"
+        );
+    }
+    // DOC-108: Mission writers are removed from the MCP surface entirely —
+    // the same unknown-tool tombstone as retired Wave tools.
+    for retired in ["mission_create", "mission_update_context", "mission_close"] {
+        assert!(
+            !names.contains(retired),
+            "retired Mission writer must not be advertised: {retired}"
         );
     }
     assert!(
@@ -500,6 +502,9 @@ fn mcp_current_surface_is_mission_only_and_rejects_legacy_wave_tools() {
         "team_run_send_message",
         "team_message_acknowledge",
         "team_run_reconcile_delivery",
+        "mission_create",
+        "mission_update_context",
+        "mission_close",
     ] {
         let response = mcp.request(
             "tools/call",

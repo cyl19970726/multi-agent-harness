@@ -11,8 +11,8 @@
 //! - `notifications/initialized` (and any other notification) → no response.
 //! - `ping` → `{}`.
 //! - `tools/list` → Agent Team tools plus the read-only legacy Mission list.
-//!   Mission writer tools are advertised only to return explicit retired-write
-//!   errors (DOC-108); they write nothing.
+//!   Mission writer tools are removed entirely (DOC-108): callers get the
+//!   same unknown-tool tombstone as retired Wave tools, with zero store delta.
 //! - `tools/call` → `{content:[{type:"text",text:<result JSON>}], isError}`.
 //! - unknown method → JSON-RPC -32601. stdin EOF exits.
 
@@ -183,9 +183,9 @@ pub(crate) fn call_tool(
         "agentfirm_member_trust_mutate" => {
             tool_agentfirm_member_trust_mutate(store, resolved, &arguments)
         }
-        "mission_create" => tool_mission_create(store, &arguments),
-        "mission_update_context" => tool_mission_update_context(store, &arguments),
-        "mission_close" => tool_mission_close(store, &arguments),
+        // DOC-108: Mission writer tools are REMOVED from the MCP surface
+        // (unknown tool, byte-zero store delta), matching the Wave tombstone
+        // convention. `mission_list` stays as the read-only legacy read.
         "mission_list" => tool_mission_list(store),
         "team_run_create" => tool_team_run_create(store, resolved, &arguments),
         "team_run_add_member" => tool_team_run_add_member(store, resolved, &arguments),
@@ -1007,29 +1007,6 @@ fn optional_str(arguments: &Value, key: &str) -> Result<Option<String>, String> 
     }
 }
 
-/// DOC-108 Stage B: Mission writer tools are retired on the MCP surface too
-/// (same retirement as `harness mission create|update-context|close|log
-/// append` and `POST /v1/missions*`). The tool entries remain advertised for
-/// one release so callers receive an explicit retired-write error instead of
-/// a bare "unknown tool"; they write nothing.
-fn retired_mission_write_tool_error(tool: &str) -> String {
-    format!(
-        "RETIRED_WRITE_AUTHORITY: `{tool}` was retired with the legacy CompanyOS cutover (DOC-108): Mission is historical provenance, not current authority. Current coordination uses durable AgentTeam (team_run_create), Team-run Work (team_run_work_*), and identity-first Message delivery; historical Mission rows stay read-only through `mission_list` and `harness legacy-company-os export|verify`."
-    )
-}
-
-fn tool_mission_create(_store: &HarnessStore, _arguments: &Value) -> Result<Value, String> {
-    Err(retired_mission_write_tool_error("mission_create"))
-}
-
-fn tool_mission_close(_store: &HarnessStore, _arguments: &Value) -> Result<Value, String> {
-    Err(retired_mission_write_tool_error("mission_close"))
-}
-
-fn tool_mission_update_context(_store: &HarnessStore, _arguments: &Value) -> Result<Value, String> {
-    Err(retired_mission_write_tool_error("mission_update_context"))
-}
-
 fn tool_mission_list(store: &HarnessStore) -> Result<Value, String> {
     Ok(json!(store
         .latest_missions()
@@ -1548,46 +1525,6 @@ fn tool_definitions() -> Value {
                     "operation_id": {"type": "string", "minLength": 1}
                 },
                 "required": ["company_id", "operation_id"]
-            }
-        },
-        {
-            "name": "mission_create",
-            "description": "RETIRED (DOC-108): Mission writers are closed on every surface. This tool is advertised only so callers receive an explicit retired-write error; it writes nothing. Historical rows: mission_list / harness legacy-company-os export|verify.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "description": "Optional stable Mission id; generated when omitted."},
-                    "title": {"type": "string"},
-                    "objective": {"type": "string"},
-                    "desired_outcome": {"type": "string"},
-                    "context": {"type": "string", "description": "Durable Markdown Mission brief."}
-                },
-                "required": ["title", "objective"]
-            }
-        },
-        {
-            "name": "mission_update_context",
-            "description": "RETIRED (DOC-108): Mission context writes are closed on every surface. Advertised only to return an explicit retired-write error; writes nothing.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "mission_id": {"type": "string"},
-                    "context": {"type": "string", "minLength": 1}
-                },
-                "required": ["mission_id", "context"]
-            }
-        },
-        {
-            "name": "mission_close",
-            "description": "RETIRED (DOC-108): Mission close writes are closed on every surface. Advertised only to return an explicit retired-write error; writes nothing.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "mission_id": {"type": "string"},
-                    "outcome": {"type": "string", "minLength": 1},
-                    "completed_by": {"type": "string", "minLength": 1, "description": "Defaults to host."}
-                },
-                "required": ["mission_id", "outcome"]
             }
         },
         {
