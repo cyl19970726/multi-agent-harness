@@ -1,78 +1,51 @@
-# Star Harness — AI Company OS
+# Star Harness — AgentFirm execution foundation
 
-Star Harness is building an operating system for an AI-native company.
+Star Harness is the provider-neutral execution foundation for an AI-native
+company: durable flat AgentTeams of standing AgentMembers, accountable Work,
+identity-first Messages, and provider-native session runtimes, across machines
+through the remote fabric.
 
-The product has two primary systems:
+The current product model and operating control plane live in Notion
+(AgentFirm Home). This repository owns the implemented execution truth: code,
+schemas, stores, CLI/API/MCP surfaces, tests, and CI.
 
-1. **Docs** — the company's memory, business structure, data relationships,
-   decisions, and default place to initiate work.
-2. **Organization** — humans, standing Agents, external collaborators, and
-   services arranged into accountable, permissioned operating units.
-
-Documents initiate or reference authoritative `Work` and explicit `Approval`
-records. Work lifecycle and ownership stay in the selected Execution Space;
-Company OS only aggregates it for company-wide reading and routing. Results,
-evidence, metrics, and financial effects return to related business records.
+The legacy Company OS layer — the Company Store registry, built-in Docs,
+Organization, Finance, generic Approval, Mission, Wave, and Mission Log — is
+retired by DOC-108. Its writers are closed on every surface; its historical
+rows remain readable as legacy provenance and are export/verify-only through
+`harness legacy-company-os export|verify`. None of it is current authority.
 
 ```text
-Document / Business Module
-  -> Work / Approval
-     -> Human or Standing Agent responsibility
-     -> Mission + Mission Log | Agent Team | Dynamic Workflow | direct work
-  -> Result / Evidence / Metric / FinancialRecord
-  -> Document and organization evolution
+AgentTeam (durable, flat, one immutable node_id placement)
+  -> TeamMembership generations bind AgentMembers
+  -> AgentTeamRun / MemberRun attempt execution
+  -> Work (durable responsibility, WorkOperation/WorkEvent/WorkDelivery history)
+  -> identity-first Message -> MessageSubscription -> CanonicalMessageDelivery
+  -> AgentSession -> provider-native session (sole execution transcript truth)
+  -> NodeDaemon -> durable RuntimeCommand -> provider effect
 ```
-
-Mission, Mission Log, Agent Team, Dynamic Workflow, Host execution, provider runtimes,
-plugins, and MCP are the execution foundation. They remain important, but they
-are not the top-level product information architecture.
 
 ## Current implementation status
 
-The provider-neutral execution foundation is substantially implemented.
-Mission is durable intent. Its append-only Mission Log preserves the Host's
-material judgment, re-plan, recovery, and closeout record without becoming a
-second lifecycle, Gate, executor, or task graph. Independent Agent Teams remain
-linked to the Mission while members and provider-native sessions continue.
-Every live TeamRun has one durable Supervisor generation that owns provider
-connections, delivery claims, and real controls. Members keep their
-provider-native sessions while idle; typed Host, Member, Agent, and Operator
-mail remains durable across service restarts, and only an explicit Host Close
-ends a member runtime.
-The Company OS product contracts, document system, mixed human/Agent
-organization, Work/Approval model, and new frontend information
-architecture are the current product-development focus.
+The execution foundation is substantially implemented and is the repository's
+active development surface:
 
-The superseded coordination stack is being frozen, exported, verified, and
-removed under ADR 0028. It is not part of the active product model.
+- one durable AgentTeam per flat team, placed immutably on one machine-scoped
+  NodeDaemon, with TeamMembership as roster authority;
+- TeamRun/MemberRun projections over provider-native sessions; one execution
+  driver per member (`host_driven` or `provider_driven`); explicit Host
+  create/message/interrupt/close/reopen/retire member control;
+- durable Work with WorkOperation history, versioned delivery, submission,
+  review, and Host acceptance;
+- peer-Team and member messaging over the canonical Message/subscription/
+  delivery fabric, locally and across machines;
+- Execution Spaces own coordination; Project Bindings own provider cwd,
+  instructions, Skills, plugins, and MCP configuration;
+- Dynamic Workflows, provider admission gates, plugins, MCP, artifacts, and
+  events.
 
-## Product surfaces
-
-Primary:
-
-- **Home** — a document-composed company overview and decision queue.
-- **Docs** — Notion-like pages, databases, typed records, relations, views, and
-  module templates.
-- **Organization** — structure containing people, standing Agents, and
-  external participants.
-
-Shared operating views:
-
-- **Work** — a read-only company aggregate over authoritative TeamWork, with
-  explicit lifecycle, condition, ownership, reports, evidence, and decisions.
-- **Approvals** — human and policy gates for legal, finance, permissions, and
-  organization changes.
-- **Finance** — typed budgets, commitments, invoices, payments, and refunds
-  linked to their originating business records.
-
-Execution tools:
-
-- Missions and their append-only Host judgment Logs;
-- independent Agent Teams, Mission-scoped TeamRuns, and MemberRuns;
-- durable Team Supervisors, typed mailboxes, delivery receipts, and native
-  session lifecycle;
-- Dynamic Workflows;
-- provider sessions, plugins, MCP, artifacts, and events.
+Legacy Mission/Wave/Mission Log rows and the retired Company OS ledgers are
+historical evidence only, proven by the export/verify round-trip.
 
 ## Repository development
 
@@ -114,37 +87,33 @@ and [getting started](docs/current/operations/getting-started.md).
 
 ## Start here
 
-- [Company OS documentation](docs/current/company-os/README.md)
-- [Document system](docs/current/company-os/document-system.md)
-- [Organization and actors](docs/current/company-os/organization-and-actors.md)
-- [Work records and approvals](docs/current/company-os/work-items-and-approvals.md)
-- [Module design](docs/current/company-os/module-design.md)
-- [Governance](docs/current/company-os/governance.md)
-- [Execution foundation](docs/current/company-os/execution-foundation.md)
-- [Mission and Mission Log Host-plan product contract](docs/current/product/mission-wave-host-plan.md)
-- [Durable Team supervision and typed mail](docs/decisions/0044-durable-team-supervision-and-typed-mail.md)
-- [Historical Host-plan Wave and Mission Team decision](docs/decisions/0034-host-plan-waves-and-mission-teams.md)
 - [Product requirements](docs/current/product/prd.md)
+- [Agent Team Work](docs/current/product/agent-team-works.md)
 - [Architecture map](docs/current/architecture/architecture-map.md)
+- [Concept model](docs/current/architecture/concept-model.md)
+- [Member continuation model](docs/current/architecture/member-continuation-model.md)
 - [Provider integrations](docs/current/integration/README.md)
 - [Operations](docs/current/operations/operations.md)
 - [Architecture decisions](docs/decisions/README.md)
+- [Durable Team supervision and typed mail](docs/decisions/0044-durable-team-supervision-and-typed-mail.md)
 
 ## Repository layout
 
 | Path | Purpose |
 | --- | --- |
-| `docs/current/company-os/` | Canonical Company OS product and architecture contracts. |
+| `docs/current/product/` | Product requirements and Work/Team product contracts. |
+| `docs/current/architecture/` | Implemented boundaries and durable design contracts. |
 | `docs/current/dashboard/` | Current layout contracts, frontend design, page contracts, and runbook. |
-| `schemas/` | Stable wire schemas for implemented objects. |
+| `docs/decisions/` | ADR history; superseded decisions are marked, never deleted. |
+| `schemas/` | Stable wire schemas for implemented objects, plus legacy read-compatibility schemas. |
 | `crates/` | Rust store, core, CLI, execution, and provider infrastructure. |
-| `apps/agent-dashboard/` | React/Vite Company OS and execution workbench frontend. |
-| `skills/` | Optional capabilities, including Dynamic Workflow authoring and thin Mission + Mission Log Host orchestration. |
+| `apps/agent-dashboard/` | React/Vite operator dashboard for harness state. |
+| `skills/` | Optional capabilities, including Dynamic Workflow authoring and Agent Team member operation. |
+| `archive/` | Retired skills and packages kept as historical references only. |
 | `examples/adapters/` | Domain adapters; business-specific logic stays outside the generic core. |
 
 ## Core boundary
 
-The generic core may define document, organization, work, relation, finance,
-governance, and execution contracts. Domain-specific record types such as a
-trademark jurisdiction or a content-platform metric belong to Company Modules,
-templates, adapters, and typed schemas—not hard-coded provider or project logic.
+The generic core defines team, membership, work, message, session, runtime,
+and execution contracts. Domain-specific record types belong to adapters,
+templates, and typed schemas — not hard-coded provider or project logic.
