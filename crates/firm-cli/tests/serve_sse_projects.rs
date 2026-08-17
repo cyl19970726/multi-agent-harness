@@ -38,11 +38,31 @@ fn create_space(home: &TempHome, id: &str, project_binding: &str) {
 }
 
 /// DOC-108 retired the Mission writers: Mission rows are pre-cutover history
-/// seeded directly into the Space ledger.
+/// seeded directly into the Space ledger. The objective lands in the row so
+/// ledger-surgery fixtures can rewrite it.
 fn create_mission(home: &TempHome, space_id: &str, project_id: &str, id: &str, objective: &str) {
     let _ = project_id;
-    let _ = objective;
-    firm_env::seed_historical_mission(home, space_id, id, id);
+    use std::io::Write as _;
+    let dir = home.spaces_dir().join(space_id);
+    std::fs::create_dir_all(&dir).expect("create space store dir");
+    let mut ledger = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("missions.jsonl"))
+        .expect("open mission ledger");
+    writeln!(
+        ledger,
+        "{}",
+        serde_json::json!({
+            "id": id,
+            "title": id,
+            "objective": objective,
+            "status": "planned",
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1",
+        })
+    )
+    .expect("append historical mission");
 }
 
 fn create_team(home: &TempHome, space_id: &str, project_id: &str) -> String {
