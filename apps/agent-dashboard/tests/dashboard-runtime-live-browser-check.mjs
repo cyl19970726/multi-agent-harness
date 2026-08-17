@@ -32,7 +32,7 @@ const now = "2026-08-05T12:00:00+08:00";
 const actorRef = { actor_type: "human", actor_id: "human-live-owner" };
 
 const roleViewSchemaDir = join(repoRoot, "schemas", "role-views", "agentfirm.role_views.v1");
-const roleViewSchemaNames = ["common", "role-view", "company-work", "team-workspace", "host-console", "member-workbench", "operator"];
+const roleViewSchemaNames = ["common", "role-view", "global-work", "team-workspace", "host-console", "member-workbench", "operator"];
 const roleViewAjv = new Ajv2020({strict:false, allErrors:true});
 for (const file of readdirSync(join(repoRoot, "schemas", "collaboration")).filter(file => file.endsWith(".schema.json"))) {
   roleViewAjv.addSchema(JSON.parse(readFileSync(join(repoRoot, "schemas", "collaboration", file), "utf8")));
@@ -324,7 +324,7 @@ if (!liveTeamRunId) throw new Error(`team-run create did not return an id: ${JSO
 const liveMemberRunId = liveTeamRunPayload.member_runs?.[0]?.id ?? liveTeamRunPayload.result?.member_runs?.[0]?.id;
 if (!liveMemberRunId) throw new Error(`team-run create did not return a MemberRun: ${JSON.stringify(liveTeamRunPayload)}`);
 
-// A second Execution Space and sibling Team prove that Company Work is a
+// A second Execution Space and sibling Team prove that Global Work is a
 // vector snapshot rather than a max-sequence illusion.
 const secondarySpaceId = "dashboard-secondary-space";
 runHarness([
@@ -411,7 +411,7 @@ function createNativeWork(id, title) {
     "--work-id", id,
     "--title", title,
     "--context", "External Runtime acceptance write.",
-    "--completion-criteria", "Visible without reload in the Company Work aggregate.",
+    "--completion-criteria", "Visible without reload in the Global Work aggregate.",
     "--priority", "high",
     "--claim-mode", "team_claim",
     "--eligible-member-id", "worker",
@@ -426,14 +426,14 @@ async function roleView(path, capabilityToken) {
   const body = await response.json().catch(() => ({}));
   return {status:response.status, body};
 }
-const companyBefore = await roleView(`/v1/views/company-work?project=${projectId}`, agentFirmToken);
-if (companyBefore.status !== 200) throw new Error(`Company Work vector: ${JSON.stringify(companyBefore.body)}`);
-validateLiveRoleView("company-work", companyBefore.body);
-const vectorBefore = companyBefore.body.data.page.snapshot_vector;
+const globalBefore = await roleView(`/v1/views/global-work?project=${projectId}`, agentFirmToken);
+if (globalBefore.status !== 200) throw new Error(`Global Work vector: ${JSON.stringify(globalBefore.body)}`);
+validateLiveRoleView("global-work", globalBefore.body);
+const vectorBefore = globalBefore.body.data.page.snapshot_vector;
 check(vectorBefore.some((point)=>point.execution_space_id===spaceId)
   && vectorBefore.some((point)=>point.execution_space_id===secondarySpaceId),
-"Company Work exposes a per-Execution-Space snapshot vector");
-check(companyBefore.body.data.page.item_count >= 2, "Company Work is populated from both sibling Teams");
+"Global Work exposes a per-Execution-Space snapshot vector");
+check(globalBefore.body.data.page.item_count >= 2, "Global Work is populated from both sibling Teams");
 const primaryDeniedBySecondary = await roleView(`/v1/views/host-console/${liveTeam.id}?project=${projectId}&space=${spaceId}`, secondaryHostAgentFirmToken);
 const secondaryDeniedByPrimary = await roleView(`/v1/views/host-console/${secondaryTeam.id}?project=${projectId}&space=${secondarySpaceId}`, agentFirmToken);
 check(primaryDeniedBySecondary.status===403 && secondaryDeniedByPrimary.status===403,
@@ -474,7 +474,7 @@ runHarness([
   "--eligible-member-id", "worker-secondary",
 ], secondaryEnv, projectRoot);
 await waitFor(async()=>{
-  const current = await roleView(`/v1/views/company-work?project=${projectId}`, agentFirmToken);
+  const current = await roleView(`/v1/views/global-work?project=${projectId}`, agentFirmToken);
   if(current.status!==200)return false;
   const beforePrimary=vectorBefore.find((point)=>point.execution_space_id===spaceId);
   const beforeSecondary=vectorBefore.find((point)=>point.execution_space_id===secondarySpaceId);
@@ -566,7 +566,7 @@ try {
   const roleBaseQuery = {api:appBase,project:projectId,space:spaceId,company:"company-a"};
   await page.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"work"})}`, {waitUntil:"domcontentloaded"});
   await waitForText(page, "work-role-live");
-  check(true, "real Company Work RoleView is populated");
+  check(true, "real Global Work RoleView is populated");
   await page.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"team",team:liveTeamRunId})}`, {waitUntil:"domcontentloaded"});
   await page.locator('[data-testid="authenticated-team-workspace"]').waitFor();
   await waitForText(page, "Real browser RoleAction loop");
@@ -657,7 +657,7 @@ try {
   await page.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"work"})}`, {waitUntil:"domcontentloaded"});
   await waitForText(page, "work-role-live");
   await waitForText(page, "active");
-  check(true, "five-view loop converges the Member mutation into real Company Work truth");
+  check(true, "five-view loop converges the Member mutation into real Global Work truth");
 
   await navigate(page, "Docs");
   const defaultBefore = await requestJson(apiBase, "/v1/companies/current");

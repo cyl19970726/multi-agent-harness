@@ -1,7 +1,7 @@
 export const ROLE_VIEW_SCHEMA = "agentfirm.role_views.v1" as const;
 
 export type RoleViewFreshness = "current" | "stale" | "unavailable" | "unknown";
-export type RoleViewKind = "company_work" | "team_workspace" | "host_console" | "agent_workspace" | "member_workbench" | "operator";
+export type RoleViewKind = "global_work" | "team_workspace" | "host_console" | "agent_workspace" | "member_workbench" | "operator";
 
 export interface ActorRef { kind: string; id: string; /** Server-resolved durable display label; the raw id remains the secondary display. */ display_name?: string|null }
 export interface TargetRef { kind: string; id: string }
@@ -176,6 +176,10 @@ export interface RoleView<T> {
 
 export interface WorkSummary {
   work_id: string; work_revision: number; team_id: string; mission_id: string;
+  accountable_team_id: string | null; assignee_membership_id: string | null;
+  assignee_kind: "host" | "member" | "unassigned";
+  assignee_ref: { kind: string; membership_id: string | null; membership_state: string | null; agent_member_id: string | null; display_name: string | null };
+  migration_state: "canonical" | "legacy_team_run_scoped";
   title: string; context_markdown: string; completion_criteria_markdown: string;
   claim_mode: string; eligible_member_ids: string[]; prerequisite_work_ids: string[];
   parent_work_id: string | null; blocker_reason: string | null; result_summary: string | null;
@@ -271,6 +275,7 @@ export interface LatestTeamRunSummary {
 export interface CompanyWorkIndexData {
   query: Record<string, string[]>; sort: Array<{field: string; direction: string}>; items: WorkSummary[];
   page: { as_of_event_sequence: number; item_count: number; next_cursor: string | null; snapshot_vector:Array<{execution_space_id:string;store_identity:string;trust_store_sequence:number;work_operation_count:number;team_row_count:number;team_run_row_count:number}> };
+  pending_migration_work_ids: string[];
   facets: Record<string, string[]>; runtime_fabric:RuntimeFabricSummary;
 }
 export interface TeamWorkspaceData {
@@ -422,9 +427,9 @@ export async function fetchRoleView<T>(apiUrl:string,path:string,scope:{project?
   const body=await response.json().catch(()=>({}));
   if(!response.ok)throw new Error(body?.error?.message??`RoleView request failed (${response.status})`);
   if(body.schema_version!==ROLE_VIEW_SCHEMA)throw new Error(`Unsupported RoleView schema: ${String(body.schema_version)}`);
-  const expectedKind=path.includes("company-work")?"company_work":path.includes("team-workspace")?"team_workspace":path.includes("host-console")?"host_console":path.includes("agent-workspace")?"agent_workspace":path.includes("member-workbench")?"member_workbench":path.includes("operator")?"operator":null;
+  const expectedKind=path.includes("global-work")?"global_work":path.includes("team-workspace")?"team_workspace":path.includes("host-console")?"host_console":path.includes("agent-workspace")?"agent_workspace":path.includes("member-workbench")?"member_workbench":path.includes("operator")?"operator":null;
   if(!expectedKind||body.view_kind!==expectedKind)throw new Error(`RoleView kind mismatch: expected ${String(expectedKind)}, received ${String(body.view_kind)}`);
-  if(body.source_execution_space_id!==scope.space&&expectedKind!=="company_work")throw new Error("RoleView execution-space identity mismatch");
+  if(body.source_execution_space_id!==scope.space&&expectedKind!=="global_work")throw new Error("RoleView execution-space identity mismatch");
   if(!Number.isSafeInteger(body.as_of_event_sequence)||!["current","stale","unavailable","unknown"].includes(body.freshness)||!Array.isArray(body.allowed_actions)||!Array.isArray(body.attention))throw new Error("Malformed RoleView envelope");
   for(const action of body.allowed_actions){if(!action||typeof action.kind!=="string"||!action.target_ref||typeof action.target_ref.id!=="string"||!Number.isSafeInteger(action.required_version)||action.required_version<0||!(action.disabled_reason===null||typeof action.disabled_reason==="string"))throw new Error("Malformed or non-CAS RoleView action")}
   return body as RoleView<T>;

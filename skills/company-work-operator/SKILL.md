@@ -81,24 +81,32 @@ Select both explicitly when they differ:
 ```bash
 harness company current
 harness project current
-harness --company <company-id> company work list
+harness work list
 harness --space <space-id> team-run work list --team-id <team-id>
 ```
 
 Do not rely on the current directory to imply either authority.
 
-## Read and filter Company Work
+## Read and filter Global Work
+
+The Global Work view (DOC-106) is the one read projection over the canonical
+Work/WorkOperation authority. It replaces the retired `company work
+list/query` CLI and `/v1/views/company-work` endpoint.
 
 ```bash
-harness company work list
-harness company work list --team-id <team-id>
-harness company work list --team-run-id <team-run-id>
-harness company work list --phase <open|active|review|closed>
-harness company work list --condition <normal|blocked|on_hold>
-harness company work list --resolution <accepted|cancelled|failed>
-harness company work list --owner-member-id <agent-member-id>
-harness company work query --work <work-id>
+harness work list
+harness work list --team-id <team-id>
+harness work list --assignee-membership-id <membership-id>
+harness work list --assignee-kind <host|member|unassigned>
+harness work list --member-id <agent-member-id>
+harness work list --phase <open|active|review|closed>
+harness work list --condition <normal|blocked|on_hold>
+harness work list --resolution <accepted|cancelled|failed>
+harness work list --priority <low|normal|high|urgent>
 ```
+
+The same projection is served at `GET /v1/views/global-work`. Responsibility
+follows the assignee TeamMembership, never a MemberRun or runtime state.
 
 These commands are read-only. They return the original TeamWork records without
 fallback rows or copied Company lifecycle fields.
