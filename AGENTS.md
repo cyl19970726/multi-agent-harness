@@ -75,7 +75,8 @@ control are separate planes and cannot impersonate one another.
 Cross-Team responsibility uses explicit WorkDelegation rather than parent/child
 Team topology. Docs plus flat AgentTeam Organization is the accepted product
 direction; ADR 0052 is superseded historical evidence. AgentMember is the one
-durable organization-agent identity. Company Work is a
+durable organization-agent identity. Global Work (DOC-106; formerly the
+Company Work aggregate) is a
 read-only aggregate over authoritative TeamWork and must never regain a second
 task ledger or mutation path. Repository self-hosting remains the first
 execution-foundation scenario.
