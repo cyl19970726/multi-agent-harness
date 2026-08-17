@@ -132,6 +132,21 @@ const api = createHttpServer((request, response) => {
     capability_auth: "x-agentfirm-token",
     build_sha: "fbc401646f66b69a0269622c489441cfe643b54f",
   });
+  if (url.pathname === "/v1/views/global-work") return jsonResponse(response, 200, {
+    view_kind: "global_work",
+    schema_version: "agentfirm.role_views.v1",
+    source_execution_space_id: url.searchParams.get("space") || "space-a",
+    source_store_identity: "self-heal-fixture-store",
+    as_of_event_sequence: 1,
+    generated_at: new Date().toISOString(),
+    freshness: "current",
+    data: {
+      items: [],
+      facets: {teams: [], hosts: [], members: [], phases: []},
+      page: {as_of_event_sequence: 1, item_count: 0, next_cursor: null},
+    },
+    attention: [], allowed_actions: [],
+  });
   if (url.pathname.startsWith("/v1/views/team-workspace/")) return jsonResponse(response, 200, {
     view_kind: "team_workspace",
     schema_version: "agentfirm.role_views.v1",
@@ -437,7 +452,10 @@ try {
   state.responsePlan.push({ delay: 500, status: 200 });
   emitInvalidation({ revision: 6 });
   await freshness(page, "stale");
-  await page.getByLabel("Active company").selectOption("company-b");
+  // The Company selector left the navigation (DOC-107); Company remains a
+  // URL-owned scope param, so the boundary crossing is driven by location.
+  const companySwitch = new URLSearchParams({ api: apiBase, project: "project-a", space: "space-a", company: "company-b", surface: "debug" });
+  await page.goto(`${appBase}/?${companySwitch}`, { waitUntil: "domcontentloaded", timeout: 15_000 });
   await freshness(page, "live");
   await page.getByText("authoritative company B", { exact: true }).waitFor({ timeout: 8_000 });
   await new Promise((resolveWait) => setTimeout(resolveWait, 650));
@@ -504,7 +522,7 @@ try {
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
   await freshness(boundaryPage, "live");
-  await boundaryPage.getByText("Company Work", { exact: true }).waitFor({ timeout: 8_000 });
+  await boundaryPage.getByRole("heading", { name: "Global Work", exact: true }).waitFor({ timeout: 8_000 });
   await boundaryPage.evaluate(() => {
     const url = new URL(window.location.href);
     url.searchParams.set("surface", "debug");

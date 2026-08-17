@@ -134,6 +134,22 @@ function responseFor(url) {
     capability_auth: "x-agentfirm-token",
     build_sha: "fbc401646f66b69a0269622c489441cfe643b54f",
   };
+  if (url.pathname.startsWith("/v1/views/team-inbox/")) return {
+    view_kind: "team_inbox",
+    schema_version: "agentfirm.role_views.v1",
+    source_execution_space_id: "fixture-space",
+    source_store_identity: "slow-snapshot-fixture-store",
+    as_of_event_sequence: 1,
+    generated_at: new Date().toISOString(),
+    freshness: "current",
+    data: {
+      team: { team_id: "teamrun-mission-current", display_name: "Fixture Team", team_revision: 1, node_id: "node-fixture", status: "active" },
+      subscription: null,
+      items: [],
+      page: { as_of_event_sequence: 1, item_count: 0, next_cursor: null },
+    },
+    attention: [], allowed_actions: [],
+  };
   if (url.pathname.startsWith("/v1/views/team-workspace/")) return teamWorkspace;
   if (url.pathname.startsWith("/v1/views/host-console/")) return hostConsole;
   if (url.pathname.startsWith("/v1/views/agent-workspace/")) return agentWorkspace;
