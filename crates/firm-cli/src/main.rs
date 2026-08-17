@@ -65,6 +65,7 @@ mod fabric_runtime;
 mod host_dispatcher;
 mod kimi_acp;
 mod kimi_team_runtime;
+mod legacy_company_os;
 mod legacy_export;
 mod mcp;
 mod native_session;
@@ -1946,6 +1947,13 @@ fn run() -> CliResult<()> {
     // is invalid. Verification is fully offline and resolves no live store.
     if args.first().map(String::as_str) == Some("legacy-goal-task") {
         return legacy_goal_task_command(&mut args);
+    }
+    // Legacy Company OS export/verify shares the same store-LESS discipline:
+    // export enumerates every record store under the resolved Firm home
+    // (machine-wide, so no project/space/company selector applies), and
+    // verification is fully offline and resolves no live store.
+    if args.first().map(String::as_str) == Some("legacy-company-os") {
+        return legacy_company_os_command(&mut args);
     }
     // `cheatsheet` is store-LESS: it prints operating knowledge for the Host
     // and must not require a store, project, or space.
@@ -7545,6 +7553,53 @@ fn legacy_goal_task_command(args: &mut Vec<String>) -> CliResult<()> {
         other => {
             return Err(CliError::Usage(format!(
                 "unknown legacy-goal-task command: {other}"
+            )))
+        }
+    }
+    Ok(())
+}
+
+/// Read-only export/verification boundary for the retired Company OS record
+/// surface (DOC-108 Stage A). Export enumerates every record store under the
+/// resolved Firm home — Company Stores, Execution Space stores, project and
+/// repo-local compatibility stores, machine node stores — so store selectors
+/// are rejected rather than silently narrowing the enumeration. Verification
+/// is fully offline and resolves no live store.
+fn legacy_company_os_command(args: &mut Vec<String>) -> CliResult<()> {
+    if args.first().map(String::as_str) != Some("legacy-company-os") {
+        return Err(CliError::Usage(
+            "usage: harness legacy-company-os export|verify".into(),
+        ));
+    }
+    args.remove(0);
+    require_subcommand(args, "legacy-company-os export|verify")?;
+    match args[0].as_str() {
+        "export" => {
+            for forbidden in ["--store", "--project", "--space", "--company"] {
+                if args.iter().any(|arg| arg == forbidden) {
+                    return Err(CliError::Usage(format!(
+                        "legacy-company-os export enumerates the whole Firm home; {forbidden} is not allowed"
+                    )));
+                }
+            }
+            let firm_home = match take_flag_value(args, "--firm-home") {
+                Some(raw) => PathBuf::from(raw),
+                None => project::firm_home().map_err(project_err)?,
+            };
+            let output = PathBuf::from(required(args, "--output")?);
+            let summary =
+                legacy_company_os::export_archive(&firm_home, &output).map_err(CliError::Usage)?;
+            print_json(&summary)?;
+        }
+        "verify" => {
+            let archive = PathBuf::from(required(args, "--archive")?);
+            let summary =
+                legacy_company_os::verify_archive(&archive).map_err(CliError::Usage)?;
+            print_json(&summary)?;
+        }
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown legacy-company-os command: {other}"
             )))
         }
     }
@@ -43063,6 +43118,8 @@ fn print_help() {
   space migrate-from-project --from-project <binding-id|path> --id <space-id> [--name <name>]
   legacy-goal-task export --project <id|path> --output <dir>
   legacy-goal-task verify --archive <dir>
+  legacy-company-os export [--firm-home <dir>] --output <dir>
+  legacy-company-os verify --archive <dir>
   mission create|list|show|update-context|close
   mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <md>
   mission log show --mission-id <id> [--tail <n>]
@@ -43135,7 +43192,8 @@ fn print_help() {
   cheatsheet [team|work|mission|all]
 
 Retired coordination commands fail explicitly. Historical rows are available only
-through legacy-goal-task export|verify.
+through legacy-goal-task export|verify; retired Company OS records through
+legacy-company-os export|verify.
 
 Execution selection is independent: --space/FIRM_SPACE selects coordination
 storage; --project/FIRM_PROJECT selects the provider cwd/config/Skill boundary.
