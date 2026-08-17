@@ -477,8 +477,10 @@ pub fn export_archive(firm_home: &Path, output: &Path) -> Result<ExportSummary, 
     })
 }
 
-/// Verify an archive without consulting any live store: manifest hashes,
-/// byte/line counts, and the contract cross-checks.
+/// Verify an archive without consulting any live store: manifest hashes and
+/// byte/line counts, the ledger/exclusion contract cross-checks, and a
+/// restore-read proof that re-reads every ledger from an isolated temp-dir
+/// copy of the archive.
 pub fn verify_archive(archive: &Path) -> Result<VerifySummary, String> {
     reject_symlink_ancestors(archive, "archive directory")?;
     reject_symlink_or_non_directory(archive, "archive directory")?;
@@ -497,6 +499,11 @@ pub fn verify_archive(archive: &Path) -> Result<VerifySummary, String> {
     let mut entries = std::collections::BTreeMap::new();
     for entry in &manifest.files {
         validate_relative_archive_path(&entry.path)?;
+        crate::legacy_export::reject_relative_symlink_components(
+            archive,
+            Path::new(&entry.path),
+            "archive file",
+        )?;
         let path = archive.join(&entry.path);
         let metadata = fs::symlink_metadata(&path)
             .map_err(|e| format!("inspect archived file {}: {e}", path.display()))?;
@@ -535,15 +542,280 @@ pub fn verify_archive(archive: &Path) -> Result<VerifySummary, String> {
         }
     }
 
+    // The echoed exclusion contract must match this verifier's own contract
+    // exactly: an archive produced under a weaker contract is not acceptable.
+    let expected_contract: Vec<ExclusionContractEcho> = EXCLUSION_CONTRACT
+        .iter()
+        .map(|rule| ExclusionContractEcho {
+            name: rule.name.into(),
+            is_dir: rule.is_dir,
+            reason: rule.reason.label().into(),
+        })
+        .collect();
+    if manifest.exclusion_contract != expected_contract {
+        return Err("archive exclusion contract does not match verifier contract".into());
+    }
+
+    // No archived file may come from an excluded location. Recomputed from
+    // the contract over every recorded source path, independent of the
+    // exporter's own per-store exclusion list. Directory rules match exact
+    // component names at any depth; file rules (including the *.token/*.key/
+    // *.pem/.env.* patterns) apply to the final component only.
+    for entry in &manifest.files {
+        let Some(source_path) = &entry.source_path else {
+            continue;
+        };
+        let source = Path::new(source_path);
+        if !source.is_absolute() {
+            return Err(format!(
+                "archived file source location is not absolute: {}",
+                entry.path
+            ));
+        }
+        let mut components = source.components().peekable();
+        while let Some(component) = components.next() {
+            let name = component.as_os_str().to_str().ok_or_else(|| {
+                format!("non-UTF-8 archived source path component: {source_path}")
+            })?;
+            let is_last = components.peek().is_none();
+            let matched = if is_last {
+                exclusion_for_name(name, false).or_else(|| exclusion_for_name(name, true))
+            } else {
+                exclusion_for_name(name, true)
+            };
+            if let Some(reason) = matched {
+                return Err(format!(
+                    "archived file {} comes from excluded location {} ({}: {})",
+                    entry.path,
+                    source_path,
+                    reason.label(),
+                    name
+                ));
+            }
+        }
+    }
+
+    let empty_sha256 = sha256_hex(b"");
+    for store in &manifest.stores {
+        validate_store_archive_id(&store.id)?;
+        if store.path.is_empty() || !Path::new(&store.path).is_absolute() {
+            return Err(format!(
+                "store source location is not absolute: {}",
+                store.id
+            ));
+        }
+        if store.ledgers.len() != LEDGER_CONTRACT.len() {
+            return Err(format!(
+                "store {} has {} ledger entries, contract requires {}",
+                store.id,
+                store.ledgers.len(),
+                LEDGER_CONTRACT.len()
+            ));
+        }
+        for (ledger, contract) in store.ledgers.iter().zip(LEDGER_CONTRACT.iter()) {
+            if ledger.ledger != contract.ledger
+                || ledger.section != contract.section.label()
+                || ledger.object_type != contract.object_type
+                || ledger.schema_version != contract.section.schema_version()
+            {
+                return Err(format!(
+                    "store {} ledger entry does not match the contract for {}",
+                    store.id, contract.ledger
+                ));
+            }
+            let expected_archive_path = format!("stores/{}/ledgers/{}", store.id, contract.ledger);
+            if ledger.archive_path != expected_archive_path {
+                return Err(format!(
+                    "store {} ledger {} has wrong archive path: {}",
+                    store.id, contract.ledger, ledger.archive_path
+                ));
+            }
+            // Source location structure: the recorded ledger must sit exactly
+            // at <store.path>/<ledger name>, so nothing nested inside an
+            // excluded directory (or anywhere else) can pose as a ledger.
+            let expected_source = Path::new(&store.path).join(contract.ledger);
+            if Path::new(&ledger.source_path) != expected_source {
+                return Err(format!(
+                    "store {} ledger {} source path escapes its store root: {}",
+                    store.id, contract.ledger, ledger.source_path
+                ));
+            }
+            let entry = entries.get(&ledger.archive_path).ok_or_else(|| {
+                format!(
+                    "manifest files miss ledger archive path: {}",
+                    ledger.archive_path
+                )
+            })?;
+            if entry.category != "legacy_ledger"
+                || entry.sha256 != ledger.sha256
+                || entry.bytes != ledger.bytes
+                || entry.rows != Some(ledger.rows)
+                || entry.source_path.as_deref() != Some(ledger.source_path.as_str())
+            {
+                return Err(format!(
+                    "ledger/file manifest mismatch: {}",
+                    ledger.archive_path
+                ));
+            }
+            if ledger.present {
+                if ledger.bytes == 0 && ledger.rows != 0 {
+                    return Err(format!(
+                        "present ledger with rows but no bytes: {}",
+                        ledger.archive_path
+                    ));
+                }
+            } else if ledger.bytes != 0 || ledger.rows != 0 || ledger.sha256 != empty_sha256 {
+                return Err(format!(
+                    "absent ledger must be an empty archived entry: {}",
+                    ledger.archive_path
+                ));
+            }
+        }
+        for excluded in &store.excluded_locations {
+            let path = Path::new(&excluded.path);
+            if !path.is_absolute() {
+                return Err(format!(
+                    "excluded location is not absolute: {}",
+                    excluded.path
+                ));
+            }
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| format!("excluded location has no file name: {}", excluded.path))?;
+            let matches_reason = exclusion_for_name(name, true)
+                .or_else(|| exclusion_for_name(name, false))
+                .is_some_and(|reason| reason.label() == excluded.reason);
+            if !matches_reason {
+                return Err(format!(
+                    "excluded location does not match the contract rule for its reason: {}",
+                    excluded.path
+                ));
+            }
+        }
+    }
+
+    // Totals must recompute exactly from the store sections.
+    let recomputed = ManifestTotals {
+        stores: manifest.stores.len() as u64,
+        ledgers_present: manifest
+            .stores
+            .iter()
+            .flat_map(|s| s.ledgers.iter())
+            .filter(|l| l.present)
+            .count() as u64,
+        rows: manifest
+            .stores
+            .iter()
+            .flat_map(|s| s.ledgers.iter())
+            .map(|l| l.rows)
+            .sum(),
+        bytes: manifest
+            .stores
+            .iter()
+            .flat_map(|s| s.ledgers.iter())
+            .map(|l| l.bytes)
+            .sum(),
+        excluded_locations_present: manifest
+            .stores
+            .iter()
+            .flat_map(|s| s.excluded_locations.iter())
+            .filter(|e| e.present)
+            .count() as u64,
+    };
+    if manifest.totals != recomputed {
+        return Err("manifest totals do not recompute from store sections".into());
+    }
+
+    // Restore-read proof: copy the manifest-listed files into an isolated
+    // temp dir, then re-read every ledger from that detached copy — parsing
+    // each row and rechecking counts and hashes — proving the archive alone
+    // reconstructs readable records without any live store.
+    let restored_rows = restore_read_proof(archive, &manifest)?;
+
     Ok(VerifySummary {
         format: ARCHIVE_FORMAT.into(),
         archive: canonical_string(archive),
         stores: manifest.stores.len(),
         ledgers_present: manifest.totals.ledgers_present,
-        rows: manifest.totals.rows,
+        rows: restored_rows,
         files: manifest.files.len(),
-        restore_read: "pending_contract_checks".into(),
+        restore_read: "verified".into(),
     })
+}
+
+fn validate_store_archive_id(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(format!("unsafe archive store id: {value}"));
+    }
+    Ok(())
+}
+
+/// Copy every manifest-listed file into an isolated temp dir and re-read all
+/// ledgers from that detached copy. Returns the total restored row count.
+fn restore_read_proof(archive: &Path, manifest: &Manifest) -> Result<u64, String> {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let restore_path = std::env::temp_dir().join(format!(
+        "legacy-company-os-restore-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir(&restore_path).map_err(|e| format!("create restore dir: {e}"))?;
+    let restore = StagingDir {
+        path: restore_path,
+        keep: false,
+    };
+
+    for entry in &manifest.files {
+        let bytes = fs::read(archive.join(&entry.path))
+            .map_err(|e| format!("restore read {}: {e}", entry.path))?;
+        write_archive_file(&restore.path, &entry.path, &bytes)?;
+    }
+
+    let mut restored_rows = 0_u64;
+    for store in &manifest.stores {
+        for ledger in &store.ledgers {
+            let restored = restore.path.join(&ledger.archive_path);
+            let bytes =
+                fs::read(&restored).map_err(|e| format!("read restored {}: {e}", restored.display()))?;
+            if sha256_hex(&bytes) != ledger.sha256 {
+                return Err(format!(
+                    "restored hash mismatch for {}",
+                    ledger.archive_path
+                ));
+            }
+            let rows = crate::legacy_export::jsonl_records(&bytes, &ledger.archive_path)?
+                .len() as u64;
+            if rows != ledger.rows {
+                return Err(format!(
+                    "restored row-count mismatch for {}: manifest {}, restored {}",
+                    ledger.archive_path, ledger.rows, rows
+                ));
+            }
+            restored_rows += rows;
+        }
+    }
+    // Control-plane registries must parse as JSON from the restored copy.
+    for entry in &manifest.files {
+        if entry.category != "control_plane_registry" {
+            continue;
+        }
+        let bytes = fs::read(restore.path.join(&entry.path))
+            .map_err(|e| format!("read restored {}: {e}", entry.path))?;
+        if serde_json::from_slice::<serde_json::Value>(&bytes).is_err() {
+            return Err(format!(
+                "restored control-plane registry is not valid JSON: {}",
+                entry.path
+            ));
+        }
+    }
+    Ok(restored_rows)
 }
 
 /// One enumerated source record store on this machine.
@@ -766,10 +1038,15 @@ fn archive_store(
     if store.present {
         reject_symlink_or_non_directory(&store.root, "enumerated source store")?;
     }
+    // Ledger source paths are recorded under the canonical store root so the
+    // manifest's store.path is always their exact parent — verification can
+    // then prove structure (top-level contract ledgers only) instead of
+    // pattern-matching arbitrary paths.
+    let canonical_root = fs::canonicalize(&store.root).unwrap_or_else(|_| store.root.clone());
     let prefix = format!("stores/{}", store.id);
     let mut ledgers = Vec::new();
     for contract in LEDGER_CONTRACT {
-        let source_path = store.root.join(contract.ledger);
+        let source_path = canonical_root.join(contract.ledger);
         let (bytes, present) = if store.present && source_path.exists() {
             let metadata = fs::symlink_metadata(&source_path)
                 .map_err(|e| format!("inspect ledger {}: {e}", source_path.display()))?;
@@ -827,14 +1104,14 @@ fn archive_store(
         });
     }
     let excluded_locations = if store.present {
-        excluded_locations_for_store(&store.root)?
+        excluded_locations_for_store(&canonical_root)?
     } else {
         Vec::new()
     };
     Ok(ManifestStore {
         id: store.id.clone(),
         kind: store.kind.into(),
-        path: canonical_string(&store.root),
+        path: canonical_root.display().to_string(),
         present: store.present,
         identity: store.identity.clone(),
         ledgers,
@@ -1410,5 +1687,120 @@ mod tests {
         let error = ensure_inputs_unchanged(&before, &stores, &home)
             .expect_err("drift must fail the export");
         assert!(error.contains("refusing mixed-moment archive"), "{error}");
+    }
+
+    /// Export the seeded home to a fresh archive dir and return its
+    /// canonical path (verify refuses symlinked temp ancestors).
+    fn export_seeded(root: &Path, home: &Path, name: &str) -> PathBuf {
+        let output = root.join(name);
+        export_archive(home, &output).expect("export");
+        fs::canonicalize(&output).expect("canonical archive")
+    }
+
+    fn read_manifest(archive: &Path) -> serde_json::Value {
+        serde_json::from_slice(&fs::read(archive.join("manifest.json")).expect("manifest"))
+            .expect("manifest json")
+    }
+
+    fn write_manifest(archive: &Path, manifest: &serde_json::Value) {
+        let mut bytes = serde_json::to_vec_pretty(manifest).unwrap();
+        bytes.push(b'\n');
+        fs::write(archive.join("manifest.json"), bytes).expect("write manifest");
+    }
+
+    #[test]
+    fn verify_rejects_tampered_bytes_manifest_and_smuggled_exclusions() {
+        let root = TempRoot::new("verify-tamper");
+        let (home, _repo) = seed_home(&root.0);
+        seed_company_os_surface(&home);
+
+        // 1. Byte tampering in an archived ledger.
+        let archive = export_seeded(&root.0, &home, "a1");
+        fs::write(
+            archive.join("stores/company-acme/ledgers/company_os_documents.jsonl"),
+            b"{\"id\":\"doc-x\"}\n",
+        )
+        .unwrap();
+        let error = verify_archive(&archive).expect_err("tampered bytes");
+        assert!(error.contains("SHA-256 mismatch"), "{error}");
+
+        // 2. A weakened echoed exclusion contract.
+        let archive = export_seeded(&root.0, &home, "a2");
+        let mut manifest = read_manifest(&archive);
+        manifest["exclusion_contract"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|rule| rule["name"] != "tokens.json");
+        write_manifest(&archive, &manifest);
+        let error = verify_archive(&archive).expect_err("weakened contract");
+        assert!(error.contains("exclusion contract"), "{error}");
+
+        // 3. Doctored row count in a ledger entry (totals no longer
+        //    recompute before the restore-read proof even runs).
+        let archive = export_seeded(&root.0, &home, "a3");
+        let mut manifest = read_manifest(&archive);
+        let company = manifest["stores"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|s| s["id"] == "company-acme")
+            .unwrap();
+        company["ledgers"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|l| l["ledger"] == "company_os_documents.jsonl")
+            .unwrap()["rows"] = serde_json::json!(99);
+        write_manifest(&archive, &manifest);
+        let error = verify_archive(&archive).expect_err("doctored rows");
+        assert!(
+            error.contains("totals do not recompute") || error.contains("manifest mismatch"),
+            "{error}"
+        );
+
+        // 4. A hand-added file smuggled from an excluded location.
+        let archive = export_seeded(&root.0, &home, "a4");
+        write_archive_file(&archive, "stores/company-acme/ledgers/sneaky.jsonl", b"{}\n")
+            .expect("plant file");
+        let mut manifest = read_manifest(&archive);
+        let store_path = manifest["stores"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == "company-acme")
+            .unwrap()["path"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        manifest["files"].as_array_mut().unwrap().push(serde_json::json!({
+            "path": "stores/company-acme/ledgers/sneaky.jsonl",
+            "category": "legacy_ledger",
+            "sha256": sha256_hex(b"{}\n"),
+            "bytes": 3,
+            "line_count": 1,
+            "rows": 1,
+            "source_path": format!("{store_path}/provider-sessions/sneaky.jsonl"),
+        }));
+        write_manifest(&archive, &manifest);
+        let error = verify_archive(&archive).expect_err("smuggled exclusion");
+        assert!(error.contains("excluded location"), "{error}");
+    }
+
+    #[test]
+    fn restore_read_recovers_rows_from_detached_copy() {
+        let root = TempRoot::new("verify-restore");
+        let (home, _repo) = seed_home(&root.0);
+        seed_company_os_surface(&home);
+        let archive = export_seeded(&root.0, &home, "a1");
+        let summary = verify_archive(&archive).expect("verify");
+        assert_eq!(summary.restore_read, "verified");
+        // Seeded rows: acme documents 2 + blocks 1 + missions 1 +
+        // team_messages 1, plus repo-local goals.jsonl is NOT in this
+        // contract.
+        assert_eq!(summary.rows, 5);
+        // Deleting the live sources must not affect verification.
+        fs::remove_dir_all(home.join("companies/acme")).expect("remove live store");
+        let summary = verify_archive(&archive).expect("verify offline");
+        assert_eq!(summary.rows, 5);
     }
 }

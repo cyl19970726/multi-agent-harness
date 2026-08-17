@@ -1443,7 +1443,7 @@ fn copy_interpretation_files(
     Ok(materials)
 }
 
-fn reject_relative_symlink_components(
+pub(crate) fn reject_relative_symlink_components(
     root: &Path,
     relative: &Path,
     label: &str,
