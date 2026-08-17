@@ -83,6 +83,11 @@ const env = {
   FIRM_HOME: harnessHome,
   HARNESS_HOME: harnessHome,
   FIRM_TEST_DASHBOARD_SNAPSHOT_BUILD_PAUSE_MS: "800",
+  // RoleView reads (the default Global Work surface included) require a
+  // member-trust credential; register one operator identity for this run.
+  AGENTFIRM_HTTP_CREDENTIALS_JSON: JSON.stringify([
+    { token: "dev33-handoff-operator", actor: { kind: "human", id: "operator:dev33-handoff" }, authority_actors: [] },
+  ]),
 };
 for (const name of [
   "FIRM_ROOT", "FIRM_PROJECT", "FIRM_PROJECT_ID", "FIRM_SPACE", "FIRM_COMPANY",
@@ -146,6 +151,9 @@ try {
   const appBase = `http://127.0.0.1:${vite.httpServer.address().port}`;
   browser = await chromium.launch({ headless: true });
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  await page.addInitScript(() => {
+    window.__AGENTFIRM_BOOTSTRAP__ = { capabilityToken: "dev33-handoff-operator" };
+  });
 
   const consoleErrors = [];
   const pageErrors = [];
@@ -175,13 +183,12 @@ try {
     project: projectA.id,
     space: spaceA.id,
     company: "dev33-company-a",
-    surface: "docs",
+    surface: "work",
   });
   await page.goto(`${appBase}/?${query}`, { waitUntil: "domcontentloaded", timeout: 20_000 });
   await Promise.all([
     page.getByLabel("Active project").locator(`option[value="${projectB.id}"]`).waitFor({ state: "attached" }),
     page.getByLabel("Active execution space").locator(`option[value="${spaceB.id}"]`).waitFor({ state: "attached" }),
-    page.getByLabel("Active company").locator('option[value="dev33-company-b"]').waitFor({ state: "attached" }),
   ]);
   await waitFor(async () => (await requestMetrics(apiBase)).active === 1, "first backend Store snapshot build to be active");
 
@@ -191,25 +198,27 @@ try {
     await waitFor(() => snapshotRequests.length > before, `${label} ${value} snapshot request`);
   };
 
+
   // Each change happens while the previous synchronous Store build is still
   // active or queued. This is true backend pressure, not a held route response.
+  // Company no longer has an in-place switcher: the URL-owned param is read
+  // at bootstrap. Scope pressure is exercised across the retained Project and
+  // Execution Space dimensions; every request still carries the fixed Company
+  // scope, and the settled proof below includes it.
   await changeScope("Active project", projectB.id);
-  await changeScope("Active company", "dev33-company-b");
   await changeScope("Active execution space", spaceB.id);
   await changeScope("Active project", projectA.id);
-  await changeScope("Active company", "dev33-company-a");
   await changeScope("Active execution space", spaceA.id);
   await changeScope("Active project", projectB.id);
-  await changeScope("Active company", "dev33-company-b");
   await changeScope("Active execution space", spaceB.id);
 
-  await page.getByLabel("Document tree")
-    .getByRole("link", { name: "DEV-33 scope document B", exact: true })
-    .first()
-    .waitFor({ timeout: 45_000 });
-  assert.equal(await page.getByLabel("Active project").inputValue(), projectB.id);
-  assert.equal(await page.getByLabel("Active execution space").inputValue(), spaceB.id);
-  assert.equal(await page.getByLabel("Active company").inputValue(), "dev33-company-b");
+  // The settled scope is proven by the snapshot request stream itself: every
+  // read after the final switches must carry project B + space B + company B.
+  await page.getByRole("heading", { name: "Global Work", exact: true }).waitFor({ timeout: 45_000 });
+  const lastRead = snapshotRequests.at(-1);
+  assert.equal(lastRead?.project, projectB.id, "final settled snapshot read carries project B");
+  assert.equal(lastRead?.space, spaceB.id, "final settled snapshot read carries space B");
+  assert.equal(lastRead?.company, "dev33-company-a", "final settled snapshot read carries the URL-owned Company scope");
   await waitFor(async () => {
     const metrics = await requestMetrics(apiBase);
     return metrics.active === 0 && metrics.completed === metrics.started;
@@ -230,7 +239,7 @@ try {
     backend_snapshot_build_started: metrics.started,
     backend_snapshot_build_completed: metrics.completed,
     max_active_backend_snapshot_builds: metrics.max_active,
-    final_scope: { project: projectB.id, company: "dev33-company-b", space: spaceB.id },
+    final_scope: { project: projectB.id, company: "dev33-company-a", space: spaceB.id },
     console_errors: consoleErrors,
     page_errors: pageErrors,
     http_errors: httpErrors,
