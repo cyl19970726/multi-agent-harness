@@ -1,7 +1,7 @@
 export const ROLE_VIEW_SCHEMA = "agentfirm.role_views.v1" as const;
 
 export type RoleViewFreshness = "current" | "stale" | "unavailable" | "unknown";
-export type RoleViewKind = "global_work" | "team_workspace" | "host_console" | "agent_workspace" | "member_workbench" | "operator";
+export type RoleViewKind = "global_work" | "team_workspace" | "host_console" | "agent_workspace" | "member_workbench" | "operator" | "team_inbox";
 
 export interface ActorRef { kind: string; id: string; /** Server-resolved durable display label; the raw id remains the secondary display. */ display_name?: string|null }
 export interface TargetRef { kind: string; id: string }
@@ -285,6 +285,27 @@ export interface TeamWorkspaceData {
   gate_evaluations: RoleRecordSummary[]; gate_waivers: RoleRecordSummary[]; workspace_attention: RoleRecordSummary[];
   delegation_provenance: RoleRecordSummary[]; collaboration:CollaborationProjectionSummary; page: {as_of_event_sequence:number;item_count:number;next_cursor:string|null}; runtime_fabric:RuntimeFabricSummary;
 }
+/** One Team-subject canonical delivery in the shared Team Inbox (DOC-106). */
+export interface TeamInboxItem {
+  delivery_id: string; delivery_version: number; delivery_status: string; attempt: number;
+  claim_id: string | null; claimed_node_daemon_generation: number | null;
+  resolved_team_membership_id: string | null; recipient_agent_member_id: string | null;
+  subscription_id: string; subscription_revision: number;
+  message_id: string; created_at: string; updated_at: string;
+  message: {
+    kind: string; body: string; body_digest?: string | null; content_fingerprint?: string | null;
+    sender_actor_ref: ActorRef; sender_agent_member_id?: string | null; sender_session_id?: string | null;
+    source_team_id?: string | null; source_execution_space_id?: string | null; source_node_id?: string | null;
+    collaboration_scope?: string | null; correlation_id: string; causation_id?: string | null;
+    work_id?: string | null; response_intent?: string | null; created_at: string;
+  } | null;
+}
+export interface TeamInboxData {
+  team: { team_id: string; display_name: string; team_revision: number; node_id: string; status: string };
+  subscription: Record<string, unknown> | null;
+  items: TeamInboxItem[];
+  page: { as_of_event_sequence: number; item_count: number; next_cursor: string | null };
+}
 export interface MissionContextSummary {id:string; title:string; objective:string; context:string; desired_outcome:string|null; status:string; outcome_summary:string|null; created_at:string; updated_at:string; completed_at:string|null; log:Array<{id:string;revision:number;kind:string;body:string;actor:string;created_at:string}>}
 export interface TeamSupervisorSummary {team_run_id:string; supervisor_id:string; generation:number; current:boolean; heartbeat_unix_ms:number; expires_unix_ms:number; owner_locator:string; node_daemon_generation:number; status:string}
 export interface HostConsoleData {
@@ -427,7 +448,7 @@ export async function fetchRoleView<T>(apiUrl:string,path:string,scope:{project?
   const body=await response.json().catch(()=>({}));
   if(!response.ok)throw new Error(body?.error?.message??`RoleView request failed (${response.status})`);
   if(body.schema_version!==ROLE_VIEW_SCHEMA)throw new Error(`Unsupported RoleView schema: ${String(body.schema_version)}`);
-  const expectedKind=path.includes("global-work")?"global_work":path.includes("team-workspace")?"team_workspace":path.includes("host-console")?"host_console":path.includes("agent-workspace")?"agent_workspace":path.includes("member-workbench")?"member_workbench":path.includes("operator")?"operator":null;
+  const expectedKind=path.includes("global-work")?"global_work":path.includes("team-workspace")?"team_workspace":path.includes("team-inbox")?"team_inbox":path.includes("host-console")?"host_console":path.includes("agent-workspace")?"agent_workspace":path.includes("member-workbench")?"member_workbench":path.includes("operator")?"operator":null;
   if(!expectedKind||body.view_kind!==expectedKind)throw new Error(`RoleView kind mismatch: expected ${String(expectedKind)}, received ${String(body.view_kind)}`);
   if(body.source_execution_space_id!==scope.space&&expectedKind!=="global_work")throw new Error("RoleView execution-space identity mismatch");
   if(!Number.isSafeInteger(body.as_of_event_sequence)||!["current","stale","unavailable","unknown"].includes(body.freshness)||!Array.isArray(body.allowed_actions)||!Array.isArray(body.attention))throw new Error("Malformed RoleView envelope");
