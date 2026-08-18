@@ -166,9 +166,30 @@ harness team-run work create \
   --idempotency-key <stable-command-key>
 ```
 
-Legacy TeamRun send/ACK commands are retired because they let a caller select
-another identity. Author and acknowledge only through the authenticated Role
-Actions of the current server-built view.
+Member essentials (full sequence in the member loop reference):
+
+```bash
+# start assigned Work (CAS on the freshly read version):
+"$HARNESS_BIN" member work start \
+  --work-id "$HARNESS_WORK_ID" \
+  --expected-version <version-from-work-show> \
+  --idempotency-key <stable-command-key>
+
+# submit with evidence — moves Work to review, never to done:
+"$HARNESS_BIN" member work submit \
+  --work-id "$HARNESS_WORK_ID" \
+  --expected-version <latest-version> \
+  --result-summary "<RESULT/SUMMARY/COVERAGE/WORKTREE/ARTIFACTS template>" \
+  --idempotency-key <stable-command-key>
+```
+
+To send message or reply, use the authenticated Member Role Action
+(`send_message`, `reply_message`, `request_decision`) of the current
+server-built view — legacy TeamRun send/ACK commands are retired because they
+let a caller select another identity. Do not use provider Plan Mode
+(EnterPlanMode/ExitPlanMode) in team context — Harness has no Plan Gate and it
+blocks headless members indefinitely (ADR 0039); plan-first means an ordinary
+Markdown plan message to the Host.
 
 ## Part IV — Worked example: one Work, both sides
 
