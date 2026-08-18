@@ -2,7 +2,6 @@
 
 > Successor (DOC-16 row, DEV-40 flip 2026-08-18): [DOC-105](https://app.notion.com/p/3be49a4fa379817aa594fd8e7331c30d) + [DOC-108](https://app.notion.com/p/3be49a4fa37981afa320f6c8a5f3a8b4).
 
-
 > **Partially superseded by DOC-108 (legacy CompanyOS retirement, 2026-08-17).**
 > The Company-broker object model is retired and not current authority. Per
 > the DOC-16 Merge row, these safety principles SURVIVE as current authority

@@ -1,5 +1,7 @@
 # ADR 0035: Company OS SQL Read Model
 
+> Successor (DOC-16 row, DEV-40 flip 2026-08-18): [DOC-106](https://app.notion.com/p/3be49a4fa3798126a598e634ed5d0807).
+
 
 > **Superseded by DOC-108 (legacy CompanyOS retirement, 2026-08-17).**
 > This ADR is retained as historical evidence only; its object model is not
