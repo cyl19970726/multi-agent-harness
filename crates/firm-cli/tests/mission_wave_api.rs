@@ -2020,22 +2020,21 @@ fn http_mission_write_routes_are_retired() {
     seed_historical_mission(&home, &project_id, "mission-log-http", "Mission Log HTTP");
 
     let ledger_dir = home.spaces_dir().join(&project_id);
-    let before = ledger_dir
-        .exists()
-        .then(|| {
-            std::fs::read_dir(&ledger_dir)
-                .expect("read ledger dir")
-                .filter_map(|entry| entry.ok())
-                .filter(|entry| entry.path().is_file())
-                .map(|entry| {
-                    (
-                        entry.file_name(),
-                        std::fs::read(entry.path()).expect("read ledger file"),
-                    )
-                })
-                .collect::<std::collections::BTreeMap<_, _>>()
-        })
-        .unwrap_or_default();
+    let before = if ledger_dir.exists() {
+        std::fs::read_dir(&ledger_dir)
+            .expect("read ledger dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().is_file())
+            .map(|entry| {
+                (
+                    entry.file_name(),
+                    std::fs::read(entry.path()).expect("read ledger file"),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+    } else {
+        std::collections::BTreeMap::new()
+    };
 
     for (path, payload) in [
         (

@@ -101,6 +101,11 @@ struct ManifestStore {
     identity: Option<serde_json::Value>,
     ledgers: Vec<ManifestLedger>,
     excluded_locations: Vec<ExcludedLocation>,
+    /// Names of top-level `*.jsonl` files that are neither contracted nor
+    /// excluded (current, non-retired surfaces). Recorded so the manifest's
+    /// completeness claim is auditable: nothing on disk is invisible.
+    #[serde(default)]
+    uncontracted_ledgers: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -337,6 +342,27 @@ const LEDGER_CONTRACT: &[LedgerContract] = &[
         object_type: "company_os_action_audit_reservation",
         section: LedgerSection::CompanyOs,
     },
+    // --- Company OS: Work cutover leftovers ---
+    LedgerContract {
+        ledger: "company_os_work_items.jsonl",
+        object_type: "company_os_work_item",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_assignments.jsonl",
+        object_type: "company_os_assignment",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_work_cutover_fences.jsonl",
+        object_type: "company_os_work_cutover_fence",
+        section: LedgerSection::CompanyOs,
+    },
+    LedgerContract {
+        ledger: "company_os_standing_agents.jsonl",
+        object_type: "legacy_standing_agent",
+        section: LedgerSection::CompanyOs,
+    },
     // --- Mission / Wave coordination ---
     LedgerContract {
         ledger: "missions.jsonl",
@@ -379,6 +405,11 @@ const LEDGER_CONTRACT: &[LedgerContract] = &[
         object_type: "legacy_agent_runtime",
         section: LedgerSection::AgentIdentityCompatibility,
     },
+    LedgerContract {
+        ledger: "durable_agent_members.jsonl",
+        object_type: "legacy_durable_agent_member",
+        section: LedgerSection::AgentIdentityCompatibility,
+    },
     // --- Retired read-only history sections ---
     LedgerContract {
         ledger: "team_messages.jsonl",
@@ -388,6 +419,11 @@ const LEDGER_CONTRACT: &[LedgerContract] = &[
     LedgerContract {
         ledger: "provider_dispatch_events.jsonl",
         object_type: "provider_dispatch_event",
+        section: LedgerSection::RetiredHistory,
+    },
+    LedgerContract {
+        ledger: "company_store_migrations.jsonl",
+        object_type: "company_store_migration",
         section: LedgerSection::RetiredHistory,
     },
 ];
@@ -1408,6 +1444,11 @@ fn archive_store(
     } else {
         Vec::new()
     };
+    let uncontracted_ledgers = if store.present {
+        uncontracted_ledgers_for_store(&canonical_root, &excluded_locations)?
+    } else {
+        Vec::new()
+    };
     Ok(ManifestStore {
         id: store.id.clone(),
         kind: store.kind.into(),
@@ -1416,7 +1457,46 @@ fn archive_store(
         identity: store.identity.clone(),
         ledgers,
         excluded_locations,
+        uncontracted_ledgers,
     })
+}
+
+/// Names of top-level `*.jsonl` files matching neither the ledger contract nor
+/// the exclusion contract. Names only: content is never opened. This makes the
+/// docstring's "nothing contracted was left behind" claim auditable — a stray
+/// legacy-looking file can no longer be silently invisible in the manifest.
+fn uncontracted_ledgers_for_store(
+    root: &Path,
+    excluded: &[ExcludedLocation],
+) -> Result<Vec<String>, String> {
+    let contracted: std::collections::BTreeSet<&str> =
+        LEDGER_CONTRACT.iter().map(|c| c.ledger).collect();
+    let excluded_names: std::collections::BTreeSet<String> = excluded
+        .iter()
+        .filter_map(|e| {
+            Path::new(&e.path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
+        .collect();
+    let mut names = Vec::new();
+    let entries =
+        fs::read_dir(root).map_err(|e| format!("enumerate store {}: {e}", root.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("enumerate store {}: {e}", root.display()))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".jsonl") {
+            continue;
+        }
+        if contracted.contains(name.as_str()) || excluded_names.contains(&name) {
+            continue;
+        }
+        if entry.path().is_file() {
+            names.push(name);
+        }
+    }
+    names.sort();
+    Ok(names)
 }
 
 /// List the store's top-level entries that match the exclusion contract.

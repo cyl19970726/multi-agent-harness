@@ -52404,13 +52404,11 @@ mod tests {
         }
         // `mission log` is its own nested dispatcher (ADR 0051 Mission Log).
         let mission_log_body = function_body(MAIN_RS_SOURCE, "mission_log_command");
-        for leaf in ["show"] {
-            assert!(
-                subcommand_is_real(mission_log_body, leaf),
-                "mission log {leaf} is documented in the cheatsheet but is not a \
-                 real match arm in mission_log_command"
-            );
-        }
+        assert!(
+            subcommand_is_real(mission_log_body, "show"),
+            "mission log show is documented in the cheatsheet but is not a \
+             real match arm in mission_log_command"
+        );
         // Wave is absent from current workflow cheatsheets. Historical reads
         // live under the explicit `legacy wave` namespace only.
         assert!(!CHEATSHEET_MISSION.contains("wave "));

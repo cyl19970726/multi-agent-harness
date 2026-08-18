@@ -1479,9 +1479,6 @@ impl HarnessStore {
         self.append_jsonl_unlocked("team_runs.jsonl", value)
     }
 
-    /// Test-only reconstruction of the pre-ADR 0051 compare-and-append path.
-    /// Production exposes historical reads but no Legacy Wave maintenance writer.
-
     /// Reconstruct one raw historical ProviderRuntimeProjection during an
     /// explicit Legacy import. It is intentionally not a current admission
     /// path and never materializes the canonical MemberRun.
