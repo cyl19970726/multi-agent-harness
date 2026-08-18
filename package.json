@@ -40,7 +40,9 @@
     "acceptance:skill-install": "bash scripts/acceptance-skill-install.sh",
     "test:multi-project": "cargo test -p firm-core project -- --nocapture && cargo test -p firm-cli --test execution_space_cli --test project_registry --test project_resolution --test init_project --test workflow_cwd --test workflow_project_options --test global_project_workflow --test delivery_project_context --test codex_delivery_cwd --test claude_delivery_cwd --test serve_projects_api --test serve_sse_projects --test project_convergence --test project_cli --test project_migrate --test store_source",
     "acceptance:multi-project": "bash scripts/verify-fixes.sh",
-    "acceptance:legacy-retirement": "cargo test -p firm-cli --test mission_wave_api --test team_run_api --test team_run_daemon --test mcp_stdio -- --test-threads=1 && pnpm check:dashboard"
+    "acceptance:legacy-retirement": "cargo test -p firm-cli --test mission_wave_api --test team_run_api --test team_run_daemon --test mcp_stdio -- --test-threads=1 && pnpm check:dashboard",
+    "check:fast": "pnpm validate:json && pnpm check:schema-fixtures && pnpm check:provider-events && pnpm check:collaboration-foundation && pnpm check:member-execution-trust && pnpm check:runtime-message-fabric && pnpm check:tool-descriptors && pnpm check:native-session-boundary && pnpm check:star-harness-plugin && node scripts/check-cross-layer-consistency.mjs && pnpm check:frontend-fast",
+    "check:frontend-fast": "tsc -p apps/agent-dashboard/tsconfig.json --noEmit && node apps/agent-dashboard/tests/dashboard-build-provenance-check.mjs && node apps/agent-dashboard/tests/mission-wave-live-merge-check.mjs && node apps/agent-dashboard/tests/domain-freshness-check.mjs && node apps/agent-dashboard/tests/workflow-diagnosis-check.mjs && node apps/agent-dashboard/tests/role-view-contract-check.mjs && node apps/agent-dashboard/tests/local-agentfirm-product-loop.mjs && node apps/agent-dashboard/tests/desktop-handoff-check.mjs && vite build --config apps/agent-dashboard/vite.config.ts"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",

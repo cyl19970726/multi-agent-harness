@@ -7,8 +7,14 @@ on:
       - main
       - master
   workflow_dispatch:
+  schedule:
+    # Nightly full acceptance (UTC); keeps the heavy tier exercised even on
+    # quiet days without taxing every PR push.
+    - cron: "30 18 * * *"
 
 jobs:
+  # PR tier: fast, deterministic gates only. Browser/live acceptance and the
+  # known timing-sensitive lifecycle tests run in the full-acceptance tier.
   docs:
     runs-on: ubuntu-latest
     steps:
@@ -21,10 +27,7 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm check
-      - run: pnpm acceptance:wave4:live
-      - run: pnpm acceptance:skill-install
+      - run: pnpm check:fast
   rust:
     runs-on: ubuntu-latest
     steps:
@@ -45,8 +48,37 @@ jobs:
       # Provider lifecycle integration tests intentionally exercise process-local
       # supervisors and live control handles. Serialize them so the release gate
       # measures protocol behavior instead of host scheduling contention.
-      - run: cargo test -- --test-threads=1
+      # Two lease/capacity timing tests are quarantined from the PR tier as
+      # load-sensitive flakes (issue #480 tracks them); the full-acceptance
+      # tier runs them unskipped.
+      - run: >
+          cargo test -- --test-threads=1
+          --skip host_close_reports_bounded_store_contention_as_retryable_503
+          --skip fresh_exhausted_capacity_blocks_start_and_leaves_work_queued
       # Doc/skill governance gate, native in the binary (replaces the retired
       # node check-doc-*/check-skills scripts). The cargo-test self-host test
       # also covers this; this is the explicit, legible CLI gate.
       - run: cargo run -q -p firm-cli -- governance check
+
+  # Full-acceptance tier: browser/live checks, install acceptance, and the
+  # complete serialized lifecycle suite (no skips). Runs on master pushes,
+  # nightly, and on demand — the stage boundary, not every PR push.
+  full-acceptance:
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm check
+      - run: pnpm acceptance:wave4:live
+      - run: pnpm acceptance:skill-install
+      - run: cargo test -- --test-threads=1

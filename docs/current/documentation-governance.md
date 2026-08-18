@@ -11,6 +11,19 @@ documents are not automatically more knowledge. A document is justified only
 when its authority, reader, lifecycle, and relationship to executable truth are
 clear.
 
+## Authority boundary: Notion vs repository
+
+Notion is the product/development authority: product intent, Specs,
+decisions-of-record for the product model, task execution state, and review
+records live there (AgentFirm Home → 01 · Docs System → Canonical Docs; the
+vNext successor Specs are DOC-105..108 in Development Documents until the
+DEV-40 flip promotes them). The repository owns versioned implementation
+truth bound to code and validated by governance gates — schemas, CLI/API
+surfaces, and the concrete facts a developer needs next to the code. When the
+two disagree, Notion is the product authority and the repository must either
+implement the change or record the gap in the Implementation Crosswalk and
+Development Work — never fork doctrine silently in repository prose.
+
 ## Documentation modules
 
 The repository has seven documentation modules. These are knowledge boundaries,
