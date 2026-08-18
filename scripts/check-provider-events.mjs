@@ -69,7 +69,9 @@ for (const kind of manifest.semantic_kinds) {
   const rustName = kind.split("_").map((part) => part[0].toUpperCase() + part.slice(1)).join("");
   if (!model.includes(`    ${rustName},`)) failures.push(`missing Rust SemanticKind::${rustName}`);
 }
-for (const required of ["exact AgentIdentity owner", "TeamRuntimeActivity", "RuntimeCommand"]) {
+// DOC-108 identity cutover: the owner boundary is the AgentMember; the old
+// "exact AgentIdentity owner" phrasing is retired with the identity itself.
+for (const required of ["exact owner AgentMember", "TeamRuntimeActivity", "RuntimeCommand"]) {
   if (!architecture.includes(required)) failures.push(`architecture contract missing ${required}`);
 }
 if (!runtime.includes('"item/reasoning/summaryTextDelta"')) failures.push("Codex live projection does not consume provider-declared summaryTextDelta");
