@@ -2747,17 +2747,18 @@ fn pre_cutover_member_run_without_canonical_last_event_at_still_materializes() {
     assert_eq!(scope, SPACE);
 
     // A post-cutover both-Some divergence on the same field stays fail-closed.
-    let mut divergent_canonical = member_run(
-        "runtime-divergent",
-        "member-divergent",
-        &team_run.id,
-        false,
-    );
+    let mut divergent_canonical =
+        member_run("runtime-divergent", "member-divergent", &team_run.id, false);
     divergent_canonical.last_event_at = Some("t-canonical-event".into());
     let mut divergent_runtime = runtime_member_run(&divergent_canonical, "Member member-divergent");
     divergent_runtime.last_event_at = Some("t-legacy-event".into());
-    admit_existing_member_run(&harness.store, &host, divergent_canonical, divergent_runtime)
-        .expect("admit both-Some-divergent MemberRun");
+    admit_existing_member_run(
+        &harness.store,
+        &host,
+        divergent_canonical,
+        divergent_runtime,
+    )
+    .expect("admit both-Some-divergent MemberRun");
 
     let current = harness
         .store
