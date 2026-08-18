@@ -89,15 +89,15 @@ else
   bad "--agent kimi missing the plugin README pointer"
 fi
 
-echo "== A1b: install the Company OS operator suite into a clean project =="
-COMPANY_PROJ="$WORK/company-proj"
+echo "== A1b: install the collaboration suite into a clean project =="
+COMPANY_PROJ="$WORK/collab-proj"
 mkdir -p "$COMPANY_PROJ"
-if bash "$REPO_ROOT/scripts/install-skill.sh" --agent both --dest "$COMPANY_PROJ" --suite company-os >/dev/null 2>&1; then
-  ok "install-skill.sh --suite company-os --agent both succeeded"
+if bash "$REPO_ROOT/scripts/install-skill.sh" --agent both --dest "$COMPANY_PROJ" --suite collaboration >/dev/null 2>&1; then
+  ok "install-skill.sh --suite collaboration --agent both succeeded"
 else
-  bad "install-skill.sh --suite company-os exited nonzero"
+  bad "install-skill.sh --suite collaboration exited nonzero"
 fi
-for name in company-business-project-bootstrap company-docs-operator company-work-operator company-org-operator company-module-designer company-page-builder dogfood-company-os connect-github-company-os orchestrate-mission-waves collaborate-as-agent-team-member shared-references; do
+for name in collaborate-as-agent-team-member shared-references; do
   for d in .claude/skills .agents/skills; do
     if [ -f "$COMPANY_PROJ/$d/$name/SKILL.md" ] && [ ! -L "$COMPANY_PROJ/$d/$name" ]; then
       ok "$d/$name installed as real files"
@@ -110,17 +110,17 @@ for name in company-business-project-bootstrap company-docs-operator company-wor
   done
 done
 
-echo "== A1c: reject a Company OS suite with a missing delegated Skill =="
+echo "== A1c: reject a suite with a missing delegated Skill =="
 MISSING_REPO="$WORK/missing-suite-repo"
 MISSING_PROJ="$WORK/missing-suite-proj"
 mkdir -p "$MISSING_REPO/scripts" "$MISSING_REPO/skills" "$MISSING_PROJ"
 cp "$REPO_ROOT/scripts/install-skill.sh" "$MISSING_REPO/scripts/install-skill.sh"
 cp -R "$REPO_ROOT/skills/." "$MISSING_REPO/skills"
-mv "$MISSING_REPO/skills/connect-github-company-os" "$WORK/withheld-connect-github-company-os"
-if bash "$MISSING_REPO/scripts/install-skill.sh" --agent both --dest "$MISSING_PROJ" --suite company-os >/dev/null 2>&1; then
-  bad "company-os suite accepted a missing delegated Skill"
+mv "$MISSING_REPO/skills/shared-references" "$WORK/withheld-shared-references"
+if bash "$MISSING_REPO/scripts/install-skill.sh" --agent both --dest "$MISSING_PROJ" --suite collaboration >/dev/null 2>&1; then
+  bad "collaboration suite accepted a missing delegated Skill"
 else
-  ok "company-os suite rejects a missing delegated Skill"
+  ok "collaboration suite rejects a missing delegated Skill"
 fi
 if [ ! -e "$MISSING_PROJ/.claude/skills" ] && [ ! -e "$MISSING_PROJ/.agents/skills" ]; then
   ok "missing-Skill preflight leaves both agent targets untouched"
