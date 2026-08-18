@@ -9178,10 +9178,18 @@ fn canonical_team_messages_for_run(
         .filter(|member| member.team_run_id == team_run_id)
         .map(|member| (member.agent_member_id.clone(), member.id.clone()))
         .collect::<BTreeMap<_, _>>();
-    let host_identity = latest_teams(store)?
-        .remove(&run.agent_team_id)
-        .map(|team| team.host_agent_id)
-        .ok_or_else(|| CliError::Usage("TeamRun references a missing AgentTeam".into()))?;
+    let host_identity = match latest_teams(store)?.remove(&run.agent_team_id) {
+        Some(team) => team.host_agent_id,
+        // Pre-cutover migration fact (DOC-108): the Team exists only in the
+        // retired legacy ledger; tolerate it as read-only legacy context. A
+        // team id absent from both ledgers still fails closed.
+        None => legacy_team_definitions_by_id(store)?
+            .get(&run.agent_team_id)
+            .and_then(|team| team.get("host_agent_id"))
+            .and_then(|host| host.as_str())
+            .map(str::to_owned)
+            .ok_or_else(|| CliError::Usage("TeamRun references a missing AgentTeam".into()))?,
+    };
     let mut projected = Vec::new();
     let deliveries = store.fabric_message_deliveries(&execution_space_id)?;
     for message in store
@@ -34100,9 +34108,14 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
             })
         })
         .collect();
-    Ok(serde_json::json!({
-        "generated_at": now_string(),
-        "teams": teams.into_values().filter(|team| team.status == AgentTeamStatus::Active).map(|team| {
+    // DOC-108 pre-cutover tolerance note lives with the loop below; the
+    // canonical id set is captured before `teams` is consumed so the
+    // membership check covers every canonical Team, not only Active ones.
+    let canonical_team_ids = teams.keys().cloned().collect::<BTreeSet<_>>();
+    let mut team_values = teams
+        .into_values()
+        .filter(|team| team.status == AgentTeamStatus::Active)
+        .map(|team| {
             // DEV-35 compatibility projection: the dashboard AgentTeam type
             // still requires mission_id / host_agent_id / member_ids. Derive
             // them from the durable TeamMembership authority — read-model
@@ -34139,7 +34152,50 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
                 object.insert("member_ids".to_string(), member_ids.into());
             }
             value
-        }).collect::<Vec<_>>(),
+        })
+        .collect::<Vec<_>>();
+    // DOC-108 pre-cutover tolerance: a TeamRun whose AgentTeam is absent from
+    // the canonical projection but present in the retired legacy teams.jsonl
+    // ledger is a migration fact. Render that Team as read-only legacy
+    // context with an explicit integrity annotation instead of failing the
+    // whole snapshot; a team id missing from both ledgers still fails closed
+    // inside `canonical_team_messages_for_run`.
+    let mut integrity_annotations = Vec::new();
+    {
+        let legacy_teams_by_id = legacy_team_definitions_by_id(store)?;
+        let mut legacy_context_ids = BTreeSet::new();
+        for run in &team_runs {
+            if canonical_team_ids.contains(&run.agent_team_id) {
+                continue;
+            }
+            if legacy_teams_by_id.contains_key(&run.agent_team_id) {
+                legacy_context_ids.insert(run.agent_team_id.clone());
+                integrity_annotations.push(serde_json::json!({
+                    "kind": "pre_cutover_dangling_agent_team_ref",
+                    "team_run_id": run.id,
+                    "agent_team_id": run.agent_team_id,
+                    "annotation": PRE_CUTOVER_DANGLING_TEAM_ANNOTATION,
+                }));
+            }
+        }
+        for id in legacy_context_ids {
+            if let Some(legacy) = legacy_teams_by_id.get(&id) {
+                let mut value = legacy.clone();
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("legacy_context".to_string(), true.into());
+                    object.insert("read_only".to_string(), true.into());
+                    object.insert(
+                        "integrity_annotation".to_string(),
+                        PRE_CUTOVER_DANGLING_TEAM_ANNOTATION.into(),
+                    );
+                }
+                team_values.push(value);
+            }
+        }
+    }
+    Ok(serde_json::json!({
+        "generated_at": now_string(),
+        "teams": team_values,
         "members": member_cards,
         "messages": messages,
         "evidence": evidence,
@@ -34172,7 +34228,8 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "team_member_close_requests": team_member_close_requests,
         "member_actions": member_actions,
         "delegation_runs": delegation_runs,
-        "team_run_events": team_run_events
+        "team_run_events": team_run_events,
+        "integrity_annotations": integrity_annotations
     }))
 }
 
@@ -34977,6 +35034,43 @@ fn latest_teams(store: &HarnessStore) -> CliResult<BTreeMap<String, AgentTeam>> 
     let mut teams = BTreeMap::new();
     for team in store.teams()? {
         teams.insert(team.id.clone(), team);
+    }
+    Ok(teams)
+}
+
+/// Integrity annotation attached wherever a pre-cutover dangling
+/// TeamRun -> AgentTeam reference is tolerated as a migration fact.
+const PRE_CUTOVER_DANGLING_TEAM_ANNOTATION: &str = "PRE_CUTOVER_DANGLING_AGENT_TEAM_REF: the TeamRun references an AgentTeam that exists only in the retired legacy teams.jsonl ledger (DOC-108 pre-cutover space); rendered as read-only legacy context, never as current authority";
+
+/// Read-only view over the retired legacy `teams.jsonl` ledger, keyed by team
+/// id (latest row wins). Pre-cutover Execution Spaces wrote Team rows here
+/// before durable AgentTeams became canonical trust aggregates (DOC-108), so a
+/// TeamRun whose `agent_team_id` is absent from the canonical projection but
+/// present in this ledger is a migration fact, not corruption. A team id
+/// missing from BOTH ledgers is a genuine dangling reference and callers must
+/// keep failing closed on it.
+fn legacy_team_definitions_by_id(
+    store: &HarnessStore,
+) -> CliResult<BTreeMap<String, serde_json::Value>> {
+    let mut teams = BTreeMap::new();
+    let contents = match fs::read_to_string(store.root().join("teams.jsonl")) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(teams),
+        Err(error) => return Err(error.into()),
+    };
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_str(trimmed).map_err(|error| {
+            CliError::Usage(format!(
+                "legacy teams.jsonl contains an unparseable row: {error}"
+            ))
+        })?;
+        if let Some(id) = value.get("id").and_then(|id| id.as_str()) {
+            teams.insert(id.to_string(), value);
+        }
     }
     Ok(teams)
 }
@@ -41215,6 +41309,129 @@ agent("a NEW second leaf that changes the ordinal alignment")
             snapshot["member_actions"].as_array().map(Vec::len),
             Some(0),
             "legacy thinking must not be projected as product state"
+        );
+    }
+
+    /// DOC-108 pre-cutover doctrine: a TeamRun whose `agent_team_id` is absent
+    /// from the canonical AgentTeam projection but present in the retired
+    /// legacy `teams.jsonl` ledger is a migration fact — the snapshot renders
+    /// it as read-only legacy context with an integrity annotation instead of
+    /// failing closed.
+    #[test]
+    fn dashboard_snapshot_tolerates_pre_cutover_dangling_team_reference() {
+        let store = temp_store("snapshot-pre-cutover-team");
+        append_jsonl_value(
+            &store.root().join("node_project_registrations.jsonl"),
+            &serde_json::json!({
+                "node_id": "node-pre-cutover",
+                "execution_space_id": "space-pre-cutover",
+                "project_binding_id": "project-pre-cutover",
+                "status": "active",
+                "created_at": "unix-ms:1",
+                "updated_at": "unix-ms:1"
+            }),
+        )
+        .expect("append registration");
+        append_jsonl_value(
+            &store.root().join("team_runs.jsonl"),
+            &serde_json::json!({
+                "id": "team-run-pre-cutover",
+                "agent_team_id": "team-pre-cutover",
+                "execution_node_id": "node-pre-cutover",
+                "project_binding_id": "project-pre-cutover",
+                "host_surface": "test",
+                "objective": "pre-cutover run",
+                "status": "completed",
+                "created_at": "unix-ms:1",
+                "updated_at": "unix-ms:1"
+            }),
+        )
+        .expect("append dangling TeamRun");
+        append_jsonl_value(
+            &store.root().join("teams.jsonl"),
+            &serde_json::json!({
+                "id": "team-pre-cutover",
+                "name": "Pre-cutover Team",
+                "description": "retired legacy Team row",
+                "mission_id": "mission-pre-cutover",
+                "host_agent_id": "agent-pre-cutover-host",
+                "node_id": "node-pre-cutover",
+                "status": "active",
+                "member_ids": ["agent-pre-cutover-worker"],
+                "created_at": "unix-ms:1",
+                "updated_at": "unix-ms:1"
+            }),
+        )
+        .expect("append legacy Team row");
+
+        let snapshot = dashboard_snapshot(&store)
+            .expect("pre-cutover dangling Team reference renders as legacy context");
+        let teams = snapshot["teams"].as_array().expect("teams array");
+        let legacy = teams
+            .iter()
+            .find(|team| team["id"].as_str() == Some("team-pre-cutover"))
+            .expect("legacy Team rendered as context");
+        assert_eq!(legacy["legacy_context"].as_bool(), Some(true));
+        assert_eq!(legacy["read_only"].as_bool(), Some(true));
+        assert!(
+            legacy["integrity_annotation"]
+                .as_str()
+                .is_some_and(|note| note.starts_with("PRE_CUTOVER_DANGLING_AGENT_TEAM_REF")),
+            "legacy context must carry the integrity annotation"
+        );
+        let annotations = snapshot["integrity_annotations"]
+            .as_array()
+            .expect("integrity_annotations array");
+        assert!(
+            annotations.iter().any(|annotation| {
+                annotation["kind"].as_str() == Some("pre_cutover_dangling_agent_team_ref")
+                    && annotation["team_run_id"].as_str() == Some("team-run-pre-cutover")
+                    && annotation["agent_team_id"].as_str() == Some("team-pre-cutover")
+            }),
+            "snapshot must name the tolerated dangling reference"
+        );
+    }
+
+    /// The same dangling reference with NO legacy `teams.jsonl` backing row is
+    /// genuine corruption (or a post-cutover write bug): the snapshot keeps
+    /// failing closed.
+    #[test]
+    fn dashboard_snapshot_still_fails_closed_on_unbacked_dangling_team_reference() {
+        let store = temp_store("snapshot-dangling-team-fails");
+        append_jsonl_value(
+            &store.root().join("node_project_registrations.jsonl"),
+            &serde_json::json!({
+                "node_id": "node-dangling",
+                "execution_space_id": "space-dangling",
+                "project_binding_id": "project-dangling",
+                "status": "active",
+                "created_at": "unix-ms:1",
+                "updated_at": "unix-ms:1"
+            }),
+        )
+        .expect("append registration");
+        append_jsonl_value(
+            &store.root().join("team_runs.jsonl"),
+            &serde_json::json!({
+                "id": "team-run-dangling",
+                "agent_team_id": "team-never-existed",
+                "execution_node_id": "node-dangling",
+                "project_binding_id": "project-dangling",
+                "host_surface": "test",
+                "objective": "dangling run",
+                "status": "completed",
+                "created_at": "unix-ms:1",
+                "updated_at": "unix-ms:1"
+            }),
+        )
+        .expect("append dangling TeamRun");
+
+        let error = dashboard_snapshot(&store).expect_err("unbacked dangling ref fails closed");
+        assert!(
+            error
+                .to_string()
+                .contains("TeamRun references a missing AgentTeam"),
+            "unexpected error: {error}"
         );
     }
 
