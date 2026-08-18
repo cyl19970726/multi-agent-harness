@@ -1,5 +1,7 @@
 # ADR 0049: Split Member Coordination And Runtime Lifecycle
 
+> Successor note (DOC-16 Keep row, DEV-40 flip 2026-08-18): this ADR is kept; the governing successor context is [DOC-105](https://app.notion.com/p/3be49a4fa379817aa594fd8e7331c30d).
+
 ```text
 status: accepted
 owner_role: architecture

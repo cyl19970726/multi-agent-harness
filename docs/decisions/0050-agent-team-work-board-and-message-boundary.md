@@ -1,5 +1,7 @@
 # ADR 0050: Agent Team Works And Message Boundary
 
+> Successor (DOC-16 row, DEV-40 flip 2026-08-18): [DOC-106](https://app.notion.com/p/3be49a4fa3798126a598e634ed5d0807).
+
 ```text
 status: accepted; flat-Team amendment implemented by Wave 3
 owner_role: architecture

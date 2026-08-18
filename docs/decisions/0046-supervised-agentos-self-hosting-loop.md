@@ -1,5 +1,7 @@
 # ADR 0046: Supervised AgentOS self-hosting loop
 
+> Successor (DOC-16 row, DEV-40 flip 2026-08-18): [DOC-105](https://app.notion.com/p/3be49a4fa379817aa594fd8e7331c30d).
+
 > **Partially superseded by DOC-108 (legacy CompanyOS retirement, 2026-08-17)
 > and by the [Agent Firm Mental Model](../mental/agent-firm-mental-model.md).**
 > The retired Company OS layer and the retired separate `StandingAgent`
