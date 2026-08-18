@@ -1,5 +1,7 @@
 # ADR 0029: Agent-programmable document runtime over canonical company facts
 
+> Successor (DOC-16 row, DEV-40 flip 2026-08-18): [DOC-108](https://app.notion.com/p/3be49a4fa37981afa320f6c8a5f3a8b4) + [DOC-16](https://app.notion.com/p/0a049a4fa3798238807081f33df4dfd7).
+
 
 > **Superseded by DOC-108 (legacy CompanyOS retirement, 2026-08-17).**
 > This ADR is retained as historical evidence only; its object model is not

@@ -1,5 +1,7 @@
 # ADR 0053: Finance contract-layer retirement
 
+> Successor note (DOC-16 Keep row, DEV-40 flip 2026-08-18): this ADR is kept; the retired Finance layer's history policy is carried by [DOC-108](https://app.notion.com/p/3be49a4fa37981afa320f6c8a5f3a8b4).
+
 **Date:** 2026-08-05
 **Status:** accepted
 **Issue:** [#323](https://github.com/cyl19970726/multi-agent-harness-company-skills/issues/323)

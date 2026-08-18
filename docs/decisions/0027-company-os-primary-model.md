@@ -1,5 +1,7 @@
 # ADR 0027: Docs and mixed Organization are the Company OS primary model
 
+> Successor (DEV-40 flip 2026-08-18): [AF-ADR-014 (Accepted)](https://app.notion.com/p/3be49a4fa3798172a8d6c1074e2e1a67) + [DOC-105](https://app.notion.com/p/3be49a4fa379817aa594fd8e7331c30d); retirement policy [DOC-108](https://app.notion.com/p/3be49a4fa37981afa320f6c8a5f3a8b4).
+
 
 > **Superseded by DOC-108 (legacy CompanyOS retirement, 2026-08-17).**
 > This ADR is retained as historical evidence only; its object model is not

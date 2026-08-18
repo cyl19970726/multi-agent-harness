@@ -1,5 +1,7 @@
 # ADR 0025: Agent Team Run Control Plane
 
+> Successor (DOC-16 row, DEV-40 flip 2026-08-18): [AF-ADR-014 (Accepted)](https://app.notion.com/p/3be49a4fa3798172a8d6c1074e2e1a67) + [DOC-105](https://app.notion.com/p/3be49a4fa379817aa594fd8e7331c30d) + [DOC-106](https://app.notion.com/p/3be49a4fa3798126a598e634ed5d0807).
+
 ```text
 status: accepted historical substrate; current semantics amended by ADRs 0032,
   0044, 0050, and 0056 (its ADR 0034 Mission/Wave amendment is itself retired

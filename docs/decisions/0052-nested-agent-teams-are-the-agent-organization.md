@@ -1,5 +1,7 @@
 # ADR 0052: Nested Agent Teams Are The Agent Organization
 
+> Successor (DEV-40 flip 2026-08-18): flat durable Teams under [AF-ADR-014 (Accepted)](https://app.notion.com/p/3be49a4fa3798172a8d6c1074e2e1a67) + [DOC-105](https://app.notion.com/p/3be49a4fa379817aa594fd8e7331c30d).
+
 ```text
 status: superseded — replaced by docs/mental/agent-firm-mental-model.md (flat topology, no nesting)
 date: 2026-08-04
