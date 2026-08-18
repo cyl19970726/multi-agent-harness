@@ -92,6 +92,10 @@ returned to ordinary Dashboard clients.
 
 ## Write boundary
 
+The provider-native session store is the sole truth for one agent's transcript,
+tool/command/file events, turn lifecycle, and resume state. Harness references
+that session and does not keep a second provider event history.
+
 Provider adapters may write only the Harness facts created by crossing a
 coordination boundary:
 
