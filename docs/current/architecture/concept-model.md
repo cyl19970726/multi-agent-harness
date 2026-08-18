@@ -4,9 +4,9 @@
 
 Product doctrine for this topic — core object relationships, the active
 coordination vocabulary, executor kinds, and anti-drift invariants — is
-canonical in Notion: Docs System (AgentFirm Home → 01 · Docs System →
-Canonical Docs; the vNext successor Specs are DOC-105..108 in Development
-Documents until the DEV-40 flip promotes them). Source-of-truth rules and
+canonical in Notion; see the single authority-boundary anchor in
+`docs/current/documentation-governance.md` (Authority boundary: Notion vs
+repository) for the current Notion location. Source-of-truth rules and
 gate invariants stay in [data-model.md](data-model.md). This repository file
 survives only as the implementation-bound remainder below.
 

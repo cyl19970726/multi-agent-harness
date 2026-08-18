@@ -10,9 +10,9 @@ canonical_for: implementation-bound remainder of the AGENTS.md relocation (CLI c
 
 Product doctrine for this topic — agent operating rules, execution-object
 semantics, lifecycle policy, self-hosting method, and the AGENTS.md
-relocation map — is canonical in Notion: Docs System (AgentFirm Home →
-01 · Docs System → Canonical Docs; the vNext successor Specs are
-DOC-105..108 in Development Documents until the DEV-40 flip promotes them).
+relocation map — is canonical in Notion; see the single authority-boundary anchor in
+`docs/current/documentation-governance.md` (Authority boundary: Notion vs
+repository) for the current Notion location.
 This repository file survives only as the implementation-bound remainder
 below. Root [AGENTS.md](../../../AGENTS.md) still states the hard invariants
 and wins any conflict.

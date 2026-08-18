@@ -16,7 +16,6 @@ jobs:
   # PR tier: fast, deterministic gates only. Browser/live acceptance and the
   # known timing-sensitive lifecycle tests run in the full-acceptance tier.
   docs:
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,7 +29,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check:fast
   rust:
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

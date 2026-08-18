@@ -21,8 +21,8 @@ DEV-40 flip promotes them). The repository owns versioned implementation
 truth bound to code and validated by governance gates — schemas, CLI/API
 surfaces, and the concrete facts a developer needs next to the code. When the
 two disagree, Notion is the product authority and the repository must either
-implement the change or explicitly record the divergence — never fork
-doctrine silently in repository prose.
+implement the change or record the gap in the Implementation Crosswalk and
+Development Work — never fork doctrine silently in repository prose.
 
 ## Documentation modules
 

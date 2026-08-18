@@ -4,9 +4,9 @@
 
 Product doctrine for this topic — Workbench information architecture,
 executor control-plane views, and Agent Team ownership visibility — is
-canonical in Notion: Docs System (AgentFirm Home → 01 · Docs System →
-Canonical Docs; the vNext successor Specs are DOC-105..108 in Development
-Documents until the DEV-40 flip promotes them). This repository file
+canonical in Notion; see the single authority-boundary anchor in
+`docs/current/documentation-governance.md` (Authority boundary: Notion vs
+repository) for the current Notion location. This repository file
 survives only as the implementation-bound remainder below.
 
 ## Implementation-bound invariants
@@ -20,7 +20,7 @@ Retired coordination pages (Mission detail, Team War Room, retired Company OS pa
 
 | Document | Owns |
 | --- | --- |
-| `docs/architecture-map.md` | cross-module product and runtime map |
+| `docs/current/architecture/architecture-map.md` | cross-module product and runtime map |
 | `docs/current/operations/dashboard.md` | Workbench product purpose and information architecture |
 | `docs/current/dashboard/pages/*.md` | page purpose, proof, actions, and layout contracts |
 | `docs/current/dashboard/frontend-architecture.md` | frontend modules, routing, and read-model plumbing |

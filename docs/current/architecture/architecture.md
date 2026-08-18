@@ -4,9 +4,9 @@
 
 Product doctrine for this topic — the product/adapter boundary, canonical
 product hierarchy, executor kinds, and surface responsibilities — is
-canonical in Notion: Docs System (AgentFirm Home → 01 · Docs System →
-Canonical Docs; the vNext successor Specs are DOC-105..108 in Development
-Documents until the DEV-40 flip promotes them). The canonical diagrams live
+canonical in Notion; see the single authority-boundary anchor in
+`docs/current/documentation-governance.md` (Authority boundary: Notion vs
+repository) for the current Notion location. The canonical diagrams live
 in [architecture-map.md](architecture-map.md). This repository file
 survives only as the implementation-bound remainder below, and stays
 registered in `docs/registry.json` as a `core_docs` entry enforced by

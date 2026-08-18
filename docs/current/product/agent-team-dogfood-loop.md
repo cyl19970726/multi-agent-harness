@@ -10,10 +10,9 @@ architecture: ADR 0031 + ADR 0032 + ADR 0037 + ADR 0039 + ADR 0041 + ADR 0044
 ## Authority
 
 Product doctrine for this topic — the dogfood method, defect-to-repair loop,
-evidence bundle shape, and exit criteria — is canonical in Notion: Docs
-System (AgentFirm Home → 01 · Docs System → Canonical Docs; the vNext
-successor Specs are DOC-105..108 in Development Documents until the DEV-40
-flip promotes them). This repository file survives only as the
+evidence bundle shape, and exit criteria — is canonical in Notion; see the single authority-boundary anchor in
+`docs/current/documentation-governance.md` (Authority boundary: Notion vs
+repository) for the current Notion location. This repository file survives only as the
 implementation-bound remainder below.
 
 ## Implementation-bound invariants

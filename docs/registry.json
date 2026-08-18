@@ -132,7 +132,7 @@
         "harness governance check",
         "node scripts/check-native-session-boundary.mjs"
       ],
-      "reorgTrigger": "Root AGENTS.md invariants change, operating detail is relocated again, or the relocation map no longer matches the root file structure.",
+      "reorgTrigger": "The implementation-bound execution rules change, or doctrine returns to the repository instead of Notion.",
       "authorityClass": "implementation_reference",
       "implementationState": "partial",
       "truthRefs": [
@@ -396,7 +396,7 @@
         "npx pnpm@9.15.4 check",
         "cargo test"
       ],
-      "reorgTrigger": "Core object semantics, the generic object set, closeout gate, open-enum vocabularies, assignment flow, evidence flow, or Dashboard projection rules change.",
+      "reorgTrigger": "The open-enum vocabulary table changes, or doctrine returns to the repository instead of Notion.",
       "authorityClass": "implementation_reference",
       "implementationState": "partial",
       "truthRefs": [
@@ -2738,7 +2738,7 @@
       ],
       "reorgTrigger": "Work kernel semantics, Team Workbench, Global Work aggregation, or accountable-Team identity changes.",
       "authorityClass": "implementation_reference",
-      "implementationState": "design_only",
+      "implementationState": "implemented",
       "truthRefs": [
         {
           "kind": "decision",

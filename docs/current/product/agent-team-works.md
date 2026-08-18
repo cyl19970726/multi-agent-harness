@@ -6,11 +6,11 @@ Contract: AFM-2026.08.2
 ## Authority
 
 Product doctrine for this topic — Work identity, ownership, the
-submission/trust chain, and the Message boundary — is canonical in Notion:
-Docs System (AgentFirm Home → 01 · Docs System → Canonical Docs; the vNext
-successor Specs are DOC-105..108 in Development Documents until the DEV-40
-flip promotes them). This repository file survives only as the
-implementation-bound remainder below.
+submission/trust chain, and the Message boundary — is canonical in Notion;
+see the single authority-boundary anchor in
+`docs/current/documentation-governance.md` (Authority boundary: Notion vs
+repository) for the current Notion location. This repository file survives
+only as the implementation-bound remainder below.
 
 ## Implementation-bound invariants
 
