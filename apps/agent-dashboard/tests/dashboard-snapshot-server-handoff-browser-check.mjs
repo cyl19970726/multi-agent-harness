@@ -5,9 +5,17 @@
  *
  * Unlike the response-delay fixture, this check runs the real `firm serve`
  * process with a pause inside the synchronous full-snapshot Store build. It
- * changes Project, Company, and Execution Space while prior builds are active
- * and reads the serve-process test metrics to prove Store computation itself
+ * changes Project and Execution Space while prior builds are active and
+ * reads the serve-process test metrics to prove Store computation itself
  * never overlaps.
+ *
+ * DOC-108 retired `harness company init|switch` and `harness company docs
+ * page create`; the durable rows that give the paused Store build real
+ * content to process are seeded on the surviving Project + Execution Space
+ * axes instead (a mission-less AgentTeam, a TeamRun, and one Team-run Work).
+ * The `company` URL param is kept as the inert free-text scope label the
+ * frontend still reads at bootstrap — the Runtime itself no longer
+ * differentiates any response by it.
  */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -103,18 +111,67 @@ const spaceB = JSON.parse(runHarness([
   "--project-binding", projectB.id,
 ], env, projectRootA));
 runHarness(["space", "switch", spaceA.id], env, projectRootA);
-runHarness(["company", "init", "--id", "dev33-company-a", "--name", "DEV-33 Company A"], env, projectRootA);
-runHarness(["company", "init", "--id", "dev33-company-b", "--name", "DEV-33 Company B"], env, projectRootA);
-runHarness(["company", "switch", "dev33-company-a"], env, projectRootA);
-for (const company of ["a", "b"]) {
+
+// Company writers are retired (`harness company ...` fails closed with a
+// DOC-108 retirement error on every subcommand); seed cheap durable rows on
+// the surviving Project + Execution Space axes instead, so the paused Store
+// snapshot build has real content, not an empty projection.
+const dev33Node = JSON.parse(runHarness(["node", "init", "--display-name", "dev33-handoff-node"], env, projectRootA));
+runHarness([
+  "node", "project", "register",
+  "--node-id", dev33Node.id,
+  "--execution-space-id", spaceA.id,
+  "--project-binding-id", projectA.id,
+], env, projectRootA);
+for (const [id, role] of [["dev33-host", "host"], ["dev33-worker", "worker"]]) {
   runHarness([
-    "--company", `dev33-company-${company}`,
-    "company", "docs", "page", "create",
-    "--title", `DEV-33 scope document ${company.toUpperCase()}`,
-    "--actor", "human-dev33-scope-owner",
-    "--markdown", `# DEV-33 scope document ${company.toUpperCase()}`,
+    "member-trust", "mutate",
+    "--actor-kind", "human",
+    "--actor-id", "dev33-handoff-owner",
+    "--idempotency-key", `dev33-handoff-create-${id}`,
+    "--expected-version", "0",
+    "--json", JSON.stringify({
+      command: "create_agent_member",
+      member: {
+        id, name: `DEV-33 handoff ${role}`,
+        description: "Durable identity seeded for the snapshot handoff acceptance.",
+        role, capabilities: [], skill_refs: [],
+        provider_profile_ref: "codex-default", model_preference: null,
+        workspace_policy: "managed-worktree", permission_ceiling: "workspace_write",
+        organization_status: "active", version: 1,
+        created_by: { kind: "human", id: "dev33-handoff-owner" },
+        created_at: "2026-08-05T12:00:00+08:00", updated_at: "2026-08-05T12:00:00+08:00",
+      },
+    }),
   ], env, projectRootA);
 }
+const dev33Team = JSON.parse(runHarness([
+  "team", "create",
+  "--name", "DEV-33 Handoff Team",
+  "--description", "Flat mission-less Team seeded for the snapshot handoff acceptance.",
+  "--host-agent-id", "dev33-host",
+  "--node-id", dev33Node.id,
+  "--member", "dev33-worker",
+], env, projectRootA));
+const dev33TeamRunPayload = JSON.parse(runHarness([
+  "team-run", "create",
+  "--objective", "Exercise the snapshot handoff Store build under scope pressure",
+  "--agent-team-id", dev33Team.id,
+  "--member", "dev33-worker:worker:codex/app-server",
+  "--json",
+], env, projectRootA));
+const dev33TeamRunId = dev33TeamRunPayload.team_run?.id ?? dev33TeamRunPayload.id ?? dev33TeamRunPayload.result?.id;
+if (!dev33TeamRunId) throw new Error(`team-run create did not return an id: ${JSON.stringify(dev33TeamRunPayload)}`);
+runHarness([
+  "team-run", "work", "create",
+  "--team-run-id", dev33TeamRunId,
+  "--work-id", "dev33-handoff-work",
+  "--title", "DEV-33 scope handoff Work",
+  "--context", "Seed content so the paused Store snapshot build is non-trivial.",
+  "--completion-criteria", "Visible in the Global Work aggregate.",
+  "--priority", "normal", "--claim-mode", "team_claim",
+  "--eligible-member-id", "dev33-worker",
+], env, projectRootA);
 
 const apiPort = await freePort();
 const apiBase = `http://127.0.0.1:${apiPort}`;

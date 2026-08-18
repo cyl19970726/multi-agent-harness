@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AgentFirmApiError,
-  fetchCompanies,
   fetchProjects,
   fetchSpaces,
   fetchSnapshot,
@@ -18,7 +17,7 @@ import {
   type SnapshotRequestToken,
 } from "../api";
 import { buildWorkbenchModel } from "../model/readModel";
-import type { Company, DashboardSnapshot, ExecutionSpace, Project, WorkflowDef } from "../types";
+import type { DashboardSnapshot, ExecutionSpace, Project, WorkflowDef } from "../types";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   defaultSelection,
@@ -194,7 +193,6 @@ export function App() {
   const [selectedSpaceId, setSelectedSpaceId] = useState<string>(spaceFromLocation);
   const [spaces, setSpaces] = useState<ExecutionSpace[]>([]);
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>(companyFromLocation);
-  const [companies, setCompanies] = useState<Company[]>([]);
   const [snapshot, setSnapshot] = useState<DashboardSnapshot>(emptySnapshot);
   // The registered workflow catalog (GET /v1/workflows) is run-independent and
   // lives outside the snapshot, so it is fetched alongside the snapshot.
@@ -633,32 +631,26 @@ export function App() {
   }, [source, apiUrl]);
 
   // Bootstrap truth selectors independently from snapshot success. A stale URL
-  // or localStorage id must not brick boot now that the runtime correctly 404s
-  // unknown spaces/companies. Reconcile both selectors atomically to registry
-  // `current`, then perform a fresh explicitly-scoped read.
+  // or localStorage id must not brick boot now that the runtime correctly
+  // 404s unknown spaces. Reconcile the Space selector to registry `current`,
+  // then perform a fresh explicitly-scoped read. DOC-108 removed the Company
+  // Store registry entirely (`/v1/companies*` no longer exists on the
+  // Runtime; `/v1/snapshot` and `/v1/events` ignore `company` too), so
+  // Company has no backend truth left to reconcile against — the URL-owned
+  // value passes through verbatim instead of being registry-validated, and
+  // this effect never calls the retired endpoint.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [spaceResult, companyResult] = await Promise.allSettled([
-        fetchSpaces(apiUrl),
-        fetchCompanies(apiUrl),
-      ]);
+      const spaceData = await fetchSpaces(apiUrl).catch(() => null);
       if (cancelled) return;
-      const spaceData = spaceResult.status === "fulfilled" ? spaceResult.value : null;
-      const companyData = companyResult.status === "fulfilled" ? companyResult.value : null;
       if (spaceData) setSpaces(spaceData.spaces);
-      if (companyData) setCompanies(companyData.companies);
 
       const spaceValid = !spaceData || !selectedSpaceId
         || Boolean(spaceData?.spaces.some((space) => space.id === selectedSpaceId));
-      const companyValid = !companyData || !selectedCompanyId
-        || Boolean(companyData?.companies.some((company) => company.id === selectedCompanyId));
       const fallbackSpace = spaceData?.spaces.some((space) => space.id === spaceData.current)
         ? spaceData.current
         : spaceData?.spaces[0]?.id ?? "";
-      const fallbackCompany = companyData?.companies.some((company) => company.id === companyData.current)
-        ? companyData.current
-        : companyData?.companies[0]?.id ?? "";
       const nextSpace = !selectedSpaceId
         ? fallbackSpace
         : !spaceData
@@ -666,14 +658,7 @@ export function App() {
         : spaceValid
           ? selectedSpaceId
           : fallbackSpace;
-      const nextCompany = !selectedCompanyId
-        ? fallbackCompany
-        : !companyData
-          ? selectedCompanyId
-        : companyValid
-          ? selectedCompanyId
-          : fallbackCompany;
-      if (nextSpace === selectedSpaceId && nextCompany === selectedCompanyId) return;
+      if (nextSpace === selectedSpaceId) return;
 
       const notices: string[] = [];
       if (selectedSpaceId && nextSpace !== selectedSpaceId) {
@@ -681,20 +666,9 @@ export function App() {
           ? `Execution Space "${selectedSpaceId}" was not found; recovered to "${nextSpace}".`
           : `Execution Space "${selectedSpaceId}" was not found; cleared the stale selection.`);
       }
-      if (selectedCompanyId && nextCompany !== selectedCompanyId) {
-        notices.push(nextCompany
-          ? `Company "${selectedCompanyId}" was not found; recovered to "${nextCompany}".`
-          : `Company "${selectedCompanyId}" was not found; cleared the stale selection.`);
-      }
-      moveStreamBoundary(streamSelectionKey(nextSpace, selectedProjectId, nextCompany));
-      if (nextSpace !== selectedSpaceId) {
-        setSelectedSpaceId(nextSpace);
-        syncSpaceToLocation(nextSpace);
-      }
-      if (nextCompany !== selectedCompanyId) {
-        setSelectedCompanyId(nextCompany);
-        syncCompanyToLocation(nextCompany);
-      }
+      moveStreamBoundary(streamSelectionKey(nextSpace, selectedProjectId, selectedCompanyId));
+      setSelectedSpaceId(nextSpace);
+      syncSpaceToLocation(nextSpace);
       if (notices.length > 0) setSelectorRecoveryNotice(notices.join(" "));
     })();
     return () => {

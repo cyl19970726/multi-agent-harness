@@ -115,10 +115,10 @@ const api = createHttpServer((request, response) => {
     current: state.registryEmpty ? "" : "space-a",
     spaces: state.registryEmpty ? [] : ["space-a", "space-b"].map((id) => ({ id, name: id, store_root: `/tmp/${id}`, is_current: id === "space-a" })),
   });
-  if (url.pathname === "/v1/companies") return jsonResponse(response, 200, {
-    current: state.registryEmpty ? "" : "company-a",
-    companies: state.registryEmpty ? [] : ["company-a", "company-b"].map((id) => ({ id, name: id, store_root: `/tmp/${id}`, is_current: id === "company-a" })),
-  });
+  // DOC-108 removed `/v1/companies*` from the real Runtime entirely; the App
+  // no longer calls it (see App.tsx's bootstrap effect), so this mock omits
+  // the route too — a request here would be a regression, and should fall
+  // through to the generic 404 below like it does against the real server.
   if (url.pathname === "/v1/workflows") return jsonResponse(response, 200, []);
   if (url.pathname === "/v1/meta") return jsonResponse(response, 200, {
     git_rev: "unknown",
@@ -173,13 +173,12 @@ const api = createHttpServer((request, response) => {
   if (url.pathname === "/v1/snapshot" || /\/v1\/team-runs\/[^/]+\/snapshot$/.test(url.pathname)) {
     const space = url.searchParams.get("space") || "space-a";
     const company = url.searchParams.get("company") || "company-a";
-    if (!["space-a", "space-b"].includes(space) || !["company-a", "company-b"].includes(company)) {
+    // DOC-108 dropped Company from both /v1/snapshot and /v1/events on the
+    // real Runtime (it is never read for scoping or validation any more);
+    // only an unknown Execution Space still fails closed with a 404 here.
+    if (!["space-a", "space-b"].includes(space)) {
       state.reads.push({ path: url.pathname, space, company, status: 404 });
-      return jsonResponse(response, 404, {
-        error: !["space-a", "space-b"].includes(space)
-          ? "execution_space_not_found"
-          : "company_not_found",
-      });
+      return jsonResponse(response, 404, { error: "execution_space_not_found" });
     }
     const captured = buildSnapshot(space, company, titleFor(space, company));
     if (url.pathname !== "/v1/snapshot") {
@@ -461,7 +460,11 @@ try {
   await new Promise((resolveWait) => setTimeout(resolveWait, 650));
   check(!(await page.locator("body").innerText()).includes("late old company A"), "late Company A response cannot overwrite Company B");
   check(state.reads.some((read) => read.company === "company-b" && read.space === "space-a"), "Company switch scopes the authoritative request");
-  check(!state.switchPaths.includes("/v1/companies/switch"), "Company selection never mutates the server/CLI default");
+  // DOC-108 removed the whole /v1/companies* route tree and the frontend no
+  // longer exports a switchCompany action at all — this stays true by
+  // construction, but the assertion documents that the retired mutation path
+  // is gone rather than merely unused.
+  check(!state.switchPaths.includes("/v1/companies/switch"), "Company selection never calls the retired /v1/companies/switch action");
 
   state.titles.set(scopeKey("space-b", "company-b"), "authoritative space B");
   await page.getByLabel("Active execution space").selectOption("space-b");
@@ -535,23 +538,35 @@ try {
   check(state.reads.at(-1)?.path === "/v1/snapshot", "Team→Work projection handoff finishes on the full endpoint");
   await boundaryContext.close();
 
-  // Stale persisted selectors fail closed on their explicit 404. Registries are
-  // available before source=live, so the client atomically adopts both current
-  // truth boundaries and performs a new explicitly-scoped read.
+  // Stale persisted Space selectors fail closed on their explicit 404. The
+  // Space registry is available before source=live, so the client adopts the
+  // current truth boundary and performs a new explicitly-scoped read.
+  // Company has no backend registry left after DOC-108 (`/v1/companies*` is
+  // gone; the mock omits it too, matching the real Runtime), so an
+  // unresolvable Company label is never "found stale" — it passes straight
+  // through unrecovered.
   const staleContext = await browser.newContext({ viewport: { width: 1200, height: 800 }, reducedMotion: "reduce" });
   const stalePage = await staleContext.newPage();
   const staleSelectors = new URLSearchParams({ api: apiBase, project: "project-a", space: "missing-space", company: "missing-company", surface: "debug" });
+  // The settled read lands on space-a (registry-corrected) with company
+  // still "missing-company" (unresolved passthrough), not "company-a" — key
+  // the expected authoritative title to that exact settled scope.
+  state.titles.set(scopeKey("space-a", "missing-company"), "recovered space with an unresolved Company label");
   await stalePage.goto(`${appBase}/?${staleSelectors}`, { waitUntil: "domcontentloaded", timeout: 15_000 });
   await freshness(stalePage, "live");
-  await stalePage.getByText("full projection after team exit", { exact: true }).waitFor({ timeout: 8_000 });
+  await stalePage.getByText("recovered space with an unresolved Company label", { exact: true }).waitFor({ timeout: 8_000 });
   const recoveredUrl = new URL(stalePage.url());
-  check(recoveredUrl.searchParams.get("space") === "space-a" && recoveredUrl.searchParams.get("company") === "company-a", "stale Space and Company selectors reconcile atomically to registry current");
+  check(recoveredUrl.searchParams.get("space") === "space-a", "a stale Execution Space selector reconciles to registry current");
+  check(recoveredUrl.searchParams.get("company") === "missing-company", "an unresolvable Company label is no longer registry-validated and passes through unrecovered");
   check(state.reads.some((read) => read.space === "missing-space" && read.company === "missing-company" && read.status === 404), "stale selector read fails closed instead of serving default truth");
-  check(!state.reads.some((read) => read.space === "missing-space" && read.company === "missing-company" && read.status === 200), "no wrong-store data is labelled with stale selectors");
-  await stalePage.getByText(/Execution Space "missing-space" was not found.*Company "missing-company" was not found/).waitFor({ timeout: 8_000 });
+  check(!state.reads.some((read) => read.space === "missing-space" && read.status === 200), "no wrong-store data is labelled with a stale Execution Space selector");
+  await stalePage.getByText(/Execution Space "missing-space" was not found/).waitFor({ timeout: 8_000 });
   check(true, "selector recovery is exposed to the operator");
   await staleContext.close();
 
+  // registryEmpty only empties the Space registry now — Company has no
+  // registry left to empty (DOC-108 removed it), so a stale Company label is
+  // never cleared, only ever passed through unresolved (proven above).
   state.registryEmpty = true;
   const emptyContext = await browser.newContext({ viewport: { width: 1000, height: 760 }, reducedMotion: "reduce" });
   const emptyPage = await emptyContext.newPage();
@@ -562,8 +577,9 @@ try {
     space: localStorage.getItem("harness.selectedSpaceId"),
     company: localStorage.getItem("harness.selectedCompanyId"),
   }));
-  check(!clearedUrl.searchParams.has("space") && !clearedUrl.searchParams.has("company"), "empty registries clear stale URL selectors before unscoped compatibility read");
-  check(persisted.space === null && persisted.company === null, "Company remains tab-local and empty registries remove Space persistence");
+  check(!clearedUrl.searchParams.has("space"), "an empty Space registry clears the stale URL selector before an unscoped compatibility read");
+  check(clearedUrl.searchParams.get("company") === "missing-company", "an unresolvable Company label survives an empty Space registry unrecovered, since it was never registry-owned");
+  check(persisted.space === null && persisted.company === null, "Company remains tab-local (never persisted) and an empty Space registry removes Space persistence");
   await emptyPage.getByText(/cleared the stale selection/).first().waitFor({ timeout: 8_000 });
   check(true, "empty-registry selector clearing remains operator-visible");
   await emptyContext.close();

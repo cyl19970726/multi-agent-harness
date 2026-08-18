@@ -1,6 +1,5 @@
 import type {
   ProviderDispatchEvent,
-  Company,
   DashboardSnapshot,
   DocRegistryEntry,
   ExecutionSpace,
@@ -346,43 +345,6 @@ export async function fetchSpaces(
 }
 
 /**
- * Enumerate Company Stores. These are Company OS truth boundaries independent
- * from Project execution/source bindings.
- */
-export async function fetchCompanies(
-  baseUrl: string,
-): Promise<{ companies: Company[]; current: string }> {
-  const normalized = normalizeBaseUrl(baseUrl);
-  if (!normalized) {
-    throw new Error("Harness API URL is required");
-  }
-  const response = await fetch(`${normalized}/v1/companies`);
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
-  }
-  const data = (await response.json()) as { companies?: Company[]; current?: string };
-  return { companies: data.companies ?? [], current: data.current ?? "" };
-}
-
-export async function fetchCurrentCompany(
-  baseUrl: string,
-): Promise<{ current?: string | null; store_root?: string | null; company?: Company | null }> {
-  const normalized = normalizeBaseUrl(baseUrl);
-  if (!normalized) {
-    throw new Error("Harness API URL is required");
-  }
-  const response = await fetch(`${normalized}/v1/companies/current`);
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
-  }
-  return (await response.json()) as {
-    current?: string | null;
-    store_root?: string | null;
-    company?: Company | null;
-  };
-}
-
-/**
  * Fetch the active project id via `GET /v1/projects/current`. Read live so a
  * `switch` (API or CLI) is reflected without a serve restart.
  */
@@ -422,12 +384,9 @@ export async function switchSpace(
   return postAction(baseUrl, "/v1/spaces/switch", { space });
 }
 
-export async function switchCompany(
-  baseUrl: string,
-  company: string,
-): Promise<ActionResponse> {
-  return postAction(baseUrl, "/v1/companies/switch", { company });
-}
+// `switchCompany` (POST /v1/companies/switch) is deliberately not exported:
+// DOC-108 removed the whole `/v1/companies*` route tree. Company is now a
+// URL-owned, unvalidated scope label only (see App.tsx's bootstrap effect).
 
 /**
  * Fetch a project doc body via `GET /v1/docs?path=docs/...` (ADR 0019). The
