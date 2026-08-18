@@ -4,8 +4,18 @@
  * Real Runtime/browser convergence acceptance.
  *
  * This check builds and spawns `harness serve` against isolated native
- * Execution/Company stores. Playwright talks to that Runtime through Vite's
+ * Execution Space stores. Playwright talks to that Runtime through Vite's
  * same-origin proxy; no snapshot, SSE frame, or business row is fabricated.
+ *
+ * DOC-108 retired the legacy CompanyOS (`harness company init|switch`,
+ * `harness company docs page create`, `harness mission create`,
+ * `/v1/company-os/*` writes, and `/v1/companies*`); this check exercises the
+ * surviving Project + Execution Space scope axes and durable AgentTeam/
+ * TeamRun/Work instead. The Company URL param is retained by the frontend as
+ * an inert free-text label only (`--company` on `space init` is likewise an
+ * unvalidated compatibility label) — the Runtime never differentiates a
+ * response by it (`/v1/snapshot` ignores it; `handle_sse_stream` always
+ * subscribes with `company_scope_id: None`).
  */
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
@@ -22,14 +32,12 @@ const dashboardRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(dashboardRoot, "../..");
 const harness = join(repoRoot, "target", "debug", "firm");
 const evidenceRoot = join(repoRoot, ".visual-evidence", "dashboard-runtime-live-e2e-v1");
-const token = `dashboard-runtime-live-${process.pid}`;
 const agentFirmToken = `agentfirm-runtime-live-${process.pid}`;
 const memberAgentFirmToken = `agentfirm-member-live-${process.pid}`;
 const operatorAgentFirmToken = `agentfirm-operator-live-${process.pid}`;
 const secondaryHostAgentFirmToken = `agentfirm-secondary-host-live-${process.pid}`;
 const siblingNodeAgentFirmToken = `agentfirm-sibling-node-live-${process.pid}`;
 const now = "2026-08-05T12:00:00+08:00";
-const actorRef = { actor_type: "human", actor_id: "human-live-owner" };
 
 const roleViewSchemaDir = join(repoRoot, "schemas", "role-views", "agentfirm.role_views.v1");
 const roleViewSchemaNames = ["common", "role-view", "global-work", "team-workspace", "host-console", "member-workbench", "operator"];
@@ -91,7 +99,6 @@ async function requestJson(base, path, { body } = {}) {
     headers: body === undefined ? { accept: "application/json" } : {
       accept: "application/json",
       "content-type": "application/json",
-      "x-harness-company-os-token": token,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -100,28 +107,6 @@ async function requestJson(base, path, { body } = {}) {
     throw new Error(`${body === undefined ? "GET" : "POST"} ${path}: HTTP ${response.status} ${JSON.stringify(payload)}`);
   }
   return payload.result ?? payload;
-}
-
-function admin(record) {
-  return { mode: "administrative", authority: actorRef, record };
-}
-
-function documentRecord(id, title) {
-  return {
-    id, space_id: "company", parent_document_id: null, title, kind: "page",
-    lifecycle_status: "active", block_ids: [], template_ref: null,
-    permission_policy_refs: ["company.records.write"], reference_refs: [],
-    created_by: actorRef, updated_by: actorRef, created_at: now, updated_at: now,
-  };
-}
-
-function orgUnitRecord(id, name) {
-  return {
-    id, organization_id: "company", name, purpose: `Prove ${name} converges in an open browser`,
-    parent_unit_id: null, status: "active", human_lead_actor_ref: actorRef,
-    agent_lead_actor_ref: null, policy_refs: ["company.records.write"],
-    document_space_ref: null, created_at: now, updated_at: now,
-  };
 }
 
 async function waitForText(page, text) {
@@ -158,9 +143,7 @@ await mkdir(projectRoot, { recursive: true });
 const env = {
   ...process.env,
   FIRM_HOME: harnessHome,
-  FIRM_COMPANY_OS_TOKEN: token,
   HARNESS_HOME: harnessHome,
-  HARNESS_COMPANY_OS_TOKEN: token,
   AGENTFIRM_HTTP_CREDENTIALS_JSON: JSON.stringify([{
     token: agentFirmToken,
     actor: { kind: "agent_member", id: "host" },
@@ -179,9 +162,6 @@ delete env.HARNESS_SPACE;
 delete env.HARNESS_COMPANY;
 
 runHarness(["init"], env, projectRoot);
-runHarness(["company", "init", "--id", "company-a", "--name", "Company A"], env, projectRoot);
-runHarness(["company", "init", "--id", "company-b", "--name", "Company B"], env, projectRoot);
-runHarness(["company", "switch", "company-a"], env, projectRoot);
 
 const apiPort = await freePort();
 const apiBase = `http://127.0.0.1:${apiPort}`;
@@ -262,8 +242,10 @@ function createCanonicalMember(id, name, role, commandEnv = env) {
 }
 
 // Build the complete Wave 3 admission chain. A TeamRun is never a free-standing
-// runtime: its flat AgentTeam owns one Mission, is placed on one Node, and the
-// Node must be registered for this exact Execution Space + Project Binding.
+// runtime: its flat AgentTeam is placed on one Node (Teams are Mission-less by
+// default post-DOC-108 — `harness mission create` is retired and `team create`
+// must not pass `--mission-id`/`--legacy-mission-id`), and the Node must be
+// registered for this exact Execution Space + Project Binding.
 const liveNode = JSON.parse(runHarness([
   "node", "init", "--display-name", "dashboard-live-node",
 ], env, projectRoot));
@@ -273,44 +255,16 @@ runHarness([
   "--execution-space-id", spaceId,
   "--project-binding-id", projectId,
 ], env, projectRoot);
-const liveMission = JSON.parse(runHarness([
-  "mission", "create",
-  "--title", "Dashboard Runtime Live Mission",
-  "--objective", "Exercise Runtime convergence against native TeamWork",
-  "--json",
-], env, projectRoot));
 createCanonicalMember("host", "Dashboard Runtime Host", "host");
 createCanonicalMember("worker", "Dashboard Runtime Worker", "worker");
 const liveTeam = JSON.parse(runHarness([
   "team", "create",
   "--name", "Dashboard Runtime Live Team",
   "--description", "Flat Team for the live Dashboard Runtime acceptance.",
-  "--mission-id", liveMission.id,
   "--host-agent-id", "host",
   "--node-id", liveNode.id,
   "--member", "worker",
 ], env, projectRoot));
-
-async function postCompany(company, endpoint, record, administrative = true) {
-  const query = new URLSearchParams({ company, project: projectId, space: spaceId });
-  return await requestJson(apiBase, `/v1/company-os/${endpoint}?${query}`, {
-    body: administrative ? admin(record) : record,
-  });
-}
-
-for (const company of ["company-a", "company-b"]) {
-  await postCompany(company, "actors", {
-    actor_type: "human",
-    actor: {
-      id: "human-live-owner", display_name: `Live Owner ${company}`, title: "Owner",
-      status: "active", availability: "available", membership_refs: [],
-      responsibility_summary: "Owns real Dashboard Runtime acceptance.",
-      permission_policy_refs: ["company_os.admin", "company.records.write", "company.work.execute"],
-      authority_policy_refs: ["company_os.admin"], created_at: now, updated_at: now,
-    },
-  }, false);
-  await postCompany(company, "documents", documentRecord(`document-seed-${company}`, `Seed document ${company}`));
-}
 
 const liveTeamRunPayload = JSON.parse(runHarness([
   "team-run", "create",
@@ -363,16 +317,12 @@ runHarness([
   "--execution-space-id", secondarySpaceId,
   "--project-binding-id", projectId,
 ], secondaryEnv, projectRoot);
-const secondaryMission = JSON.parse(runHarness([
-  "mission", "create", "--title", "Dashboard Sibling Mission",
-  "--objective", "Prove sibling Team and Execution Space isolation", "--json",
-], secondaryEnv, projectRoot));
 createCanonicalMember("host-secondary", "Dashboard Secondary Host", "host", secondaryEnv);
 createCanonicalMember("worker-secondary", "Dashboard Secondary Worker", "worker", secondaryEnv);
 const secondaryTeam = JSON.parse(runHarness([
   "team", "create", "--name", "Dashboard Sibling Team",
   "--description", "Sibling Team for isolation acceptance.",
-  "--mission-id", secondaryMission.id, "--host-agent-id", "host-secondary",
+  "--host-agent-id", "host-secondary",
   "--node-id", secondaryNode.id, "--member", "worker-secondary",
 ], secondaryEnv, projectRoot));
 const secondaryRunPayload = JSON.parse(runHarness([
@@ -483,7 +433,7 @@ await waitFor(async()=>{
   return JSON.stringify(beforePrimary)===JSON.stringify(afterPrimary)
     && afterSecondary.work_operation_count>beforeSecondary.work_operation_count;
 }, "secondary Execution Space vector advances independently");
-check(true, "Company cursor invalidation advances only the mutated Execution Space point");
+check(true, "Execution Space cursor invalidation advances only the mutated Execution Space point");
 
 const vite = await createViteServer({
   configFile: join(dashboardRoot, "vite.config.ts"),
@@ -521,20 +471,25 @@ try {
 
   let snapshotReads = 0;
   let delayedDomainSnapshot = null;
-  let delayedCompanyB = null;
+  // Company can no longer gate a delayed response: DOC-108 dropped it from
+  // /v1/snapshot entirely (the handler no longer reads it) and from every SSE
+  // subscription (`handle_sse_stream` always passes `company_scope_id: None`).
+  // The axis that still genuinely differentiates a backend response is
+  // Execution Space, so the delayed/stale-response race below is keyed on it.
+  let delayedSecondarySpace = null;
   await page.route("**/v1/snapshot?**", async (route) => {
     snapshotReads += 1;
     const url = new URL(route.request().url());
-    if (delayedCompanyB && url.searchParams.get("company") === "company-b") {
-      const gate = delayedCompanyB;
-      delayedCompanyB = null;
+    if (delayedSecondarySpace && url.searchParams.get("space") === secondarySpaceId) {
+      const gate = delayedSecondarySpace;
+      delayedSecondarySpace = null;
       const response = await route.fetch();
       gate.started();
       await gate.releasePromise;
       await route.fulfill({ response });
       return;
     }
-    if (delayedDomainSnapshot && url.searchParams.get("company") === "company-b") {
+    if (delayedDomainSnapshot) {
       const response = await route.fetch();
       const body = await response.body();
       if (body.toString("utf8").includes(delayedDomainSnapshot.marker)) {
@@ -658,22 +613,14 @@ try {
   await waitForText(page, "work-role-live");
   await waitForText(page, "active");
   check(true, "five-view loop converges the Member mutation into real Global Work truth");
+  // `page` is already at {space: spaceId, company: "company-a", surface:
+  // "work"} from the five-view loop above (Company no longer differentiates
+  // any backend response, so no further scope navigation is needed here).
 
-  const companyScopeUrl = (company) => `${appBase}/?${new URLSearchParams({api: appBase, project: projectId, space: spaceId, company, surface: "work"})}`;
-  const defaultBefore = await requestJson(apiBase, "/v1/companies/current");
-  await page.goto(companyScopeUrl("company-a"), { waitUntil: "domcontentloaded" });
-  await waitForDomain(page, "runtime", "live");
-  await page.goto(companyScopeUrl("company-b"), { waitUntil: "domcontentloaded" });
-  await waitForDomain(page, "runtime", "live");
-  const defaultAfterNonDefaultSelection = await requestJson(apiBase, "/v1/companies/current");
-  check(
-    defaultBefore.current === "company-a" && defaultAfterNonDefaultSelection.current === "company-a",
-    "non-default Company B page selection does not mutate the CLI/server Company A default",
-  );
-
-  // Every write below is external to the browser and lands in the real Company
-  // Store. The Runtime watcher emits freshness-only invalidations; the browser
-  // may display a row only after its authoritative scoped snapshot converges.
+  // Every write below is external to the browser and lands in the real
+  // Execution Space store. The Runtime watcher emits freshness-only
+  // invalidations; the browser may display a row only after its
+  // authoritative scoped snapshot converges.
   const armDomainSnapshot = (marker) => {
     let signalStarted;
     let releaseDelayed;
@@ -690,102 +637,106 @@ try {
   try {
     await waitForDomain(page, "works", "stale");
     check(await page.locator('[data-freshness-domain="docs"][data-freshness-status="live"]').count() === 1, "Work invalidation leaves Docs freshness truthful and independent");
+    check(await page.locator('[data-freshness-domain="organization"][data-freshness-status="live"]').count() === 1, "Work invalidation leaves Organization freshness truthful and independent");
   } finally { workSnapshotGate.release(); }
   await waitForText(page, "work-live-external");
   check(true, "external Work write converges into the open page without reload");
 
-  // The Docs surface is retired; the docs ledger remains live until DEV-39, so
-  // the strip must still prove docs-domain staleness and reconvergence from any
-  // retained surface.
-  const docsSnapshotGate = armDomainSnapshot("document-live-external");
-  await postCompany("company-b", "documents", documentRecord("document-live-external", "External Docs converged"));
-  await docsSnapshotGate.startedPromise;
-  try {
-    await waitForDomain(page, "docs", "stale");
-    check(await page.locator('[data-freshness-domain="works"][data-freshness-status="live"]').count() === 1, "Docs invalidation leaves Works freshness truthful and independent");
-  } finally { docsSnapshotGate.release(); }
-  await waitForDomain(page, "docs", "live");
-  check(true, "external Docs write converges the docs freshness domain without reload");
+  // DOC-108 deleted every Company Store writer (`company docs page create`,
+  // POST /v1/company-os/documents|org-units both fail closed with a 410
+  // tombstone) and the Runtime never subscribes a browser to a Company scope
+  // any more (`handle_sse_stream` always passes `company_scope_id: None`).
+  // There is no remaining live product path that can dirty the Docs or
+  // Organization freshness domains, so — unlike Works above — they can only
+  // be proven to stay truthfully Live/independent, never proven to cycle
+  // stale->live from a real write. That capability retires with the Docs/
+  // Organization surfaces themselves in DEV-39.
+  check(await page.locator('[data-freshness-domain="docs"][data-freshness-status="live"]').count() === 1, "Docs freshness has no live Company writer left after DOC-108 and stays truthfully Live");
+  check(await page.locator('[data-freshness-domain="organization"][data-freshness-status="live"]').count() === 1, "Organization freshness has no live Company writer left after DOC-108 and stays truthfully Live");
 
-  const orgSnapshotGate = armDomainSnapshot("org-live-external");
-  await postCompany("company-b", "org-units", orgUnitRecord("org-live-external", "External Org converged"));
-  await orgSnapshotGate.startedPromise;
-  try {
-    await waitForDomain(page, "organization", "stale");
-    check(await page.locator('[data-freshness-domain="docs"][data-freshness-status="live"]').count() === 1, "Org invalidation leaves Docs freshness truthful and independent");
-  } finally { orgSnapshotGate.release(); }
-  await waitForDomain(page, "organization", "live");
-  check(true, "external Organization write converges the organization freshness domain without reload");
-
-  // Real response, deliberately delivered late: switch the scope while B's
-  // captured Runtime snapshot is in flight, then release it. Generation/scope
-  // guards must prevent B from overwriting A.
+  // Real response, deliberately delivered late while the tab is scoped to the
+  // sibling Execution Space: switch scope back to the primary Space while the
+  // sibling's captured Runtime snapshot is in flight, then release it.
+  // Generation/scope guards must prevent the sibling Space's stale response
+  // from overwriting the primary Space's page. Company can no longer carry
+  // this proof (DOC-108 dropped it from /v1/snapshot and /v1/events
+  // entirely); Execution Space is the axis that still genuinely
+  // differentiates a backend response, so the race is re-expressed on it.
+  await page.goto(`${appBase}/?${new URLSearchParams({api: appBase, project: projectId, space: secondarySpaceId, company: "company-a", surface: "work"})}`, {waitUntil:"domcontentloaded"});
+  await waitForDomain(page, "runtime", "live");
   let signalStarted;
   let releaseDelayed;
   const startedPromise = new Promise((resolveStarted) => { signalStarted = resolveStarted; });
   const releasePromise = new Promise((resolveRelease) => { releaseDelayed = resolveRelease; });
-  delayedCompanyB = { started: signalStarted, releasePromise };
-  createNativeWork("work-live-delayed", "Delayed Company B response");
+  delayedSecondarySpace = { started: signalStarted, releasePromise };
+  runHarness([
+    "team-run", "work", "create", "--team-run-id", secondaryTeamRunId,
+    "--work-id", "work-secondary-delayed", "--title", "Delayed secondary Space response",
+    "--context", "Prove a late cross-space response cannot overwrite the tab.",
+    "--completion-criteria", "The tab must stay scoped to the primary Space.",
+    "--priority", "normal", "--claim-mode", "team_claim",
+    "--eligible-member-id", "worker-secondary",
+  ], secondaryEnv, projectRoot);
   await startedPromise;
-  await page.goto(companyScopeUrl("company-a"), { waitUntil: "domcontentloaded" });
+  await page.goto(`${appBase}/?${new URLSearchParams({api: appBase, project: projectId, space: spaceId, company: "company-a", surface: "work"})}`, {waitUntil:"domcontentloaded"});
   await waitForDomain(page, "runtime", "live");
   releaseDelayed();
   await new Promise((resolveWait) => setTimeout(resolveWait, 500));
-  const tabScopeAfterDelayed = await page.evaluate(() => new URLSearchParams(window.location.search).get("company"));
-  // Works are Execution-Space-scoped, not Company-scoped; the boundary this
-  // segment guards is the captured-scope fetch pipeline, proven at mock level
-  // by the self-heal check. Here we assert the delayed response cannot disturb
-  // the tab's explicit scope or produce browser errors.
-  check(tabScopeAfterDelayed === "company-a" && pageErrors.length === 0, "delayed stale Runtime response cannot disturb the current Company scope");
+  const tabScopeAfterDelayed = await page.evaluate(() => new URLSearchParams(window.location.search).get("space"));
+  // Global Work is deliberately a cross-Space aggregate (proven above via the
+  // snapshot_vector spanning both Spaces), so the sibling Space's Work title
+  // legitimately appearing on this surface is not a leak to check against —
+  // the boundary this race actually guards is the tab's own scope selector.
+  check(tabScopeAfterDelayed === spaceId && pageErrors.length === 0, "delayed stale sibling-Space Runtime response cannot disturb the current Execution Space scope");
 
-  // External registry creation changes the CLI default as a CLI operation, then
-  // we restore it. Visibility recovery refreshes the picker while this tab keeps
-  // its explicit Company A scope and does not display Company C truth.
-  runHarness(["company", "init", "--id", "company-c", "--name", "Externally Created Company"], env, projectRoot);
-  runHarness(["company", "switch", "company-a"], env, projectRoot);
+  // Visibility regain is the one remaining trigger that resyncs the tab
+  // without an intervening user navigation. `harness company init` (the CLI
+  // mutation the old "external Company creation" scenario relied on) is
+  // retired along with the rest of `harness company`, and there is no CLI/
+  // server Company default left to protect (`/v1/companies*` is removed
+  // entirely). What survives is: recovery reissues exactly one scoped read
+  // while the tab keeps its explicit URL-owned Space and Company scope.
   const beforeVisibilityReads = snapshotReads;
   await page.evaluate(() => { window.__dashboardVisibility = "hidden"; document.dispatchEvent(new Event("visibilitychange")); });
   await page.evaluate(() => { window.__dashboardVisibility = "visible"; document.dispatchEvent(new Event("visibilitychange")); });
-  await waitFor(() => snapshotReads > beforeVisibilityReads, "visibility recovery snapshot");
-  // The Company picker left navigation; the tab scope is URL-owned. Visibility
-  // recovery must refresh the snapshot while the tab keeps its explicit scope.
   await waitFor(() => snapshotReads > beforeVisibilityReads, "visibility recovery issued a scoped snapshot read");
-  const tabScopeAfterRecovery = await page.evaluate(() => new URLSearchParams(window.location.search).get("company"));
-  check(tabScopeAfterRecovery === "company-a", "external Company creation does not change the tab's URL-owned Company scope");
+  const scopeAfterRecovery = await page.evaluate(() => ({
+    space: new URLSearchParams(window.location.search).get("space"),
+    company: new URLSearchParams(window.location.search).get("company"),
+  }));
+  check(
+    scopeAfterRecovery.space === spaceId && scopeAfterRecovery.company === "company-a",
+    "visibility recovery does not change the tab's URL-owned Execution Space or Company scope",
+  );
 
-  // Stop and restart the actual Runtime on the same stores. A CLI write while it
-  // is down is recovered by the authoritative reconnect snapshot; no SSE replay
-  // or fixture row is involved.
+  // Stop and restart the actual Runtime on the same stores. A CLI write while
+  // it is down is recovered by the authoritative reconnect snapshot; no SSE
+  // replay or fixture row is involved. `harness company org create-unit` is
+  // retired (DOC-108 closes the whole `harness company` tree), so the write
+  // exercised here is Team-run Work, the surviving authoritative surface.
   await stopRuntime();
   await context.setOffline(true);
   await waitForDomain(page, "runtime", "reconnecting");
-  runHarness([
-    "company", "org", "create-unit",
-    "--id", "org-reconnect-live", "--organization", "company",
-    "--name", "Reconnect Org Unit", "--purpose", "Written while Runtime is disconnected",
-    "--human-lead", "human-live-owner", "--policy", "company.records.write",
-    "--authority", "human-live-owner",
-  ], env, projectRoot);
+  createNativeWork("work-reconnect-live", "Reconnect Work converged");
   startRuntime();
   await waitFor(async () => (await fetch(`${apiBase}/health`).catch(() => null))?.ok, "restarted Runtime health");
   await context.setOffline(false);
   await waitForDomain(page, "runtime", "live");
-  const recoveredOrg = await requestJson(apiBase, `/v1/company-os/org-units?${new URLSearchParams({ company: "company-a", project: projectId, space: spaceId })}`).catch(() => null);
-  const recoveredText = JSON.stringify(recoveredOrg ?? {});
-  check(recoveredText.includes("Reconnect Org Unit"), "disconnect/reconnect recovers external Organization truth in the authoritative store");
-  check(true, "browser reconverges Runtime freshness after the reconnect snapshot");
+  await waitForText(page, "work-reconnect-live");
+  check(true, "disconnect/reconnect recovers a CLI write made while the Runtime was down, without SSE replay or a fixture row");
 
   const stalePage = await context.newPage();
   const staleQuery = new URLSearchParams({
     api: appBase, project: projectId, space: "missing-space", company: "missing-company", surface: "work",
   });
   await stalePage.goto(`${appBase}/?${staleQuery}`, { waitUntil: "domcontentloaded", timeout: 20_000 });
-  await waitFor(async () => {
-    const url = new URL(stalePage.url());
-    return url.searchParams.get("space") === spaceId && url.searchParams.get("company") === "company-a";
-  }, "stale selector recovery");
+  await waitFor(async () => new URL(stalePage.url()).searchParams.get("space") === spaceId, "stale Execution Space selector recovery");
   await waitForDomain(stalePage, "runtime", "live");
-  check((await stalePage.locator("body").innerText()).includes("was not found; recovered"), "stale Company/Space selectors recover visibly and fail closed before current-scope truth");
+  check((await stalePage.locator("body").innerText()).includes("was not found; recovered"), "a stale Execution Space selector recovers visibly and fails closed before current-scope truth");
+  // DOC-108 removed `/v1/companies*` entirely: there is no backend registry
+  // left to validate a Company label against, so an unresolvable value now
+  // passes straight through instead of being registry-corrected.
+  check(new URL(stalePage.url()).searchParams.get("company") === "missing-company", "an unresolvable Company label is no longer registry-validated and passes through unrecovered");
   await stalePage.close();
 
   await page.screenshot({ path: join(evidenceRoot, "runtime-live-converged.png"), fullPage: true });

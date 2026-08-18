@@ -1,217 +1,131 @@
-# Product Requirements — AI Company OS
+# Product Requirements — AgentFirm execution foundation
+
+```text
+status: canonical repository contract
+supersedes: the Company OS primary model (DOC-108; ADR 0027 superseded)
+```
 
 ## Product mission
 
-Star Harness helps a person and a mixed organization of AgentMembers run a
-company through durable documents, explicit responsibility, governed actions,
-and provider-neutral execution tools.
+Star Harness is the provider-neutral execution foundation for an AI-native
+company: a person runs durable, flat AgentTeams of standing AgentMembers that
+hold accountable Work, converse over identity-first Messages, and execute
+through provider-native sessions across machines.
 
-The product is not primarily a multi-agent run dashboard. It is a Company OS:
+The product intent and operating control plane for the company being built on
+top of this foundation live in Notion (AgentFirm Home). This repository is the
+versioned implementation truth for the execution substrate: code, schemas,
+stores, CLI/HTTP/MCP surfaces, tests, and CI.
 
-```text
-Docs organize business intent and knowledge.
-Organization supplies long-lived human and Agent capability.
-TeamWorks connect intent to accountable execution.
-Approvals protect high-risk actions.
-Execution tools perform the work.
-Results and effects return to Docs and related records.
-```
+## Retired layer (DOC-108)
+
+The legacy Company OS product model — the Company Store registry, built-in
+Docs system, Organization/actor module, Finance records, generic business
+Approval, Mission, Wave, and Mission Log — is retired from the product model
+and normal navigation:
+
+- no writer exists on any surface (CLI, HTTP, MCP, SSE, frontend);
+- historical rows remain readable as legacy provenance
+  (`harness mission list|show|log show`, `harness legacy wave
+  list|show|history`, `AgentTeam.legacy_mission_id`);
+- historical runtime data is export/verify-only through
+  `harness legacy-company-os export|verify` (the Stage A contract);
+- ADR 0026/0027/0034/0051 remain as superseded historical evidence, never
+  deleted.
 
 ## Product thesis
 
-An AI-native company needs more than parallel agents. It needs:
+A company of agents needs more than parallel provider sessions:
 
-- a place where company context, data, decisions, and operating structures
-  remain understandable as they grow;
-- durable Agent identities with roles, permissions, availability, capacity,
-  responsibilities, and provider runtime history;
-- first-class human, external, service, and Agent participation without
-  pretending their lifecycles are identical;
-- explicit records of who requested, submitted, owns, executes, reviews, and
-  approves work;
-- typed relations so a business action, its cost, its approval, and its result
-  remain one connected truth;
-- execution tools that can be selected when useful without forcing every piece
-  of company work into a predefined execution structure.
+- durable AgentMember identities with roles, permissions, and provider runtime
+  history, bound to Teams by versioned TeamMembership generations;
+- one explicit record of who requested, claimed, executed, submitted,
+  reviewed, and accepted each unit of Work;
+- execution that survives process restarts and machine boundaries without
+  inventing transcript authority;
+- provider neutrality: the harness never mirrors provider-native transcripts
+  into its own ledgers, and provider satisfaction never implies Host
+  acceptance.
 
 ## Primary systems
 
-### Docs
+### Agent Teams
 
-Docs is the company memory and operating hub. It must support:
+A durable `AgentTeam` is flat and placed immutably on one machine (`node_id`)
+under that machine's single NodeDaemon. TeamMembership binds AgentMembers with
+exact generations. `AgentTeamRun` and `MemberRun` are coordination/history
+projections — they never own a provider process.
 
-- basic rich documents: hierarchical pages, text, lists, checklists, callouts,
-  media, attachments, comments, mentions, and ordinary tables;
-- structured documents: standard table, board, timeline, calendar, chart, and
-  embedded related-record views over TypedRecords and Relations;
-- typed records and relations rather than copied values;
-- templates and Module Designs for repeatable business domains;
-- actions that create TeamWorks and Approvals with source-document provenance;
-- result, evidence, metric, and financial-effect updates back into the source;
-- structure-health, reorganization, archival, and conflict detection.
+The Host explicitly creates, messages, inspects, interrupts, closes, reopens,
+and retires members. Close releases the managed runtime while retaining the
+MemberRun and provider-native session; Reopen increments the runtime
+generation and resumes that exact session. TeamRun completion never implies
+Close.
 
-For a stable, high-value surface that must coordinate several kinds of data and
-actions, a Module may register a custom HTML/React page. An Agent may compose
-this page from approved components, declared queries, and named Action
-Commands. The page is never a data store: it cannot directly write business
-facts or bypass permissions, audit, relation validation, or Approval policy.
-Every custom page links to its underlying Documents and records and has a
-standard document/view fallback.
+### Work
 
-### Organization
+`Work` is the single durable unit of accountable execution. Its truth is
+rebuilt from ordered `WorkOperation` rows, each preserving append-only
+`WorkEvent` and `WorkDelivery` deltas. Work carries lifecycle axes (phase,
+condition, resolution), owner TeamMembership, evidence, artifacts, checks,
+gate results, and explicit submission/acceptance. The Global Work RoleView is
+a read-only aggregate over authoritative TeamWork and owns no second task
+ledger or mutation path.
 
-Organization models `HumanMember`, standing `AgentMember`, external
-collaborators, and services through common `ActorRef` references while
-preserving their distinct identity and runtime rules.
+### Messages
 
-The initial operating model is deliberately governance-led: one Human Owner,
-one Lead Agent, with optional role agents for Docs, Work, Finance, and
-Org/HR. All Business Agents report to Org/HR. Docs, Work, and Finance Governance
-Agents collaborate with them through governed records and Actions without
-becoming their organizational manager. `reports_to_actor_ref` and
-`OrgUnit.parent_unit_id` keep later hierarchy explicit and additive.
+Identity-first `Message` is authored conversation. `MessageSubscription`
+selects authorized sources; each recipient owns one `CanonicalMessageDelivery`
+with its own claim/acknowledgement state. Peer-Team messaging is admitted by
+MessageSubscription authorization and the `collaboration.peer_message_deliver`
+capability — never by a Company policy object or an implicit roster.
 
-Organization collaboration is object-centred. Human and Agent conversation,
-handoff, activity, and artifacts remain linked to a Document, BusinessModule,
-Milestone, TeamWork, Approval, or execution attempt. The Organization overview
-and compact Actor configuration compose those explicit links; dedicated Agent
-workspaces are deferred and ordinary provider logs are never company context.
+### Runtime and fabric
 
-### Work and approvals
+- one machine-scoped NodeDaemon owns all local Team execution across
+  registered Execution Spaces;
+- every provider effect is prepared and settled through a durable
+  `RuntimeCommand` bound to exact NodeDaemon and AgentSession generations;
+- `AgentSession` binds the provider-native session, which remains the sole
+  execution truth for transcripts, tool calls, and turn lifecycle;
+- provider admission is versioned and review-gated; an unreviewed provider
+  tuple is `review_required`, never silently compatible.
 
-Native `Work` is the product-level execution record; `TeamWork` is its
-explicit-context name. Company Work is a read-only aggregate, not another
-record. Work remains distinct from runtime internals and ordinary messages.
+### Execution Spaces and Project Bindings
 
-`Milestone` is the only grouping layer above TeamWorks. It records a named
-stage outcome, owner, target date, acceptance criteria, and the TeamWorks that
-contribute to it. There is no separate canonical `Project` object. A
-BusinessModule or Document supplies durable business context while Work owns
-Milestones and TeamWorks.
-
-Every TeamWork records its Team/TeamRun scope, exact revision, owner Member,
-context and completion criteria, independent phase/condition/resolution,
-prerequisites, gates, reports, artifacts, checks, and decisions. Documents,
-Approvals, Finance, and Milestones relate to the Work id without copying or
-controlling its lifecycle.
-
-`Approval` records legal, financial, permission, publication, and organization
-gates. Policies may require a human actor; an Agent cannot impersonate that
-approval.
-
-### Relations, finance, and metrics
-
-Structured records are linked, not duplicated. A trademark filing fee shown in
-a trademark document and in Finance is one `FinancialRecord` with relations to
-the application, BusinessModule, Milestone, source document, TeamWork,
-approval, and evidence.
-
-Finance distinguishes budget, commitment, invoice, payment, refund, and
-forecast. Metrics distinguish definitions from timestamped observations and
-retain their source.
-
-### Governance
-
-- Docs Governance Agent proposes new or reorganized Document and Module
-  structures.
-- Work Governance Agent classifies and routes durable TeamWorks and their
-  cross-system effects.
-- Finance Governance Agent manages monetary requests, controls, evidence, and
-  authorized financial transitions.
-- Org/HR Governance Agent evaluates capability gaps and proposes, provisions,
-  evaluates, or retires Business Agents through governed organization Actions.
-- Finance, legal, security, and domain reviewers evaluate affected relations.
-- A Lead or human authority approves changes according to risk policy.
-- Proposals and decisions remain reconstructable from source to effect.
-
-## Execution foundation
-
-A TeamWork may be executed directly by a human or Agent Membership, or may start
-one of the product's one-time long-task capabilities:
-
-```text
-Mission -> append-only Mission Log entries
-Mission -> one flat AgentTeam
-execution = Agent Team | Dynamic Workflow | Host work
-```
-
-- `Mission` structures one bounded long-running outcome and owns one flat
-  AgentTeam.
-- the Mission's append-only Log preserves the Host's evolving judgment,
-  re-planning, recovery, and closeout evidence without becoming a lifecycle,
-  runtime container, gate, or barrier.
-- `AgentTeamRun/MemberRun` records temporary collaboration that may span
-  several Mission Log entries while native sessions continue.
-- one machine NodeDaemon generation owns all local TeamRuns; each live Team
-  Supervisor generation is parent-fenced by it and owns that run's provider
-  transports, delivery claims, reconnect, and real controls;
-- identity-first Message preserves source-authenticated Host/Member/Agent/
-  Operator authorship; MessageSubscription selects authorized sources and
-  CanonicalMessageDelivery owns each recipient's delivery state;
-- Work claim, provider receipt, CanonicalMessageDelivery acknowledgement,
-  semantic reply, and acceptance remain distinct. Work/WorkDelivery,
-  Message/CanonicalMessageDelivery, and RuntimeCommand are independent planes;
-- correlated provider questions and answers are
-  `provider_interaction_request` / `provider_interaction_response` Message
-  kinds, not a separate interaction object;
-- `DynamicWorkflow` runs a provider-neutral process for the bounded outcome.
-- provider sessions, plugins, MCP, and child work remain execution evidence.
-
-No executor owns the originating document, organization, approval, or company
-record. Results return through the TeamWork relation.
+Execution Spaces own Agent Team and Workflow coordination. Project Bindings
+identify the repository where providers execute and discover instructions,
+Skills, plugins, and MCP configuration. Selecting `--project` never switches
+the coordination store. Provider cwd resolves the attached
+`MemberWorkspaceBinding.canonical_root` > TeamRun `execution_root` > binding
+`project_root`.
 
 ## Required product experiences
 
-1. Company Home surfaces decisions, milestone state, metrics, financial pressure,
-   and organization capacity with links to source documents.
-2. Docs supports Notion-like editing and nesting, ordinary tables, structured
-   relations, Module templates, embedded operating views, and governed custom
-   pages for core surfaces.
-3. Organization shows a mixed company and distinct details for humans and
-   AgentMembers.
-4. Work is the company-wide read-only aggregate of native TeamWorks plus
-   Milestone groupings and makes submission, responsibility, remaining work,
-   gates, and acceptance visible.
-5. Approvals provides a focused `Needs You` queue and complete audit history.
-6. Finance provides typed, permissioned records linked to business origin.
-7. Governance handles new business domains, document growth, organization
-   change, and missing capability.
-8. Execution pages retain Mission and Mission Log, Team, MemberRun, Supervisor,
-   typed Message Inbox/Outbox with per-recipient delivery, Workflow, and provider observability as professional
-   drill-ins.
-
-## Near-term acceptance scenario
-
-The first Company OS scenario is a new Trademark Management module:
-
-- Document Architecture proposes its document space, templates, record types,
-  relations, views, permissions, and archival rules.
-- Organization Governance identifies a Brand Owner human, Trademark Agent,
-  Finance Agent, and External Lawyer participation.
-- a filing TeamWork preserves requester, submitter, owner, contributors,
-  reviewer, and human approver;
-- the ¥3,000 filing fee is one linked FinancialRecord, not copied text;
-- approval updates Work, Finance, and the trademark application;
-- documents receive the filing result, evidence, dates, cost, and next action.
+1. An operator dashboard (Agent Dashboard) presents Nodes, durable Teams,
+   runs, member lifecycle, the shared Team Inbox, and Work boards from store
+   truth with bounded snapshots.
+2. CLI, HTTP, and MCP surfaces share one TeamMembership and Work authority.
+3. Cross-machine Teams collaborate through the remote fabric with explicit,
+   fenced delivery.
+4. Dynamic Workflows run provider-neutral scripted processes for bounded
+   outcomes.
+5. Every acceptance claim reconstructs from the store and the provider-native
+   session.
 
 ## Non-goals
 
-- do not make raw provider transcripts or thinking the company knowledge base;
-- do not infer assignment from matching names, roles, providers, or sessions;
-- do not make every message a TeamWork;
-- do not introduce a separate Project object above Milestone and TeamWork;
-- do not force every TeamWork into a Mission or another executor;
-- do not use runtime status as business availability;
-- do not let an Agent satisfy a human-required approval;
-- do not copy finance or metric values between modules;
-- do not let page code become a second source of truth or a policy bypass.
+- no second organization-agent identity beside AgentMember;
+- no Company task ledger, migration fallback, or dual-write Work path;
+- no Mission/Wave/Mission Log or Company OS writers, readers as current
+  authority, or dual runtime control;
+- no raw provider transcripts or thinking as Harness evidence;
+- no name-based mapping of responsibility or identity.
 
 ## Implementation truth
 
-The execution foundation is substantially implemented. The Company OS objects
-and primary frontend are an additive migration in progress. Documentation must
-label planned fields and projections honestly until schemas, store, APIs,
-fixtures, and acceptance checks exist.
-
-See [Company OS docs](../company-os/README.md) and
-[ADR 0027](../../decisions/0027-company-os-primary-model.md).
+The execution foundation described here is implemented and acceptance-gated.
+Documentation must label planned fields and projections honestly until
+schemas, store, APIs, fixtures, and acceptance checks exist. Historical
+compatibility schemas (Mission, Wave) remain validated only so old rows can
+be read and exported.

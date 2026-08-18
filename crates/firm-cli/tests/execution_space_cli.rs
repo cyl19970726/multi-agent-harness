@@ -74,7 +74,22 @@ fn project_binding_selection_never_changes_execution_store() {
         .unwrap()
         .to_string();
 
-    let mission = json(&run(
+    // DOC-108 retired the Mission writers this test used; the retained
+    // space-owned writer proving the same store/binding split is
+    // `team create`, which lands trust envelopes in the Execution Space
+    // store while the provider cwd comes from the Project Binding.
+    let host = crate::firm_env::create_canonical_agent_member(
+        &home,
+        &first,
+        &second_binding,
+        "agent-space-host",
+        "space-host",
+        "host",
+        "codex",
+        &[("FIRM_SPACE", space_id.as_str())],
+    );
+    assert!(host.status.success(), "host create failed: {host:?}");
+    let node = json(&run(
         &home,
         &first,
         &[
@@ -82,24 +97,42 @@ fn project_binding_selection_never_changes_execution_store() {
             &space_id,
             "--project",
             &second_binding,
-            "mission",
-            "create",
-            "--title",
-            "Independent binding",
-            "--objective",
-            "prove the store/binding split",
-            "--context",
-            "The Mission is stored in the space while provider cwd uses the binding.",
-            "--json",
+            "node",
+            "init",
         ],
     ));
-    assert!(mission["id"].as_str().is_some());
+    let node_id = node["id"].as_str().expect("node id");
+    let team = json(&run(
+        &home,
+        &first,
+        &[
+            "--space",
+            &space_id,
+            "--project",
+            &second_binding,
+            "team",
+            "create",
+            "--name",
+            "Independent binding",
+            "--description",
+            "prove the store/binding split",
+            "--host-agent-id",
+            "agent-space-host",
+            "--node-id",
+            node_id,
+            "--member",
+            "agent-space-host",
+        ],
+    ));
+    assert!(team["id"].as_str().is_some());
 
     let store = home.spaces_dir().join(&space_id);
-    assert!(store.join("missions.jsonl").is_file());
+    assert!(store.join("agentfirm_trust_operations.jsonl").is_file());
     let project_store = home.projects_dir().join(&second_binding);
     assert!(
-        !project_store.join("missions.jsonl").is_file(),
+        !project_store
+            .join("agentfirm_trust_operations.jsonl")
+            .is_file(),
         "selecting a Project Binding must not create execution truth in its compatibility store"
     );
 }

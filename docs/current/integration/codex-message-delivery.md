@@ -136,7 +136,7 @@ is not inferred from a transport receipt.
 Ordinary Messages never interrupt a busy turn. Steer is a separate
 RuntimeCommand and uses `turn/steer` only when the snapshotted mode supports it.
 Interrupt and Close are likewise provider controls. They are not implied by a
-turn, Mission Log append, TeamRun completion or Mission completion.
+turn or a TeamRun completion.
 
 ## Delivered Envelope And Native Continuity
 

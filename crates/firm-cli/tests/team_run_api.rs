@@ -260,17 +260,8 @@ fn seed_runtime_team(home: &TempHome, project_id: &str, env: &[(&str, &str)]) {
             String::from_utf8_lossy(&member.stderr)
         );
     }
-    run(&[
-        "mission",
-        "create",
-        "--id",
-        FIXTURE_MISSION_ID,
-        "--title",
-        "Runtime Regression",
-        "--objective",
-        "Preserve provider, recovery, lease, and mailbox contracts",
-        "--json",
-    ]);
+    // DOC-108 retired the Mission writers; seed legacy provenance directly.
+    firm_env::seed_historical_mission(home, project_id, FIXTURE_MISSION_ID, "Runtime Regression");
     let node = run(&["node", "init"]);
     let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node JSON");
     let node_id = node["id"].as_str().expect("node id");
@@ -408,6 +399,42 @@ fn seed_historical_wave(
         })
     )
     .expect("append historical wave");
+}
+
+/// Seed one historical Mission Log row directly, bypassing the retired
+/// `mission log append` write path (DOC-108), so legacy log reads and the
+/// snapshot projection can be proven against pre-cutover history.
+fn seed_historical_mission_log(
+    home: &TempHome,
+    project_id: &str,
+    mission_id: &str,
+    revision: u64,
+    kind: &str,
+    body: &str,
+    actor: &str,
+) {
+    use std::io::Write as _;
+
+    let path = home.spaces_dir().join(project_id).join("mission_log.jsonl");
+    let mut ledger = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("open mission log ledger");
+    writeln!(
+        ledger,
+        "{}",
+        serde_json::json!({
+            "id": format!("mission-log-{mission_id}-{revision}"),
+            "mission_id": mission_id,
+            "revision": revision,
+            "kind": kind,
+            "body": body,
+            "actor": actor,
+            "created_at": "unix-ms:1",
+        })
+    )
+    .expect("append historical mission log entry");
 }
 
 /// Run `harness team-run ...` in the given project and return parsed stdout JSON.
@@ -1451,24 +1478,10 @@ fn historical_wave_executor_kind_no_longer_controls_team_run_admission() {
 fn mission_log_cli_and_legacy_wave_read_are_independent_of_team_run() {
     let home = TempHome::new("mission-wave-cli");
     let project_id = init_project(&home, "alpha");
-    let mission = command_json(
-        &home,
-        &project_id,
-        &[
-            "mission",
-            "create",
-            "--id",
-            "mission-cli",
-            "--title",
-            "CLI Mission",
-            "--objective",
-            "Prove the native authoring surface",
-            "--desired-outcome",
-            "A completed retry attempt",
-            "--json",
-        ],
-    );
-    assert_eq!(mission["id"].as_str(), Some("mission-cli"));
+    // DOC-108 retired the Mission writers; this pre-cutover Mission and its
+    // Log rows are seeded directly as history, and the legacy reads must
+    // still serve them.
+    firm_env::seed_historical_mission(&home, &project_id, "mission-cli", "CLI Mission");
     // `wave create` is retired (ADR 0051): seed a row solely to prove the
     // explicit Legacy read surface. Current TeamRun identity does not cite it.
     seed_historical_wave(
@@ -1534,16 +1547,11 @@ fn mission_log_cli_and_legacy_wave_read_are_independent_of_team_run() {
     );
     assert_eq!(running_mission["status"].as_str(), Some("planned"));
 
-    // `wave gate` is retired (ADR 0051): there is nothing left to accept,
-    // revise, or block. The Host records closeout evidence in the Mission
-    // Log instead, then closes the Mission directly -- no Wave acceptance
-    // required.
-    let gate_error = run_firm(
-        &home,
-        home.base(),
-        &[
-            "--project",
-            &project_id,
+    // `wave gate` is retired (ADR 0051) and the Mission writers are retired
+    // (DOC-108): there is nothing left to accept, close, or append through
+    // the legacy surfaces.
+    for args in [
+        vec![
             "wave",
             "gate",
             "--id",
@@ -1551,16 +1559,9 @@ fn mission_log_cli_and_legacy_wave_read_are_independent_of_team_run() {
             "--status",
             "accepted",
             "--run-id",
-            &run_id,
+            run_id.as_str(),
         ],
-    );
-    assert!(!gate_error.status.success());
-    assert!(String::from_utf8_lossy(&gate_error.stderr).contains("retired"));
-
-    let closeout = command_json(
-        &home,
-        &project_id,
-        &[
+        vec![
             "mission",
             "log",
             "append",
@@ -1569,31 +1570,50 @@ fn mission_log_cli_and_legacy_wave_read_are_independent_of_team_run() {
             "--kind",
             "closeout_evidence",
             "--body",
-            "artifact:smoke -- assigned run completed",
-            "--actor",
-            "operator",
-            "--json",
+            "must not persist",
         ],
-    );
-    assert_eq!(closeout["revision"].as_u64(), Some(1));
-    let closed = command_json(
-        &home,
-        &project_id,
-        &[
+        vec![
             "mission",
             "close",
             "--id",
             "mission-cli",
             "--outcome",
-            "assigned run completed",
-            "--completed-by",
-            "operator",
+            "must not persist",
+        ],
+    ] {
+        let mut full = vec!["--project", project_id.as_str()];
+        full.extend(args.clone());
+        let out = run_firm(&home, home.base(), &full);
+        assert!(
+            !out.status.success(),
+            "harness {args:?} must fail as retired"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("retired"),
+            "harness {args:?} stderr must name the retirement"
+        );
+    }
+    // The Mission stays exactly as seeded: no closeout row, no status flip.
+    let still_planned = command_json(
+        &home,
+        &project_id,
+        &["mission", "show", "--id", "mission-cli", "--json"],
+    );
+    assert_eq!(still_planned["status"].as_str(), Some("planned"));
+    assert!(still_planned["completed_at"].is_null());
+    let log = command_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "log",
+            "show",
+            "--mission-id",
+            "mission-cli",
             "--json",
         ],
     );
-    assert_eq!(closed["status"].as_str(), Some("completed"));
-    // Current Mission output omits the empty Legacy Wave compatibility field.
-    assert!(closed.get("wave_ids").is_none());
+    assert_eq!(log.as_array().map(Vec::len), Some(0));
 }
 
 #[test]
@@ -1601,6 +1621,9 @@ fn post_mission_and_retired_wave_write_routes() {
     let home = TempHome::new("mission-wave-http");
     let project_id = init_project(&home, "alpha");
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
+
+    // `POST /v1/missions` is retired (DOC-108): Mission is historical
+    // provenance, never new current authority.
     let (status, body) = serve.post_json(
         "/v1/missions",
         &serde_json::json!({
@@ -1609,10 +1632,14 @@ fn post_mission_and_retired_wave_write_routes() {
             "objective": "Author via API"
         }),
     );
-    assert_eq!(status, 200, "body: {body}");
-    assert_eq!(body["result"]["id"].as_str(), Some("mission-http"));
+    assert_eq!(status, 400, "body: {body}");
+    let error = body["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("retired") && error.contains("DOC-108"),
+        "error: {error}"
+    );
 
-    // `POST /v1/waves` is retired (ADR 0051): the Mission Log absorbed it.
+    // `POST /v1/waves` stays retired (ADR 0051).
     let (status, body) = serve.post_json(
         "/v1/waves",
         &serde_json::json!({
@@ -1626,35 +1653,44 @@ fn post_mission_and_retired_wave_write_routes() {
     assert_eq!(status, 400, "body: {body}");
     let error = body["error"].as_str().unwrap_or_default();
     assert!(
-        error.contains("retired") && error.contains("mission log append"),
+        error.contains("retired") && error.contains("legacy wave"),
         "error: {error}"
     );
     let (_, snapshot) = serve.get_json("/v1/snapshot");
-    assert_eq!(snapshot["missions"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        snapshot["missions"].as_array().map(Vec::len),
+        Some(1),
+        "the rejected POST must not have appended a row; only the seeded fixture Mission remains"
+    );
     assert_eq!(
         snapshot["legacy_waves"].as_array().map(Vec::len),
         Some(0),
         "the rejected POST must not have appended a row"
     );
 
-    // The Host records judgment on the Mission Log instead.
-    let logged = command_json(
+    // `POST /v1/missions/{id}/log` is retired too (DOC-108); the historical
+    // Log is seeded directly and stays readable in the snapshot projection.
+    let (status, body) = serve.post_json(
+        "/v1/missions/mission-runtime-fixture/log",
+        &serde_json::json!({"kind": "judgment", "body": "must not persist"}),
+    );
+    assert_eq!(status, 400, "body: {body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("retired"),
+        "body: {body}"
+    );
+    seed_historical_mission_log(
         &home,
         &project_id,
-        &[
-            "mission",
-            "log",
-            "append",
-            "--mission-id",
-            "mission-http",
-            "--kind",
-            "judgment",
-            "--body",
-            "clarify scope before assigning",
-            "--json",
-        ],
+        FIXTURE_MISSION_ID,
+        1,
+        "judgment",
+        "pre-cutover history",
+        "host",
     );
-    assert_eq!(logged["revision"].as_u64(), Some(1));
     let (_, snapshot) = serve.get_json("/v1/snapshot");
     assert_eq!(snapshot["mission_log"].as_array().map(Vec::len), Some(1));
 
@@ -1953,7 +1989,36 @@ fn post_mutation_response_is_bounded_and_dashboard_can_refresh_from_get_snapshot
     let home = TempHome::new("bounded-mutation-response");
     let _project_id = init_project(&home, "alpha");
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
+    // DOC-108 retired `POST /v1/missions`; the multi-megabyte historical
+    // projection is seeded directly into the ledger, and the bounded-mutation
+    // proof uses the retained `POST /v1/team-runs` writer.
     let large_context = "x".repeat(20_000);
+    {
+        use std::io::Write as _;
+        let path = home.spaces_dir().join(&_project_id).join("missions.jsonl");
+        let mut ledger = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("open mission ledger");
+        for index in 0..80 {
+            writeln!(
+                ledger,
+                "{}",
+                serde_json::json!({
+                    "id": format!("mission-large-{index}"),
+                    "title": format!("Large mission {index}"),
+                    "objective": "inflate the durable read projection",
+                    "context": large_context,
+                    "status": "planned",
+                    "created_at": "unix-ms:1",
+                    "updated_at": "unix-ms:1",
+                })
+            )
+            .expect("seed large mission row");
+        }
+    }
+
     let (status, created) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
@@ -1962,31 +2027,18 @@ fn post_mutation_response_is_bounded_and_dashboard_can_refresh_from_get_snapshot
         }),
     );
     assert_eq!(status, 200, "created: {created}");
+    assert!(
+        created.get("snapshot").is_none(),
+        "mutation response leaked a full snapshot"
+    );
+    assert!(
+        serde_json::to_vec(&created).unwrap().len() < 64 * 1024,
+        "mutation response exceeded the bounded envelope"
+    );
     let run_id = created["result"]["team_run"]["id"]
         .as_str()
         .expect("run id")
         .to_string();
-
-    for index in 0..80 {
-        let (status, body) = serve.post_json(
-            "/v1/missions",
-            &serde_json::json!({
-                "id": format!("mission-large-{index}"),
-                "title": format!("Large mission {index}"),
-                "objective": "inflate the durable read projection",
-                "context": large_context,
-            }),
-        );
-        assert_eq!(status, 200, "body: {body}");
-        assert!(
-            body.get("snapshot").is_none(),
-            "mutation response leaked a full snapshot"
-        );
-        assert!(
-            serde_json::to_vec(&body).unwrap().len() < 64 * 1024,
-            "mutation response exceeded the bounded envelope"
-        );
-    }
 
     let (status, snapshot) = serve.get_json("/v1/snapshot");
     assert_eq!(status, 200, "snapshot: {snapshot}");
@@ -8657,26 +8709,24 @@ fn team_run_recover_prints_mission_log_tail_before_the_report() {
     let home = TempHome::new("team-run-recover-mission-log");
     let project_id = init_project(&home, "alpha");
 
-    for (kind, body) in [
+    for (revision, (kind, body)) in [
         ("judgment", "First judgment before recovery."),
         ("replan", "Re-planned after review."),
         ("recovery", "Most recent judgment entry."),
-    ] {
-        command_json(
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        // DOC-108 retired `mission log append`; the tail reader is proven
+        // against directly-seeded pre-cutover history.
+        seed_historical_mission_log(
             &home,
             &project_id,
-            &[
-                "mission",
-                "log",
-                "append",
-                "--mission-id",
-                FIXTURE_MISSION_ID,
-                "--kind",
-                kind,
-                "--body",
-                body,
-                "--json",
-            ],
+            FIXTURE_MISSION_ID,
+            revision as u64 + 1,
+            kind,
+            body,
+            "host",
         );
     }
 

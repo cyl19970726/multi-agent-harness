@@ -78,11 +78,9 @@ core_docs = [
     "docs/current/operations/operations.md",
     "docs/current/architecture/schemas.md",
     "docs/decisions/README.md",
-    "docs/current/company-os/product-system-map.md",
 ]
 coverage_roots = [
     "docs/mental",
-    "docs/current/company-os",
     "docs/current/dashboard/pages",
     "docs/current/integration",
     "plugins",
@@ -98,10 +96,16 @@ terms = [
     "Goal -> Task",
     "Vision/Goal/Task",
     "Goal/Task Workbench",
+    "Commitment ledger",
+    "Payment ledger",
+    "Finance module",
+    "Mission/Wave orchestration",
+    "Company OS Docs",
 ]
-# Finance vocabulary (Commitment, Payment, etc.) is not yet added to
-# retired_vocabulary.terms: the append-only code still exists. Add them
-# when the code is fully decommissioned (see issue #323).
+# Finance/CompanyOS vocabulary added when DOC-108 decommissioned the
+# append-only writers (issue #323). Terms are phrase-scoped (not bare
+# "Mission"/"Payment") so labeled history and legacy read-only docs
+# keep their vocabulary.
 allowed_paths = [
     "docs/current/operations/governance-engine.md",
 ]
@@ -120,7 +124,7 @@ context_markers = [
 ]
 
 [[document_invariants]]
-name = "mission-team-bijection"
+name = "flat-team-placement-and-legacy-mission"
 paths = [
     "AGENTS.md",
     "docs/mental/agent-firm-mental-model.md",
@@ -128,17 +132,16 @@ paths = [
 ]
 required_terms = [
     "flat AgentTeams",
-    "Every Team belongs to exactly one Mission",
-    "No two AgentTeams may reference the same Mission",
     "immutable `node_id`",
 ]
 forbidden_terms = [
     "recursive AgentTeams",
     "recursive AgentTeam Organization",
-    "Mission <-> independent AgentTeam",
     "zero or more Agent Teams",
     "optional `machine_id`",
     "`machine_id` field on Agent Teams",
+    "Every Team belongs to exactly one Mission",
+    "No two AgentTeams may reference the same Mission",
 ]
 
 [[document_invariants]]

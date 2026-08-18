@@ -10,22 +10,24 @@ Agent executes:
 
 ```text
 Execution Space                    Project Binding
-Mission / Mission Log              provider cwd
-Agent Team / TeamRun / MemberRun   AGENTS.md / CLAUDE.md / config
-Message / correlated reply        project-local Skills
-WorkflowRun / WorkflowStep         Git / worktree / permission boundary
+Agent Team / TeamRun / MemberRun   provider cwd
+Message / correlated reply         AGENTS.md / CLAUDE.md / config
+WorkflowRun / WorkflowStep         project-local Skills
+legacy Mission/Wave (read-only)    Git / worktree / permission boundary
 ```
 
-A Company Store is a third, independent identity for Docs, Organization, Work,
-Finance, and governance. Execution does not require a Company.
+The retired Company Store was a third, independent identity for the legacy
+Docs/Organization/Finance layer (DOC-108). Its writers and reads are closed;
+its stores remain only as export/verify sources for
+`harness legacy-company-os export|verify`.
 
 ## Core invariants
 
 1. `--space` selects coordination storage.
 2. `--project` selects provider execution context.
-3. Selecting a Project Binding never moves or switches Mission/Mission Log, Agent
-   Team, or Workflow rows.
-4. Selecting an Execution Space never changes Company truth.
+3. Selecting a Project Binding never moves or switches Agent
+   Team, Message, or Workflow rows.
+4. Selecting an Execution Space never changes legacy Company truth.
 5. Provider cwd is never a Company Store or Execution Space directory.
 6. Provider-native sessions remain the sole transcript/tool/turn truth and are
    referenced rather than copied.
@@ -42,7 +44,7 @@ Finance, and governance. Execution does not require a Company.
 │   ├── registry.json
 │   └── <space-id>/
 │       ├── metadata.json
-│       ├── missions.jsonl
+│       ├── missions.jsonl         # DOC-108 legacy read/export only
 │       ├── waves.jsonl            # ADR-0051-predecessor Legacy read/export only
 │       ├── teams.jsonl
 │       ├── team_runs.jsonl
@@ -59,12 +61,11 @@ Finance, and governance. Execution does not require a Company.
 │   ├── registry.json
 │   └── <binding-id>/
 │       └── metadata.json          # compatibility locator, not new truth owner
-├── companies/
+├── companies/                   # DOC-108 retired; export/verify sources only
 │   ├── registry.json
 │   └── <company-id>/company_os_*.jsonl
 ├── ACTIVE_SPACE
-├── ACTIVE_PROJECT
-└── ACTIVE_COMPANY
+└── ACTIVE_PROJECT
 ```
 
 Logical separation is mandatory even if a deployment later co-locates some
@@ -90,12 +91,11 @@ The optional default Project Binding is a convenience for provider execution;
 it does not transfer ownership. A command can override it:
 
 ```bash
-harness --space company-dev --project another-repo mission list
 harness --space company-dev --project another-repo team-run create ...
 ```
 
-The Mission remains in `company-dev`; only the new TeamRun's execution binding
-is `another-repo`.
+The Team and its runs remain in `company-dev`; only the new TeamRun's
+execution binding is `another-repo`.
 
 ## Project Binding
 
@@ -118,7 +118,7 @@ firm project remove <id> [--force]
 ```
 
 `firm project switch` changes the default Project Binding only. It does not
-switch the active Execution Space or Company Store.
+switch the active Execution Space.
 
 ### Provider cwd precedence
 
@@ -208,8 +208,8 @@ firm init
 Space exists and doing so would not shadow existing execution rows, it also
 creates a repo-derived Execution Space with that binding as its default.
 
-`init` never creates a Company Store and never silently migrates an old
-project-derived Store.
+`init` never creates a Company Store (the Company layer is retired by
+DOC-108) and never silently migrates an old project-derived Store.
 
 ## Explicit migration
 
@@ -235,8 +235,8 @@ The migration:
   active space, and a rollback command;
 - never dual-writes.
 
-Company records use the separate guarded `firm company
-migrate-from-project` path.
+Legacy Company records are export/verify-only through
+`firm legacy-company-os export|verify`; there is no Company migration writer.
 
 ## Dashboard and HTTP
 
@@ -254,10 +254,9 @@ POST /v1/projects/switch
 
 `?space=<id>` selects coordination snapshot/SSE data.
 `?project=<id>` selects provider execution/source context.
-`?company=<id>` selects Company OS truth.
 
-The Dashboard TopBar shows separate **Execution Space**, **Project Binding**,
-and **Company Store** controls. AgentWorkspace provider history resolves its
+The Dashboard TopBar shows separate **Execution Space** and **Project
+Binding** controls. AgentWorkspace provider history resolves its
 Session from the selected Execution Space and its source from the server-owned
 Project Binding. Private live SSE additionally binds the authenticated exact
 AgentIdentity owner, so switching spaces or selecting another Member cannot
@@ -274,10 +273,8 @@ Old repo-local or project-derived stores remain readable until an explicit,
 verified migration and later governed retirement. They are not silently
 rewritten or deleted.
 
-Until a Company Store is selected, `firm company ...` alone may read and
-write the selected Project Binding's legacy `company_os_*` compatibility
-ledgers. It never falls through into the active Execution Space. Selecting a
-Company Store removes that fallback.
+Legacy `company_os_*` ledgers in any store are export/verify-only history
+(DOC-108); nothing reads or writes them on a current path.
 
 ## Verification
 

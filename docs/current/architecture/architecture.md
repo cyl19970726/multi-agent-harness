@@ -202,17 +202,18 @@ Agent Memberships + Docs
   -> not part of the current implementation goal
 ```
 
-Agent Memberships + Docs are the current product direction with additive
-contracts still being implemented. Documentation must distinguish those
-planned Company OS contracts from proven schemas and must never treat Agent
-Team runs as standing organizations.
+Durable AgentTeams, Work, and identity-first Messages are the current
+product direction with additive contracts still being implemented.
+Documentation must distinguish planned contracts from proven schemas and must
+never treat Agent Team runs as standing organizations. The legacy Company OS
+contract set is retired (DOC-108).
 
 ## Current Implementation Boundary
 
-Native Mission and Mission Log authoring, Agent Team joins and attempts,
-Mission closeout, CLI/API/MCP calls, and the Mission-first Dashboard are
-implemented. Wave authoring and gates are retired historical compatibility
-surfaces. Persistent Codex app-server, Claude Agent SDK, and Kimi ACP
+Durable AgentTeam creation and attempts, Team-run Work, identity-first
+Messages, CLI/API/MCP calls, and the operator Dashboard are implemented.
+Mission, Mission Log, and Wave are retired legacy read/export surfaces
+(DOC-108). Persistent Codex app-server, Claude Agent SDK, and Kimi ACP
 members share the same durable Supervisor and typed mailbox contract; bounded
 provider exec paths remain Dynamic Workflow-only. Dynamic Workflow and Host
 retain their executor-specific truth;

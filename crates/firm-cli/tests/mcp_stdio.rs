@@ -23,7 +23,9 @@ fn init_project(home: &TempHome, name: &str) -> String {
 }
 
 /// Seed the mandatory flat AgentTeam relation used by every AgentTeamRun:
-/// one Mission, one durable Host Agent, and the local ExecutionNode.
+/// one durable Host AgentMember and the local ExecutionNode. No Mission is
+/// created — post-DEV-35 Teams never require one and DOC-108 retired the
+/// Mission writers.
 fn seed_agent_team(home: &TempHome, project_root: &std::path::Path, suffix: &str) -> String {
     let project_id = current_project_id(home);
     let space_id = format!("mcp-space-{suffix}");
@@ -83,25 +85,7 @@ fn seed_agent_team(home: &TempHome, project_root: &std::path::Path, suffix: &str
     );
     assert!(host.status.success(), "host create failed: {host:?}");
 
-    let mission = run_firm(
-        home,
-        project_root,
-        &[
-            "mission",
-            "create",
-            "--title",
-            &format!("MCP Mission {suffix}"),
-            "--objective",
-            "Exercise the MCP AgentTeam contract",
-        ],
-    );
-    assert!(
-        mission.status.success(),
-        "mission create failed: {mission:?}"
-    );
-    let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
-
-    seed_team_for_mission(home, project_root, &mission_id, &host_id, suffix, &[])
+    seed_team_without_mission(home, project_root, &host_id, suffix, &[])
 }
 
 #[cfg(any())]
@@ -193,6 +177,11 @@ fn seed_member_in_active_space_with_provider(
     member_id
 }
 
+/// Historical helper for the source-only `mcp_stdio_agent_team_tools`
+/// migration-evidence test: seeds a Team WITH legacy Mission provenance.
+/// Live tests use `seed_team_without_mission`; DOC-108 retired the Mission
+/// writers this flow depended on.
+#[cfg(any())]
 fn seed_team_for_mission(
     home: &TempHome,
     project_root: &std::path::Path,
@@ -246,6 +235,85 @@ fn seed_team_for_mission(
     );
     assert!(team.status.success(), "team create failed: {team:?}");
     let team: serde_json::Value = serde_json::from_slice(&team.stdout).expect("team JSON");
+    let team_id = team["id"].as_str().expect("team id").to_string();
+    for member_id in additional_member_ids {
+        let added = run_firm(
+            home,
+            project_root,
+            &[
+                "team",
+                "add-member",
+                "--id",
+                &team_id,
+                "--member",
+                member_id,
+            ],
+        );
+        assert!(added.status.success(), "team add-member failed: {added:?}");
+    }
+    team_id
+}
+
+/// Seed a durable flat AgentTeam with NO Mission relation (the post-DEV-35
+/// default): local ExecutionNode, durable Host AgentMember, no
+/// `--mission-id`/`--legacy-mission-id` on `team create`.
+fn seed_team_without_mission(
+    home: &TempHome,
+    project_root: &std::path::Path,
+    host_id: &str,
+    suffix: &str,
+    additional_member_ids: &[&str],
+) -> String {
+    let node = run_firm(home, project_root, &["node", "init"]);
+    assert!(node.status.success(), "node init failed: {node:?}");
+    let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node init JSON");
+    let node_id = node["id"].as_str().expect("node id");
+    let project_id = current_project_id(home);
+    let registration = run_firm(
+        home,
+        project_root,
+        &[
+            "node",
+            "project",
+            "register",
+            "--node-id",
+            node_id,
+            "--project-binding-id",
+            &project_id,
+        ],
+    );
+    assert!(
+        registration.status.success(),
+        "node project register failed: {registration:?}"
+    );
+
+    let team = run_firm(
+        home,
+        project_root,
+        &[
+            "team",
+            "create",
+            "--name",
+            &format!("MCP Missionless Team {suffix}"),
+            "--description",
+            "Flat test AgentTeam without Mission provenance",
+            "--host-agent-id",
+            host_id,
+            "--node-id",
+            node_id,
+            "--member",
+            host_id,
+        ],
+    );
+    assert!(
+        team.status.success(),
+        "mission-less team create failed: {team:?}"
+    );
+    let team: serde_json::Value = serde_json::from_slice(&team.stdout).expect("team JSON");
+    assert!(
+        team["legacy_mission_id"].is_null(),
+        "mission-less team must not gain Mission provenance: {team}"
+    );
     let team_id = team["id"].as_str().expect("team id").to_string();
     for member_id in additional_member_ids {
         let added = run_firm(
@@ -345,7 +413,7 @@ impl Drop for McpClient {
 }
 
 #[test]
-fn mcp_current_surface_is_mission_only_and_rejects_legacy_wave_tools() {
+fn mcp_current_surface_is_team_tools_with_retired_mission_and_wave_tombstones() {
     let home = TempHome::new("mcp-mission-only-surface");
     let project_id = init_project(&home, "mcp-mission-only-project");
     let mut mcp = McpClient::spawn(&home, &project_id, &[]);
@@ -364,16 +432,18 @@ fn mcp_current_surface_is_mission_only_and_rejects_legacy_wave_tools() {
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect::<std::collections::BTreeSet<_>>();
-    for current in [
-        "mission_create",
-        "mission_update_context",
-        "mission_close",
-        "mission_list",
-        "team_run_create",
-    ] {
+    for current in ["mission_list", "team_run_create"] {
         assert!(
             names.contains(current),
             "missing current MCP tool {current}"
+        );
+    }
+    // DOC-108: Mission writers are removed from the MCP surface entirely —
+    // the same unknown-tool tombstone as retired Wave tools.
+    for retired in ["mission_create", "mission_update_context", "mission_close"] {
+        assert!(
+            !names.contains(retired),
+            "retired Mission writer must not be advertised: {retired}"
         );
     }
     assert!(
@@ -432,6 +502,9 @@ fn mcp_current_surface_is_mission_only_and_rejects_legacy_wave_tools() {
         "team_run_send_message",
         "team_message_acknowledge",
         "team_run_reconcile_delivery",
+        "mission_create",
+        "mission_update_context",
+        "mission_close",
     ] {
         let response = mcp.request(
             "tools/call",
@@ -456,6 +529,63 @@ fn mcp_current_surface_is_mission_only_and_rejects_legacy_wave_tools() {
             "removed MCP tombstone must have a byte-zero store delta: {removed}"
         );
     }
+}
+
+#[test]
+fn mcp_team_run_create_without_legacy_mission_omits_mission_context() {
+    let home = TempHome::new("mcp-missionless-team-run");
+    let project_id = init_project(&home, "mcp-missionless-project");
+    let project_root = home.base().join("mcp-missionless-project");
+    let space = run_firm(
+        &home,
+        &project_root,
+        &[
+            "space",
+            "init",
+            "--id",
+            "mcp-space-missionless",
+            "--project-binding",
+            &project_id,
+        ],
+    );
+    assert!(space.status.success(), "space init failed: {space:?}");
+    let host_id = seed_member_in_active_space_with_provider(
+        &home,
+        &project_root,
+        "missionless-host",
+        "host",
+        "codex",
+    );
+    let team_id = seed_team_without_mission(&home, &project_root, &host_id, "missionless", &[]);
+
+    let mut mcp = McpClient::spawn(&home, &project_id, &[]);
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_create",
+            "arguments": {
+                "objective": "Mission-less TeamRun",
+                "agent_team_id": team_id,
+                "members": [
+                    {"name": "lead", "role": "coordinator", "provider": "kimi", "agent_member_id": host_id}
+                ]
+            }
+        }),
+    );
+    let payload = call_payload(&response);
+    let team_run_id = payload["team_run_id"].as_str().expect("team_run_id");
+    assert!(
+        payload["mission_id"].is_null(),
+        "mission-less Team must not report a Mission id: {payload}"
+    );
+    let dashboard_url = payload["dashboard_url"].as_str().expect("dashboard_url");
+    assert_eq!(
+        dashboard_url,
+        format!(
+            "http://127.0.0.1:5173/?api=.&surface=team&team={team_run_id}&space=mcp-space-missionless&project={project_id}"
+        ),
+        "mission-less dashboard URL must not carry an empty mission selector"
+    );
 }
 
 fn call_payload(response: &serde_json::Value) -> serde_json::Value {

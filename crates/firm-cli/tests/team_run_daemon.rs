@@ -88,16 +88,14 @@ fn bootstrap_runtime(home: &TempHome, name: &str) -> RuntimeFixture {
         "node project register",
     );
 
-    let mission = selected(&[
-        "mission",
-        "create",
-        "--title",
+    // DOC-108 retired the Mission writers; seed legacy provenance directly.
+    let mission_id = format!("mission-daemon-{name}");
+    firm_env::seed_historical_mission(
+        home,
+        &execution_space_id,
+        &mission_id,
         &format!("Daemon mission {name}"),
-        "--objective",
-        "Verify machine-scoped NodeDaemon execution",
-    ]);
-    success(&mission, "mission create");
-    let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
+    );
 
     let host_id = format!("agent-daemon-host-{name}");
     let host = create_canonical_agent_member(

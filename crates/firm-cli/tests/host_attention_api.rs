@@ -106,15 +106,14 @@ fn create_mission_and_run(
     node_id: &str,
     host_id: &str,
 ) -> (String, String, String) {
-    let (status, body) = serve.post_json(
-        &format!("/v1/missions?project={project_id}"),
-        &serde_json::json!({
-            "id": "mission-console-followups",
-            "title": "Console follow-ups",
-            "objective": "Exercise HostAttention and resume routes",
-        }),
+    // DOC-108 retired the Mission HTTP writer this fixture used; legacy
+    // Mission provenance is seeded directly as pre-cutover history.
+    firm_env::seed_historical_mission(
+        home,
+        project_id,
+        "mission-console-followups",
+        "Console follow-ups",
     );
-    assert_eq!(status, 200, "body: {body}");
     let team = run_firm(
         home,
         home.base(),

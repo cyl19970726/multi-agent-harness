@@ -1,16 +1,15 @@
-//! End-to-end acceptance for the Mission control plane, including the
-//! ADR 0051 Mission Log cutover: Mission is the sole current intent spine,
-//! while Legacy Wave write commands (`create`/`update`/`advance`/`gate`)
-//! retire on every surface and `legacy wave list`/`show`/`history` remain
-//! historical reads only.
+//! End-to-end acceptance for the retired Mission/Wave legacy stack after the
+//! DOC-108 legacy CompanyOS cutover: Mission and Wave writers are retired on
+//! every surface (CLI, HTTP, MCP), while historical rows stay readable
+//! through the read-only legacy CLI reads (`mission list|show|log show`,
+//! `legacy wave list|show|history`) and the Stage A export/verify path.
 //!
 //! This deliberately exercises the public CLI and HTTP surfaces rather than
-//! constructing core objects directly: Mission Log revisions, TeamRun retry
-//! lineage, and snapshot projections must agree across the surfaces a Host
-//! uses. Historical Wave rows are seeded directly via `seed_historical_wave`
-//! (the only way a Wave can exist post-cutover) rather than through the
-//! retired `wave create`, so tests can still prove historical reads without
-//! making Legacy Wave part of current TeamRun or Message identity.
+//! constructing core objects directly. Historical Mission/Wave rows are
+//! seeded directly via `seed_historical_mission`, `seed_historical_mission_log`
+//! and `seed_historical_wave` (the only way such rows can exist post-cutover)
+//! so tests prove legacy reads and retired-write errors without making
+//! Mission or Legacy Wave part of current TeamRun or Message identity.
 
 use std::time::{Duration, Instant};
 
@@ -136,6 +135,77 @@ fn seed_historical_wave(
     .expect("append historical wave");
 }
 
+/// Seed one historical Mission row directly, bypassing the retired `mission
+/// create` write path (DOC-108): pre-cutover rows are the only Missions that
+/// may exist, and the legacy reads must still serve them. Fields with
+/// `#[serde(default)]` are omitted.
+fn seed_historical_mission(home: &TempHome, project_id: &str, id: &str, title: &str) {
+    use std::io::Write as _;
+
+    let path = home.spaces_dir().join(project_id).join("missions.jsonl");
+    let mut ledger = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("open mission ledger");
+    writeln!(
+        ledger,
+        "{}",
+        serde_json::json!({
+            "id": id,
+            "title": title,
+            "objective": "Seeded pre-cutover row for legacy read coverage",
+            "status": "planned",
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1",
+        })
+    )
+    .expect("append historical mission");
+}
+
+/// Seed one historical Mission Log row directly, bypassing the retired
+/// `mission log append` write path (DOC-108), so the read-only `mission log
+/// show` legacy read can be proven against pre-cutover history.
+fn seed_historical_mission_log(
+    home: &TempHome,
+    project_id: &str,
+    mission_id: &str,
+    revision: u64,
+    kind: &str,
+    body: &str,
+    actor: &str,
+) {
+    use std::io::Write as _;
+
+    let path = home.spaces_dir().join(project_id).join("mission_log.jsonl");
+    let mut ledger = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("open mission log ledger");
+    writeln!(
+        ledger,
+        "{}",
+        serde_json::json!({
+            "id": format!("mission-log-{mission_id}-{revision}"),
+            "mission_id": mission_id,
+            "revision": revision,
+            "kind": kind,
+            "body": body,
+            "actor": actor,
+            "created_at": "unix-ms:1",
+        })
+    )
+    .expect("append historical mission log entry");
+}
+
+// Historical Mission/TeamRun/member-session umbrella. It seeds its world
+// through the retired `mission create` and `company org actor` writers, whose
+// authority DOC-108 closed; the retained-path contract it protected —
+// TeamRun completion and Host close never tear down member runtimes — has
+// executable coverage in team_run_api.rs (`...close...` tests) without any
+// Mission or Company object.
+#[cfg(any())]
 #[test]
 fn mission_log_keeps_one_mission_team_and_member_sessions_alive() {
     let home = TempHome::new("host-plan-mission-team");
@@ -690,102 +760,99 @@ fn mission_log_keeps_one_mission_team_and_member_sessions_alive() {
     );
 }
 
+/// DOC-108 Stage B retirement contract: every Mission and Wave writer fails
+/// with an explicit retired error on the CLI and HTTP surfaces, while the
+/// historical rows stay readable through the legacy reads. History is seeded
+/// directly into the ledgers — the only way Mission/Wave rows may exist
+/// post-cutover.
 #[test]
-fn mission_close_no_longer_gates_on_wave_and_wave_writes_are_retired_everywhere() {
+fn legacy_mission_and_wave_writes_are_retired_everywhere() {
     let home = TempHome::new("host-wave-gate");
     let project_id = init_project(&home, "host-wave");
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
-    run_json(
+    seed_historical_mission(&home, &project_id, "mission-host", "Direct host work");
+    seed_historical_mission_log(
         &home,
         &project_id,
-        &[
-            "mission",
-            "create",
-            "--id",
-            "mission-host",
-            "--title",
-            "Direct host work",
-            "--objective",
-            "Record an honest Host outcome",
-            "--json",
-        ],
+        "mission-host",
+        1,
+        "closeout_evidence",
+        "Direct work verified without a fake executor run.",
+        "host",
     );
 
-    // By convention the Host records closeout evidence in the Mission Log
-    // before closing, but the store does not gate on it (ADR 0051: closeout
-    // no longer depends on any Wave -- or Wave-equivalent -- acceptance).
-    run_json(
-        &home,
-        &project_id,
-        &[
+    // Mission writers are retired on the CLI (DOC-108), whether or not the
+    // referenced Mission exists.
+    for args in [
+        vec!["mission", "create", "--title", "x", "--objective", "y"],
+        vec![
+            "mission",
+            "update-context",
+            "--id",
+            "mission-host",
+            "--context",
+            "x",
+        ],
+        vec!["mission", "close", "--id", "mission-host", "--outcome", "x"],
+        vec![
             "mission",
             "log",
             "append",
             "--mission-id",
             "mission-host",
             "--kind",
-            "closeout_evidence",
+            "judgment",
             "--body",
-            "Direct work verified without a fake executor run.",
-            "--json",
+            "x",
         ],
-    );
-    let (status, body) = serve.post_json(
-        "/v1/missions/mission-host/close",
-        &serde_json::json!({
-            "outcome": "Mission intent satisfied",
-            "completed_by": "dashboard-host"
-        }),
-    );
-    assert_eq!(status, 200, "body: {body}");
-    assert_eq!(body["result"]["status"].as_str(), Some("completed"));
-    assert_eq!(
-        body["result"]["completed_by"].as_str(),
-        Some("dashboard-host")
-    );
-    assert!(body["result"]["completed_at"].is_string());
-    assert!(
-        body["result"].get("wave_ids").is_none(),
-        "current Mission output must not advertise Legacy Wave identity"
-    );
+    ] {
+        let mut full = vec!["--project", project_id.as_str()];
+        full.extend(args.clone());
+        let out = run_firm(&home, home.base(), &full);
+        assert!(
+            !out.status.success(),
+            "harness {args:?} must fail as retired"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("retired") && stderr.contains("DOC-108"),
+            "harness {args:?} stderr: {stderr}"
+        );
+    }
 
-    // Identical closeout is idempotent; a conflicting actor/outcome is
-    // rejected, exactly as before this cutover.
-    let repeated = run_json(
-        &home,
-        &project_id,
-        &[
-            "mission",
-            "close",
-            "--id",
-            "mission-host",
-            "--outcome",
-            "Mission intent satisfied",
-            "--completed-by",
-            "dashboard-host",
-            "--json",
-        ],
-    );
-    assert_eq!(repeated["status"].as_str(), Some("completed"));
-    let conflict = run_firm(
-        &home,
-        home.base(),
-        &[
-            "--project",
-            &project_id,
-            "mission",
-            "close",
-            "--id",
-            "mission-host",
-            "--outcome",
-            "different",
-            "--completed-by",
-            "another-host",
-        ],
-    );
-    assert!(!conflict.status.success());
+    // ...and over HTTP, the same five routes plus Mission-owned Team creation.
+    for (path, payload) in [
+        (
+            "/v1/missions",
+            serde_json::json!({"id": "mission-new", "title": "x", "objective": "y"}),
+        ),
+        (
+            "/v1/missions/mission-host/close",
+            serde_json::json!({"outcome": "x"}),
+        ),
+        (
+            "/v1/missions/mission-host/context",
+            serde_json::json!({"context": "x"}),
+        ),
+        (
+            "/v1/missions/mission-host/log",
+            serde_json::json!({"kind": "judgment", "body": "x"}),
+        ),
+        (
+            "/v1/missions/mission-host/teams",
+            serde_json::json!({"name": "x", "description": "y", "host_agent_id": "z"}),
+        ),
+    ] {
+        let (status, body) = serve.post_json(path, &payload);
+        assert_eq!(status, 400, "{path} body: {body}");
+        let error = body["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains("retired") && error.contains("DOC-108"),
+            "{path} error: {error}"
+        );
+    }
 
-    // Wave write commands are retired on every surface (ADR 0051), regardless
+    // Wave write commands stay retired on every surface (ADR 0051), regardless
     // of Mission state or whether the referenced Wave exists at all.
     for (command, extra) in [
         (
@@ -818,7 +885,7 @@ fn mission_close_no_longer_gates_on_wave_and_wave_writes_are_retired_everywhere(
         assert!(!out.status.success(), "wave {command} must fail: {args:?}");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
-            stderr.contains("retired") && stderr.contains("mission log append"),
+            stderr.contains("retired") && stderr.contains("legacy wave"),
             "wave {command} stderr: {stderr}"
         );
     }
@@ -846,14 +913,38 @@ fn mission_close_no_longer_gates_on_wave_and_wave_writes_are_retired_everywhere(
         assert_eq!(status, 400, "{path} body: {body}");
         let error = body["error"].as_str().unwrap_or_default();
         assert!(
-            error.contains("retired") && error.contains("mission log append"),
+            error.contains("retired") && error.contains("legacy wave"),
             "{path} error: {error}"
         );
     }
 
-    // Historical reads remain functional: seed one pre-cutover Wave row
-    // directly (the only way a Wave can exist post-cutover) and prove
-    // `wave list`/`show`/`history` still see it.
+    // Historical reads remain functional: the seeded pre-cutover Mission and
+    // its Log stay readable through the read-only legacy CLI surface.
+    let missions = run_json(&home, &project_id, &["mission", "list"]);
+    assert_eq!(missions.as_array().map(Vec::len), Some(1));
+    let shown = run_json(
+        &home,
+        &project_id,
+        &["mission", "show", "--id", "mission-host"],
+    );
+    assert_eq!(shown["title"].as_str(), Some("Direct host work"));
+    let log = run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "log",
+            "show",
+            "--mission-id",
+            "mission-host",
+            "--json",
+        ],
+    );
+    assert_eq!(log.as_array().map(Vec::len), Some(1));
+    assert_eq!(log[0]["kind"].as_str(), Some("closeout_evidence"));
+
+    // ...and so do Legacy Wave reads, seeded directly (the only way a Wave
+    // can exist post-cutover).
     seed_historical_wave(
         &home,
         &project_id,
@@ -1399,15 +1490,8 @@ fn http_console_delegates_native_team_run_to_node_daemon() {
         ],
     );
 
-    let (status, body) = serve.post_json(
-        "/v1/missions",
-        &serde_json::json!({
-            "id": "mission-console",
-            "title": "Console-native Agent Team",
-            "objective": "Run the complete Mission/TeamRun journey",
-        }),
-    );
-    assert_eq!(status, 200, "body: {body}");
+    // No Mission seeding: post-DEV-35 Teams are created without Mission
+    // provenance, and DOC-108 retired the Mission writers entirely.
     let host = create_canonical_agent_member(
         &home,
         home.base(),
@@ -1449,8 +1533,6 @@ fn http_console_delegates_native_team_run_to_node_daemon() {
             "Console Team",
             "--description",
             "Flat Console Team",
-            "--mission-id",
-            "mission-console",
             "--host-agent-id",
             "agent-console-host",
             "--node-id",
@@ -1696,28 +1778,9 @@ fn http_console_delegates_native_team_run_to_node_daemon() {
         "stop NodeDaemon failed: {stopped:?}"
     );
 
-    // The Host records closeout evidence in the Mission Log instead of a
-    // Wave gate accepting the run (ADR 0051: an append-only log has nothing
-    // analogous to a gate). `/v1/waves/{id}/gate` is retired regardless.
-    let closeout = run_json(
-        &home,
-        &project_id,
-        &[
-            "mission",
-            "log",
-            "append",
-            "--mission-id",
-            "mission-console",
-            "--kind",
-            "closeout_evidence",
-            "--body",
-            "Deterministic provider completed; run accepted.",
-            "--json",
-        ],
-    );
-    assert_eq!(closeout["kind"].as_str(), Some("closeout_evidence"));
-    assert_eq!(closeout["revision"].as_u64(), Some(1));
-
+    // Wave gate routes stay retired (ADR 0051), and the Mission Log writer
+    // that once recorded closeout evidence is itself retired (DOC-108): run
+    // acceptance is recorded on the Work/TeamRun path, never in a Mission.
     let (status, body) = serve.post_json(
         &format!("/v1/waves/wave-console/gate?project={project_id}"),
         &serde_json::json!({
@@ -1738,34 +1801,81 @@ fn http_console_delegates_native_team_run_to_node_daemon() {
     );
 }
 
-/// `mission log append`/`show` CLI happy path, focused purely on the Mission
-/// Log surface itself (revision monotonicity, --tail, plain-text vs --json,
-/// the "no mission log yet" sentinel, and CLI-side empty-body rejection) --
-/// the other tests in this file exercise it woven into larger scenarios,
-/// this one is the dedicated coverage the ADR 0051 cutover asked for.
+/// `mission log show` is a read-only legacy read (DOC-108 retired the
+/// append writer): revision order, --tail, plain-text vs --json, and the "no
+/// mission log yet" sentinel are proven against directly-seeded pre-cutover
+/// history — the only way Mission Log rows may exist now.
 #[test]
-fn mission_log_cli_append_and_show_happy_path() {
+fn mission_log_cli_show_reads_history_and_append_is_retired() {
     let home = TempHome::new("mission-log-cli-happy-path");
     let project_id = init_project(&home, "alpha");
+    seed_historical_mission(&home, &project_id, "mission-log-happy", "Mission Log reads");
 
-    run_json(
-        &home,
-        &project_id,
-        &[
+    // Append is retired, whatever the payload: empty body, unknown kind, and
+    // well-formed rows all fail with the DOC-108 retired-write error and
+    // write nothing.
+    for args in [
+        vec![
             "mission",
-            "create",
-            "--id",
+            "log",
+            "append",
+            "--mission-id",
             "mission-log-happy",
-            "--title",
-            "Mission Log happy path",
-            "--objective",
-            "Prove append/show end to end",
-            "--json",
+            "--kind",
+            "judgment",
+            "--body",
+            "   ",
         ],
-    );
+        vec![
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-log-happy",
+            "--kind",
+            "narration",
+            "--body",
+            "not a real kind",
+        ],
+        vec![
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-log-happy",
+            "--kind",
+            "judgment",
+            "--body",
+            "must not persist",
+        ],
+        vec![
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-log-does-not-exist",
+            "--kind",
+            "judgment",
+            "--body",
+            "orphan",
+        ],
+    ] {
+        let mut full = vec!["--project", project_id.as_str()];
+        full.extend(args.clone());
+        let out = run_firm(&home, home.base(), &full);
+        assert!(
+            !out.status.success(),
+            "harness {args:?} must fail as retired"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("retired") && stderr.contains("DOC-108"),
+            "harness {args:?} stderr: {stderr}"
+        );
+    }
 
-    // A fresh Mission with no entries shows the explicit sentinel in text
-    // mode, not an empty line or an error.
+    // A Mission with no entries shows the explicit sentinel in text mode, not
+    // an empty line or an error.
     let out = run_firm(
         &home,
         home.base(),
@@ -1785,80 +1895,30 @@ fn mission_log_cli_append_and_show_happy_path() {
         "no mission log yet"
     );
 
-    // Empty (whitespace-only) body is rejected before anything is appended.
-    let empty_body = run_firm(
-        &home,
-        home.base(),
-        &[
-            "--project",
-            &project_id,
-            "mission",
-            "log",
-            "append",
-            "--mission-id",
-            "mission-log-happy",
-            "--kind",
-            "judgment",
-            "--body",
-            "   ",
-        ],
-    );
-    assert!(!empty_body.status.success());
-    assert!(String::from_utf8_lossy(&empty_body.stderr).contains("body must not be empty"));
-
-    // Unknown --kind is rejected with the exact accepted set named.
-    let bad_kind = run_firm(
-        &home,
-        home.base(),
-        &[
-            "--project",
-            &project_id,
-            "mission",
-            "log",
-            "append",
-            "--mission-id",
-            "mission-log-happy",
-            "--kind",
-            "narration",
-            "--body",
-            "not a real kind",
-        ],
-    );
-    assert!(!bad_kind.status.success());
-    assert!(String::from_utf8_lossy(&bad_kind.stderr)
-        .contains("judgment|replan|recovery|closeout_evidence"));
-
-    for (kind, body, actor) in [
-        ("judgment", "First judgment.", None),
-        ("replan", "Re-planned after review.", Some("operator-a")),
-        ("recovery", "Recovered after a supervisor death.", None),
+    // Seed pre-cutover history directly, then prove the reads.
+    for (revision, kind, body, actor) in [
+        (1, "judgment", "First judgment.", "host"),
+        (2, "replan", "Re-planned after review.", "operator-a"),
+        (3, "recovery", "Recovered after a supervisor death.", "host"),
         (
+            4,
             "closeout_evidence",
             "Everything verified; closing.",
-            Some("host"),
+            "host",
         ),
     ] {
-        let mut args = vec![
-            "mission",
-            "log",
-            "append",
-            "--mission-id",
+        seed_historical_mission_log(
+            &home,
+            &project_id,
             "mission-log-happy",
-            "--kind",
+            revision,
             kind,
-            "--body",
             body,
-        ];
-        if let Some(actor) = actor {
-            args.push("--actor");
-            args.push(actor);
-        }
-        args.push("--json");
-        run_json(&home, &project_id, &args);
+            actor,
+        );
     }
 
-    // --json show: full ordered history, correct kinds, default actor "host"
-    // when --actor was not supplied.
+    // --json show: full ordered history with correct kinds and actors.
     let all_json = run_json(
         &home,
         &project_id,
@@ -1946,113 +2006,84 @@ fn mission_log_cli_append_and_show_happy_path() {
     );
     assert!(text.contains("[judgment]"), "text: {text}");
     assert!(text.contains("[closeout_evidence]"), "text: {text}");
-
-    // A non-JSON append prints a terse summary line, not the full entry.
-    let terse_append = run_firm(
-        &home,
-        home.base(),
-        &[
-            "--project",
-            &project_id,
-            "mission",
-            "log",
-            "append",
-            "--mission-id",
-            "mission-log-happy",
-            "--kind",
-            "judgment",
-            "--body",
-            "Fifth entry, terse output.",
-        ],
-    );
-    assert!(terse_append.status.success());
-    let terse_stdout = String::from_utf8_lossy(&terse_append.stdout);
-    assert_eq!(terse_stdout.trim(), "mission-log-happy\t#5\tjudgment");
-
-    // Appending against a Mission that does not exist fails clearly instead
-    // of silently creating an orphaned Log row.
-    let missing_mission = run_firm(
-        &home,
-        home.base(),
-        &[
-            "--project",
-            &project_id,
-            "mission",
-            "log",
-            "append",
-            "--mission-id",
-            "mission-log-does-not-exist",
-            "--kind",
-            "judgment",
-            "--body",
-            "orphan",
-        ],
-    );
-    assert!(!missing_mission.status.success());
-    assert!(String::from_utf8_lossy(&missing_mission.stderr).contains("mission not found"));
 }
 
-/// The console must be able to record Host judgment without a terminal:
-/// `POST /v1/missions/{id}/log` appends through the same path as
-/// `harness mission log append`, assigns store revisions, and rejects
-/// unknown kinds with a usage error.
+/// The Mission HTTP write routes are retired with the legacy CompanyOS
+/// cutover (DOC-108): `POST /v1/missions`, `/{id}/close`, `/{id}/context`,
+/// `/{id}/log`, and `/{id}/teams` all fail with the explicit retired-write
+/// error and leave a byte-zero store delta.
 #[test]
-fn http_mission_log_append_route_appends_and_rejects_unknown_kind() {
+fn http_mission_write_routes_are_retired() {
     let home = TempHome::new("mission-wave-http-log");
-    let _project_id = init_project(&home, "alpha");
+    let project_id = init_project(&home, "alpha");
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
+    seed_historical_mission(&home, &project_id, "mission-log-http", "Mission Log HTTP");
 
-    let (status, body) = serve.post_json(
-        "/v1/missions",
-        &serde_json::json!({
-            "id": "mission-log-http",
-            "title": "Mission Log HTTP",
-            "objective": "Append entries through the console route",
-        }),
-    );
-    assert_eq!(status, 200, "body: {body}");
+    let ledger_dir = home.spaces_dir().join(&project_id);
+    let before = if ledger_dir.exists() {
+        std::fs::read_dir(&ledger_dir)
+            .expect("read ledger dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().is_file())
+            .map(|entry| {
+                (
+                    entry.file_name(),
+                    std::fs::read(entry.path()).expect("read ledger file"),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+    } else {
+        std::collections::BTreeMap::new()
+    };
 
-    let (status, body) = serve.post_json(
-        "/v1/missions/mission-log-http/log",
-        &serde_json::json!({
-            "kind": "judgment",
-            "body": "Advance from the console.",
-            "actor": "operator",
-        }),
-    );
-    assert_eq!(status, 200, "body: {body}");
-    let entry = &body["result"];
-    assert_eq!(entry["mission_id"], "mission-log-http");
-    assert_eq!(entry["kind"], "judgment");
-    assert_eq!(entry["actor"], "operator");
-    assert!(
-        entry["revision"].as_u64().unwrap_or(0) >= 1,
-        "revision must be store-assigned: {entry}"
-    );
+    for (path, payload) in [
+        (
+            "/v1/missions",
+            serde_json::json!({"id": "mission-new", "title": "x", "objective": "y"}),
+        ),
+        (
+            "/v1/missions/mission-log-http/close",
+            serde_json::json!({"outcome": "x"}),
+        ),
+        (
+            "/v1/missions/mission-log-http/context",
+            serde_json::json!({"context": "x"}),
+        ),
+        (
+            "/v1/missions/mission-log-http/log",
+            serde_json::json!({"kind": "judgment", "body": "Advance from the console."}),
+        ),
+        (
+            "/v1/missions/mission-log-http/teams",
+            serde_json::json!({"name": "x", "description": "y", "host_agent_id": "z"}),
+        ),
+        (
+            "/v1/missions/mission-log-does-not-exist/log",
+            serde_json::json!({"kind": "judgment", "body": "orphan"}),
+        ),
+    ] {
+        let (status, body) = serve.post_json(path, &payload);
+        assert_eq!(status, 400, "{path} body: {body}");
+        let error = body["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains("retired") && error.contains("DOC-108"),
+            "{path} error: {error}"
+        );
+    }
 
-    // A second append defaults the actor to host and advances the revision.
-    let (status, body) = serve.post_json(
-        "/v1/missions/mission-log-http/log",
-        &serde_json::json!({ "kind": "replan", "body": "Replan from the console." }),
+    let after = std::fs::read_dir(&ledger_dir)
+        .expect("read ledger dir")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_file())
+        .map(|entry| {
+            (
+                entry.file_name(),
+                std::fs::read(entry.path()).expect("read ledger file"),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        before, after,
+        "retired Mission HTTP writers must leave a byte-zero store delta"
     );
-    assert_eq!(status, 200, "body: {body}");
-    assert_eq!(body["result"]["actor"], "host");
-    assert!(
-        body["result"]["revision"].as_u64().unwrap_or(0) > entry["revision"].as_u64().unwrap_or(0),
-        "revisions must be monotonic: {body}"
-    );
-
-    // Unknown kinds are usage errors (HTTP 400), mirroring the CLI.
-    let (status, body) = serve.post_json(
-        "/v1/missions/mission-log-http/log",
-        &serde_json::json!({ "kind": "advance", "body": "nope" }),
-    );
-    assert_eq!(status, 400, "body: {body}");
-
-    // Missing missions are rejected like the CLI (`mission not found`).
-    let (status, body) = serve.post_json(
-        "/v1/missions/mission-log-does-not-exist/log",
-        &serde_json::json!({ "kind": "judgment", "body": "orphan" }),
-    );
-    assert_eq!(status, 400, "body: {body}");
 }

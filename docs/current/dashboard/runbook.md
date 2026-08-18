@@ -125,9 +125,9 @@ The current execution surfaces show:
 - Workflows: WorkflowRun/WorkflowStep, result, artifacts, and diagnostics;
 - the raw snapshot, read-only, behind the Debug boundary.
 
-Company OS surfaces share the shell and expose Home, Docs, Work,
-Organization, Approvals, Finance, and Governance from either authoritative
-store projections or an explicitly labelled prototype fixture.
+The retired Company OS surfaces are removed from the shell (DEV-38/DOC-108);
+navigation exposes Nodes, Agent Teams, Team Workspace, Agent Conversation,
+Global Work, and Workflows from authoritative store projections.
 
 If the current service does not own a live Team's process handles, the
 Workbench still shows durable state. Only controls returned by the current

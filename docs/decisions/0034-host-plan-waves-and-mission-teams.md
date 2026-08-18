@@ -1,5 +1,11 @@
 # ADR 0034: Host Plan Waves And Mission-Scoped Agent Teams
 
+
+> **Superseded by DOC-108 (legacy CompanyOS retirement, 2026-08-17).**
+> This ADR is retained as historical evidence only; its object model is not
+> current authority. See `docs/current/product/prd.md` and
+> `docs/current/architecture/architecture-map.md`.
+
 ```text
 status: active
 date: 2026-07-23

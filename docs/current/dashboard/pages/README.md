@@ -48,26 +48,21 @@ open_questions:
 
 ## Core Page Specs
 
-The current product direction is Mission context -> append-only Mission Log ->
-one flat AgentTeam, owned by ADR 0051 and ADR 0034, while
-durable Team control is owned by ADR 0044 and the current identity-first
-Message/CanonicalMessageDelivery cutover by ADR 0056. The
-implemented primary pages are Mission Detail and Log and Agent Team War Room. Historical
-Vision/Goal/Task Work-board and Goal Workbench specs are archived; they do not
-define the new information architecture.
+The current product direction is durable flat AgentTeams with Team-run Work
+and identity-first Messages (DEV-35/36/37); durable Team control is owned by
+ADR 0044 and the Message/CanonicalMessageDelivery cutover by ADR 0056.
+Mission/Mission Log and the Mission-scoped page specs are retired (DOC-108);
+the TeamWorkspace and AgentConversationWorkspace surfaces replaced the Team
+War Room and MemberRun Focus pages (DEV-38, `schemas/role-views/surface-migration.v1.json`).
 
 | Page | Status | Layout |
 | --- | --- | --- |
-| [Mission Detail and Log](mission-detail-log.md) | implemented | durable context, Mission-owned Team, append-only Host judgment/replan/recovery/closeout log |
-| [Agent Team War Room](team-run-war-room.md) | implemented | one Mission-owned, Node-placed long-lived TeamRun |
-| [MemberRun Focus](member-run-focus.md) | implemented candidate | run-scoped member detail |
 | [AgentMember Focus](agent-member-focus.md) | proposed | canonical identity, organization projection, and execution trust |
 | [Debug](debug.md) | planned secondary surface | current raw objects and source diagnosis |
 
-The deleted Team workspace, AgentMember workbench, Evidence/Review/Decision,
-and Warnings/repair specs described the retired Goal/Task/Proposal/Gap stack.
-Git history is sufficient provenance; those files must not be used as active
-product input or recreated as compatibility pages.
+The deleted Mission Detail, Team War Room, and MemberRun Focus specs described
+retired surfaces. Git history is sufficient provenance; those files must not
+be used as active product input or recreated as compatibility pages.
 
 ## Boundary
 

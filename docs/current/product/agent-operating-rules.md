@@ -14,20 +14,18 @@ conflict; do not restate its contract here.
 
 ## Product Context
 
-Star Harness is an AI Company OS with two primary systems: a Notion-like Docs
-system for company memory and operating structure, and a mixed Organization of
-humans, Agent Memberships, external collaborators, and services. Documents create
-TeamWorks and Approvals; accountable actors execute them; results, evidence,
-metrics, and financial effects return to the originating records
-([prd.md](prd.md), [company-os/README.md](../company-os/README.md)).
+Star Harness is the AgentFirm execution foundation: durable flat AgentTeams
+of standing AgentMembers, accountable Work, identity-first Messages, and
+provider-neutral runtimes. The legacy Company OS layer (Company Store,
+built-in Docs, Organization, Finance, generic Approval) and the
+Mission/Wave/Mission Log coordination objects are retired by DOC-108 — their
+writers are closed on every surface and their rows are export/verify-only
+history. See [prd.md](prd.md).
 
-Mission, Agent Team, Dynamic Workflow, Host execution, providers, plugins,
-and MCP are the shared execution foundation. `Mission` is durable intent and
-owns exactly one flat AgentTeam. Its append-only Mission Log records Host
-judgment, re-planning, recovery, and closeout evidence; it is part of Mission
-memory, not a lifecycle, executor container, gate, or synchronization barrier.
-An AgentTeamRun and its MemberRuns/native sessions continue across Mission Log
-entries. ADR 0050 defines Work as member
+Agent Team, Dynamic Workflow, Host execution, providers, plugins,
+and MCP are the shared execution foundation. `Mission` survives only as
+optional read-only provenance (`AgentTeam.legacy_mission_id`) and legacy CLI
+reads; it owns nothing. ADR 0050 defines Work as member
 responsibility and removes Assignment-message ownership. `WorkOperation`
 atomically preserves the resulting Work, its `WorkEvent`, and `WorkDelivery`
 deltas. Identity-first `Message` is authored conversation only;
@@ -58,21 +56,16 @@ the live canary fails. Authentication, payment, license acceptance, new
 credentials and other protected actions still require the appropriate Human or
 policy approval.
 
-Docs plus flat AgentTeam Organization is the accepted target direction.
-AgentMember is the durable agent identity and native Work is the shared
-responsibility kernel. The Unified Work cutover is implemented: Company Work
-aggregates native TeamWork and owns no second task or Assignment ledger. Do not
-claim other target objects or fields exist until schemas, stores, APIs, and
-acceptance checks prove them. See
-[company-os/README.md](../company-os/README.md) and
-[ADR 0052](../../decisions/0052-nested-agent-teams-are-the-agent-organization.md).
+Flat durable AgentTeams are the organization of execution. AgentMember is the
+durable agent identity and native Work is the shared responsibility kernel. The
+Unified Work cutover is implemented: the Global Work RoleView aggregates native
+TeamWork read-only and owns no second task or Assignment ledger. Do not claim
+other target objects or fields exist until schemas, stores, APIs, and
+acceptance checks prove them. ADR 0052 is superseded historical evidence.
 
-The first Company OS acceptance scenario is a governed Trademark Management
-module whose filing TeamWork, human approval, ¥3,000 financial commitment,
-participants, evidence, and source/result documents remain one linked truth.
 Repository self-hosting remains the first execution-foundation scenario.
-Project-specific logic belongs in modules, adapters, and scenario skills, not
-in the generic core.
+Project-specific logic belongs in adapters and scenario tooling, not in the
+generic core.
 
 ## Native Product And Execution Objects
 
@@ -182,9 +175,8 @@ the harness must not claim lifecycle control it does not have.
 Do not claim that Mission-scoped Agent Team work was accepted unless the store
 shows:
 
-- a native Mission, its linked `AgentTeam`, and the relevant Mission Log
-  judgment entries;
-- one or more Mission-scoped `AgentTeamRun` records;
+- the durable `AgentTeam` and its `AgentTeamRun` records (a
+  `legacy_mission_id` may appear as read-only pre-cutover provenance);
 - role-specific MemberRuns and owned or claimed Works for actual members;
 - ordered WorkOperations preserving append-only WorkEvents, resulting Work
   projections, and WorkDelivery facts for allocation, execution, blocking,
@@ -192,8 +184,8 @@ shows:
 - Work-linked conversation where questions, explanation, or peer coordination
   occurred;
 - submitted results and explicit Host acceptance, plus artifact/check refs;
-- an explicit Host closeout/advance judgment. Active unrelated Works may
-  continue across the next Mission Log entry.
+- an explicit Host closeout/advance judgment recorded on the Work records.
+  Active unrelated Works may continue across runs.
 
 Execution claims must also resolve to the provider-native session when the
 member used a provider. Missing or incompatible native sessions are reported
@@ -209,19 +201,20 @@ without inventing controlled child objects.
 
 The Lead Agent should use this sequence for non-trivial new work:
 
-1. Inspect relevant code/docs and native state with `firm mission list`,
-   `firm mission show`, and the Agent Team/Dynamic Workflow surfaces needed.
-   Use `firm wave list/show/history` only when reconstructing Legacy records.
-2. Create or select the Mission and its one flat AgentTeam, then append the
-   current Host judgment to the Mission Log before the material action.
-3. Let each executor own its internal plan. A Mission Log entry records what
-   changed, what the Host decided, which work carries forward, and why.
+1. Inspect relevant code/docs and native state with the Agent Team, Work, and
+   Dynamic Workflow surfaces needed. Use `firm mission list|show|log show` and
+   `firm legacy wave list/show/history` only when reconstructing pre-cutover
+   records (both are read-only legacy reads; DOC-108 retired the writers).
+2. Create or select the flat AgentTeam for the work and state the current
+   Host judgment in Work context before the material action.
+3. Let each executor own its internal plan. Work records carry what changed,
+   what the Host decided, which work carries forward, and why.
 4. For Agent Team work, create one Team/Node/Project-fenced TeamRun and put every lane on
    its shared Works board. Assign bounded responsibility directly or expose
    eligible unassigned Work for atomic claim. Give concurrent members
    disjoint owned paths or explicit conflict boundaries. Let each Member decide
    whether to create its own same-repository worktree and surface shared-file
-   conflicts to the Host. A current path has no Wave id.
+   conflicts to the Host.
 5. Keep Harness-owned WorkOperations/WorkEvents, WorkDelivery, checks, artifact references,
    blockers, submissions, Host acceptance, control acknowledgements, and
    outcomes durable. Keep provider chat, tool,
@@ -230,12 +223,11 @@ The Lead Agent should use this sequence for non-trivial new work:
 6. Apply review proportional to risk. A reviewer member or stricter repository
    governance may be added when useful, but Proposal/Decision/outcome
    evaluation is not a universal product chain.
-7. Append an explicit Host outcome/next judgment to the Mission Log. Do not
+7. Record the explicit Host outcome/next judgment on the Work records. Do not
    wait for unrelated member work; carry its same Work, MemberRun, and native
-   session across entries.
-8. Re-plan with another append-only entry from plan-vs-actual deviation and
-   close the Mission with an explicit outcome summary. Closing never archives
-   or deletes a team.
+   session across runs.
+8. Re-plan from plan-vs-actual deviation on the Work board and finish the run
+   with an explicit outcome. Run completion never archives or deletes a team.
 
 When the work is a Harness dogfood run, follow
 [product/agent-team-dogfood-loop.md](agent-team-dogfood-loop.md). A
@@ -248,28 +240,24 @@ Useful local commands:
 
 ```bash
 target/debug/firm init
-target/debug/firm mission create --title <title> --objective <objective> \
-  --context <mission-markdown>
 target/debug/firm node init
 target/debug/firm team create --name <team> --description <purpose> \
-  --mission-id <mission> --host-agent-id <agent-member-id> \
+  --host-agent-id <agent-member-id> \
   --node-id <node-uuid> --member <agent-member-id>
 target/debug/firm team-run create --agent-team-id <team> --objective <objective>
 target/debug/firm team-run work create --team-run-id <team-run> \
   --title <title> --context <markdown> \
   --completion-criteria <criteria> --owner-member-run-id <member-run>
 target/debug/firm team-run work list --team-run-id <team-run>
-target/debug/firm mission log append --mission-id <mission> --kind judgment --body "<decision>"
-target/debug/firm mission close --id <mission> --outcome <summary>
 target/debug/firm dashboard snapshot
 target/debug/firm serve --addr 127.0.0.1:8787
-npx pnpm@9.15.4 acceptance:mission-wave
+npx pnpm@9.15.4 acceptance:legacy-retirement
 ```
 
-`acceptance:mission-wave` is a retained compatibility command name. It proves
-the deterministic current Mission/Mission Log, Agent Team, MCP, Kimi ACP
-adapter, and Dashboard contracts plus Legacy Wave read-only behavior. A
-real-provider claim still requires a separately recorded native live run; the
+`acceptance:legacy-retirement` (formerly `acceptance:mission-wave`) proves the
+deterministic current Agent Team, MCP, Kimi ACP adapter, and Dashboard
+contracts plus the retired Mission/Wave legacy reads and retired-write errors.
+A real-provider claim still requires a separately recorded native live run; the
 deterministic gate is not live-provider evidence.
 
 ## Execution Space And Project Binding
@@ -281,7 +269,7 @@ The operator rules are:
 
 One `serve` / dashboard manages independent Execution Spaces and Project
 Bindings. Execution Spaces under `~/.firm/execution-spaces/<id>/` own
-Mission, Agent Team, and Workflow coordination. Project Bindings identify
+Agent Team and Workflow coordination. Project Bindings identify
 the registered Git repository/directory where providers execute and discover
 instructions, Skills, plugins, and MCP configuration. Selecting `--project`
 never switches the coordination store.
@@ -362,10 +350,11 @@ mechanism, but must say so and add focused acceptance for the path it creates.
 
 Scenario execution rosters and research budgets are scenario policy, not
 repository-wide invariants. The current dogfood roster and per-member research
-budget live in operations.md and
-[../skills/dogfood-company-os/SKILL.md](../../../skills/dogfood-company-os/SKILL.md);
+budget live in operations.md;
 do not mirror quota-specific rosters here — update those scenario carriers
-instead.
+instead. (The `dogfood-company-os` skill was archived with the DOC-108 legacy
+CompanyOS cutover; the dogfood method lives in
+[product/agent-team-dogfood-loop.md](agent-team-dogfood-loop.md).)
 
 The provider-neutral principle behind rolling reconciliation binds every
 runtime replacement (Harness binary, adapter, protocol, permission,
@@ -402,7 +391,7 @@ companion.
 
 | Former AGENTS.md content | Now lives in | Notes |
 | --- | --- | --- |
-| Product We Are Building — two primary systems | Root §Product Identity | Canonical: [prd.md](prd.md), [company-os/README.md](../company-os/README.md) |
+| Product We Are Building — execution foundation identity | Root §Product Identity | Canonical: [prd.md](prd.md) |
 | Product We Are Building — Mission/Mission Log relations diagram and semantics | Root §Product Identity; here §Product Context | Full prose kept here |
 | Product We Are Building — Work responsibility, Work-linked conversation, thinking-as-transient contract | Here §Product Context | Thinking stays non-persisted; live display channel still pending |
 | Product We Are Building — shared substrate, capability claims, interactive controls | Root invariant 5 (gate); here §Product Context | Substrate contract: agent-runtime.md |
@@ -427,4 +416,4 @@ companion.
 | Self-Hosting Rules | Root §Repository Execution Rules (condensed); here §Self-Hosting Rules (full) | — |
 | Staged Acceptance | Root §Proportional Acceptance | Not duplicated here |
 | What Counts As Done | Root §Proportional Acceptance | Not duplicated here |
-| Provider-neutral rolling reconciliation principle (aligned post-slimming, not relocated) | Root invariant 7; here §Runtime Replacement And Rolling Reconciliation | Scenario rosters and research budgets stay in scenario policy — operations.md and [../skills/dogfood-company-os/SKILL.md](../../../skills/dogfood-company-os/SKILL.md) — and are deliberately not mirrored in root instructions |
+| Provider-neutral rolling reconciliation principle (aligned post-slimming, not relocated) | Root invariant 7; here §Runtime Replacement And Rolling Reconciliation | Scenario rosters and research budgets stay in scenario policy (operations.md) and are deliberately not mirrored in root instructions |

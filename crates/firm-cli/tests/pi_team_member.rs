@@ -107,17 +107,13 @@ fn init_pi_project(home: &TempHome, name: &str) -> String {
         "canonical fixture Host failed: {}",
         String::from_utf8_lossy(&host.stderr)
     );
-    run(&[
-        "mission",
-        "create",
-        "--id",
+    // DOC-108 retired the Mission writers; seed legacy provenance directly.
+    firm_env::seed_historical_mission(
+        home,
+        &project_id,
         "mission-pi-fixture",
-        "--title",
         "Pi Journey Fixture",
-        "--objective",
-        "Preserve Pi member journey contracts",
-        "--json",
-    ]);
+    );
     let node = run(&["node", "init"]);
     let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node JSON");
     let node_id = node["id"].as_str().expect("node id");

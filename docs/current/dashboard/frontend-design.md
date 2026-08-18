@@ -45,8 +45,8 @@ status:
   current_implementation: Execution Workbench V3 on the active product branch
   stack: React 18 + TypeScript + Vite + Tailwind v4 + shadcn/Radix + lucide + Geist
   theme: light, Notion-like document surface (supersedes 0016 dark theme)
-  mission_log_direction: implemented; pages/mission-detail-log.md
-  agent_team_page: implemented; pages/team-run-war-room.md
+  mission_log_direction: retired with DOC-108; historical rows are Legacy read-only
+  agent_team_page: converged onto durable Team surfaces; pages/agent-member-focus.md
   retired_coordination_ui: removed from active product surfaces
   implementation_allowed: follow the canonical page and visual contracts
 ```
@@ -105,16 +105,17 @@ copied into Mission/Log IA.
 
 | Page spec | Owns |
 | --- | --- |
-| [Mission Detail and Log](pages/mission-detail-log.md) | One Mission's durable context, Mission-owned Team, append-only Host judgments, decisions, and closeout. |
-| [Agent Team War Room](pages/team-run-war-room.md) | One required Mission-owned AgentTeamRun: shared Works ownership/status, Work-linked conversation, member presence, unified activity, artifacts, and Mission Log context. |
-| [MemberRun Focus](pages/member-run-focus.md) | One run-scoped Agent Team member: owned/eligible Works, WorkDelivery, native activity/evidence, runtime, and direct canonical Messages. |
-| [AgentMember Focus](pages/agent-member-focus.md) | One canonical AgentMember: organization projection, responsibilities, TeamWorks, documents, availability, and execution trust. |
+| Agent Teams Home | Durable flat AgentTeams with immutable Node placement and their runs. |
+| Team Workspace | One durable Team: shared Works ownership/status, Work-linked conversation, member presence, unified activity, and artifacts. |
+| Agent Conversation Workspace | One Host/Member conversation surface with exact Session activity, authored Messages, and Work responsibility. |
+| Global Work Index | The read-only Global Work aggregate over authoritative TeamWork. |
+| [AgentMember Focus](pages/agent-member-focus.md) | One canonical AgentMember: organization projection, responsibilities, TeamWorks, availability, and execution trust. |
 | [Debug](pages/debug.md) | Raw snapshot, import/export, and low-level object views outside the primary work surface. |
 
-Approval decisions and TeamWork lifecycle actions belong to their Company OS
-focus pages. Execution pressure belongs to the Mission, TeamRun, or MemberRun
-record that produced it. There is no replacement global Goal-era decision or
-warnings page.
+Work lifecycle actions belong to their Team Workspace surfaces. Execution
+pressure belongs to the TeamRun or MemberRun record that produced it. There is
+no replacement global Goal-era decision or warnings page, and the retired
+Mission/Company OS pages have no successor page in this shell.
 
 ## Source Of Truth Boundary
 

@@ -415,7 +415,7 @@ fn seed_team(
         )
         .unwrap();
     store
-        .insert_mission(&Mission {
+        .append_mission(&Mission {
             id: mission_id.into(),
             title: format!("{team_name} Mission"),
             objective: "Execute delegated Work".into(),

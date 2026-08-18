@@ -38,6 +38,10 @@ recipients, optional Work link and per-recipient public delivery state.
 
 ## Read model
 
+Live activity renders from the ephemeral NativeActivityProjection over the
+provider-native session; when that projection is unavailable the page reports
+it and does not silently fall back to a mirrored history.
+
 The focus page joins by canonical ids:
 
 ```text

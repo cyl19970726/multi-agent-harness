@@ -14,11 +14,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const canonicalRoot = join(repoRoot, "skills");
 const pluginRoot = join(repoRoot, "plugins", "star-harness", "skills");
-const names = [
-  "orchestrate-mission-waves",
-  "collaborate-as-agent-team-member",
-  "shared-references",
-];
+const names = ["collaborate-as-agent-team-member", "shared-references"];
 const check = process.argv.includes("--check");
 
 function filesUnder(root, base = root) {

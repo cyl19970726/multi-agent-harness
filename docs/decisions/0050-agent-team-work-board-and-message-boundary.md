@@ -109,21 +109,21 @@ cannot force assignment to a same-level peer. Cross-Team responsibility is an
 explicit `WorkDelegation` from source Work to target Work in another flat Team;
 it never creates parent/child Team authority.
 
-### Mission owns exactly one flat Team and remains distinct from Work
+### Team placement, and the historical Mission relation
 
-Mission owns durable outcome, shared context, and exactly one flat AgentTeam.
-Wave owns versioned Host judgment and material re-plan. Works own current
-execution demand, ownership, and state. Cross-Team or cross-machine cooperation
-uses WorkDelegation without merging Mission or Team identity.
+> Historical note (DOC-108): at decision time this ADR bound each Team to
+> exactly one Mission in both directions. That relation is retired — Teams are
+> durable and are created without any Mission, keeping at most an optional
+> `legacy_mission_id` migration marker — and Mission/Wave write authority fails
+> closed. The placement rule below remains current.
 
-The Organization contains flat AgentTeams.
-Every Team belongs to exactly one Mission, and every Team has immutable `node_id`
-placement on one machine.
-No two AgentTeams may reference the same Mission. This is a one-to-one relation
-in both directions, not merely a required foreign key from Team to Mission.
+The Organization contains flat AgentTeams, and every Team has an
+immutable `node_id` placement on one machine. Works own current execution demand,
+ownership, and state. Cross-Team or cross-machine cooperation uses
+WorkDelegation without merging Team identity.
 
-Works remove task enumeration from Wave and replace Assignment-message
-ownership. They do not replace Mission closeout or Wave decision history.
+Works remove task enumeration from the historical Wave concept and replace
+Assignment-message ownership.
 
 ## Consequences
 
@@ -187,9 +187,10 @@ there is no dual-read, dual-write, or silent inference path. Dogfood starts in
 a fresh space after a manifested historical export. No merged release may
 expose two ownership authorities.
 
-At cutover, Mission/Wave remain the only native durable intent and Host
-plan/judgment objects. Work is executor-specific responsibility state, not a
-third planning hierarchy or a universal Task Graph.
+At cutover time, Mission/Wave were the only native durable intent and Host
+plan/judgment objects (both since retired by DOC-108). Work is
+executor-specific responsibility state, not a third planning hierarchy or a
+universal Task Graph.
 
 The decision becomes operational only after:
 

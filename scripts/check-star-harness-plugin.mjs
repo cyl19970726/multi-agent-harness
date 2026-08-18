@@ -27,13 +27,16 @@ function checkWorkCreateExamples() {
   const skillPath = join(
     repoRoot,
     "skills",
-    "orchestrate-mission-waves",
+    "collaborate-as-agent-team-member",
     "SKILL.md",
   );
   const markdown = readFileSync(skillPath, "utf8");
   const commands = [
     ...continuedCommands(markdown, "harness team-run work create"),
     ...continuedCommands(markdown, "firm team-run work create"),
+    // Member-skill convention: examples run through the provisioned binary
+    // variable, which is the installed `harness` executable by contract.
+    ...continuedCommands(markdown, '"$HARNESS_BIN" team-run work create'),
   ];
   if (commands.length === 0) {
     errors.push(`${skillPath}: must contain executable team-run work create examples`);
@@ -127,11 +130,11 @@ for (const path of [
 ]) {
   if (!existsSync(path)) errors.push(`missing lifecycle integration: ${path}`);
 }
+// mission-new.md and new-run.md were removed with the DOC-108 Mission
+// retirement: every write they prescribed now fails closed.
 for (const name of [
-  "mission-new.md",
   "team-start.md",
   "team-status.md",
-  "new-run.md",
   "status.md",
   "dashboard.md",
 ]) {
@@ -144,10 +147,7 @@ for (const retired of ["kimi-agent-team", "harness-telemetry"]) {
     errors.push(`retired plugin directory still exists: plugins/${retired}`);
   }
 }
-for (const skill of [
-  "orchestrate-mission-waves",
-  "collaborate-as-agent-team-member",
-]) {
+for (const skill of ["collaborate-as-agent-team-member"]) {
   if (!existsSync(join(pluginRoot, "skills", skill, "SKILL.md"))) {
     errors.push(`missing generated plugin skill: ${skill}`);
   }

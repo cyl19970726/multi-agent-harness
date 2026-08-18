@@ -153,15 +153,9 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         "--project-binding-id",
         &project_id,
     ]);
-    let mission = run(&[
-        "mission",
-        "create",
-        "--title",
-        "Role action loop",
-        "--objective",
-        "Prove the authenticated local product loop",
-    ]);
-    let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
+    // DOC-108 retired the Mission writers; seed legacy provenance directly.
+    let mission_id = "mission-role-action-loop".to_string();
+    firm_env::seed_historical_mission(&home, &project_id, &mission_id, "Role action loop");
     let host_id = "agent-role-action-host";
     let host = create_canonical_agent_member(
         &home,
@@ -2075,15 +2069,14 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
         "--project-binding-id",
         &project_id,
     ]);
-    let mission = run(&[
-        "mission",
-        "create",
-        "--title",
+    // DOC-108 retired the Mission writers; seed legacy provenance directly.
+    let mission_id = "mission-settle-sync".to_string();
+    firm_env::seed_historical_mission(
+        &home,
+        &project_id,
+        &mission_id,
         "Fresh-start Session binding",
-        "--objective",
-        "Prove the provider settle syncs the trust Session binding",
-    ]);
-    let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
+    );
     let host_id = "agent-settle-sync-host";
     let host = create_canonical_agent_member(
         &home,
@@ -2699,15 +2692,9 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         "--project-binding-id",
         &project_id,
     ]);
-    let mission = run(&[
-        "mission",
-        "create",
-        "--title",
-        "Canonical message journey",
-        "--objective",
-        "Prove Host and Member use one NodeDaemon-owned message fabric",
-    ]);
-    let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
+    // DOC-108 retired the Mission writers; seed legacy provenance directly.
+    let mission_id = "mission-message-journey".to_string();
+    firm_env::seed_historical_mission(&home, &project_id, &mission_id, "Canonical message journey");
     let host_id = "agent-message-host";
     let member_id = "agent-message-member";
     for (id, name, role) in [
@@ -3292,15 +3279,14 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
         "--project-binding-id",
         &project_id,
     ]);
-    let mission = run(&[
-        "mission",
-        "create",
-        "--title",
+    // DOC-108 retired the Mission writers; seed legacy provenance directly.
+    let mission_id = "mission-delivery-projection".to_string();
+    firm_env::seed_historical_mission(
+        &home,
+        &project_id,
+        &mission_id,
         "Delivery projection contract",
-        "--objective",
-        "Prove delivery consistency, Work correlation, and Host mode labeling",
-    ]);
-    let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
+    );
     let host_id = "agent-acceptance-host";
     let member_id = "agent-acceptance-member";
     for (id, name, role) in [

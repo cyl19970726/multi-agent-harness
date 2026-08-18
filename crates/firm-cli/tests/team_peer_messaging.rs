@@ -100,11 +100,8 @@ fn peer_team_message_send_inbox_claim_and_replay() {
     let initialized = run_firm(&home, &project_root, &["init"]);
     assert!(initialized.status.success(), "init failed: {initialized:?}");
     let project_id = current_project_id(&home);
-    run_json(
-        &home,
-        &project_id,
-        &["company", "init", "--id", "company-test"],
-    );
+    // DOC-108 retired the Company registry; the peer-message `--company`
+    // route fact is a routing-scope label and needs no registered Company.
     let node = run_json(&home, &project_id, &["node", "init"]);
     let node_id = node["id"].as_str().expect("node id").to_string();
     run_json(
@@ -141,21 +138,8 @@ fn peer_team_message_send_inbox_claim_and_replay() {
         ("mission-source", "Source Mission"),
         ("mission-target", "Target Mission"),
     ] {
-        run_json(
-            &home,
-            &project_id,
-            &[
-                "mission",
-                "create",
-                "--id",
-                mission_id,
-                "--title",
-                title,
-                "--objective",
-                "peer messaging fixture",
-                "--json",
-            ],
-        );
+        // DOC-108 retired the Mission writers; seed legacy provenance directly.
+        firm_env::seed_historical_mission(&home, &project_id, mission_id, title);
     }
     run_json(
         &home,
@@ -451,11 +435,8 @@ fn peer_team_direct_member_send_binds_delivery_and_ambiguous_claim_stays_queued(
     let initialized = run_firm(&home, &project_root, &["init"]);
     assert!(initialized.status.success(), "init failed: {initialized:?}");
     let project_id = current_project_id(&home);
-    run_json(
-        &home,
-        &project_id,
-        &["company", "init", "--id", "company-test"],
-    );
+    // DOC-108 retired the Company registry; the peer-message `--company`
+    // route fact is a routing-scope label and needs no registered Company.
     let node = run_json(&home, &project_id, &["node", "init"]);
     let node_id = node["id"].as_str().expect("node id").to_string();
     run_json(
@@ -492,21 +473,8 @@ fn peer_team_direct_member_send_binds_delivery_and_ambiguous_claim_stays_queued(
         ("mission-source", "Source Mission"),
         ("mission-target", "Target Mission"),
     ] {
-        run_json(
-            &home,
-            &project_id,
-            &[
-                "mission",
-                "create",
-                "--id",
-                mission_id,
-                "--title",
-                title,
-                "--objective",
-                "peer messaging fixture",
-                "--json",
-            ],
-        );
+        // DOC-108 retired the Mission writers; seed legacy provenance directly.
+        firm_env::seed_historical_mission(&home, &project_id, mission_id, title);
     }
     run_json(
         &home,

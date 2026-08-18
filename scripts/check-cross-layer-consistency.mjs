@@ -52,8 +52,8 @@ if (mainRs && shared) {
   fail("Cannot read main.rs or shared-references SKILL.md");
 }
 
-// ── Rule 2: Mission is current; Wave is compatibility-only ────────────────
-console.log("\nRule 2: Mission + Mission Log current authority; Wave Legacy-only");
+// ── Rule 2: Mission + Wave are Legacy read/export-only (DOC-108) ─────────
+console.log("\nRule 2: Mission + Wave retired to Legacy read-only (DOC-108); no writers remain");
 const missionSchema = read(join(ROOT, "schemas/mission.schema.json"));
 const waveSchema = read(join(ROOT, "schemas/wave.schema.json"));
 const schemasReadme = read(join(ROOT, "schemas/README.md"));
@@ -77,6 +77,15 @@ if (!missionSchema || !waveSchema || !schemasReadme || !currentMissionFixture ||
       ok("Mission.wave_ids is explicitly Legacy read-only compatibility");
     }
 
+    const missionIsLegacy = mission.deprecated === true && mission.readOnly === true &&
+      mission["x-agentfirm-authority"] === "legacy-historical-read-only" &&
+      mission["x-agentfirm-new-writes"] === false;
+    if (!missionIsLegacy) {
+      fail("Mission schema is not fully fenced as Legacy historical read-only (DOC-108)");
+    } else {
+      ok("Mission is Legacy read/export-only with no writer surface");
+    }
+
     if (Object.hasOwn(currentFixture, "wave_ids")) {
       fail("current Mission fixture still writes wave_ids");
     } else if (!Array.isArray(legacyFixture.wave_ids) || legacyFixture.wave_ids.length === 0) {
@@ -97,15 +106,14 @@ if (!missionSchema || !waveSchema || !schemasReadme || !currentMissionFixture ||
       ok("Wave is Legacy-only while historical gate rows remain validation-compatible");
     }
 
-    const [currentSchemas, legacySchemas = ""] = schemasReadme.split("## Legacy historical compatibility");
-    if (!currentSchemas.includes("Mission log entry")) {
-      fail("schemas README omits MissionLogEntry from the current Mission model");
-    } else if (currentSchemas.includes("[wave.schema.json]")) {
-      fail("schemas README lists Wave in a current section");
-    } else if (!legacySchemas.includes("[wave.schema.json]")) {
-      fail("schemas README no longer documents the Wave compatibility schema");
+    const [beforeLegacy, legacySchemas = ""] = schemasReadme.split("## Legacy historical compatibility");
+    const currentRegistry = beforeLegacy.split("## Current schema registry")[1] ?? "";
+    if (currentRegistry.includes("[mission.schema.json]") || currentRegistry.includes("[wave.schema.json]")) {
+      fail("schemas README lists Mission/Wave in the current schema registry");
+    } else if (!legacySchemas.includes("[mission.schema.json]") || !legacySchemas.includes("[wave.schema.json]")) {
+      fail("schemas README no longer documents the Mission/Wave compatibility schemas");
     } else {
-      ok("schemas README separates Mission/MissionLogEntry from Legacy Wave");
+      ok("schemas README keeps Mission/Wave in the Legacy historical compatibility section");
     }
   } catch (error) {
     fail(`Mission/Wave compatibility contract is invalid JSON: ${error.message}`);

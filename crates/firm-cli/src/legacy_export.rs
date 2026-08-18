@@ -455,9 +455,9 @@ const LINK_RULES: &[LinkRule] = &[
     },
 ];
 
-struct StagingDir {
-    path: PathBuf,
-    keep: bool,
+pub(crate) struct StagingDir {
+    pub(crate) path: PathBuf,
+    pub(crate) keep: bool,
 }
 
 impl Drop for StagingDir {
@@ -939,7 +939,7 @@ fn discover_sources(store_root: &Path, project_root: &Path) -> Result<Vec<Source
     Ok(sources)
 }
 
-fn reject_symlink_or_non_directory(path: &Path, label: &str) -> Result<(), String> {
+pub(crate) fn reject_symlink_or_non_directory(path: &Path, label: &str) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|e| format!("inspect {label} {}: {e}", path.display()))?;
     if metadata.file_type().is_symlink() {
@@ -954,7 +954,7 @@ fn reject_symlink_or_non_directory(path: &Path, label: &str) -> Result<(), Strin
 /// Reject a path reached through any symlink component. Canonicalizing first is
 /// insufficient here because it erases precisely the aliasing the offline
 /// verifier must report and refuse (for example `alias/archive-v3`).
-fn reject_symlink_ancestors(path: &Path, label: &str) -> Result<(), String> {
+pub(crate) fn reject_symlink_ancestors(path: &Path, label: &str) -> Result<(), String> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -1271,7 +1271,7 @@ fn reject_output_inside_roots(
 /// Resolve symlinks in the nearest existing ancestor, then append the normalized
 /// not-yet-created suffix. This prevents `outside/symlink-to-store/new/archive`
 /// and `outside/../store/new/archive` from bypassing the live-store guard.
-fn resolve_with_existing_ancestor(path: &Path) -> Result<PathBuf, String> {
+pub(crate) fn resolve_with_existing_ancestor(path: &Path) -> Result<PathBuf, String> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -1313,14 +1313,14 @@ fn normalize_path(path: &Path) -> PathBuf {
     normalized
 }
 
-fn canonical_string(path: &Path) -> String {
+pub(crate) fn canonical_string(path: &Path) -> String {
     fs::canonicalize(path)
         .unwrap_or_else(|_| path.to_path_buf())
         .display()
         .to_string()
 }
 
-fn write_archive_file(root: &Path, relative: &str, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_archive_file(root: &Path, relative: &str, bytes: &[u8]) -> Result<(), String> {
     validate_relative_archive_path(relative)?;
     let path = root.join(relative);
     if let Some(parent) = path.parent() {
@@ -1330,7 +1330,7 @@ fn write_archive_file(root: &Path, relative: &str, bytes: &[u8]) -> Result<(), S
     fs::write(&path, bytes).map_err(|e| format!("write archive file {}: {e}", path.display()))
 }
 
-fn validate_relative_archive_path(path: &str) -> Result<(), String> {
+pub(crate) fn validate_relative_archive_path(path: &str) -> Result<(), String> {
     let path = Path::new(path);
     if path.as_os_str().is_empty() || path.is_absolute() {
         return Err(format!("invalid archive-relative path: {}", path.display()));
@@ -1443,7 +1443,7 @@ fn copy_interpretation_files(
     Ok(materials)
 }
 
-fn reject_relative_symlink_components(
+pub(crate) fn reject_relative_symlink_components(
     root: &Path,
     relative: &Path,
     label: &str,
@@ -1572,13 +1572,16 @@ fn validate_interpretation_materials(
     Ok(())
 }
 
-struct JsonlRecord<'a> {
+pub(crate) struct JsonlRecord<'a> {
     line: u64,
     raw: &'a [u8],
     value: serde_json::Value,
 }
 
-fn jsonl_records<'a>(bytes: &'a [u8], label: &str) -> Result<Vec<JsonlRecord<'a>>, String> {
+pub(crate) fn jsonl_records<'a>(
+    bytes: &'a [u8],
+    label: &str,
+) -> Result<Vec<JsonlRecord<'a>>, String> {
     let mut records = Vec::new();
     let mut start = 0_usize;
     for (index, end) in bytes
@@ -1609,7 +1612,7 @@ fn validate_jsonl(bytes: &[u8], label: &str) -> Result<(), String> {
     jsonl_records(bytes, label).map(|_| ())
 }
 
-fn physical_line_count(bytes: &[u8]) -> u64 {
+pub(crate) fn physical_line_count(bytes: &[u8]) -> u64 {
     if bytes.is_empty() {
         0
     } else {
@@ -1916,7 +1919,7 @@ fn jsonl_bytes<T: Serialize>(values: &[T]) -> Result<Vec<u8>, String> {
 
 // Small self-contained SHA-256 implementation. Keeping it here avoids making the
 // archive contract depend on an external executable or a new crate dependency.
-fn sha256_hex(input: &[u8]) -> String {
+pub(crate) fn sha256_hex(input: &[u8]) -> String {
     const INITIAL: [u32; 8] = [
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
         0x5be0cd19,

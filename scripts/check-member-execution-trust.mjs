@@ -232,6 +232,12 @@ const sourceRoots = [
 ];
 const sourceExtensions = new Set([".rs", ".ts", ".tsx", ".js", ".mjs", ".json", ".md"]);
 const thisScript = "scripts/check-member-execution-trust.mjs";
+// DOC-108: the legacy export machinery is the single sanctioned place that
+// names retired ledgers — to archive them, never to serve them.
+const exportModules = new Set([
+  "crates/firm-cli/src/legacy_company_os.rs",
+  "crates/firm-cli/tests/legacy_company_os.rs",
+]);
 const activeFiles = [];
 
 function collect(path) {
@@ -243,7 +249,7 @@ function collect(path) {
     return;
   }
   const normalized = relative(process.cwd(), path);
-  if (normalized === thisScript || !sourceExtensions.has(extname(path))) return;
+  if (normalized === thisScript || exportModules.has(normalized) || !sourceExtensions.has(extname(path))) return;
   activeFiles.push(normalized);
 }
 for (const root of sourceRoots) collect(root);

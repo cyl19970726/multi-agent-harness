@@ -451,11 +451,11 @@ for (const token of [
 ]) {
   if (!rootRules.includes(token)) failures.push(`AGENTS.md runtime model drifted: ${token}`);
 }
+// orchestrate-mission-waves was archived by DOC-108; only the retained
+// collaboration skill still carries the fabric contract.
 for (const path of [
   "skills/collaborate-as-agent-team-member/SKILL.md",
-  "skills/orchestrate-mission-waves/SKILL.md",
   "plugins/star-harness/skills/collaborate-as-agent-team-member/SKILL.md",
-  "plugins/star-harness/skills/orchestrate-mission-waves/SKILL.md",
 ]) {
   const text = readFileSync(path, "utf8");
   if (text.includes("team-run send") || text.includes("team-run ack")) {

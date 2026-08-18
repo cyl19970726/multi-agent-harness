@@ -15,9 +15,9 @@ becoming a second transcript database.
 
 This contract defines the adapter seam between:
 
-- Harness coordination truth (`Mission`, append-only `MissionLogEntry`,
-  `AgentTeamRun`, `MemberRun`, Work, messages, interactions, outcomes, and
-  artifact/check refs); and
+- Harness coordination truth (`AgentTeamRun`, `MemberRun`, Work, messages,
+  interactions, outcomes, artifact/check refs, and the retired read-only
+  Mission/Mission Log legacy rows); and
 - provider-native execution truth (chat, tools, commands, file events, turns,
   native children, and resume data).
 
@@ -92,6 +92,10 @@ returned to ordinary Dashboard clients.
 
 ## Write boundary
 
+The provider-native session store is the sole truth for one agent's transcript,
+tool/command/file events, turn lifecycle, and resume state. Harness references
+that session and does not keep a second provider event history.
+
 Provider adapters may write only the Harness facts created by crossing a
 coordination boundary:
 
@@ -106,7 +110,7 @@ coordination boundary:
 | member explains or coordinates with another actor | Work-linked canonical `Message` |
 | member/Host declares an outcome | explicit outcome summary + refs |
 | file/check/result supports acceptance | artifact/check reference, optionally hash |
-| Host judges, replans, recovers, or closes out | append-only Mission Log entry with outcome and refs |
+| Host judges, accepts, or requests changes | explicit Work review/acceptance with outcome and refs |
 
 The same text may exist in both systems only when a Human/Lead deliberately
 promotes it into a coordination object. Automatic copying is prohibited.
@@ -115,7 +119,7 @@ promotes it into a coordination object. Automatic copying is prohibited.
 
 ```text
 GET Harness Team/Member projection
-  -> Mission/MissionLogEntry/TeamRun/MemberRun/Work/WorkDelivery/messages/interactions/outcome
+  -> TeamRun/MemberRun/Work/WorkDelivery/messages/interactions/outcome (+ legacy Mission rows when present)
 
 GET authenticated AgentWorkspace for exact AgentIdentity
   -> provider adapter probe

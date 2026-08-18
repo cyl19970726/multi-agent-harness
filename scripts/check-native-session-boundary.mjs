@@ -13,21 +13,25 @@ const requirements = new Map([
     "docs/current/architecture/data-model.md",
     ["provider-native store owns transcript", "ephemeral read projection"],
   ],
-  [
-    "docs/current/company-os/execution-foundation.md",
-    ["sole truth for", "does not keep a second provider event history"],
-  ],
+  // execution-foundation.md was retired by DOC-108; its native-session
+  // invariant now lives in the retained adapter contract below.
   [
     "docs/current/integration/native-session-storage.md",
-    ["NativeSessionAdapter", "Write boundary", "Resume flow", "Provider matrix"],
+    [
+      "NativeSessionAdapter",
+      "Write boundary",
+      "Resume flow",
+      "Provider matrix",
+      "sole truth for",
+      "does not keep a second provider event history",
+    ],
   ],
+  // member-run-focus.md and team-run-war-room.md were retired with the
+  // TeamRun-era surfaces (DEV-38/DOC-107); the Member contract moved to the
+  // successor focus page, and the war-room surface no longer exists.
   [
-    "docs/current/dashboard/pages/member-run-focus.md",
+    "docs/current/dashboard/pages/agent-member-focus.md",
     ["NativeActivityProjection", "does not silently fall back to a mirrored history"],
-  ],
-  [
-    "docs/current/dashboard/pages/team-run-war-room.md",
-    ["joined read model, not a transcript database"],
   ],
 ]);
 

@@ -67,8 +67,8 @@ Close are different:
 - **Interrupt** requests `turn/interrupt`, waits for provider acknowledgement,
   and leaves the Member/native thread available for later mail.
 - **Close** ends the app-server process, freezes coordination, and retains the
-  same MemberRun/native thread for explicit Reopen. A Mission Log append,
-  TeamRun completion, or an empty mailbox never substitutes for Close.
+  same MemberRun/native thread for explicit Reopen. A TeamRun completion or an
+  empty mailbox never substitutes for Close.
 - **Reopen/Resume** increments the MemberRun runtime generation and uses the
   recorded native thread id with the provider's real
   `thread/resume` operation. Harness never reconstructs a session by replaying

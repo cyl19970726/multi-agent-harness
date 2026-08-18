@@ -1,8 +1,8 @@
 # Agent Workbench
 
 The Agent Workbench is the operator UI for Star Harness. Its job is to make
-Mission planning and append-only Log, each Mission's flat AgentTeam, shared
-Works, execution state, artifacts, Host decisions, and capability gaps inspectable
+durable flat AgentTeams, shared Works, execution state, artifacts, Host
+decisions, and capability gaps inspectable
 without raw JSON or duplicated provider transcripts.
 
 `Agent Workbench` is the product name. `Agent Dashboard` remains a compatibility
@@ -11,20 +11,19 @@ module/path name in `apps/agent-dashboard`, snapshots, and commands.
 ## Product Flow
 
 ```text
-Mission
-  -> append-only Mission Log (Host judgment / replan / recovery / closeout)
-  -> one flat AgentTeam -> Team/Node/Project-fenced TeamRun
+AgentTeam (durable, flat)
+  -> Team/Node/Project-fenced TeamRun
       -> shared Works -> Member execution
   -> Dynamic Workflow | Host work
   -> observable actions/messages/artifacts/outcome
-  -> explicit Host judgment
-  -> plan adjustment, recovery, or Mission closeout
+  -> explicit Host judgment on the Work records
+  -> plan adjustment, recovery, or run completion
 ```
 
-The Workbench must not require or introduce a dependency graph for Mission,
-Mission Log, or Agent Team. Retired coordination pages are not part of active
-navigation or authoring. Agent Teams navigation lists Mission-owned Teams and
-their runs; Mission Detail shows only its owning Team.
+The Workbench must not require or introduce a dependency graph for Agent Team
+or Work objects. Retired coordination pages (Mission detail, Team War Room,
+Company OS) are not part of active navigation or authoring; Agent Teams
+navigation lists durable Teams and their runs.
 
 ## Key Questions
 
@@ -176,7 +175,7 @@ exists yet.
 | `apps/agent-dashboard/src/model/*.ts` | implemented projections and selectors |
 | git history (design/execution-workbench-v4) | Team War Room Works browser, screenshot, responsive, and visual acceptance |
 | `docs/current/dashboard/runbook.md` | local run/build/snapshot entry points |
-| `docs/current/company-os/frontend-information-architecture.md` | shared visual doctrine and layout decisions |
+| `docs/current/dashboard/frontend-design.md` | shared visual doctrine and layout decisions |
 
 ## Acceptance
 

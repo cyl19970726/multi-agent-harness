@@ -1,3 +1,10 @@
+// INACTIVE HISTORICAL (DOC-108 Stage B): this gate exercised the retired
+// legacy CompanyOS surface and is removed from every pipeline. Kept as
+// source-only history per the inactive-historical convention (file kept,
+// removed from pipelines, named replacement) — see
+// docs/current/operations/operations.md.
+// Replacement: none — built-in Docs v2 is retired (DOC-108)
+
 #!/usr/bin/env node
 /**
  * Real-use visual evidence capture for the AI-first Docs Phase 0 session.

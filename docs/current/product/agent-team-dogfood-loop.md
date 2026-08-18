@@ -22,7 +22,7 @@ define whether the product works.
 ## Promise
 
 Star Harness should be able to develop and inspect itself through the same
-Mission and Mission Log, Agent Team, identity-first Message inbox,
+durable Agent Team, Work, identity-first Message inbox,
 native-session and lifecycle paths
 it offers to users. Dogfood therefore uses real persistent Provider members and normal
 Host controls. Deterministic fixtures are the baseline, not a substitute for a
@@ -47,8 +47,8 @@ external blocker with an owner and a reproducible resume condition.
 
 ## Run Charter
 
-Before starting members, the Host writes one Mission and appends the current
-Host judgment to its Mission Log with:
+Before starting members, the Host records the run charter in the Team's Work
+context with:
 
 - the user-visible scenario and why it matters;
 - the Provider versions and exact Team execution modes under test;
@@ -59,9 +59,9 @@ Host judgment to its Mission Log with:
 - the deterministic baseline and live evidence expected;
 - stop conditions, protected actions and rollback points.
 
-The Agent Team is linked to the Mission, not embedded in a planning tranche.
+The Agent Team is durable and flat; it is not embedded in a planning tranche.
 Members keep their MemberRun, Work ownership, workspace and provider-native
-session when unfinished work carries across Mission Log entries.
+session when unfinished work carries across runs of the same Team.
 
 The trusted-development dogfood profile gives all three Provider members full
 execution access so ordinary tool authorization cannot silently stall an
@@ -79,13 +79,13 @@ Build from the selected commit and verify:
 
 ```bash
 firm member providers --fail-on-review
-npx pnpm@9.15.4 acceptance:mission-wave
+npx pnpm@9.15.4 acceptance:legacy-retirement
 npx pnpm@9.15.4 check:star-harness-plugin
 firm governance check
 ```
 
-The `acceptance:mission-wave` name is retained for compatibility; the current
-contract under test is Mission and Mission Log plus Legacy Wave read-only behavior.
+`acceptance:legacy-retirement` (formerly `acceptance:mission-wave`) covers the
+current Agent Team surface plus the retired Mission/Wave legacy reads.
 `review_required` is not rewritten as `current`. The Host either reviews that
 Provider in a dedicated lane or limits claims to exploratory evidence.
 
@@ -120,7 +120,7 @@ not need to wait for unrelated work before appending the next judgment.
 
 ### 3. Preserve the right evidence
 
-Harness owns Mission and Mission Log, TeamRun, MemberRun/native-session binding,
+Harness owns TeamRun, MemberRun/native-session binding,
 WorkOperation/Work/WorkEvent, WorkDelivery, identity-first Message,
 MessageSubscription, per-recipient CanonicalMessageDelivery, outcome and
 artifact/check references. The target NodeDaemon advances the exact canonical
@@ -216,8 +216,8 @@ and opens tracked Work/issue through normal controls.
 
 ### 5. Repair without erasing the failure
 
-Append a Mission Log entry before acting when the Host changes plan,
-responsibility, risk, or decision boundary. Use new tracked Work and, when
+Record the judgment on the affected Work before acting when the Host changes
+plan, responsibility, risk, or decision boundary. Use new tracked Work and, when
 useful, a Repair Member/worktree for the fix; preserve the failed MemberRun and
 native session. A repair is accepted only after focused tests pass and the
 original user journey succeeds without a manual store edit or hidden fallback.
@@ -240,7 +240,7 @@ reviewable lane and rollback point.
 
 ## Exit Criteria
 
-A dogfood Mission may close only when:
+A dogfood run may close only when:
 
 - all required deterministic gates pass from the accepted commit;
 - each claimed live Provider path resolves to its native session;
@@ -259,8 +259,8 @@ A dogfood Mission may close only when:
 - no P0/P1 defect remains open;
 - remaining lower-risk defects have an issue, owner, severity, reproduction and
   retest condition;
-- the Host records explicit Mission Log outcomes, carry-over decisions and
-  Mission closeout;
+- the Host records explicit outcomes and carry-over decisions on the Work
+  records;
 - the installed Harness/Plugin copy matches the accepted repository source.
 
 For a release baseline, run the critical live matrix twice from fresh member
@@ -325,14 +325,14 @@ are idle and require either delegation or an explicit Lead-local justification.
 
 ## Closeout
 
-The final Mission Log `closeout_evidence` entry summarizes:
+The closeout record on the run's Works summarizes:
 
 - which scenarios passed and which Provider versions/modes were proven;
 - defects found, repair judgments/Work/issues, rerun results and remaining
   tracked risks;
 - evidence ids and native-session locators;
 - Plugin/Harness version installed for the run;
-- the next pressure scenario or why the Mission can close.
+- the next pressure scenario or why the run can close.
 
 If the next operator cannot reconstruct those answers from repository files,
 Harness state and provider-native records, dogfood is not complete.

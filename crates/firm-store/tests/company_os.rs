@@ -1,3 +1,10 @@
+//! INACTIVE HISTORICAL (DOC-108 Stage B): the `firm-store` company_os
+//! module this file covered was deleted with the legacy CompanyOS cutover.
+//! Historical Company OS data is proven by the Stage A export/verify
+//! acceptance in `firm-cli` (tests/legacy_company_os.rs). Kept source-only
+//! per the inactive-historical convention.
+#![cfg(any())]
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 

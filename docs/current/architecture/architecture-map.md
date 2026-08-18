@@ -1,98 +1,63 @@
 # Architecture Map
 
-This is the canonical product-level architecture map. Detailed object contracts
-live under [company-os](../company-os/README.md). Implemented execution details
-remain documented by the Mission/Mission Log, Workflow, Agent Team, runtime, and
-provider specifications.
+This is the canonical product-level architecture map of the implemented
+execution foundation. The legacy Company OS product layers (Docs,
+Organization, Finance, Approval) and the Mission/Wave/Mission Log
+coordination objects are retired (DOC-108); their historical contracts remain
+in Git history and the superseded ADRs.
 
 ```mermaid
 flowchart TB
   Human["Human operators"]
-  Home["Company Home"]
-  Docs["Docs\npages · modules · records · relations · views"]
-  Blocks["Basic Documents + Blocks"]
-  Views["Standard structured Views"]
-  Custom["Registered Custom Pages\nHTML / React package"]
-  Actions["Scoped Queries + Action Commands"]
-  Policy["Policy · Approval · Audit"]
-  Org["Organization\nhumans · agent memberships · external · services"]
-  Collab["Collaboration spine\nidentity-first Message · activity · artifacts"]
-  Delivery["CanonicalMessageDelivery\nper-recipient queue · receipt · ACK"]
-  TeamWork["Agent Team Works\nownership · readiness · Kanban · review"]
-  Work["Company Work\nTeamWorks · Milestones · business relations"]
-  Approval["Approvals and Needs You"]
-  Gov["Governance Agents\nDocs · Work · Finance · Org / HR"]
-  Finance["Finance and Metrics"]
-  Exec["Execution selection"]
-  Mission["Mission context / append-only Mission Log"]
-  Team["Independent AgentTeam / AgentTeamRun / MemberRun"]
+  Teams["Durable flat AgentTeams\nimmutable node_id placement"]
+  Members["AgentMembers\none durable agent identity"]
+  Membership["TeamMembership generations"]
+  Runs["AgentTeamRun / MemberRun\ncoordination + history projections"]
   Supervisor["Durable Team Supervisor\nlease · canonical delivery claims · controls"]
-  Workflow["Dynamic Workflow"]
-  Direct["Human / Agent Membership direct work"]
-  Runtime["Providers · sessions · plugins · MCP"]
+  Work["Work\nWorkOperation · WorkEvent · WorkDelivery"]
+  GlobalWork["Global Work RoleView\nread-only aggregate"]
+  Msg["identity-first Message"]
+  Sub["MessageSubscription"]
+  Delivery["CanonicalMessageDelivery\nper-recipient queue · receipt · ACK"]
+  Sessions["AgentSession -> provider-native session\nsole execution transcript truth"]
+  Daemon["machine-scoped NodeDaemon\ndurable RuntimeCommand authority"]
   Fabric["Remote Node Fabric\nControl Plane · outbound NodeGateway · durable routes"]
-  Result["Results · evidence · artifacts · observations"]
+  Runtime["Providers · sessions · plugins · MCP"]
+  Workflow["Dynamic Workflow"]
+  Spaces["Execution Spaces\ncoordination storage"]
+  Bindings["Project Bindings\nprovider cwd · instructions · Skills · plugins · MCP config"]
 
-  Human --> Home
-  Home --> Docs
-  Home --> Org
-  Org --> Collab
-  Docs --> Collab
-  Collab --> Delivery
-  Collab --> Work
-  Docs --> Blocks
-  Docs --> Views
-  Docs --> Custom
-  Custom --> Actions
-  Actions --> Policy
-  Policy --> Work
-  Docs --> Work
-  Org --> Work
-  Work --> Approval
-  Work --> Exec
-  Approval --> Exec
-  Exec --> Mission
-  Exec --> Team
-  Exec --> Workflow
-  Exec --> Direct
-  Mission -.->|relation + plan context| Team
-  Mission -.->|plan context| Workflow
-  Mission -.->|plan context| Direct
-  Team --> Supervisor
-  Team --> TeamWork
-  TeamWork --> Supervisor
-  TeamWork -.->|shared WorkCore| Work
-  Supervisor --> Runtime
+  Human --> Teams
+  Teams --> Membership
+  Membership --> Members
+  Teams --> Runs
+  Runs --> Supervisor
+  Runs --> Work
+  Work --> GlobalWork
+  Msg --> Sub
+  Sub --> Delivery
   Delivery --> Supervisor
-  Supervisor --> Fabric
-  Fabric --> Runtime
+  Supervisor --> Sessions
+  Supervisor --> Daemon
+  Daemon --> Runtime
+  Fabric --> Daemon
   Workflow --> Runtime
-  Direct --> Runtime
-  Runtime --> Result
-  Result --> Work
-  Work --> Docs
-  Result --> Finance
-  Finance --> Docs
-  Gov --> Docs
-  Gov --> Org
-  Gov --> Work
-  Gov --> Finance
-  Gov --> Approval
+  Runs --> Spaces
+  Runtime --> Bindings
 ```
 
 ## Layer responsibilities
 
 | Layer | Owns | Does not own |
 | --- | --- | --- |
-| Docs and Modules | business structure, content, record types, relations, views, templates | provider execution lifecycle |
-| Organization | Actor identity, Human Owner → Lead Agent, optional role agents, role, authority, permissions, availability, capacity | one TeamRun attempt or work-routing inference |
-| Collaboration | identity-first Message, subscriptions, per-recipient CanonicalMessageDelivery, interaction routing, artifacts, explicit outcomes, and provider-native session links | Work ownership, RuntimeCommand authority, approval, finance truth, copied provider transcripts, or raw thinking |
-| Agent Team Works | TeamRun-scoped Work ownership, assigned/unassigned readiness, atomic claim, review, child delegation, and Kanban projection | authored conversation, company approval/finance, or provider transcript |
-| Company Work and Approval | WorkCore extension with Milestones, TeamWork responsibility, source/result provenance, policy gates, and execution reference | provider runtime or a second Agent Team scheduler |
-| Finance and Metrics | typed values, observations, audit, business relations | copied document display values |
-| Execution | Mission context/append-only Mission Log, one flat Mission-owned AgentTeam, durable NodeDaemon-fenced Team Supervisors, canonical Message delivery, Workflow, direct delivery | company organization or document truth; nested/reusable Teams or Mission Log runtime containment |
-| Runtime | provider processes, native sessions, native activity readers/resume, plugins, MCP, and ephemeral projections | business approval, assignment inference, or a second provider history |
-| Remote Node Fabric | cross-machine RoutedOperation/Attempt/Receipt, mTLS gateway generations, reconcile, and bounded artifacts | a second Node identity, Message/Work/RuntimeCommand truth, or application-effect inference from transport |
+| Agent Teams and Membership | durable Team identity, immutable `node_id` placement, roster generations, Host membership | provider execution lifecycle, a second agent identity |
+| Agent Team Runs | TeamRun/MemberRun projections, attempts, lineage | a provider process, a provider effect authorization |
+| Team Supervision | one current Supervisor generation per run: delivery claims, live controls, reconnect | Work authority, Message authorship |
+| Work | durable responsibility rebuilt from ordered WorkOperations, WorkEvents, WorkDeliveries, submission and Host acceptance | authored conversation, runtime control, provider transcripts |
+| Messages | identity-first authorship, MessageSubscription authorization, per-recipient CanonicalMessageDelivery | Work lifecycle mutation, RuntimeCommand authority |
+| Execution Spaces and Project Bindings | coordination storage vs provider cwd/instructions/Skills/plugins/MCP selection | each other's scope; `--project` never switches the coordination store |
+| Runtime | provider processes, native sessions, native activity readers/resume, plugins, MCP, and ephemeral projections | a second provider history or assignment inference |
+| Remote Node Fabric | cross-machine RoutedOperation/Attempt/Receipt, mTLS gateway generations, reconcile, and bounded artifacts | a second Node identity, Message/Work/RuntimeCommand truth |
 
 For persistent Agent Team members, Work ownership and continuous native
 execution are separate. Harness owns Work, WorkEvent, WorkDelivery, immutable
@@ -111,20 +76,14 @@ Work/Message boundary.
 
 ## Source-of-truth rule
 
-Documents compose views of typed records. A value shared by two modules is one
-record linked by `Relation`, not duplicated document content. Provider-native
-execution remains in its native session. Only explicit outcomes, artifact/check
-references, metrics, decisions, or linked record updates are promoted into
-Harness/Company OS truth.
+Provider-native execution remains in its native session. Only explicit
+outcomes, artifact/check references, evidence, and decisions are promoted into
+Harness coordination truth. The retired Company OS ledgers are readable only
+as historical exports.
 
-## Document runtime rule
+## Retired layers
 
-Basic Documents, standard Views, and registered Custom Pages all render the
-same canonical records. Custom HTML/React receives scoped Queries and named
-Action Commands only; it cannot directly mutate company truth or bypass Policy,
-Approval, and Audit. Every Custom Page has a standard Document/View fallback.
-
-The obsolete coordination stack is retired by ADR 0028. ADR 0051 defines the
-current Mission plus append-only Mission Log contract and retires Wave
-authoring; ADR 0026 is historical context. ADR 0029 defines the programmable
-document runtime.
+ADR 0051 (Mission/Wave single-intent spine), ADR 0027 (Company OS primary
+model), and ADR 0026 (Mission/Wave foundation) are superseded by DOC-108: no
+Mission, Mission Log, Wave, or Company OS object is current authority. ADR
+0029 (programmable document runtime) retired with the built-in Docs layer.

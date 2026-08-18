@@ -10,7 +10,9 @@
 //! - `initialize` → protocolVersion / capabilities / serverInfo handshake.
 //! - `notifications/initialized` (and any other notification) → no response.
 //! - `ping` → `{}`.
-//! - `tools/list` → Mission / Mission Log authoring plus Agent Team tools.
+//! - `tools/list` → Agent Team tools plus the read-only legacy Mission list.
+//!   Mission writer tools are removed entirely (DOC-108): callers get the
+//!   same unknown-tool tombstone as retired Wave tools, with zero store delta.
 //! - `tools/call` → `{content:[{type:"text",text:<result JSON>}], isError}`.
 //! - unknown method → JSON-RPC -32601. stdin EOF exits.
 
@@ -26,16 +28,16 @@ use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
 use crate::{
-    add_team_run_member, agentfirm_api, answer_provider_message_value, close_mission,
-    close_team_member_value, create_mission, create_team_run, current_unix_ms_u64,
-    deactivate_team_run_member, delegate_team_run_to_node_daemon, format_work_brief_line,
-    generated_id, host_inbox_for_native_thread, interrupt_team_member_value,
-    latest_member_runs_in_append_order, latest_team_run, latest_team_runs_in_append_order,
-    mutate_team_work_value, now_string, reconcile_team_work_delivery_value, rename_team_run_member,
-    reopen_team_member_value, reopened_member_requires_supervisor_start, revise_mission_context,
-    serde_snake_label, steer_team_member_value, team_member_specs_from_definition,
-    team_run_board_summary_text, team_run_inbox, team_run_mission_id, transition_team_run,
-    visible_member_actions_in_append_order, work_operation_cursors, ResolvedStore, TeamMemberSpec,
+    add_team_run_member, agentfirm_api, answer_provider_message_value, close_team_member_value,
+    create_team_run, current_unix_ms_u64, deactivate_team_run_member,
+    delegate_team_run_to_node_daemon, format_work_brief_line, generated_id,
+    host_inbox_for_native_thread, interrupt_team_member_value, latest_member_runs_in_append_order,
+    latest_team_run, latest_team_runs_in_append_order, mutate_team_work_value, now_string,
+    reconcile_team_work_delivery_value, rename_team_run_member, reopen_team_member_value,
+    reopened_member_requires_supervisor_start, serde_snake_label, steer_team_member_value,
+    team_member_specs_from_definition, team_run_board_summary_text, team_run_inbox,
+    team_run_mission_id, transition_team_run, visible_member_actions_in_append_order,
+    work_operation_cursors, ResolvedStore, TeamMemberSpec,
 };
 
 /// MCP protocol revision this server speaks, echoed verbatim in `initialize`
@@ -79,9 +81,11 @@ const DASHBOARD_SAME_ORIGIN_API_BASE: &str = ".";
 
 fn team_dashboard_url(store: &HarnessStore, resolved: &ResolvedStore, team_run_id: &str) -> String {
     let run = latest_team_run(store, team_run_id).ok();
+    // Legacy Mission provenance is optional: mission-less Teams produce no
+    // `&mission=` selector instead of an empty one.
     let mission_id = run
         .as_ref()
-        .and_then(|run| team_run_mission_id(store, run).ok());
+        .and_then(|run| team_run_mission_id(store, run).ok().flatten());
     let context = mission_id
         .as_deref()
         .map(|mission_id| format!("&mission={mission_id}"))
@@ -179,9 +183,9 @@ pub(crate) fn call_tool(
         "agentfirm_member_trust_mutate" => {
             tool_agentfirm_member_trust_mutate(store, resolved, &arguments)
         }
-        "mission_create" => tool_mission_create(store, &arguments),
-        "mission_update_context" => tool_mission_update_context(store, &arguments),
-        "mission_close" => tool_mission_close(store, &arguments),
+        // DOC-108: Mission writer tools are REMOVED from the MCP surface
+        // (unknown tool, byte-zero store delta), matching the Wave tombstone
+        // convention. `mission_list` stays as the read-only legacy read.
         "mission_list" => tool_mission_list(store),
         "team_run_create" => tool_team_run_create(store, resolved, &arguments),
         "team_run_add_member" => tool_team_run_add_member(store, resolved, &arguments),
@@ -1003,42 +1007,6 @@ fn optional_str(arguments: &Value, key: &str) -> Result<Option<String>, String> 
     }
 }
 
-fn tool_mission_create(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    let mission = create_mission(
-        store,
-        optional_str(arguments, "id")?,
-        required_str(arguments, "title")?,
-        required_str(arguments, "objective")?,
-        optional_str(arguments, "desired_outcome")?,
-        optional_str(arguments, "context")?,
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(json!(mission))
-}
-
-fn tool_mission_close(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    let mission = close_mission(
-        store,
-        required_str(arguments, "mission_id")?,
-        required_str(arguments, "outcome")?,
-        optional_str(arguments, "completed_by")?
-            .as_deref()
-            .unwrap_or("host"),
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(json!(mission))
-}
-
-fn tool_mission_update_context(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    revise_mission_context(
-        store,
-        required_str(arguments, "mission_id")?,
-        required_str(arguments, "context")?,
-    )
-    .map(|mission| json!(mission))
-    .map_err(|error| error.to_string())
-}
-
 fn tool_mission_list(store: &HarnessStore) -> Result<Value, String> {
     Ok(json!(store
         .latest_missions()
@@ -1560,53 +1528,13 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "mission_create",
-            "description": "Create durable Mission intent and optional Markdown context. CLI owns the same operation; this MCP tool is a thin adapter.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "description": "Optional stable Mission id; generated when omitted."},
-                    "title": {"type": "string"},
-                    "objective": {"type": "string"},
-                    "desired_outcome": {"type": "string"},
-                    "context": {"type": "string", "description": "Durable Markdown Mission brief."}
-                },
-                "required": ["title", "objective"]
-            }
-        },
-        {
-            "name": "mission_update_context",
-            "description": "Replace a Mission's durable Markdown context using the shared CLI/store service.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "mission_id": {"type": "string"},
-                    "context": {"type": "string", "minLength": 1}
-                },
-                "required": ["mission_id", "context"]
-            }
-        },
-        {
-            "name": "mission_close",
-            "description": "Complete a Mission with an explicit outcome. Completed Missions are immutable; linked Team lifecycle is unchanged. Legacy history never gates a new Mission; record a closeout_evidence Mission Log entry beforehand by convention.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "mission_id": {"type": "string"},
-                    "outcome": {"type": "string", "minLength": 1},
-                    "completed_by": {"type": "string", "minLength": 1, "description": "Defaults to host."}
-                },
-                "required": ["mission_id", "outcome"]
-            }
-        },
-        {
             "name": "mission_list",
-            "description": "List latest native Mission rows.",
+            "description": "Read-only legacy read of historical Mission rows (DOC-108). Not current authority; no writer surface remains.",
             "inputSchema": {"type": "object", "properties": {}}
         },
         {
             "name": "team_run_create",
-            "description": "Create one runtime attempt from a required flat AgentTeam. Mission, ExecutionNode, and Project Binding are derived from the durable Team and selected execution context; members can come from the Team definition.",
+            "description": "Create one runtime attempt from a required flat AgentTeam. ExecutionNode and Project Binding are derived from the durable Team and selected execution context; members can come from the Team definition. Legacy Mission provenance is optional and never required.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,

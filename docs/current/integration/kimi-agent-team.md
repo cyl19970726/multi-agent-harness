@@ -145,9 +145,10 @@ The owner-private SSE emitted both `updated` and `terminal` envelopes scoped to
 from one episode to two under the same AgentSession id. This is live evidence
 for the intentionally independent MemberRun/AgentSession generation fences,
 not permission to relax the exact AgentIdentity, native-session, provider,
-Execution Space, Project, NodeDaemon, or privacy checks. Mission
-`mission-dev26-kimi-0361-v2` records the defect, repair judgment, accepted Work
-revisions, runtime close receipt, and closeout.
+Execution Space, Project, NodeDaemon, or privacy checks. The pre-cutover
+Mission `mission-dev26-kimi-0361-v2` (legacy history, DOC-108) records the
+defect, repair judgment, accepted Work revisions, runtime close receipt, and
+closeout.
 
 ## Busy-turn delivery boundary
 

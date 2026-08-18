@@ -127,8 +127,9 @@ Provider-native execution history is referenced only by
 `native-session-ref.schema.json`. Harness deliberately has no schema for a
 mirrored transcript, stdout stream, tool stream, or provider turn ledger.
 
-Schemas evolve additively where a current contract permits it; Company OS
-contracts define their own required migration and validation rules.
+Schemas evolve additively where a current contract permits it; retired
+legacy schemas (Mission, Wave) stay pinned to their historical read contract
+so old rows remain readable and exportable.
 
 - New fields on existing objects are added as property-but-NOT-required, using
   nullable type unions (`["string","null"]`) for scalars, arrays for lists, and

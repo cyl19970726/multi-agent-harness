@@ -108,20 +108,20 @@ Host deliberately targets another Project Binding.
 For a live TeamRun, the service that starts it acquires the durable Supervisor
 generation and keeps Member provider connections alive across idle periods.
 Other Dashboard/MCP/CLI processes route Steer, Interrupt, Close, and queued
-mail to that owner. A Mission Log entry or TeamRun completion does not close a Member.
+mail to that owner. A TeamRun completion does not close a Member.
 
-## 4. Create a Mission and persistent Agent Team
+## 4. Create a durable AgentTeam
+
+Teams are created without any Mission (DOC-108); `agent create` is retired,
+so the Host AgentMember is created through the canonical member-trust
+mutation:
 
 ```bash
-./target/debug/firm mission create \
-  --title "Dogfood Agent Team" \
-  --objective "Prove persistent multi-member collaboration" \
-  --context "## Context\nUse native provider sessions, shared Works, and explicit Host acceptance."
-./target/debug/firm agent create \
-  --id builder-codex --name Builder --role builder --provider codex
+./target/debug/firm member-trust mutate --actor-kind human --actor-id operator \
+  --idempotency-key create-builder --expected-version 0 --json '<create_agent_member payload>'
 ./target/debug/firm node init
 ./target/debug/firm team create \
-  --mission-id <mission-id> --name builders --description "Persistent builders" \
+  --name builders --description "Persistent builders" \
   --host-agent-id builder-codex --node-id <node-uuid> --member builder-codex
 Use authenticated AgentFirm Message role actions together with `inbox`,
 `host-inbox`, `status`, and `events` for durable coordination. The retired

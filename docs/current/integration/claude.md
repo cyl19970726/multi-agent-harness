@@ -53,7 +53,7 @@ per MemberRun and exchanges NDJSON control frames over stdio.
 
 ```text
 Harness Host process
-  ├─ durable Mission / Mission Log / Message / MemberRun
+  ├─ durable AgentTeam / Message / MemberRun
   ├─ durable Team Supervisor lease + delivery claims
   ├─ process-local SDK control handles owned by that generation
   └─ Claude member runner
@@ -335,12 +335,13 @@ Repository gates:
 node --test apps/claude-member-runner/test/*.test.mjs
 cargo test -p firm-cli --test claude_agent_sdk_member
 cargo test -p firm-cli
-npx pnpm@9.15.4 acceptance:mission-wave
+npx pnpm@9.15.4 acceptance:legacy-retirement
 ```
 
-`acceptance:mission-wave` is a compatibility script basename. Its current
-contract covers Mission, append-only Mission Log, and Legacy Wave read-only
-behavior; it does not make Wave a current runtime object.
+`acceptance:legacy-retirement` (formerly `acceptance:mission-wave`; renamed
+with the DOC-108 legacy cutover) covers Mission, append-only Mission Log, and
+Legacy Wave read-only behavior; it does not make Wave a current runtime
+object.
 
 Minimum live canary:
 

@@ -181,6 +181,38 @@ pub fn clear_inherited_native_firm_env(command: &mut Command) {
     }
 }
 
+/// Seed one historical Mission row directly into the Execution Space ledger.
+/// DOC-108 retired the `mission create` writer on every surface, so tests
+/// that need pre-cutover Mission history (legacy reads, `legacy_mission_id`
+/// provenance on a Team) write the row directly instead of calling the CLI.
+pub fn seed_historical_mission(home: &TempHome, space_id: &str, id: &str, title: &str) {
+    use std::io::Write as _;
+
+    let path = home.spaces_dir().join(space_id).join("missions.jsonl");
+    // Space stores are created lazily on first write; fixture seeding is that
+    // first write for pre-cutover Mission history.
+    std::fs::create_dir_all(path.parent().expect("mission ledger parent"))
+        .expect("create space store dir");
+    let mut ledger = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("open mission ledger");
+    writeln!(
+        ledger,
+        "{}",
+        serde_json::json!({
+            "id": id,
+            "title": title,
+            "objective": "Seeded pre-cutover row for legacy read coverage",
+            "status": "planned",
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1",
+        })
+    )
+    .expect("append historical mission");
+}
+
 /// Reconstruct the latest ProviderWorkDispatch projection from crash-atomic Work
 /// operations plus later claim/receipt updates. Integration tests use this
 /// instead of treating update rows as standalone deliveries.

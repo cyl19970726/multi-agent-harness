@@ -55,11 +55,13 @@ done
 
 expand_suite() {
   case "$1" in
-    company-os)
-      echo "company-business-project-bootstrap company-docs-operator company-work-operator company-org-operator company-module-designer company-page-builder dogfood-company-os connect-github-company-os orchestrate-mission-waves collaborate-as-agent-team-member shared-references"
+    # The company-os suite was retired by DOC-108; its operator skills moved
+    # to archive/skills/ and are no longer installable.
+    collaboration)
+      echo "collaborate-as-agent-team-member shared-references"
       ;;
     *)
-      echo "unknown suite: $1 (available: company-os)" >&2
+      echo "unknown suite: $1 (available: collaboration)" >&2
       exit 2
       ;;
   esac

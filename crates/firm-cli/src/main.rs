@@ -20,51 +20,53 @@ use harness_core::{
     HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind, HostControlMode,
     HostDispatchConfig, LaunchMcp, LaunchPermission, LaunchSpec, LegacyWave, MemberAction,
     MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver, MemberRunStatus,
-    MemberWorkspaceSnapshot, MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind,
-    MissionStatus, NativeSessionAvailability, NativeSessionRef, NodeDaemonLeaseStatus,
-    NodeProjectRegistration, NodeProjectRegistrationStatus, OrdinaryMessageBoundary,
-    ProjectContext, ProjectKind, ProviderAccountRef, ProviderCapabilities,
-    ProviderCapacityConfidence, ProviderCapacityEvidence, ProviderCapacitySnapshot,
-    ProviderCapacityState, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
-    ProviderCompatibilityAdmissionPolicy, ProviderCompatibilityBlockBoundary,
-    ProviderCompatibilityBlockCause, ProviderCompatibilityBlockSource, ProviderCompatibilityStatus,
-    ProviderDispatchAttempt, ProviderDispatchIntent, ProviderEventFidelity,
-    ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
-    ProviderIntegrationProfile, ProviderInteractionMessageOption, ProviderInteractionMode,
-    ProviderInteractionRequestBody, ProviderInteractionResponseBody, ProviderInteractionType,
-    ProviderLaunchConfig, ProviderLaunchProfile, ProviderLaunchStatus, ProviderProcess,
-    ProviderProcessHealth, ProviderProcessStatus, ProviderResponseIntent,
-    ProviderRuntimeContextFact, ProviderRuntimeProjection, ProviderWorkDispatch,
-    ProviderWorkDispatchStatus, RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage,
-    RegistryMessageIntent, Review, SecurityEnforcementLocus, SecurityEnforcementLocusKind,
-    SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus,
-    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection, TeamRecipientKind,
-    TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease,
-    Validate, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition,
-    WorkDelegation, WorkDelegationState, WorkPhase, WorkPriority, WorkRef, WorkResolution,
-    WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch,
-    WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
-    WorkflowTerminalReason, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
+    MemberWorkspaceSnapshot, MessageTerminalSource, MissionLogEntry, NativeSessionAvailability,
+    NativeSessionRef, NodeDaemonLeaseStatus, NodeProjectRegistration,
+    NodeProjectRegistrationStatus, OrdinaryMessageBoundary, ProjectContext, ProjectKind,
+    ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
+    ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityAdmission,
+    ProviderCompatibilityAdmissionLifecycle, ProviderCompatibilityAdmissionPolicy,
+    ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
+    ProviderCompatibilityBlockSource, ProviderCompatibilityStatus, ProviderDispatchAttempt,
+    ProviderDispatchIntent, ProviderEventFidelity, ProviderExecutionControls,
+    ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
+    ProviderInteractionMessageOption, ProviderInteractionMode, ProviderInteractionRequestBody,
+    ProviderInteractionResponseBody, ProviderInteractionType, ProviderLaunchConfig,
+    ProviderLaunchProfile, ProviderLaunchStatus, ProviderProcess, ProviderProcessHealth,
+    ProviderProcessStatus, ProviderResponseIntent, ProviderRuntimeContextFact,
+    ProviderRuntimeProjection, ProviderWorkDispatch, ProviderWorkDispatchStatus,
+    RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage, RegistryMessageIntent,
+    Review, SecurityEnforcementLocus, SecurityEnforcementLocusKind, SenderKind, TeamActorKind,
+    TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
+    TeamMemberCloseStatus, TeamMessageProjection, TeamRecipientKind, TeamRecipientRef,
+    TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Validate, Work,
+    WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition, WorkDelegation,
+    WorkDelegationState, WorkPhase, WorkPriority, WorkRef, WorkResolution, WorkflowArtifactFile,
+    WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
+    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
     canonical_surface, CanonicalMemberRunAdmission, HarnessStore, HostAttentionClaimResult,
     MessageDeliveryClaimResult, StoreError,
 };
+
+// Mission/MissionStatus remain only for cfg(test) legacy-history fixtures.
+#[cfg(test)]
+use harness_core::{Mission, MissionStatus};
 use thiserror::Error;
 
 mod agentfirm_api;
 mod claude_team_runtime;
 mod codex_app_server;
 mod codex_team_runtime;
-mod company_os_api;
-mod company_store;
-mod docs_v2_page;
 mod execution_space;
 #[cfg(unix)]
 mod fabric_runtime;
 mod host_dispatcher;
 mod kimi_acp;
 mod kimi_team_runtime;
+mod legacy_company_os;
 mod legacy_export;
 mod mcp;
 mod native_session;
@@ -155,15 +157,6 @@ enum StoreSource {
     FirmRootEnv,
     /// Deprecated `HARNESS_ROOT` compatibility alias.
     HarnessRootEnv,
-    /// `--company <id>` explicit Company Store selector. Only applies to
-    /// `harness company ...` commands.
-    CompanyFlag,
-    /// `FIRM_COMPANY` Company Store selector, with `HARNESS_COMPANY` alias.
-    /// `harness company ...` commands.
-    CompanyEnv,
-    /// Active Company Store marker / registry current. Only applies to
-    /// `harness company ...` commands.
-    CompanyCurrent,
     /// `--space <id>` explicit Execution Space selector.
     SpaceFlag,
     /// `FIRM_SPACE` Execution Space selector, with `HARNESS_SPACE` alias.
@@ -196,7 +189,6 @@ pub(crate) struct ResolvedStore {
     /// ambient context and are not operator authorization for scoped writes.
     project_selection_explicit: bool,
     pub(crate) context: Option<harness_core::ProjectContext>,
-    pub(crate) company_context: Option<company_store::CompanyContext>,
     pub(crate) execution_space_context: Option<ExecutionSpace>,
 }
 
@@ -257,7 +249,6 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             source: StoreSource::StoreFlag,
             project_selection_explicit: false,
             context: None,
-            company_context: None,
             execution_space_context: None,
         });
     }
@@ -268,7 +259,6 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                 source: StoreSource::WorkflowChildEnv,
                 project_selection_explicit: false,
                 context: None,
-                company_context: None,
                 execution_space_context: None,
             });
         }
@@ -283,7 +273,6 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             },
             project_selection_explicit: false,
             context: None,
-            company_context: None,
             execution_space_context: None,
         });
     }
@@ -297,47 +286,10 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                 source: StoreSource::CwdWalkUp,
                 project_selection_explicit: false,
                 context: None,
-                company_context: None,
                 execution_space_context: None,
             });
         }
     };
-
-    if command == Some("company") {
-        let (company_selector, selector_source) = match take_flag_value(args, "--company") {
-            Some(v) => (Some(v), StoreSource::CompanyFlag),
-            None => match canonical_or_legacy_env("FIRM_COMPANY", "HARNESS_COMPANY") {
-                Some((v, _)) => (Some(v), StoreSource::CompanyEnv),
-                None => (None, StoreSource::CompanyFlag),
-            },
-        };
-        if let Some(selector) = company_selector {
-            let ctx = company_store::context_for_id(&firm_home, &selector)
-                .map_err(company_store_err)?
-                .ok_or_else(|| CliError::Usage(format!("unknown company: {selector}")))?;
-            return Ok(ResolvedStore {
-                root: ctx.store_root.clone(),
-                source: selector_source,
-                project_selection_explicit: false,
-                context: None,
-                company_context: Some(ctx),
-                execution_space_context: None,
-            });
-        }
-        if let Some(id) = company_store::active_company_id(&firm_home).map_err(company_store_err)? {
-            let ctx = company_store::context_for_id(&firm_home, &id)
-                .map_err(company_store_err)?
-                .ok_or_else(|| CliError::Usage(format!("active company is unknown: {id}")))?;
-            return Ok(ResolvedStore {
-                root: ctx.store_root.clone(),
-                source: StoreSource::CompanyCurrent,
-                project_selection_explicit: false,
-                context: None,
-                company_context: Some(ctx),
-                execution_space_context: None,
-            });
-        }
-    }
 
     // Project selection is now independent from execution-store selection. It
     // picks the provider workspace/config/permission binding only.
@@ -388,7 +340,6 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             source,
             project_selection_explicit,
             context: Some(context),
-            company_context: None,
             execution_space_context: None,
         });
     }
@@ -425,7 +376,6 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             source: space_source,
             project_selection_explicit,
             context: project_context,
-            company_context: None,
             execution_space_context: Some(space),
         });
     }
@@ -438,7 +388,6 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             source: selector_source,
             project_selection_explicit,
             context: Some(context),
-            company_context: None,
             execution_space_context: None,
         });
     }
@@ -489,7 +438,6 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                             source: StoreSource::RegistryCurrent,
                             project_selection_explicit: false,
                             context,
-                            company_context: None,
                             execution_space_context: None,
                         });
                     }
@@ -520,7 +468,6 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                             source: StoreSource::CwdWalkUp,
                             project_selection_explicit: false,
                             context: None,
-                            company_context: None,
                             execution_space_context: None,
                         });
                     }
@@ -539,7 +486,6 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                 source: StoreSource::RegistryCurrent,
                 project_selection_explicit: false,
                 context: Some(ctx),
-                company_context: None,
                 execution_space_context: None,
             });
         }
@@ -552,7 +498,6 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             source: StoreSource::GlobalDefault,
             project_selection_explicit: false,
             context: Some(ctx),
-            company_context: None,
             execution_space_context: None,
         });
     }
@@ -563,7 +508,6 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
         source: StoreSource::CwdWalkUp,
         project_selection_explicit: false,
         context: None,
-        company_context: None,
         execution_space_context: None,
     })
 }
@@ -799,21 +743,6 @@ fn project_err(e: project::ProjectError) -> CliError {
     }
 }
 
-/// Map a `company_store::CompanyStoreError` onto `CliError` at the command
-/// boundary.
-fn company_store_err(e: company_store::CompanyStoreError) -> CliError {
-    match e {
-        company_store::CompanyStoreError::Io(io) => CliError::Io(io),
-        company_store::CompanyStoreError::Json(j) => CliError::Json(j),
-        company_store::CompanyStoreError::InvalidId(msg) => CliError::Usage(format!(
-            "invalid company id `{msg}`; use letters, digits, '.', '_' or '-'"
-        )),
-        company_store::CompanyStoreError::NoHome => {
-            CliError::Usage("could not determine harness home".to_string())
-        }
-    }
-}
-
 fn execution_space_err(error: execution_space::ExecutionSpaceError) -> CliError {
     match error {
         execution_space::ExecutionSpaceError::Io(error) => CliError::Io(error),
@@ -862,14 +791,9 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
                 }
             }
             let company_id = value(args, "--company");
-            if let Some(company) = company_id.as_deref() {
-                if company_store::context_for_id(&firm_home, company)
-                    .map_err(company_store_err)?
-                    .is_none()
-                {
-                    return Err(CliError::Usage(format!("unknown company: {company}")));
-                }
-            }
+            // DOC-108: the Company registry is retired, so `--company` stays
+            // only as an inert free-text compatibility label on the Space —
+            // it is no longer validated against a registry.
             let context = execution_space::register_and_activate(
                 &firm_home,
                 &id,
@@ -1947,6 +1871,13 @@ fn run() -> CliResult<()> {
     if args.first().map(String::as_str) == Some("legacy-goal-task") {
         return legacy_goal_task_command(&mut args);
     }
+    // Legacy Company OS export/verify shares the same store-LESS discipline:
+    // export enumerates every record store under the resolved Firm home
+    // (machine-wide, so no project/space/company selector applies), and
+    // verification is fully offline and resolves no live store.
+    if args.first().map(String::as_str) == Some("legacy-company-os") {
+        return legacy_company_os_command(&mut args);
+    }
     // `cheatsheet` is store-LESS: it prints operating knowledge for the Host
     // and must not require a store, project, or space.
     if args.first().map(String::as_str) == Some("cheatsheet") {
@@ -1964,9 +1895,6 @@ fn run() -> CliResult<()> {
             resolved.source,
             resolved.root.display()
         );
-        if let Some(company) = &resolved.company_context {
-            eprintln!("company-context: id={} name={}", company.id, company.name);
-        }
     }
     if args.is_empty() || args[0] == "help" || args[0] == "--help" {
         print_help();
@@ -1996,7 +1924,7 @@ fn run() -> CliResult<()> {
                 return Err(retired_wave_write_error(subcommand));
             }
             return Err(CliError::Usage(
-                "Wave is Legacy-only (ADR 0051). Historical reads moved to `harness legacy wave list|show|history`; current planning uses `harness mission log`.".to_string(),
+                "Wave is Legacy-only (ADR 0051). Historical reads moved to `harness legacy wave list|show|history`; current coordination uses durable AgentTeam, Team-run Work, and identity-first Messages.".to_string(),
             ));
         }
         "team-run" => team_run_command(&store, &resolved, &args[1..])?,
@@ -2111,579 +2039,15 @@ fn retired_surface_error(command: &str) -> CliError {
     ))
 }
 
-fn company_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company <init|list|current|switch|show|migrate-from-project|migrations> | company docs ... | company work list|query|milestone | company org ... | company approval ... | company finance ... | company gateway social readiness")?;
-    match args[0].as_str() {
-        "init" => company_store_init_command(args.get(1..).unwrap_or(&[])),
-        "list" => company_store_list_command(),
-        "current" => company_store_current_command(),
-        "switch" => company_store_switch_command(args.get(1..).unwrap_or(&[])),
-        "show" => company_store_show_command(args.get(1..).unwrap_or(&[])),
-        "migrate-from-project" => {
-            company_store_migrate_from_project_command(args.get(1..).unwrap_or(&[]))
-        }
-        "migrations" => company_store_migrations_command(store),
-        "docs" => company_docs_command(store, &args[1..]),
-        "work" => company_work_command(store, &args[1..]),
-        "org" => company_org_command(store, &args[1..]),
-        "approval" => company_approval_command(store, &args[1..]),
-        "finance" => company_finance_command(store, &args[1..]),
-        "gateway" => company_gateway_command(&args[1..]),
-        other => Err(CliError::Usage(format!(
-            "unknown company command: {other}; usage: harness company <init|list|current|switch|show|migrate-from-project|migrations> | harness company docs ... | harness company work ... | harness company org ... | harness company approval ... | harness company finance ... | harness company gateway ..."
-        ))),
-    }
+fn company_command(_store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    // DOC-108 Stage B: the entire `harness company` tree is retired. The
+    // Company Store registry and its Docs/Organization/Approval/Finance
+    // surfaces are historical, export/verify-only through
+    // `harness legacy-company-os export|verify`.
+    let subcommand = args.first().map(String::as_str).unwrap_or("help");
+    Err(retired_company_error(subcommand))
 }
-
-fn company_gateway_command(args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company gateway social readiness")?;
-    match args[0].as_str() {
-        "social" => {
-            require_subcommand(&args[1..], "company gateway social readiness")?;
-            match args[1].as_str() {
-                "readiness" => company_gateway_social_readiness_command(&args[2..]),
-                other => Err(CliError::Usage(format!(
-                    "unknown company gateway social command: {other}; usage: harness company gateway social readiness"
-                ))),
-            }
-        }
-        other => Err(CliError::Usage(format!(
-            "unknown company gateway command: {other}; usage: harness company gateway social readiness"
-        ))),
-    }
-}
-
-fn company_gateway_social_readiness_command(args: &[String]) -> CliResult<()> {
-    let requested = many(args, "--platform");
-    let platforms = if requested.is_empty() {
-        vec![
-            "xiaohongshu".to_string(),
-            "douyin".to_string(),
-            "wechat_channels".to_string(),
-        ]
-    } else {
-        requested
-    };
-    let adb = value(args, "--adb").unwrap_or_else(|| "adb".to_string());
-    let device = value(args, "--device");
-    let mut base_args: Vec<String> = Vec::new();
-    if let Some(device) = &device {
-        base_args.push("-s".to_string());
-        base_args.push(device.clone());
-    }
-
-    let devices = match run_command_text(&adb, &["devices".to_string(), "-l".to_string()]) {
-        Ok(output) => output,
-        Err(error) => {
-            return print_json(&serde_json::json!({
-                "ok": true,
-                "command": "harness company gateway social readiness",
-                "gateway": "social_content",
-                "status": "adb_unavailable",
-                "error": error.to_string(),
-                "boundaries": social_gateway_readiness_boundaries(),
-                "platforms": platform_readiness_without_device(&platforms),
-            }));
-        }
-    };
-    if !android_devices_has_authorized_device(&devices) {
-        return print_json(&serde_json::json!({
-            "ok": true,
-            "command": "harness company gateway social readiness",
-            "gateway": "social_content",
-            "status": "no_authorized_android_device",
-            "adb_devices": devices,
-            "boundaries": social_gateway_readiness_boundaries(),
-            "platforms": platform_readiness_without_device(&platforms),
-        }));
-    }
-
-    let mut pm_args = base_args.clone();
-    pm_args.extend([
-        "shell".to_string(),
-        "pm".to_string(),
-        "list".to_string(),
-        "packages".to_string(),
-    ]);
-    let packages = run_command_text(&adb, &pm_args)?;
-    let mut focus_args = base_args;
-    focus_args.extend([
-        "shell".to_string(),
-        "dumpsys".to_string(),
-        "window".to_string(),
-    ]);
-    let focus = run_command_text(&adb, &focus_args).unwrap_or_default();
-    let results: Vec<serde_json::Value> = platforms
-        .iter()
-        .map(|platform| social_platform_readiness(platform, &packages, &focus))
-        .collect();
-
-    print_json(&serde_json::json!({
-        "ok": true,
-        "command": "harness company gateway social readiness",
-        "gateway": "social_content",
-        "status": "observed",
-        "device_selector": device,
-        "boundaries": social_gateway_readiness_boundaries(),
-        "platforms": results,
-    }))
-}
-
-fn run_command_text(program: &str, args: &[String]) -> CliResult<String> {
-    let output = Command::new(program).args(args).output()?;
-    let mut text = String::from_utf8_lossy(&output.stdout).to_string();
-    if text.trim().is_empty() && !output.stderr.is_empty() {
-        text = String::from_utf8_lossy(&output.stderr).to_string();
-    }
-    if !output.status.success() {
-        return Err(CliError::Usage(format!(
-            "{program} {} failed: {}",
-            args.join(" "),
-            text.trim()
-        )));
-    }
-    Ok(text)
-}
-
-fn android_devices_has_authorized_device(devices: &str) -> bool {
-    devices
-        .lines()
-        .filter(|line| !line.starts_with("List of devices"))
-        .any(|line| line.split_whitespace().nth(1) == Some("device"))
-}
-
-fn platform_readiness_without_device(platforms: &[String]) -> Vec<serde_json::Value> {
-    platforms
-        .iter()
-        .map(|platform| {
-            let (canonical, package, display) = social_platform_package(platform);
-            serde_json::json!({
-                "platform": canonical,
-                "display_name": display,
-                "package": package,
-                "readiness_state": "unknown_no_device",
-                "installed": false,
-                "focused": false,
-            })
-        })
-        .collect()
-}
-
-fn social_platform_readiness(platform: &str, packages: &str, focus: &str) -> serde_json::Value {
-    let (canonical, package, display) = social_platform_package(platform);
-    let known = !package.is_empty();
-    let installed = known
-        && packages
-            .lines()
-            .any(|line| line.trim() == format!("package:{package}"));
-    let focused = known && current_android_focus_package(focus).as_deref() == Some(package);
-    let readiness_state = if !known {
-        "unknown_platform"
-    } else if installed && focused {
-        "installed_currently_focused"
-    } else if installed {
-        "installed_not_focused"
-    } else {
-        "not_installed_or_not_detected"
-    };
-    serde_json::json!({
-        "platform": canonical,
-        "display_name": display,
-        "package": package,
-        "installed": installed,
-        "focused": focused,
-        "readiness_state": readiness_state,
-        "recommended_record_type": "social_platform_account",
-        "recommended_human_gates": [
-            "login",
-            "publish",
-            "delete",
-            "paid_promotion",
-            "account_settings",
-            "private_message_export"
-        ],
-        "recommended_allowed_automation": [
-            "open_app",
-            "screenshot",
-            "draft_preparation",
-            "visible_metric_read"
-        ]
-    })
-}
-
-fn current_android_focus_package(window_dump: &str) -> Option<String> {
-    window_dump
-        .lines()
-        .find(|line| line.contains("mCurrentFocus="))
-        .and_then(|line| {
-            let activity = line
-                .split_whitespace()
-                .find(|part| part.contains('/') && !part.starts_with("Window{"))?;
-            activity
-                .split_once('/')
-                .map(|(package, _)| package.trim().to_string())
-        })
-        .filter(|package| !package.is_empty())
-}
-
-fn social_platform_package(platform: &str) -> (&'static str, &'static str, &'static str) {
-    match platform {
-        "xhs" | "xiaohongshu" | "rednote" => ("xiaohongshu", "com.xingin.xhs", "Xiaohongshu"),
-        "douyin" | "aweme" => ("douyin", "com.ss.android.ugc.aweme", "Douyin"),
-        "wechat" | "wechat_channels" | "channels" | "shipinhao" => {
-            ("wechat_channels", "com.tencent.mm", "WeChat Channels")
-        }
-        _ => ("unknown", "", "Unknown platform"),
-    }
-}
-
-fn social_gateway_readiness_boundaries() -> serde_json::Value {
-    serde_json::json!({
-        "read_only": true,
-        "store_side_effects": false,
-        "publishing_side_effects": false,
-        "login_side_effects": false,
-        "payment_side_effects": false,
-        "deletion_side_effects": false,
-        "credential_export": false,
-        "output_role": "observation_for_social_platform_account_typed_records_and_Work"
-    })
-}
-
-fn company_store_init_command(args: &[String]) -> CliResult<()> {
-    let id = required(args, "--id")?;
-    let name = value(args, "--name").unwrap_or_else(|| id.clone());
-    let firm_home = company_store::firm_home().map_err(company_store_err)?;
-    let ctx = company_store::register_and_activate(&firm_home, &id, &name, &now_string())
-        .map_err(company_store_err)?;
-    HarnessStore::new(ctx.store_root.clone()).init()?;
-    print_json(&company_context_json(&ctx, &ctx.id))
-}
-
-fn company_store_list_command() -> CliResult<()> {
-    let firm_home = company_store::firm_home().map_err(company_store_err)?;
-    let current = company_store::active_company_id(&firm_home)
-        .map_err(company_store_err)?
-        .unwrap_or_default();
-    let companies = company_store::list_companies(&firm_home).map_err(company_store_err)?;
-    let json: Vec<serde_json::Value> = companies
-        .iter()
-        .map(|ctx| company_context_json(ctx, &current))
-        .collect();
-    print_json(&json)
-}
-
-fn company_store_current_command() -> CliResult<()> {
-    let firm_home = company_store::firm_home().map_err(company_store_err)?;
-    match company_store::active_company_id(&firm_home).map_err(company_store_err)? {
-        Some(id) => {
-            match company_store::context_for_id(&firm_home, &id).map_err(company_store_err)? {
-                Some(ctx) => print_json(&company_context_json(&ctx, &id)),
-                None => print_json(&serde_json::json!({ "id": id, "is_current": true })),
-            }
-        }
-        None => print_json(&serde_json::json!({
-            "id": serde_json::Value::Null,
-            "is_current": false,
-        })),
-    }
-}
-
-fn company_store_switch_command(args: &[String]) -> CliResult<()> {
-    let id = args
-        .iter()
-        .find(|a| !a.starts_with("--"))
-        .cloned()
-        .ok_or_else(|| CliError::Usage("usage: harness company switch <id>".to_string()))?;
-    let firm_home = company_store::firm_home().map_err(company_store_err)?;
-    let ctx = company_store::switch_current_company(&firm_home, &id, &now_string())
-        .map_err(company_store_err)?;
-    print_json(&company_context_json(&ctx, &ctx.id))
-}
-
-fn company_store_show_command(args: &[String]) -> CliResult<()> {
-    let firm_home = company_store::firm_home().map_err(company_store_err)?;
-    let selector = args.iter().find(|a| !a.starts_with("--")).cloned();
-    let current = company_store::active_company_id(&firm_home)
-        .map_err(company_store_err)?
-        .unwrap_or_default();
-    let id = match selector {
-        Some(id) => id,
-        None => return company_store_current_command(),
-    };
-    let ctx = company_store::context_for_id(&firm_home, &id)
-        .map_err(company_store_err)?
-        .ok_or_else(|| CliError::Usage(format!("unknown company: {id}")))?;
-    print_json(&company_context_json(&ctx, &current))
-}
-
-fn company_store_migrate_from_project_command(args: &[String]) -> CliResult<()> {
-    let from_project = required(args, "--from-project")?;
-    let id = required(args, "--id")?;
-    let name = value(args, "--name").unwrap_or_else(|| id.clone());
-    let force = has_flag(args, "--force");
-    let verify_only = has_flag(args, "--verify-only");
-    let firm_home = company_store::firm_home().map_err(company_store_err)?;
-    let source_project = resolve_project_selector(&firm_home, &from_project).ok_or_else(|| {
-        CliError::Usage(format!(
-            "unknown source project: {from_project}; pass a registered project id or path"
-        ))
-    })?;
-    let ctx = if verify_only {
-        company_store::context_for_id(&firm_home, &id)
-            .map_err(company_store_err)?
-            .ok_or_else(|| {
-                CliError::Usage(format!(
-                    "Company Store {id} does not exist; run migrate-from-project without --verify-only first"
-                ))
-            })?
-    } else {
-        company_store::register_and_activate(&firm_home, &id, &name, &now_string())
-            .map_err(company_store_err)?
-    };
-    let outcome = if verify_only {
-        CompanyLedgerCopyOutcome::default()
-    } else {
-        copy_company_os_ledgers(&source_project.store_root, &ctx.store_root, force).map_err(
-            |err| {
-                CliError::Usage(format!(
-                    "Company Store migration refused from {} to {}: {err}",
-                    source_project.store_root.display(),
-                    ctx.store_root.display()
-                ))
-            },
-        )?
-    };
-    HarnessStore::new(ctx.store_root.clone()).init()?;
-    let verified_at = now_string();
-    let verification =
-        verify_company_os_ledger_migration(&source_project.store_root, &ctx.store_root).map_err(
-            |err| {
-                CliError::Usage(format!(
-                    "Company Store migration verification failed from {} to {}: {err}",
-                    source_project.store_root.display(),
-                    ctx.store_root.display()
-                ))
-            },
-        )?;
-    let migration_record = serde_json::json!({
-        "id": generated_id("company-store-migration"),
-        "company_id": ctx.id,
-        "source_project_id": source_project.id,
-        "source_store_root": source_project.store_root.display().to_string(),
-        "target_store_root": ctx.store_root.display().to_string(),
-        "mode": if verify_only { "verify_only" } else { "copy_and_verify" },
-        "verified_at": verified_at,
-        "verification": verification,
-        "boundary": {
-            "copied": "active Company OS ledger allowlist only",
-            "retired_workitem_history_migrated": false,
-            "execution_space_migration": false,
-            "project_binding_migration": false,
-            "dual_write": false,
-            "destructive_delete": false,
-            "source_access": "read_only_audit_recommended",
-            "source_read_only_enforced": false
-        }
-    });
-    append_jsonl_value(
-        &ctx.store_root.join("company_store_migrations.jsonl"),
-        &migration_record,
-    )?;
-    let source_marker = serde_json::json!({
-        "company_id": ctx.id,
-        "target_store_root": ctx.store_root.display().to_string(),
-        "source_project_id": source_project.id,
-        "verified_at": verified_at,
-        "status": "migrated_and_verified",
-        "recommended_access": "read_only_audit",
-        "read_only_enforced": false,
-        "destructive_delete": false,
-        "dual_write": false
-    });
-    fs::write(
-        source_project
-            .store_root
-            .join("COMPANY_OS_MIGRATED_TO_COMPANY.json"),
-        serde_json::to_string_pretty(&source_marker)?,
-    )?;
-    print_json(&serde_json::json!({
-        "ok": true,
-        "command": "harness company migrate-from-project",
-        "mode": if verify_only { "verify_only" } else { "copy_and_verify" },
-        "company": company_context_json(&ctx, &ctx.id),
-        "source_project": project_context_json(&source_project, ""),
-        "copied_files": outcome.copied_files,
-        "copied_records": outcome.copied_records,
-        "skipped_identical_files": outcome.skipped_identical_files,
-        "verification": migration_record["verification"],
-        "migration_record": migration_record,
-        "source_marker": source_marker,
-        "boundary": {
-            "copied": "active Company OS ledger allowlist only",
-            "not_copied": ["retired WorkItem/Assignment/cutover ledgers", "missions.jsonl", "waves.jsonl", "agent_teams.jsonl", "team_runs.jsonl", "member_runs.jsonl", "team_messages.jsonl", "provider_sessions.jsonl", "runtimes", "prompts"],
-            "retired_workitem_history_migrated": false,
-            "execution_space_migration": false,
-            "project_binding_migration": false,
-            "dual_write": false,
-            "destructive_delete": false
-        },
-        "next_commands": [
-            format!("harness --company {} company docs health", ctx.id),
-            format!("harness --company {} company work list", ctx.id),
-            format!("harness --company {} company org list", ctx.id)
-        ]
-    }))
-}
-
-fn company_store_migrations_command(store: &HarnessStore) -> CliResult<()> {
-    let path = store.root().join("company_store_migrations.jsonl");
-    let records = match fs::read_to_string(path) {
-        Ok(text) => text
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(serde_json::from_str)
-            .collect::<Result<Vec<serde_json::Value>, _>>()?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(CliError::Io(error)),
-    };
-    print_json(&serde_json::json!({
-        "command": "harness company migrations",
-        "records": records
-    }))
-}
-
-#[derive(Debug, Clone, Default)]
-struct CompanyLedgerCopyOutcome {
-    copied_files: u64,
-    copied_records: u64,
-    skipped_identical_files: u64,
-}
-
-/// Current Company Store ledgers only. Retired WorkItem, Assignment and
-/// cutover ledgers are intentionally absent: historical Company task data is
-/// disposable and is neither copied nor verified.
-const ACTIVE_COMPANY_OS_LEDGER_FILES: &[&str] = &[
-    "company_os_documents.jsonl",
-    "company_os_blocks.jsonl",
-    "company_os_typed_records.jsonl",
-    "company_os_relations.jsonl",
-    "company_os_views.jsonl",
-    "company_os_business_modules.jsonl",
-    "company_os_human_members.jsonl",
-    "company_os_human_provider_launch_profiles.jsonl",
-    "company_os_agent_memberships.jsonl",
-    "company_os_external_participants.jsonl",
-    "company_os_service_actors.jsonl",
-    "company_os_org_units.jsonl",
-    "company_os_organization_memberships.jsonl",
-    "company_os_milestones.jsonl",
-    "company_os_approvals.jsonl",
-    "company_os_commitments.jsonl",
-    "company_os_payments.jsonl",
-    "company_os_custom_page_definitions.jsonl",
-    "company_os_custom_page_packages.jsonl",
-    "company_os_action_commands.jsonl",
-    "company_os_action_policy_definitions.jsonl",
-    "company_os_audit_events.jsonl",
-    "company_os_action_audit_reservations.jsonl",
-    "company_os_blocks_v2.jsonl",
-    "company_os_document_revisions.jsonl",
-    "company_os_document_change_ops.jsonl",
-];
-
-fn active_company_os_ledger_paths(root: &Path) -> Vec<PathBuf> {
-    ACTIVE_COMPANY_OS_LEDGER_FILES
-        .iter()
-        .map(|file_name| root.join(file_name))
-        .filter(|path| path.is_file())
-        .collect()
-}
-
-fn verify_company_os_ledger_migration(src: &Path, dst: &Path) -> Result<serde_json::Value, String> {
-    let mut source_ledgers = active_company_os_ledger_paths(src);
-    source_ledgers.sort();
-    if source_ledgers.is_empty() {
-        return Err(format!(
-            "source store has no active Company OS ledgers: {}",
-            src.display()
-        ));
-    }
-    let forbidden_execution_files = [
-        "missions.jsonl",
-        "waves.jsonl",
-        "agent_teams.jsonl",
-        "team_runs.jsonl",
-        "member_runs.jsonl",
-        "team_messages.jsonl",
-        "provider_sessions.jsonl",
-    ];
-    let leaked_execution_files = forbidden_execution_files
-        .iter()
-        .filter(|file| dst.join(file).exists())
-        .copied()
-        .collect::<Vec<_>>();
-    if !leaked_execution_files.is_empty() {
-        return Err(format!(
-            "target Company Store contains execution ledgers: {}",
-            leaked_execution_files.join(", ")
-        ));
-    }
-    let mut file_results = Vec::new();
-    let mut source_records = 0_u64;
-    let mut target_records = 0_u64;
-    for source_path in source_ledgers {
-        let file_name = source_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| "source ledger has a non-UTF-8 filename".to_string())?;
-        let target_path = dst.join(file_name);
-        if !target_path.is_file() {
-            return Err(format!(
-                "target ledger is missing: {}",
-                target_path.display()
-            ));
-        }
-        let source_text = fs::read_to_string(&source_path).map_err(|error| error.to_string())?;
-        let target_text = fs::read_to_string(&target_path).map_err(|error| error.to_string())?;
-        let source_lines = source_text
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .collect::<Vec<_>>();
-        let target_lines = target_text
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .collect::<HashSet<_>>();
-        let missing_source_records = source_lines
-            .iter()
-            .filter(|line| !target_lines.contains(**line))
-            .count();
-        if missing_source_records > 0 {
-            return Err(format!(
-                "target ledger {file_name} is missing {missing_source_records} exact source record(s)"
-            ));
-        }
-        source_records += source_lines.len() as u64;
-        target_records += target_lines.len() as u64;
-        file_results.push(serde_json::json!({
-            "file": file_name,
-            "source_records": source_lines.len(),
-            "target_records": target_lines.len(),
-            "missing_source_records": 0,
-            "source_content_hash": content_hash_hex16(&source_text)
-        }));
-    }
-    Ok(serde_json::json!({
-        "status": "verified",
-        "verified_files": file_results.len(),
-        "source_records": source_records,
-        "target_records": target_records,
-        "missing_source_records": 0,
-        "execution_ledgers_in_target": [],
-        "files": file_results
-    }))
-}
-
+#[cfg(test)]
 fn append_jsonl_value(path: &Path, value: &serde_json::Value) -> CliResult<()> {
     let mut file = fs::OpenOptions::new()
         .create(true)
@@ -2695,876 +2059,9 @@ fn append_jsonl_value(path: &Path, value: &serde_json::Value) -> CliResult<()> {
     Ok(())
 }
 
-fn copy_company_os_ledgers(
-    src: &Path,
-    dst: &Path,
-    force: bool,
-) -> Result<CompanyLedgerCopyOutcome, String> {
-    if !src.is_dir() {
-        return Err(format!("source store is missing: {}", src.display()));
-    }
-    fs::create_dir_all(dst).map_err(|err| err.to_string())?;
-    let mut outcome = CompanyLedgerCopyOutcome::default();
-    let mut saw_company_ledger = false;
-    for path in active_company_os_ledger_paths(src) {
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        saw_company_ledger = true;
-        let target = dst.join(file_name);
-        if target.exists() {
-            let src_bytes = fs::read(&path).map_err(|err| err.to_string())?;
-            let dst_bytes = fs::read(&target).map_err(|err| err.to_string())?;
-            if src_bytes == dst_bytes {
-                outcome.skipped_identical_files += 1;
-                outcome.copied_records +=
-                    count_non_empty_lines(&path).map_err(|e| e.to_string())?;
-                continue;
-            }
-            if !force {
-                return Err(format!(
-                    "target ledger already exists with different content: {} (pass --force to overwrite Company OS ledgers only)",
-                    target.display()
-                ));
-            }
-        }
-        fs::copy(&path, &target).map_err(|err| err.to_string())?;
-        outcome.copied_files += 1;
-        outcome.copied_records += count_non_empty_lines(&path).map_err(|e| e.to_string())?;
-    }
-    if !saw_company_ledger {
-        return Err(format!(
-            "source store has no active Company OS ledgers: {}",
-            src.display()
-        ));
-    }
-    Ok(outcome)
-}
-
 fn count_non_empty_lines(path: &Path) -> std::io::Result<u64> {
     let text = fs::read_to_string(path)?;
     Ok(text.lines().filter(|line| !line.trim().is_empty()).count() as u64)
-}
-
-fn company_context_json(ctx: &company_store::CompanyContext, current: &str) -> serde_json::Value {
-    serde_json::json!({
-        "id": ctx.id,
-        "name": ctx.name,
-        "store_root": ctx.store_root.display().to_string(),
-        "is_current": ctx.id == current,
-        "identity_boundary": "company_store",
-        "execution_dependency": "optional",
-        "project_binding": "external",
-    })
-}
-
-fn company_org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(
-        args,
-        "company org actor|unit|membership | list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions|link-execution|unlink-execution",
-    )?;
-    match args[0].as_str() {
-        "actor" => company_org_actor_command(store, &args[1..]),
-        "unit" => company_org_unit_command(store, &args[1..]),
-        "membership" => company_org_membership_command(store, &args[1..]),
-        "list" => company_org_list_command(store, &args[1..]),
-        "query" => company_org_query_command(store, &args[1..]),
-        "create-human" => company_org_create_human_command(store, &args[1..]),
-        "create-agent" => company_org_create_agent_command(store, &args[1..]),
-        "create-unit" => company_org_create_unit_command(store, &args[1..]),
-        "add-membership" => company_org_add_membership_command(store, &args[1..]),
-        "transition-actor" => company_org_transition_actor_command(store, &args[1..]),
-        "update-permissions" => company_org_update_permissions_command(store, &args[1..]),
-        "link-execution" | "unlink-execution" => Err(CliError::Usage(
-            "AgentMembership requires its canonical AgentMember ActorRef at creation; relink/unlink compatibility commands are retired".into(),
-        )),
-        other => Err(CliError::Usage(format!(
-            "unknown company org command: {other}; usage: harness company org actor|unit|membership | list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions|link-execution|unlink-execution"
-        ))),
-    }
-}
-
-fn company_org_list_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let actor_kind = value(args, "--actor-kind");
-    let status = value(args, "--status");
-    let unit_id = value(args, "--unit");
-    let memberships = store.latest_organization_memberships()?;
-    let actors = store
-        .latest_actors()?
-        .into_iter()
-        .filter_map(|actor| serde_json::to_value(actor).ok())
-        .filter(|actor| {
-            actor_kind.as_deref().is_none_or(|kind| {
-                actor.get("actor_type").and_then(serde_json::Value::as_str) == Some(kind)
-            })
-        })
-        .filter(|actor| {
-            status.as_deref().is_none_or(|expected| {
-                actor
-                    .get("actor")
-                    .and_then(|record| record.get("status"))
-                    .and_then(serde_json::Value::as_str)
-                    == Some(expected)
-            })
-        })
-        .filter(|actor| {
-            unit_id.as_deref().is_none_or(|unit| {
-                let Some(kind) = actor.get("actor_type").and_then(serde_json::Value::as_str) else {
-                    return false;
-                };
-                let Some(id) = actor
-                    .get("actor")
-                    .and_then(|record| record.get("id"))
-                    .and_then(serde_json::Value::as_str)
-                else {
-                    return false;
-                };
-                memberships.iter().any(|membership| {
-                    serde_json::to_value(membership)
-                        .ok()
-                        .is_some_and(|membership| {
-                            membership
-                                .get("org_unit_id")
-                                .and_then(serde_json::Value::as_str)
-                                == Some(unit)
-                                && membership.get("status").and_then(serde_json::Value::as_str)
-                                    == Some("active")
-                                && membership
-                                    .get("actor_ref")
-                                    .and_then(|actor| actor.get("actor_type"))
-                                    .and_then(serde_json::Value::as_str)
-                                    == Some(kind)
-                                && membership
-                                    .get("actor_ref")
-                                    .and_then(|actor| actor.get("actor_id"))
-                                    .and_then(serde_json::Value::as_str)
-                                    == Some(id)
-                        })
-                })
-            })
-        })
-        .collect::<Vec<_>>();
-    let org_units = store.latest_org_units()?;
-    print_json(&serde_json::json!({
-        "ok": true,
-        "command": "harness company org list",
-        "result": {
-            "actors": actors,
-            "org_units": org_units,
-            "memberships": memberships,
-            "summary": {
-                "actor_count": actors.len(),
-                "org_unit_count": org_units.len(),
-                "membership_count": memberships.len()
-            },
-            "boundaries": company_org_boundaries()
-        }
-    }))
-}
-
-fn company_org_query_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let actor_id = value(args, "--actor");
-    let unit_id = value(args, "--unit");
-    let membership_id = value(args, "--membership");
-    if actor_id.is_none() && unit_id.is_none() && membership_id.is_none() {
-        return Err(CliError::Usage(
-            "usage: harness company org query --actor <id> [--actor-kind <kind>] | --unit <id> | --membership <id>".into(),
-        ));
-    }
-    let actor = actor_id
-        .as_deref()
-        .map(|id| {
-            let kind = value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string());
-            latest_company_actor_value(store, &kind, id)
-        })
-        .transpose()?;
-    let unit = unit_id
-        .as_deref()
-        .map(|id| latest_org_unit_value(store, id))
-        .transpose()?;
-    let membership = membership_id
-        .as_deref()
-        .map(|id| latest_membership_value(store, id))
-        .transpose()?;
-    let related_memberships = store
-        .latest_organization_memberships()?
-        .into_iter()
-        .filter(|candidate| {
-            actor_id
-                .as_deref()
-                .is_some_and(|id| candidate.actor_ref.actor_id == id)
-                || unit_id
-                    .as_deref()
-                    .is_some_and(|id| candidate.org_unit_id == id)
-                || membership_id
-                    .as_deref()
-                    .is_some_and(|id| candidate.id == id)
-        })
-        .collect::<Vec<_>>();
-    print_json(&serde_json::json!({
-        "ok": true,
-        "command": "harness company org query",
-        "result": {
-            "actor": actor,
-            "org_unit": unit,
-            "membership": membership,
-            "related_memberships": related_memberships,
-            "boundaries": company_org_boundaries()
-        }
-    }))
-}
-
-fn company_org_create_human_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
-    let now = now_string();
-    let id = value(args, "--id").unwrap_or_else(|| generated_id("human-cli"));
-    let actor = serde_json::json!({
-        "actor_type": "human",
-        "actor": {
-            "id": id,
-            "display_name": required(args, "--display-name")?,
-            "title": value(args, "--title"),
-            "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
-            "availability": value(args, "--availability").unwrap_or_else(|| "available".to_string()),
-            "membership_refs": many(args, "--membership"),
-            "responsibility_summary": required(args, "--responsibility")?,
-            "permission_policy_refs": many(args, "--permission"),
-            "authority_policy_refs": many(args, "--authority-policy"),
-            "created_at": now,
-            "updated_at": now
-        }
-    });
-    company_org_admin_append(
-        store,
-        "/v1/company-os/actors",
-        &authority,
-        actor,
-        "administrative_human_actor_append",
-    )
-}
-
-fn company_agent_membership_actor_value(args: &[String]) -> CliResult<serde_json::Value> {
-    let agent_member_id = required(args, "--agent-member")?;
-    let execution_space_id = required(args, "--execution-space")?;
-    let (space, execution_store) = company_execution_space_store(&execution_space_id)?;
-    let member = execution_store
-        .trust_agent_members(&space.id)?
-        .into_iter()
-        .find(|member| member.id == agent_member_id)
-        .ok_or_else(|| {
-            CliError::Usage(format!(
-                "canonical AgentMember not found in Execution Space {}: {agent_member_id}",
-                space.id
-            ))
-        })?;
-    if member.organization_status
-        != harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active
-    {
-        return Err(CliError::Usage(format!(
-            "canonical AgentMember {agent_member_id} is not active"
-        )));
-    }
-    let now = now_string();
-    Ok(serde_json::json!({
-        "actor_type": "agent",
-        "actor": {
-            "id": value(args, "--id").unwrap_or_else(|| generated_id("agent-membership-cli")),
-            "agent_member_ref": { "kind": "agent_member", "id": agent_member_id },
-            "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
-            "membership_refs": many(args, "--membership"),
-            "responsibility_summary": required(args, "--responsibility")?,
-            "permission_policy_refs": many(args, "--permission"),
-            "created_at": now,
-            "updated_at": now
-        }
-    }))
-}
-
-fn company_org_create_agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
-    company_org_admin_append(
-        store,
-        "/v1/company-os/actors",
-        &authority,
-        company_agent_membership_actor_value(args)?,
-        "administrative_agent_membership_append",
-    )
-}
-fn company_org_create_unit_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
-    let now = now_string();
-    let id = value(args, "--id").unwrap_or_else(|| generated_id("org-unit-cli"));
-    let record = serde_json::json!({
-        "id": id,
-        "organization_id": value(args, "--organization").unwrap_or_else(|| "company".to_string()),
-        "name": required(args, "--name")?,
-        "purpose": required(args, "--purpose")?,
-        "parent_unit_id": value(args, "--parent-unit"),
-        "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
-        "human_lead_actor_ref": value(args, "--human-lead")
-            .map(|id| company_actor_ref_json(&value(args, "--human-lead-kind").unwrap_or_else(|| "human".to_string()), &id))
-            .transpose()?,
-        "agent_lead_actor_ref": value(args, "--agent-lead")
-            .map(|id| company_actor_ref_json(&value(args, "--agent-lead-kind").unwrap_or_else(|| "agent".to_string()), &id))
-            .transpose()?,
-        "policy_refs": many(args, "--policy"),
-        "document_space_ref": value(args, "--document-space"),
-        "created_at": now,
-        "updated_at": now
-    });
-    company_org_admin_append(
-        store,
-        "/v1/company-os/org-units",
-        &authority,
-        record,
-        "administrative_org_unit_append",
-    )
-}
-
-fn company_org_add_membership_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
-    let now = now_string();
-    let record = serde_json::json!({
-        "id": value(args, "--id").unwrap_or_else(|| generated_id("membership-cli")),
-        "organization_id": value(args, "--organization").unwrap_or_else(|| "company".to_string()),
-        "org_unit_id": required(args, "--unit")?,
-        "actor_ref": company_actor_ref_json(&value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string()), &required(args, "--actor")?)?,
-        "membership_role": value(args, "--role").unwrap_or_else(|| "member".to_string()),
-        "title_or_function": value(args, "--title"),
-        "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
-        "starts_at": value(args, "--starts-at").unwrap_or_else(now_string),
-        "ends_at": value(args, "--ends-at"),
-        "authority_policy_refs": many(args, "--authority-policy"),
-        "created_by_actor_ref": company_actor_ref_json(&value(args, "--created-by-kind").unwrap_or_else(|| "human".to_string()), &authority)?,
-        "created_at": now
-    });
-    company_org_admin_append(
-        store,
-        "/v1/company-os/memberships",
-        &authority,
-        record,
-        "administrative_membership_append",
-    )
-}
-
-fn company_org_transition_actor_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
-    let actor_id = required(args, "--actor")?;
-    let actor_kind = value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string());
-    let mut actor = latest_company_actor_value(store, &actor_kind, &actor_id)?;
-    actor["actor"]["status"] = serde_json::json!(required(args, "--status")?);
-    if actor_kind != "agent" {
-        if let Some(availability) = value(args, "--availability") {
-            actor["actor"]["availability"] = serde_json::json!(availability);
-        }
-    } else if value(args, "--availability").is_some() {
-        return Err(CliError::Usage(
-            "Agent Membership has no independent availability; inspect the canonical AgentMember/ProviderRuntimeProjection projection"
-                .to_string(),
-        ));
-    }
-    actor["actor"]["updated_at"] = serde_json::json!(now_string());
-    company_org_admin_append(
-        store,
-        "/v1/company-os/actors",
-        &authority,
-        actor,
-        "administrative_actor_status_append",
-    )
-}
-
-fn company_org_update_permissions_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
-    let actor_id = required(args, "--actor")?;
-    let actor_kind = value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string());
-    let mut actor = latest_company_actor_value(store, &actor_kind, &actor_id)?;
-    if actor_kind == "agent"
-        && (!many(args, "--authority-policy").is_empty() || !many(args, "--capability").is_empty())
-    {
-        return Err(CliError::Usage(
-            "Agent Membership stores only permission_policy_refs; capabilities and authority live on the canonical AgentMember or Human authority"
-                .to_string(),
-        ));
-    }
-    append_string_values(
-        &mut actor["actor"],
-        "permission_policy_refs",
-        many(args, "--permission"),
-    );
-    if actor_kind != "agent" {
-        append_string_values(
-            &mut actor["actor"],
-            "authority_policy_refs",
-            many(args, "--authority-policy"),
-        );
-        append_string_values(
-            &mut actor["actor"],
-            "capability_refs",
-            many(args, "--capability"),
-        );
-    }
-    actor["actor"]["updated_at"] = serde_json::json!(now_string());
-    company_org_admin_append(
-        store,
-        "/v1/company-os/actors",
-        &authority,
-        actor,
-        "administrative_actor_permission_append",
-    )
-}
-
-/// Open the Execution Space that owns ProviderLaunchProfile truth for a Company OS link.
-///
-/// `harness company ...` resolves its store from the Company Store registry and
-/// returns from [`resolve_store`] *before* the global `--space` selector is
-/// consumed, so a Company CLI command never holds an execution store. Per ADR
-/// 0042 the Company Store does not own ProviderLaunchProfile truth and a Project Binding
-/// only describes cwd, so the relation command names its Execution Space
-/// explicitly and this function is the single read-only bridge across the
-/// boundary. It deliberately has no fallback to the active space or to a
-/// Project Binding: a link validated against an unnamed store is not governed.
-fn company_execution_space_store(
-    space_id: &str,
-) -> CliResult<(harness_core::ExecutionSpace, HarnessStore)> {
-    let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
-    let space = execution_space::context_for_id(&firm_home, space_id)
-        .map_err(execution_space_err)?
-        .ok_or_else(|| {
-            CliError::Usage(format!(
-                "unknown execution space: {space_id}; list them with `harness space list`"
-            ))
-        })?;
-    let store = HarnessStore::new(space.store_root.clone());
-    Ok((space, store))
-}
-
-fn company_org_admin_append(
-    store: &HarnessStore,
-    path: &str,
-    authority: &str,
-    record: serde_json::Value,
-    write_path: &str,
-) -> CliResult<()> {
-    company_org_admin_append_detail(
-        store,
-        path,
-        authority,
-        record,
-        write_path,
-        serde_json::Value::Null,
-    )
-}
-
-fn company_org_admin_append_detail(
-    store: &HarnessStore,
-    path: &str,
-    authority: &str,
-    record: serde_json::Value,
-    write_path: &str,
-    detail: serde_json::Value,
-) -> CliResult<()> {
-    let result = dispatch_company_docs_admin_append_value(
-        store,
-        path,
-        company_actor_ref_json("human", authority)?,
-        record,
-    )?;
-    let mut payload = serde_json::json!({
-        "record": result,
-        "write_path": write_path,
-        "boundaries": company_org_boundaries()
-    });
-    if let (Some(target), Some(detail)) = (payload.as_object_mut(), detail.as_object()) {
-        for (key, value) in detail {
-            target.insert(key.clone(), value.clone());
-        }
-    }
-    print_json(&serde_json::json!({
-        "ok": true,
-        "command": "harness company org",
-        "result": payload
-    }))
-}
-
-fn company_org_boundaries() -> serde_json::Value {
-    serde_json::json!({
-        "org_change_proposal_action": "planned",
-        "write_model": "human_administrative_append_v1",
-        "organization_side_effects": true,
-        "execution_side_effects": false,
-        "agent_membership_is_not_agent_team_member_run": true,
-        "runtime_health_does_not_grant_authority": true
-    })
-}
-
-fn company_finance_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(
-        args,
-        "company finance commitment|payment | list|query|propose-commitment|request-approval|decide-approval|transition-commitment|record-payment|transition-payment",
-    )?;
-    match args[0].as_str() {
-        "commitment" => company_finance_commitment_command(store, &args[1..]),
-        "payment" => company_finance_payment_command(store, &args[1..]),
-        "list" => company_finance_list_command(store, &args[1..]),
-        "query" => company_finance_query_command(store, &args[1..]),
-        "propose-commitment" => company_finance_propose_commitment_command(store, &args[1..]),
-        "request-approval" => company_finance_request_approval_command(store, &args[1..]),
-        "decide-approval" => company_finance_decide_approval_command(store, &args[1..]),
-        "transition-commitment" => {
-            company_finance_transition_commitment_command(store, &args[1..])
-        }
-        "record-payment" => company_finance_record_payment_command(store, &args[1..]),
-        "transition-payment" => company_finance_transition_payment_command(store, &args[1..]),
-        other => Err(CliError::Usage(format!(
-            "unknown company finance command: {other}; usage: harness company finance commitment|payment | list|query|propose-commitment|request-approval|decide-approval|transition-commitment|record-payment|transition-payment"
-        ))),
-    }
-}
-
-fn company_finance_list_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let commitment_status = value(args, "--commitment-status");
-    let payment_status = value(args, "--payment-status");
-    let source_document = value(args, "--source-document");
-    let commitments = store
-        .latest_commitments()?
-        .into_iter()
-        .filter(|item| {
-            commitment_status.as_deref().is_none_or(|status| {
-                serde_json::to_value(item.status)
-                    .ok()
-                    .and_then(|v| v.as_str().map(str::to_string))
-                    .as_deref()
-                    == Some(status)
-            }) && source_document
-                .as_deref()
-                .is_none_or(|id| item.source_document_id == id)
-        })
-        .collect::<Vec<_>>();
-    let payments = store
-        .latest_payments()?
-        .into_iter()
-        .filter(|item| {
-            payment_status.as_deref().is_none_or(|status| {
-                serde_json::to_value(item.status)
-                    .ok()
-                    .and_then(|v| v.as_str().map(str::to_string))
-                    .as_deref()
-                    == Some(status)
-            }) && source_document
-                .as_deref()
-                .is_none_or(|id| item.source_document_id == id)
-        })
-        .collect::<Vec<_>>();
-    print_json(&serde_json::json!({
-        "ok": true,
-        "command": "harness company finance list",
-        "result": {
-            "commitments": commitments,
-            "payments": payments,
-            "summary": {
-                "commitment_count": commitments.len(),
-                "payment_count": payments.len()
-            },
-            "boundaries": company_finance_boundaries()
-        }
-    }))
-}
-
-fn company_finance_query_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let commitment_id = value(args, "--commitment");
-    let payment_id = value(args, "--payment");
-    if commitment_id.is_none() && payment_id.is_none() {
-        return Err(CliError::Usage(
-            "usage: harness company finance query --commitment <id> | --payment <id>".into(),
-        ));
-    }
-    let commitment = commitment_id
-        .as_deref()
-        .map(|id| latest_commitment_value(store, id))
-        .transpose()?;
-    let payment = payment_id
-        .as_deref()
-        .map(|id| latest_payment_value(store, id))
-        .transpose()?;
-    let approvals = store.latest_approvals()?;
-    print_json(&serde_json::json!({
-        "ok": true,
-        "command": "harness company finance query",
-        "result": {
-            "commitment": commitment,
-            "payment": payment,
-            "related_approvals": approvals.into_iter().filter(|approval| {
-                let subject = commitment_id.as_deref().or(payment_id.as_deref());
-                subject == Some(approval.subject_ref.id.as_str())
-            }).collect::<Vec<_>>(),
-            "boundaries": company_finance_boundaries()
-        }
-    }))
-}
-
-fn company_finance_propose_commitment_command(
-    store: &HarnessStore,
-    args: &[String],
-) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
-    let source_document = required(args, "--source-document")?;
-    let amount = required(args, "--amount")?;
-    let currency = value(args, "--currency").unwrap_or_else(|| "CNY".to_string());
-    let submitted_by = required(args, "--submitted-by")?;
-    let accountable_owner = required(args, "--accountable-owner")?;
-    let now = now_string();
-    let commitment_id = value(args, "--id").unwrap_or_else(|| generated_id("commitment-cli"));
-    let record = serde_json::json!({
-        "id": commitment_id,
-        "amount": {"amount": amount, "currency": currency},
-        "status": "proposed",
-        "source_document_id": source_document,
-        "submitted_by": company_actor_ref_json(&value(args, "--submitted-by-kind").unwrap_or_else(|| "agent".to_string()), &submitted_by)?,
-        "accountable_owner": company_actor_ref_json(&value(args, "--accountable-owner-kind").unwrap_or_else(|| "human".to_string()), &accountable_owner)?,
-        "relation_ids": many(args, "--relation"),
-        "evidence_refs": many(args, "--evidence"),
-        "approval_refs": [],
-        "audit_event_ids": many(args, "--audit-event"),
-        "due_at": value(args, "--due-at"),
-        "created_at": now,
-        "updated_at": now
-    });
-    let authority_ref = company_actor_ref_json("human", &authority)?;
-    let result = dispatch_company_docs_admin_append_value(
-        store,
-        "/v1/company-os/commitments",
-        authority_ref,
-        record,
-    )?;
-    print_json(&serde_json::json!({
-        "ok": true,
-        "command": "harness company finance propose-commitment",
-        "result": {
-            "record": result,
-            "write_path": "administrative_proposed_commitment_import",
-            "next": "request approval, then transition-commitment to pending_approval"
-        }
-    }))
-}
-
-fn company_finance_request_approval_command(
-    store: &HarnessStore,
-    args: &[String],
-) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let commitment_id = required(args, "--commitment")?;
-    let requested_by = required(args, "--requested-by")?;
-    let approver = required(args, "--approver")?;
-    let policy_ref =
-        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:commitment.append"));
-    let now = now_string();
-    let approval_id = value(args, "--id").unwrap_or_else(|| generated_id("approval-cli-finance"));
-    let record = serde_json::json!({
-        "id": approval_id,
-        "subject_ref": {"kind": "financial_record", "id": commitment_id},
-        "action_summary": value(args, "--action-summary").unwrap_or_else(|| "Authorize commitment.append for financial commitment".to_string()),
-        "requested_by": company_actor_ref_json(&value(args, "--requested-by-kind").unwrap_or_else(|| "agent".to_string()), &requested_by)?,
-        "required_approver_refs": [company_actor_ref_json(&value(args, "--approver-kind").unwrap_or_else(|| "human".to_string()), &approver)?],
-        "required_actor_type": "human",
-        "policy_ref": policy_ref,
-        "status": "requested",
-        "decided_by": [],
-        "decision_note": null,
-        "evidence_refs": many(args, "--evidence"),
-        "requested_at": now,
-        "decided_at": null,
-        "expires_at": value(args, "--expires-at")
-    });
-    let body = company_work_action_body(
-        &definition_id,
-        value(args, "--approval-policy-ref")
-            .unwrap_or_else(|| format!("{definition_id}:approval.request")),
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-approval-request")),
-        "approval.request",
-        serde_json::json!({"kind": "financial_record", "id": commitment_id}),
-        company_actor_ref_json(
-            &value(args, "--requested-by-kind").unwrap_or_else(|| "agent".to_string()),
-            &requested_by,
-        )?,
-        record,
-        "company.records.write",
-        "r1",
-        false,
-    );
-    dispatch_company_work_action(store, &body)
-}
-
-fn company_finance_decide_approval_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let approval_id = required(args, "--approval")?;
-    let actor = required(args, "--actor")?;
-    let decision = value(args, "--decision").unwrap_or_else(|| "approved".to_string());
-    if !matches!(decision.as_str(), "approved" | "rejected") {
-        return Err(CliError::Usage(
-            "--decision must be approved or rejected".into(),
-        ));
-    }
-    let mut record = latest_approval_value(store, &approval_id)?;
-    record["status"] = serde_json::json!(decision);
-    record["decided_by"] = serde_json::json!([company_actor_ref_json("human", &actor)?]);
-    record["decision_note"] = serde_json::json!(required(args, "--note")?);
-    record["decided_at"] =
-        serde_json::json!(value(args, "--decided-at").unwrap_or_else(now_string));
-    let body = company_work_action_body(
-        &definition_id,
-        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:approval.decide")),
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-approval-decide")),
-        "approval.decide",
-        serde_json::json!({"kind": "approval", "id": approval_id}),
-        company_actor_ref_json("human", &actor)?,
-        record,
-        "company.approve",
-        "r2",
-        false,
-    );
-    dispatch_company_work_action(store, &body)
-}
-
-fn company_finance_transition_commitment_command(
-    store: &HarnessStore,
-    args: &[String],
-) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let commitment_id = required(args, "--commitment")?;
-    let status = required(args, "--status")?;
-    let actor = required(args, "--actor")?;
-    let command_id = value(args, "--command-id")
-        .unwrap_or_else(|| generated_id("action-cli-commitment-transition"));
-    let authorized_audit_id = format!("{command_id}:policy-authorized");
-    let mut record = latest_commitment_value(store, &commitment_id)?;
-    record["status"] = serde_json::json!(status);
-    record["updated_at"] = serde_json::json!(now_string());
-    append_string_values(&mut record, "approval_refs", many(args, "--approval"));
-    append_string_values(&mut record, "evidence_refs", many(args, "--evidence"));
-    append_string_values(&mut record, "audit_event_ids", vec![authorized_audit_id]);
-    append_string_values(&mut record, "audit_event_ids", many(args, "--audit-event"));
-    let approvals = many(args, "--approval");
-    let body = company_finance_action_body(
-        &definition_id,
-        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:commitment.append")),
-        command_id,
-        "commitment.append",
-        serde_json::json!({"kind": "financial_record", "id": commitment_id}),
-        company_actor_ref_json(
-            &value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string()),
-            &actor,
-        )?,
-        record,
-        "finance.commitment.write",
-        "r3",
-        true,
-        approvals,
-    );
-    dispatch_company_work_action(store, &body)
-}
-
-fn company_finance_record_payment_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let commitment_id = required(args, "--commitment")?;
-    let actor = required(args, "--actor")?;
-    let commitment = latest_commitment_value(store, &commitment_id)?;
-    let payment_id = value(args, "--id").unwrap_or_else(|| generated_id("payment-cli"));
-    let command_id =
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-payment-record"));
-    let authorized_audit_id = format!("{command_id}:policy-authorized");
-    let mut audit_event_ids = vec![authorized_audit_id];
-    audit_event_ids.extend(many(args, "--audit-event"));
-    let now = now_string();
-    let record = serde_json::json!({
-        "id": payment_id,
-        "amount": commitment["amount"].clone(),
-        "status": value(args, "--status").unwrap_or_else(|| "prepared".to_string()),
-        "source_document_id": commitment["source_document_id"].clone(),
-        "submitted_by": company_actor_ref_json(&value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string()), &actor)?,
-        "accountable_owner": commitment["accountable_owner"].clone(),
-        "related_commitment_refs": [commitment_id],
-        "relation_ids": many(args, "--relation"),
-        "evidence_refs": many(args, "--evidence"),
-        "approval_refs": many(args, "--approval"),
-        "audit_event_ids": audit_event_ids,
-        "occurred_at": value(args, "--occurred-at"),
-        "created_at": now,
-        "updated_at": now
-    });
-    let approvals = many(args, "--approval");
-    let body = company_finance_action_body(
-        &definition_id,
-        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:payment.append")),
-        command_id,
-        "payment.append",
-        serde_json::json!({"kind": "financial_record", "id": commitment["id"].clone()}),
-        company_actor_ref_json(
-            &value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string()),
-            &actor,
-        )?,
-        record,
-        "finance.payment.write",
-        "r3",
-        true,
-        approvals,
-    );
-    dispatch_company_work_action(store, &body)
-}
-
-fn company_finance_transition_payment_command(
-    store: &HarnessStore,
-    args: &[String],
-) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let payment_id = required(args, "--payment")?;
-    let status = required(args, "--status")?;
-    let actor = required(args, "--actor")?;
-    let command_id = value(args, "--command-id")
-        .unwrap_or_else(|| generated_id("action-cli-payment-transition"));
-    let authorized_audit_id = format!("{command_id}:policy-authorized");
-    let mut record = latest_payment_value(store, &payment_id)?;
-    record["status"] = serde_json::json!(status);
-    record["updated_at"] = serde_json::json!(now_string());
-    if matches!(status.as_str(), "settled" | "reversed") && record["occurred_at"].is_null() {
-        record["occurred_at"] =
-            serde_json::json!(value(args, "--occurred-at").unwrap_or_else(now_string));
-    }
-    append_string_values(&mut record, "approval_refs", many(args, "--approval"));
-    append_string_values(&mut record, "evidence_refs", many(args, "--evidence"));
-    append_string_values(&mut record, "audit_event_ids", vec![authorized_audit_id]);
-    append_string_values(&mut record, "audit_event_ids", many(args, "--audit-event"));
-    let approvals = many(args, "--approval");
-    let body = company_finance_action_body(
-        &definition_id,
-        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:payment.append")),
-        command_id,
-        "payment.append",
-        serde_json::json!({"kind": "financial_record", "id": payment_id}),
-        company_actor_ref_json(
-            &value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string()),
-            &actor,
-        )?,
-        record,
-        "finance.payment.write",
-        "r3",
-        true,
-        approvals,
-    );
-    dispatch_company_work_action(store, &body)
-}
-
-fn company_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company work milestone")?;
-    match args[0].as_str() {
-        "list" | "query" => Err(CliError::Usage(
-            "`harness company work list|query` was replaced by the Global Work view (DOC-106): use `harness work list` (CLI) or GET /v1/views/global-work (API). The one Work/WorkOperation authority is unchanged; no Company ledger exists."
-                .into(),
-        )),
-        "milestone" => company_work_milestone_command(store, &args[1..]),
-        other => Err(CliError::Usage(format!(
-            "unknown company work command: {other}; Company Work Milestones remain; Global Work reads moved to `harness work list`"
-        ))),
-    }
 }
 
 /// Global Work CLI (DOC-106): the same one read projection served at
@@ -3631,3871 +2128,6 @@ fn global_work_command(args: &[String]) -> CliResult<()> {
         ))),
     }
 }
-
-fn company_work_milestone_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company work milestone list|show|create|update|close")?;
-    match args[0].as_str() {
-        "list" => company_work_milestone_list_command(store, &args[1..]),
-        "show" => company_work_milestone_show_command(store, &args[1..]),
-        "create" => company_work_milestone_create_command(store, &args[1..]),
-        "update" => company_work_milestone_update_command(store, &args[1..]),
-        "close" => company_work_milestone_close_command(store, &args[1..]),
-        other => Err(CliError::Usage(format!(
-            "unknown company work milestone command: {other}; usage: harness company work milestone list|show|create|update|close"
-        ))),
-    }
-}
-
-fn company_work_milestone_list_command(store: &HarnessStore, _args: &[String]) -> CliResult<()> {
-    print_json(&serde_json::json!({
-        "ok": true,
-        "result": store.latest_milestones()?,
-        "command": "harness company work milestone list",
-        "boundaries": {
-            "owned_by": "Work",
-            "project_object": false,
-            "task_graph": false
-        }
-    }))
-}
-
-fn company_work_milestone_show_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let id = required(args, "--id").or_else(|_| required(args, "--milestone"))?;
-    let milestone = latest_milestone_value(store, &id)?;
-    print_json(&serde_json::json!({
-        "ok": true,
-        "result": milestone,
-        "command": "harness company work milestone show"
-    }))
-}
-
-fn company_work_milestone_create_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
-    let milestone_id = value(args, "--id").unwrap_or_else(|| generated_id("milestone-cli"));
-    let now = now_string();
-    let record = serde_json::json!({
-        "id": milestone_id,
-        "title": required(args, "--title")?,
-        "outcome": required(args, "--outcome")?,
-        "status": value(args, "--status").unwrap_or_else(|| "planned".to_string()),
-        "accountable_owner": company_actor_ref_json(
-            &value(args, "--accountable-kind").unwrap_or_else(|| "agent".to_string()),
-            &required(args, "--accountable-owner")?,
-        )?,
-        "source_document_ref": value(args, "--source-document"),
-        "business_module_ref": value(args, "--module"),
-        "target_at": value(args, "--target-at"),
-        "acceptance_criteria": many(args, "--acceptance-criterion"),
-        "work_refs": many(args, "--work"),
-        "created_at": now,
-        "updated_at": now,
-        "achieved_at": null
-    });
-    let result = dispatch_company_admin_append_value(
-        store,
-        "/v1/company-os/milestones",
-        Some(company_actor_ref_json("human", &authority)?),
-        record,
-    )?;
-    print_json(&serde_json::json!({
-        "ok": true,
-        "result": result,
-        "command": "harness company work milestone create"
-    }))
-}
-
-fn company_work_milestone_update_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
-    let id = required(args, "--id").or_else(|_| required(args, "--milestone"))?;
-    let mut record = latest_milestone_value(store, &id)?;
-    if let Some(title) = value(args, "--title") {
-        record["title"] = serde_json::json!(title);
-    }
-    if let Some(outcome) = value(args, "--outcome") {
-        record["outcome"] = serde_json::json!(outcome);
-    }
-    if let Some(status) = value(args, "--status") {
-        record["status"] = serde_json::json!(status);
-    }
-    if let Some(accountable) = value(args, "--accountable-owner") {
-        record["accountable_owner"] = company_actor_ref_json(
-            &value(args, "--accountable-kind").unwrap_or_else(|| "agent".to_string()),
-            &accountable,
-        )?;
-    }
-    if let Some(source) = value(args, "--source-document") {
-        record["source_document_ref"] = serde_json::json!(source);
-    }
-    if let Some(module) = value(args, "--module") {
-        record["business_module_ref"] = serde_json::json!(module);
-    }
-    if let Some(target) = value(args, "--target-at") {
-        record["target_at"] = serde_json::json!(target);
-    }
-    append_string_values(
-        &mut record,
-        "acceptance_criteria",
-        many(args, "--acceptance-criterion"),
-    );
-    append_string_values(&mut record, "work_refs", many(args, "--work"));
-    record["updated_at"] = serde_json::json!(now_string());
-    if record.get("status").and_then(|value| value.as_str()) == Some("achieved")
-        && record
-            .get("achieved_at")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .is_empty()
-    {
-        record["achieved_at"] =
-            serde_json::json!(value(args, "--achieved-at").unwrap_or_else(now_string));
-    } else if let Some(achieved_at) = value(args, "--achieved-at") {
-        record["achieved_at"] = serde_json::json!(achieved_at);
-    }
-    let result = dispatch_company_admin_append_value(
-        store,
-        "/v1/company-os/milestones",
-        Some(company_actor_ref_json("human", &authority)?),
-        record,
-    )?;
-    print_json(&serde_json::json!({
-        "ok": true,
-        "result": result,
-        "command": "harness company work milestone update"
-    }))
-}
-
-fn company_work_milestone_close_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let mut forwarded = args.to_vec();
-    forwarded.push("--status".to_string());
-    forwarded.push("achieved".to_string());
-    if value(args, "--achieved-at").is_none() {
-        forwarded.push("--achieved-at".to_string());
-        forwarded.push(now_string());
-    }
-    company_work_milestone_update_command(store, &forwarded)
-}
-
-fn company_org_actor_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(
-        args,
-        "company org actor list|show|create-human|create-agent|update-status|link-execution|unlink-execution",
-    )?;
-    match args[0].as_str() {
-        "list" => {
-            let mut forwarded = args[1..].to_vec();
-            if value(&forwarded, "--actor-kind").is_none() {
-                if let Some(kind) = value(&forwarded, "--kind") {
-                    forwarded.push("--actor-kind".to_string());
-                    forwarded.push(kind);
-                }
-            }
-            company_org_list_command(store, &forwarded)
-        }
-        "show" => {
-            let id = required(&args[1..], "--id").or_else(|_| required(&args[1..], "--actor"))?;
-            let actor = store
-                .latest_actors()?
-                .into_iter()
-                .filter_map(|actor| serde_json::to_value(actor).ok())
-                .find(|actor| {
-                    value(&args[1..], "--kind").as_deref().is_none_or(|kind| {
-                        actor.get("actor_type").and_then(serde_json::Value::as_str)
-                            == Some(kind)
-                    }) && actor
-                        .get("actor")
-                        .and_then(|record| record.get("id"))
-                        .and_then(serde_json::Value::as_str)
-                        == Some(id.as_str())
-                })
-                .ok_or_else(|| CliError::Usage(format!("Company actor not found: {id}")))?;
-            print_json(&serde_json::json!({"ok": true, "result": actor, "command": "harness company org actor show"}))
-        }
-        "create-human" => {
-            let forwarded = company_org_nested_display_name_args(&args[1..]);
-            company_org_actor_create_human_command(store, &forwarded)
-        }
-        "create-agent" => {
-            let forwarded = company_org_nested_display_name_args(&args[1..]);
-            company_org_actor_create_agent_command(store, &forwarded)
-        }
-        "update-status" => {
-            let mut forwarded = args[1..].to_vec();
-            if value(&forwarded, "--actor").is_none() {
-                if let Some(id) = value(&forwarded, "--id") {
-                    forwarded.push("--actor".to_string());
-                    forwarded.push(id);
-                }
-            }
-            if value(&forwarded, "--actor-kind").is_none() {
-                if let Some(kind) = value(&forwarded, "--kind") {
-                    forwarded.push("--actor-kind".to_string());
-                    forwarded.push(kind);
-                }
-            }
-            company_org_transition_actor_command(store, &forwarded)
-        }
-        "link-execution" | "unlink-execution" => Err(CliError::Usage(
-            "AgentMembership references a canonical AgentMember at creation; relink/unlink compatibility commands are retired".into(),
-        )),
-        other => Err(CliError::Usage(format!(
-            "unknown company org actor command: {other}; usage: harness company org actor list|show|create-human|create-agent|update-status|link-execution|unlink-execution"
-        ))),
-    }
-}
-
-fn company_org_unit_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company org unit list|show|create|update-status")?;
-    match args[0].as_str() {
-        "list" => print_json(&serde_json::json!({"ok": true, "result": store.latest_org_units()?, "command": "harness company org unit list"})),
-        "show" => {
-            let id = required(&args[1..], "--id").or_else(|_| required(&args[1..], "--unit"))?;
-            let unit = store.latest_org_units()?.into_iter().find(|unit| unit.id == id).map(serde_json::to_value).transpose()?.ok_or_else(|| CliError::Usage(format!("OrgUnit not found: {id}")))?;
-            print_json(&serde_json::json!({"ok": true, "result": unit, "command": "harness company org unit show"}))
-        }
-        "create" => company_org_unit_create_nested_command(store, &args[1..]),
-        "update-status" => {
-            let mut forwarded = args[1..].to_vec();
-            if value(&forwarded, "--unit").is_none() {
-                if let Some(id) = value(&forwarded, "--id") {
-                    forwarded.push("--unit".to_string());
-                    forwarded.push(id);
-                }
-            }
-            company_org_transition_unit_command(store, &forwarded)
-        }
-        other => Err(CliError::Usage(format!(
-            "unknown company org unit command: {other}; usage: harness company org unit list|show|create|update-status"
-        ))),
-    }
-}
-
-fn company_org_membership_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company org membership list|assign|update-status")?;
-    match args[0].as_str() {
-        "list" => print_json(&serde_json::json!({"ok": true, "result": store.latest_organization_memberships()?, "command": "harness company org membership list"})),
-        "assign" => company_org_membership_assign_nested_command(store, &args[1..]),
-        "update-status" => {
-            let mut forwarded = args[1..].to_vec();
-            if value(&forwarded, "--membership").is_none() {
-                if let Some(id) = value(&forwarded, "--id") {
-                    forwarded.push("--membership".to_string());
-                    forwarded.push(id);
-                }
-            }
-            company_org_transition_membership_command(store, &forwarded)
-        }
-        other => Err(CliError::Usage(format!(
-            "unknown company org membership command: {other}; usage: harness company org membership list|assign|update-status"
-        ))),
-    }
-}
-
-fn company_org_nested_display_name_args(args: &[String]) -> Vec<String> {
-    let mut forwarded = args.to_vec();
-    if value(&forwarded, "--display-name").is_none() {
-        if let Some(name) = value(&forwarded, "--name") {
-            forwarded.push("--display-name".to_string());
-            forwarded.push(name);
-        }
-    }
-    forwarded
-}
-
-fn company_org_actor_create_human_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let id = value(args, "--id").unwrap_or_else(|| generated_id("human-cli"));
-    let now = now_string();
-    let record = serde_json::json!({
-        "actor_type": "human",
-        "actor": {
-            "id": id,
-            "display_name": required(args, "--display-name")?,
-            "title": value(args, "--title"),
-            "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
-            "availability": value(args, "--availability"),
-            "membership_refs": many(args, "--membership"),
-            "responsibility_summary": required(args, "--responsibility")?,
-            "permission_policy_refs": defaulted_many(args, "--permission", "company_os.admin"),
-            "authority_policy_refs": defaulted_many(args, "--authority-policy", "company_os.admin"),
-            "created_at": now,
-            "updated_at": now
-        }
-    });
-    let result = dispatch_company_admin_append_value(
-        store,
-        "/v1/company-os/actors",
-        optional_human_authority(args)?,
-        record,
-    )?;
-    print_json(
-        &serde_json::json!({"ok": true, "result": result, "command": "harness company org actor create-human"}),
-    )
-}
-
-fn company_org_actor_create_agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
-    let result = dispatch_company_admin_append_value(
-        store,
-        "/v1/company-os/actors",
-        Some(company_actor_ref_json("human", &authority)?),
-        company_agent_membership_actor_value(args)?,
-    )?;
-    print_json(&serde_json::json!({
-        "ok": true,
-        "result": result,
-        "command": "harness company org actor create-agent"
-    }))
-}
-fn company_org_unit_create_nested_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
-    let now = now_string();
-    let record = serde_json::json!({
-        "id": value(args, "--id").unwrap_or_else(|| generated_id("org-unit-cli")),
-        "organization_id": value(args, "--organization").unwrap_or_else(|| "company".to_string()),
-        "name": required(args, "--name")?,
-        "purpose": required(args, "--purpose")?,
-        "parent_unit_id": value(args, "--parent").or_else(|| value(args, "--parent-unit")),
-        "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
-        "human_lead_actor_ref": value(args, "--human-lead")
-            .map(|id| company_actor_ref_json("human", &id))
-            .transpose()?,
-        "agent_lead_actor_ref": value(args, "--agent-lead")
-            .map(|id| company_actor_ref_json("agent", &id))
-            .transpose()?,
-        "policy_refs": many(args, "--policy"),
-        "document_space_ref": value(args, "--document-space"),
-        "created_at": now,
-        "updated_at": now
-    });
-    let result = dispatch_company_admin_append_value(
-        store,
-        "/v1/company-os/org-units",
-        Some(company_actor_ref_json("human", &authority)?),
-        record,
-    )?;
-    print_json(
-        &serde_json::json!({"ok": true, "result": result, "command": "harness company org unit create"}),
-    )
-}
-
-fn company_org_transition_unit_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
-    let id = required(args, "--unit")?;
-    let mut record = store
-        .latest_org_units()?
-        .into_iter()
-        .find(|unit| unit.id == id)
-        .map(serde_json::to_value)
-        .transpose()?
-        .ok_or_else(|| CliError::Usage(format!("OrgUnit not found: {id}")))?;
-    record["status"] = serde_json::json!(required(args, "--status")?);
-    record["updated_at"] = serde_json::json!(now_string());
-    let result = dispatch_company_admin_append_value(
-        store,
-        "/v1/company-os/org-units",
-        Some(company_actor_ref_json("human", &authority)?),
-        record,
-    )?;
-    print_json(
-        &serde_json::json!({"ok": true, "result": result, "command": "harness company org unit update-status"}),
-    )
-}
-
-fn company_org_membership_assign_nested_command(
-    store: &HarnessStore,
-    args: &[String],
-) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
-    let now = now_string();
-    let record = serde_json::json!({
-        "id": value(args, "--id").unwrap_or_else(|| generated_id("membership-cli")),
-        "organization_id": value(args, "--organization").unwrap_or_else(|| "company".to_string()),
-        "org_unit_id": required(args, "--unit")?,
-        "actor_ref": company_actor_ref_json(
-            &value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string()),
-            &required(args, "--actor")?,
-        )?,
-        "membership_role": value(args, "--role").unwrap_or_else(|| "member".to_string()),
-        "title_or_function": value(args, "--title"),
-        "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
-        "starts_at": value(args, "--starts-at").unwrap_or_else(|| now.clone()),
-        "ends_at": value(args, "--ends-at"),
-        "authority_policy_refs": many(args, "--authority-policy"),
-        "created_by_actor_ref": company_actor_ref_json("human", &authority)?,
-        "created_at": now
-    });
-    let result = dispatch_company_admin_append_value(
-        store,
-        "/v1/company-os/memberships",
-        Some(company_actor_ref_json("human", &authority)?),
-        record,
-    )?;
-    print_json(
-        &serde_json::json!({"ok": true, "result": result, "command": "harness company org membership assign"}),
-    )
-}
-
-fn company_org_transition_membership_command(
-    store: &HarnessStore,
-    args: &[String],
-) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
-    let id = required(args, "--membership")?;
-    let mut record = store
-        .latest_organization_memberships()?
-        .into_iter()
-        .find(|membership| membership.id == id)
-        .map(serde_json::to_value)
-        .transpose()?
-        .ok_or_else(|| CliError::Usage(format!("OrganizationMembership not found: {id}")))?;
-    record["status"] = serde_json::json!(required(args, "--status")?);
-    if let Some(ends_at) = value(args, "--ends-at") {
-        record["ends_at"] = serde_json::json!(ends_at);
-    }
-    let result = dispatch_company_admin_append_value(
-        store,
-        "/v1/company-os/memberships",
-        Some(company_actor_ref_json("human", &authority)?),
-        record,
-    )?;
-    print_json(
-        &serde_json::json!({"ok": true, "result": result, "command": "harness company org membership update-status"}),
-    )
-}
-
-fn company_approval_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company approval list|show|request|decide")?;
-    match args[0].as_str() {
-        "list" => print_json(&serde_json::json!({"ok": true, "result": store.latest_approvals()?, "command": "harness company approval list"})),
-        "show" => {
-            let id = required(&args[1..], "--id").or_else(|_| required(&args[1..], "--approval"))?;
-            let approval = latest_approval_value(store, &id)?;
-            print_json(&serde_json::json!({"ok": true, "result": approval, "command": "harness company approval show"}))
-        }
-        "request" => company_approval_request_command(store, &args[1..]),
-        "decide" => company_approval_decide_command(store, &args[1..]),
-        other => Err(CliError::Usage(format!(
-            "unknown company approval command: {other}; usage: harness company approval list|show|request|decide"
-        ))),
-    }
-}
-
-fn company_approval_request_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let subject = company_entity_ref_json(
-        &required(args, "--subject-kind")?,
-        &required(args, "--subject")?,
-    )?;
-    let requested_by = required(args, "--requested-by")?;
-    let requested_by_kind =
-        value(args, "--requested-by-kind").unwrap_or_else(|| "agent".to_string());
-    let approval_id = value(args, "--id").unwrap_or_else(|| generated_id("approval-cli"));
-    let policy_ref = required(args, "--approval-policy-ref")?;
-    let record = serde_json::json!({
-        "id": approval_id,
-        "subject_ref": subject,
-        "action_summary": required(args, "--summary")?,
-        "requested_by": company_actor_ref_json(&requested_by_kind, &requested_by)?,
-        "required_approver_refs": company_actor_refs_json(&many(args, "--required-approver"), "human")?,
-        "required_actor_type": value(args, "--required-actor-type").unwrap_or_else(|| "human".to_string()),
-        "policy_ref": policy_ref,
-        "status": "requested",
-        "decided_by": [],
-        "decision_note": null,
-        "evidence_refs": many(args, "--evidence"),
-        "requested_at": value(args, "--requested-at").unwrap_or_else(now_string),
-        "decided_at": null,
-        "expires_at": value(args, "--expires-at")
-    });
-    let body = company_action_body(
-        &definition_id,
-        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:approval.request")),
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-approval-request")),
-        "approval.request",
-        record["subject_ref"].clone(),
-        company_actor_ref_json(&requested_by_kind, &requested_by)?,
-        record,
-        "company.records.write",
-        "r1",
-        false,
-        vec![],
-    );
-    dispatch_company_action(store, &body, "harness company approval request")
-}
-
-fn company_approval_decide_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let approval_id = required(args, "--approval").or_else(|_| required(args, "--id"))?;
-    let actor = required(args, "--actor")?;
-    let decision = required(args, "--decision").or_else(|_| required(args, "--status"))?;
-    if !matches!(decision.as_str(), "approved" | "rejected") {
-        return Err(CliError::Usage(
-            "--decision must be approved|rejected".into(),
-        ));
-    }
-    let mut record = latest_approval_value(store, &approval_id)?;
-    record["status"] = serde_json::json!(decision);
-    record["decided_by"] = serde_json::json!([company_actor_ref_json("human", &actor)?]);
-    record["decision_note"] = serde_json::json!(required(args, "--note")?);
-    append_string_values(&mut record, "evidence_refs", many(args, "--evidence"));
-    record["decided_at"] =
-        serde_json::json!(value(args, "--decided-at").unwrap_or_else(now_string));
-    let body = company_action_body(
-        &definition_id,
-        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:approval.decide")),
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-approval-decide")),
-        "approval.decide",
-        serde_json::json!({"kind": "approval", "id": approval_id}),
-        company_actor_ref_json("human", &actor)?,
-        record,
-        "company.approve",
-        "r2",
-        false,
-        vec![],
-    );
-    dispatch_company_action(store, &body, "harness company approval decide")
-}
-
-fn company_finance_commitment_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(
-        args,
-        "company finance commitment list|show|propose|transition",
-    )?;
-    match args[0].as_str() {
-        "list" => print_json(&serde_json::json!({"ok": true, "result": store.latest_commitments()?, "command": "harness company finance commitment list"})),
-        "show" => {
-            let id = required(&args[1..], "--id").or_else(|_| required(&args[1..], "--commitment"))?;
-            let commitment = latest_commitment_value(store, &id)?;
-            print_json(&serde_json::json!({"ok": true, "result": commitment, "command": "harness company finance commitment show"}))
-        }
-        "propose" => company_finance_commitment_propose_command(store, &args[1..]),
-        "transition" => company_finance_commitment_transition_command(store, &args[1..]),
-        other => Err(CliError::Usage(format!(
-            "unknown company finance commitment command: {other}; usage: harness company finance commitment list|show|propose|transition"
-        ))),
-    }
-}
-
-fn company_finance_commitment_propose_command(
-    store: &HarnessStore,
-    args: &[String],
-) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let command_id = value(args, "--command-id")
-        .unwrap_or_else(|| generated_id("action-cli-commitment-propose"));
-    let submitted_by = required(args, "--submitted-by")?;
-    let submitted_by_kind =
-        value(args, "--submitted-by-kind").unwrap_or_else(|| "agent".to_string());
-    let record = serde_json::json!({
-        "id": value(args, "--id").unwrap_or_else(|| generated_id("commitment-cli")),
-        "amount": {
-            "amount": required(args, "--amount")?,
-            "currency": value(args, "--currency").unwrap_or_else(|| "CNY".to_string())
-        },
-        "status": "proposed",
-        "source_document_id": required(args, "--source-document")?,
-        "submitted_by": company_actor_ref_json(&submitted_by_kind, &submitted_by)?,
-        "accountable_owner": company_actor_ref_json(
-            &value(args, "--accountable-kind").unwrap_or_else(|| "agent".to_string()),
-            &required(args, "--accountable-owner")?,
-        )?,
-        "relation_ids": many(args, "--relation"),
-        "evidence_refs": many(args, "--evidence"),
-        "approval_refs": [],
-        "audit_event_ids": [format!("{command_id}:policy-authorized")],
-        "due_at": value(args, "--due-at"),
-        "created_at": now_string(),
-        "updated_at": now_string()
-    });
-    let body = company_action_body(
-        &definition_id,
-        value(args, "--policy-ref")
-            .unwrap_or_else(|| format!("{definition_id}:commitment.propose")),
-        command_id,
-        "commitment.propose",
-        serde_json::json!({"kind": "work", "id": required(args, "--work")?}),
-        company_actor_ref_json(&submitted_by_kind, &submitted_by)?,
-        record,
-        "finance.commitment.write",
-        "r2",
-        false,
-        vec![],
-    );
-    dispatch_company_action(store, &body, "harness company finance commitment propose")
-}
-
-fn company_finance_commitment_transition_command(
-    store: &HarnessStore,
-    args: &[String],
-) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let commitment_id = required(args, "--commitment").or_else(|_| required(args, "--id"))?;
-    let actor = required(args, "--actor")?;
-    let actor_kind = value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string());
-    let command_id = value(args, "--command-id")
-        .unwrap_or_else(|| generated_id("action-cli-commitment-transition"));
-    let mut record = latest_commitment_value(store, &commitment_id)?;
-    record["status"] = serde_json::json!(required(args, "--status")?);
-    record["updated_at"] = serde_json::json!(now_string());
-    append_string_values(&mut record, "relation_ids", many(args, "--relation"));
-    append_string_values(&mut record, "evidence_refs", many(args, "--evidence"));
-    append_string_values(&mut record, "approval_refs", many(args, "--approval"));
-    append_string_values(
-        &mut record,
-        "audit_event_ids",
-        vec![format!("{command_id}:policy-authorized")],
-    );
-    let approval_refs = many(args, "--approval");
-    let body = company_action_body(
-        &definition_id,
-        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:commitment.append")),
-        command_id,
-        "commitment.append",
-        serde_json::json!({"kind": "financial_record", "id": commitment_id}),
-        company_actor_ref_json(&actor_kind, &actor)?,
-        record,
-        "finance.commitment.write",
-        "r3",
-        true,
-        approval_refs,
-    );
-    dispatch_company_action(
-        store,
-        &body,
-        "harness company finance commitment transition",
-    )
-}
-
-fn company_finance_payment_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company finance payment list|show|record")?;
-    match args[0].as_str() {
-        "list" => print_json(&serde_json::json!({"ok": true, "result": store.latest_payments()?, "command": "harness company finance payment list"})),
-        "show" => {
-            let id = required(&args[1..], "--id").or_else(|_| required(&args[1..], "--payment"))?;
-            let payment = latest_payment_value(store, &id)?;
-            print_json(&serde_json::json!({"ok": true, "result": payment, "command": "harness company finance payment show"}))
-        }
-        "record" => company_finance_payment_record_command(store, &args[1..]),
-        other => Err(CliError::Usage(format!(
-            "unknown company finance payment command: {other}; usage: harness company finance payment list|show|record"
-        ))),
-    }
-}
-
-fn company_finance_payment_record_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let command_id =
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-payment-record"));
-    let submitted_by = required(args, "--submitted-by")?;
-    let submitted_by_kind =
-        value(args, "--submitted-by-kind").unwrap_or_else(|| "agent".to_string());
-    let commitment_refs = many(args, "--commitment");
-    if commitment_refs.is_empty() {
-        return Err(CliError::Usage(
-            "payment record requires at least one --commitment".into(),
-        ));
-    }
-    let payment_id = value(args, "--id").unwrap_or_else(|| generated_id("payment-cli"));
-    let status = value(args, "--status").unwrap_or_else(|| "prepared".to_string());
-    let occurred_at = if matches!(status.as_str(), "settled" | "reversed") {
-        Some(value(args, "--occurred-at").unwrap_or_else(now_string))
-    } else {
-        value(args, "--occurred-at")
-    };
-    let record = serde_json::json!({
-        "id": payment_id,
-        "amount": {
-            "amount": required(args, "--amount")?,
-            "currency": value(args, "--currency").unwrap_or_else(|| "CNY".to_string())
-        },
-        "status": status,
-        "source_document_id": required(args, "--source-document")?,
-        "submitted_by": company_actor_ref_json(&submitted_by_kind, &submitted_by)?,
-        "accountable_owner": company_actor_ref_json(
-            &value(args, "--accountable-kind").unwrap_or_else(|| "agent".to_string()),
-            &required(args, "--accountable-owner")?,
-        )?,
-        "related_commitment_refs": commitment_refs,
-        "relation_ids": many(args, "--relation"),
-        "evidence_refs": many(args, "--evidence"),
-        "approval_refs": many(args, "--approval"),
-        "audit_event_ids": [format!("{command_id}:policy-authorized")],
-        "occurred_at": occurred_at,
-        "created_at": now_string(),
-        "updated_at": now_string()
-    });
-    let approval_refs = many(args, "--approval");
-    let body = company_action_body(
-        &definition_id,
-        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:payment.append")),
-        command_id,
-        "payment.append",
-        serde_json::json!({"kind": "financial_record", "id": required(args, "--commitment")?}),
-        company_actor_ref_json(&submitted_by_kind, &submitted_by)?,
-        record,
-        "finance.payment.write",
-        "r3",
-        true,
-        approval_refs,
-    );
-    dispatch_company_action(store, &body, "harness company finance payment record")
-}
-
-fn company_docs_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company docs query|search|traverse|refs|related|health|source|module|page|page-definition|typed-record|view|relation|diff|snapshot|change-report")?;
-    match args[0].as_str() {
-        "query" => company_docs_query_command(store, &args[1..]),
-        "search" => company_docs_search_command(store, &args[1..]),
-        "traverse" => company_docs_traverse_command(store, &args[1..]),
-        "refs" => company_docs_refs_command(store, &args[1..]),
-        "related" => company_docs_related_command(store, &args[1..]),
-        "health" => company_docs_health_command(store, &args[1..]),
-        "source" => {
-            require_subcommand(&args[1..], "company docs source sync")?;
-            match args[1].as_str() {
-                "sync" => company_docs_source_sync_command(store, &args[2..]),
-                other => Err(CliError::Usage(format!(
-                    "unknown company docs source command: {other}; usage: harness company docs source sync"
-                ))),
-            }
-        }
-        "module" => {
-            require_subcommand(&args[1..], "company docs module create")?;
-            match args[1].as_str() {
-                "create" => company_docs_module_create_command(store, &args[2..]),
-                other => Err(CliError::Usage(format!(
-                    "unknown company docs module command: {other}; usage: harness company docs module create"
-                ))),
-            }
-        }
-        "page-definition" => {
-            require_subcommand(&args[1..], "company docs page-definition create")?;
-            match args[1].as_str() {
-                "create" => company_docs_page_definition_create_command(store, &args[2..]),
-                other => Err(CliError::Usage(format!(
-                    "unknown company docs page-definition command: {other}; usage: harness company docs page-definition create"
-                ))),
-            }
-        }
-        "page" => {
-            require_subcommand(
-                &args[1..],
-                "company docs page create|read|write|append|search|rename|move|archive|scaffold|verify|publish",
-            )?;
-            match args[1].as_str() {
-                "create" | "read" | "write" | "append" | "search" | "rename" | "move" | "archive" => {
-                    docs_v2_page::company_docs_page_v2_command(store, &args[1..])
-                }
-                "scaffold" => company_docs_page_scaffold_command(store, &args[2..]),
-                "verify" => company_docs_page_verify_command(store, &args[2..]),
-                "publish" => company_docs_page_publish_command(store, &args[2..]),
-                other => Err(CliError::Usage(format!(
-                    "unknown company docs page command: {other}; usage: harness company docs page create|read|write|append|scaffold|verify|publish"
-                ))),
-            }
-        }
-        "typed-record" => {
-            require_subcommand(&args[1..], "company docs typed-record append|update|validate")?;
-            match args[1].as_str() {
-                "append" => company_docs_typed_record_append_command(store, &args[2..]),
-                "update" => company_docs_typed_record_update_command(store, &args[2..]),
-                "validate" => company_docs_typed_record_validate_command(store, &args[2..]),
-                other => Err(CliError::Usage(format!(
-                    "unknown company docs typed-record command: {other}; usage: harness company docs typed-record append|update|validate"
-                ))),
-            }
-        }
-        "view" => {
-            require_subcommand(&args[1..], "company docs view create|update")?;
-            match args[1].as_str() {
-                "create" => company_docs_view_create_command(store, &args[2..]),
-                "update" => company_docs_view_update_command(store, &args[2..]),
-                other => Err(CliError::Usage(format!(
-                    "unknown company docs view command: {other}; usage: harness company docs view create|update"
-                ))),
-            }
-        }
-        "relation" => {
-            require_subcommand(
-                &args[1..],
-                "company docs relation link|unlink|relink|repair-missing",
-            )?;
-            match args[1].as_str() {
-                "link" => company_docs_relation_link_command(store, &args[2..]),
-                "unlink" => company_docs_relation_unlink_command(store, &args[2..]),
-                "relink" => company_docs_relation_relink_command(store, &args[2..]),
-                "repair-missing" => {
-                    company_docs_relation_repair_missing_command(store, &args[2..])
-                }
-                other => Err(CliError::Usage(format!(
-                    "unknown company docs relation command: {other}; usage: harness company docs relation link|unlink|relink|repair-missing"
-                ))),
-            }
-        }
-        "diff" => company_docs_diff_command(store, &args[1..]),
-        "snapshot" => company_docs_snapshot_command(store, &args[1..]),
-        "change-report" => company_docs_change_report_command(store, &args[1..]),
-        other => Err(CliError::Usage(format!(
-            "unknown company docs command: {other}; usage: harness company docs query|search|traverse|refs|related|health|source|module|page|page-definition|document|template|block|typed-record|view|relation|diff|snapshot|change-report"
-        ))),
-    }
-}
-
-fn company_docs_query_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let document_id = value(args, "--document");
-    let module_id = value(args, "--module");
-    if document_id.is_none() && module_id.is_none() {
-        return Err(CliError::Usage(
-            "usage: harness company docs query --document <document-id> | --module <business-module-id>".into(),
-        ));
-    }
-    if document_id.is_some() && module_id.is_some() {
-        return Err(CliError::Usage(
-            "choose either --document or --module, not both".into(),
-        ));
-    }
-    let snapshot = company_os_api::snapshot(store)?;
-    let documents = json_array(&snapshot, "documents");
-    let blocks = json_array(&snapshot, "blocks");
-    let typed_records = json_array(&snapshot, "typed_records");
-    let relations = json_array(&snapshot, "relations");
-    let views = json_array(&snapshot, "views");
-    let business_modules = json_array(&snapshot, "business_modules");
-    let custom_page_definitions = json_array(&snapshot, "custom_page_definitions");
-    let action_policy_definitions = json_array(&snapshot, "action_policy_definitions");
-    let health_findings = company_docs_health_findings(&snapshot);
-
-    let selected_module = module_id.as_deref().and_then(|id| {
-        business_modules
-            .iter()
-            .find(|module| json_str(module, "id").as_deref() == Some(id))
-    });
-    let selected_document = if let Some(id) = document_id.as_deref() {
-        documents
-            .iter()
-            .find(|document| json_str(document, "id").as_deref() == Some(id))
-    } else {
-        selected_module
-            .and_then(|module| json_str(module, "root_document_ref"))
-            .as_deref()
-            .and_then(|root_id| {
-                documents
-                    .iter()
-                    .find(|document| json_str(document, "id").as_deref() == Some(root_id))
-            })
-    };
-    if let Some(id) = document_id.as_deref() {
-        if selected_document.is_none() {
-            return Err(CliError::Usage(format!("Document not found: {id}")));
-        }
-    }
-    if let Some(id) = module_id.as_deref() {
-        if selected_module.is_none() {
-            return Err(CliError::Usage(format!("BusinessModule not found: {id}")));
-        }
-    }
-
-    let selected_document_id = selected_document.and_then(|document| json_str(document, "id"));
-    let selected_module_id = selected_module
-        .and_then(|module| json_str(module, "id"))
-        .or_else(|| {
-            selected_document_id.as_deref().and_then(|doc_id| {
-                business_modules
-                    .iter()
-                    .find(|module| json_str(module, "root_document_ref").as_deref() == Some(doc_id))
-                    .and_then(|module| json_str(module, "id"))
-            })
-        });
-    let mut relevant_document_ids = BTreeSet::new();
-    if let Some(id) = selected_document_id.as_deref() {
-        relevant_document_ids.insert(id.to_string());
-        for child in documents {
-            if json_str(child, "parent_document_id").as_deref() == Some(id) {
-                if let Some(child_id) = json_str(child, "id") {
-                    relevant_document_ids.insert(child_id);
-                }
-            }
-        }
-    }
-    if let Some(module) = selected_module {
-        if let Some(root_id) = json_str(module, "root_document_ref") {
-            relevant_document_ids.insert(root_id.clone());
-            for child in documents {
-                if json_str(child, "parent_document_id").as_deref() == Some(root_id.as_str()) {
-                    if let Some(child_id) = json_str(child, "id") {
-                        relevant_document_ids.insert(child_id);
-                    }
-                }
-            }
-        }
-    }
-
-    let related_typed_records = typed_records
-        .iter()
-        .filter(|record| {
-            let record_id = json_str(record, "id");
-            let source_document_ref = json_str(record, "source_document_ref")
-                .or_else(|| json_field_str(record, "source_document_ref"));
-            let module_match = selected_module_id.as_deref().is_some_and(|module_id| {
-                json_str(record, "module_id").as_deref() == Some(module_id)
-            });
-            let source_match = source_document_ref
-                .as_deref()
-                .is_some_and(|doc_id| relevant_document_ids.contains(doc_id));
-            let relation_match = record_id.as_deref().is_some_and(|record_id| {
-                relevant_document_ids
-                    .iter()
-                    .any(|doc_id| json_has_relation_between(relations, doc_id, record_id))
-            });
-            module_match || source_match || relation_match
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let related_record_ids = related_typed_records
-        .iter()
-        .filter_map(|record| json_str(record, "id"))
-        .collect::<BTreeSet<_>>();
-    let related_relations = relations
-        .iter()
-        .filter(|relation| {
-            if !json_relation_is_active(relation) {
-                return false;
-            }
-            let endpoints = [
-                json_entity_id(relation, "from_ref"),
-                json_entity_id(relation, "to_ref"),
-            ];
-            endpoints
-                .iter()
-                .flatten()
-                .any(|id| relevant_document_ids.contains(id) || related_record_ids.contains(id))
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let ordered_blocks = selected_document
-        .map(|document| company_docs_ordered_blocks(document, blocks))
-        .unwrap_or_default();
-    let child_documents = documents
-        .iter()
-        .filter(|document| {
-            selected_document_id
-                .as_deref()
-                .is_some_and(|id| json_str(document, "parent_document_id").as_deref() == Some(id))
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let templates = documents
-        .iter()
-        .filter(|document| {
-            json_str(document, "kind").as_deref() == Some("template")
-                && (selected_document_id.as_deref().is_some_and(|id| {
-                    json_str(document, "parent_document_id").as_deref() == Some(id)
-                }) || selected_module
-                    .and_then(|module| json_str(module, "root_document_ref"))
-                    .as_deref()
-                    .is_some_and(|root_id| {
-                        json_str(document, "parent_document_id").as_deref() == Some(root_id)
-                    }))
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let module_views = views
-        .iter()
-        .filter(|view| {
-            selected_module_id
-                .as_deref()
-                .is_some_and(|module_id| json_str(view, "module_id").as_deref() == Some(module_id))
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let definitions = custom_page_definitions
-        .iter()
-        .filter(|definition| {
-            selected_module_id.as_deref().is_some_and(|module_id| {
-                json_str(definition, "module_id").as_deref() == Some(module_id)
-            })
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let scoped_health_findings = health_findings
-        .into_iter()
-        .filter(|finding| {
-            json_entity_id(finding, "subject")
-                .as_deref()
-                .is_some_and(|id| {
-                    relevant_document_ids.contains(id) || related_record_ids.contains(id)
-                })
-                || json_entity_id(finding, "related")
-                    .as_deref()
-                    .is_some_and(|id| {
-                        relevant_document_ids.contains(id) || related_record_ids.contains(id)
-                    })
-        })
-        .collect::<Vec<_>>();
-    let available_commands = company_docs_available_commands(
-        selected_document_id.as_deref(),
-        selected_module_id.as_deref(),
-        definitions
-            .first()
-            .and_then(|definition| json_str(definition, "id"))
-            .as_deref(),
-        !action_policy_definitions.is_empty(),
-    );
-    print_json(&serde_json::json!({
-        "command": "harness company docs query",
-        "source": "latest_projection",
-        "query": {
-            "document_id": document_id,
-            "module_id": module_id
-        },
-        "document": selected_document.cloned(),
-        "blocks": ordered_blocks,
-        "children": child_documents,
-        "templates": templates,
-        "typed_records": related_typed_records,
-        "relations": related_relations,
-        "views": module_views,
-        "business_module": selected_module.cloned(),
-        "custom_page_definitions": definitions,
-        "health_findings": scoped_health_findings,
-        "available_commands": available_commands,
-        "boundaries": {
-            "docs_only": true,
-            "canonical_write_store": "append_only_jsonl_ledgers",
-            "read_model": "latest_projection",
-            "future_sql_role": "derived_read_query_index_layer",
-            "work_side_effects": false,
-            "finance_side_effects": false,
-            "organization_side_effects": false,
-            "execution_side_effects": false,
-            "ui_is_review_surface": true
-        }
-    }))
-}
-
-fn company_docs_search_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let query = required(args, "--query")?.to_lowercase();
-    let module_filter = value(args, "--module");
-    let limit = value(args, "--limit")
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(50);
-    let snapshot = company_os_api::snapshot(store)?;
-    let mut matches = Vec::new();
-    for (kind, key) in [
-        ("document", "documents"),
-        ("block", "blocks"),
-        ("typed_record", "typed_records"),
-        ("view", "views"),
-        ("business_module", "business_modules"),
-        ("custom_page_definition", "custom_page_definitions"),
-    ] {
-        for entry in json_array(&snapshot, key) {
-            if module_filter
-                .as_deref()
-                .is_some_and(|module| !json_entry_matches_module(&snapshot, entry, module))
-            {
-                continue;
-            }
-            let haystack = serde_json::to_string(entry)?.to_lowercase();
-            if haystack.contains(&query) {
-                matches.push(serde_json::json!({
-                    "kind": kind,
-                    "id": json_str(entry, "id").unwrap_or_default(),
-                    "title": json_str(entry, "title").or_else(|| json_str(entry, "name")),
-                    "module_id": json_str(entry, "module_id"),
-                    "source": "latest_projection"
-                }));
-                if matches.len() >= limit {
-                    break;
-                }
-            }
-        }
-        if matches.len() >= limit {
-            break;
-        }
-    }
-    print_json(&serde_json::json!({
-        "command": "harness company docs search",
-        "query": query,
-        "module_id": module_filter,
-        "matches": matches,
-        "boundaries": company_docs_read_boundaries()
-    }))
-}
-
-fn company_docs_traverse_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let document_id = required(args, "--document")?;
-    let depth = value(args, "--depth")
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(2);
-    let snapshot = company_os_api::snapshot(store)?;
-    let documents = json_array(&snapshot, "documents");
-    let blocks = json_array(&snapshot, "blocks");
-    let root = documents
-        .iter()
-        .find(|document| json_str(document, "id").as_deref() == Some(document_id.as_str()))
-        .ok_or_else(|| CliError::Usage(format!("Document not found: {document_id}")))?;
-    let tree = company_docs_document_tree(documents, blocks, root, depth);
-    print_json(&serde_json::json!({
-        "command": "harness company docs traverse",
-        "document_id": document_id,
-        "depth": depth,
-        "tree": tree,
-        "boundaries": company_docs_read_boundaries()
-    }))
-}
-
-fn company_docs_refs_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let reference = company_docs_ref_from_args(args)?;
-    let snapshot = company_os_api::snapshot(store)?;
-    let refs = company_docs_refs_for(&snapshot, &reference);
-    print_json(&serde_json::json!({
-        "command": "harness company docs refs",
-        "ref": reference,
-        "refs": refs,
-        "boundaries": company_docs_read_boundaries()
-    }))
-}
-
-fn company_docs_related_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let reference = company_docs_ref_from_args(args)?;
-    let snapshot = company_os_api::snapshot(store)?;
-    let refs = company_docs_refs_for(&snapshot, &reference);
-    let mut related = Vec::new();
-    for relation in refs
-        .get("relations")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-    {
-        for key in ["from_ref", "to_ref"] {
-            if let Some(endpoint) = relation.get(key) {
-                if endpoint != &reference {
-                    related.push(endpoint.clone());
-                }
-            }
-        }
-    }
-    print_json(&serde_json::json!({
-        "command": "harness company docs related",
-        "ref": reference,
-        "related_refs": related,
-        "refs": refs,
-        "boundaries": company_docs_read_boundaries()
-    }))
-}
-
-fn company_docs_snapshot_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let reference = company_docs_ref_from_args(args)?;
-    let snapshot = company_os_api::snapshot(store)?;
-    let refs = company_docs_refs_for(&snapshot, &reference);
-    let primary = company_docs_find_ref(&snapshot, &reference);
-    print_json(&serde_json::json!({
-        "command": "harness company docs snapshot",
-        "ref": reference,
-        "primary": primary,
-        "refs": refs,
-        "boundaries": company_docs_read_boundaries()
-    }))
-}
-
-fn company_docs_diff_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let reference = company_docs_ref_from_args(args)?;
-    let proposed = required(args, "--proposed-json")?;
-    let proposed = serde_json::from_str::<serde_json::Value>(&proposed)?;
-    let snapshot = company_os_api::snapshot(store)?;
-    let before = company_docs_find_ref(&snapshot, &reference)
-        .ok_or_else(|| CliError::Usage(format!("ref not found: {}", reference)))?;
-    let changed_fields = company_docs_changed_fields(&before, &proposed);
-    print_json(&serde_json::json!({
-        "command": "harness company docs diff",
-        "ref": reference,
-        "before": before,
-        "after": proposed,
-        "changed_fields": changed_fields,
-        "boundaries": {
-            "docs_only": true,
-            "read_only": true,
-            "diff_does_not_dispatch": true,
-            "rollback_evidence_only": true,
-            "canonical_write_store": "append_only_jsonl_ledgers",
-            "work_side_effects": false,
-            "finance_side_effects": false,
-            "organization_side_effects": false,
-            "execution_side_effects": false,
-            "ui_is_review_surface": true
-        }
-    }))
-}
-
-fn company_docs_change_report_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let action = if let Some(raw) = value(args, "--action-json") {
-        serde_json::from_str::<serde_json::Value>(&raw)?
-    } else if let Some(action_id) = value(args, "--action") {
-        let snapshot = company_os_api::snapshot(store)?;
-        json_array(&snapshot, "action_commands")
-            .iter()
-            .find(|entry| json_str(entry, "id").as_deref() == Some(action_id.as_str()))
-            .cloned()
-            .ok_or_else(|| CliError::Usage(format!("ActionCommand not found: {action_id}")))?
-    } else {
-        return Err(CliError::Usage(
-            "usage: harness company docs change-report --action-json <json> | --action <action-command-id>".into(),
-        ));
-    };
-    let snapshot = company_os_api::snapshot(store)?;
-    let subject_ref = action
-        .get("subject_ref")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
-    let before = if subject_ref.is_object() {
-        company_docs_find_ref(&snapshot, &subject_ref)
-    } else {
-        None
-    };
-    let after = action
-        .get("payload")
-        .and_then(|payload| payload.get("record"))
-        .cloned();
-    let changed_fields = before
-        .as_ref()
-        .zip(after.as_ref())
-        .map(|(before, after)| company_docs_changed_fields(before, after))
-        .unwrap_or_default();
-    print_json(&serde_json::json!({
-        "command": "harness company docs change-report",
-        "action": action,
-        "subject_ref": subject_ref,
-        "before": before,
-        "after": after,
-        "changed_fields": changed_fields,
-        "review_boundary": "report_only_no_dispatch",
-        "boundaries": company_docs_read_boundaries()
-    }))
-}
-
-fn company_docs_health_command(store: &HarnessStore, _args: &[String]) -> CliResult<()> {
-    let snapshot = company_os_api::snapshot(store)?;
-    let documents = json_array(&snapshot, "documents");
-    let typed_records = json_array(&snapshot, "typed_records");
-    let relations = json_array(&snapshot, "relations");
-    let business_modules = json_array(&snapshot, "business_modules");
-    let blocks = json_array(&snapshot, "blocks");
-    let findings = company_docs_health_findings(&snapshot);
-    let critical = findings
-        .iter()
-        .filter(|finding| finding.get("severity").and_then(|v| v.as_str()) == Some("critical"))
-        .count();
-    let warning = findings
-        .iter()
-        .filter(|finding| finding.get("severity").and_then(|v| v.as_str()) == Some("warning"))
-        .count();
-    print_json(&serde_json::json!({
-        "command": "harness company docs health",
-        "status": if findings.is_empty() { "pass" } else { "issues" },
-        "counts": {
-            "documents": documents.len(),
-            "blocks": blocks.len(),
-            "typed_records": typed_records.len(),
-            "relations": relations.len(),
-            "business_modules": business_modules.len(),
-            "findings": findings.len(),
-            "critical": critical,
-            "warning": warning
-        },
-        "findings": findings,
-        "action_hints": [
-            {"command": "harness company docs module create --root-document <doc-id> --name <module-name> --purpose <purpose> --authority <human-admin-id> [--record-type <type> --relation-rule-json '{\"relation_type\":\"source_for\",\"from_kind\":\"document\",\"to_kind\":\"typed_record\",\"required\":true,\"cross_module\":false}']"},
-            {"command": "harness company docs page-definition create --module <module-id> --fallback-view <view-id> --purpose <purpose> --authority <human-admin-id>"},
-            {"command": "harness company docs page create --title <title> --actor <actor-id> [--markdown <text>] [--space <id>] [--parent <doc-id>]"},
-            {"command": "harness company docs page write --doc <doc-id> --expected-revision <n> (--markdown <text> | --markdown-file <path>) [--summary <s>]"},
-            {"command": "harness company docs page append --doc <doc-id> (--markdown <text> | --markdown-file <path>) [--after <block-id|-1|end|heading:text>] [--expected-revision <n>]"},
-            {"command": "harness company docs page rename|move|archive --doc <doc-id> ... (rename: --title <title>; move: --parent <doc-id|-1|root>; archive: --confirm) [--expected-revision <n>]"},
-            {"command": "harness company docs typed-record append --definition <id> --module <module-id> --source-document <doc-id> --record-type <type> --title <title> --actor <agent-or-human-id>"},
-            {"command": "harness company docs source sync --definition <id> --module <module-id> --source-document <doc-id> --actor <agent-or-human-id> --repo-path <path> --repo <owner/repo> --branch <branch> --path docs/prd --dry-run"},
-            {"command": "harness company docs view create --definition <id> --module <module-id> --title <title> --source-kind typed_record --actor <agent-or-human-id>"},
-            {"command": "harness company docs relation link --definition <id> --from-document <doc-id> --to-record <typed-record-id> --actor <agent-or-human-id>"},
-            {"capability": "TeamWork intake routed from a source Document", "state": "planned_cli"}
-        ]
-    }))
-}
-
-fn company_docs_source_sync_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let module_id = required(args, "--module")?;
-    let source_document = required(args, "--source-document")?;
-    let actor_id = required(args, "--actor")?;
-    let actor_kind = docs_actor_kind(args)?;
-    let repo_path_raw = PathBuf::from(required(args, "--repo-path")?);
-    let repo_path = fs::canonicalize(&repo_path_raw).map_err(|error| {
-        CliError::Usage(format!(
-            "--repo-path must point to a readable local Git worktree: {} ({error})",
-            repo_path_raw.display()
-        ))
-    })?;
-    let project_id = value(args, "--project-id").unwrap_or_else(|| {
-        value(args, "--repo")
-            .map(|repo| relation_slug(&repo))
-            .unwrap_or_else(|| {
-                relation_slug(
-                    repo_path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("external-project"),
-                )
-            })
-    });
-    let repo = value(args, "--repo").unwrap_or_else(|| project_id.clone());
-    let branch = value(args, "--branch")
-        .or_else(|| git_current_branch(&repo_path).ok())
-        .unwrap_or_else(|| "unknown".to_string());
-    let commit = value(args, "--commit")
-        .or_else(|| git_head_commit(&repo_path).ok())
-        .unwrap_or_else(|| "unknown".to_string());
-    let requested_paths = many(args, "--path");
-    if requested_paths.is_empty() {
-        return Err(CliError::Usage(
-            "company docs source sync requires at least one --path <file-or-directory>".into(),
-        ));
-    }
-    let dry_run = has_flag(args, "--dry-run");
-    let now = now_string();
-    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
-    let files = collect_company_docs_source_files(&repo_path, &requested_paths)?;
-    let mut planned_records = Vec::new();
-
-    planned_records.push(company_docs_source_typed_record(
-        store,
-        &module_id,
-        &source_document,
-        actor_ref.clone(),
-        "external_project",
-        format!("external-project-{}", relation_slug(&project_id)),
-        format!("{repo} ({branch})"),
-        serde_json::json!({
-            "project_id": project_id,
-            "repo": repo,
-            "branch": branch,
-            "repo_path": repo_path.display().to_string(),
-            "head_commit": commit,
-            "source_role": "software_product_source",
-            "sync_transport": "local_git_worktree",
-            "github_webhook_ready": true
-        }),
-        &now,
-    )?);
-
-    for requested_path in &requested_paths {
-        planned_records.push(company_docs_source_typed_record(
-            store,
-            &module_id,
-            &source_document,
-            actor_ref.clone(),
-            "product_doc_source",
-            format!(
-                "product-doc-source-{}-{}",
-                relation_slug(&project_id),
-                relation_slug(requested_path)
-            ),
-            format!("{repo}:{requested_path}"),
-            serde_json::json!({
-                "project_id": project_id,
-                "repo": repo,
-                "branch": branch,
-                "path": requested_path,
-                "source_class": company_docs_source_class(requested_path),
-                "sync_policy": "snapshot_and_review_material_drift"
-            }),
-            &now,
-        )?);
-    }
-
-    for file in &files {
-        let content = fs::read_to_string(file)?;
-        let relative_path = file
-            .strip_prefix(&repo_path)
-            .unwrap_or(file)
-            .to_string_lossy()
-            .replace('\\', "/");
-        planned_records.push(company_docs_source_typed_record(
-            store,
-            &module_id,
-            &source_document,
-            actor_ref.clone(),
-            "product_doc_snapshot",
-            format!(
-                "product-doc-snapshot-{}-{}",
-                relation_slug(&project_id),
-                relation_slug(&relative_path)
-            ),
-            markdown_title(&content).unwrap_or_else(|| relative_path.clone()),
-            serde_json::json!({
-                "project_id": project_id,
-                "repo": repo,
-                "branch": branch,
-                "commit": commit,
-                "path": relative_path,
-                "hash": content_hash_hex16(&content),
-                "source_class": company_docs_source_class(&relative_path),
-                "headings": markdown_headings(&content),
-                "observed_at": now,
-                "snapshot_is_observation": true,
-                "does_not_overwrite_company_os_truth": true
-            }),
-            &now,
-        )?);
-    }
-
-    planned_records.push(company_docs_source_typed_record(
-        store,
-        &module_id,
-        &source_document,
-        actor_ref.clone(),
-        "source_sync_run",
-        generated_id("source-sync-run"),
-        format!("Sync {repo}@{branch}"),
-        serde_json::json!({
-            "project_id": project_id,
-            "repo": repo,
-            "branch": branch,
-            "commit": commit,
-            "requested_paths": requested_paths,
-            "snapshot_count": files.len(),
-            "transport": "local_git_worktree",
-            "started_at": now,
-            "completed_at": now,
-            "work_side_effects": false,
-            "finance_side_effects": false,
-            "organization_side_effects": false,
-            "execution_side_effects": false,
-            "webhook_followup": "GitHub webhook should append SourceChangeEvent and invoke the same source sync path."
-        }),
-        &now,
-    )?);
-
-    let existing_relations = store
-        .latest_relations()?
-        .into_iter()
-        .filter(|relation| relation.lifecycle_status.as_deref() != Some("archived"))
-        .map(|relation| {
-            (
-                relation.from_ref.id,
-                relation.to_ref.id,
-                relation.relation_type,
-            )
-        })
-        .collect::<BTreeSet<_>>();
-    let planned_relations = planned_records
-        .iter()
-        .filter_map(|record| {
-            let record_id = json_str(record, "id")?;
-            let relation_key = (
-                source_document.clone(),
-                record_id.clone(),
-                "source_for".to_string(),
-            );
-            if existing_relations.contains(&relation_key) {
-                return None;
-            }
-            Some(serde_json::json!({
-                "relation_id": company_docs_relation_id(&source_document, &record_id),
-                "from_document": source_document,
-                "to_record": record_id,
-                "relation_type": "source_for"
-            }))
-        })
-        .collect::<Vec<_>>();
-
-    if dry_run {
-        return print_json(&serde_json::json!({
-            "ok": true,
-            "dry_run": true,
-            "command": "harness company docs source sync",
-            "effects": ["typed_record.append", "relation.append"],
-            "records": planned_records,
-            "relations": planned_relations,
-            "boundaries": company_docs_source_sync_boundaries()
-        }));
-    }
-
-    let mut record_results = Vec::new();
-    for record in planned_records {
-        let record_id = json_str(&record, "id").unwrap_or_else(|| "<unknown>".to_string());
-        let subject_ref = if store
-            .latest_typed_records()?
-            .into_iter()
-            .any(|existing| existing.id == record_id)
-        {
-            serde_json::json!({"kind": "typed_record", "id": record_id})
-        } else {
-            serde_json::json!({"kind": "document", "id": source_document})
-        };
-        let body = docs_action_body(
-            &definition_id,
-            value(args, "--policy")
-                .unwrap_or_else(|| format!("{definition_id}:typed_record.append")),
-            generated_id("action-cli-docs-source-sync"),
-            "typed_record.append",
-            subject_ref,
-            actor_ref.clone(),
-            record,
-            now_string(),
-        );
-        record_results.push(dispatch_company_docs_action_value(store, &body)?);
-    }
-
-    let relation_policy = value(args, "--relation-policy")
-        .unwrap_or_else(|| format!("{definition_id}:relation.append"));
-    let mut relation_results = Vec::new();
-    for plan in &planned_relations {
-        let document_id = json_str(plan, "from_document").unwrap_or_default();
-        let record_id = json_str(plan, "to_record").unwrap_or_default();
-        let relation_id = json_str(plan, "relation_id").unwrap_or_default();
-        let command_id = generated_id("action-cli-docs-source-sync-relation");
-        let relation_now = now_string();
-        let body = company_docs_relation_append_body(
-            &definition_id,
-            &document_id,
-            &record_id,
-            actor_ref.clone(),
-            "source_for",
-            &command_id,
-            &relation_id,
-            relation_policy.clone(),
-            &relation_now,
-        );
-        relation_results.push(dispatch_company_docs_action_value(store, &body)?);
-    }
-
-    print_json(&serde_json::json!({
-        "ok": true,
-        "command": "harness company docs source sync",
-        "effects": ["typed_record.append", "relation.append"],
-        "records_written": record_results.len(),
-        "relations_written": relation_results.len(),
-        "record_results": record_results,
-        "relation_results": relation_results,
-        "boundaries": company_docs_source_sync_boundaries()
-    }))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn company_docs_source_typed_record(
-    store: &HarnessStore,
-    module_id: &str,
-    source_document: &str,
-    actor_ref: serde_json::Value,
-    record_type: &str,
-    record_id: String,
-    title: String,
-    fields: serde_json::Value,
-    now: &str,
-) -> CliResult<serde_json::Value> {
-    if !fields.is_object() {
-        return Err(CliError::Usage(
-            "source typed record fields must be a JSON object".into(),
-        ));
-    }
-    if let Some(existing) = store
-        .latest_typed_records()?
-        .into_iter()
-        .find(|record| record.id == record_id)
-    {
-        let mut record = serde_json::to_value(existing)?;
-        record["title"] = serde_json::json!(title);
-        record["fields"] = fields;
-        record["lifecycle_status"] = serde_json::json!("active");
-        record["updated_by"] = actor_ref;
-        record["updated_at"] = serde_json::json!(now);
-        Ok(record)
-    } else {
-        Ok(serde_json::json!({
-            "id": record_id,
-            "module_id": module_id,
-            "record_type": record_type,
-            "title": title,
-            "fields": fields,
-            "lifecycle_status": "active",
-            "source_document_ref": source_document,
-            "created_by": actor_ref,
-            "updated_by": actor_ref,
-            "created_at": now,
-            "updated_at": now
-        }))
-    }
-}
-
-fn collect_company_docs_source_files(
-    repo_path: &Path,
-    requested_paths: &[String],
-) -> CliResult<Vec<PathBuf>> {
-    let mut files = BTreeSet::new();
-    for requested in requested_paths {
-        let candidate = repo_path.join(requested);
-        if candidate.is_file() {
-            if candidate.extension().and_then(|ext| ext.to_str()) == Some("md") {
-                files.insert(fs::canonicalize(candidate)?);
-            }
-        } else if candidate.is_dir() {
-            collect_markdown_files_recursive(&candidate, &mut files)?;
-        } else {
-            return Err(CliError::Usage(format!(
-                "source path does not exist under repo: {requested}"
-            )));
-        }
-    }
-    Ok(files.into_iter().collect())
-}
-
-fn collect_markdown_files_recursive(path: &Path, files: &mut BTreeSet<PathBuf>) -> CliResult<()> {
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let path = entry.path();
-        if file_type.is_dir() {
-            let name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("");
-            if name != ".git" && name != "node_modules" {
-                collect_markdown_files_recursive(&path, files)?;
-            }
-        } else if file_type.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("md")
-        {
-            files.insert(fs::canonicalize(path)?);
-        }
-    }
-    Ok(())
-}
-
-fn git_head_commit(repo_path: &Path) -> CliResult<String> {
-    git_output(repo_path, &["rev-parse", "HEAD"])
-}
-
-fn git_current_branch(repo_path: &Path) -> CliResult<String> {
-    git_output(repo_path, &["rev-parse", "--abbrev-ref", "HEAD"])
-}
-
-fn git_output(repo_path: &Path, args: &[&str]) -> CliResult<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(repo_path)
-        .output()?;
-    if !output.status.success() {
-        return Err(CliError::Usage(format!(
-            "git {} failed in {}",
-            args.join(" "),
-            repo_path.display()
-        )));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn markdown_title(content: &str) -> Option<String> {
-    content.lines().find_map(|line| {
-        line.strip_prefix("# ")
-            .map(str::trim)
-            .filter(|title| !title.is_empty())
-            .map(str::to_string)
-    })
-}
-
-fn markdown_headings(content: &str) -> Vec<serde_json::Value> {
-    content
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim_start();
-            let level = trimmed.chars().take_while(|ch| *ch == '#').count();
-            if !(1..=6).contains(&level) || trimmed.chars().nth(level).is_none_or(|ch| ch != ' ') {
-                return None;
-            }
-            Some(serde_json::json!({
-                "level": level,
-                "title": trimmed[level..].trim()
-            }))
-        })
-        .collect()
-}
-
-fn company_docs_source_class(path: &str) -> &'static str {
-    if path.contains("docs/prd/") || path.starts_with("docs/prd") {
-        "software_product_contract"
-    } else if path.contains("docs/architecture/") || path.starts_with("docs/architecture") {
-        "software_architecture"
-    } else if path.contains("docs/decisions/") || path.starts_with("docs/decisions") {
-        "software_decision"
-    } else if path.contains("docs/frontend-design-os/")
-        || path.starts_with("docs/frontend-design-os")
-    {
-        "frontend_design_contract"
-    } else if path.ends_with("AGENTS.md") {
-        "repository_operating_rules"
-    } else {
-        "external_project_document"
-    }
-}
-
-fn company_docs_source_sync_boundaries() -> serde_json::Value {
-    serde_json::json!({
-        "docs_only": true,
-        "canonical_write_store": "append_only_jsonl_ledgers",
-        "record_model": "TypedRecord v0",
-        "github_webhook_is_transport_not_authority": true,
-        "snapshots_are_observations": true,
-        "work_side_effects": false,
-        "finance_side_effects": false,
-        "organization_side_effects": false,
-        "execution_side_effects": false,
-        "commercial_truth_overwrite": false
-    })
-}
-
-fn company_docs_module_create_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let root_document = required(args, "--root-document")?;
-    let name = required(args, "--name")?;
-    let purpose = required(args, "--purpose")?;
-    let authority = required(args, "--authority")?;
-    let module_id =
-        value(args, "--id").unwrap_or_else(|| format!("module-cli-{}", relation_slug(&name)));
-    let owner_id = value(args, "--owner").unwrap_or_else(|| authority.clone());
-    let owner_kind = value(args, "--owner-kind").unwrap_or_else(|| "human".to_string());
-    let record_types = many(args, "--record-type");
-    let record_types = if record_types.is_empty() {
-        vec!["record".to_string()]
-    } else {
-        record_types
-    };
-    let relation_rules = many(args, "--relation-rule-json")
-        .into_iter()
-        .map(|raw| serde_json::from_str::<serde_json::Value>(&raw))
-        .collect::<Result<Vec<_>, _>>()?;
-    for rule in &relation_rules {
-        if !rule.is_object() {
-            return Err(CliError::Usage(
-                "--relation-rule-json must parse to a JSON object".into(),
-            ));
-        }
-    }
-    let policies = many(args, "--policy-ref");
-    let policies = if policies.is_empty() {
-        vec!["company.records.write".to_string()]
-    } else {
-        policies
-    };
-    let view_id = value(args, "--default-view-id")
-        .unwrap_or_else(|| format!("view-cli-{}", relation_slug(&name)));
-    let view_title =
-        value(args, "--default-view-title").unwrap_or_else(|| format!("{name} records"));
-    let now = now_string();
-    let owner_ref = serde_json::json!({"actor_type": owner_kind, "actor_id": owner_id});
-    let authority_ref = serde_json::json!({"actor_type": "human", "actor_id": authority});
-    let module_record = serde_json::json!({
-        "id": module_id,
-        "name": name,
-        "purpose": purpose,
-        "root_document_ref": root_document,
-        "record_types": record_types,
-        "relation_rules": relation_rules,
-        "default_view_refs": [],
-        "policy_refs": policies,
-        "lifecycle_rules": [],
-        "metric_definition_refs": [],
-        "custom_page_definition_refs": [],
-        "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
-        "owner": owner_ref,
-        "created_at": now,
-        "updated_at": now
-    });
-    let module_result = dispatch_company_docs_admin_append_value(
-        store,
-        "/v1/company-os/business-modules",
-        authority_ref.clone(),
-        module_record.clone(),
-    )?;
-    let view_record = serde_json::json!({
-        "id": view_id,
-        "module_id": module_id,
-        "title": view_title,
-        "mode": value(args, "--default-view-mode").unwrap_or_else(|| "table".to_string()),
-        "source_kinds": ["typed_record"],
-        "query": {},
-        "owner": owner_ref,
-        "policy_refs": ["company.records.write"],
-        "created_at": now,
-        "updated_at": now
-    });
-    let view_result = dispatch_company_docs_admin_append_value(
-        store,
-        "/v1/company-os/views",
-        authority_ref.clone(),
-        view_record.clone(),
-    )?;
-    let mut module_update = module_record;
-    module_update["default_view_refs"] = serde_json::json!([view_record["id"].clone()]);
-    let module_update_result = dispatch_company_docs_admin_append_value(
-        store,
-        "/v1/company-os/business-modules",
-        authority_ref,
-        module_update,
-    )?;
-    print_json(&serde_json::json!({
-        "ok": true,
-        "result": {
-            "module": module_result,
-            "default_view": view_result,
-            "module_update": module_update_result,
-            "module_id": module_result["id"],
-            "default_view_id": view_result["id"]
-        }
-    }))
-}
-
-fn company_docs_page_definition_create_command(
-    store: &HarnessStore,
-    args: &[String],
-) -> CliResult<()> {
-    let module_id = required(args, "--module")?;
-    let fallback_view = required(args, "--fallback-view")?;
-    let purpose = required(args, "--purpose")?;
-    let authority = required(args, "--authority")?;
-    let definition_id =
-        value(args, "--id").unwrap_or_else(|| format!("page-cli-{}", relation_slug(&module_id)));
-    let owner_id = value(args, "--owner").unwrap_or_else(|| authority.clone());
-    let owner_kind = value(args, "--owner-kind").unwrap_or_else(|| "human".to_string());
-    let package_version = value(args, "--package-version").unwrap_or_else(|| "1.0.0".to_string());
-    let package_id =
-        value(args, "--package-id").unwrap_or_else(|| format!("package-cli-{definition_id}"));
-    let now = now_string();
-    let authority_ref = serde_json::json!({"actor_type": "human", "actor_id": authority});
-    let owner_ref = serde_json::json!({"actor_type": owner_kind, "actor_id": owner_id});
-    let package_record = serde_json::json!({
-        "id": package_id,
-        "definition_id": definition_id,
-        "version": package_version,
-        "kind": value(args, "--package-kind").unwrap_or_else(|| "html".to_string()),
-        "artifact_ref": value(args, "--artifact-ref").unwrap_or_else(|| "inline://docs-governance-page".to_string()),
-        "entrypoint": value(args, "--entrypoint").unwrap_or_else(|| "index.html".to_string()),
-        "integrity_digest": value(args, "--integrity-digest").unwrap_or_else(|| format!("sha256:{}", relation_slug(&definition_id))),
-        "built_at": now
-    });
-    let package_result = dispatch_company_docs_admin_append_value(
-        store,
-        "/v1/company-os/custom-page-packages",
-        authority_ref.clone(),
-        package_record.clone(),
-    )?;
-    let action_command_refs = many(args, "--action");
-    let action_command_refs = if action_command_refs.is_empty() {
-        vec![
-            "typed_record.append".to_string(),
-            "view.append".to_string(),
-            "relation.append".to_string(),
-        ]
-    } else {
-        action_command_refs
-    };
-    let policy_refs = action_command_refs
-        .iter()
-        .map(|command| format!("{definition_id}:{command}"))
-        .collect::<Vec<_>>();
-    let components = many(args, "--component");
-    let components = if components.is_empty() {
-        vec!["DocumentEditor".to_string(), "StructuredView".to_string()]
-    } else {
-        components
-    };
-    let query_source_kind =
-        value(args, "--query-source-kind").unwrap_or_else(|| "document".to_string());
-    let definition_record = serde_json::json!({
-        "id": definition_id,
-        "module_id": module_id,
-        "purpose": purpose,
-        "allowed_data_queries": [{
-            "id": value(args, "--query-id").unwrap_or_else(|| format!("query-cli-{definition_id}")),
-            "source_kind": query_source_kind,
-            "source_scope": module_id,
-            "permission_policy_ref": "company.records.write"
-        }],
-        "approved_ui_components": components,
-        "action_command_refs": action_command_refs,
-        "standard_view_fallback_ref": fallback_view,
-        "owner": owner_ref,
-        "package_ref": package_record["id"].clone(),
-        "package_version": package_record["version"].clone(),
-        "fixture_ref": value(args, "--fixture-ref").unwrap_or_else(|| format!("{definition_id}:fixture")),
-        "visual_contract_ref": value(args, "--visual-contract-ref").unwrap_or_else(|| format!("{definition_id}:visual-contract")),
-        "policy_refs": policy_refs,
-        "created_at": now,
-        "updated_at": now
-    });
-    let definition_result = dispatch_company_docs_admin_append_value(
-        store,
-        "/v1/company-os/custom-page-definitions",
-        authority_ref.clone(),
-        definition_record.clone(),
-    )?;
-    let module_update_result = if let Some(mut module_record) = store
-        .latest_business_modules()?
-        .into_iter()
-        .find(|module| module.id == module_id)
-        .map(serde_json::to_value)
-        .transpose()?
-    {
-        let mut refs = module_record
-            .get("custom_page_definition_refs")
-            .and_then(|value| value.as_array())
-            .cloned()
-            .unwrap_or_default();
-        if !refs
-            .iter()
-            .any(|value| value.as_str() == Some(definition_id.as_str()))
-        {
-            refs.push(serde_json::json!(definition_id));
-        }
-        module_record["custom_page_definition_refs"] = serde_json::json!(refs);
-        module_record["updated_at"] = serde_json::json!(now);
-        Some(dispatch_company_docs_admin_append_value(
-            store,
-            "/v1/company-os/business-modules",
-            authority_ref,
-            module_record,
-        )?)
-    } else {
-        None
-    };
-    print_json(&serde_json::json!({
-        "ok": true,
-        "result": {
-            "package": package_result,
-            "definition": definition_result,
-            "module_update": module_update_result,
-            "definition_id": definition_record["id"],
-            "package_id": package_record["id"]
-        }
-    }))
-}
-
-fn company_docs_page_scaffold_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let module_id = required(args, "--module")?;
-    let fallback_view = required(args, "--fallback-view")?;
-    let title = required(args, "--title")?;
-    let authority = required(args, "--authority")?;
-    let definition_id =
-        value(args, "--id").unwrap_or_else(|| format!("page-cli-{}", relation_slug(&title)));
-    let purpose = value(args, "--purpose").unwrap_or_else(|| {
-        format!(
-            "Code-declared custom business page for {title}; consumes native Company OS objects and never becomes a second data truth."
-        )
-    });
-    let mut forwarded = vec![
-        "--module".to_string(),
-        module_id.clone(),
-        "--fallback-view".to_string(),
-        fallback_view.clone(),
-        "--purpose".to_string(),
-        purpose,
-        "--authority".to_string(),
-        authority.clone(),
-        "--id".to_string(),
-        definition_id.clone(),
-        "--package-kind".to_string(),
-        value(args, "--package-kind").unwrap_or_else(|| "react".to_string()),
-        "--artifact-ref".to_string(),
-        value(args, "--artifact-ref").unwrap_or_else(|| {
-            format!(
-                "apps/agent-dashboard/src/company-os/modules/{}/{}Page.tsx",
-                relation_slug(&module_id),
-                relation_slug(&title)
-            )
-        }),
-        "--entrypoint".to_string(),
-        value(args, "--entrypoint").unwrap_or_else(|| "index.tsx".to_string()),
-        "--fixture-ref".to_string(),
-        value(args, "--fixture-ref").unwrap_or_else(|| {
-            format!(
-                "docs/design/company-os/custom-pages/{}/fixture.json",
-                relation_slug(&title)
-            )
-        }),
-        "--visual-contract-ref".to_string(),
-        value(args, "--visual-contract-ref").unwrap_or_else(|| {
-            format!(
-                "docs/design/company-os/custom-pages/{}/review.html",
-                relation_slug(&title)
-            )
-        }),
-    ];
-    for component in many(args, "--component").into_iter().chain([
-        "CodeDeclaredPage".to_string(),
-        "VisualContractReview".to_string(),
-    ]) {
-        forwarded.push("--component".to_string());
-        forwarded.push(component);
-    }
-    let actions = many(args, "--action");
-    let actions = if actions.is_empty() {
-        vec![
-            "typed_record.append".to_string(),
-            "view.append".to_string(),
-            "relation.append".to_string(),
-        ]
-    } else {
-        actions
-    };
-    for action in actions {
-        forwarded.push("--action".to_string());
-        forwarded.push(action);
-    }
-    company_docs_page_definition_create_command(store, &forwarded)
-}
-
-fn company_docs_page_verify_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let definitions = store.latest_custom_page_definitions()?;
-    let packages = store.latest_custom_page_packages()?;
-    let modules = store.latest_business_modules()?;
-    let views = store.latest_views()?;
-    let definition = definitions
-        .into_iter()
-        .find(|definition| definition.id == definition_id)
-        .ok_or_else(|| {
-            CliError::Usage(format!("CustomPageDefinition:{definition_id} not found"))
-        })?;
-    let package = packages
-        .iter()
-        .find(|package| package.id == definition.package_ref)
-        .cloned();
-    let module_exists = modules
-        .iter()
-        .any(|module| module.id == definition.module_id);
-    let fallback_view_exists = views
-        .iter()
-        .any(|view| view.id == definition.standard_view_fallback_ref);
-    let missing_policy_refs = definition
-        .action_command_refs
-        .iter()
-        .map(|command| format!("{definition_id}:{command}"))
-        .filter(|policy| !definition.policy_refs.contains(policy))
-        .collect::<Vec<_>>();
-    let ok = package.is_some()
-        && module_exists
-        && fallback_view_exists
-        && !definition.allowed_data_queries.is_empty()
-        && !definition.approved_ui_components.is_empty()
-        && !definition.action_command_refs.is_empty()
-        && !definition.visual_contract_ref.is_empty()
-        && missing_policy_refs.is_empty();
-    print_json(&serde_json::json!({
-        "ok": ok,
-        "command": "harness company docs page verify",
-        "definition_id": definition_id,
-        "definition": definition,
-        "package": package,
-        "checks": {
-            "module_exists": module_exists,
-            "fallback_view_exists": fallback_view_exists,
-            "package_exists": package.is_some(),
-            "allowed_data_queries_declared": !definition.allowed_data_queries.is_empty(),
-            "approved_ui_components_declared": !definition.approved_ui_components.is_empty(),
-            "action_command_refs_declared": !definition.action_command_refs.is_empty(),
-            "visual_contract_ref_declared": !definition.visual_contract_ref.is_empty(),
-            "missing_policy_refs": missing_policy_refs
-        },
-        "boundaries": {
-            "code_declared_page": true,
-            "consumes_native_objects_only": true,
-            "page_is_not_second_truth": true,
-            "verify_does_not_dispatch": true,
-            "ui_is_review_surface": true
-        }
-    }))
-}
-
-fn company_docs_page_publish_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let authority = required(args, "--authority")?;
-    let version = required(args, "--version")?;
-    let artifact_ref = required(args, "--artifact-ref")?;
-    let entrypoint = value(args, "--entrypoint").unwrap_or_else(|| "index.tsx".to_string());
-    let integrity_digest = value(args, "--integrity-digest").unwrap_or_else(|| {
-        format!(
-            "sha256:{}",
-            content_hash_hex16(&format!(
-                "{definition_id}:{version}:{artifact_ref}:{entrypoint}"
-            ))
-        )
-    });
-    let definition = store
-        .latest_custom_page_definitions()?
-        .into_iter()
-        .find(|definition| definition.id == definition_id)
-        .ok_or_else(|| {
-            CliError::Usage(format!("CustomPageDefinition:{definition_id} not found"))
-        })?;
-    let now = now_string();
-    let package_id = value(args, "--package-id")
-        .unwrap_or_else(|| format!("package-cli-{definition_id}-{}", relation_slug(&version)));
-    let package_record = serde_json::json!({
-        "id": package_id,
-        "definition_id": definition_id,
-        "version": version,
-        "kind": value(args, "--package-kind").unwrap_or_else(|| "react".to_string()),
-        "artifact_ref": artifact_ref,
-        "entrypoint": entrypoint,
-        "integrity_digest": integrity_digest,
-        "built_at": now
-    });
-    let authority_ref = serde_json::json!({"actor_type": "human", "actor_id": authority});
-    let package_result = dispatch_company_docs_admin_append_value(
-        store,
-        "/v1/company-os/custom-page-packages",
-        authority_ref.clone(),
-        package_record.clone(),
-    )?;
-    print_json(&serde_json::json!({
-        "ok": true,
-        "command": "harness company docs page publish",
-        "result": {
-            "package": package_result,
-            "active_definition_package_ref": definition.package_ref,
-            "active_definition_package_version": definition.package_version,
-            "definition_id": definition_id,
-            "package_id": package_record["id"],
-            "package_version": package_record["version"],
-            "activation_state": "candidate_package_recorded"
-        },
-        "boundaries": {
-            "code_declared_page": true,
-            "page_is_not_second_truth": true,
-            "publishes_package_metadata_only": true,
-            "does_not_switch_active_definition_pointer": true
-        }
-    }))
-}
-
-fn company_docs_typed_record_append_command(
-    store: &HarnessStore,
-    args: &[String],
-) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let module_id = required(args, "--module")?;
-    let source_document = required(args, "--source-document")?;
-    let record_type = required(args, "--record-type")?;
-    let title = required(args, "--title")?;
-    let actor_id = required(args, "--actor")?;
-    let actor_kind = docs_actor_kind(args)?;
-    let record_id = value(args, "--id")
-        .unwrap_or_else(|| format!("typed-record-cli-{}", relation_slug(&title)));
-    let fields = if let Some(raw) = value(args, "--fields-json") {
-        serde_json::from_str::<serde_json::Value>(&raw)?
-    } else {
-        serde_json::json!({})
-    };
-    if !fields.is_object() {
-        return Err(CliError::Usage(
-            "--fields-json must parse to a JSON object".into(),
-        ));
-    }
-    let now = now_string();
-    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
-    let record = serde_json::json!({
-        "id": record_id,
-        "module_id": module_id,
-        "record_type": record_type,
-        "title": title,
-        "fields": fields,
-        "lifecycle_status": value(args, "--status").unwrap_or_else(|| "draft".to_string()),
-        "source_document_ref": source_document,
-        "created_by": actor_ref,
-        "updated_by": actor_ref,
-        "created_at": now,
-        "updated_at": now
-    });
-    let body = docs_action_body(
-        &definition_id,
-        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:typed_record.append")),
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-docs-typed-record")),
-        "typed_record.append",
-        serde_json::json!({"kind": "document", "id": source_document}),
-        actor_ref,
-        record,
-        now,
-    );
-    dispatch_company_docs_action(store, &body)
-}
-
-fn company_docs_typed_record_update_command(
-    store: &HarnessStore,
-    args: &[String],
-) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let record_id = required(args, "--record")?;
-    let actor_id = required(args, "--actor")?;
-    let actor_kind = docs_actor_kind(args)?;
-    let has_title = value(args, "--title").is_some();
-    let has_fields = value(args, "--fields-json").is_some();
-    let has_status = value(args, "--status").is_some();
-    if !has_title && !has_fields && !has_status {
-        return Err(CliError::Usage(
-            "typed-record update requires at least one of --title, --fields-json, or --status"
-                .into(),
-        ));
-    }
-    let typed_record = store
-        .latest_typed_records()?
-        .into_iter()
-        .find(|row| row.id == record_id)
-        .ok_or_else(|| CliError::Usage(format!("TypedRecord:{record_id} not found")))?;
-    let before = serde_json::to_value(&typed_record).map_err(CliError::Json)?;
-    let mut record = before.clone();
-    if let Some(title) = value(args, "--title") {
-        record["title"] = serde_json::json!(title);
-    }
-    if let Some(raw) = value(args, "--fields-json") {
-        let fields = serde_json::from_str::<serde_json::Value>(&raw)?;
-        if !fields.is_object() {
-            return Err(CliError::Usage(
-                "--fields-json must parse to a JSON object".into(),
-            ));
-        }
-        record["fields"] = if has_flag(args, "--merge-fields") {
-            let mut merged = before
-                .get("fields")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({}));
-            if !merged.is_object() {
-                return Err(CliError::Usage(
-                    "existing TypedRecord.fields must be an object to merge".into(),
-                ));
-            }
-            if let (Some(target), Some(source)) = (merged.as_object_mut(), fields.as_object()) {
-                for (key, value) in source {
-                    target.insert(key.clone(), value.clone());
-                }
-            }
-            merged
-        } else {
-            fields
-        };
-    }
-    if let Some(status) = value(args, "--status") {
-        record["lifecycle_status"] = serde_json::json!(status);
-    }
-    let now = now_string();
-    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
-    record["updated_by"] = actor_ref.clone();
-    record["updated_at"] = serde_json::json!(now.clone());
-    let body = docs_action_body(
-        &definition_id,
-        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:typed_record.append")),
-        value(args, "--command-id")
-            .unwrap_or_else(|| generated_id("action-cli-docs-typed-record-update")),
-        "typed_record.append",
-        serde_json::json!({"kind": "typed_record", "id": record_id}),
-        actor_ref,
-        record.clone(),
-        now,
-    );
-    if has_flag(args, "--dry-run") {
-        return print_json(&serde_json::json!({
-            "ok": true,
-            "dry_run": true,
-            "operation": "update",
-            "command": "harness company docs typed-record update",
-            "effect": "typed_record.append",
-            "before": before,
-            "after": record,
-            "boundaries": {
-                "docs_only": true,
-                "dry_run_does_not_dispatch": true,
-                "canonical_write_store": "append_only_jsonl_ledgers",
-                "work_side_effects": false,
-                "finance_side_effects": false,
-                "organization_side_effects": false,
-                "execution_side_effects": false,
-                "ui_is_review_surface": true
-            },
-            "action": body
-        }));
-    }
-    let result = dispatch_company_docs_action_value(store, &body)?;
-    print_json(&serde_json::json!({
-        "ok": true,
-        "result": {
-            "operation": "update",
-            "typed_record_action": result,
-            "typed_record_id": record_id,
-            "title": record.get("title"),
-            "lifecycle_status": record.get("lifecycle_status"),
-            "fields": record.get("fields")
-        }
-    }))
-}
-
-fn company_docs_typed_record_validate_command(
-    store: &HarnessStore,
-    args: &[String],
-) -> CliResult<()> {
-    let record_id = required(args, "--record")?;
-    let schema = if let Some(raw) = value(args, "--schema-json") {
-        serde_json::from_str::<serde_json::Value>(&raw)?
-    } else {
-        serde_json::json!({})
-    };
-    if !schema.is_object() {
-        return Err(CliError::Usage(
-            "--schema-json must parse to a JSON object".into(),
-        ));
-    }
-    let record = store
-        .latest_typed_records()?
-        .into_iter()
-        .find(|row| row.id == record_id)
-        .ok_or_else(|| CliError::Usage(format!("TypedRecord:{record_id} not found")))?;
-    let record_json = serde_json::to_value(&record).map_err(CliError::Json)?;
-    let fields = record_json
-        .get("fields")
-        .and_then(|value| value.as_object())
-        .ok_or_else(|| CliError::Usage("TypedRecord.fields must be an object".into()))?;
-    let mut findings = Vec::new();
-    if let Some(required_fields) = schema.get("required").and_then(|value| value.as_array()) {
-        for field in required_fields.iter().filter_map(|value| value.as_str()) {
-            if !fields.contains_key(field) {
-                findings.push(serde_json::json!({
-                    "kind": "missing_required_field",
-                    "field": field,
-                    "severity": "error"
-                }));
-            }
-        }
-    }
-    if let Some(properties) = schema.get("properties").and_then(|value| value.as_object()) {
-        for (field, rule) in properties {
-            let Some(value) = fields.get(field) else {
-                continue;
-            };
-            let Some(expected_type) = rule.get("type").and_then(|value| value.as_str()) else {
-                continue;
-            };
-            let actual_ok = match expected_type {
-                "string" => value.is_string(),
-                "number" => value.is_number(),
-                "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
-                "boolean" => value.is_boolean(),
-                "object" => value.is_object(),
-                "array" => value.is_array(),
-                _ => true,
-            };
-            if !actual_ok {
-                findings.push(serde_json::json!({
-                    "kind": "field_type_mismatch",
-                    "field": field,
-                    "expected": expected_type,
-                    "actual": value,
-                    "severity": "error"
-                }));
-            }
-        }
-    }
-    print_json(&serde_json::json!({
-        "ok": findings.is_empty(),
-        "command": "harness company docs typed-record validate",
-        "record_id": record_id,
-        "record_type": record.record_type,
-        "module_id": record.module_id,
-        "schema": schema,
-        "findings": findings,
-        "boundaries": {
-            "read_only": true,
-            "validate_does_not_dispatch": true,
-            "module_schema_persistence": "planned",
-            "work_side_effects": false,
-            "finance_side_effects": false,
-            "organization_side_effects": false,
-            "execution_side_effects": false
-        }
-    }))
-}
-
-fn company_docs_view_create_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let module_id = required(args, "--module")?;
-    let title = required(args, "--title")?;
-    let actor_id = required(args, "--actor")?;
-    let actor_kind = docs_actor_kind(args)?;
-    let view_id =
-        value(args, "--id").unwrap_or_else(|| format!("view-cli-{}", relation_slug(&title)));
-    let query = if let Some(raw) = value(args, "--query-json") {
-        serde_json::from_str::<serde_json::Value>(&raw)?
-    } else {
-        serde_json::json!({})
-    };
-    if !query.is_object() {
-        return Err(CliError::Usage(
-            "--query-json must parse to a JSON object".into(),
-        ));
-    }
-    let source_kinds = many(args, "--source-kind");
-    let source_kinds = if source_kinds.is_empty() {
-        vec!["typed_record".to_string()]
-    } else {
-        source_kinds
-    };
-    let now = now_string();
-    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
-    let record = serde_json::json!({
-        "id": view_id,
-        "module_id": module_id,
-        "title": title,
-        "mode": value(args, "--mode").unwrap_or_else(|| "table".to_string()),
-        "source_kinds": source_kinds,
-        "query": query,
-        "owner": actor_ref,
-        "policy_refs": ["company.records.write"],
-        "created_at": now,
-        "updated_at": now
-    });
-    let body = docs_action_body(
-        &definition_id,
-        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:view.append")),
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-docs-view")),
-        "view.append",
-        serde_json::json!({"kind": "business_module", "id": module_id}),
-        actor_ref,
-        record,
-        now,
-    );
-    dispatch_company_docs_action(store, &body)
-}
-
-fn company_docs_view_update_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let view_id = required(args, "--view")?;
-    let actor_id = required(args, "--actor")?;
-    let actor_kind = docs_actor_kind(args)?;
-    let has_title = value(args, "--title").is_some();
-    let has_mode = value(args, "--mode").is_some();
-    let has_query = value(args, "--query-json").is_some();
-    let source_kinds = many(args, "--source-kind");
-    if !has_title && !has_mode && !has_query && source_kinds.is_empty() {
-        return Err(CliError::Usage(
-            "view update requires at least one of --title, --mode, --query-json, or --source-kind"
-                .into(),
-        ));
-    }
-    let view = store
-        .latest_views()?
-        .into_iter()
-        .find(|row| row.id == view_id)
-        .ok_or_else(|| CliError::Usage(format!("View:{view_id} not found")))?;
-    let before = serde_json::to_value(&view).map_err(CliError::Json)?;
-    let mut record = before.clone();
-    if let Some(title) = value(args, "--title") {
-        record["title"] = serde_json::json!(title);
-    }
-    if let Some(mode) = value(args, "--mode") {
-        record["mode"] = serde_json::json!(mode);
-    }
-    if let Some(raw) = value(args, "--query-json") {
-        let query = serde_json::from_str::<serde_json::Value>(&raw)?;
-        if !query.is_object() {
-            return Err(CliError::Usage(
-                "--query-json must parse to a JSON object".into(),
-            ));
-        }
-        record["query"] = query;
-    }
-    if !source_kinds.is_empty() {
-        record["source_kinds"] = serde_json::json!(source_kinds);
-    }
-    let now = now_string();
-    record["updated_at"] = serde_json::json!(now.clone());
-    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
-    let module_id = record
-        .get("module_id")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| CliError::Usage("view update requires View.module_id".into()))?
-        .to_string();
-    let body = docs_action_body(
-        &definition_id,
-        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:view.append")),
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-docs-view-update")),
-        "view.append",
-        serde_json::json!({"kind": "business_module", "id": module_id}),
-        actor_ref,
-        record.clone(),
-        now,
-    );
-    if has_flag(args, "--dry-run") {
-        return print_json(&serde_json::json!({
-            "ok": true,
-            "dry_run": true,
-            "operation": "update",
-            "command": "harness company docs view update",
-            "effect": "view.append",
-            "before": before,
-            "after": record,
-            "boundaries": {
-                "docs_only": true,
-                "view_is_presentation_truth_not_record_store": true,
-                "dry_run_does_not_dispatch": true,
-                "work_side_effects": false,
-                "finance_side_effects": false,
-                "organization_side_effects": false,
-                "execution_side_effects": false
-            },
-            "action": body
-        }));
-    }
-    let result = dispatch_company_docs_action_value(store, &body)?;
-    print_json(&serde_json::json!({
-        "ok": true,
-        "result": {
-            "operation": "update",
-            "view_action": result,
-            "view_id": view_id,
-            "title": record.get("title"),
-            "mode": record.get("mode"),
-            "query": record.get("query")
-        }
-    }))
-}
-
-fn company_docs_relation_link_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let from_document = required(args, "--from-document")?;
-    let to_record = required(args, "--to-record")?;
-    let actor_id = required(args, "--actor")?;
-    let actor_kind = docs_actor_kind(args)?;
-    let relation_type = value(args, "--relation-type").unwrap_or_else(|| "source_for".to_string());
-    let command_id =
-        value(args, "--id").unwrap_or_else(|| generated_id("action-cli-docs-relation"));
-    let relation_id = value(args, "--relation-id")
-        .unwrap_or_else(|| company_docs_relation_id(&from_document, &to_record));
-    let now = now_string();
-    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
-    let body = company_docs_relation_append_body(
-        &definition_id,
-        &from_document,
-        &to_record,
-        actor_ref,
-        &relation_type,
-        &command_id,
-        &relation_id,
-        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:relation.append")),
-        &now,
-    );
-    dispatch_company_docs_action(store, &body)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn company_docs_relation_append_body(
-    definition_id: &str,
-    from_document: &str,
-    to_record: &str,
-    actor_ref: serde_json::Value,
-    relation_type: &str,
-    command_id: &str,
-    relation_id: &str,
-    policy_ref: String,
-    now: &str,
-) -> serde_json::Value {
-    let record = serde_json::json!({
-        "id": relation_id,
-        "from_ref": {"kind": "document", "id": from_document},
-        "relation_type": relation_type,
-        "to_ref": {"kind": "typed_record", "id": to_record},
-        "provenance_ref": {"kind": "document", "id": from_document},
-        "lifecycle_status": "active",
-        "created_by": actor_ref,
-        "created_at": now
-    });
-    serde_json::json!({
-        "id": command_id,
-        "command_name": "relation.append",
-        "subject_ref": {"kind": "document", "id": from_document},
-        "requested_by": actor_ref,
-        "payload": {
-            "definition_id": definition_id,
-            "record": record
-        },
-        "required_permission": "company.records.write",
-        "policy_ref": policy_ref,
-        "risk_tier": "r1",
-        "requires_human_approval": false,
-        "approval_refs": [],
-        "status": "requested",
-        "audit_event_refs": [format!("{command_id}:policy-authorized")],
-        "requested_at": now,
-        "completed_at": null
-    })
-}
-
-fn company_docs_relation_repair_missing_command(
-    store: &HarnessStore,
-    args: &[String],
-) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let actor_id = required(args, "--actor")?;
-    let actor_kind = docs_actor_kind(args)?;
-    let dry_run = has_flag(args, "--dry-run");
-    if !dry_run && !has_flag(args, "--confirm") {
-        return Err(CliError::Usage(
-            "relation repair-missing requires --confirm unless --dry-run is supplied".into(),
-        ));
-    }
-    let definition = store
-        .latest_custom_page_definitions()?
-        .into_iter()
-        .find(|definition| definition.id == definition_id)
-        .ok_or_else(|| {
-            CliError::Usage(format!(
-                "CustomPageDefinition:{definition_id} not found for relation repair"
-            ))
-        })?;
-    let snapshot = company_os_api::snapshot(store)?;
-    let document_ids = json_array(&snapshot, "documents")
-        .iter()
-        .filter_map(|document| json_str(document, "id"))
-        .collect::<BTreeSet<_>>();
-    let relations = json_array(&snapshot, "relations");
-    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
-    let relation_type = "source_for".to_string();
-    let policy_ref =
-        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:relation.append"));
-    let mut plans = json_array(&snapshot, "typed_records")
-        .iter()
-        .filter(|record| {
-            json_str(record, "module_id").as_deref() == Some(definition.module_id.as_str())
-        })
-        .filter_map(|record| {
-            let record_id = json_str(record, "id")?;
-            let document_id = json_str(record, "source_document_ref")
-                .or_else(|| json_field_str(record, "source_document_ref"))?;
-            if !document_ids.contains(&document_id)
-                || json_has_relation_between(relations, &document_id, &record_id)
-            {
-                return None;
-            }
-            let relation_id = company_docs_relation_id(&document_id, &record_id);
-            Some(serde_json::json!({
-                "relation_id": relation_id,
-                "from_document": document_id,
-                "to_record": record_id,
-                "relation_type": relation_type
-            }))
-        })
-        .collect::<Vec<_>>();
-    plans.sort_by(|left, right| {
-        json_str(left, "relation_id")
-            .unwrap_or_default()
-            .cmp(&json_str(right, "relation_id").unwrap_or_default())
-    });
-    if dry_run {
-        return print_json(&serde_json::json!({
-            "ok": true,
-            "dry_run": true,
-            "command": "harness company docs relation repair-missing",
-            "definition_id": definition_id,
-            "module_id": definition.module_id,
-            "planned_count": plans.len(),
-            "planned_relations": plans,
-            "boundaries": {
-                "relation_type": relation_type,
-                "physical_delete": false,
-                "work_side_effects": false,
-                "finance_side_effects": false,
-                "organization_side_effects": false,
-                "execution_side_effects": false
-            }
-        }));
-    }
-    let mut results = Vec::new();
-    for plan in &plans {
-        let document_id = json_str(plan, "from_document").unwrap_or_default();
-        let record_id = json_str(plan, "to_record").unwrap_or_default();
-        let relation_id = json_str(plan, "relation_id").unwrap_or_default();
-        let command_id = generated_id("action-cli-docs-relation-repair");
-        let now = now_string();
-        let body = company_docs_relation_append_body(
-            &definition_id,
-            &document_id,
-            &record_id,
-            actor_ref.clone(),
-            &relation_type,
-            &command_id,
-            &relation_id,
-            policy_ref.clone(),
-            &now,
-        );
-        results.push(dispatch_company_docs_action_value(store, &body)?);
-    }
-    print_json(&serde_json::json!({
-        "ok": true,
-        "dry_run": false,
-        "command": "harness company docs relation repair-missing",
-        "definition_id": definition_id,
-        "module_id": definition.module_id,
-        "repaired_count": results.len(),
-        "relation_ids": plans
-            .iter()
-            .filter_map(|plan| json_str(plan, "relation_id"))
-            .collect::<Vec<_>>(),
-        "results": results
-    }))
-}
-
-fn company_docs_relation_unlink_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let relation_id = required(args, "--relation")?;
-    let actor_id = required(args, "--actor")?;
-    let actor_kind = docs_actor_kind(args)?;
-    let dry_run = has_flag(args, "--dry-run");
-    if !dry_run && !has_flag(args, "--confirm") {
-        return Err(CliError::Usage(
-            "relation unlink requires --confirm unless --dry-run is supplied".into(),
-        ));
-    }
-    let relation = store
-        .latest_relations()?
-        .into_iter()
-        .find(|row| row.id == relation_id)
-        .ok_or_else(|| CliError::Usage(format!("Relation:{relation_id} not found")))?;
-    if relation.lifecycle_status.as_deref() == Some("archived") {
-        return Err(CliError::Usage(format!(
-            "Relation:{relation_id} is already archived"
-        )));
-    }
-    let before = serde_json::to_value(&relation).map_err(CliError::Json)?;
-    let mut record = before.clone();
-    record["lifecycle_status"] = serde_json::json!("archived");
-    let now = now_string();
-    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
-    let subject_ref = record
-        .get("from_ref")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({"kind": "relation", "id": relation_id}));
-    let body = docs_action_body(
-        &definition_id,
-        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:relation.append")),
-        value(args, "--command-id")
-            .unwrap_or_else(|| generated_id("action-cli-docs-relation-unlink")),
-        "relation.append",
-        subject_ref,
-        actor_ref,
-        record.clone(),
-        now,
-    );
-    if dry_run {
-        return print_json(&serde_json::json!({
-            "ok": true,
-            "dry_run": true,
-            "operation": "unlink",
-            "command": "harness company docs relation unlink",
-            "effect": "relation.append",
-            "before": before,
-            "after": record,
-            "boundaries": {
-                "docs_only": true,
-                "dry_run_does_not_dispatch": true,
-                "canonical_write_store": "append_only_jsonl_ledgers",
-                "physical_delete": false,
-                "work_side_effects": false,
-                "finance_side_effects": false,
-                "organization_side_effects": false,
-                "execution_side_effects": false,
-                "ui_is_review_surface": true
-            },
-            "action": body
-        }));
-    }
-    let result = dispatch_company_docs_action_value(store, &body)?;
-    print_json(&serde_json::json!({
-        "ok": true,
-        "result": {
-            "operation": "unlink",
-            "relation_action": result,
-            "relation_id": relation_id,
-            "lifecycle_status": "archived"
-        }
-    }))
-}
-
-fn company_docs_relation_relink_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let relation_id = required(args, "--relation")?;
-    let actor_id = required(args, "--actor")?;
-    let actor_kind = docs_actor_kind(args)?;
-    let new_from_document = value(args, "--from-document");
-    let new_to_record = value(args, "--to-record");
-    let dry_run = has_flag(args, "--dry-run");
-    if !dry_run && !has_flag(args, "--confirm") {
-        return Err(CliError::Usage(
-            "relation relink requires --confirm unless --dry-run is supplied".into(),
-        ));
-    }
-    let relation = store
-        .latest_relations()?
-        .into_iter()
-        .find(|row| row.id == relation_id)
-        .ok_or_else(|| CliError::Usage(format!("Relation:{relation_id} not found")))?;
-    if relation.lifecycle_status.as_deref() == Some("archived") {
-        return Err(CliError::Usage(format!(
-            "Relation:{relation_id} is already archived; create a new link instead"
-        )));
-    }
-    let before = serde_json::to_value(&relation).map_err(CliError::Json)?;
-    let from_document = new_from_document
-        .or_else(|| json_entity_id(&before, "from_ref"))
-        .ok_or_else(|| {
-            CliError::Usage("relation relink needs --from-document or an existing from_ref".into())
-        })?;
-    let to_record = new_to_record
-        .or_else(|| json_entity_id(&before, "to_ref"))
-        .ok_or_else(|| {
-            CliError::Usage("relation relink needs --to-record or an existing to_ref".into())
-        })?;
-    let relation_type =
-        json_str(&before, "relation_type").unwrap_or_else(|| "source_for".to_string());
-    let unlink_preview = serde_json::json!({
-        "relation": relation_id,
-        "after": {
-            "id": relation_id,
-            "lifecycle_status": "archived"
-        }
-    });
-    let link_preview = serde_json::json!({
-        "from_document": from_document,
-        "to_record": to_record,
-        "relation_type": relation_type
-    });
-    if dry_run {
-        return print_json(&serde_json::json!({
-            "ok": true,
-            "dry_run": true,
-            "operation": "relink",
-            "command": "harness company docs relation relink",
-            "plan": {
-                "archive_existing_relation": unlink_preview,
-                "create_replacement_relation": link_preview
-            },
-            "boundaries": {
-                "docs_only": true,
-                "dry_run_does_not_dispatch": true,
-                "physical_delete": false,
-                "requires_confirm_for_dispatch": true,
-                "work_side_effects": false,
-                "finance_side_effects": false,
-                "organization_side_effects": false,
-                "execution_side_effects": false
-            }
-        }));
-    }
-    let now = now_string();
-    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
-    let mut archived_record = before.clone();
-    archived_record["lifecycle_status"] = serde_json::json!("archived");
-    let unlink_body = docs_action_body(
-        &definition_id,
-        value(args, "--unlink-policy")
-            .unwrap_or_else(|| format!("{definition_id}:relation.append")),
-        value(args, "--unlink-command-id")
-            .unwrap_or_else(|| generated_id("action-cli-docs-relation-relink-unlink")),
-        "relation.append",
-        before
-            .get("from_ref")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({"kind": "document", "id": from_document})),
-        actor_ref.clone(),
-        archived_record,
-        now.clone(),
-    );
-    let replacement_relation_id = value(args, "--new-relation-id")
-        .unwrap_or_else(|| company_docs_relation_id(&from_document, &to_record));
-    let link_record = serde_json::json!({
-        "id": replacement_relation_id,
-        "from_ref": {"kind": "document", "id": from_document.clone()},
-        "relation_type": relation_type,
-        "to_ref": {"kind": "typed_record", "id": to_record},
-        "provenance_ref": {"kind": "document", "id": from_document.clone()},
-        "lifecycle_status": "active",
-        "created_by": actor_ref.clone(),
-        "created_at": now
-    });
-    let link_body = docs_action_body(
-        &definition_id,
-        value(args, "--link-policy").unwrap_or_else(|| format!("{definition_id}:relation.append")),
-        value(args, "--link-command-id")
-            .unwrap_or_else(|| generated_id("action-cli-docs-relation-relink-link")),
-        "relation.append",
-        serde_json::json!({"kind": "document", "id": from_document}),
-        actor_ref,
-        link_record.clone(),
-        now,
-    );
-    let unlink_result = dispatch_company_docs_action_value(store, &unlink_body)?;
-    let link_result = dispatch_company_docs_action_value(store, &link_body)?;
-    print_json(&serde_json::json!({
-        "ok": true,
-        "result": {
-            "operation": "relink",
-            "archived_relation_action": unlink_result,
-            "replacement_relation_action": link_result,
-            "archived_relation_id": relation_id,
-            "replacement_relation_id": link_record["id"]
-        },
-        "boundaries": {
-            "physical_delete": false,
-            "two_governed_relation_append_actions": true
-        }
-    }))
-}
-
-fn docs_actor_kind(args: &[String]) -> CliResult<String> {
-    let actor_kind = value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string());
-    if !matches!(actor_kind.as_str(), "agent" | "human") {
-        return Err(CliError::Usage(
-            "--actor-kind must be agent or human for Docs authoring commands".into(),
-        ));
-    }
-    Ok(actor_kind)
-}
-
-fn company_actor_ref_json(kind: &str, id: &str) -> CliResult<serde_json::Value> {
-    if !matches!(kind, "human" | "agent" | "external" | "service") {
-        return Err(CliError::Usage(format!(
-            "actor kind must be human|agent|external|service, got {kind}"
-        )));
-    }
-    Ok(serde_json::json!({"actor_type": kind, "actor_id": id}))
-}
-
-fn company_entity_ref_json(kind: &str, id: &str) -> CliResult<serde_json::Value> {
-    if !matches!(
-        kind,
-        "actor"
-            | "document"
-            | "typed_record"
-            | "business_module"
-            | "milestone"
-            | "work"
-            | "approval"
-            | "financial_record"
-            | "evidence"
-            | "execution"
-    ) {
-        return Err(CliError::Usage(format!(
-            "entity kind must be actor|document|typed_record|business_module|milestone|work|approval|financial_record|evidence|execution, got {kind}"
-        )));
-    }
-    Ok(serde_json::json!({"kind": kind, "id": id}))
-}
-
-fn defaulted_many(args: &[String], name: &str, default: &str) -> Vec<String> {
-    let values = many(args, name);
-    if values.is_empty() {
-        vec![default.to_string()]
-    } else {
-        values
-    }
-}
-
-fn optional_human_authority(args: &[String]) -> CliResult<Option<serde_json::Value>> {
-    value(args, "--authority")
-        .map(|id| company_actor_ref_json("human", &id))
-        .transpose()
-}
-
-fn company_actor_refs_json(ids: &[String], kind: &str) -> CliResult<Vec<serde_json::Value>> {
-    ids.iter()
-        .map(|id| company_actor_ref_json(kind, id))
-        .collect()
-}
-
-#[allow(clippy::too_many_arguments)]
-fn company_work_action_body(
-    definition_id: &str,
-    policy_ref: String,
-    command_id: String,
-    command_name: &str,
-    subject_ref: serde_json::Value,
-    actor_ref: serde_json::Value,
-    record: serde_json::Value,
-    required_permission: &str,
-    risk_tier: &str,
-    requires_human_approval: bool,
-) -> serde_json::Value {
-    company_action_body(
-        definition_id,
-        policy_ref,
-        command_id,
-        command_name,
-        subject_ref,
-        actor_ref,
-        record,
-        required_permission,
-        risk_tier,
-        requires_human_approval,
-        vec![],
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn company_action_body(
-    definition_id: &str,
-    policy_ref: String,
-    command_id: String,
-    command_name: &str,
-    subject_ref: serde_json::Value,
-    actor_ref: serde_json::Value,
-    record: serde_json::Value,
-    required_permission: &str,
-    risk_tier: &str,
-    requires_human_approval: bool,
-    approval_refs: Vec<String>,
-) -> serde_json::Value {
-    serde_json::json!({
-        "id": command_id,
-        "command_name": command_name,
-        "subject_ref": subject_ref,
-        "requested_by": actor_ref,
-        "payload": {
-            "definition_id": definition_id,
-            "record": record
-        },
-        "required_permission": required_permission,
-        "policy_ref": policy_ref,
-        "risk_tier": risk_tier,
-        "requires_human_approval": requires_human_approval,
-        "approval_refs": approval_refs,
-        "status": "requested",
-        "audit_event_refs": [format!("{command_id}:policy-authorized")],
-        "requested_at": now_string(),
-        "completed_at": null
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn company_finance_action_body(
-    definition_id: &str,
-    policy_ref: String,
-    command_id: String,
-    command_name: &str,
-    subject_ref: serde_json::Value,
-    actor_ref: serde_json::Value,
-    record: serde_json::Value,
-    required_permission: &str,
-    risk_tier: &str,
-    requires_human_approval: bool,
-    approval_refs: Vec<String>,
-) -> serde_json::Value {
-    company_action_body(
-        definition_id,
-        policy_ref,
-        command_id,
-        command_name,
-        subject_ref,
-        actor_ref,
-        record,
-        required_permission,
-        risk_tier,
-        requires_human_approval,
-        approval_refs,
-    )
-}
-
-fn dispatch_company_action(
-    store: &HarnessStore,
-    body: &serde_json::Value,
-    command_name: &str,
-) -> CliResult<()> {
-    let mut result = dispatch_company_action_value(store, body)?;
-    if let Some(object) = result.as_object_mut() {
-        object.insert("command_name".to_string(), serde_json::json!(command_name));
-    }
-    print_json(&result)
-}
-
-fn dispatch_company_action_value(
-    store: &HarnessStore,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    let token = env::var("FIRM_COMPANY_OS_TOKEN")
-        .or_else(|_| env::var("HARNESS_COMPANY_OS_TOKEN"))
-        .ok();
-    let response = company_os_api::handle_post(
-        store,
-        "/v1/company-os/actions/dispatch",
-        body,
-        token.as_deref(),
-    )
-    .ok_or_else(|| CliError::Usage("Company OS action dispatcher is unavailable".into()))?;
-    if response.body.get("ok").and_then(|value| value.as_bool()) != Some(true) {
-        let detail = response
-            .body
-            .get("detail")
-            .and_then(|value| value.as_str())
-            .or_else(|| response.body.get("error").and_then(|value| value.as_str()))
-            .unwrap_or("Company OS action failed");
-        return Err(CliError::Usage(detail.to_string()));
-    }
-    Ok(response.body)
-}
-
-fn dispatch_company_work_action(store: &HarnessStore, body: &serde_json::Value) -> CliResult<()> {
-    print_json(&dispatch_company_work_action_value(store, body)?)
-}
-
-fn dispatch_company_work_action_value(
-    store: &HarnessStore,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    dispatch_company_action_value(store, body)
-}
-
-fn latest_company_actor_value(
-    store: &HarnessStore,
-    actor_kind: &str,
-    actor_id: &str,
-) -> CliResult<serde_json::Value> {
-    store
-        .latest_actors()?
-        .into_iter()
-        .filter_map(|actor| serde_json::to_value(actor).ok())
-        .find(|actor| {
-            actor.get("actor_type").and_then(serde_json::Value::as_str) == Some(actor_kind)
-                && actor
-                    .get("actor")
-                    .and_then(|record| record.get("id"))
-                    .and_then(serde_json::Value::as_str)
-                    == Some(actor_id)
-        })
-        .ok_or_else(|| CliError::Usage(format!("Company actor not found: {actor_kind}:{actor_id}")))
-}
-
-fn latest_org_unit_value(store: &HarnessStore, unit_id: &str) -> CliResult<serde_json::Value> {
-    store
-        .latest_org_units()?
-        .into_iter()
-        .find(|candidate| candidate.id == unit_id)
-        .map(serde_json::to_value)
-        .transpose()?
-        .ok_or_else(|| CliError::Usage(format!("OrgUnit not found: {unit_id}")))
-}
-
-fn latest_membership_value(
-    store: &HarnessStore,
-    membership_id: &str,
-) -> CliResult<serde_json::Value> {
-    store
-        .latest_organization_memberships()?
-        .into_iter()
-        .find(|candidate| candidate.id == membership_id)
-        .map(serde_json::to_value)
-        .transpose()?
-        .ok_or_else(|| {
-            CliError::Usage(format!("OrganizationMembership not found: {membership_id}"))
-        })
-}
-
-fn latest_milestone_value(
-    store: &HarnessStore,
-    milestone_id: &str,
-) -> CliResult<serde_json::Value> {
-    store
-        .latest_milestones()?
-        .into_iter()
-        .find(|candidate| candidate.id == milestone_id)
-        .map(serde_json::to_value)
-        .transpose()?
-        .ok_or_else(|| CliError::Usage(format!("Milestone not found: {milestone_id}")))
-}
-
-fn latest_approval_value(store: &HarnessStore, approval_id: &str) -> CliResult<serde_json::Value> {
-    store
-        .latest_approvals()?
-        .into_iter()
-        .find(|candidate| candidate.id == approval_id)
-        .map(serde_json::to_value)
-        .transpose()?
-        .ok_or_else(|| CliError::Usage(format!("Approval not found: {approval_id}")))
-}
-
-fn latest_commitment_value(
-    store: &HarnessStore,
-    commitment_id: &str,
-) -> CliResult<serde_json::Value> {
-    store
-        .latest_commitments()?
-        .into_iter()
-        .find(|candidate| candidate.id == commitment_id)
-        .map(serde_json::to_value)
-        .transpose()?
-        .ok_or_else(|| CliError::Usage(format!("Commitment not found: {commitment_id}")))
-}
-
-fn latest_payment_value(store: &HarnessStore, payment_id: &str) -> CliResult<serde_json::Value> {
-    store
-        .latest_payments()?
-        .into_iter()
-        .find(|candidate| candidate.id == payment_id)
-        .map(serde_json::to_value)
-        .transpose()?
-        .ok_or_else(|| CliError::Usage(format!("Payment not found: {payment_id}")))
-}
-
-fn company_finance_boundaries() -> serde_json::Value {
-    serde_json::json!({
-        "finance_owned_objects": ["Commitment", "Payment", "invoice", "refund", "monetary metric", "reconciliation evidence"],
-        "commitment_is_payment": false,
-        "approved_commitment_is_payment": false,
-        "docs_side_effects": false,
-        "work_side_effects": false,
-        "organization_side_effects": false,
-        "execution_side_effects": false,
-        "payment_note": "record-payment creates a governed prepared Payment; settlement is a later transition with evidence and approval"
-    })
-}
-
-fn append_string_values(record: &mut serde_json::Value, field: &str, values: Vec<String>) {
-    let mut existing = record
-        .get(field)
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    for value in values {
-        if !existing
-            .iter()
-            .any(|item| item.as_str() == Some(value.as_str()))
-        {
-            existing.push(serde_json::json!(value));
-        }
-    }
-    record[field] = serde_json::json!(existing);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn docs_action_body(
-    definition_id: &str,
-    policy_ref: String,
-    command_id: String,
-    command_name: &str,
-    subject_ref: serde_json::Value,
-    actor_ref: serde_json::Value,
-    record: serde_json::Value,
-    requested_at: String,
-) -> serde_json::Value {
-    serde_json::json!({
-        "id": command_id,
-        "command_name": command_name,
-        "subject_ref": subject_ref,
-        "requested_by": actor_ref,
-        "payload": {
-            "definition_id": definition_id,
-            "record": record
-        },
-        "required_permission": "company.records.write",
-        "policy_ref": policy_ref,
-        "risk_tier": "r1",
-        "requires_human_approval": false,
-        "approval_refs": [],
-        "status": "requested",
-        "audit_event_refs": [format!("{command_id}:policy-authorized")],
-        "requested_at": requested_at,
-        "completed_at": null
-    })
-}
-
-fn dispatch_company_docs_action(store: &HarnessStore, body: &serde_json::Value) -> CliResult<()> {
-    print_json(&dispatch_company_docs_action_value(store, body)?)
-}
-
-fn dispatch_company_docs_action_value(
-    store: &HarnessStore,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    let token = env::var("FIRM_COMPANY_OS_TOKEN")
-        .or_else(|_| env::var("HARNESS_COMPANY_OS_TOKEN"))
-        .ok();
-    let response = company_os_api::handle_post(
-        store,
-        "/v1/company-os/actions/dispatch",
-        body,
-        token.as_deref(),
-    )
-    .ok_or_else(|| CliError::Usage("Company OS action dispatcher is unavailable".into()))?;
-    if response.body.get("ok").and_then(|value| value.as_bool()) != Some(true) {
-        let detail = response
-            .body
-            .get("detail")
-            .and_then(|value| value.as_str())
-            .unwrap_or("Company OS docs relation link failed");
-        return Err(CliError::Usage(detail.to_string()));
-    }
-    Ok(response.body)
-}
-
-fn dispatch_company_docs_admin_append_value(
-    store: &HarnessStore,
-    path: &str,
-    authority_ref: serde_json::Value,
-    record: serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    dispatch_company_admin_append_value(store, path, Some(authority_ref), record)
-}
-
-fn dispatch_company_admin_append_value(
-    store: &HarnessStore,
-    path: &str,
-    authority_ref: Option<serde_json::Value>,
-    record: serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    let first_actor_bootstrap =
-        path == "/v1/company-os/actors" && store.latest_actors()?.is_empty();
-    let body = if first_actor_bootstrap {
-        record
-    } else {
-        let authority_ref = authority_ref.ok_or_else(|| {
-            CliError::Usage(
-                "Company OS administrative append requires --authority after the first root actor"
-                    .into(),
-            )
-        })?;
-        serde_json::json!({
-            "mode": "administrative",
-            "authority": authority_ref,
-            "record": record
-        })
-    };
-    let token = env::var("FIRM_COMPANY_OS_TOKEN")
-        .or_else(|_| env::var("HARNESS_COMPANY_OS_TOKEN"))
-        .ok();
-    let response =
-        company_os_api::handle_post(store, path, &body, token.as_deref()).ok_or_else(|| {
-            CliError::Usage(format!(
-                "Company OS administrative append is unavailable for {path}"
-            ))
-        })?;
-    if response.body.get("ok").and_then(|value| value.as_bool()) != Some(true) {
-        let detail = response
-            .body
-            .get("detail")
-            .and_then(|value| value.as_str())
-            .or_else(|| response.body.get("error").and_then(|value| value.as_str()))
-            .unwrap_or("Company OS administrative append failed");
-        return Err(CliError::Usage(detail.to_string()));
-    }
-    Ok(response
-        .body
-        .get("result")
-        .cloned()
-        .unwrap_or(response.body))
-}
-
-fn json_array<'a>(root: &'a serde_json::Value, key: &str) -> &'a Vec<serde_json::Value> {
-    static EMPTY: OnceLock<Vec<serde_json::Value>> = OnceLock::new();
-    root.get(key)
-        .and_then(|value| value.as_array())
-        .unwrap_or_else(|| EMPTY.get_or_init(Vec::new))
-}
-
-fn company_docs_health_findings(snapshot: &serde_json::Value) -> Vec<serde_json::Value> {
-    let documents = json_array(snapshot, "documents");
-    let typed_records = json_array(snapshot, "typed_records");
-    let relations = json_array(snapshot, "relations");
-    let document_ids = documents
-        .iter()
-        .filter_map(|entry| json_str(entry, "id"))
-        .collect::<BTreeSet<_>>();
-    let document_lifecycle = documents
-        .iter()
-        .filter_map(|entry| {
-            Some((
-                json_str(entry, "id")?,
-                (
-                    json_str(entry, "title").unwrap_or_default(),
-                    json_str(entry, "lifecycle_status").unwrap_or_else(|| "active".to_string()),
-                ),
-            ))
-        })
-        .collect::<BTreeMap<_, _>>();
-    let mut findings = Vec::new();
-    for record in typed_records {
-        let Some(record_id) = json_str(record, "id") else {
-            continue;
-        };
-        let source_document_ref = json_str(record, "source_document_ref")
-            .or_else(|| json_field_str(record, "source_document_ref"));
-        match source_document_ref {
-            None => findings.push(serde_json::json!({
-                "id": format!("missing-source:{record_id}"),
-                "kind": "typed_record_missing_source",
-                "severity": "warning",
-                "subject": {"kind": "typed_record", "id": record_id},
-                "recommended_action": "Link the TypedRecord to its originating Document or document the source-less policy."
-            })),
-            Some(document_id) if !document_ids.contains(&document_id) => {
-                findings.push(serde_json::json!({
-                    "id": format!("missing-source-document:{record_id}"),
-                    "kind": "typed_record_source_document_missing",
-                    "severity": "critical",
-                    "subject": {"kind": "typed_record", "id": record_id},
-                    "related": {"kind": "document", "id": document_id},
-                    "recommended_action": "Restore the source Document or migrate this record through a governed Docs action."
-                }));
-            }
-            Some(document_id) => {
-                if let Some((title, lifecycle)) = document_lifecycle.get(&document_id) {
-                    if lifecycle == "archived" {
-                        findings.push(serde_json::json!({
-                            "id": format!("archived-source-document:{record_id}"),
-                            "kind": "typed_record_source_document_archived",
-                            "severity": "warning",
-                            "subject": {"kind": "typed_record", "id": record_id},
-                            "related": {
-                                "kind": "document", "id": document_id,
-                                "title": title,
-                                "lifecycle_status": "archived",
-                            },
-                            "recommended_action": "The source Document is explicit archived history; keep it read-only or route a successor source through a governed Docs action."
-                        }));
-                    }
-                }
-                if !json_has_relation_between(relations, &document_id, &record_id) {
-                    findings.push(serde_json::json!({
-                        "id": format!("missing-doc-record-relation:{record_id}"),
-                        "kind": "missing_document_record_relation",
-                        "severity": "warning",
-                        "subject": {"kind": "typed_record", "id": record_id},
-                        "related": {"kind": "document", "id": document_id},
-                        "recommended_action": "Run harness company docs relation link or dispatch a governed relation.append Action."
-                    }));
-                }
-            }
-        }
-    }
-    findings
-}
-
-fn company_docs_ordered_blocks(
-    document: &serde_json::Value,
-    blocks: &[serde_json::Value],
-) -> Vec<serde_json::Value> {
-    let mut by_id = blocks
-        .iter()
-        .filter_map(|block| json_str(block, "id").map(|id| (id, block)))
-        .collect::<BTreeMap<_, _>>();
-    let mut ordered = Vec::new();
-    if let Some(block_ids) = document.get("block_ids").and_then(|value| value.as_array()) {
-        for block_id in block_ids.iter().filter_map(|value| value.as_str()) {
-            if let Some(block) = by_id.remove(block_id) {
-                ordered.push(block.clone());
-            }
-        }
-    }
-    ordered
-}
-
-fn company_docs_available_commands(
-    document_id: Option<&str>,
-    module_id: Option<&str>,
-    definition_id: Option<&str>,
-    has_action_policies: bool,
-) -> Vec<serde_json::Value> {
-    let definition = definition_id.unwrap_or("<custom-page-definition-id>");
-    let document = document_id.unwrap_or("<document-id>");
-    let module = module_id.unwrap_or("<business-module-id>");
-    vec![
-        serde_json::json!({
-            "command": format!("harness company docs query --document {document}"),
-            "effect": "read_only",
-            "available": document_id.is_some()
-        }),
-        serde_json::json!({
-            "command": "harness company docs health",
-            "effect": "read_only",
-            "available": true
-        }),
-        serde_json::json!({
-            "command": "harness company docs search --query <text>",
-            "effect": "read_only",
-            "available": true
-        }),
-        serde_json::json!({
-            "command": format!("harness company docs traverse --document {document} --depth 2"),
-            "effect": "read_only",
-            "available": document_id.is_some()
-        }),
-        serde_json::json!({
-            "command": format!("harness company docs refs --document {document}"),
-            "effect": "read_only",
-            "available": document_id.is_some()
-        }),
-        serde_json::json!({
-            "command": format!("harness company docs snapshot --document {document}"),
-            "effect": "read_only",
-            "available": document_id.is_some()
-        }),
-        serde_json::json!({
-            "command": format!("harness company docs page scaffold --module {module} --fallback-view <view-id> --title <title> --authority <human-id>"),
-            "effect": "custom_page_definition + custom_page_package",
-            "available": module_id.is_some()
-        }),
-        serde_json::json!({
-            "command": format!("harness company docs page verify --definition {definition}"),
-            "effect": "read_only",
-            "available": definition_id.is_some()
-        }),
-        serde_json::json!({
-            "command": format!("harness company docs page publish --definition {definition} --version <semver> --artifact-ref <path> --authority <human-id>"),
-            "effect": "custom_page_package + custom_page_definition",
-            "available": definition_id.is_some()
-        }),
-        serde_json::json!({
-            "command": format!("harness company docs typed-record append --definition {definition} --module {module} --source-document {document} --record-type <type> --title <title> --actor <actor-id>"),
-            "effect": "typed_record.append",
-            "available": document_id.is_some() && module_id.is_some() && definition_id.is_some() && has_action_policies
-        }),
-        serde_json::json!({
-            "command": format!("harness company docs source sync --definition {definition} --module {module} --source-document {document} --actor <actor-id> --repo-path <path> --repo <owner/repo> --branch <branch> --path docs/prd --dry-run"),
-            "effect": "typed_record.append",
-            "available": document_id.is_some() && module_id.is_some() && definition_id.is_some() && has_action_policies
-        }),
-        serde_json::json!({
-            "command": format!("harness company docs typed-record update --definition {definition} --record <typed-record-id> --fields-json <json> --actor <actor-id> --dry-run"),
-            "effect": "typed_record.append",
-            "available": definition_id.is_some() && has_action_policies
-        }),
-        serde_json::json!({
-            "command": "harness company docs typed-record validate --record <typed-record-id> --schema-json <json>",
-            "effect": "read_only",
-            "available": true
-        }),
-        serde_json::json!({
-            "command": format!("harness company docs view create --definition {definition} --module {module} --title <title> --source-kind typed_record --actor <actor-id>"),
-            "effect": "view.append",
-            "available": module_id.is_some() && definition_id.is_some() && has_action_policies
-        }),
-        serde_json::json!({
-            "command": format!("harness company docs view update --definition {definition} --view <view-id> --query-json <json> --actor <actor-id> --dry-run"),
-            "effect": "view.append",
-            "available": definition_id.is_some() && has_action_policies
-        }),
-        serde_json::json!({
-            "command": format!("harness company docs relation link --definition {definition} --from-document {document} --to-record <typed-record-id> --actor <actor-id>"),
-            "effect": "relation.append",
-            "available": document_id.is_some() && definition_id.is_some() && has_action_policies
-        }),
-        serde_json::json!({
-            "command": format!("harness company docs relation unlink --definition {definition} --relation <relation-id> --actor <actor-id> --dry-run"),
-            "effect": "relation.append",
-            "available": definition_id.is_some() && has_action_policies
-        }),
-        serde_json::json!({
-            "command": format!("harness company docs relation relink --definition {definition} --relation <relation-id> --to-record <typed-record-id> --actor <actor-id> --dry-run"),
-            "effect": "relation.append + relation.append",
-            "available": definition_id.is_some() && has_action_policies
-        }),
-        serde_json::json!({
-            "command": format!("harness company docs diff --document {document} --proposed-json <json>"),
-            "effect": "read_only",
-            "available": document_id.is_some()
-        }),
-        serde_json::json!({
-            "command": "harness company docs change-report --action-json <json>",
-            "effect": "read_only",
-            "available": true
-        }),
-    ]
-}
-
-fn company_docs_read_boundaries() -> serde_json::Value {
-    serde_json::json!({
-        "read_only": true,
-        "source": "latest_projection",
-        "canonical_write_store": "append_only_jsonl_ledgers",
-        "future_sql_role": "derived_read_query_index_layer",
-        "work_side_effects": false,
-        "finance_side_effects": false,
-        "organization_side_effects": false,
-        "execution_side_effects": false,
-        "ui_is_review_surface": true
-    })
-}
-
-fn company_docs_ref_from_args(args: &[String]) -> CliResult<serde_json::Value> {
-    if let Some(raw) = value(args, "--ref") {
-        let (kind, id) = raw.split_once(':').ok_or_else(|| {
-            CliError::Usage("--ref must use <kind>:<id>, for example document:doc-1".into())
-        })?;
-        return Ok(serde_json::json!({"kind": kind, "id": id}));
-    }
-    if let Some(id) = value(args, "--document") {
-        return Ok(serde_json::json!({"kind": "document", "id": id}));
-    }
-    if let Some(id) = value(args, "--record") {
-        return Ok(serde_json::json!({"kind": "typed_record", "id": id}));
-    }
-    if let Some(id) = value(args, "--module") {
-        return Ok(serde_json::json!({"kind": "business_module", "id": id}));
-    }
-    Err(CliError::Usage(
-        "expected --ref <kind:id>, --document <id>, --record <id>, or --module <id>".into(),
-    ))
-}
-
-fn company_docs_find_ref(
-    snapshot: &serde_json::Value,
-    reference: &serde_json::Value,
-) -> Option<serde_json::Value> {
-    let kind = reference.get("kind").and_then(|value| value.as_str())?;
-    let id = reference.get("id").and_then(|value| value.as_str())?;
-    let key = match kind {
-        "document" => "documents",
-        "block" => "blocks",
-        "typed_record" => "typed_records",
-        "business_module" => "business_modules",
-        "view" => "views",
-        "relation" => "relations",
-        "custom_page_definition" => "custom_page_definitions",
-        "custom_page_package" => "custom_page_packages",
-        "work" => "works",
-        "approval" => "approvals",
-        "financial_record" => "financial_records",
-        _ => return None,
-    };
-    json_array(snapshot, key)
-        .iter()
-        .find(|entry| json_str(entry, "id").as_deref() == Some(id))
-        .cloned()
-}
-
-fn company_docs_refs_for(
-    snapshot: &serde_json::Value,
-    reference: &serde_json::Value,
-) -> serde_json::Value {
-    let id = reference
-        .get("id")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
-    let kind = reference
-        .get("kind")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
-    let relations = json_array(snapshot, "relations")
-        .iter()
-        .filter(|relation| {
-            json_relation_is_active(relation)
-                && [
-                    json_entity_id(relation, "from_ref"),
-                    json_entity_id(relation, "to_ref"),
-                ]
-                .iter()
-                .flatten()
-                .any(|endpoint| endpoint == id)
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let children = if kind == "document" {
-        json_array(snapshot, "documents")
-            .iter()
-            .filter(|document| json_str(document, "parent_document_id").as_deref() == Some(id))
-            .cloned()
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    let source_records = if kind == "document" {
-        json_array(snapshot, "typed_records")
-            .iter()
-            .filter(|record| {
-                json_str(record, "source_document_ref")
-                    .or_else(|| json_field_str(record, "source_document_ref"))
-                    .as_deref()
-                    == Some(id)
-            })
-            .cloned()
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    let approvals = json_array(snapshot, "approvals")
-        .iter()
-        .filter(|approval| serde_json::to_string(approval).is_ok_and(|text| text.contains(id)))
-        .cloned()
-        .collect::<Vec<_>>();
-    let financial_records = json_array(snapshot, "financial_records")
-        .iter()
-        .filter(|record| serde_json::to_string(record).is_ok_and(|text| text.contains(id)))
-        .cloned()
-        .collect::<Vec<_>>();
-    serde_json::json!({
-        "relations": relations,
-        "child_documents": children,
-        "source_records": source_records,
-        "approvals": approvals,
-        "financial_records": financial_records
-    })
-}
-
-fn company_docs_document_tree(
-    documents: &[serde_json::Value],
-    blocks: &[serde_json::Value],
-    document: &serde_json::Value,
-    depth: usize,
-) -> serde_json::Value {
-    let id = json_str(document, "id").unwrap_or_default();
-    let children = if depth == 0 {
-        Vec::new()
-    } else {
-        documents
-            .iter()
-            .filter(|child| json_str(child, "parent_document_id").as_deref() == Some(id.as_str()))
-            .map(|child| company_docs_document_tree(documents, blocks, child, depth - 1))
-            .collect::<Vec<_>>()
-    };
-    serde_json::json!({
-        "document": document,
-        "blocks": company_docs_ordered_blocks(document, blocks),
-        "children": children
-    })
-}
-
-fn company_docs_changed_fields(
-    before: &serde_json::Value,
-    after: &serde_json::Value,
-) -> Vec<serde_json::Value> {
-    let mut keys = BTreeSet::new();
-    if let Some(object) = before.as_object() {
-        keys.extend(object.keys().cloned());
-    }
-    if let Some(object) = after.as_object() {
-        keys.extend(object.keys().cloned());
-    }
-    keys.into_iter()
-        .filter(|key| before.get(key) != after.get(key))
-        .map(|key| {
-            serde_json::json!({
-                "field": key,
-                "before": before.get(&key),
-                "after": after.get(&key)
-            })
-        })
-        .collect()
-}
-
-fn json_entry_matches_module(
-    snapshot: &serde_json::Value,
-    entry: &serde_json::Value,
-    module_id: &str,
-) -> bool {
-    if json_str(entry, "module_id").as_deref() == Some(module_id) {
-        return true;
-    }
-    if json_str(entry, "id").as_deref() == Some(module_id) {
-        return true;
-    }
-    let Some(document_id) = json_str(entry, "id")
-        .filter(|_| entry.get("space_id").is_some() || entry.get("parent_document_id").is_some())
-        .or_else(|| json_str(entry, "source_document_ref"))
-        .or_else(|| json_field_str(entry, "source_document_ref"))
-    else {
-        return false;
-    };
-    let Some(module) = json_array(snapshot, "business_modules")
-        .iter()
-        .find(|module| json_str(module, "id").as_deref() == Some(module_id))
-    else {
-        return false;
-    };
-    let Some(root_id) = json_str(module, "root_document_ref") else {
-        return false;
-    };
-    let documents = json_array(snapshot, "documents");
-    let mut current = Some(document_id);
-    for _ in 0..64 {
-        let Some(id) = current.as_deref() else {
-            return false;
-        };
-        if id == root_id {
-            return true;
-        }
-        current = documents
-            .iter()
-            .find(|document| json_str(document, "id").as_deref() == Some(id))
-            .and_then(|document| json_str(document, "parent_document_id"));
-    }
-    false
-}
-
-fn json_field_str(root: &serde_json::Value, key: &str) -> Option<String> {
-    root.get("fields")
-        .and_then(|value| value.get(key))
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn json_entity_id(root: &serde_json::Value, key: &str) -> Option<String> {
-    root.get(key)
-        .and_then(|value| value.get("id"))
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn json_has_relation_between(relations: &[serde_json::Value], left: &str, right: &str) -> bool {
-    relations.iter().any(|relation| {
-        if !json_relation_is_active(relation) {
-            return false;
-        }
-        let from = json_entity_id(relation, "from_ref");
-        let to = json_entity_id(relation, "to_ref");
-        matches!((from.as_deref(), to.as_deref()), (Some(a), Some(b)) if (a == left && b == right) || (a == right && b == left))
-    })
-}
-
-fn json_relation_is_active(relation: &serde_json::Value) -> bool {
-    relation
-        .get("lifecycle_status")
-        .and_then(|value| value.as_str())
-        .is_none_or(|status| status != "archived")
-}
-
-fn relation_slug(value: &str) -> String {
-    let slug = value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        "ref".to_string()
-    } else {
-        slug.chars().take(48).collect()
-    }
-}
-
-fn company_docs_relation_id(from_document: &str, to_record: &str) -> String {
-    let from_slug = relation_slug(from_document)
-        .chars()
-        .take(24)
-        .collect::<String>();
-    let to_slug = relation_slug(to_record)
-        .chars()
-        .take(24)
-        .collect::<String>();
-    let endpoint_hash = content_hash_hex16(&format!("{from_document}\0{to_record}"));
-    format!("relation-cli-docs-{from_slug}-{to_slug}-{endpoint_hash}")
-}
-
 /// Read-only export/verification boundary for the retired Goal/Task ledgers.
 fn legacy_goal_task_command(args: &mut Vec<String>) -> CliResult<()> {
     if args.first().map(String::as_str) != Some("legacy-goal-task") {
@@ -7545,6 +2177,52 @@ fn legacy_goal_task_command(args: &mut Vec<String>) -> CliResult<()> {
         other => {
             return Err(CliError::Usage(format!(
                 "unknown legacy-goal-task command: {other}"
+            )))
+        }
+    }
+    Ok(())
+}
+
+/// Read-only export/verification boundary for the retired Company OS record
+/// surface (DOC-108 Stage A). Export enumerates every record store under the
+/// resolved Firm home — Company Stores, Execution Space stores, project and
+/// repo-local compatibility stores, machine node stores — so store selectors
+/// are rejected rather than silently narrowing the enumeration. Verification
+/// is fully offline and resolves no live store.
+fn legacy_company_os_command(args: &mut Vec<String>) -> CliResult<()> {
+    if args.first().map(String::as_str) != Some("legacy-company-os") {
+        return Err(CliError::Usage(
+            "usage: harness legacy-company-os export|verify".into(),
+        ));
+    }
+    args.remove(0);
+    require_subcommand(args, "legacy-company-os export|verify")?;
+    match args[0].as_str() {
+        "export" => {
+            for forbidden in ["--store", "--project", "--space", "--company"] {
+                if args.iter().any(|arg| arg == forbidden) {
+                    return Err(CliError::Usage(format!(
+                        "legacy-company-os export enumerates the whole Firm home; {forbidden} is not allowed"
+                    )));
+                }
+            }
+            let firm_home = match take_flag_value(args, "--firm-home") {
+                Some(raw) => PathBuf::from(raw),
+                None => project::firm_home().map_err(project_err)?,
+            };
+            let output = PathBuf::from(required(args, "--output")?);
+            let summary =
+                legacy_company_os::export_archive(&firm_home, &output).map_err(CliError::Usage)?;
+            print_json(&summary)?;
+        }
+        "verify" => {
+            let archive = PathBuf::from(required(args, "--archive")?);
+            let summary = legacy_company_os::verify_archive(&archive).map_err(CliError::Usage)?;
+            print_json(&summary)?;
+        }
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown legacy-company-os command: {other}"
             )))
         }
     }
@@ -8263,17 +2941,25 @@ fn org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             for team in teams.values() {
                 team.validate()
                     .map_err(|error| CliError::Usage(error.to_string()))?;
-                if !mission_ids.insert(team.mission_id.as_str()) {
-                    return Err(CliError::Usage(format!(
-                        "multiple AgentTeams reference Mission {}",
-                        team.mission_id
-                    )));
-                }
-                if !missions.iter().any(|mission| mission.id == team.mission_id) {
-                    return Err(CliError::Usage(format!(
-                        "AgentTeam {} references missing Mission {}",
-                        team.id, team.mission_id
-                    )));
+                // Mission linkage is optional legacy provenance (DEV-35):
+                // mission-less Teams are the current default and skip the
+                // historical Mission-reference audit entirely.
+                if let Some(mission_id) = team
+                    .legacy_mission_id
+                    .as_deref()
+                    .filter(|mission_id| !mission_id.trim().is_empty())
+                {
+                    if !mission_ids.insert(mission_id) {
+                        return Err(CliError::Usage(format!(
+                            "multiple AgentTeams reference Mission {mission_id}"
+                        )));
+                    }
+                    if !missions.iter().any(|mission| mission.id == mission_id) {
+                        return Err(CliError::Usage(format!(
+                            "AgentTeam {} references missing Mission {}",
+                            team.id, mission_id
+                        )));
+                    }
                 }
                 if !nodes.iter().any(|node| node.id == team.node_id) {
                     return Err(CliError::Usage(format!(
@@ -9345,24 +4031,14 @@ fn team_message_claim(
 // ---------------------------------------------------------------------------
 
 fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "mission create|list|show|update-context|close|log")?;
-    let json = has_flag(args, "--json");
+    require_subcommand(
+        args,
+        "mission list|show|log show (read-only legacy; writers retired by DOC-108)",
+    )?;
     match args[0].as_str() {
         "log" => return mission_log_command(store, &args[1..]),
-        "create" => {
-            let mission = create_mission(
-                store,
-                value(args, "--id"),
-                &required(args, "--title")?,
-                &required(args, "--objective")?,
-                value(args, "--desired-outcome"),
-                value(args, "--context"),
-            )?;
-            if json {
-                print_json(&mission)?;
-            } else {
-                println!("{}", mission.id);
-            }
+        command if retired_mission_write_command(command) => {
+            return Err(retired_mission_write_error(command));
         }
         "list" => print_json(&store.latest_missions()?)?,
         "show" => {
@@ -9374,55 +4050,20 @@ fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 .ok_or_else(|| CliError::Usage(format!("mission not found: {id}")))?;
             print_json(&mission)?;
         }
-        "update-context" => print_json(&revise_mission_context(
-            store,
-            &required(args, "--id")?,
-            &required(args, "--context")?,
-        )?)?,
-        "close" => {
-            let mission = close_mission(
-                store,
-                &required(args, "--id")?,
-                &required(args, "--outcome")?,
-                &value(args, "--completed-by").unwrap_or_else(|| "host".to_string()),
-            )?;
-            if json {
-                print_json(&mission)?;
-            } else {
-                println!("{}\tcompleted", mission.id);
-            }
-        }
         other => return Err(CliError::Usage(format!("unknown mission command: {other}"))),
     }
     Ok(())
 }
 
-/// `mission log append|show` — the ADR 0051 Mission Log: Mission's
-/// append-only judgment record. This absorbs the versioned-memo role Wave
-/// used to play; there is no update/advance/gate here because an
-/// append-only log has nothing to mutate, only entries to add.
+/// `mission log show` — read-only legacy read of the append-only Mission Log
+/// (ADR 0051). `append` was retired with the legacy CompanyOS cutover
+/// (DOC-108): the log is historical provenance, never new current authority.
 fn mission_log_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "mission log append|show")?;
+    require_subcommand(args, "mission log show (append retired by DOC-108)")?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
         "append" => {
-            let entry = create_mission_log_entry(
-                store,
-                &required(args, "--mission-id")?,
-                &required(args, "--kind")?,
-                &required(args, "--body")?,
-                value(args, "--actor"),
-            )?;
-            if json {
-                print_json(&entry)?;
-            } else {
-                println!(
-                    "{}\t#{}\t{}",
-                    entry.mission_id,
-                    entry.revision,
-                    serde_snake_label(&entry.kind)
-                );
-            }
+            return Err(retired_mission_write_error("log-append"));
         }
         "show" => {
             let mission_id = required(args, "--mission-id")?;
@@ -9452,51 +4093,6 @@ fn mission_log_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     Ok(())
 }
 
-/// Append one Mission Log entry. `revision` is store-assigned (monotonic per
-/// `mission_id`); callers never choose it. Mirrors `create_wave`'s
-/// validate-then-insert shape, but there is no compare-and-append variant
-/// because a Mission Log entry, once appended, is never revised in place.
-pub(crate) fn create_mission_log_entry(
-    store: &HarnessStore,
-    mission_id: &str,
-    kind: &str,
-    body: &str,
-    actor: Option<String>,
-) -> CliResult<MissionLogEntry> {
-    if mission_id.trim().is_empty() {
-        return Err(CliError::Usage(
-            "mission log entry mission id must not be empty".to_string(),
-        ));
-    }
-    if body.trim().is_empty() {
-        return Err(CliError::Usage(
-            "mission log entry body must not be empty".to_string(),
-        ));
-    }
-    let entry = MissionLogEntry {
-        id: generated_id("mission-log"),
-        mission_id: mission_id.to_string(),
-        revision: 0, // store-assigned on append
-        kind: parse_mission_log_kind(kind)?,
-        body: body.to_string(),
-        actor: actor.unwrap_or_else(|| "host".to_string()),
-        created_at: now_string(),
-    };
-    store_conflict_as_usage(store.append_mission_log_entry(entry))
-}
-
-pub(crate) fn parse_mission_log_kind(value: &str) -> CliResult<MissionLogEntryKind> {
-    match value {
-        "judgment" => Ok(MissionLogEntryKind::Judgment),
-        "replan" => Ok(MissionLogEntryKind::Replan),
-        "recovery" => Ok(MissionLogEntryKind::Recovery),
-        "closeout_evidence" => Ok(MissionLogEntryKind::CloseoutEvidence),
-        other => Err(CliError::Usage(format!(
-            "unknown mission log kind `{other}` (judgment|replan|recovery|closeout_evidence)"
-        ))),
-    }
-}
-
 /// Render Mission Log entries as plain text for a terminal reader — the
 /// non-JSON `mission log show` output and the mandatory-reader tail
 /// `team-run recover` prints before its recovery report. Entries are
@@ -9523,57 +4119,6 @@ fn format_mission_log_entries_text(entries: &[MissionLogEntry]) -> String {
         .collect::<Vec<_>>()
         .join("\n\n")
 }
-
-/// Complete durable Mission intent. Prior to ADR 0051 this required every
-/// ordered Legacy Wave to have an explicit Host advance outcome; those write
-/// commands are now retired, so a native post-cutover Mission closes on its
-/// own outcome (the Host records `kind = closeout_evidence` in the Mission
-/// Log beforehand by convention — see `HarnessStore::compare_and_close_mission`).
-/// Closeout is idempotent for the same outcome and immutable for a
-/// conflicting second outcome. It never changes linked Team lifecycle.
-pub(crate) fn close_mission(
-    store: &HarnessStore,
-    mission_id: &str,
-    outcome: &str,
-    completed_by: &str,
-) -> CliResult<Mission> {
-    if outcome.trim().is_empty() || completed_by.trim().is_empty() {
-        return Err(CliError::Usage(
-            "mission close requires a non-empty outcome and completed-by actor".to_string(),
-        ));
-    }
-    let mission = store
-        .latest_missions()?
-        .into_iter()
-        .find(|mission| mission.id == mission_id)
-        .ok_or_else(|| CliError::Usage(format!("mission not found: {mission_id}")))?;
-    if mission.status == MissionStatus::Completed {
-        if mission.outcome_summary.as_deref() == Some(outcome)
-            && mission.completed_by.as_deref() == Some(completed_by)
-        {
-            return Ok(mission);
-        }
-        return Err(CliError::Usage(format!(
-            "mission {mission_id} is already completed with a different outcome"
-        )));
-    }
-    if mission.status == MissionStatus::Cancelled {
-        return Err(CliError::Usage(format!(
-            "mission {mission_id} is cancelled and cannot be completed"
-        )));
-    }
-    let expected = mission.clone();
-    let now = now_string();
-    let mut completed = mission;
-    completed.status = MissionStatus::Completed;
-    completed.outcome_summary = Some(outcome.to_string());
-    completed.completed_by = Some(completed_by.to_string());
-    completed.completed_at = Some(now.clone());
-    completed.updated_at = now;
-    store_conflict_as_usage(store.compare_and_close_mission(&expected, &completed))?;
-    Ok(completed)
-}
-
 fn legacy_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(args, "legacy wave")?;
     match args[0].as_str() {
@@ -9638,82 +4183,41 @@ pub(crate) fn retired_wave_write_command(command: &str) -> bool {
 
 pub(crate) fn retired_wave_write_error(command: &str) -> CliError {
     CliError::Usage(format!(
-        "`harness wave {command}` was retired with the Mission Log cutover (ADR 0051): Mission absorbs Wave as an append-only judgment log. Use `harness mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <markdown>` instead. Historical rows are read only through `harness legacy wave list|show|history`."
+        "`harness wave {command}` was retired with the Mission Log cutover (ADR 0051), and the Mission Log writers that absorbed it were themselves retired with the legacy CompanyOS cutover (DOC-108). Current coordination uses durable AgentTeam, Team-run Work, and identity-first Message delivery. Historical rows are read only through `harness legacy wave list|show|history` and `harness legacy-company-os export|verify`."
     ))
 }
 
-/// Create one native Mission.
-pub(crate) fn create_mission(
-    store: &HarnessStore,
-    id: Option<String>,
-    title: &str,
-    objective: &str,
-    desired_outcome: Option<String>,
-    context: Option<String>,
-) -> CliResult<Mission> {
-    let id = id.unwrap_or_else(|| generated_id("mission"));
-    if id.trim().is_empty() {
-        return Err(CliError::Usage("mission id must not be empty".to_string()));
-    }
-    if title.trim().is_empty() || objective.trim().is_empty() {
-        return Err(CliError::Usage(
-            "mission title and objective must not be empty".to_string(),
-        ));
-    }
-    if desired_outcome
-        .as_ref()
-        .is_some_and(|outcome| outcome.trim().is_empty())
-    {
-        return Err(CliError::Usage(
-            "mission desired outcome must not be empty when supplied".to_string(),
-        ));
-    }
-    let mission = Mission {
-        id,
-        title: title.to_string(),
-        objective: objective.to_string(),
-        context: context.unwrap_or_default(),
-        desired_outcome,
-        status: MissionStatus::Planned,
-        legacy_wave_ids: Vec::new(),
-        outcome_summary: None,
-        completed_by: None,
-        created_at: now_string(),
-        updated_at: now_string(),
-        completed_at: None,
-    };
-    store_conflict_as_usage(store.insert_mission(&mission))?;
-    Ok(mission)
+/// Mission/Mission Log write commands retired by the DOC-108 legacy
+/// CompanyOS cutover. Mirrors the Wave shim: `mission list|show|log show`
+/// remain functional as read-only legacy reads; `create`, `update-context`,
+/// `close`, and `log append` no longer accept a new write on ANY surface —
+/// CLI, HTTP (`POST /v1/missions`...), or MCP (`mission_create`...) — so
+/// there is exactly one place (this function plus
+/// [`retired_mission_write_command`]) that states the retirement.
+pub(crate) fn retired_mission_write_command(command: &str) -> bool {
+    matches!(
+        command,
+        "create" | "update-context" | "close" | "log-append"
+    )
 }
 
-pub(crate) fn revise_mission_context(
-    store: &HarnessStore,
-    mission_id: &str,
-    context: &str,
-) -> CliResult<Mission> {
-    if context.trim().is_empty() {
-        return Err(CliError::Usage(
-            "mission context must not be empty".to_string(),
-        ));
-    }
-    let mut mission = store
-        .latest_missions()?
-        .into_iter()
-        .find(|mission| mission.id == mission_id)
-        .ok_or_else(|| CliError::Usage(format!("mission not found: {mission_id}")))?;
-    if matches!(
-        mission.status,
-        MissionStatus::Completed | MissionStatus::Cancelled
-    ) {
-        return Err(CliError::Usage(format!(
-            "mission {mission_id} is terminal and cannot be revised"
-        )));
-    }
-    let expected = mission.clone();
-    mission.context = context.to_string();
-    mission.updated_at = now_string();
-    store_conflict_as_usage(store.compare_and_append_mission(&expected, &mission))?;
-    Ok(mission)
+pub(crate) fn retired_mission_write_error(command: &str) -> CliError {
+    CliError::Usage(format!(
+        "`harness mission {command}` was retired with the legacy CompanyOS cutover (DOC-108): Mission is historical provenance, not current authority, and its writers are closed on every surface. Current coordination uses durable AgentTeam (`harness team`), Team-run Work (`harness team-run work`), and identity-first Message delivery. Historical Mission rows stay read-only through `harness mission list|show|log show` and `harness legacy-company-os export|verify`."
+    ))
+}
+
+/// The whole `harness company` surface retired with the DOC-108 legacy
+/// CompanyOS cutover: the Company Store registry, Docs, Organization,
+/// Approval, Finance, and gateway sub-commands are no longer current
+/// authority. Work responsibility is Team-scoped (`harness team-run work`)
+/// with the read-only Global Work aggregate at `harness work list|show`;
+/// historical Company data is export/verify-only through
+/// `harness legacy-company-os export|verify`.
+pub(crate) fn retired_company_error(command: &str) -> CliError {
+    CliError::Usage(format!(
+        "`harness company {command}` was retired with the legacy CompanyOS cutover (DOC-108): the Company Store registry and its Docs/Organization/Approval/Finance writers and reads are closed. Use `harness team`, `harness team-run work`, the read-only Global Work aggregate `harness work list|show`, and `harness legacy-company-os export|verify` for historical data."
+    ))
 }
 
 /// Read one Legacy Wave by id. Its write commands (`create`/`update`/
@@ -13101,7 +7605,7 @@ fn ensure_legacy_unit_test_team_binding(
         .iter()
         .any(|mission| mission.id == MISSION_ID)
     {
-        store.insert_mission(&Mission {
+        store.append_mission(&Mission {
             id: MISSION_ID.to_string(),
             title: "Unit-test mission".to_string(),
             objective: "Exercise legacy unit fixtures through the canonical Team contract"
@@ -15020,10 +9524,20 @@ fn latest_team_run(store: &HarnessStore, id: &str) -> CliResult<AgentTeamRun> {
         .ok_or_else(|| CliError::Usage(format!("team run not found: {id}")))
 }
 
-pub(crate) fn team_run_mission_id(store: &HarnessStore, run: &AgentTeamRun) -> CliResult<String> {
+/// Resolve the optional legacy Mission provenance of a TeamRun's durable
+/// AgentTeam. Post-DEV-35 Teams never require a Mission, so this returns
+/// `None` for mission-less Teams; the empty-string compatibility projection
+/// is never exposed as an identifier.
+pub(crate) fn team_run_mission_id(
+    store: &HarnessStore,
+    run: &AgentTeamRun,
+) -> CliResult<Option<String>> {
     latest_teams(store)?
         .remove(&run.agent_team_id)
-        .map(|team| team.mission_id)
+        .map(|team| {
+            team.legacy_mission_id
+                .filter(|mission_id| !mission_id.trim().is_empty())
+        })
         .ok_or_else(|| {
             CliError::Usage(format!(
                 "AgentTeam {} for TeamRun {} not found",
@@ -15319,17 +9833,20 @@ fn team_run_recover(
     let supervisor = store.latest_team_supervisor_lease(team_run_id)?;
     let supervisor_current = supervisor.as_ref().is_some_and(is_supervisor_current);
 
-    // Mandatory reader: Mission Log tail (ADR 0051). This must remain before
-    // provider probing or any recovery mutation so a recovering Host re-reads
-    // durable judgment before acting on provider-native state.
+    // Legacy reader: Mission Log tail (ADR 0051). Printed only when the
+    // Team carries legacy Mission provenance; post-DEV-35 mission-less Teams
+    // have no Mission Log to re-read. When present this stays before provider
+    // probing or any recovery mutation so a recovering Host re-reads durable
+    // judgment before acting on provider-native state.
     if !json {
-        let mission_id = team_run_mission_id(store, &run)?;
-        println!("── mission log (last 3) ──");
-        match store.mission_log_tail(&mission_id, 3) {
-            Ok(entries) => println!("{}", format_mission_log_entries_text(&entries)),
-            Err(error) => println!("mission log unavailable: {error}"),
+        if let Some(mission_id) = team_run_mission_id(store, &run)? {
+            println!("── mission log (last 3) ──");
+            match store.mission_log_tail(&mission_id, 3) {
+                Ok(entries) => println!("{}", format_mission_log_entries_text(&entries)),
+                Err(error) => println!("mission log unavailable: {error}"),
+            }
+            println!();
         }
-        println!();
     }
 
     // Recovery must not mutate a ProviderRuntimeProjection generation, reconcile a delivery,
@@ -27456,7 +21973,7 @@ fn member_collaboration_envelope(
         execution_space_id: execution_space_id.map(str::to_string),
         project_id: project_id.map(str::to_string),
         project_selector: project_selector.map(str::to_string),
-        mission_id: Some(team_run_mission_id(&ledger.store, &run)?),
+        mission_id: team_run_mission_id(&ledger.store, &run)?,
         team_run_id: run.id,
         member_run_id: member.id.clone(),
         work_id: None,
@@ -27681,7 +22198,7 @@ fn parse_unix_ms(value: &str) -> Option<u128> {
 
 fn dashboard_command(
     store: &HarnessStore,
-    resolved: &ResolvedStore,
+    _resolved: &ResolvedStore,
     args: &[String],
 ) -> CliResult<()> {
     require_subcommand(
@@ -27690,30 +22207,7 @@ fn dashboard_command(
     )?;
     match args[0].as_str() {
         "doctor" => dashboard_doctor_command(store, &args[1..])?,
-        "snapshot" => {
-            let company_store = if let Ok(home) = company_store::firm_home() {
-                match company_store::active_company_id(&home).map_err(company_store_err)? {
-                    Some(id) => {
-                        let context = company_store::context_for_id(&home, &id)
-                            .map_err(company_store_err)?
-                            .ok_or_else(|| {
-                                CliError::Usage(format!("active company is unknown: {id}"))
-                            })?;
-                        Some(HarnessStore::new(context.store_root))
-                    }
-                    None => resolved
-                        .context
-                        .as_ref()
-                        .map(|context| HarnessStore::new(context.store_root.clone())),
-                }
-            } else {
-                None
-            };
-            print_json(&dashboard_snapshot_with_company(
-                store,
-                company_store.as_ref(),
-            )?)?
-        }
+        "snapshot" => print_json(&dashboard_snapshot(store)?)?,
         other => {
             return Err(CliError::Usage(format!(
                 "unknown dashboard command: {other}"
@@ -28755,85 +23249,6 @@ impl ServeProjects {
         }
         map
     }
-
-    /// Independently enumerate Company Store projection sources. The watcher
-    /// emits scoped invalidations only; it never copies Company rows into an
-    /// Execution Space. Compatibility project stores retain an explicit
-    /// `project-compat:` scope so they cannot collide with native Company ids.
-    fn company_watch_map(&self) -> std::collections::HashMap<String, PathBuf> {
-        let mut map = std::collections::HashMap::new();
-        for company in self.list_companies() {
-            map.insert(company.id, company.store_root);
-        }
-        if self.firm_home.is_some() {
-            for project in self.list_project_bindings() {
-                map.entry(format!("project-compat:{}", project.id))
-                    .or_insert(project.store_root);
-            }
-        }
-        map
-    }
-
-    fn current_company_id(&self) -> Option<String> {
-        let home = self.firm_home.as_ref()?;
-        company_store::active_company_id(home).ok().flatten()
-    }
-
-    fn list_companies(&self) -> Vec<company_store::CompanyContext> {
-        match &self.firm_home {
-            Some(home) => company_store::list_companies(home).unwrap_or_default(),
-            None => Vec::new(),
-        }
-    }
-
-    fn company_store_for(
-        &self,
-        company: Option<&str>,
-        project_binding_id: Option<&str>,
-    ) -> CliResult<Option<(String, HarnessStore)>> {
-        let Some(home) = &self.firm_home else {
-            if company.is_some() {
-                return Err(CliError::Usage(
-                    "serve is running with a raw --store/FIRM_ROOT override; Company Store selection is unavailable"
-                        .to_string(),
-                ));
-            }
-            return Ok(None);
-        };
-        let id = match company {
-            Some(id) if !id.is_empty() => Some(id.to_string()),
-            Some(_) => None,
-            None => company_store::active_company_id(home).map_err(company_store_err)?,
-        };
-        if let Some(id) = id {
-            let ctx = company_store::context_for_id(home, &id)
-                .map_err(company_store_err)?
-                .ok_or_else(|| CliError::Usage(format!("unknown company: {id}")))?;
-            return Ok(Some((ctx.id.clone(), HarnessStore::new(ctx.store_root))));
-        }
-
-        // No Company Store is selected. Keep legacy Company OS rows readable
-        // from the selected Project Binding, but never fall through into the
-        // Execution Space coordination store.
-        let compatibility = if let Some(id) = project_binding_id.filter(|id| !id.is_empty()) {
-            Some(
-                project::context_for_id(home, id)
-                    .map_err(project_err)?
-                    .ok_or_else(|| CliError::Usage(format!("unknown project binding: {id}")))?,
-            )
-        } else {
-            project::active_project_id(home)
-                .map_err(project_err)?
-                .and_then(|id| project::context_for_id(home, &id).ok().flatten())
-                .or_else(|| self.default_context.clone())
-        };
-        Ok(compatibility.map(|context| {
-            (
-                format!("project-compat:{}", context.id),
-                HarnessStore::new(context.store_root),
-            )
-        }))
-    }
 }
 
 fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]) -> CliResult<()> {
@@ -28903,10 +23318,11 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
     // registry so spaces registered after serve starts become live without a
     // restart. Each stream stays scoped to its coordination store.
     let watcher_projects = projects.clone();
-    let watcher_companies = projects.clone();
+    // DOC-108: no Company Store watch map remains; the second watcher map is
+    // permanently empty (the SSE subscription field stays wire-compatible).
     sse::start_scoped_sse_watcher(
         move || watcher_projects.watch_map(),
-        move || watcher_companies.company_watch_map(),
+        std::collections::HashMap::new,
         sse_manager.clone(),
     )
     .map_err(CliError::Io)?;
@@ -29463,13 +23879,14 @@ fn resolve_peer_team_message_admission_authority(
         target_policy_revision = 1;
     }
     let mut authority = PeerTeamMessageAdmissionAuthority {
+        // DOC-108: ordinary peer-Team messaging must not depend on the
+        // retired Company registry. Without an explicit remote_transfer
+        // Company label, the collaboration scope is the local Execution
+        // Space. The label feeds only the self-consistent admission digests;
+        // remote targets fence against their own inbound policy revision.
         company_id: match request {
             Some(request) => request.company_id.clone(),
-            None => company_store::active_company_id(firm_home)
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| {
-                    "local peer-Team authoring requires an active Company or an explicit remote_transfer Company".to_string()
-                })?,
+            None => format!("space:{execution_space_id}"),
         },
         source_execution_space_id: execution_space_id.into(),
         source_team_id: source_team_id.into(),
@@ -29640,40 +24057,11 @@ fn handle_http_connection(
             return Ok(());
         }
     };
-    let company_param = query_param(&path, "company");
+    // DOC-108: `/v1/company-os/*` reads and writes are retired; the retired
+    // tombstone below answers them directly and no Company Store is resolved.
     let company_os_path = path_only.starts_with("/v1/company-os/");
-    let dashboard_snapshot_path = matches!(
-        path_only.as_str(),
-        "/v1/snapshot" | "/v1/dashboard/snapshot"
-    );
-    let company_store_owned =
-        if company_os_path || dashboard_snapshot_path || path_only == "/v1/events" {
-            match projects.company_store_for(company_param.as_deref(), project_param.as_deref()) {
-                Ok(store) => store,
-                Err(error) => {
-                    let detail = error.to_string();
-                    let code = if detail.starts_with("unknown project binding:") {
-                        "project_not_found"
-                    } else {
-                        detail.as_str()
-                    };
-                    write_http_json(
-                        &mut stream,
-                        "404 Not Found",
-                        &serde_json::json!({"ok": false, "error": code, "detail": detail}),
-                    )?;
-                    return Ok(());
-                }
-            }
-        } else {
-            None
-        };
-    let store = company_store_owned
-        .as_ref()
-        .map(|(_, company_store)| company_store)
-        .unwrap_or(&store_owned);
+    let store = &store_owned;
     let mut content_length = 0usize;
-    let mut company_os_token = None;
     let mut trust_transport_token = None;
     let mut trust_idempotency_key = None;
     let mut trust_expected_version = None;
@@ -29690,9 +24078,6 @@ fn handle_http_connection(
         if let Some((name, value)) = trimmed.split_once(':') {
             if name.eq_ignore_ascii_case("content-length") {
                 content_length = value.trim().parse().unwrap_or(0);
-            }
-            if name.eq_ignore_ascii_case("x-harness-company-os-token") {
-                company_os_token = Some(value.trim().to_string());
             }
             if name.eq_ignore_ascii_case("x-agentfirm-token") {
                 trust_transport_token = Some(value.trim().to_string());
@@ -31108,26 +25493,7 @@ fn handle_http_connection(
             &serde_json::json!({
                 "ok": false,
                 "error": "retired_coordination_surface",
-                "detail": "This Goal/GoalPhase/Task Graph API was retired. Use /v1/missions, /v1/missions/{id}/log, /v1/team-runs, or /v1/company-os/*; historical rows are export-only through `harness legacy-goal-task export|verify`."
-            }),
-        )?;
-        return Ok(());
-    }
-    if method == "POST"
-        && path_only.starts_with("/v1/company-os/")
-        && company_store_owned.is_none()
-        && projects.default_space.is_none()
-        && project_param
-            .as_deref()
-            .is_some_and(|requested| requested != project_id)
-    {
-        write_http_json(
-            &mut stream,
-            "404 Not Found",
-            &serde_json::json!({
-                "ok": false,
-                "error": "project_not_found",
-                "detail": "explicit Company OS write project selector is unknown",
+                "detail": "This Goal/GoalPhase/Task Graph API was retired. Current coordination uses /v1/teams and /v1/team-runs; historical rows are export-only through `harness legacy-goal-task export|verify`."
             }),
         )?;
         return Ok(());
@@ -31189,13 +25555,20 @@ fn handle_http_connection(
             write_http_json(&mut stream, response.status, &response.body)?;
             return Ok(());
         }
-        if let Some(response) = company_os_api::handle_get(
-            store,
-            Some(&store_owned),
-            Some(&execution_space_stores),
-            &path_only,
-        ) {
-            write_http_json(&mut stream, response.status, &response.body)?;
+        // DOC-108: the legacy Company OS read surface is retired with its
+        // module. One explicit tombstone answers every /v1/company-os/* GET;
+        // historical data is export/verify-only through
+        // `harness legacy-company-os export|verify`.
+        if company_os_path {
+            write_http_json(
+                &mut stream,
+                "410 Gone",
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "retired_surface",
+                    "detail": "The legacy Company OS API was retired with the DOC-108 cutover; historical Company data is export/verify-only through `harness legacy-company-os export|verify`. Current surfaces: /v1/views/global-work (read-only Global Work aggregate), /v1/teams, /v1/team-runs.",
+                }),
+            )?;
             return Ok(());
         }
         if path_only == "/v1/host-attentions" {
@@ -31415,15 +25788,11 @@ fn handle_http_connection(
                 &serde_json::json!({"status": "ok", "generated_at": now_string()}),
             )?,
             "/v1/snapshot" | "/v1/dashboard/snapshot" => {
-                let snapshot = projects.dashboard_snapshot_builds.build(|| {
-                    dashboard_snapshot_with_company_spaces(
-                        &store_owned,
-                        company_store_owned
-                            .as_ref()
-                            .map(|(_, company_store)| company_store),
-                        &execution_space_stores,
-                    )
-                })?;
+                // DOC-108: the snapshot no longer merges a Company Store
+                // projection; the execution store is the only source.
+                let snapshot = projects
+                    .dashboard_snapshot_builds
+                    .build(|| dashboard_snapshot(&store_owned))?;
                 write_http_json(&mut stream, "200 OK", &snapshot)?
             }
             "/v1/test/dashboard-snapshot-builds"
@@ -31502,42 +25871,6 @@ fn handle_http_connection(
                     }),
                 )?
             }
-            "/v1/companies" => {
-                let current = projects.current_company_id().unwrap_or_default();
-                let list: Vec<serde_json::Value> = projects
-                    .list_companies()
-                    .into_iter()
-                    .map(|ctx| company_context_json(&ctx, &current))
-                    .collect();
-                write_http_json(
-                    &mut stream,
-                    "200 OK",
-                    &serde_json::json!({"companies": list, "current": current}),
-                )?
-            }
-            "/v1/companies/current" => {
-                let current = projects.current_company_id();
-                let company = current.as_deref().and_then(|id| {
-                    projects
-                        .list_companies()
-                        .into_iter()
-                        .find(|company| company.id == id)
-                });
-                let store_root = company
-                    .as_ref()
-                    .map(|ctx| ctx.store_root.display().to_string());
-                let company_json =
-                    company.map(|ctx| company_context_json(&ctx, current.as_deref().unwrap_or("")));
-                write_http_json(
-                    &mut stream,
-                    "200 OK",
-                    &serde_json::json!({
-                        "current": current,
-                        "store_root": store_root,
-                        "company": company_json,
-                    }),
-                )?
-            }
             "/v1/events" => {
                 let private_agent_member_id = match trust_transport_token.as_deref() {
                     None => None,
@@ -31585,7 +25918,7 @@ fn handle_http_connection(
                     &store_owned,
                     &project_id,
                     private_project_binding_id.as_deref(),
-                    company_store_owned.as_ref().map(|(id, _)| id.as_str()),
+                    None,
                     private_agent_member_id.as_deref(),
                     stream,
                     sse_manager,
@@ -31693,20 +26026,19 @@ fn handle_http_connection(
             }
         }
     };
-    let execution_space_stores = projects
-        .list_spaces()
-        .into_iter()
-        .map(|space| (space.id, HarnessStore::new(space.store_root)))
-        .collect::<Vec<_>>();
-    if let Some(response) = company_os_api::handle_post_with_execution(
-        store,
-        Some(&store_owned),
-        Some(&execution_space_stores),
-        &path_only,
-        &body_json,
-        company_os_token.as_deref(),
-    ) {
-        write_http_json(&mut stream, response.status, &response.body)?;
+    // DOC-108: every POST /v1/company-os/* writer is retired with its module.
+    // One explicit tombstone answers them all; historical Company data is
+    // export/verify-only through `harness legacy-company-os export|verify`.
+    if company_os_path {
+        write_http_json(
+            &mut stream,
+            "410 Gone",
+            &serde_json::json!({
+                "ok": false,
+                "error": "retired_write_authority",
+                "detail": "The legacy Company OS writers were retired with the DOC-108 cutover. Team-scoped Work is authoritative (harness team-run work / /v1/team-runs/*), the Global Work aggregate is read-only, and historical Company data is export/verify-only through `harness legacy-company-os export|verify`.",
+            }),
+        )?;
         return Ok(());
     }
     // POST /v1/projects/switch — flip the active project in the registry +
@@ -31742,29 +26074,6 @@ fn handle_http_connection(
                 &serde_json::json!({
                     "ok": true,
                     "result": {"current": id},
-                }),
-            )?,
-            Err(error) => write_http_json(
-                &mut stream,
-                "400 Bad Request",
-                &serde_json::json!({"ok": false, "error": error.to_string()}),
-            )?,
-        }
-        return Ok(());
-    }
-
-    // POST /v1/companies/switch — flip the active Company Store selector.
-    // This is independent from project selection and does not affect
-    // Mission/Mission Log, Agent Team, Workflow, or provider cwd routing.
-    if path_only == "/v1/companies/switch" {
-        match handle_company_switch(projects, &body_json) {
-            Ok((id, switch_store)) => write_http_json(
-                &mut stream,
-                "200 OK",
-                &serde_json::json!({
-                    "ok": true,
-                    "result": {"current": id},
-                    "company_os_snapshot": company_os_api::snapshot(&switch_store)?,
                 }),
             )?,
             Err(error) => write_http_json(
@@ -32194,28 +26503,6 @@ fn handle_space_switch(
     Ok((space.id.clone(), HarnessStore::new(space.store_root)))
 }
 
-/// Apply a `POST /v1/companies/switch {company: <id>}` request. This switches
-/// only the active Company Store marker/registry pointer; project selection and
-/// execution routing are intentionally unchanged.
-fn handle_company_switch(
-    projects: &ServeProjects,
-    body: &serde_json::Value,
-) -> CliResult<(String, HarnessStore)> {
-    let id = json_string(body, "company")
-        .or_else(|| json_string(body, "id"))
-        .or_else(|| json_string(body, "company_id"))
-        .ok_or_else(|| CliError::Usage("missing `company` id to switch to".to_string()))?;
-    let home = projects.firm_home.as_ref().ok_or_else(|| {
-        CliError::Usage(
-            "serve is running with a raw --store/FIRM_ROOT override; Company Store switch is unavailable"
-                .to_string(),
-        )
-    })?;
-    let ctx = company_store::switch_current_company(home, &id, &now_string())
-        .map_err(company_store_err)?;
-    Ok((ctx.id.clone(), HarnessStore::new(ctx.store_root)))
-}
-
 /// Render the compatibility context as a native Project Binding. The old
 /// project-derived store remains visible only as an explicitly labelled
 /// compatibility locator; it is not the binding's owned state.
@@ -32269,45 +26556,44 @@ fn handle_http_action(
             "RETIRED_WRITE_AUTHORITY: legacy local Work/WorkDelegation writers are closed".into(),
         ));
     }
+    // Mission/Mission Log write endpoints retired with the DOC-108 legacy
+    // CompanyOS cutover (same retirement as the `mission
+    // create|update-context|close|log append` CLI commands and the
+    // `mission_*` MCP writer tools — see `retired_mission_write_error`).
+    // Mission rows remain readable history through the CLI legacy reads and
+    // the Stage A export/verify path; no current surface may write them.
     if path == "/v1/missions" {
-        return create_mission_value(store, body);
+        return Err(retired_mission_write_error("create"));
     }
-    if let Some(mission_id) = path
+    if path
         .strip_prefix("/v1/missions/")
         .and_then(|rest| rest.strip_suffix("/close"))
+        .is_some()
     {
-        return close_mission_value(store, mission_id, body);
+        return Err(retired_mission_write_error("close"));
     }
-    if let Some(mission_id) = path
+    if path
         .strip_prefix("/v1/missions/")
         .and_then(|rest| rest.strip_suffix("/teams"))
+        .is_some()
     {
-        let mut team_body = body.clone();
-        let object = team_body.as_object_mut().ok_or_else(|| {
-            CliError::Usage("Mission Team body must be a JSON object".to_string())
-        })?;
-        object.insert(
-            "mission_id".to_string(),
-            serde_json::Value::String(mission_id.to_string()),
-        );
-        let team_value = create_team_value(store, execution_space_id, &team_body)?;
-        return Ok(serde_json::json!({"team": team_value}));
+        return Err(CliError::Usage(
+            "POST /v1/missions/{id}/teams was retired with the legacy CompanyOS cutover (DOC-108): Mission no longer owns Team creation. Create durable Teams directly through POST /v1/teams (or `harness team create`) without Mission provenance.".to_string(),
+        ));
     }
-    if let Some(mission_id) = path
+    if path
         .strip_prefix("/v1/missions/")
         .and_then(|rest| rest.strip_suffix("/context"))
+        .is_some()
     {
-        return Ok(serde_json::to_value(revise_mission_context(
-            store,
-            mission_id,
-            &required_json_string(body, "context")?,
-        )?)?);
+        return Err(retired_mission_write_error("update-context"));
     }
-    if let Some(mission_id) = path
+    if path
         .strip_prefix("/v1/missions/")
         .and_then(|rest| rest.strip_suffix("/log"))
+        .is_some()
     {
-        return append_mission_log_value(store, mission_id, body);
+        return Err(retired_mission_write_error("log-append"));
     }
     if let Some(attention_id) = path
         .strip_prefix("/v1/host-attentions/")
@@ -33476,54 +27762,6 @@ fn acknowledge_provider_request_as_host(
         )?;
     }
     Ok(())
-}
-
-/// POST /v1/missions — create native Mission intent from the JSON body.
-fn create_mission_value(
-    store: &HarnessStore,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    Ok(serde_json::to_value(create_mission(
-        store,
-        optional_json_string(body, "id")?,
-        &required_json_string(body, "title")?,
-        &required_json_string(body, "objective")?,
-        optional_json_string(body, "desired_outcome")?,
-        optional_json_string(body, "context")?,
-    )?)?)
-}
-
-/// POST /v1/missions/{id}/close — close durable intent with an explicit
-/// Mission outcome. Legacy Wave rows never gate a new Mission.
-fn close_mission_value(
-    store: &HarnessStore,
-    mission_id: &str,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    Ok(serde_json::to_value(close_mission(
-        store,
-        mission_id,
-        &required_json_string(body, "outcome")?,
-        &optional_json_string(body, "completed_by")?.unwrap_or_else(|| "host".to_string()),
-    )?)?)
-}
-
-/// POST /v1/missions/{id}/log — append one append-only Mission Log entry,
-/// the console-facing replacement for the retired Wave write routes
-/// (ADR 0051): Host plan judgment, replans, recovery notes, and closeout
-/// evidence are recorded here. Same append path as `harness mission log`.
-fn append_mission_log_value(
-    store: &HarnessStore,
-    mission_id: &str,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    Ok(serde_json::to_value(create_mission_log_entry(
-        store,
-        mission_id,
-        &required_json_string(body, "kind")?,
-        &required_json_string(body, "body")?,
-        optional_json_string(body, "actor")?,
-    )?)?)
 }
 
 /// GET /v1/host-attentions?team_run_id=<id> — reconciled latest HostAttention
@@ -39725,7 +33963,6 @@ fn summarize_json_value(value: &serde_json::Value) -> String {
 }
 
 fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
-    let company_os = company_os_api::snapshot(store)?;
     let members = latest_members(store)?;
     let teams = latest_teams(store)?;
     let runtimes = latest_runtimes(store)?;
@@ -39935,37 +34172,8 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "team_member_close_requests": team_member_close_requests,
         "member_actions": member_actions,
         "delegation_runs": delegation_runs,
-        "team_run_events": team_run_events,
-        "company_os": company_os
+        "team_run_events": team_run_events
     }))
-}
-
-fn dashboard_snapshot_with_company(
-    execution_store: &HarnessStore,
-    company_store: Option<&HarnessStore>,
-) -> CliResult<serde_json::Value> {
-    dashboard_snapshot_with_company_spaces(execution_store, company_store, &[])
-}
-
-fn dashboard_snapshot_with_company_spaces(
-    execution_store: &HarnessStore,
-    company_store: Option<&HarnessStore>,
-    execution_spaces: &[(String, HarnessStore)],
-) -> CliResult<serde_json::Value> {
-    let mut snapshot = dashboard_snapshot(execution_store)?;
-    if let Some(company_store) = company_store {
-        if let Some(object) = snapshot.as_object_mut() {
-            object.insert(
-                "company_os".to_string(),
-                company_os_api::snapshot_with_execution_spaces(
-                    company_store,
-                    execution_store,
-                    execution_spaces,
-                )?,
-            );
-        }
-    }
-    Ok(snapshot)
 }
 
 /// `GET /v1/meta` — server build/data provenance (issue #307, 2nd occurrence of
@@ -42733,13 +36941,6 @@ fn parse_hook_payload(input: &str) -> serde_json::Value {
     }
 }
 
-fn json_str(value: &serde_json::Value, key: &str) -> Option<String> {
-    value
-        .get(key)
-        .and_then(|value| value.as_str())
-        .map(str::to_string)
-}
-
 fn record_provider_hook_event(
     store: &HarnessStore,
     args: &[String],
@@ -43001,15 +37202,9 @@ work request-changes --work-id <id> --expected-version <n> --reason <text> [--id
 work poll-github-ci --team-run-id <id>
 "#;
 
-const CHEATSHEET_MISSION: &str = r#"mission create        --title <text> --objective <text> [--id <id>]
-                      [--desired-outcome <text>] [--context <text>] [--json]
-mission show          --id <id>
-mission update-context --id <id> --context <text>
-mission close         --id <id> --outcome <text> [--completed-by <actor>]
-mission log append    --mission-id <id>
-                      --kind judgment|replan|recovery|closeout_evidence
-                      --body <md> [--actor <id>] [--json]
-mission log show       --mission-id <id> [--tail <n>] [--json]
+const CHEATSHEET_MISSION: &str = r#"mission list            (read-only legacy rows; Mission writers retired by DOC-108)
+mission show            --id <id>
+mission log show        --mission-id <id> [--tail <n>] [--json]
 "#;
 
 const CHEATSHEET_ALL: &str = r#"team-run create --objective <text> --agent-team-id <id>
@@ -43038,18 +37233,14 @@ work accept --work-id <id> --expected-version <n>
 work request-changes --work-id <id> --expected-version <n> --reason <text>
 work poll-github-ci --team-run-id <id>
 
-mission create --title <text> --objective <text> [--id <id>]
-  [--context <text>] [--json]
-mission show --id <id>
-mission update-context --id <id> --context <text>
-team create --name <text> --description <text> --mission-id <id>
-  --host-agent-id <id> --node-id <uuid> [--member <id>]
+team create --name <text> --description <text> --host-agent-id <id>
+  --node-id <uuid> [--member <id>] [--legacy-mission-id <id>]
 team message send --from-team <id> --from-member <id> --to-team <id> --body <md>
 team message inbox --team <id> [--all]
-mission close --id <id> --outcome <text>
-mission log append --mission-id <id>
-  --kind judgment|replan|recovery|closeout_evidence --body <md>
+mission list
+mission show --id <id>
 mission log show --mission-id <id> [--tail <n>]
+  (read-only legacy Mission reads; writers retired by DOC-108)
 "#;
 
 fn print_help() {
@@ -43063,9 +37254,10 @@ fn print_help() {
   space migrate-from-project --from-project <binding-id|path> --id <space-id> [--name <name>]
   legacy-goal-task export --project <id|path> --output <dir>
   legacy-goal-task verify --archive <dir>
-  mission create|list|show|update-context|close
-  mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <md>
-  mission log show --mission-id <id> [--tail <n>]
+  legacy-company-os export [--firm-home <dir>] --output <dir>
+  legacy-company-os verify --archive <dir>
+  mission list|show (read-only legacy rows; Mission writers retired by DOC-108)
+  mission log show --mission-id <id> [--tail <n>] (read-only legacy)
   legacy wave list|show|history (historical reads only)
   team-run create|list|status|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|answer-message|events|complete|cancel
   team-run board-summary --id <team-run-id>
@@ -43106,25 +37298,6 @@ fn print_help() {
                  [--policy strict|advisory] [--actor <id>] [--json]
       An active/selected Execution Space requires the global --project flag;
       FIRM_PROJECT and ambient Project Binding defaults do not authorize admission.
-  company init --id <company-id> [--name <name>]
-  company list | company current | company switch <company-id> | company show [company-id]
-  company migrate-from-project --from-project <project-id|path> --id <company-id> [--name <name>] [--force]
-  company docs query|search|traverse|refs|related|health|source sync|snapshot|diff|change-report
-  company docs module create | page create|read|write|append|search|rename|move|archive|scaffold|verify|publish | page-definition create
-  company docs typed-record append|update|validate | view create|update | relation link|unlink|relink
-  company work list|query
-  company work milestone list|show|create|update|close
-  company finance list|query|propose-commitment|request-approval|decide-approval|transition-commitment|record-payment|transition-payment
-  company finance commitment list|show|propose|transition
-  company finance payment list|show|record
-  company org list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions
-  company org link-execution --authority <human> --actor <agent-membership> --agent-member <id> --execution-space <id> [--replace]
-  company org unlink-execution --authority <human> --actor <agent-membership> [--expect-agent-member <id>]
-  company org actor list|show|create-human|create-agent|update-status|link-execution|unlink-execution
-  company org unit list|show|create|update-status
-  company org membership list|assign|update-status
-  company gateway social readiness [--platform xiaohongshu|douyin|wechat_channels] [--adb adb] [--device <serial>]
-  company approval list|show|request|decide
   workflow list|run|run-script|get-output|patch|gc-worktrees|reap-workers
   dashboard snapshot
   dashboard doctor --team-run-id <id> --api <base-url> [--expected-git-rev <rev>]
@@ -43135,13 +37308,17 @@ fn print_help() {
   cheatsheet [team|work|mission|all]
 
 Retired coordination commands fail explicitly. Historical rows are available only
-through legacy-goal-task export|verify.
+through legacy-goal-task export|verify; retired Company OS records through
+legacy-company-os export|verify. `harness company ...` and the Mission writers
+(`mission create|update-context|close|log append`, POST /v1/missions*,
+mission_* MCP writers, POST /v1/company-os/*) were retired by DOC-108.
 
 Execution selection is independent: --space/FIRM_SPACE selects coordination
 storage; --project/FIRM_PROJECT selects the provider cwd/config/Skill boundary.
 HARNESS_SPACE and HARNESS_PROJECT remain deprecated compatibility aliases.
 
-Agent Team creation requires one Mission, Host Agent, and ExecutionNode."#
+Agent Team creation requires one Host AgentMember and one ExecutionNode; Mission
+provenance is optional legacy context, never a requirement."#
     );
 }
 #[cfg(test)]
@@ -49392,47 +43569,6 @@ mod tests {
     }
 
     #[test]
-    fn social_readiness_detects_whitespace_separated_authorized_android_device() {
-        let huawei_adb_output = "\
-List of devices attached
-48FYD25403400924       device usb:34603008X product:JUY-AL00 model:JUY_AL00 device:HWJUY-H transport_id:1
-";
-        assert!(android_devices_has_authorized_device(huawei_adb_output));
-
-        let unauthorized_adb_output = "\
-List of devices attached
-48FYD25403400924       unauthorized usb:34603008X product:JUY-AL00
-";
-        assert!(!android_devices_has_authorized_device(
-            unauthorized_adb_output
-        ));
-    }
-
-    #[test]
-    fn social_readiness_uses_current_focus_package_only() {
-        let window_dump = "\
-  mCurrentFocus=Window{7f8a209 u0 com.tencent.mm/com.tencent.mm.plugin.finder.ui.FinderHomeAffinityUI}
-  mFocusedApp=AppWindowToken{825f583 token=Token{8443a27 ActivityRecord{825f505 u0 com.ss.android.ugc.aweme/.account.business.login.DYLoginActivity t67}}}
-";
-        assert_eq!(
-            current_android_focus_package(window_dump).as_deref(),
-            Some("com.tencent.mm")
-        );
-
-        let packages = "\
-package:com.xingin.xhs
-package:com.ss.android.ugc.aweme
-package:com.tencent.mm
-";
-        let wechat = social_platform_readiness("wechat_channels", packages, window_dump);
-        let douyin = social_platform_readiness("douyin", packages, window_dump);
-        assert_eq!(wechat["focused"], true);
-        assert_eq!(wechat["readiness_state"], "installed_currently_focused");
-        assert_eq!(douyin["focused"], false);
-        assert_eq!(douyin["readiness_state"], "installed_not_focused");
-    }
-
-    #[test]
     fn member_run_open_native_print_only_never_launches_an_application() {
         let root =
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("native-open")));
@@ -49685,7 +43821,6 @@ package:com.tencent.mm
                 kind: ProjectKind::Repo,
                 is_git_repo: true,
             }),
-            company_context: None,
             execution_space_context: None,
         };
         let args = |evidence: &[&str]| {
@@ -49751,7 +43886,6 @@ package:com.tencent.mm
                 kind: ProjectKind::Repo,
                 is_git_repo: true,
             }),
-            company_context: None,
             execution_space_context: None,
         };
         let version = "0.148.0-alpha.9";
@@ -49808,7 +43942,6 @@ package:com.tencent.mm
                 kind: ProjectKind::Repo,
                 is_git_repo: true,
             }),
-            company_context: None,
             execution_space_context: Some(ExecutionSpace {
                 id: "space-a".into(),
                 name: "Space A".into(),
@@ -51153,8 +45286,8 @@ package:com.tencent.mm
             let firm_home =
                 std::env::temp_dir().join(format!("harness-cli-home-{}", generated_id(tag)));
             std::fs::create_dir_all(&firm_home).expect("firm home");
-            company_store::register_and_activate(&firm_home, "company-test", "Test Company", "t1")
-                .expect("active Company");
+            // DOC-108: no Company registry is seeded; the local peer-message
+            // admission label defaults to the Execution Space scope.
             let node_id = "11111111-1111-4111-8111-111111111111".to_string();
             let space_id = "space-test";
             store.init().expect("store init");
@@ -51393,7 +45526,7 @@ package:com.tencent.mm
         )
         .expect("local peer resolution");
         assert!(!resolved.requires_remote_route);
-        assert_eq!(resolved.authority.company_id, "company-test");
+        assert_eq!(resolved.authority.company_id, "space:space-test");
         assert_eq!(resolved.authority.target_subscription_revision, 1);
         assert_eq!(
             resolved.authority.target_subscription_id,
@@ -52797,7 +46930,6 @@ package:com.tencent.mm
             source: StoreSource::StoreFlag,
             project_selection_explicit: false,
             context: None,
-            company_context: None,
             execution_space_context: None,
         };
         let response = mcp::call_tool(
@@ -58261,7 +52393,9 @@ package:com.tencent.mm
             );
         }
         let mission_body = function_body(MAIN_RS_SOURCE, "mission_command");
-        for leaf in ["create", "show", "update-context", "close", "log"] {
+        // Mission writers retired with the legacy CompanyOS cutover
+        // (DOC-108); only the read-only legacy reads remain documented.
+        for leaf in ["list", "show", "log"] {
             assert!(
                 subcommand_is_real(mission_body, leaf),
                 "mission {leaf} is documented in the cheatsheet but is not a \
@@ -58270,13 +52404,11 @@ package:com.tencent.mm
         }
         // `mission log` is its own nested dispatcher (ADR 0051 Mission Log).
         let mission_log_body = function_body(MAIN_RS_SOURCE, "mission_log_command");
-        for leaf in ["append", "show"] {
-            assert!(
-                subcommand_is_real(mission_log_body, leaf),
-                "mission log {leaf} is documented in the cheatsheet but is not a \
-                 real match arm in mission_log_command"
-            );
-        }
+        assert!(
+            subcommand_is_real(mission_log_body, "show"),
+            "mission log show is documented in the cheatsheet but is not a \
+             real match arm in mission_log_command"
+        );
         // Wave is absent from current workflow cheatsheets. Historical reads
         // live under the explicit `legacy wave` namespace only.
         assert!(!CHEATSHEET_MISSION.contains("wave "));
@@ -58285,12 +52417,31 @@ package:com.tencent.mm
             assert!(
                 !CHEATSHEET_MISSION.contains(&format!("wave {retired}")),
                 "CHEATSHEET_MISSION documents retired `wave {retired}`; ADR 0051 retired \
-                 Wave write commands, use `mission log append` instead"
+                 Wave write commands"
             );
             assert!(
                 !CHEATSHEET_ALL.contains(&format!("wave {retired}")),
                 "CHEATSHEET_ALL documents retired `wave {retired}`; ADR 0051 retired \
-                 Wave write commands, use `mission log append` instead"
+                 Wave write commands"
+            );
+        }
+        // Mission writers are likewise absent after DOC-108: the cheatsheets
+        // document only the read-only legacy Mission reads.
+        for retired in [
+            "mission create",
+            "update-context",
+            "mission close",
+            "log append",
+        ] {
+            assert!(
+                !CHEATSHEET_MISSION.contains(retired),
+                "CHEATSHEET_MISSION documents retired `{retired}`; DOC-108 retired Mission \
+                 write commands, historical rows stay read-only"
+            );
+            assert!(
+                !CHEATSHEET_ALL.contains(retired),
+                "CHEATSHEET_ALL documents retired `{retired}`; DOC-108 retired Mission \
+                 write commands, historical rows stay read-only"
             );
         }
     }
