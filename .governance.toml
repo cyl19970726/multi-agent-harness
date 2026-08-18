@@ -96,10 +96,16 @@ terms = [
     "Goal -> Task",
     "Vision/Goal/Task",
     "Goal/Task Workbench",
+    "Commitment ledger",
+    "Payment ledger",
+    "Finance module",
+    "Mission/Wave orchestration",
+    "Company OS Docs",
 ]
-# Finance vocabulary (Commitment, Payment, etc.) is not yet added to
-# retired_vocabulary.terms: the append-only code still exists. Add them
-# when the code is fully decommissioned (see issue #323).
+# Finance/CompanyOS vocabulary added when DOC-108 decommissioned the
+# append-only writers (issue #323). Terms are phrase-scoped (not bare
+# "Mission"/"Payment") so labeled history and legacy read-only docs
+# keep their vocabulary.
 allowed_paths = [
     "docs/current/operations/governance-engine.md",
 ]
