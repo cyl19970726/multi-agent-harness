@@ -101,8 +101,7 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "operating detail behind the root AGENTS.md hard invariants",
-        "AGENTS.md slimming relocation map"
+        "implementation-bound remainder for agent operating detail (CLI commands, gate-grepped phrases, execution-space selectors); product doctrine canonical in Notion (Docs System)"
       ],
       "dependsOn": [
         "AGENTS.md",
@@ -134,7 +133,7 @@
         "node scripts/check-native-session-boundary.mjs"
       ],
       "reorgTrigger": "Root AGENTS.md invariants change, operating detail is relocated again, or the relocation map no longer matches the root file structure.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "implementation_reference",
       "implementationState": "partial",
       "truthRefs": [
         {
@@ -374,12 +373,7 @@
       "status": "stable",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "core object relationships",
-        "current concept model: durable Teams, AgentMember identity, Work kernel; legacy Mission rows are read-only history",
-        "executor kinds and Agent Team Work/Message boundary",
-        "optional governance object model (Review, Gap, Evaluation, LearningNote, Vision)",
-        "closeout gate and open-enum vocabularies",
-        "anti-drift invariants"
+        "implementation-bound remainder for the concept model (open-enum vocabularies); product doctrine canonical in Notion (Docs System)"
       ],
       "dependsOn": [
         "docs/current/product/prd.md",
@@ -403,7 +397,7 @@
         "cargo test"
       ],
       "reorgTrigger": "Core object semantics, the generic object set, closeout gate, open-enum vocabularies, assignment flow, evidence flow, or Dashboard projection rules change.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "implementation_reference",
       "implementationState": "partial",
       "truthRefs": [
         {
@@ -422,9 +416,7 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "current product architecture: durable Teams and Global Work; legacy Mission hierarchy is read-only history",
-        "executor kinds and shared infrastructure",
-        "retired coordination boundary"
+        "implementation-bound remainder for architecture (surface responsibility matrix, legacy Message read/export boundary); product doctrine canonical in Notion (Docs System)"
       ],
       "dependsOn": [
         "docs/current/architecture/design-basis.md",
@@ -455,7 +447,7 @@
         "cargo test"
       ],
       "reorgTrigger": "Implemented crates, object boundaries, or source-of-truth surfaces diverge from the architecture.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "implementation_reference",
       "implementationState": "partial",
       "truthRefs": [
         {
@@ -622,10 +614,7 @@
       "status": "stable",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "operations dashboard information architecture for durable Teams and Global Work",
-        "executor control-plane views",
-        "Agent Team ownership visibility",
-        "retired-surface exclusion boundary"
+        "implementation-bound remainder for the operations dashboard (Workbench/Dashboard naming compatibility, document ownership map); product doctrine canonical in Notion (Docs System)"
       ],
       "dependsOn": [
         "docs/current/architecture/architecture-map.md",
@@ -2728,9 +2717,7 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "Agent Team Work, shared Kanban, assignment and atomic claim",
-        "WorkEvent/WorkDelivery and identity-first Message/CanonicalMessageDelivery boundary",
-        "flat cross-Team WorkDelegation on durable Mission-less Teams"
+        "implementation-bound remainder for Agent Team Work (lifecycle enum, CLI mutation surface, plane separation table); product doctrine canonical in Notion (Docs System)"
       ],
       "dependsOn": [
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
@@ -2750,7 +2737,7 @@
         "npx pnpm@9.15.4 check:docs-governance"
       ],
       "reorgTrigger": "Work kernel semantics, Team Workbench, Global Work aggregation, or accountable-Team identity changes.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "implementation_reference",
       "implementationState": "design_only",
       "truthRefs": [
         {
@@ -2810,7 +2797,7 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "execution-foundation dogfood boundary (durable Teams + Global Work)"
+        "implementation-bound remainder for the Agent Team dogfood loop (baseline gates, provider execution modes, delivery receipts); product doctrine canonical in Notion (Docs System)"
       ],
       "dependsOn": [
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
@@ -2833,7 +2820,7 @@
         "harness governance check"
       ],
       "reorgTrigger": "Dogfood loop scope, Team/Work runtime projection, or acceptance boundary changes.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "implementation_reference",
       "implementationState": "implemented",
       "truthRefs": [
         {
