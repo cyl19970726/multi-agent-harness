@@ -1,5 +1,7 @@
 # ADR 0042: Company Store (retired), Execution Space, and Project Binding
 
+> Successor (DOC-16 row, DEV-40 flip 2026-08-18): [DOC-105](https://app.notion.com/p/3be49a4fa379817aa594fd8e7331c30d) + [DOC-108](https://app.notion.com/p/3be49a4fa37981afa320f6c8a5f3a8b4).
+
 > **Partially superseded by DOC-108 (legacy CompanyOS retirement, 2026-08-17).**
 > The Company Store third of this decision is retired: its identity, selector,
 > ledgers, and commands are gone and survive only as export/verify history.

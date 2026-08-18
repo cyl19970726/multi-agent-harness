@@ -1,5 +1,7 @@
 # ADR 0055: Remote Node Fabric and sole cross-Node route truth
 
+> Successor (DOC-16 row, DEV-40 flip 2026-08-18): [DOC-106](https://app.notion.com/p/3be49a4fa3798126a598e634ed5d0807) + [AF-ADR-014 (Accepted)](https://app.notion.com/p/3be49a4fa3798172a8d6c1074e2e1a67).
+
 > **Naming partially superseded by DOC-108 (2026-08-18).** The decision was
 > recorded with "Company Control Plane" / "CompanyNode" naming; DOC-16
 > supersedes only that naming (now Fabric Control Plane / ExecutionNode,

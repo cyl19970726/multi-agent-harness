@@ -1,5 +1,7 @@
 # ADR 0037: Agent Member Autonomy And Collaboration
 
+> Successor (DOC-16 row, DEV-40 flip 2026-08-18): [DOC-105](https://app.notion.com/p/3be49a4fa379817aa594fd8e7331c30d) + [DOC-106](https://app.notion.com/p/3be49a4fa3798126a598e634ed5d0807).
+
 ```text
 status: active; responsibility semantics amended by ADR 0050; its Mission/Wave
   premise is retired legacy history (DOC-108)

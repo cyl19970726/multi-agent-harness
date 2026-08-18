@@ -16,9 +16,10 @@ clear.
 Notion is the product/development authority: product intent, Specs,
 decisions-of-record for the product model, task execution state, and review
 records live there (AgentFirm Home → 01 · Docs System → Canonical Docs; the
-vNext successor Specs are DOC-105..108 in Development Documents until the
-DEV-40 flip promotes them). The repository owns versioned implementation
-truth bound to code and validated by governance gates — schemas, CLI/API
+DEV-40 flip of 2026-08-18 promoted DOC-105..108 to the four Current
+Canonical rows under the now-Accepted AF-ADR-014). The repository owns
+versioned implementation truth bound to code and validated by governance
+gates — schemas, CLI/API
 surfaces, and the concrete facts a developer needs next to the code. When the
 two disagree, Notion is the product authority and the repository must either
 implement the change or record the gap in the Implementation Crosswalk and

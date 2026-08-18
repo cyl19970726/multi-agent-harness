@@ -1,5 +1,7 @@
 # ADR 0056: Correlated Message And Session Permission Cutover
 
+> Successor note (DOC-16 Keep row, DEV-40 flip 2026-08-18): this ADR is kept; the governing successor context is [DOC-106](https://app.notion.com/p/3be49a4fa3798126a598e634ed5d0807).
+
 - Status: accepted; breaking clean cutover
 - Date: 2026-08-14
 - Supersedes: ADR 0030 interaction-object and permission-routing contract

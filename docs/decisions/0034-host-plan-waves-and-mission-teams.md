@@ -1,5 +1,6 @@
 # ADR 0034: Host Plan Waves And Mission-Scoped Agent Teams
 
+> Successor (DOC-16 row, DEV-40 flip 2026-08-18): [AF-ADR-014 (Accepted)](https://app.notion.com/p/3be49a4fa3798172a8d6c1074e2e1a67) + [DOC-108](https://app.notion.com/p/3be49a4fa37981afa320f6c8a5f3a8b4).
 
 > **Superseded by DOC-108 (legacy CompanyOS retirement, 2026-08-17).**
 > This ADR is retained as historical evidence only; its object model is not

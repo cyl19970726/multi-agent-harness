@@ -1,5 +1,7 @@
 # ADR 0039: Ordinary Member Planning And Durable Mailbox Delivery
 
+> Successor note (DOC-16 Keep row, DEV-40 flip 2026-08-18): this ADR is kept; the governing successor context is [DOC-106](https://app.notion.com/p/3be49a4fa3798126a598e634ed5d0807).
+
 ```text
 status: active; Assignment/Handoff kinds amended by ADR 0050
 date: 2026-07-27
