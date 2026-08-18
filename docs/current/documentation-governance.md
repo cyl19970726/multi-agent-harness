@@ -18,7 +18,7 @@ not seven independent sources of product truth.
 
 | Module | Location | Owns | Default context? |
 | --- | --- | --- | --- |
-| Product | `docs/current/product/prd.md`, `docs/current/company-os/` | product mission, system ownership, object meaning, governance and UX contracts | yes, through a small context pack |
+| Product | `docs/current/product/` | product mission, system ownership, object meaning, governance and UX contracts | yes, through a small context pack |
 | Architecture | `docs/current/architecture/architecture*.md`, `docs/current/architecture/concept-model.md`, `docs/current/architecture/data-model.md`, `docs/decisions/` | implemented boundaries, durable decisions, source-of-truth and migration rules | selected files only |
 | Execution | `docs/current/dashboard/`, `docs/current/integration/`, runtime/workflow docs | Mission and Mission Log, executors, providers, operator surfaces and runbooks | only for execution work |
 | Design evidence | `design/<workstream>/` (git history) | versioned Expected, Actual, prompts, specs, overlays, comparisons and reviews | only for the selected workstream |
@@ -26,20 +26,17 @@ not seven independent sources of product truth.
 | Research | `research/` (git history) | unresolved evidence, comparisons and bounded proposals attached to an active decision or TeamWork | never default context |
 | Historical evidence | verified external archives and Git history | provenance needed to interpret still-existing records or decisions | never default context |
 
-Within Company OS, product contracts divide by truth-owning system:
+The legacy Company OS system split (Docs / Organization / Work / Finance /
+Approval) was retired with DOC-108; see the superseded ADRs and Git history
+for that model. Current product contracts divide by execution-foundation
+truth-owning system:
 
-- **Docs**: Document, Block, TypedRecord, Relation, View and BusinessModule;
-- **Organization**: Actors, OrgUnits, reporting, permissions and authority;
-- **Work**: TeamWork, Milestone, Assignment, lifecycle and result routing;
-- **Finance**: monetary records, controls and evidence;
-- **cross-system governance**: Approval, module/organization evolution and the
-  optional role-agent decision contracts;
-- **execution foundation**: Mission and Mission Log plus the selected executor, linked as
-  evidence rather than company structure.
-
-Business domains such as Trademark Management are `BusinessModule`s. They link
-records from the four systems; they do not create a second document hierarchy
-or duplicate those systems' truth.
+- **Agent Teams**: durable flat AgentTeam, TeamMembership, AgentMember;
+- **Work**: Work, WorkOperation, WorkEvent, WorkDelivery, lifecycle and result
+  routing;
+- **Messages**: Message, MessageSubscription, CanonicalMessageDelivery;
+- **runtime**: AgentSession, NativeSessionRef, NodeDaemon, RuntimeCommand,
+  Execution Space and Project Binding.
 
 ## Authority classes
 
@@ -63,29 +60,20 @@ summary links to the owning contract instead of copying its rules.
 Agents must not load all repository docs. Start with the smallest pack that can
 answer the current decision.
 
-### Company OS product pack
+### Product pack
 
-1. `docs/current/company-os/product-system-map.md`
-2. the one system contract being changed;
-3. `docs/current/company-os/four-system-collaboration.md` only for a cross-system change;
-4. the relevant ADR or schema;
-5. the selected visual workstream index when UI is in scope.
+1. `docs/current/product/prd.md`
+2. `docs/current/product/agent-team-works.md` for Work questions;
+3. the relevant ADR or schema.
 
 ### Execution foundation pack
 
 1. `AGENTS.md`
 2. `docs/current/architecture/architecture-map.md`
-3. ADR 0051, ADR 0056 when Message is in scope, and the selected executor
-   contract; ADR 0026 is historical Wave evidence only;
+3. ADR 0050 for the Work/Message boundary, ADR 0056 when Message is in scope,
+   and the selected executor contract; ADR 0026/0034/0051 are historical
+   Mission/Wave evidence only;
 4. the specific page, provider or runtime reference being changed.
-
-### Module-design pack
-
-1. source Document or request;
-2. `docs/current/company-os/module-design.md`;
-3. the four-system ownership map;
-4. relevant Organization, Work, Finance and Approval policy;
-5. the domain example or adapter, if one exists.
 
 Old visual candidates, completion audits and historical evidence are loaded
 only to answer a historical or comparative question. Unresolved research must
@@ -202,30 +190,11 @@ Owner approves protected policy or authority changes. Docs Governance may move
 and link information but cannot silently redefine legal, financial, permission
 or organization truth.
 
-For a new business module such as Trademark Management, the operating sequence
-is:
-
-```text
-new request / source Document
-  -> Docs Governance proposes BusinessModule, document tree and TypedRecords
-  -> Org/HR Governance assigns accountable Actors and authority
-  -> Work Governance creates TeamWorks, Milestones and result routing
-  -> Finance Governance links commitments/payments when money is affected
-  -> owning System Governance Agents approve their records
-  -> Lead or Human handles the cross-system gate when required
-  -> execution runs
-  -> result records return to Docs without duplicating Work or Finance truth
-```
-
-The document UI provides ordinary pages, blocks and tables by default. A core
-page may use a code-declared composed View when it must present several linked
-systems. That custom presentation still reads the same governed records; it
-does not create a private database hidden inside HTML.
-
-Docs Governance should publish a small health view rather than a second task
-system: unowned canonical documents, conflicting scopes, broken relations,
-stale reviews, archival candidates, unresolved placement requests and recent
-structural decisions. All remediation remains normal TeamWorks.
+The document UI in the Agent Dashboard provides ordinary execution surfaces
+by default. Docs Governance should publish a small health view rather than a
+second task system: unowned canonical documents, conflicting scopes, broken
+relations, stale reviews, archival candidates, unresolved placement requests
+and recent structural decisions. All remediation remains normal TeamWorks.
 
 ## Required metadata and review
 

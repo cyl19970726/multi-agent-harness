@@ -1,5 +1,11 @@
 # ADR 0045: Company-owned Standing Agent execution relation
 
+
+> **Superseded by DOC-108 (legacy CompanyOS retirement, 2026-08-17).**
+> This ADR is retained as historical evidence only; its object model is not
+> current authority. See `docs/current/product/prd.md` and
+> `docs/current/architecture/architecture-map.md`.
+
 Status: active; Agent Team responsibility projection amended by ADR 0050
 
 ## Decision

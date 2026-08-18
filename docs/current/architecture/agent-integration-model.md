@@ -4,8 +4,7 @@ This is the canonical answer to one question: **to integrate a new agent,
 provider, or platform into Star Harness, what do you have to define?**
 
 It sits above the provider runtime implementation reference in
-[agent-runtime.md](agent-runtime.md) and the execution boundary in
-[execution-foundation.md](../company-os/execution-foundation.md), and above the concrete
+[agent-runtime.md](agent-runtime.md) and above the concrete
 provider implementations in [integration/codex.md](../integration/codex.md),
 [integration/claude.md](../integration/claude.md), and
 [integration/kimi.md](../integration/kimi.md). It does not redefine
@@ -86,7 +85,7 @@ MemberRun's queued mail at native prompt boundaries. Stop remains user-driven
 by default; cooperative same-task continuation is opt-in and never upgrades
 the member to a Harness-controlled runtime.
 
-An `AgentMember` (see [agent-control-plane.md](../company-os/execution-foundation.md)) is a
+An `AgentMember` (see [concept-model.md](concept-model.md)) is a
 durable identity. To make that identity *executable on a given platform* you
 must answer three independent questions, and the launch spec is how the harness
 hands a single turn to whatever platform sits behind the member:
@@ -117,8 +116,7 @@ prompt artifact, not inline chat text**. The contract:
   escalates, reports). It must be durable when it affects acceptance — role
   prompts that change permissions or evidence policy must be files/refs, not
   hidden chat context.
-- The role prompt is **one layer** in the documented prompt stack from
-  [agent-control-plane.md](../company-os/execution-foundation.md). The harness composes the
+- The role prompt is **one layer** in the documented prompt stack. The harness composes the
   full system prompt per delivery from this stack:
 
 ```text

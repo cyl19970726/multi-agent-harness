@@ -201,27 +201,25 @@ Start the operator surface with an explicit Workspace selection:
 firm serve --addr 127.0.0.1:8787
 ```
 
-The current Mission/Team authoring path is available through Cargo:
+The current Team authoring path is available through Cargo:
 
 ```bash
 cargo run -p firm-cli -- --help
 cargo run -p firm-cli -- init
-cargo run -p firm-cli -- mission create --title <title> --objective <objective> --context "<mission-markdown>"
 cargo run -p firm-cli -- node init
-cargo run -p firm-cli -- team create --mission-id <mission-id> --name <team-name> \
+cargo run -p firm-cli -- team create --name <team-name> \
   --description <purpose> --host-agent-id <agent-id> --node-id <node-uuid>
 cargo run -p firm-cli -- team-run create --agent-team-id <team-id> --objective <objective> \
   --member-owned-path <member-name>:crates
 cargo run -p firm-cli -- team-run start --id <team-run-id>
-cargo run -p firm-cli -- mission log append --mission-id <mission-id> --kind judgment --body "<host-decision>"
 cargo run -p firm-cli -- dashboard snapshot
 cargo run -p firm-cli -- serve --addr 127.0.0.1:8787
 ```
 
-Omit ad-hoc `--member` overrides when starting from a Mission-owned AgentTeam.
-That path preserves each registered AgentMember's stable identifier
-as `MemberRun.agent_member_id`; Company Organization projects that same
-canonical AgentMember ActorRef without copying runtime state.
+Teams are created without any Mission (DOC-108); `--mission-id` survives only
+as optional legacy provenance. Omit ad-hoc `--member` overrides when starting
+from a durable AgentTeam definition. That path preserves each registered
+AgentMember's stable identifier as `MemberRun.agent_member_id`.
 
 Select the Execution Space and Project Binding explicitly:
 
@@ -230,7 +228,7 @@ firm space switch <execution-space-id>
 firm project switch <project-binding-id>
 ```
 
-`--space` / `HARNESS_SPACE` selects Mission/Mission Log, Agent Team, Workflow, and
+`--space` / `HARNESS_SPACE` selects Agent Team, Workflow, and
 coordination storage. `--project` / `HARNESS_PROJECT` independently selects
 provider cwd, project instructions, Skills, Git/worktree, and permission
 boundaries. `--store` / `HARNESS_ROOT` remains a deprecation-warned

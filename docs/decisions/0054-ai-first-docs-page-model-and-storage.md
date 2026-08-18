@@ -1,5 +1,11 @@
 # ADR 0054: AI-first Docs page model, revision contract, and storage
 
+
+> **Superseded by DOC-108 (legacy CompanyOS retirement, 2026-08-17).**
+> This ADR is retained as historical evidence only; its object model is not
+> current authority. See `docs/current/product/prd.md` and
+> `docs/current/architecture/architecture-map.md`.
+
 **Date:** 2026-08-05
 **Status:** accepted
 **Spec:** docs/current/company-os/ai-first-docs-spec.md

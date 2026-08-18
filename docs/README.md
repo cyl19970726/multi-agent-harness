@@ -32,10 +32,14 @@ docs/
 │   ├── architecture/# Architecture maps, data model, schemas
 │   ├── operations/  # Getting started, operations, governance engine
 │   ├── integration/ # Provider integrations
-│   ├── dashboard/   # Dashboard frontend architecture
-│   └── company-os/  # Company OS product contracts
+│   └── dashboard/   # Dashboard frontend architecture
 ├── decisions/       # ADRs (historical decisions, never deleted)
 ```
+
+The legacy `current/company-os/` directory was removed with the DOC-108
+cutover; its reusable Work contract lives in
+[current/product/agent-team-works.md](current/product/agent-team-works.md) and
+the rest is recoverable from Git history.
 
 **Authority order**: `mental/` > `current/` > `decisions/`.
 When `mental/` contradicts any other doc, `mental/` wins.
@@ -45,9 +49,8 @@ When `mental/` contradicts any other doc, `mental/` wins.
 | Need | Smallest useful entry |
 | --- | --- |
 | Understand the product architecture | [Agent Firm Mental Model](mental/agent-firm-mental-model.md) — canonical |
-| Understand the AI Company OS | [Company OS product system map](current/company-os/product-system-map.md) |
-| Change Company OS product behavior | [Company OS contracts](current/company-os/README.md) |
-| Change Agent Team orchestration | [Mission and Mission Log Host-plan contract](current/product/mission-wave-host-plan.md), [Agent Team Works](current/product/agent-team-works.md), [Member continuation](current/architecture/member-continuation-model.md), historical [ADR 0034](decisions/0034-host-plan-waves-and-mission-teams.md), [ADR 0044](decisions/0044-durable-team-supervision-and-typed-mail.md), [ADR 0050](decisions/0050-agent-team-work-board-and-message-boundary.md), and [Architecture map](current/architecture/architecture-map.md) |
+| Understand the execution foundation | [Product requirements](current/product/prd.md) and [Architecture map](current/architecture/architecture-map.md) |
+| Change Agent Team orchestration | [Agent Team Works](current/product/agent-team-works.md), [Member continuation](current/architecture/member-continuation-model.md), [ADR 0044](decisions/0044-durable-team-supervision-and-typed-mail.md), [ADR 0050](decisions/0050-agent-team-work-board-and-message-boundary.md), and historical [ADR 0034](decisions/0034-host-plan-waves-and-mission-teams.md) |
 | Change cross-machine Team collaboration | [Cross-machine collaboration architecture](current/architecture/cross-machine-team-collaboration.md), [operations](current/operations/cross-machine-collaboration.md), and [Remote Node Fabric](current/architecture/remote-node-fabric.md) |
 | Implement or operate the repository | [Getting started](current/operations/getting-started.md), [Operations](current/operations/operations.md), [Schemas](current/architecture/schemas.md) |
 | Change repository agent operating rules | Root [AGENTS.md](../AGENTS.md) and [Agent operating rules detail](current/product/agent-operating-rules.md) |
@@ -59,7 +62,7 @@ When `mental/` contradicts any other doc, `mental/` wins.
 | Module | Entry points |
 | --- | --- |
 | Mental models | [`mental/`](mental/) — authoritative, single source of truth |
-| Product | [PRD](current/product/prd.md), [Company OS](current/company-os/README.md), [Design basis](current/architecture/design-basis.md) |
+| Product | [PRD](current/product/prd.md), [Design basis](current/architecture/design-basis.md) |
 | Architecture | [Architecture map](current/architecture/architecture-map.md), [Concept model](current/architecture/concept-model.md), [Data model](current/architecture/data-model.md), [ADRs](decisions/README.md) |
 | Execution | [Dashboard](current/operations/dashboard.md), [Workflow runtime](current/operations/workflow-runtime.md), [Agent runtime](current/architecture/agent-runtime.md), [Agent Team Works](current/product/agent-team-works.md), [Integration](current/integration/README.md) |
 | Operations | [Getting started](current/operations/getting-started.md), [Operations](current/operations/operations.md), [Multi-project](current/operations/multi-project.md), [Governance engine](current/operations/governance-engine.md) |
@@ -90,7 +93,6 @@ integrating project repository, not in the generic core docs.
 | Skill | Use |
 | --- | --- |
 | [agentfirm-development-loop](../.agents/skills/agentfirm-development-loop/SKILL.md) | The repository's only default development loop: Brain -> one Task -> Dev -> exact-revision Review; rejected work returns to the same Task. |
-| [orchestrate-mission-waves](../skills/orchestrate-mission-waves/SKILL.md) | Compatibility-named Host guidance for durable Mission context, append-only Mission Log judgment, shared Works, Mission-linked long-lived Teams, and re-plan/closeout. It never creates or advances a Wave; CLI remains the authority. |
 | [collaborate-as-agent-team-member](../skills/collaborate-as-agent-team-member/SKILL.md) | Provider-neutral member guidance for Work claim/start/block/submit, Work-linked conversation, native subagents, evidence, and Host acceptance. |
 | [star-workflow](../skills/star-workflow/SKILL.md) | Optional Dynamic Workflow authoring capability; not Mission or Mission Log planning authority. |
 | [bootstrap-project-workflow](../skills/bootstrap-project-workflow/SKILL.md) | Current doc-sync compatibility methodology. It is no longer a mandatory Lead skill or default install. |

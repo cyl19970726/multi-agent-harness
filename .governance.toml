@@ -78,11 +78,9 @@ core_docs = [
     "docs/current/operations/operations.md",
     "docs/current/architecture/schemas.md",
     "docs/decisions/README.md",
-    "docs/current/company-os/product-system-map.md",
 ]
 coverage_roots = [
     "docs/mental",
-    "docs/current/company-os",
     "docs/current/dashboard/pages",
     "docs/current/integration",
     "plugins",
