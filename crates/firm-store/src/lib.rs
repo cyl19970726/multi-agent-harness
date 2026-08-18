@@ -386,20 +386,15 @@ impl HarnessStore {
         })
     }
 
-    /// Raw append retained ONLY for verified migration/import and append-only
-    /// history reconstruction (DOC-108 Stage A export/restore, Execution
-    /// Space migration). No current product path may author a new Mission.
+    /// Test-seed helper for historical Mission rows. Mission write authority
+    /// is retired (DOC-108); production has no Mission author or restore path,
+    /// and every caller lives in test code. Kept un-gated only because
+    /// integration tests in other crates link the non-test build.
+    #[doc(hidden)]
     pub fn append_mission(&self, value: &Mission) -> StoreResult<()> {
         self.append_jsonl("missions.jsonl", value)
     }
 
-    /// Compare-and-append one Mission revision. Mission lifecycle is
-    /// independent from durable AgentTeam identity and membership authority.
-
-    /// Insert a new native Mission under the store lock. Unlike the generic
-    /// append method this rejects a concurrently-created duplicate id.
-
-    /// Test-only seed helper for ADR 0051 pre-cutover rows. Production has no
     pub fn append_member(&self, value: &ProviderLaunchProfile) -> StoreResult<()> {
         self.append_jsonl("provider_launch_profiles.jsonl", value)
     }

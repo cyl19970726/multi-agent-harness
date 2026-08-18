@@ -45,8 +45,8 @@ status:
   current_implementation: Execution Workbench V3 on the active product branch
   stack: React 18 + TypeScript + Vite + Tailwind v4 + shadcn/Radix + lucide + Geist
   theme: light, Notion-like document surface (supersedes 0016 dark theme)
-  mission_log_direction: implemented; pages/mission-detail-log.md
-  agent_team_page: implemented; pages/team-run-war-room.md
+  mission_log_direction: retired with DOC-108; historical rows are Legacy read-only
+  agent_team_page: converged onto durable Team surfaces; pages/agent-member-focus.md
   retired_coordination_ui: removed from active product surfaces
   implementation_allowed: follow the canonical page and visual contracts
 ```

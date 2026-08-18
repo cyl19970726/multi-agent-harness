@@ -130,11 +130,11 @@ for (const path of [
 ]) {
   if (!existsSync(path)) errors.push(`missing lifecycle integration: ${path}`);
 }
+// mission-new.md and new-run.md were removed with the DOC-108 Mission
+// retirement: every write they prescribed now fails closed.
 for (const name of [
-  "mission-new.md",
   "team-start.md",
   "team-status.md",
-  "new-run.md",
   "status.md",
   "dashboard.md",
 ]) {

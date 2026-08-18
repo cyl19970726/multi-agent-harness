@@ -335,7 +335,7 @@
         },
         {
           "kind": "test",
-          "ref": "npx pnpm@9.15.4 acceptance:mission-wave"
+          "ref": "npx pnpm@9.15.4 acceptance:legacy-retirement"
         }
       ]
     },
@@ -1686,7 +1686,7 @@
       "reviewAfter": "2026-09-03",
       "lastVerifiedWith": [
         "cargo test -p firm-cli",
-        "npx pnpm@9.15.4 acceptance:mission-wave",
+        "npx pnpm@9.15.4 acceptance:legacy-retirement",
         "harness governance check"
       ],
       "reorgTrigger": "Kimi ACP protocol, mailbox boundary, control mapping, interrupt, resume, compatibility review, or issue #274 acceptance changes.",
@@ -1733,7 +1733,7 @@
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance",
-        "acceptance:mission-wave"
+        "acceptance:legacy-retirement"
       ],
       "reviewAfter": "2026-09-13",
       "lastVerifiedWith": [
@@ -1890,7 +1890,7 @@
     {
       "path": "docs/decisions/0027-company-os-primary-model.md",
       "ownerRole": "product-architecture",
-      "status": "stable",
+      "status": "deprecated",
       "lifecycle": "stable",
       "canonicalFor": [
         "Company OS primary product model decision",
@@ -1973,7 +1973,7 @@
     {
       "path": "docs/decisions/0029-agent-programmable-document-runtime.md",
       "ownerRole": "product-platform",
-      "status": "stable",
+      "status": "deprecated",
       "lifecycle": "stable",
       "canonicalFor": [
         "agent-programmable document runtime decision",
@@ -1996,7 +1996,7 @@
     {
       "path": "docs/decisions/0035-company-os-sql-read-model.md",
       "ownerRole": "product-platform",
-      "status": "stable",
+      "status": "deprecated",
       "lifecycle": "stable",
       "canonicalFor": [
         "Company OS SQL read model decision",
@@ -2010,7 +2010,7 @@
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance",
-        "check:company-os"
+        "check:docs-governance"
       ],
       "reviewAfter": "2026-10-23",
       "lastVerifiedWith": [
@@ -2030,7 +2030,7 @@
     {
       "path": "docs/decisions/0036-agent-operated-docs-and-code-declared-pages.md",
       "ownerRole": "product-platform",
-      "status": "stable",
+      "status": "deprecated",
       "lifecycle": "stable",
       "canonicalFor": [
         "Agent-operated Docs product stance",
@@ -2044,7 +2044,7 @@
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance",
-        "check:company-os"
+        "check:docs-governance"
       ],
       "reviewAfter": "2026-10-24",
       "lastVerifiedWith": [
@@ -2411,13 +2411,13 @@
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance",
-        "acceptance:mission-wave"
+        "acceptance:legacy-retirement"
       ],
       "reviewAfter": "2026-09-30",
       "lastVerifiedWith": [
         "cargo test -p firm-cli -- --test-threads=1",
         "npx pnpm@9.15.4 check",
-        "npx pnpm@9.15.4 acceptance:mission-wave",
+        "npx pnpm@9.15.4 acceptance:legacy-retirement",
         "npx pnpm@9.15.4 check:star-harness-plugin"
       ],
       "reorgTrigger": "Historical Host-plan Wave interpretation, retained Mission-Team cardinality, TeamRun lifecycle, or the CLI/MCP boundary changes.",
@@ -2441,7 +2441,7 @@
     {
       "path": "docs/decisions/0051-single-intent-spine.md",
       "ownerRole": "architecture",
-      "status": "stable",
+      "status": "deprecated",
       "lifecycle": "stable",
       "canonicalFor": [
         "current Mission and append-only Mission Log authority",
@@ -2455,13 +2455,13 @@
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance",
-        "acceptance:mission-wave"
+        "acceptance:legacy-retirement"
       ],
       "reviewAfter": "2026-09-30",
       "lastVerifiedWith": [
         "cargo test -p firm-cli --test mission_wave_api -- --test-threads=1",
         "npx pnpm@9.15.4 check:docs-governance",
-        "npx pnpm@9.15.4 acceptance:mission-wave"
+        "npx pnpm@9.15.4 acceptance:legacy-retirement"
       ],
       "reorgTrigger": "Mission or Mission Log semantics, Wave retirement, or Legacy Wave read-only compatibility changes.",
       "authorityClass": "canonical_contract",
@@ -2500,11 +2500,11 @@
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance",
-        "acceptance:mission-wave"
+        "acceptance:legacy-retirement"
       ],
       "reviewAfter": "2026-09-30",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 acceptance:mission-wave"
+        "npx pnpm@9.15.4 acceptance:legacy-retirement"
       ],
       "reorgTrigger": "Member autonomy, Inbox delivery, peer messaging, provider subagent attribution, Steer truth, or Host replan semantics change.",
       "authorityClass": "canonical_contract",
@@ -2545,11 +2545,11 @@
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance",
-        "acceptance:mission-wave"
+        "acceptance:legacy-retirement"
       ],
       "reviewAfter": "2026-09-30",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 acceptance:mission-wave"
+        "npx pnpm@9.15.4 acceptance:legacy-retirement"
       ],
       "reorgTrigger": "Legacy plan_* read compatibility is removed.",
       "authorityClass": "historical_evidence",
@@ -2580,11 +2580,11 @@
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance",
-        "acceptance:mission-wave"
+        "acceptance:legacy-retirement"
       ],
       "reviewAfter": "2026-09-30",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 acceptance:mission-wave",
+        "npx pnpm@9.15.4 acceptance:legacy-retirement",
         "npx pnpm@9.15.4 check:star-harness-plugin"
       ],
       "reorgTrigger": "Mailbox delivery semantics, coordination message shapes, Member autonomy, or provider-native execution boundary changes.",
@@ -2663,7 +2663,7 @@
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance",
-        "acceptance:mission-wave"
+        "acceptance:legacy-retirement"
       ],
       "reviewAfter": "2026-09-30",
       "lastVerifiedWith": [
@@ -2741,7 +2741,7 @@
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance",
-        "acceptance:mission-wave"
+        "acceptance:legacy-retirement"
       ],
       "reviewAfter": "2026-09-03",
       "lastVerifiedWith": [
@@ -2787,7 +2787,7 @@
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance",
-        "acceptance:mission-wave"
+        "acceptance:legacy-retirement"
       ],
       "reviewAfter": "2026-09-03",
       "lastVerifiedWith": [
@@ -2826,11 +2826,11 @@
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance",
-        "acceptance:mission-wave"
+        "acceptance:legacy-retirement"
       ],
       "reviewAfter": "2026-09-29",
       "lastVerifiedWith": [
-        "npx pnpm@9.15.4 acceptance:mission-wave",
+        "npx pnpm@9.15.4 acceptance:legacy-retirement",
         "npx pnpm@9.15.4 check:star-harness-plugin",
         "harness governance check"
       ],
@@ -2872,7 +2872,7 @@
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance",
-        "acceptance:mission-wave"
+        "acceptance:legacy-retirement"
       ],
       "reviewAfter": "2026-09-30",
       "lastVerifiedWith": [
@@ -2886,7 +2886,7 @@
     {
       "path": "docs/decisions/0045-company-owned-standing-agent-execution-relation.md",
       "ownerRole": "architecture",
-      "status": "stable",
+      "status": "deprecated",
       "lifecycle": "stable",
       "canonicalFor": [
         "Company-owned canonical AgentMember ActorRef membership projection",
@@ -2901,7 +2901,7 @@
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance",
-        "acceptance:mission-wave"
+        "acceptance:legacy-retirement"
       ],
       "reviewAfter": "2026-10-30",
       "lastVerifiedWith": [
@@ -2913,14 +2913,6 @@
       "authorityClass": "canonical_contract",
       "implementationState": "implemented",
       "truthRefs": [
-        {
-          "kind": "schema",
-          "ref": "schemas/company-os/actors.schema.json"
-        },
-        {
-          "kind": "api",
-          "ref": "crates/firm-cli/src/company_os_api.rs"
-        },
         {
           "kind": "test",
           "ref": "crates/firm-cli/tests/mission_wave_api.rs"
@@ -2975,7 +2967,7 @@
     {
       "path": "docs/decisions/0047-scoped-company-authority-broker.md",
       "ownerRole": "company-authority-architecture",
-      "status": "stable",
+      "status": "deprecated",
       "lifecycle": "stable",
       "canonicalFor": [
         "decision to adopt the scoped Company authority broker contract while deferring implementation"
@@ -3001,7 +2993,7 @@
     {
       "path": "docs/decisions/0048-human-rooted-company-constitution.md",
       "ownerRole": "company-authority-architecture",
-      "status": "stable",
+      "status": "deprecated",
       "lifecycle": "stable",
       "canonicalFor": [
         "decision to adopt the Human-rooted Company Constitution while deferring implementation and activation"
@@ -3096,15 +3088,11 @@
         },
         {
           "kind": "api",
-          "ref": "crates/firm-cli/src/company_store.rs"
-        },
-        {
-          "kind": "api",
-          "ref": "crates/firm-cli/src/company_os_api.rs"
+          "ref": "crates/firm-cli/src/legacy_company_os.rs"
         },
         {
           "kind": "store",
-          "ref": "crates/firm-store/src/company_os.rs"
+          "ref": "crates/firm-cli/src/legacy_company_os.rs"
         },
         {
           "kind": "test",
@@ -3439,7 +3427,7 @@
     {
       "path": "docs/decisions/0054-ai-first-docs-page-model-and-storage.md",
       "ownerRole": "product-architecture",
-      "status": "stable",
+      "status": "deprecated",
       "lifecycle": "stable",
       "canonicalFor": [
         "AI-first Docs closed block kind set and Markdown-first serialization decision",

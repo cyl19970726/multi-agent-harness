@@ -292,12 +292,13 @@ reconstruct the result from native state:
 Run the deterministic product gate with:
 
 ```bash
-npx pnpm@9.15.4 acceptance:mission-wave
+npx pnpm@9.15.4 acceptance:legacy-retirement
 ```
 
-`acceptance:mission-wave` is a compatibility script basename. Its current
-contract covers Mission, append-only Mission Log, Agent Team, and Legacy Wave
-read-only behavior; it does not make Wave a current runtime object.
+`acceptance:legacy-retirement` (formerly `acceptance:mission-wave`; renamed
+with the DOC-108 legacy cutover) covers Mission, append-only Mission Log,
+Agent Team, and Legacy Wave read-only behavior; it does not make Wave a
+current runtime object.
 
 This gate is not proof of a real provider call. Live claims require the native
 records from a separately executed run in the claimed provider mode.
