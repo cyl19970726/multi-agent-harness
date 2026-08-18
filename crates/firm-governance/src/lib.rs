@@ -1633,7 +1633,7 @@ mod tests {
     }
 
     #[test]
-    fn self_host_document_invariants_cover_mission_team_and_node_authorities() {
+    fn self_host_document_invariants_cover_team_placement_and_node_authorities() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(Path::parent)
@@ -1646,30 +1646,38 @@ mod tests {
             .map(|invariant| (invariant.name.as_str(), invariant))
             .collect::<BTreeMap<_, _>>();
 
-        let mission_team = by_name
-            .get("mission-team-bijection")
-            .expect("Mission-Team bijection must be governed");
+        let team_placement = by_name
+            .get("flat-team-placement-and-legacy-mission")
+            .expect("flat Team placement must be governed");
         for path in [
             "AGENTS.md",
             "docs/mental/agent-firm-mental-model.md",
             "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
         ] {
             assert!(
-                mission_team.paths.iter().any(|candidate| candidate == path),
-                "Mission-Team governance omitted {path}"
+                team_placement
+                    .paths
+                    .iter()
+                    .any(|candidate| candidate == path),
+                "Team placement governance omitted {path}"
             );
         }
-        for term in [
-            "Every Team belongs to exactly one Mission",
-            "No two AgentTeams may reference the same Mission",
-            "immutable `node_id`",
-        ] {
+        for term in ["flat AgentTeams", "immutable `node_id`"] {
             assert!(
-                mission_team
+                team_placement
                     .required_terms
                     .iter()
                     .any(|candidate| candidate == term),
-                "Mission-Team governance omitted `{term}`"
+                "Team placement governance omitted `{term}`"
+            );
+        }
+        for term in ["recursive AgentTeams", "optional `machine_id`"] {
+            assert!(
+                team_placement
+                    .forbidden_terms
+                    .iter()
+                    .any(|candidate| candidate == term),
+                "Team placement governance no longer forbids `{term}`"
             );
         }
 
