@@ -20,8 +20,9 @@ root package.json owns dependencies
 
 The source directory remains named `apps/agent-dashboard` for package and
 command stability; the product is Agent Workbench. The frontend never owns
-canonical Mission, Mission Log, AgentTeamRun, Company OS, assignment, approval, or
-financial state.
+canonical AgentTeam, AgentTeamRun, Work, Message, session, or runtime state.
+The retired Mission/Wave and Company OS surfaces are gone from navigation
+(DEV-38, DOC-108).
 
 ## Data Flow
 
@@ -30,7 +31,8 @@ Harness store / provider adapters
   -> authenticated Rust snapshot, RoleView and action APIs
   -> project-scoped SSE deltas
   -> pure read-model selectors
-  -> Mission, Team, Workflow, and Company OS surfaces
+  -> Nodes, Agent Teams, Team Workspace, Agent Conversation, Global Work, and
+     Workflow surfaces
   -> screenshot and behavior acceptance
 ```
 
@@ -51,32 +53,33 @@ Harness store / provider adapters
 ```text
 apps/agent-dashboard/src/
   app/               shell, selection, snapshot/SSE lifecycle
-  surfaces/          Missions, Agent Teams, Team War Room, MemberRuns, Workflows
-  company-os/        Docs, Organization, Work, Approvals, Finance, Governance
+  surfaces/          OperatorView, AgentTeamsHome, TeamWorkspace,
+                     AgentConversationWorkspace, GlobalWorkIndex, HostConsole,
+                     Workflows
   model/             pure selectors and projection helpers
   components/ui/     owned shadcn/Radix primitives
-  components/workbench/ shared execution and document primitives
+  components/workbench/ shared execution primitives
   api.ts             reads, project selection, SSE, action transport
   api/actions.ts     typed write-action descriptors
   types.ts           wire and projection types
   index.css          tokens, typography, responsive and motion policy
 ```
 
-Execution surfaces and Company OS surfaces share shell, typography, identity,
-status, relation, activity, and context primitives. They do not collapse their
-objects: a MemberRun is still different from an Agent Membership; a Mission Log
-entry is different from a Human Approval; an AgentTeamRun is different from an OrgUnit.
+Surfaces share shell, typography, identity, status, relation, activity, and
+context primitives. They do not collapse their objects: a MemberRun is still
+different from an AgentMember, and a TeamRun is different from a durable
+AgentTeam.
 
 ## Surface Ownership
 
 | Surface | Owns | Must not claim |
 | --- | --- | --- |
-| Mission Detail | durable Mission Markdown, its Mission-owned Team, append-only Mission Log, explicit judgment, closeout | dependency graph, runtime containment, mutable Team linking, Wave authoring, or implicit acceptance |
-| Agent Teams Home | Mission-owned, Node-placed AgentTeam/TeamRun discovery | implying Teams are reusable across Missions or owned by a Log entry |
-| Team War Room | stable Team identity, Mission relation, shared Works, current Supervisor, authenticated Message actors, WorkDelivery claim/receipt/failure, per-recipient CanonicalMessageDelivery state, member presence, Work-linked conversation, unified activity, and controls | claiming a Mission Log entry owns the TeamRun, impersonating a Member, consulting Legacy TeamMessage state, or fabricating provider control |
-| Agent Workspace | one shared Host/Member shell with Team roster, exact Session activity, authored Messages, Work responsibility, selected context, profile/configuration and server-authorized actions | browser-authored authority, a second Work/Message model, copied provider transcript, or cross-Agent provider-private events |
+| Agent Teams Home | durable Node-placed AgentTeam discovery and Team routes | implying Teams belong to a retired Mission or inherit runtime state |
+| Team Workspace | stable Team identity, shared Works, current Supervisor, authenticated Message actors, WorkDelivery claim/receipt/failure, per-recipient CanonicalMessageDelivery state, member presence, Work-linked conversation, unified activity, and controls | impersonating a Member, consulting Legacy TeamMessage state, or fabricating provider control |
+| Agent Conversation Workspace | one shared Host/Member shell with Team roster, exact Session activity, authored Messages, Work responsibility, selected context, profile/configuration and server-authorized actions | browser-authored authority, a second Work/Message model, copied provider transcript, or cross-Agent provider-private events |
+| Global Work Index | the read-only Global Work aggregate over authoritative TeamWork | a second task ledger or a Work mutation path |
+| Operator View / Nodes | ExecutionNode and machine-scoped NodeDaemon state | per-Team daemon claims |
 | Workflows | WorkflowRun/WorkflowStep/result/artifacts | Agent Team semantics |
-| Company OS | Documents, TeamWorks, actors, approvals, finance, metrics, governance | unimplemented schema authority |
 | Debug | raw snapshot and diagnostics | primary product navigation |
 
 ## Component Policy
@@ -87,7 +90,7 @@ entry is different from a Human Approval; an AgentTeamRun is different from an O
 | execution portraits and `Avatar` | stable identity with generated asset and text fallback |
 | status/tone primitives | text-backed semantic state, never color-only |
 | timeline/activity rows | WorkEvent, conversation, runtime, evidence, review, and decision semantics |
-| context modules | Mission Log, Gate, Attempt, Member, Resources, linked company records |
+| context modules | Gate, Attempt, Member, Resources, linked legacy context |
 | document primitives | basic rich content, properties, relations, structured views |
 | operator forms | typed API commands with pending/error state and truthful disable reasons |
 
@@ -136,10 +139,10 @@ copied into this repository.
 
 ```bash
 npx pnpm@9.15.4 check:dashboard
-npx pnpm@9.15.4 acceptance:mission-wave
+npx pnpm@9.15.4 acceptance:legacy-retirement
 ```
 
 The first command proves types, selectors, operator controls, visual fixture
-semantics, and production build. The second retains its compatibility command
-name while proving native Mission, Mission Log, MCP, TeamRun, Kimi, Codex, and
-mixed-provider execution contracts.
+semantics, and production build. The second proves the deterministic Agent
+Team, MCP, Kimi, Codex, and mixed-provider execution contracts plus the
+retired Mission/Wave legacy reads.

@@ -18,9 +18,8 @@ Star Harness owns durable collaboration. The selected provider owns native
 execution:
 
 ```text
-Mission
-  -> append-only Mission Log (Host judgment/replan/recovery/closeout)
-  -> one flat AgentTeam -> AgentTeamRun
+AgentTeam (durable, flat)
+  -> AgentTeamRun
   -> MemberRun
        -> active Work + WorkDelivery
        -> Harness Mailbox
@@ -33,8 +32,8 @@ These layers answer different questions:
 
 | Layer | Question | Authority |
 | --- | --- | --- |
-| Mission | Why does the long-running work exist? | Harness |
-| Mission Log entry | What did the Host judge, replan, recover, or close out? | Harness |
+| AgentTeam | Which durable Team owns the long-running work? | Harness |
+| Work context | Why does the work exist and what did the Host decide? | Harness |
 | Work | What result does this Member own and what is its state? | Harness `Work` + `WorkEvent` |
 | MemberRun | Which durable team participant owns the lane? | Harness |
 | Mailbox | What coordination has been sent, delivered and acknowledged? | Harness |
@@ -278,7 +277,7 @@ The Host:
 
 The Member:
 
-1. owns the Work across provider cycles and Host replans recorded in the Mission Log;
+1. owns the Work across provider cycles and Host replans recorded on the Work records;
 2. may use native planning, continuation and subagents within its permission
    and Workspace boundary;
 3. records block/submission through Work operations and communicates questions,

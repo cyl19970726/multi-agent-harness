@@ -3,7 +3,8 @@
 This document describes the collaboration authority shipped in the development
 batch historically named “Wave 6”. Wave 4C/5/6 labels in this document identify
 development batches, not a current product `Wave` object. The
-product model remains simple: one Mission owns one flat Team, and every Member
+product model remains simple: a Team is durable, flat, and Mission-free
+(DOC-108), and every Member
 of that Team executes on the Team's single immutable Node. Cross-machine work
 is cooperation between Teams, never a Team split across machines.
 

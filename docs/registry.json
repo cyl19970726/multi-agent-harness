@@ -1396,7 +1396,6 @@
         "docs/current/architecture/agent-runtime.md",
         "docs/current/architecture/architecture-map.md",
         "docs/current/integration/kimi.md",
-        "docs/current/dashboard/pages/team-run-war-room.md",
         "docs/decisions/0011-provider-neutral-runtime.md",
         "docs/decisions/0018-exec-stream-primary-substrate.md",
         "docs/decisions/0022-dynamic-workflow-runtime-json-ir.md",
@@ -1782,7 +1781,6 @@
         "docs/current/integration/codex.md",
         "docs/current/integration/claude.md",
         "docs/current/integration/kimi.md",
-        "docs/current/dashboard/pages/member-run-focus.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md"
       ],
       "machineConsumers": [
@@ -1916,117 +1914,6 @@
         {
           "kind": "decision",
           "ref": "docs/decisions/0026-mission-wave-architecture.md"
-        }
-      ]
-    },
-    {
-      "path": "docs/current/dashboard/pages/member-run-focus.md",
-      "ownerRole": "product-design",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "MemberRun execution focus page",
-        "run-scoped My Works, native activity projection, and evidence UI contract"
-      ],
-      "dependsOn": [
-        "docs/decisions/0025-agent-team-run-control-plane.md",
-        "docs/decisions/0032-provider-native-session-is-execution-truth.md",
-        "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
-        "docs/current/product/agent-team-works.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-09-30",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "MemberRun execution semantics, Work proof, activity truth, or responsive page contract changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "partial",
-      "truthRefs": [
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0025-agent-team-run-control-plane.md"
-        }
-      ]
-    },
-    {
-      "path": "docs/current/dashboard/pages/mission-detail-log.md",
-      "ownerRole": "product-design",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Mission detail and append-only Mission Log projection",
-        "Host judgment, replan, recovery, and closeout UI contract"
-      ],
-      "dependsOn": [
-        "docs/decisions/0026-mission-wave-architecture.md",
-        "docs/decisions/0051-single-intent-spine.md",
-        "docs/current/product/agent-team-works.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-09-30",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check",
-        "npx pnpm@9.15.4 check:dashboard:quick"
-      ],
-      "reorgTrigger": "Mission/Mission Log semantics, historical Wave projection, source-context return path, or responsive page contract changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "implemented",
-      "truthRefs": [
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0051-single-intent-spine.md"
-        },
-        {
-          "kind": "ui",
-          "ref": "apps/agent-dashboard/src/surfaces/Missions.tsx"
-        }
-      ]
-    },
-    {
-      "path": "docs/current/dashboard/pages/team-run-war-room.md",
-      "ownerRole": "product-design",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "AgentTeamRun execution war room",
-        "run-scoped Works Kanban, collaboration, native activity, and delivery-proof UI contract"
-      ],
-      "dependsOn": [
-        "docs/decisions/0025-agent-team-run-control-plane.md",
-        "docs/decisions/0032-provider-native-session-is-execution-truth.md",
-        "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
-        "docs/current/product/agent-team-works.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-09-30",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "AgentTeamRun Works, Message collaboration, source-context return path, or responsive page contract changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "partial",
-      "truthRefs": [
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
-        },
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0025-agent-team-run-control-plane.md"
         }
       ]
     },
@@ -2192,9 +2079,7 @@
         "docs/current/architecture/agent-integration-model.md",
         "docs/current/integration/codex.md",
         "docs/current/integration/kimi.md",
-        "docs/current/integration/claude.md",
-        "docs/current/dashboard/pages/member-run-focus.md",
-        "docs/current/dashboard/pages/team-run-war-room.md"
+        "docs/current/integration/claude.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2237,8 +2122,7 @@
       "dependsOn": [
         "docs/decisions/0025-agent-team-run-control-plane.md",
         "docs/current/architecture/agent-integration-model.md",
-        "docs/current/integration/kimi.md",
-        "docs/current/dashboard/pages/team-run-war-room.md"
+        "docs/current/integration/kimi.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3012,7 +2896,6 @@
       "dependsOn": [
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0034-host-plan-waves-and-mission-teams.md",
-        "schemas/company-os/actors.schema.json",
         "schemas/member-run.schema.json"
       ],
       "machineConsumers": [

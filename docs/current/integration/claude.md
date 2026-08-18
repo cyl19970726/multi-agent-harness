@@ -53,7 +53,7 @@ per MemberRun and exchanges NDJSON control frames over stdio.
 
 ```text
 Harness Host process
-  ├─ durable Mission / Mission Log / Message / MemberRun
+  ├─ durable AgentTeam / Message / MemberRun
   ├─ durable Team Supervisor lease + delivery claims
   ├─ process-local SDK control handles owned by that generation
   └─ Claude member runner

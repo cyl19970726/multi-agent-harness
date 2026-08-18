@@ -29,7 +29,7 @@ started externally and records its own active Session id during claim.
 
 Here **development Wave** is only the established name for one repository
 delivery batch. It is not the retired runtime `Wave` structure and creates no
-Mission child lifecycle, advance action, or gate.
+lifecycle, advance action, or gate on any current object.
 
 ## Truth Boundaries
 

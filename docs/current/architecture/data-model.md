@@ -6,10 +6,10 @@ shape and validation.
 ## Canonical graph
 
 ```text
-Mission 1 ── 1 AgentTeam ── * AgentTeamRun ── * MemberRun
-                    │                 │          └── WorkExecutionBinding
-                    │                 └── * Work / Evidence
-                    └── 1 ExecutionNode
+AgentTeam 1 ── * AgentTeamRun ── * MemberRun
+     │               │          └── WorkExecutionBinding
+     │               └── * Work / Evidence
+     └── 1 ExecutionNode
 
 AgentIdentity ── * AgentSession
       └── authors Message ── * CanonicalMessageDelivery ──> AgentSession
@@ -19,14 +19,14 @@ NodeDaemon ── * RuntimeCommand ──> provider effect
 WorkDelegation: source Team/Work ──> target Team/Work
 ```
 
-`Mission` carries durable intent. `AgentTeam` is the atomic agency unit: one
-Mission, one Host Agent, one immutable Node placement, and a flat Member set.
-Teams never nest. `AgentTeamRun` always names its Team, execution Node, and
-project binding; Mission is derived through Team and is not duplicated on the
-Run.
+`AgentTeam` is the atomic agency unit: one Host membership, one immutable
+Node placement, and a flat Member set. Teams never nest. Pre-cutover Teams
+may carry read-only `legacy_mission_id` provenance (DOC-108); no Mission owns
+or gates a Team. `AgentTeamRun` always names its Team, execution Node, and
+project binding.
 
 Cross-Team cooperation is explicit `WorkDelegation`, not parent/child topology.
-The Company collaboration store owns the relationship and decisions; source
+The collaboration fabric owns the relationship and decisions; source
 and target Execution Spaces independently own their native Work. Cross-node
 mutations route through the accepted Remote Node Fabric and fold relationship
 truth only after an exact terminal application receipt. Target Work completion
@@ -47,9 +47,9 @@ Space; a registration from one Store cannot name another Space.
 
 | Question | Canonical record |
 | --- | --- |
-| Why does the Team exist? | `Mission` |
-| Which agency owns it? | `AgentTeam.mission_id` |
-| Who leads it? | `AgentTeam.host_agent_id` |
+| Why does the Team exist? | its durable `AgentTeam` record and Work context |
+| Which agency owns it? | the durable `AgentTeam` itself |
+| Who leads it? | the Host-role `TeamMembership` |
 | Where may it execute? | `AgentTeam.node_id` |
 | Which runtime attempt is active? | `AgentTeamRun` |
 | Who executes a lane? | `MemberRun` plus current `Work` ownership |
@@ -65,8 +65,8 @@ native session locator and coordination evidence it needs; any activity shown
 in the Dashboard is an ephemeral read projection from that provider-owned
 source, never a second transcript ledger.
 
-`Wave`, `WaveStatus`, `WaveGateStatus`, `Mission.wave_ids`, and `waves.jsonl`
-are ADR 0051 pre-cutover historical read/export compatibility data. They are
-not part of new Mission, Team, Run, Work, scheduling, or acceptance contracts.
-All new Host judgment, replan, recovery, and closeout evidence is appended as
-`MissionLogEntry` rows inside the owning Mission.
+`Mission`, `MissionLogEntry`, `Wave`, `WaveStatus`, `WaveGateStatus`,
+`Mission.wave_ids`, `missions.jsonl`, `mission_log.jsonl`, and `waves.jsonl`
+are retired historical read/export compatibility data (DOC-108, and ADR 0051
+before it). They are not part of new Team, Run, Work, scheduling, or
+acceptance contracts, and no writer exists on any surface.

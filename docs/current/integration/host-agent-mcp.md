@@ -116,22 +116,19 @@ path as an execution root is a routing defect.
 
 ## Host Journey
 
-1. Call `mission_create` for durable intent and Markdown context.
-2. Create the Mission's one flat AgentTeam with its Host Agent and immutable
-   ExecutionNode placement. Before a material scheduling decision, append the
-   Host's judgment to the Mission Log. A Mission Log entry is append-only
-   history and never owns runtime.
-3. Call `team_run_create` with the required `agent_team_id`; Node and Mission
-   are derived from the Team and the selected Project Binding is frozen on the
+1. Create the durable flat AgentTeam with its Host AgentMember and immutable
+   ExecutionNode placement (Mission provenance is optional and legacy-only,
+   DOC-108; the retired `mission_*` MCP writers are gone and `mission_list`
+   is a read-only legacy read).
+2. Call `team_run_create` with the required `agent_team_id`; Node is derived
+   from the Team and the selected Project Binding is frozen on the
    run. Supply supported provider member identities/roles, disjoint owned paths,
    and workspace overrides only when needed. Keep the returned execution/member roots. Create bounded Works
    with explicit completion criteria, directly assign them or expose eligible
    unassigned Works for atomic claim, and keep the returned Work ids/versions.
-4. Call `team_run_start`; immediately give the user its `dashboard_url`.
-   For a Mission-scoped long-lived TeamRun, the URL includes the Mission as
-   navigation context. Pre-ADR-0051 TeamRuns may retain a Legacy Wave id for
-   historical read-only navigation, but no current run is created from or
-   owned by a Wave. The machine
+3. Call `team_run_start`; immediately give the user its `dashboard_url`.
+   When the Team carries legacy Mission provenance, the URL includes it as
+   navigation context; mission-less Teams omit it. The machine
    NodeDaemon owns the new Team Supervisor generation; a later Host process
    inspects that parent-fenced lease rather than assuming it owns provider handles.
 5. Follow `team_run_status` or `team_run_events(after_seq=...)`. The browser
