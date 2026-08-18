@@ -1878,7 +1878,8 @@ impl HarnessStore {
                     )))
                 }
             };
-            let mismatch_fields = current_member_lifecycle_mismatch_fields(canonical, legacy)?;
+            let mismatch_fields =
+                current_member_lifecycle_validation_mismatch_fields(canonical, legacy)?;
             if !mismatch_fields.is_empty() {
                 return Err(StoreError::Conflict(format!(
                     "MEMBER_RUN_MATERIALIZATION_MISMATCH: TeamRun {} MemberRun {} legacy/canonical projection differs in Execution Space {} for fields {}; legacy_status={:?} canonical_status={:?} legacy_last_event_at={:?} canonical_last_event_at={:?}",

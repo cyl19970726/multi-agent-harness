@@ -121,6 +121,29 @@ pub(crate) fn current_member_lifecycle_matches(
     Ok(current_member_lifecycle_mismatch_fields(canonical, runtime)?.is_empty())
 }
 
+/// Fail-closed parity validation between the legacy ProviderRuntimeProjection
+/// and the canonical MemberRun. Rows written before the DOC-108 cutover
+/// legitimately materialized without a canonical `last_event_at` while the
+/// legacy projection kept advancing one; that exact shape (canonical `None`,
+/// legacy `Some`) is a known migration artifact, not corruption, so validation
+/// treats the legacy value as authoritative for it. Every other divergence —
+/// including both-`Some` disagreement on `last_event_at` — still fails closed.
+///
+/// Sync decisions keep using the strict
+/// [`current_member_lifecycle_mismatch_fields`]: any real difference still
+/// heals the canonical projection from the legacy row on the next mutation.
+pub(crate) fn current_member_lifecycle_validation_mismatch_fields(
+    canonical: &MemberRun,
+    runtime: &ProviderRuntimeProjection,
+) -> StoreResult<Vec<&'static str>> {
+    let mut mismatches = current_member_lifecycle_mismatch_fields(canonical, runtime)?;
+    mismatches.retain(|field| {
+        *field != "last_event_at"
+            || !(canonical.last_event_at.is_none() && runtime.last_event_at.is_some())
+    });
+    Ok(mismatches)
+}
+
 pub(crate) fn current_member_lifecycle_mismatch_fields(
     canonical: &MemberRun,
     runtime: &ProviderRuntimeProjection,
@@ -1820,7 +1843,9 @@ impl HarnessStore {
                 )
             })
             .and_then(|envelope| event_projection::<MemberRun>(&envelope))?;
-        if !current_member_lifecycle_matches(&canonical_current, &current)? {
+        if !current_member_lifecycle_validation_mismatch_fields(&canonical_current, &current)?
+            .is_empty()
+        {
             return Err(StoreError::Conflict(format!(
                 "MEMBER_RUN_MATERIALIZATION_MISMATCH: TeamRun {} MemberRun {} lifecycle projections diverge",
                 team_run.id, member_run_id
