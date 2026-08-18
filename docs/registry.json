@@ -3262,52 +3262,6 @@
       "truthRefs": []
     },
     {
-      "path": "plugins/star-harness/commands/mission-new.md",
-      "ownerRole": "platform",
-      "status": "stable",
-      "lifecycle": "stable",
-      "canonicalFor": [
-        "Star Harness mission-new command specification"
-      ],
-      "dependsOn": [
-        "plugins/star-harness/README.md"
-      ],
-      "machineConsumers": [
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-09-03",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:star-harness-plugin"
-      ],
-      "reorgTrigger": "Mission command spec changes.",
-      "authorityClass": "implementation_reference",
-      "implementationState": "partial",
-      "truthRefs": []
-    },
-    {
-      "path": "plugins/star-harness/commands/new-run.md",
-      "ownerRole": "platform",
-      "status": "stable",
-      "lifecycle": "stable",
-      "canonicalFor": [
-        "Star Harness new-run command specification"
-      ],
-      "dependsOn": [
-        "plugins/star-harness/README.md"
-      ],
-      "machineConsumers": [
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-09-03",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:star-harness-plugin"
-      ],
-      "reorgTrigger": "New-run command spec changes.",
-      "authorityClass": "implementation_reference",
-      "implementationState": "partial",
-      "truthRefs": []
-    },
-    {
       "path": "plugins/star-harness/commands/status.md",
       "ownerRole": "platform",
       "status": "stable",

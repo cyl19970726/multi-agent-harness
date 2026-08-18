@@ -134,6 +134,8 @@ forbidden_terms = [
     "zero or more Agent Teams",
     "optional `machine_id`",
     "`machine_id` field on Agent Teams",
+    "Every Team belongs to exactly one Mission",
+    "No two AgentTeams may reference the same Mission",
 ]
 
 [[document_invariants]]
