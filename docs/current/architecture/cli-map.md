@@ -2,11 +2,13 @@
 
 status: stable  
 owner: lead-operations  
-last reviewed: 2026-08-09
+last reviewed: 2026-08-17
 
 This map records the current `target/debug/firm` command surface. It separates
 implemented CLI from API/store-backed capability that does not yet have a
-dedicated CLI.
+dedicated CLI. The legacy Company OS command tree (`company ...`) and the
+Mission writers were retired by DOC-108; they fail with an explicit retired
+error and are documented here only as retired compatibility.
 
 ## Status labels
 
@@ -15,159 +17,58 @@ dedicated CLI.
 - **Partial**: supported by store/API/UI/scripts, but the CLI is incomplete or
   only covers metadata/control slices.
 - **Missing / next**: expected product surface with no dedicated CLI command yet.
-- **Retired compatibility**: retained only to export or verify historical data.
+- **Retired compatibility**: retained only to read, export, or verify
+  historical data.
 
 ## Top-level command map
 
 | Area | Commands | Status | Notes |
 | --- | --- | --- | --- |
-| Execution Space / Project Binding routing | `init`, `space init/list/current/switch/show/migrate-from-project`, `project add/list/current/switch/remove/show/migrate` | Implemented | `--space` selects Mission/Mission Log/Agent Team/Workflow storage; `--project` independently selects provider cwd, instructions/Skills, Git/worktree and permission boundaries. Raw store overrides and project-derived execution stores are compatibility paths only. |
-| Company Store routing | `company init/list/current/switch/show/migrate-from-project`, global `--company <id>` for `company ...`, `HARNESS_COMPANY` | Implemented | ADR 0042 Phase 2 first slice. `firm company ...` uses the selected Company Store when explicit/current Company exists; execution commands still use Project routing. |
-| Mission | `mission create/list/show/update-context/close`, `mission log append/show` | Implemented | Current durable intent surface. One Team is created through `team create --mission-id ...`; retired link/unlink and Mission-scoped create-team commands are absent. `mission log append --mission-id <id> --kind judgment\|replan\|recovery\|closeout_evidence --body <markdown>` and `mission log show --mission-id <id> [--tail <n>]` are the ADR 0051 append-only Mission Log that absorbed Wave as the Host's judgment record. |
-| Legacy Wave archive | `legacy wave list/show/history` | Implemented (historical reads only) | `wave create/update/advance/gate` and HTTP writes return the ADR 0051 retirement error. MCP publishes no `wave_*` capability at all. Existing `waves.jsonl` rows remain readable without becoming current planning context; no data migration. |
-| Agent Team | `team create/list/show/rename/add-member/remove-member/close/archive` | Implemented | Defines one flat Team for one Mission with required Host Agent and immutable ExecutionNode placement. |
-| Durable Agent Organization identity | `org member create/converge/list/show`, `org bootstrap-lead`, `org host`, `org cutover-audit` | Implemented foundation | ADR 0052 CLI/store slice. Durable AgentMember is separate from MemberRun/native Session. `converge` is explicit and deterministic; `cutover-audit` refuses compatibility-only, missing, or conflicting Host authority. HTTP/MCP/UI and full Organization/Work cutover remain pending. |
-| Agent Team run | `team-run create/list/status/work/inbox/host-inbox/dispatch-host/bind-host/host-lease-status/renew-host-lease/release-host-lease/reconcile-delivery/add-member/rename-member/close-member/reopen-member/deactivate-member/start/send/answer-message/events/complete/cancel` | Implemented | Runtime control plane for shared Works, persistent MemberRuns, WorkDelivery, identity-first Message, and per-recipient CanonicalMessageDelivery. Provider questions and answers are correlated Message kinds. Legacy `ack`/TeamMessage delivery mutations are not current authority. Permissions are frozen at AgentSession start; no second permission workflow is exposed. `bind-host` durably records the exact Host surface/thread independently from `HostBindingLease`; an Interactive Codex lease requires an exact parsed `session_meta.payload.id` in the canonical default `<HOME>/.codex/sessions` rollout store. Filename matches, `CODEX_THREAD_ID`, and caller-controlled `CODEX_HOME` are not validation evidence. Close freezes coordination and releases a managed runtime; Reopen resumes the same MemberRun/native session; Deactivate retires permanently. |
+| Execution Space / Project Binding routing | `init`, `space init/list/current/switch/show/migrate-from-project`, `project add/list/current/switch/remove/show/migrate` | Implemented | `--space` selects Agent Team/Workflow coordination storage; `--project` independently selects provider cwd, instructions/Skills, Git/worktree and permission boundaries. Raw store overrides and project-derived execution stores are compatibility paths only. |
+| Agent Team | `team create/list/show/rename/add-member/remove-member/activate-member/activate/deactivate/trash/restore`, `team message send/inbox/claim` | Implemented | Defines one durable flat Team with required Host AgentMember and immutable ExecutionNode placement; Mission provenance is optional and legacy-only. Peer-Team messaging sends into the shared Team Inbox over the canonical Message/subscription/delivery fabric. |
+| Durable Agent Organization identity | `org host`, `org cutover-audit` | Implemented foundation | Durable AgentMember is separate from MemberRun/native Session. `cutover-audit` refuses ambiguous Host authority and audits legacy Mission provenance only when present. |
+| Agent Team run | `team-run create/list/status/work/recover/host-inbox/dispatch-host/bind-host/host-lease-status/renew-host-lease/release-host-lease/inbox/add-member/rename-member/close-member/reopen-member/deactivate-member/start/send/answer-message/events/wait/board-summary/complete/cancel` | Implemented | Runtime control plane for shared Works, persistent MemberRuns, WorkDelivery, identity-first Message, and per-recipient CanonicalMessageDelivery. Provider questions and answers are correlated Message kinds. Legacy `ack`/TeamMessage delivery mutations are not current authority. Permissions are frozen at AgentSession start; no second permission workflow is exposed. Close freezes coordination and releases a managed runtime; Reopen resumes the same MemberRun/native session; Deactivate retires permanently. |
 | Agent Team member detail | `member-run show --id <member-run-id> [--json]`; `member-run open-native --id <member-run-id> [--print-only] [--json]` | Implemented | Joins one MemberRun, TeamRun, owned/eligible Works, WorkDelivery, Inbox/Outbox, actions, Workspace and provider-native session locator without copying the provider transcript. `open-native` is provider-neutral fail-closed routing. |
-| Members/providers | `member register/list/providers/preflight` | Implemented | Two separate axes. `member providers` reviews ADAPTER compatibility against the installed provider version. `member preflight [--provider <name>] [--execution-mode <mode>] [--canary] [--timeout-s <n>] [--fail-on-unavailable]` reports execution-mode-specific ACCOUNT capacity (state, account/source boundary, observed_at, reset_at, evidence source, confidence) as a sibling of compatibility, never merged into it. See [integration/provider-capacity.md](../integration/provider-capacity.md). |
+| Members/providers | `member providers/preflight/inbox/message/work` | Implemented | Two separate axes. `member providers` reviews ADAPTER compatibility against the installed provider version. `member preflight` reports execution-mode-specific ACCOUNT capacity as a sibling of compatibility, never merged into it. See [integration/provider-capacity.md](../integration/provider-capacity.md). |
 | AgentMember execution trust | `member-trust mutate` plus TeamRun supervisor delivery | Implemented kernel | Canonical AgentMember, MemberRun, Message, delivery, Report, Finding, Evaluation, Gate, and Work acceptance mutations share one operation ledger and explicit authority context. The retired `agent` registry routes are not an execution authority. |
+| Global Work read | `work list` | Implemented | The read-only Global Work aggregate filters the one Work authority by accountable Team, assignee TeamMembership, phase, condition, resolution, priority, and owner; preserves exact ids and revisions. |
 | Dynamic Workflow | `workflow list/run/run-script/get-output/patch/gc-worktrees/reap-workers/reap` | Implemented | WorkflowRun/WorkflowStep remain their own execution truth. |
-| Dashboard | `dashboard snapshot` | Implemented | Produces operator projection. |
-| Serve/API | `serve [--addr] [--once]`, `mcp`, `node init/list/show/drain/retire/project`, `daemon start/status/stop/serve`, `hook record` | Implemented | One machine-scoped NodeDaemon supervises every admitted local TeamRun across registered Execution Spaces. All public start surfaces delegate to it and fail explicitly when unavailable; there is no per-run fallback. `hook record` is a compatibility ingress that validates the bound AgentMember and discards the provider frame; it does not write Evidence, Message, CanonicalMessageDelivery, or lifecycle state. |
-| Historical migration | `legacy-goal-task export`, `legacy-goal-task verify` | Retired compatibility | Export/verify only. Current planning must use Mission plus the Mission Log; Wave remains readable only as historical context. |
+| Dashboard | `dashboard snapshot`, `dashboard doctor` | Implemented | Operator projection and read-only convergence checks. |
+| Serve/API | `serve [--addr] [--once]`, `mcp`, `node init/list/show/drain/retire/project`, `daemon start/status/stop/serve`, `hook record` | Implemented | One machine-scoped NodeDaemon supervises every admitted local TeamRun across registered Execution Spaces. All public start surfaces delegate to it and fail explicitly when unavailable; there is no per-run fallback. `hook record` is a compatibility ingress that validates the bound AgentMember and discards the provider frame. |
+| Mission legacy reads | `mission list`, `mission show`, `mission log show` | Retired compatibility | Read-only legacy reads over historical rows (DOC-108). `mission create/update-context/close/log append` and the `/v1/missions*` POST routes and `mission_*` MCP writers fail with an explicit DOC-108 retired-write error. |
+| Legacy Wave archive | `legacy wave list/show/history` | Retired compatibility | `wave create/update/advance/gate` and HTTP writes return the ADR 0051 retirement error. MCP publishes no `wave_*` capability at all. Existing `waves.jsonl` rows remain readable without becoming current planning context; no data migration. |
+| Legacy Company OS export | `legacy-company-os export`, `legacy-company-os verify` | Retired compatibility | Stage A export/verify of every Company Store, Execution Space, compatibility, and machine store. The `company ...` command tree and the `/v1/company-os/*` routes are retired (410 tombstones); historical data is export/verify-only. |
+| Historical migration | `legacy-goal-task export`, `legacy-goal-task verify` | Retired compatibility | Export/verify only. |
 | Retired command families | old `goal`, `phase`, `task`, proposal/review/design surfaces | Retired compatibility | These fail explicitly and must not be used for new work. |
-
-## Company OS CLI map
-
-### Company Store
-
-`firm company init/list/current/switch/show` manages the explicit Company
-Store identity introduced by ADR 0042.
-
-| Capability | Commands | Status | Notes |
-| --- | --- | --- | --- |
-| Registry | `company init --id <company-id> [--name <name>]`, `company list`, `company current`, `company show [company-id]`, `company switch <company-id>` | Implemented | Stores live under `<HARNESS_HOME>/companies/<id>/`; `ACTIVE_COMPANY` and `companies/registry.json` track the current Company. |
-| Company OS routing | `harness --company <id> company ...`, `HARNESS_COMPANY=<id> firm company ...`, or active Company from `company switch/init` | Implemented | Applies only to `firm company ...`; Mission/Mission Log, Agent Team, Workflow, provider cwd, and Project selection remain separate. |
-| Migration from project-derived stores | `company migrate-from-project --from-project <project-id\|path> --id <company-id> [--name <name>] [--force]`, `company migrate-from-project ... --verify-only`, `company migrations` | Implemented | Copies and verifies only the explicit active Company Store ledger allowlist, appends a Company Store migration record, and writes an advisory source marker. Retired WorkItem, Assignment, and cutover ledgers are disposable history: they are not copied and are not verification inputs. `--verify-only` applies the same allowlist to an existing destination. No Mission/Mission Log, Agent Team, Workflow, provider session, prompt, or runtime ledger is copied. |
-
-### Docs
-
-`firm company docs ...` is the most complete Company OS CLI surface. Per
-the ADR 0054 retirement plan (`docs/current/company-os/ai-first-docs-spec.md` §13),
-the Block-era document/template/block command tree was deleted at retirement
-stage R3; the AI-first Docs v2 page surface is current for page/document work.
-
-| Capability | Commands | Status | Notes |
-| --- | --- | --- | --- |
-| Pages v2 (ADR 0054) | `page create`, `page read`, `page write`, `page append`, `page search`, `page rename`, `page move`, `page archive` | Implemented | AI-first page model: whole-page immutable revisions with sha256 digests, `expected_revision` optimistic concurrency, idempotent replay by action id, scoped reads (`outline/section/range/keyword` + `simple/with-ids/full`), Markdown<->block serialization, `--after -1\|heading:<text>` anchors, write-time missing-embed warnings, metadata maintenance (`rename`, `move` with parent-cycle rejection, `archive` behind `--confirm` with dry-run default) through the same revision mechanism. Serve API: `/v1/company-os/docs-v2/pages*` (token-gated writes, revision history, live entity_embed resolution). Dashboard: `?surface=docs-v2` (store-live, zero fixture path). |
-| Read/projection | `query`, `search`, `traverse`, `refs`, `related`, `snapshot`, `diff`, `change-report`, `health` | Implemented | Agent-readable and human-readable projections over native Docs records. |
-| Source sync | `source sync` | Implemented | Syncs external source state into Docs TypedRecords and idempotent `Document → source_for → TypedRecord` Relations with explicit boundaries. GitHub webhook transport is still a separate future adapter. |
-| Module setup | `module create` | Implemented | Creates BusinessModule plus default/fallback View through governed API path. |
-| Custom page metadata | `page-definition create`, `page scaffold`, `page verify`, `page publish` | Partial | Defines/scaffolds/verifies/publishes custom-page records and refs. It does not yet generate a complete production page from an arbitrary business brief. |
-| Typed records | `typed-record append`, `typed-record update`, `typed-record validate` | Implemented | Core structured memory primitive. |
-| Views | `view create`, `view update` | Partial | Basic view records exist. Advanced view editing, calendar/chart views and complex field configuration are still missing. |
-| Relations | `relation link`, `relation unlink`, `relation relink`, `relation repair-missing` | Implemented | Native relation maintenance across Docs and adjacent systems. `repair-missing` is definition/module-scoped, dry-run-first, confirmation-gated, and idempotent. |
-
-### Work
-
-`firm company work ...` is a read-only aggregate and Milestone surface. Native
-Work mutations belong to `firm team-run work ...`.
-
-| Capability | Commands | Status | Notes |
-| --- | --- | --- | --- |
-| Global Work read | `work list` | Implemented | Filters the one Work authority by accountable Team, assignee TeamMembership, phase, condition, resolution, priority, and owner; preserves exact ids and revisions. Replaces `company work list/query` (DOC-106). |
-| Native Work intake | `team-run work create` | Implemented | Creates the only executable Work object inside an explicit TeamRun. |
-| Native responsibility | `team-run work assign`, `claim`, `release`, `retarget` | Implemented | Mutates native Work with optimistic revision checks. |
-| Native lifecycle | `team-run work start`, `block`, `resume`, `submit`, `review`, `request-changes`, `accept`, `cancel` | Implemented | Uses phase/condition/resolution and immutable report/gate/decision evidence. |
-| Milestone management | `company work milestone list`, `show`, `create`, `update`, `close` | Implemented | Stores native Work ids in `work_refs`; Milestones never own Work lifecycle. |
-| Retired Company task mutations | `company work create`, `update`, `assign`, `transition`, `close` | Removed | Rejected with an actionable route to `team-run work`. |
-| Approval request/decision | `firm company approval request`, `decide`, `list`, `show` | Implemented | Approval is a shared Company OS CLI group, not nested under Work. Requests/decisions dispatch governed Actions. |
-
-### Organization
-
-| Capability | Current surface | Status | Notes |
-| --- | --- | --- | --- |
-| Actors | `org actor list`, `show`, `create-human`, `create-agent`, `update-status` | Implemented | Native Human and Agent Membership authoring is available. Writes use Human-admin administrative governance. |
-| Org units | `org unit list`, `show`, `create`, `update-status` | Implemented | Native OrgUnit authoring is available. |
-| Membership/reporting | `org membership list`, `assign`, `update-status` | Implemented | Native Membership assignment is available. Move/retire are represented as status updates for now. |
-| Agent membership | canonical `member-trust mutate` plus Company Organization membership commands | Implemented kernel | AgentMember is the single durable identity. Company stores only its ActorRef membership projection; MemberRun/runtime/provider state stays in the Execution Space. |
-| Permissions/capabilities | actor create/update-status fields | Partial | Create commands can write permission/capability refs. Dedicated grant/revoke/proposal workflow is still missing. |
-| HR / business-agent lifecycle | `create-agent`, `membership assign`, `update-status` plus skill/docs contract | Partial | Basic lifecycle exists. Proposal/approval/promotion workflow remains next. |
-
-### Finance
-
-| Capability | Current surface | Status | Notes |
-| --- | --- | --- | --- |
-| Commitments | `finance commitment list`, `show`, `propose`, `transition` | Implemented | `propose` is R2; `transition` uses `commitment.append` and enforces existing approval policy. |
-| Payments | `finance payment list`, `show`, `record` | Implemented | `record` creates evidence-backed prepared Payments through governed `payment.append`; settlement transition remains a future command. |
-| Approval-linked spend | `company approval ...` + `company finance ...` | Implemented | Approval request/decision can be linked to Commitment and Payment commands. |
-| Budget/invoice/refund/reporting | docs/skill contract only | Missing / next | Need first-class finance CLI and acceptance tests. |
-
-### External gateways
-
-| Capability | Current surface | Status | Notes |
-| --- | --- | --- | --- |
-| Social platform readiness | `company gateway social readiness [--platform xiaohongshu|douyin|wechat_channels] [--adb adb] [--device <serial>]` | Implemented / read-only core bootstrap | Observes Android package/focus readiness for Xiaohongshu, Douyin, and WeChat Channels slots. It returns data suitable for `social_platform_account` records but does not write Store truth, log in, publish, delete, pay, or export messages. |
-| GitHub source observation | `company docs source sync` | Implemented for local worktree observation | Writes external software source TypedRecords. First GitHub connector should be sync/projection-first and may call existing `gh`/Git rather than adding GitHub-specific core CLI. GitHub webhook/API delivery remains next. |
-| GitHub issue/PR/check connector | connector sync using existing `gh`/GitHub API/webhook; Company OS receives delivery refs and views | Planned / first connector priority | Sync issues, PRs, reviews, checks, branches, and source snapshots into TeamWork delivery panels, Agent detail development queues, and Docs source mapping views. No new MCP/plugin CLI is required for the first slice. |
-| WeCom merchant gateway | docs/TeamWorks only | Planned | Needs schema/API/CLI/Agent inbox implementation. |
-| Social plugin actions/connectors/views | plugin Skill + MCP or plugin-owned CLI adapter; Company OS receives governed Actions/TypedRecords/Relations/TeamWorks/evidence | Planned | Upload, title/body/topic fill, publish submit, comment/private-message sync, profile management, paid-promotion preparation, account sync, metrics sync, and view extensions should live in platform plugins rather than `firm-cli` core. |
-| Social publication / metric evidence | Docs TypedRecords + TeamWorks now; plugin connector commands next | Partial | Current Store can model accounts, campaigns, post plans, publications, external message threads, and metric snapshots. Dedicated publish/message/metrics/plugin commands must remain policy-gated and write back through Company OS records. |
-
-### Company OS API resources with no equivalent dedicated CLI
-
-The local API can read/write more resources than the CLI exposes directly:
-
-- `action-policies`
-- `action-commands`
-- `audit-events`
-
-These should not all become raw append commands. The preferred next step is
-ergonomic governed commands that preserve ownership boundaries:
-
-- raw action policy / command / audit inspection helpers
-- future budget / invoice / refund resources
 
 ## Skills and install status
 
-Repository skills exist for the intended Company OS operator roles:
+Active repository skills:
 
-- `skills/company-docs-operator`
-- `skills/company-work-operator`
-- `skills/company-org-operator`
-- `skills/parked-company-finance-operator-20260805` (retired per ADR 0053)
-- `skills/company-module-designer`
-- `skills/company-page-builder`
-- `skills/company-business-project-bootstrap`
+- `skills/collaborate-as-agent-team-member` (mirrored into the Star Harness plugin)
+- `skills/shared-references` (cross-reference, mirrored)
+- `skills/star-workflow`
+- `skills/bootstrap-project-workflow`
 
-The skill suite is checked by `scripts/check-company-os-skill-suite.mjs` and
-`acceptance:skill-install`. Skills are distribution/operator guidance. They are
-not the authority for product architecture; canonical truth remains schemas,
-store/API, CLI routing, UI, tests and ADRs.
+The Company OS operator skills and the Mission-orchestration skill were
+archived to `archive/skills/` with the DOC-108 cutover and must not be
+installed or treated as current operating contracts. Skills are
+distribution/operator guidance. They are not the authority for product
+architecture; canonical truth remains schemas, store/API, CLI routing, UI,
+tests and ADRs.
 
 ## Current validation commands
 
 | Check | What it proves |
 | --- | --- |
-| `pnpm check:company-os` | Docs CLI smoke, Work CLI smoke, skill suite, Company OS UI/runtime/navigation/trademark checks and docs governance. |
-| `pnpm check:docs-v2-live` | Store-live Docs v2 API and page store contracts (revision writes, scoped reads, legacy projection). |
-| `node scripts/check-company-os-work-cli-smoke.mjs` | Store-live Work CLI can create/assign/transition/close TeamWorks. |
-| `node scripts/check-company-os-operator-cli-smoke.mjs` | Store-live Org, Milestone, Approval, Commitment and Payment operator CLI commands work together. |
-| `pnpm acceptance:mission-wave` | Deterministic Mission/Mission Log, TeamRun, MCP and dashboard contracts. The script name is a compatibility basename, not current product vocabulary. |
+| `pnpm check` | Umbrella: JSON validity, schema fixtures, provider events, collaboration foundation, member execution trust, runtime message fabric, remote fabric, tool descriptors, native-session boundary, plugin contract, cross-layer consistency, role views, dashboard. |
+| `pnpm acceptance:legacy-retirement` | Deterministic Agent Team, MCP, Kimi ACP adapter, and Dashboard contracts plus the retired Mission/Wave legacy reads and retired-write errors. |
 | `firm governance check` | Documentation registry/link/retired-surface governance. |
 
 ## Recommended CLI roadmap
 
-1. **Org governance workflow**: add proposal/approval/promotion commands for
-   permission grant/revoke, agent creation, reporting changes and retirement.
-2. **Finance lifecycle depth**: add explicit payment transition/settlement,
-   budget, invoice, refund and finance report commands.
-3. **Work taxonomy helpers**: add WorkType/business-line helpers when they
-   become first-class records instead of fields.
-4. **Custom page CLI**: promote page metadata into a full page-build loop:
-   design contract -> component scaffold -> store-live fixture -> screenshot
-   capture -> compare -> publish.
-5. **External source CLI**: add GitHub/webhook adapter commands that update
-   Docs source projections without letting GitHub become commercial truth.
-6. **SQL read-model CLI**: when ADR 0035 is implemented, add rebuild/status/query
-   commands for the derived read/index layer. JSONL ledgers remain canonical.
+1. **Global Work depth**: pagination and richer filters on the read-only
+   aggregate as the RoleView contract grows.
+2. **External source observation**: sync/projection-first connectors that
+   attach external software-delivery evidence to TeamWork without becoming
+   commercial truth.
