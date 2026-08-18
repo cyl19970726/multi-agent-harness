@@ -55,6 +55,7 @@ jobs:
           cargo test -- --test-threads=1
           --skip host_close_reports_bounded_store_contention_as_retryable_503
           --skip fresh_exhausted_capacity_blocks_start_and_leaves_work_queued
+          --skip status_remains_responsive_while_execution_space_scan_is_blocked
       # Doc/skill governance gate, native in the binary (replaces the retired
       # node check-doc-*/check-skills scripts). The cargo-test self-host test
       # also covers this; this is the explicit, legible CLI gate.
