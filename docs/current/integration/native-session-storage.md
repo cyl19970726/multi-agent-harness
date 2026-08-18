@@ -121,7 +121,7 @@ promotes it into a coordination object. Automatic copying is prohibited.
 GET Harness Team/Member projection
   -> TeamRun/MemberRun/Work/WorkDelivery/messages/interactions/outcome (+ legacy Mission rows when present)
 
-GET authenticated AgentWorkspace for exact AgentIdentity
+GET authenticated AgentWorkspace for exact AgentMember
   -> provider adapter probe
   -> provider-native bounded read (latest 300 displayable items)
   -> SessionEventProjection grouped by provider turn/episode

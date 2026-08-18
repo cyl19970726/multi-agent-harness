@@ -14,7 +14,7 @@ consequences, affected modules, and validation path.
 | [0008](0008-persistent-codex-agent-runtime.md) | amended | Persistent Codex Agent runtime; provider lifecycle refined by 0018, 0020 and 0021 |
 | [0010](0010-harness-store-is-canonical.md) | active | Harness store is canonical for execution records |
 | [0011](0011-provider-neutral-runtime.md) | active | Provider-neutral runtime before provider implementations |
-| [0012](0012-dashboard-is-control-plane.md) | scoped | Dashboard is the execution operator control plane, not the Company OS truth owner |
+| [0012](0012-dashboard-is-control-plane.md) | scoped | Dashboard is the execution operator control plane; it was never the truth owner for the retired Company OS layer |
 | [0013](0013-pr-merge-is-not-harness-acceptance.md) | active | PR merge is not Harness acceptance |
 | [0014](0014-react-vite-agent-dashboard.md) | scoped | React/Vite frontend platform; earlier product IA is superseded |
 | [0016](0016-tailwind-shadcn-adoption.md) | active | Tailwind v4 + shadcn/ui adoption |
@@ -40,19 +40,19 @@ consequences, affected modules, and validation path.
 | [0039](0039-ordinary-member-planning-and-durable-mailbox-delivery.md) | active; kinds amended by 0050 | Planning is ordinary Host/Member conversation; Harness owns durable authored-message delivery |
 | [0040](0040-native-host-inbox-delivery.md) | active | Host mail is scoped to an exact native task; Codex busy delivery uses a one-shot Stop continuation and unowned idle tasks remain safe-boundary pull |
 | [0041](0041-provider-neutral-member-continuation.md) | active; responsibility ref amended by 0050 | Continuation separates durable Work from the provider-native execution driver and one top-level Workspace lease |
-| [0042](0042-company-store-execution-space-project-binding.md) | amended by DOC-108 | Execution Space vs Project Binding separation remains current; the Company Store identity is retired |
+| [0042](0042-company-store-execution-space-project-binding.md) | partially superseded by DOC-108 | Execution Space vs Project Binding separation remains current; the legacy Company Store identity is retired |
 | [0044](0044-durable-team-supervision-and-typed-mail.md) | active | One durable Supervisor lease owns Provider control; typed mail and atomic delivery claims make multi-client coordination safe |
 | [0045](0045-company-owned-standing-agent-execution-relation.md) | superseded by DOC-108 | Company-owned execution relation retired; AgentMember/TeamMembership is the only identity authority |
-| [0046](0046-supervised-agentos-self-hosting-loop.md) | superseded by the Agent Firm Mental Model | Supervising Operator and Runtime Supervisor boundaries remain; separate StandingAgent target is superseded |
+| [0046](0046-supervised-agentos-self-hosting-loop.md) | partially superseded by DOC-108 and the Agent Firm Mental Model | Supervising Operator and Runtime Supervisor boundaries remain current; the legacy Company OS premise and the separate StandingAgent target are retired |
 | [0047](0047-scoped-company-authority-broker.md) | superseded by DOC-108 | The Company authority broker plan retired with the Company layer |
 | [0048](0048-human-rooted-company-constitution.md) | superseded by DOC-108 | The Company constitution plan retired with the Company layer |
 | [0049](0049-member-coordination-and-runtime-lifecycle.md) | active, implemented | Member coordination and disposable adapter runtime have separate Close, Reopen, and Retire semantics |
 | [0050](0050-agent-team-work-board-and-message-boundary.md) | superseded by the Agent Firm Mental Model; implementation pending | Work is the scheduling primitive; permanent Company WorkItem separation is superseded |
 | [0051](0051-single-intent-spine.md) | superseded by DOC-108 | The Mission/Mission Log spine is retired; Work + Messages replaced it |
-| [0052](0052-nested-agent-teams-are-the-agent-organization.md) | superseded by [mental model](../mental/agent-firm-mental-model.md) | Proposed recursive AgentTeam topology; replaced by flat Agent Teams (no nesting). See the Agent Firm Mental Model. |
+| [0052](0052-nested-agent-teams-are-the-agent-organization.md) | superseded by [mental model](../mental/agent-firm-mental-model.md) | Proposed a recursive AgentTeam topology; that proposal is superseded by flat Agent Teams (no nesting). See the Agent Firm Mental Model. |
 | [0053](0053-finance-contract-layer-retirement.md) | accepted; staged retirement | Finance contract layer retired; Commitment/Payment code remains dormant until decommission |
 | [0054](0054-ai-first-docs-page-model-and-storage.md) | superseded by DOC-108 | The AI-first Docs page model retired with the built-in Docs layer |
-| [0055](0055-remote-node-fabric.md) | accepted; implemented | One Company Control Plane, outbound NodeGateway children, and FabricStore as the sole cross-Node route truth |
+| [0055](0055-remote-node-fabric.md) | accepted; implemented | One Fabric Control Plane, outbound NodeGateway children, and FabricStore as the sole cross-Node route truth |
 | [0056](0056-correlated-message-and-session-permission-cutover.md) | accepted; implemented | Provider questions are correlated Messages; permission is frozen at AgentSession start; the second interaction object is removed |
 
 ## Split Rule

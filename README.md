@@ -10,8 +10,8 @@ The current product model and operating control plane live in Notion
 schemas, stores, CLI/API/MCP surfaces, tests, and CI.
 
 The legacy Company OS layer — the Company Store registry, built-in Docs,
-Organization, Finance, generic Approval, Mission, Wave, and Mission Log — is
-retired by DOC-108. Its writers are closed on every surface; its historical
+Organization, Finance, generic Approval, and the legacy Mission, Wave, and
+Mission Log — is retired by DOC-108. Its writers are closed on every surface; its historical
 rows remain readable as legacy provenance and are export/verify-only through
 `harness legacy-company-os export|verify`. None of it is current authority.
 

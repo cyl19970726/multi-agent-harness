@@ -118,7 +118,7 @@ not decorative noise.
 | Styling | Tailwind v4 tokens plus owned CSS for high-fidelity execution compositions. |
 | UI primitives | shadcn/Radix copy-in components, wrapped by product primitives. |
 | Icons | lucide plus purpose-built generated identity assets. |
-| Graph/canvas | no library unless a future Company OS view has a semantic graph requirement and a list fallback. |
+| Graph/canvas | no library unless a future view has a semantic graph requirement and a list fallback (the retired Company OS views are not such a case). |
 | Dependencies | root `package.json`; no second full component framework without an ADR. |
 
 ## Visual Implementation Contract

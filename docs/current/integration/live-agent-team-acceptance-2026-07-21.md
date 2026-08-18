@@ -10,7 +10,8 @@ canonical_for: first native Codex + Kimi AgentTeamRun acceptance and interrupted
 > Wave id, Wave status, Wave gate, Wave advance, and numbered Wave reference in
 > this file records the execution model that existed when the evidence was
 > captured. ADR 0051 later retired Wave authoring and replaced Host judgment
-> with the append-only Mission Log. Preserve the facts below; do not use them to
+> with the append-only Mission Log — itself later retired by DOC-108. Preserve
+> the facts below; do not use them to
 > create or control a current runtime Wave. This run also predates ADR 0032 and
 > ADR 0050 and therefore
 > includes provider-derived MemberAction/TeamRunEvent mirrors. It remains valid

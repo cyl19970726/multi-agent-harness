@@ -1,12 +1,18 @@
-status: superseded by docs/mental/agent-firm-mental-model.md
-# ADR 0042: Company Store, Execution Space, and Project Binding
+# ADR 0042: Company Store (retired), Execution Space, and Project Binding
 
-status: accepted historical — evolved into docs/mental/agent-firm-mental-model.md (Company as top-level, not three independent identities)
+> **Partially superseded by DOC-108 (legacy CompanyOS retirement, 2026-08-17).**
+> The Company Store third of this decision is retired: its identity, selector,
+> ledgers, and commands are gone and survive only as export/verify history.
+> The Execution Space vs Project Binding separation, the cwd precedence, and
+> the never-silently-migrate rule remain current authority. Read every Company
+> Store passage below as decision-time history, never as a current contract.
+
 ```text
-status: accepted
+status: partially superseded (DOC-108); was: accepted
 date: 2026-07-28
 tracks: https://github.com/cyl19970726/multi-agent-harness/issues/252
-supersedes: repo-derived Company OS Store ownership implied by ADR 0033 docs
+supersedes: repo-derived legacy Company OS Store ownership implied by ADR 0033 docs
+current_authority: docs/mental/agent-firm-mental-model.md
 ```
 
 ADR 0056 supersedes the historical PendingInteraction item in the coordination
@@ -20,7 +26,7 @@ repository or path. That context carries both:
 - `project_root`, the workspace where providers run and discover project
   instructions; and
 - `store_root`, the JSONL store where Mission/Wave, Agent Team, Workflow, and
-  Company OS records are written.
+  legacy Company OS records were written.
 
 That coupling is useful for repository execution and compatibility, but it is
 not the right product boundary for an Agent-native company.
@@ -28,7 +34,7 @@ not the right product boundary for an Agent-native company.
 An Agent Company can contain multiple operating areas and software sources:
 
 ```text
-Agent Company Workspace
+Agent Company Workspace          # legacy shape; retired by DOC-108
 ├── Wanchengwanling
 │   ├── commercial model
 │   ├── merchant operations
@@ -44,7 +50,7 @@ Agent Company Workspace
 Those areas share Docs, Organization, Work, Finance, governance, and company
 identity even when implementation sources live in different Git repositories.
 Conversely, Mission/Wave, Agent Team, Dynamic Workflow, and Host execution must
-remain usable by people who never initialize Company OS.
+remain usable by people who never initialize the legacy Company OS.
 
 ## Decision
 
@@ -52,14 +58,14 @@ Introduce three independent native identities, connected only by explicit
 relations:
 
 ```text
-Company Store       Execution Space       Project Binding
-     \                    |                    /
-      \------ explicit, optional relations ---/
+Company Store (retired)   Execution Space       Project Binding
+     \                          |                    /
+      \------- explicit, optional relations --------/
 ```
 
-### Company Store
+### Company Store (retired by DOC-108)
 
-The Company Store owns durable company operating truth:
+At decision time the legacy Company Store owned durable company operating truth:
 
 - `Document`, `Block`, `TypedRecord`, `Relation`, `View`, `BusinessModule`;
 - Organization actors, OrgUnits, memberships, authority, and permissions;
@@ -70,8 +76,8 @@ The Company Store owns durable company operating truth:
 It does not own Mission/Wave lifecycle, Team messages, provider sessions,
 runtime process handles, repository roots, worktrees, or source-control state.
 
-Product language may present this as an **Agent Company Workspace**. The
-technical boundary is `Company Store`.
+Product language presented this as an **Agent Company Workspace** — legacy
+naming. That former technical boundary was `Company Store`.
 
 ### Execution Space
 
@@ -92,7 +98,7 @@ Company is optional for every execution object.
 
 No Mission, Wave, Agent Team, TeamRun, MemberRun, WorkflowRun, Host execution,
 or provider session requires a `company_id`. An Execution Space may later link
-to a Company Store, but standalone execution remains first-class.
+to a legacy Company Store, but standalone execution remains first-class.
 
 ### Project Binding
 
@@ -137,7 +143,7 @@ selected.
 `harness init` is the low-friction compatibility entry: it registers the
 current repository as a Project Binding and, when no prior execution history
 would be shadowed, creates a repo-derived Execution Space. It never creates a
-Company Store.
+legacy Company Store.
 
 Existing project-derived stores are not silently reinterpreted, dual-written,
 or deleted. `harness space migrate-from-project` performs an explicit,
@@ -145,7 +151,7 @@ copy-only, byte-verified migration of active execution ledgers and whitelisted
 execution-evidence files, and leaves the source intact with a rollback command
 in the migration manifest.
 
-When no Company Store is selected, `harness company ...` retains a narrow
+When no legacy Company Store was selected, `harness company ...` retained a narrow
 compatibility fallback to the selected Project Binding's old `company_os_*`
 ledgers. It never writes Company truth into an Execution Space.
 
@@ -198,9 +204,9 @@ harness init
 ```
 
 It should create or select a repo-derived compatibility Execution Space and a
-Project Binding. It must not implicitly create a Company Store.
+Project Binding. It must not implicitly create a legacy Company Store.
 
-Company OS commands resolve an explicit or current selected Company Store:
+Retired Company OS commands resolved an explicit or selected Company Store:
 
 ```bash
 harness company init --id <agent-company-id> --name <display-name>
@@ -243,9 +249,10 @@ Relations do not transfer truth ownership:
 ## Migration status
 
 1. **Freeze boundaries — implemented.** Canonical docs and native identities
-   distinguish Company Store, Execution Space, and Project Binding.
-2. **Company Store v1 — implemented slice.** Registry, CLI/API routing,
-   Dashboard selector, and guarded Company-row migration exist.
+   distinguish the legacy Company Store, Execution Space, and Project Binding.
+2. **Company Store v1 — implemented slice, since retired (DOC-108).** Registry,
+   CLI/API routing, Dashboard selector, and guarded Company-row migration
+   existed; all of it is now export/verify-only history.
 3. **Project Binding — implemented slice.** Git/source metadata and discovery,
    worktree, and permission boundaries are projected independently from Store
    ownership. `ProjectContext` remains internal compatibility infrastructure.
@@ -263,9 +270,9 @@ reconstructable.
 ## Acceptance
 
 1. Standalone execution can create Mission/Wave/Agent Team/Workflow records
-   without any Company Store.
-2. A Company Store can contain Wanchengwanling and AgentOS operating areas in
-   one company truth boundary while mapping multiple external repositories.
+   without any legacy Company Store.
+2. A legacy Company Store could contain Wanchengwanling and AgentOS operating
+   areas in one company truth boundary while mapping external repositories.
 3. One Mission can use multiple Project Bindings through separate TeamRuns or
    MemberRuns without duplicating Mission/Wave history.
 4. Switching Company never silently switches Execution Space; switching
@@ -281,6 +288,6 @@ reconstructable.
 - `ProjectContext` is compatibility infrastructure, not an ownership object.
 - `--project` remains first-class as an execution-resource selector; only its
   former Store-selection meaning is compatibility behavior.
-- Wanchengwanling and AgentOS should eventually live as operating areas in one
-  Agent Company Workspace, with their GitHub repositories mapped as external
-  source and delivery systems.
+- Wanchengwanling and AgentOS were expected to live as operating areas in one
+  Agent Company Workspace — a legacy shape retired by DOC-108 — with their
+  GitHub repositories mapped as external source and delivery systems.

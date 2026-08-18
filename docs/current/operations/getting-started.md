@@ -2,7 +2,7 @@
 
 Choose the execution surface first:
 
-- install **Star Harness** for Mission, Mission Log, and persistent Agent Teams;
+- install **Star Harness** for durable Agent Teams, Work, and Messages;
 - install **star-workflow** for bounded, one-shot Dynamic Workflow; and
 - start one Harness service plus the Workbench for shared state and controls.
 
@@ -79,8 +79,9 @@ cargo build -p firm-cli
 ./target/debug/firm project list
 ```
 
-An **Execution Space** owns Mission/Mission Log, Agent Team, Workflow, and coordination
-state. A **Project Binding** independently selects provider cwd, project
+An **Execution Space** owns Agent Team, Work, Message, Workflow, and
+coordination state (plus the retired Mission/Mission Log rows as read-only
+legacy history). A **Project Binding** independently selects provider cwd, project
 instructions, Skills, Git/worktree, and permission boundaries. Select them
 explicitly with `--space` / `HARNESS_SPACE` and
 `--project` / `HARNESS_PROJECT`, or `firm space switch` and

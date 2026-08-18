@@ -6,12 +6,13 @@ shape and validation.
 ## Canonical graph
 
 ```text
-AgentTeam 1 ── * AgentTeamRun ── * MemberRun
-     │               │          └── WorkExecutionBinding
-     │               └── * Work / Evidence
-     └── 1 ExecutionNode
+AgentTeam 1 ── * Work / Evidence                # durable responsibility
+     ├── * TeamMembership ──> AgentMember       # participation, not identity
+     ├── 1 ExecutionNode
+     └── * AgentTeamRun ── * MemberRun          # internal diagnostics/history
+                        └── WorkExecutionBinding
 
-AgentIdentity ── * AgentSession
+AgentMember ── * AgentSession
       └── authors Message ── * CanonicalMessageDelivery ──> AgentSession
 
 NodeDaemon ── * RuntimeCommand ──> provider effect
@@ -19,11 +20,20 @@ NodeDaemon ── * RuntimeCommand ──> provider effect
 WorkDelegation: source Team/Work ──> target Team/Work
 ```
 
+`AgentMember` is the sole durable agent identity root; `TeamMembership` records
+only participation. The `AgentIdentity` name is a deprecated same-ID read-only
+compatibility projection of `AgentMember` and is never a second identity root.
+
 `AgentTeam` is the atomic agency unit: one Host membership, one immutable
 Node placement, and a flat Member set. Teams never nest. Pre-cutover Teams
 may carry read-only `legacy_mission_id` provenance (DOC-108); no Mission owns
 or gates a Team. `AgentTeamRun` always names its Team, execution Node, and
 project binding.
+
+`Work` hangs off the durable `AgentTeam` through `accountable_team_id`.
+`AgentTeamRun` and `MemberRun` are internal diagnostics and history
+projections: `Work.team_run_id` only correlates the run that surfaced a Work,
+and ending or discarding a run never moves or re-scopes responsibility.
 
 Cross-Team cooperation is explicit `WorkDelegation`, not parent/child topology.
 The collaboration fabric owns the relationship and decisions; source
@@ -49,6 +59,7 @@ Space; a registration from one Store cannot name another Space.
 | --- | --- |
 | Why does the Team exist? | its durable `AgentTeam` record and Work context |
 | Which agency owns it? | the durable `AgentTeam` itself |
+| Who is the durable agent? | `AgentMember` |
 | Who leads it? | the Host-role `TeamMembership` |
 | Where may it execute? | `AgentTeam.node_id` |
 | Which runtime attempt is active? | `AgentTeamRun` |

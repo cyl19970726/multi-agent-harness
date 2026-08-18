@@ -8,7 +8,8 @@
 
 **Date:** 2026-08-05
 **Status:** superseded (DOC-108); was: accepted
-**Spec:** docs/current/company-os/ai-first-docs-spec.md
+**Spec:** `docs/current/company-os/ai-first-docs-spec.md` — removed historical
+path (deleted with the DOC-108 cutover; recoverable from Git history).
 
 ## Decision
 

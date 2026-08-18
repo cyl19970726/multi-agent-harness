@@ -34,7 +34,7 @@ delegated to a provider's private transcript.
 ### Three truth layers
 
 ```text
-Company OS truth
+Company OS truth (retired by DOC-108; historical layer)
   Document / WorkItem / Approval / Finance / Organization
                      |
 Harness coordination truth

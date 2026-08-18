@@ -7,12 +7,12 @@ environment connected through an adapter.
 
 ```text
 Star Harness
-  Mission intent / append-only Mission Log / team relations
+  Durable AgentTeams / accountable Work / identity-first Messages
   Agent Team control plane / durable Team Supervisor / typed mail
   Dynamic Workflow runtime
   Host-facing plugins, MCP tools, skills, CLI
   Provider-neutral execution substrate
-  Artifact refs / outcomes / explicit Host judgment and Mission closeout
+  Artifact refs / outcomes / explicit Host judgment and Work acceptance
   Agent Dashboard
 
 Project Adapter
@@ -32,7 +32,7 @@ The canonical diagrams for the current product direction live in
 see:
 
 - the product capability stack;
-- the Mission -> append-only Mission Log and Mission -> one AgentTeam relations;
+- the AgentTeam -> TeamMembership -> AgentMember and AgentTeam -> Work relations;
 - the shared runtime and dashboard infrastructure;
 - what is implemented, planned, or transitional.
 
@@ -43,17 +43,22 @@ This file is the compact narrative that explains the same boundary in prose.
 The product direction is:
 
 ```text
-Mission -> append-only Mission Log
-Mission -> one flat AgentTeam -> AgentTeamRun -> MemberRun
+AgentTeam -> TeamMembership -> AgentMember
+AgentTeam -> Work (accountable_team_id) -> append-only WorkEvent lineage
+AgentTeam -> AgentTeamRun -> MemberRun      # internal diagnostics/history
 ```
 
-- A `Mission` is the durable objective and outcome container.
-- A `MissionLogEntry` is a small append-only Markdown record of the Host's
-  judgment, replan, recovery, or closeout evidence inside the Mission.
+- An `AgentTeam` is the durable agency: one Host membership, one immutable Node
+  placement, and a flat Member set. It is created without any Mission.
+- A `Work` is the durable unit of accountable responsibility; its append-only
+  `WorkEvent` lineage records allocation, blocking, submission, the Host's
+  judgment, replan, recovery, and acceptance evidence.
 - Agent Team, Dynamic Workflow, and Host work keep distinct runtime truth. A
-  Mission Log entry may explain their use but does not own their lifecycle.
+  Work record may explain their use but does not own their lifecycle.
+- `AgentTeamRun` and `MemberRun` are internal diagnostics and history; they
+  never scope durable identity or Work responsibility.
 
-A Mission Log entry is intentionally small. It is not a lifecycle object and
+A `WorkEvent` is intentionally small. It is not a lifecycle object and
 does not own or require a task graph, executor attempt, synchronization
 barrier, or provider session.
 Dependencies, branches, worktrees, or workflow fan-out may still exist inside
@@ -62,10 +67,11 @@ product concept a future operator should start from.
 
 ## Active Coordination Contract
 
-Mission plus its Mission Log is the active coordination vocabulary. Native
-ledgers, schemas, authoring, Mission-Team linkage, Mission Log append/read, and
-Mission closeout are implemented. Wave create/update/advance/gate is retired;
-its rows and types are ADR 0051 pre-cutover history for read/export only. ADR
+Durable Teams, Work, and identity-first Messages are the active coordination
+vocabulary. Native ledgers, schemas, authoring, Team/Membership linkage, Work
+operations, and Host acceptance are implemented. The retired Mission, Mission
+Log, and Wave create/update/advance/gate paths are legacy read/export history
+only (DOC-108, and ADR 0051 before it). ADR
 0050 accepts Agent Team Works as the replacement for
 Assignment-message ownership; its schemas/runtime/UI cutover is in progress and
 must land without a compatibility ownership path. The superseded stack is removed from active reads,
@@ -77,9 +83,9 @@ closeout model.
 
 ### `agent_team`
 
-Use Agent Team when the Mission needs living collaborators with persistent
+Use Agent Team when the work needs living collaborators with persistent
 session state, explicit Work ownership, review, and role ownership across the
-Mission lifetime.
+Team's lifetime.
 
 Each `MemberRun` may own one active end-to-end Work and use provider-native
 subagents for bounded internal work. The subagents return to that member and do
@@ -146,16 +152,16 @@ infrastructure contracts where possible.
 | Permission and budget ceiling | all executor kinds |
 | Artifact references and explicit outcome summaries | all executor kinds |
 | Harness coordination stream + ephemeral native activity projection | Agent Team and Host-observable execution; Workflow keeps its own run/step truth |
-| Artifact references, outcome summaries, and Host Mission judgments | all execution kinds |
+| Artifact references, outcome summaries, and Host judgments on the Work record | all execution kinds |
 | Durable Supervisor lease, typed actor routing, canonical per-recipient delivery claim/receipt/ACK | persistent Agent Team members only |
 
 Shared infrastructure does not collapse distinct product objects into one.
-Agent Team, Dynamic Workflow, and Host work stay distinct even when one Mission
-Log entry refers to several of them.
+Agent Team, Dynamic Workflow, and Host work stay distinct even when one Work
+record refers to several of them.
 
 The repository currently applies a stricter Evidence -> Proposal -> Review ->
 Decision -> outcome evaluation chain while self-hosting changes. That is repository
-governance during migration, not a mandatory product contract for every Mission.
+governance during migration, not a mandatory product contract for every Work.
 
 ## Thinking Policy
 
@@ -178,7 +184,7 @@ chat/tool/command/file/turn history remains in the native session.
 New Kimi execution does not persist `thinking` actions, and active stores do
 not retain historical thinking rows. The Console has a sanitized
 `live_provider_activity` SSE preview with expiry: it is delivered only to the
-currently connected exact AgentIdentity owner, is Execution-Space scoped, and
+currently connected exact AgentMember owner, is Execution-Space scoped, and
 is never added to JSONL, snapshots, replay, messages, or evidence. It is a
 preview, not an audit trail.
 
@@ -188,7 +194,7 @@ The near-term product stack is:
 
 ```text
 Host plugin
-  -> Mission/Mission Log orchestration
+  -> durable AgentTeam + Work orchestration
   -> executor selection
   -> shared runtime + artifacts + dashboard
 ```
@@ -196,7 +202,7 @@ Host plugin
 The later layer is:
 
 ```text
-Agent Memberships + Docs
+Standing AgentMembers beyond one Team
   -> long-lived business operations
   -> built on the same runtime/artifact/evidence substrate
   -> not part of the current implementation goal

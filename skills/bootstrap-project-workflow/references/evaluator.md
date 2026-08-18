@@ -75,14 +75,15 @@ quality, not as a generic object model for other projects.
 ```text
 base_commit: a clean pre-reorg worktree (before docs were reorganized around
 critical mechanisms)
-final_acceptance: this project can use native Mission execution and Mission Log judgment, linked
-Agent Team Works, executor-native outcomes, artifacts, gates, and
-Dashboard visibility to develop itself while preserving Company OS truth.
+final_acceptance: this project can use native Agent Team execution and Host
+judgment recorded on the Work, linked Agent Team Works, executor-native
+outcomes, artifacts, gates, and Dashboard visibility to develop itself while
+preserving canonical repository truth.
 expected_outcome_class: similar quality to a commit that reorganizes docs
 around critical mechanisms, adds data-model / agent-runtime / dashboard /
 Git-PR workflow / integration guidance, records ADRs, updates skills and
 registry, and passes repository checks.
-expected_discovery: docs must cover Company OS data, execution boundaries,
+expected_discovery: docs must cover coordination data, execution boundaries,
 agent runtime, dashboard, Git/PR workflow, provider integration, and ADRs;
 Agent Team ownership must be represented by Work and its WorkDelivery;
 TeamMessage only carries Work-linked conversation. Provider transcript is

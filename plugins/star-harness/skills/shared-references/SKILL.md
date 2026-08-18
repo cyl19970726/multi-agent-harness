@@ -10,7 +10,7 @@ description: Shared Hard Invariants referenced by team coordination skills. Do n
 When the local AgentFirm Dashboard is available, read responsibility state from
 the five `agentfirm.role_views.v1` endpoints documented in
 `docs/agentfirm-role-views.md`. Treat SSE only as an invalidation signal and
-refetch the view. Never rebuild Company/Team/Host/Member/Operator state by
+refetch the view. Never rebuild Global-Work/Team/Host/Member/Operator state by
 joining raw ledgers, and never treat an `AllowedAction` as authority when it has
 a `disabled_reason`.
 
@@ -86,7 +86,7 @@ acceptance.
 
 ## 9. Work Ownership Survives
 
-Work identity persists across Mission Log entries, re-plans, crashes, and
+Work identity persists across WorkEvent history, re-plans, crashes, and
 runtime restarts. Active Work keeps the same Work id, MemberRun, Workspace, and
 native session. Never clear ownership, duplicate side effects, or reconstruct a
 session from Harness messages after a crash. Host assignment, resume,

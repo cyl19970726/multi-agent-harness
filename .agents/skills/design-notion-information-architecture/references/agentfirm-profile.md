@@ -69,7 +69,9 @@ Task state to both systems.
 
 Notion documents the product model; it must not invent runtime objects. Current
 AgentFirm runtime authority is: one machine-scoped NodeDaemon owns local
-AgentSessions, Teams are dynamic routing overlays, provider questions use
-correlated Messages, and AgentSession permission is frozen before start. Do not
+AgentSessions, AgentTeams are durable and Mission-less with immutable Node
+placement, `AgentMember` is the sole durable agent identity and
+`TeamMembership` records only participation, provider questions use correlated
+Messages, and AgentSession permission is frozen before start. Do not
 reintroduce a second provider-interaction or permission lifecycle through a
 Notion template or Spec.

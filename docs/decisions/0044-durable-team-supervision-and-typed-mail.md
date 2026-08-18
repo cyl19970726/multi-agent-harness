@@ -70,8 +70,9 @@ touching its process-local Provider handle. A stale generation, expired lease,
 unroutable locator, or missing handle is an explicit failure; no client falls
 back to starting a second Provider driver.
 
-TeamRun, Mission, Wave, UI task, and Supervisor lifecycles remain independent.
-Completing or advancing a Wave never releases or closes a Member. A Supervisor
+TeamRun, UI task, and Supervisor lifecycles remain independent (as did the
+retired Mission and Wave lifecycles). Completing or advancing a legacy Wave
+never released or closed a Member. A Supervisor
 release never deletes provider-native history.
 
 ### Claim before Provider side effect

@@ -28,7 +28,7 @@ Dynamic Workflow and Host execution retain their distinct execution-specific
 objects. Existing Goal/Task schemas and retired TeamMessage projections are
 historical compatibility contracts; Evidence/Proposal/Decision remain optional
 governance contracts. They are not the
-active Mission/Mission Log or Agent Team coordination model, and new Agent Team work
+active Agent Team coordination model (the retired Mission/Mission Log model is not either), and new Agent Team work
 must not depend on Goal, Task Graph, Plan Gate, or a TeamMessage compatibility
 path.
 

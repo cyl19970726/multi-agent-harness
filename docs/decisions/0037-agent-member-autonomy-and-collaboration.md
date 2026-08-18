@@ -1,9 +1,11 @@
 # ADR 0037: Agent Member Autonomy And Collaboration
 
 ```text
-status: active; responsibility semantics amended by ADR 0050
+status: active; responsibility semantics amended by ADR 0050; its Mission/Wave
+  premise is retired legacy history (DOC-108)
 date: 2026-07-24
-extends: ADR 0032 provider-native execution truth; ADR 0034 Host-plan Waves
+extends: ADR 0032 provider-native execution truth; the historical ADR 0034
+  Host-plan Waves (retired by DOC-108)
 ```
 
 ADR 0050 supersedes this ADR's Assignment-message ownership and Handoff-as-task

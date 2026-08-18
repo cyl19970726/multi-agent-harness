@@ -150,7 +150,7 @@ Harness remains the communication authority in both driver modes:
 | Provider continuation active | Inject only through a verified safe provider operation or cycle boundary; otherwise leave mail queued. |
 | Host chooses Steer | Use the selected mode's real current-activity injection and terminal acknowledgement. |
 | Provider asks a question | Create a correlated Message and wait for its correlated reply. |
-| Provider asks for a protected project action | Use the existing Approval ledger; do not create a generic interaction object or infer approval from tool completion. |
+| Provider asks for a protected project action | Require the appropriate Human or policy approval and record the decision on the Work record; do not create a generic interaction object, do not revive the retired Approval ledger, and never infer approval from tool completion. |
 | Native continuation satisfies its condition | Record/project the provider fact, then await explicit Work submission/Host acceptance as required. |
 | Host explicitly closes Member | Latch Close before teardown, release the managed runtime, and freeze delivery without deleting the MemberRun or native-session binding. |
 | Host explicitly reopens Member | Increment `runtime_generation`; a managed adapter resumes the exact recorded native session and frozen mail becomes actionable. |

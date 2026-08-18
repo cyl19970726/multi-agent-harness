@@ -7,22 +7,23 @@ development batches, not a current product `Wave` object.
 ## Purpose and boundary
 
 Remote Node Fabric connects AgentFirm execution across machines without
-creating a second Company, Node, identity, Message, Work or runtime authority.
-There is one logical Company Control Plane. Every machine runs one NodeDaemon
+creating a second Firm, Node, identity, Message, Work or runtime authority.
+There is one logical Fabric Control Plane. Every machine runs one NodeDaemon
 and one outbound NodeGateway connection.
 
-- `CompanyNode.id == ExecutionNode.id`.
+- One `ExecutionNode` identity per machine; the former `CompanyNode` name is
+  retired and always denoted the same row (`CompanyNode.id == ExecutionNode.id`).
 - NodeGatewayLease is a child of the exact current NodeDaemonLease generation.
 - Nodes use outbound `wss://` with TLS 1.3 mTLS and
   `agentfirm.node.v1`; Nodes expose no inbound collaboration listener.
-- The certificate-derived Company and Node identity, never Hello or payload
+- The certificate-derived Firm and Node identity, never Hello or payload
   JSON, selects machine authority.
 - Source authority is closed to `node | control_plane`.
 - Protocol, schema and deterministic canonical-byte versions are mandatory.
 
 ## One route truth
 
-FabricStore is Company-scoped and owns `RoutedOperation`, transport-only
+FabricStore is Firm-scoped and owns `RoutedOperation`, transport-only
 `RouteAttempt`, and generation-fenced `RouteReceipt`. It is the sole cross-Node
 route truth. Node-local Stores own pre-acceptance outboxes, target inboxes and
 application results. `firm-store` owns their filesystem roots.
@@ -50,7 +51,7 @@ application. The only application certainty values are `none`, `not_applied`,
 
 A message route carries the complete immutable canonical Message envelope or
 an authenticated content-addressed `message_object_ref`. The target verifies
-the body digest, Company, Team and identity scope, then persists the Message in
+the body digest, Firm, Team and identity scope, then persists the Message in
 the existing trust Store before creating a per-recipient
 `CanonicalMessageDelivery`.
 
@@ -60,7 +61,7 @@ through the existing NodeDaemon socket. The canonical RuntimeCommand terminal
 record, not socket success, decides application effect.
 
 Artifacts use digest-bound manifests, bounded size/capability scope, encrypted
-Company-local storage, short-lived one-use upload/download capabilities and
+Firm-local storage, short-lived one-use upload/download capabilities and
 tamper rejection. Large bytes never enter the 256 KiB Fabric frame.
 
 ## Replay, crash and successor rules
@@ -79,7 +80,7 @@ when the earlier attempt proves `effect=none`.
 
 ## Product and operator projections
 
-Company Host REST lists Nodes with snapshot-bound opaque cursors. Node detail,
+Control Plane Host REST lists Nodes with snapshot-bound opaque cursors. Node detail,
 diagnostics, enrollment, revoke, drain, artifact and recovery operations are
 server-authoritative and Host-authenticated. Operator RoleView projects the
 Node-local gateway session, outbox/inbox depth, oldest age, reconcile lag and

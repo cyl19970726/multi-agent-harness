@@ -3,7 +3,8 @@
 - Status: accepted; breaking clean cutover
 - Date: 2026-08-14
 - Supersedes: ADR 0030 interaction-object and permission-routing contract
-- Product authority: AgentFirm CompanyOS DOC-87
+- Product authority: the current execution-foundation authority, Global Work
+  (DOC-106); the former AgentFirm CompanyOS DOC-87 line is retired history
 - Implementation issue: [#462](https://github.com/cyl19970726/multi-agent-harness/issues/462)
 
 ## Context

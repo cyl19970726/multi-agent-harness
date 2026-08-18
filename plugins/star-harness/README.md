@@ -13,8 +13,8 @@ It installs experience adapters only:
   Host was busy; and
 - Dashboard deep-link guidance.
 
-Product architecture, Works/WorkDelivery, messages, Mission records and the
-append-only Mission Log, TeamRun lifecycle, and provider capability review
+Product architecture, Works/WorkDelivery, messages, the append-only WorkEvent
+lineage, TeamRun lifecycle, and provider capability review
 remain in Harness. Provider transcripts, tool activity, and subagent history
 remain in provider-native sessions.
 

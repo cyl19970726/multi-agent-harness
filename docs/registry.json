@@ -3732,10 +3732,28 @@
         "canonical Member collaboration contract (source of the plugin mirror)"
       ],
       "dependsOn": [],
-      "truthRefs": [],
-      "machineConsumers": [],
+      "truthRefs": [
+        {
+          "kind": "test",
+          "ref": "scripts/sync-star-harness-plugin-skills.mjs"
+        },
+        {
+          "kind": "test",
+          "ref": "scripts/check-runtime-message-fabric.mjs"
+        }
+      ],
+      "machineConsumers": [
+        "scripts/check-runtime-message-fabric.mjs",
+        "scripts/sync-star-harness-plugin-skills.mjs"
+      ],
       "reorgTrigger": "skill contract changes",
-      "authorityClass": "canonical_contract"
+      "authorityClass": "canonical_contract",
+      "lastVerifiedWith": [
+        "node scripts/check-runtime-message-fabric.mjs",
+        "node scripts/sync-star-harness-plugin-skills.mjs --check"
+      ],
+      "implementationState": "implemented",
+      "reviewAfter": "2026-11-18"
     },
     {
       "path": "skills/shared-references/SKILL.md",
@@ -3746,10 +3764,22 @@
         "canonical shared hard-invariants reference (source of the plugin mirror)"
       ],
       "dependsOn": [],
-      "truthRefs": [],
-      "machineConsumers": [],
+      "truthRefs": [
+        {
+          "kind": "test",
+          "ref": "scripts/sync-star-harness-plugin-skills.mjs"
+        }
+      ],
+      "machineConsumers": [
+        "scripts/sync-star-harness-plugin-skills.mjs"
+      ],
       "reorgTrigger": "skill contract changes",
-      "authorityClass": "canonical_contract"
+      "authorityClass": "canonical_contract",
+      "lastVerifiedWith": [
+        "node scripts/sync-star-harness-plugin-skills.mjs --check"
+      ],
+      "implementationState": "implemented",
+      "reviewAfter": "2026-11-18"
     },
     {
       "path": "docs/decisions/0040-native-host-inbox-delivery.md",
@@ -3757,13 +3787,25 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "kept architecture decision (DOC-16 Keep row)"
+        "kept native Host Inbox delivery decision (DOC-16 Keep row)"
       ],
       "dependsOn": [],
-      "truthRefs": [],
-      "machineConsumers": [],
+      "truthRefs": [
+        {
+          "kind": "test",
+          "ref": "crates/firm-cli/tests/team_run_api.rs"
+        }
+      ],
+      "machineConsumers": [
+        "crates/firm-governance/src/lib.rs"
+      ],
       "reorgTrigger": "decision superseded",
-      "authorityClass": "canonical_contract"
+      "authorityClass": "canonical_contract",
+      "lastVerifiedWith": [
+        "cargo run -q -p firm-cli -- governance check"
+      ],
+      "implementationState": "implemented",
+      "reviewAfter": "2027-02-18"
     },
     {
       "path": "docs/decisions/0053-finance-contract-layer-retirement.md",
@@ -3771,13 +3813,25 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "kept architecture decision (DOC-16 Keep row)"
+        "kept Finance contract-layer retirement decision (DOC-16 Keep row)"
       ],
       "dependsOn": [],
-      "truthRefs": [],
-      "machineConsumers": [],
+      "truthRefs": [
+        {
+          "kind": "test",
+          "ref": "crates/firm-cli/tests/legacy_company_os.rs"
+        }
+      ],
+      "machineConsumers": [
+        "crates/firm-governance/src/lib.rs"
+      ],
       "reorgTrigger": "decision superseded",
-      "authorityClass": "canonical_contract"
+      "authorityClass": "canonical_contract",
+      "lastVerifiedWith": [
+        "cargo run -q -p firm-cli -- governance check"
+      ],
+      "implementationState": "implemented",
+      "reviewAfter": "2027-02-18"
     }
   ]
 }

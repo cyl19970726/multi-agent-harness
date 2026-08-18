@@ -77,8 +77,9 @@ needs-backend 项 → 复制到下方立项区。
 
 ## 3. 组件登记表模板（registry，防实现分叉）
 
-存放：**仓内**（如 `docs/frontend/component-registry.md`），因为新建 primitive 的是
-写代码的 agent，查表动作必须零成本。
+存放：**仓内**（与前端架构文档同目录，例如
+`docs/current/dashboard/frontend-architecture.md` 旁边的登记表小节），因为新建
+primitive 的是写代码的 agent，查表动作必须零成本。
 
 ```markdown
 | 组件 | 用途 | 何时复用 | 何时允许新增 | 调用点 |

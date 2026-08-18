@@ -10,7 +10,7 @@ lives in [docs/current/product/agent-operating-rules.md](docs/current/product/ag
 canonical contracts live in the docs linked under [Routing](#routing). Where
 this file and a canonical doc conflict, the canonical doc wins — fix this file.
 
-## AgentFirm CompanyOS Authority
+## AgentFirm Execution Foundation Authority
 
 AgentFirm's current product mental model and development control plane live in
 Notion. Repository files remain the versioned implementation truth for code,
@@ -37,10 +37,10 @@ either side.
 
 Star Harness is the AgentFirm execution foundation: durable flat AgentTeams
 of standing AgentMembers, accountable Work, identity-first Messages, and
-provider-neutral runtimes across machines. The legacy Company OS layer — the
-Company Store, built-in Docs, Organization, Finance, generic Approval,
-Mission, Wave, and Mission Log — is retired by DOC-108: its writers are
-closed on every surface and its rows are export/verify-only history through
+provider-neutral runtimes across machines. DOC-108 retired the legacy
+Company OS layer: the legacy Company Store, built-in Docs, Organization,
+Finance, generic Approval, and the legacy Mission, Wave, and Mission Log. Its
+writers are closed on every surface and its rows are export/verify-only through
 `harness legacy-company-os export|verify`. See
 [docs/current/product/prd.md](docs/current/product/prd.md).
 
@@ -49,18 +49,24 @@ the shared execution foundation. Their native relations are:
 
 ```text
 AgentTeam -> immutable node_id -> one machine-scoped NodeDaemon
-AgentIdentity -> AgentSession -> provider-native session/thread
-AgentTeam -> TeamMembership -> AgentIdentity
+AgentTeam -> TeamMembership -> AgentMember
+AgentMember -> AgentSession -> provider-native session/thread
 Work -> WorkExecutionBinding -> exact AgentSession generation
 identity-first Message -> MessageSubscription -> per-recipient CanonicalMessageDelivery
 NodeDaemon -> durable RuntimeCommand -> provider effect
 ```
 
+`AgentMember` is the sole durable agent identity; `TeamMembership` records only
+participation and never carries identity. The legacy `AgentIdentity` name survives
+solely as a deprecated same-ID read-only projection of `AgentMember`: the
+legacy compatibility edge `AgentIdentity -> AgentSession` names the exact same
+edge as `AgentMember -> AgentSession` above, never a second identity root.
+
 `Mission` is retired (DOC-108): pre-cutover rows remain read-only legacy
 provenance through `harness mission list|show|log show`,
 `AgentTeam.legacy_mission_id`, and the Stage A export. A Team never spans
-machines, and no new Mission, Mission Log, or Wave row may be written on any
-surface.
+machines, and no new legacy Mission, Mission Log, or Wave row may be written
+on any surface.
 `NodeDaemonLease` is machine-scoped authority for all local Teams across
 registered Execution Spaces; each machine has one machine-scoped NodeDaemon and
 the lease is never scoped to one Execution Space.
@@ -71,10 +77,9 @@ NodeDaemon and AgentSession generations. Messages, Work delivery, and runtime
 control are separate planes and cannot impersonate one another.
 Cross-Team responsibility uses explicit WorkDelegation rather than parent/child
 Team topology. AgentMember is the one durable organization-agent identity.
-Global Work (DOC-106; formerly the
-Company Work aggregate) is a
-read-only aggregate over authoritative TeamWork and must never regain a second
-task ledger or mutation path. Repository self-hosting remains the first
+Global Work (DOC-106) is a read-only aggregate over authoritative TeamWork and
+must never regain a second task ledger or mutation path; it replaced the
+former Company Work aggregate. Repository self-hosting remains the first
 execution-foundation scenario.
 
 ## Hard Invariants
@@ -167,15 +172,18 @@ doc carries the contract behind each rule.
    remain internal execution aids. Provider-native or chat-side subagents are
    implementation details of whoever invoked them; the harness must not claim
    lifecycle control it does not have.
-10. **Honest capability claims.** Company OS contracts are additive and still
-    being implemented; do not claim planned objects or fields exist until
-    schemas, stores, APIs, and acceptance checks prove them. Keep the
-    design-contract vs implemented-schema distinction explicit. In particular,
+10. **Honest capability claims.** The execution-foundation contract set —
+    AgentTeam, TeamMembership, AgentMember, AgentSession, Work, Message, and
+    RuntimeCommand — is the only contract set you may cite as shipped, and
+    only where schemas, stores, APIs, and acceptance checks prove the specific
+    object or field. Do not claim planned objects or fields exist before that
+    proof, and keep the design-contract vs implemented-schema distinction
+    explicit. In particular,
     AgentTeam authority is flat, and every
     Team has immutable `node_id` placement under one machine-scoped NodeDaemon.
     The unified Work kernel is the shipped authority: do not
-    create a second organization-agent identity or recreate a
-    Company task ledger, migration fallback, or dual-write Work path.
+    create a second organization-agent identity or recreate a retired
+    company-scoped task ledger, migration fallback, or dual-write Work path.
 11. **Skill optionality.** Skills are optional capabilities, never the
     authority for product architecture or Lead behavior. Do not load a skill
     merely because you are working in this repository; canonical docs, schemas,

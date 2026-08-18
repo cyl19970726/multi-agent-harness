@@ -23,7 +23,7 @@ New CLI, HTTP, and MCP creation accepts the latter two overrides. With a
 registered project, each override must be the canonical project root or a Git
 worktree top level whose canonical Git common directory matches the project.
 Provider spawn resolves `worktree_ref > execution_root > project_root` and
-never falls back to an Execution Space or Company Store. The internal
+never falls back to an Execution Space or the legacy Company Store. The internal
 `ProjectContext` adapter may still carry a compatibility store locator, but it
 does not own native coordination writes.
 

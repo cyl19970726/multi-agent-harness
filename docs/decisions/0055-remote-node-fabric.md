@@ -7,13 +7,14 @@
 
 ## Decision
 
-1. AgentFirm has one logical Company Control Plane. Each machine retains the
+1. AgentFirm has one logical Fabric Control Plane. Each machine retains the
    existing immutable ExecutionNode identity and one current NodeDaemonLease.
-   `CompanyNode.id == ExecutionNode.id`; NodeGatewayLease is only a child of
-   the exact NodeDaemonLease generation.
+   The former `CompanyNode` name is retired: it was always the same row, under
+   the rule `CompanyNode.id == ExecutionNode.id`. NodeGatewayLease is only a
+   child of the exact NodeDaemonLease generation.
 2. Nodes initiate outbound TLS 1.3 mTLS WSS to the Control Plane. They expose
    no inbound collaboration listener and use no peer-to-peer route.
-3. Company-scoped FabricStore `RoutedOperation`, `RouteAttempt`, and
+3. Firm-scoped FabricStore `RoutedOperation`, `RouteAttempt`, and
    `RouteReceipt` are the sole cross-Node route truth. MessageRouteJournal may
    only project FabricStore read-only for cross-Node delivery.
 4. RouteAttempt is transport evidence only. Only a generation-fenced target
@@ -26,7 +27,7 @@
    NodeDaemon dispatch.
 6. Source authority is closed to `node | control_plane`. Wire bytes use frozen
    protocol, schema, and deterministic canonical-JSON versions.
-7. `firm-store` owns Company Control Plane and machine-local Fabric roots.
+7. `firm-store` owns Fabric Control Plane and machine-local Fabric roots.
    Local pre-acceptance outbox, target inbox, and application result do not
    compete with FabricStore route truth.
 

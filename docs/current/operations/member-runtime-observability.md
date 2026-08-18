@@ -36,7 +36,7 @@ live state and is never replayed or evidence.
 | Did a Member pull ready Work itself? | atomic `claimed` WorkEvent plus successful bound-runtime command result; no loopback delivery |
 | Did the Member accept responsibility? | Work `claimed` or `started` event, not WorkDelivery state |
 | Who owns live control? | latest active `TeamSupervisorLease` generation and owner heartbeat |
-| Who sent the input? | immutable Message sender Actor plus bound AgentIdentity/AgentSession; never a caller-supplied display identity |
+| Who sent the input? | immutable Message sender Actor plus bound AgentMember/AgentSession; never a caller-supplied display identity |
 | Is a delivery attempt active? | latest queued/claim/provider-receipt/failure projection |
 | Is the runtime executable? | provider-process health, endpoint, protocol, and delivery probes |
 | What is the agent doing? | on-demand provider-native activity projection |
@@ -53,7 +53,7 @@ Durable Harness data:
 
 - runtime identity and health;
 - current Team Supervisor generation, owner locator/heartbeat, reconnect state,
-  authenticated Message sender AgentIdentity/Session, subscriptions, delivery
+  authenticated Message sender AgentMember/Session, subscriptions, delivery
   claims/provider receipts/failures, and
   canonical per-recipient `CanonicalMessageDelivery`;
 - TeamRun `execution_root`, optional member `provider_cwd_hint`, and the launch-time
