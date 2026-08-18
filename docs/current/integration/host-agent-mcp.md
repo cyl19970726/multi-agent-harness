@@ -218,10 +218,11 @@ Member native session
   -> Host sends a causation-linked answer/review/acceptance
 ```
 
-Codex and Claude do not own separate mailbox Skills. Both use the canonical,
-compatibility-named `orchestrate-mission-waves` Host contract and
-`collaborate-as-agent-team-member` Member contract; app-server versus Agent SDK
-differences remain Adapter capabilities, not different team semantics.
+Codex and Claude do not own separate mailbox Skills. Both use the canonical
+`collaborate-as-agent-team-member` Member contract (the historical
+`orchestrate-mission-waves` Host skill was archived by DOC-108); app-server
+versus Agent SDK differences remain Adapter capabilities, not different team
+semantics.
 
 Stable external Agent mail uses `agent route-inbox` and a
 `CanonicalMessageDelivery` to bind one immutable Message and recipient

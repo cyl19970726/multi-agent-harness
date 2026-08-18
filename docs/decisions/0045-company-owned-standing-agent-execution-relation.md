@@ -6,7 +6,7 @@
 > current authority. See `docs/current/product/prd.md` and
 > `docs/current/architecture/architecture-map.md`.
 
-Status: active; Agent Team responsibility projection amended by ADR 0050
+Status: superseded (DOC-108); was: active; Agent Team responsibility projection amended by ADR 0050
 
 ## Decision
 

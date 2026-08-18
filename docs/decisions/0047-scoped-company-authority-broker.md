@@ -7,7 +7,7 @@
 > `docs/current/architecture/architecture-map.md`.
 
 ```text
-status: accepted target contract; Agent Team execution chain amended by ADR 0050; implementation pending
+status: superseded (DOC-108); was: accepted target contract; Agent Team execution chain amended by ADR 0050; implementation pending
 date: 2026-07-31
 owner_role: company-authority-architecture
 ```

@@ -77,15 +77,15 @@ Kimi plugin installer; do not claim it is globally installed today.
 On clients that support command manifests, the command basenames are:
 
 ```text
-/star-harness:mission-new
 /star-harness:team-start
 /star-harness:team-status
-/star-harness:new-run
 /star-harness:status
 /star-harness:dashboard
 ```
 
-The last three preserve the historical command basenames. The retired
+The historical `mission-new` and `new-run` commands were removed with the
+DOC-108 Mission retirement. `status` and `dashboard` preserve their historical
+command basenames. The retired
 `agent-team` namespace cannot remain registered by the new `star-harness`
 plugin id without installing a second compatibility plugin, which this package
 intentionally avoids so Skills and hooks have one owner.

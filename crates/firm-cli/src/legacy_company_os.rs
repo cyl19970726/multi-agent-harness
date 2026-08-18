@@ -51,6 +51,8 @@ pub struct ExportSummary {
     pub bytes: u64,
     pub files: usize,
     pub excluded_locations: u64,
+    #[serde(default)]
+    pub uncontracted_ledgers: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +63,8 @@ pub struct VerifySummary {
     pub ledgers_present: u64,
     pub rows: u64,
     pub files: usize,
+    #[serde(default)]
+    pub uncontracted_ledgers: u64,
     pub restore_read: String,
 }
 
@@ -635,8 +639,10 @@ pub fn export_archive(firm_home: &Path, output: &Path) -> Result<ExportSummary, 
     let mut total_rows = 0_u64;
     let mut total_bytes = 0_u64;
     let mut excluded_locations = 0_u64;
+    let mut uncontracted_ledgers = 0_u64;
     for store in &stores {
         let archived = archive_store(store, &staging.path, &mut files)?;
+        uncontracted_ledgers += archived.uncontracted_ledgers.len() as u64;
         ledgers_present += archived.ledgers.iter().filter(|l| l.present).count() as u64;
         total_rows += archived.ledgers.iter().map(|l| l.rows).sum::<u64>();
         total_bytes += archived.ledgers.iter().map(|l| l.bytes).sum::<u64>();
@@ -708,6 +714,7 @@ pub fn export_archive(firm_home: &Path, output: &Path) -> Result<ExportSummary, 
         bytes: total_bytes,
         files: manifest.files.len(),
         excluded_locations,
+        uncontracted_ledgers,
     })
 }
 
@@ -927,6 +934,34 @@ pub fn verify_archive(archive: &Path) -> Result<VerifySummary, String> {
                 ));
             }
         }
+        // The uncontracted audit list must be internally consistent: names
+        // only, top-level `*.jsonl`, and disjoint from both the ledger
+        // contract and the exclusion contract — otherwise a contracted or
+        // excludable file could be laundered into the "current surface"
+        // bucket where nothing else checks it.
+        for name in &store.uncontracted_ledgers {
+            if name.contains('/') || name.contains('\\') || !name.ends_with(".jsonl") {
+                return Err(format!(
+                    "store {} uncontracted entry is not a top-level jsonl name: {name}",
+                    store.id
+                ));
+            }
+            if LEDGER_CONTRACT.iter().any(|c| c.ledger == name.as_str()) {
+                return Err(format!(
+                    "store {} lists a contracted ledger as uncontracted: {name}",
+                    store.id
+                ));
+            }
+            if exclusion_for_name(name, true)
+                .or_else(|| exclusion_for_name(name, false))
+                .is_some()
+            {
+                return Err(format!(
+                    "store {} lists an excludable location as uncontracted: {name}",
+                    store.id
+                ));
+            }
+        }
     }
 
     // Totals must recompute exactly from the store sections.
@@ -974,6 +1009,11 @@ pub fn verify_archive(archive: &Path) -> Result<VerifySummary, String> {
         ledgers_present: manifest.totals.ledgers_present,
         rows: restored_rows,
         files: manifest.files.len(),
+        uncontracted_ledgers: manifest
+            .stores
+            .iter()
+            .map(|s| s.uncontracted_ledgers.len() as u64)
+            .sum(),
         restore_read: "verified".into(),
     })
 }

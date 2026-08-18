@@ -7,7 +7,7 @@
 > `docs/current/architecture/architecture-map.md`.
 
 **Date:** 2026-08-05
-**Status:** accepted
+**Status:** superseded (DOC-108); was: accepted
 **Spec:** docs/current/company-os/ai-first-docs-spec.md
 
 ## Decision

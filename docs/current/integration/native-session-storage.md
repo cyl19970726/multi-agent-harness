@@ -132,6 +132,11 @@ UI merge
   -> native unavailable state does not erase Harness records
 ```
 
+The merged Team/Workspace presentation is a
+joined read model, not a transcript database: it is rebuilt from Harness
+coordination rows plus bounded provider-native reads, and is never persisted
+as a second history.
+
 The backend performs native reads so provider paths and credentials do not leak
 to browser code. The current response exposes `truncated` rather than a cursor;
 refresh/reconnect rebuilds the projection directly from provider storage.

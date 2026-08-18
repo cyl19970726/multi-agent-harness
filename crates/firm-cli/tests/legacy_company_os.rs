@@ -139,6 +139,14 @@ fn verify_args(archive: &Path) -> Vec<String> {
 fn export_then_verify_round_trips_all_store_kinds() {
     let home = TempHome::new("legacy-company-os-round-trip");
     seed_home(&home);
+    // A current-surface stray must surface in the manifest's uncontracted
+    // audit list instead of being silently invisible.
+    let company_store = home.firm_home().join("companies/acme");
+    std::fs::write(
+        company_store.join("current_surface.jsonl"),
+        b"{\"id\":\"w\"}\n",
+    )
+    .unwrap();
     let archive = home.base().join("archive-v1");
 
     let output = run(&home, home.base(), &export_args(&archive));
@@ -146,6 +154,7 @@ fn export_then_verify_round_trips_all_store_kinds() {
     let summary: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(summary["format"], "legacy-company-os-v1");
     assert_eq!(summary["stores"], 6);
+    assert_eq!(summary["uncontracted_ledgers"], 1);
     // company 2 + space 3 + project 2 + repo-local 1 present ledgers.
     assert_eq!(summary["ledgers_present"], 8);
     assert_eq!(summary["rows"], 9);
@@ -172,6 +181,15 @@ fn export_then_verify_round_trips_all_store_kinds() {
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(archive.join("manifest.json")).unwrap()).unwrap();
     let stores = manifest["stores"].as_array().unwrap();
+    let acme = stores
+        .iter()
+        .find(|s| s["id"] == "company-acme")
+        .expect("company store in manifest");
+    assert_eq!(
+        acme["uncontracted_ledgers"],
+        serde_json::json!(["current_surface.jsonl"]),
+        "the current-surface stray must be audited by name"
+    );
     let ids: Vec<&str> = stores.iter().map(|s| s["id"].as_str().unwrap()).collect();
     assert_eq!(
         ids,
@@ -335,6 +353,26 @@ fn verify_rejects_tampered_and_missing_archives_offline() {
     let missing = home.base().join("missing-archive");
     let verify = run(&home, home.base(), &verify_args(&missing));
     assert!(!verify.status.success());
+
+    // Laundering a contracted ledger into the uncontracted audit list must be
+    // rejected: re-export cleanly, then tamper only the manifest field.
+    let archive2 = home.base().join("archive-launder");
+    let output = run(&home, home.base(), &export_args(&archive2));
+    assert!(output.status.success(), "export failed: {output:?}");
+    let manifest_path = archive2.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["stores"][0]["uncontracted_ledgers"] =
+        serde_json::json!(["company_os_documents.jsonl"]);
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    let verify = run(&home, home.base(), &verify_args(&archive2));
+    assert!(!verify.status.success());
+    assert!(String::from_utf8_lossy(&verify.stderr)
+        .contains("lists a contracted ledger as uncontracted"));
 }
 
 #[test]

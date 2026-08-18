@@ -58,9 +58,9 @@ claude plugin install star-harness@multi-agent-harness --scope user
 ```
 
 Start a new task/session, then verify that `star-harness` is enabled and that
-the `orchestrate-mission-waves` compatibility-named skill and
-`collaborate-as-agent-team-member` skill
-are visible. The bundled MCP entry runs `firm mcp`, so the `firm` binary
+the `collaborate-as-agent-team-member` skill is visible (the historical
+`orchestrate-mission-waves` Host skill was archived by DOC-108 and is no
+longer shipped). The bundled MCP entry runs `firm mcp`, so the `firm` binary
 must be on `PATH`.
 
 The separate `star-workflow` plugin remains available for Dynamic Workflow:

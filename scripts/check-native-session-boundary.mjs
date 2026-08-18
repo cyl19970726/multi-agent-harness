@@ -24,6 +24,7 @@ const requirements = new Map([
       "Provider matrix",
       "sole truth for",
       "does not keep a second provider event history",
+      "joined read model, not a transcript database",
     ],
   ],
   // member-run-focus.md and team-run-war-room.md were retired with the

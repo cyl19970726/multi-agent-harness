@@ -7,7 +7,7 @@
 > `docs/current/architecture/architecture-map.md`.
 
 ```text
-status: active
+status: superseded (DOC-108); was: active
 date: 2026-07-23
 supersedes: none
 amends: 0004 File Store Before Database, 0010 Harness Store Is Canonical, 0027 Company OS Primary Model

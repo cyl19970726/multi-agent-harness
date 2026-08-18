@@ -1908,7 +1908,7 @@
         "npx pnpm@9.15.4 check"
       ],
       "reorgTrigger": "The primary Company OS model, product center, Unified Work boundary, or ADR 0026 supersession boundary changes.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "historical_evidence",
       "implementationState": "partial",
       "truthRefs": [
         {
@@ -1989,7 +1989,7 @@
         "npx pnpm@9.15.4 check"
       ],
       "reorgTrigger": "Page-tier model, CustomPageDefinition/Package boundaries, scoped query/action policy, or standard-view fallback requirements change.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "historical_evidence",
       "implementationState": "partial",
       "truthRefs": []
     },
@@ -2018,7 +2018,7 @@
         "cargo run -q -p firm-cli -- governance check"
       ],
       "reorgTrigger": "Company OS Store, Docs query/search/View/health/diff/export read model, SQLite/PostgreSQL adapter, or canonical write path changes.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "historical_evidence",
       "implementationState": "partial",
       "truthRefs": [
         {
@@ -2052,7 +2052,7 @@
         "cargo run -q -p firm-cli -- governance check"
       ],
       "reorgTrigger": "Docs becomes Human-editor-first, PageDefinition/PagePackage source-of-truth boundaries change, or code-declared page publish gates change.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "historical_evidence",
       "implementationState": "partial",
       "truthRefs": [
         {
@@ -2464,7 +2464,7 @@
         "npx pnpm@9.15.4 acceptance:legacy-retirement"
       ],
       "reorgTrigger": "Mission or Mission Log semantics, Wave retirement, or Legacy Wave read-only compatibility changes.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "historical_evidence",
       "implementationState": "verified",
       "truthRefs": [
         {
@@ -2910,7 +2910,7 @@
         "npx pnpm@9.15.4 check:docs-governance"
       ],
       "reorgTrigger": "AgentMember, MemberRun, Organization projection, or lifecycle ownership semantics change.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "historical_evidence",
       "implementationState": "implemented",
       "truthRefs": [
         {
@@ -2986,7 +2986,7 @@
         "npx pnpm@9.15.4 check:docs-governance"
       ],
       "reorgTrigger": "The decision to adopt or defer scoped Company authority brokerage changes.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "historical_evidence",
       "implementationState": "design_only",
       "truthRefs": []
     },
@@ -3011,7 +3011,7 @@
         "npx pnpm@9.15.4 check:docs-governance"
       ],
       "reorgTrigger": "The decision to adopt or defer the Human-rooted Company Constitution changes.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "historical_evidence",
       "implementationState": "design_only",
       "truthRefs": []
     },
@@ -3402,7 +3402,7 @@
         "cargo run -q -p firm-cli -- governance check"
       ],
       "reorgTrigger": "The Docs page model, revision contract, storage boundary, or blob strategy changes.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "historical_evidence",
       "implementationState": "design_only",
       "truthRefs": []
     },
