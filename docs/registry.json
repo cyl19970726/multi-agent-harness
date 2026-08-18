@@ -3714,7 +3714,7 @@
       "status": "stable",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "canonical Member collaboration contract (source of the plugin mirror)"
+        "canonical Host + Member Agent Team collaboration contract (shared mental model; source of the plugin mirror)"
       ],
       "dependsOn": [],
       "truthRefs": [
@@ -3869,6 +3869,62 @@
       "reviewAfter": "2026-11-18",
       "reorgTrigger": "Provider observation binding, owner boundary, or projection rules change.",
       "authorityClass": "canonical_contract"
+    },
+    {
+      "path": "plugins/star-harness/skills/collaborate-as-agent-team-member/references/host-loop.md",
+      "ownerRole": "product",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Host operating loop (generated mirror of the canonical skill reference)"
+      ],
+      "dependsOn": [
+        "skills/collaborate-as-agent-team-member/SKILL.md"
+      ],
+      "truthRefs": [
+        {
+          "kind": "test",
+          "ref": "scripts/sync-star-harness-plugin-skills.mjs"
+        }
+      ],
+      "machineConsumers": [
+        "scripts/sync-star-harness-plugin-skills.mjs"
+      ],
+      "lastVerifiedWith": [
+        "node scripts/sync-star-harness-plugin-skills.mjs --check"
+      ],
+      "implementationState": "implemented",
+      "reviewAfter": "2026-11-18",
+      "reorgTrigger": "Canonical skill reference changes.",
+      "authorityClass": "implementation_reference"
+    },
+    {
+      "path": "plugins/star-harness/skills/collaborate-as-agent-team-member/references/member-loop.md",
+      "ownerRole": "product",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "Member operating loop (generated mirror of the canonical skill reference)"
+      ],
+      "dependsOn": [
+        "skills/collaborate-as-agent-team-member/SKILL.md"
+      ],
+      "truthRefs": [
+        {
+          "kind": "test",
+          "ref": "scripts/sync-star-harness-plugin-skills.mjs"
+        }
+      ],
+      "machineConsumers": [
+        "scripts/sync-star-harness-plugin-skills.mjs"
+      ],
+      "lastVerifiedWith": [
+        "node scripts/sync-star-harness-plugin-skills.mjs --check"
+      ],
+      "implementationState": "implemented",
+      "reviewAfter": "2026-11-18",
+      "reorgTrigger": "Canonical skill reference changes.",
+      "authorityClass": "implementation_reference"
     }
   ]
 }

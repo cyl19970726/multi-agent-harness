@@ -1,214 +1,164 @@
 ---
 name: collaborate-as-agent-team-member
-description: Use when a persistent Agent Team Member receives, claims, resumes, executes, blocks, or submits shared Work; reads its WorkDelivery and message Inbox; coordinates with the Host or peers; uses provider-native subagents; or survives review and runtime restart. Do not use for Host orchestration or a one-shot internal subagent.
+description: The one Agent Team collaboration contract for BOTH roles — the Host who orchestrates a durable Team and the persistent Members who execute shared Work. Use whenever an agent creates or runs a Team, decomposes/assigns/reviews/accepts Work, or receives, claims, resumes, executes, blocks, submits Work; reads WorkDelivery or the message Inbox; coordinates Host↔Member or peer↔peer; uses provider-native subagents; or must survive review and runtime restart. The shared mental model in Part I is required reading for both roles — asymmetric mental models are the main way multi-agent collaboration fails.
 ---
 
-# Collaborate As An Agent Team Member
+# Agent Team Collaboration — Host & Member Contract
 
-## Member Workbench projection
+One skill, two roles, one mental model. The Host orchestrates; Members execute.
+Every collaboration failure we have observed in real runs came from the two
+sides holding different models of the same object — a Host assuming "assigned
+means understood", a Member assuming "provider finished means Work done". So
+Part I is identical required context for both roles; Parts II/III are the
+role-specific operating loops; Part IV is one worked example traced from both
+sides.
 
-For local product operation, read `GET
-/v1/views/member-workbench/{member_run_id}` using the authenticated
-AgentMember capability. A different actor must receive `NOT_AUTHORIZED`. The
-view contains outcome Work, messages/deliveries, Workspace/NativeSession health
-and Report/Finding/Failure/Gate history; private execution mechanics are not
-product Work.
+## Part I — Shared mental model (both roles hold this, verbatim)
 
-Own one shared-board Work end to end. This skill is a procedural capability, not
-product authority. You are a durable AgentMember participating through one
-exact active TeamMembership. The machine-local NodeDaemon owns your current
-AgentSession and provider thread; Work responsibility is frozen separately in
-WorkExecutionBinding. MemberRun and Workspace rows are coordination/history
-projections, not provider runtime authority. Your Provider-native subagents are
-implementation details.
+### 1. Who you are: identity is three separate facts
 
-Use the exact `HARNESS_BIN` and identifiers supplied by the collaboration
-envelope. Do not substitute another binary from `PATH` or infer identity from a
-display name.
+```
+AgentMember      durable identity   (Active | Paused | Retired)
+  └─ TeamMembership   participation in ONE Team, with a role
+       role:  Host | Member | Observer
+       state: Invited | Active | Leaving | Inactive
+  └─ AgentSession     runtime       (Cold | Idle | Active | Waiting |
+                                     Interrupted | RecoveryRequired | Closed)
+```
 
-These hard invariants apply to every Host and Member. The full shared text lives in [`skills/shared-references/SKILL.md`](../shared-references/SKILL.md); when a rule appears in both skills, the shared copy is authoritative. The rules below are the Member-specific application.
+You are a durable `AgentMember` acting through exactly one active
+`TeamMembership`. Host is a **role on a membership**, not a different kind of
+being. Identity outlives every run; participation outlives every session;
+sessions outlive every provider turn. Never infer identity from a display
+name; the server resolves your identity — identity/runtime authority is
+server-built, never caller-selected. (`AgentIdentity` is a deprecated same-ID
+read-only compatibility projection of `AgentMember`.)
 
-## Quick Start: First Turn
+### 2. The Team: durable, flat, pinned to one machine
 
-When you wake up as a new member with a Work assignment, the daemon has already
-delivered your Work context and set these env vars. Run these exact commands
-(paste them — do not retype):
+A Team is durable and Mission-less (legacy `legacy_mission_id` provenance is
+read-only history, DOC-108). It lives on exactly one immutable `node_id`.
+Teams are flat peers — no nesting; cross-Team execution is an explicit
+Host-coordinated `WorkDelegation`, never hierarchy. Lifecycle:
+`Active | Inactive | Trashed`; an Active Team has exactly one Active Host
+membership. One machine-scoped NodeDaemon owns every local Team's sessions;
+each Team's live run is fenced by a Supervisor generation — whoever starts the
+run owns the provider transports, everyone else routes controls to the owner.
+
+### 3. Work: the only responsibility authority
+
+Three orthogonal axes, not one long chain:
+
+```
+phase:      Open ──assign/claim──▶ Active ──submit──▶ Review ──Host decides──▶ Closed
+condition:  Normal ⇄ Blocked ⇄ OnHold          (overlay; does not change phase)
+resolution: Accepted | Cancelled | Failed       (exists only at Closed)
+```
+
+- Every change is an ordered, append-only `WorkOperation`/`WorkEvent` — that
+  history is the responsibility record, not chat.
+- One accountable Team per Work; zero or one assignee TeamMembership.
+- Claim/assign/start/submit are **atomic CAS operations with expected
+  versions**. `VERSION_CONFLICT` means refresh and re-read; never retry with a
+  guessed version. `CLAIM_LOST` means someone else owns it; do not perform its
+  side effects.
+- **Provider "completed" is not Work "done."** Submission moves Work to
+  `review`; only explicit Host acceptance moves it to `done`. A green fixture,
+  a delivery receipt, or a provider completion status alone is never
+  acceptance.
+- **Assignment never travels by message.** Work assignment is a Work-module
+  operation; a Message may explain, ask, or announce — it never changes Work
+  owner or status.
+
+### 4. Messages: one authority, honest delivery states
+
+```
+Message (immutable, identity-authored)
+  → MessageSubscription (admission: who may receive what)
+    → CanonicalMessageDelivery (per-recipient state machine, owned by the
+      target NodeDaemon)
+
+Queued → Routed → Claimed → ProviderReceived → Acknowledged
+                └─────────▶ Failed | Expired | Invalidated
+```
+
+- Delivery rows appear **automatically** for admitted recipients — inboxes
+  (Team Inbox, member inbox, Host inbox) are projections of deliveries, never
+  a second ledger.
+- A Team-subject delivery is claimed by one member as an atomic transition on
+  the same row; a stale or duplicate claim has zero side effects.
+- Ordinary mail is injected at the recipient's **next safe provider cycle**;
+  it does not interrupt the current turn. Steer is the separate same-turn
+  control. Offline/Detached recipients keep the delivery honestly Queued — no
+  invented sessions.
+- `informational` intent does not start a provider round by itself; select
+  `response-required` only when an answer or action is genuinely needed. This
+  is what prevents two agents from bouncing acknowledgement mail forever.
+- Transport `Acknowledged` is not a semantic answer. Provider-pausing
+  questions and their answers are correlated Messages with exact ids.
+
+### 5. Truth boundaries (what lives where)
+
+| Truth | Owner |
+| --- | --- |
+| Responsibility, status, evidence refs | Work module (ordered WorkEvents) |
+| Conversation, decisions-as-text | Message → Subscription → Delivery |
+| Transcript, tool calls, thinking | provider-native session (never copied) |
+| Session/runtime state, recovery | NodeDaemon + Supervisor generations |
+| Inboxes, boards, views | projections — rebuildable, never authoritative |
+
+Fail closed on anything you cannot prove: an unacknowledged interrupt stays
+`RecoveryRequired`; an uncertain effect is reconciled, never blindly replayed;
+Work ownership survives process exit.
+
+## Part II — What each role must hold to collaborate well
+
+**A Host cannot orchestrate without:** the roster (which AgentMembers, which
+providers, which permission ceilings, which disjoint owned paths); bounded
+Works with observable completion criteria (a Work a Member cannot verify
+finished is a Work the Host cannot review); the board state (who is idle,
+working, awaiting review — from `board-summary`, not from memory); the review
+discipline (evidence refs, not vibes); and the recovery model (close/reopen
+resumes the exact native session at a higher generation — a dead runtime is
+not lost work).
+
+**A Member cannot execute without:** its own Work context (What / Mental
+Model / Workspace / Boundary / Gates / Evidence — read it fully before side
+effects); its exact identity envelope (`HARNESS_MEMBER_RUN_ID` etc. — never
+substituted); the version of the Work it is mutating; its inbox at safe
+boundaries; and the submission contract (result summary + artifact/check refs
+matching the declared gates).
+
+**Both fail without the shared model above** — that is why it comes first.
+
+## Part III — Operating loops
+
+Role-specific procedure lives in two references; read yours fully before the
+first action of a run:
+
+- Host loop: [references/host-loop.md](references/host-loop.md) — roster
+  design, Work decomposition, create/start, watch without polling, answer
+  correlated questions, review/accept, recovery, teardown.
+- Member loop: [references/member-loop.md](references/member-loop.md) — first
+  turn, claim/start, plan-first, converse, block honestly, submit with
+  evidence, survive restart.
+
+The gate-checked command shapes both roles share:
 
 ```bash
-# 1. See your Work
-"$HARNESS_BIN" team-run work show --work-id "$HARNESS_WORK_ID" --json
-
-# 2. Mark it in progress (version from step 1)
-"$HARNESS_BIN" member work start \
-  --work-id "$HARNESS_WORK_ID" \
-  --expected-version <version-from-step-1> \
-  --idempotency-key "start-$(date +%s)"
-
-# 3. Check for messages from Host or peers
-"$HARNESS_BIN" member inbox --all --json
-
-# 4. Read the board to see other members' status
-"$HARNESS_BIN" team-run board-summary --id "$HARNESS_TEAM_RUN_ID"
-```
-
-## Start From Work, Not Chat
-
-Your Work comes with a mini mental model. Parse it in one pass:
-
-```
-Work context structure (written by Lead):
-┌─ What ──────────┐  ← The problem, in one sentence
-├─ Mental Model ──┤  ← States, invariants, data flow. Study this.
-├─ Workspace ─────┤  ← Your cwd is already set up. Work here.
-├─ Boundary ──────┤  ← Paths to touch / NEVER touch. Respect this.
-├─ Gates ─────────┤  ← Verification gates that must pass. Deliver what
-│                    each gate needs (PR merge, artifacts, checks).
-├─ Evidence ──────┤  ← What counts as done. Deliver this.
-└─────────────────┘
-
-Work criteria (written by Lead):
-  Acceptance checklist. Match every item before submitting.
-```
-
-Before any side effect, read the full Work with:
-
-```bash
-"$HARNESS_BIN" team-run work show --work-id "$HARNESS_WORK_ID" --json
-```
-
-Then confirm these facts from the output:
-
-Read the board and exact Work:
-
-```bash
-"$HARNESS_BIN" team-run work list \
-  --team-run-id "$HARNESS_TEAM_RUN_ID"
-"$HARNESS_BIN" team-run work show \
-  --work-id "$HARNESS_WORK_ID"
-```
-
-The board is the sole responsibility/status authority. TeamMessage is conversation only — see shared hard invariants §1 (no Assignment Message compatibility path) and §4 (messages never change Work state).
-
-For a compact board overview when context is limited:
-
-```bash
-"$HARNESS_BIN" team-run board-summary --id "$HARNESS_TEAM_RUN_ID"
-"$HARNESS_BIN" team-run work list --team-run-id "$HARNESS_TEAM_RUN_ID" --brief
-"$HARNESS_BIN" team-run work list --team-run-id "$HARNESS_TEAM_RUN_ID" --since <cursor>
-```
-
-`board-summary` prints a ≤500-character summary: open/in-progress/blocked/review/done/cancelled counts plus each Member's idle/working/awaiting-review state. `--brief` prints one plain-text line per Work. `--since` takes a monotonic cursor from a prior `list` response and returns only new or updated Works.
-
-## Claim Or Start Exactly One Work
-
-For a ready unassigned Work you are eligible to take, atomically claim it:
-
-```bash
-"$HARNESS_BIN" member work claim \
-  --work-id <work-id> \
-  --expected-version <latest-version> \
+# Host creates an assigned Work (host_assign requires an explicit owner):
+harness team-run work create \
+  --team-run-id <team-run-id> \
+  --title "<one bounded responsibility>" \
+  --context "<why it exists; mental model; boundary paths>" \
+  --completion-criteria "<observable criteria a reviewer can check>" \
+  --claim-mode host_assign \
+  --owner-member-run-id <member-run-id> \
   --idempotency-key <stable-command-key>
-```
 
-For Work already assigned to you, explicitly start it:
-
-```bash
-"$HARNESS_BIN" member work start \
-  --work-id "$HARNESS_WORK_ID" \
-  --expected-version "$HARNESS_WORK_VERSION" \
-  --idempotency-key <stable-command-key>
-```
-
-Refresh the Work after any `VERSION_CONFLICT`. Never retry with a guessed
-version. `CLAIM_LOST` means another Member owns the latest Work; do not perform
-its side effects.
-
-A successful self-claim is already responsibility possession inside this
-bound MemberRun/native turn. It records the `claimed` WorkEvent and returns the
-new Work version; it does not send a WorkDelivery back to yourself. After a
-runtime restart, continue the same `in_progress` Work only through the same
-stable AgentMember, active TeamMembership, exact WorkExecutionBinding, and
-current AgentSession generation. Inspect native history and the Workspace first,
-and never invent a provider receipt. Host assignment,
-resume, request-changes, and rebind are external changes and still arrive as
-WorkDelivery.
-
-V1 permits one active `in_progress` Work per Member unless a concrete capacity
-profile says otherwise. You may own several open Works but must not start two
-top-level cycles in one native session or writable Workspace.
-
-## Own Your Internal Plan
-
-Translate the current Work into your own design, implementation, and verification plan. Provider-native plan/goal features are optional internal aids; they are not Harness state or Host acceptance — see shared hard invariants §8 (no Plan Mode/Gate). When the Host asks for a plan first, reply with concise Markdown in a Work-linked conversation, address revisions, and execute only after the Host says to proceed.
-
-Use the execution driver selected by the Host/adapter — see shared hard invariants §2 (one execution driver per MemberRun). The three drivers are `host_driven` (Harness starts each cycle, return control at safe boundaries), `provider_driven` (use the reviewed native continuation controller and report its terminal reason), and `user_driven` (only for `external_interactive` members).
-
-Use Provider-native subagents for bounded internal lanes. They inherit your Workspace and permission ceiling, return evidence to you, and never become Harness Members or independent reviewers — see shared hard invariants §6.
-
-## Read And Send Work-Linked Conversation
-
-Read actionable mail, or include history when needed:
-
-```bash
-"$HARNESS_BIN" member inbox --json
-"$HARNESS_BIN" member inbox --all --json
-```
-
-Legacy TeamRun send/ACK commands are retired because they let a caller select
-another Member's identity. Author or acknowledge through the authenticated
-Member Role Action (`send_message`, `reply_message`, or `request_decision`)
-exposed by the current server-built view. The server must
-resolve your stable AgentMember, exact current AgentSession generation,
-TeamMembership, Work/Team scope, NodeDaemon generation, and subscription
-cursor; never supply or override those facts from a prompt, browser, or shell.
-
-For a decision-shaped question, address the Host and include the exact Work id,
-decision needed, options, and recommendation. For peer coordination, address
-the peer AgentMember in the same Team without transferring Work. For a reply,
-preserve the server-returned correlation id and use the exact source Message id
-as causation. Acknowledge only the exact current recipient delivery/cursor.
-
-A Message may explain scope, a blocker, a result, or a review decision, but it never changes Work owner/status — see shared hard invariants §4. If conversation creates durable follow-up,
-create a self-owned or eligible unassigned Work explicitly.
-
-Ordinary mail queues until a safe boundary. Member-to-Host mail is durable in
-the Lead Inbox immediately but does not interrupt the Host's current reasoning.
-Peer informational mail does not create a provider cycle by itself; select
-response-required intent only when an answer or action is genuinely required.
-
-Provider-pausing questions and answers are correlated Messages. Permissions are
-frozen at AgentSession start and never become a second workflow. This is not ordinary
-mail. A tool status of `completed` is not the semantic answer.
-
-## Block Work Honestly
-
-When safe progress is impossible, preserve ownership and record the blocker:
-
-```bash
-"$HARNESS_BIN" member work block \
-  --work-id "$HARNESS_WORK_ID" \
-  --expected-version <latest-version> \
-  --reason "<specific blocker and required decision>" \
-  --idempotency-key <stable-command-key>
-```
-
-The Supervisor-bound Member Role Action derives your exact MemberRun and
-AgentSession scope. Never supply or override a sender or Member identity.
-
-Then send one concise linked Message with options and recommendation when Human,
-Host, or peer input is useful. Do not repeatedly resend or create duplicate
-Work. When the Host resolves the blocker or requests changes, refresh the Work
-and continue in the same MemberRun, Workspace, and native session.
-
-## Create Follow-Up Work Without Assigning Peers
-
-You may create self-owned or unassigned Work, and child Work beneath Work you
-own. Do not force assignment to a same-level peer.
-
-```bash
-"$HARNESS_BIN" team-run work create \
-  --team-run-id "$HARNESS_TEAM_RUN_ID" \
-  --as-member-run-id "$HARNESS_MEMBER_RUN_ID" \
+# Either role creates an open Work for eligible claim:
+harness team-run work create \
+  --team-run-id <team-run-id> \
   --title "<follow-up responsibility>" \
   --context "<why it exists and relevant evidence>" \
   --completion-criteria "<observable completion criteria>" \
@@ -216,185 +166,112 @@ own. Do not force assignment to a same-level peer.
   --idempotency-key <stable-command-key>
 ```
 
-If another Team should own a substantial result, report that finding to your
-Host with the proposed boundary and evidence. The Host may create an explicit
-`WorkDelegation` to another flat Team. You remain accountable for integrating
-the delegated result and submitting your source Work; target completion never
-auto-completes the source Work — see shared hard invariants §7.
+Legacy TeamRun send/ACK commands are retired because they let a caller select
+another identity. Author and acknowledge only through the authenticated Role
+Actions of the current server-built view.
 
-When the runtime presents `SHARED WORK AVAILABLE`, treat it as a board-derived
-discovery hint, not ownership. Refresh the Work and claim it with the bound
-MemberRun before acting. A lost claim means another Member won; do not duplicate
-effects. A continuation prompt is valid only for your current `in_progress`
-Work; never keep executing a Work already in `review`, `blocked`, `done`, or
-`cancelled`.
+## Part IV — Worked example: one Work, both sides
 
-## Submit Work, Not A Handoff Message
+The scenario: Host `hana` (Codex app-server) runs Team `builders` with Member
+`kiwi` (Kimi ACP). The task: add a laundering-rejection check to the legacy
+exporter's `verify`.
 
-- **RULE ZERO: done = merged PR with green CI.** Code-complete without commit,
-  push, and PR is NOT delivery. File changes sitting in a worktree or workspace
-  are work-in-progress, not a submission. Only a merged PR with passing CI
-  proves delivery for code and doc changes.
-- **Submissions MUST carry artifact_refs and check_refs.** Every `work submit`
-  must include `--artifact-ref` and `--check-ref` when the Work's declared
-  gates (`artifact-exists`, `check-pass`) or completion criteria require them.
-  Use `--artifact-ref <PR URL>` to attach a PR link when required by a gate.
-  These are not optional decoration — they are
-  the verifiable evidence the Host inspects during review.
-- **Non-trivial work defaults to plan-first.** Before implementing a multi-file
-  change or a design decision, present your plan as an ordinary Markdown
-  message to the Host and wait for approval before coding. Do NOT use
-  EnterPlanMode or ExitPlanMode — they block you indefinitely in headless
-  team context (ADR 0039: Harness has no Plan Gate). Implementation without
-  a reviewed plan on non-trivial work is treated as un-reviewed delivery.
-- **Never go silent.** When blocked, send a Work-linked message naming the
-  specific blocker and the decision needed. Do not spin silently in a
-  provider-native loop waiting for resolution — the Host cannot see a silent
-  stall.
-- **Worktree discipline.** Create your own worktree OUTSIDE the repository
-  directory (e.g. `../multi-agent-harness-audit`). Never edit files in the
-  main checkout or in `.worktrees/`. Report the absolute worktree path, branch,
-  and commit in your submission.
-
-- **Submission format.** Every `work submit --result-summary` must follow this
-  format so the Host can review efficiently:
-
-  ```
-  ## RESULT
-  done | blocked | failed
-
-  ## SUMMARY
-  <=10 lines of what was accomplished
-
-  ## COVERAGE
-  - bullet list of what the output covers
-  - each major area addressed
-
-  ## KEY DECISIONS
-  - decisions made and why (if applicable)
-
-  ## WORKTREE
-  Absolute path, branch, commit hash
-
-  ## ARTIFACTS
-  - PR URL (if code/docs changed)
-  - CI run URL (if applicable)
-  ```
-
-  The `--result-summary` should be pasted from this template, not re-typed.
-  The `## WORKTREE` section tells Host where to find your changes.
-  After Host accepts, the review feedback is in the work's `result_summary`
-  and the PR comments — check both.
-
-When criteria are met, refresh the latest Work version and submit a durable
-result summary. Add artifact and check refs when the completion criteria or
-Host review requires them; they are not universal submission fields:
-
-```bash
-"$HARNESS_BIN" member work submit \
-  --work-id "$HARNESS_WORK_ID" \
-  --expected-version <latest-version> \
-  --result-summary "<concise result summary>" \
-  --candidate-revision "<exact revision>" \
-  --idempotency-key <stable-command-key>
+```
+ HOST hana                                MEMBER kiwi
+ ─────────────────────────────────────    ─────────────────────────────────────
+ 1. work create                           (idle; NodeDaemon holds session)
+    --claim-mode host_assign
+    --owner-member-run-id kiwi-run
+    --completion-criteria "verify exits
+    nonzero on a manifest that lists a
+    contracted ledger as uncontracted;
+    test proves it; PR opened, CI green"
+        │
+        └─▶ WorkDelivery reaches kiwi ──▶ 2. wakes with HARNESS_WORK_ID set:
+                                             work show → reads What/Boundary/
+                                             Gates; work start --expected-
+                                             version 3 → phase Active
+                                          3. plan-first: sends Host ONE
+                                             response-required Message:
+                                             "plan: disjointness check in
+                                             verify_archive + tamper test.
+                                             OK?"  (work-linked, correlated)
+ 4. inbox at safe boundary: reads plan,
+    replies on the SAME correlation id:
+    "proceed; keep names-only"
+        │                                 5. implements in own worktree
+        │                                    (outside repo checkout); runs
+        │                                    the test; commits; opens PR
+        │                                 6. hits a doubt mid-way → does NOT
+        │                                    go silent and does NOT block yet:
+        │                                    informational Message "heads-up:
+        │                                    also found excluded-name overlap
+        │                                    — created team_claim follow-up
+        │                                    Work W-42, not assigning it"
+ 7. board-summary shows kiwi=working,
+    one new open Work W-42. Host does
+    NOT poll in a loop — waits on
+    events/notifications.
+                                          8. work submit --expected-version 5
+                                             --result-summary "## RESULT done…
+                                             ## WORKTREE …"
+                                             --artifact-ref <PR URL>
+                                             --check-ref "cargo test -p
+                                             firm-cli --test legacy… exit 0"
+        │◀── Work → Review ──────────────────┘
+ 9. reviews EVIDENCE: opens the PR diff,
+    reruns the named check, verifies the
+    criteria line by line.
+10a. accept → phase Closed,
+     resolution Accepted.            OR
+10b. request-changes with reasons →
+     phase back to Active; kiwi
+     continues in the SAME MemberRun,
+     workspace, and native session —
+     no new identity, no lost state.
+11. Run teardown: TeamRun completion
+    atomically REJECTS any non-terminal
+    Work — W-42 must be closed,
+    reassigned, or cancelled first.
 ```
 
-When required, add one or more `--artifact-ref <artifact-or-path>` and
-`--check-ref "<command and actual result>"` arguments to that command.
-Attach a GitHub PR as its full URL in `--artifact-ref`.
+What made this work — the six load-bearing habits: assignment traveled as a
+Work operation (never prose); every mutation carried an expected version; the
+plan cost one correlated round-trip instead of a wrong implementation; the
+side-discovery became an unassigned Work instead of scope creep or a peer
+order; the submission carried verifiable evidence so review was a check, not
+an argument; and request-changes reused the same session instead of spawning
+a fresh agent that would re-learn everything.
 
-Submission moves Work to `review`; it does not imply Host acceptance. Send an optional linked Message only when review needs explanation. Remain available for `request-changes`; update the same Work and resubmit. Only Host acceptance moves Work to `done` — see shared hard invariants §5.
+## Anti-patterns (each observed in a real run)
 
-## Respect Workspace, Permissions, And Controls
+- **Polling loops.** `sleep 2` + status in a loop burns the Host's context and
+  budget; use board cursors, waits, and event notifications.
+- **Ack ping-pong.** Two agents bouncing acknowledgement-only mail; use
+  informational intent.
+- **Assignment by message.** "Please take W-7" in chat changes nothing and
+  desynchronizes the board.
+- **Trusting provider completion.** A member's provider saying "done" without
+  submitted evidence; Work stays Active until submit, Review until accept.
+- **Silent stall.** A blocked member spinning in a provider loop; block the
+  Work with a reason and send one decision-shaped Message.
+- **Shared-workspace clobber.** Two agents in one worktree; uncommitted state
+  is not protected — disjoint owned paths, own worktrees, commit early.
+- **Second inbox.** Any private "unread list" ledger drifts from delivery
+  truth; inboxes are projections of CanonicalMessageDelivery, full stop.
 
-The trusted-development Team profile may grant full tool access so ordinary
-authorization does not stall unattended work. It is a ceiling, not permission
-to touch unrelated paths or perform protected external effects.
+## Envelope and provenance
 
-Choose your own same-repository worktree when isolation helps. Report the
-absolute worktree, branch, commit, checks, and conflicts. Coordinate shared-file
-changes before editing. Do not deploy, merge protected branches, spend money,
-submit legal actions, change permissions, expose credentials, or perform
-destructive external actions without the applicable authority.
+The runtime injects the collaboration envelope (`HARNESS_BIN`,
+`HARNESS_TEAM_RUN_ID`, `HARNESS_MEMBER_RUN_ID`, `HARNESS_SPACE`,
+`HARNESS_PROJECT`, `HARNESS_PROJECT_ID`, and `HARNESS_WORK_ID`/`_VERSION` when
+Work is delivered). These bind identity and scope; bound commands reject
+caller-selected identity. Use the exact `HARNESS_BIN` — never another binary
+from `PATH`.
 
-- Steer changes a current turn only when the Provider acknowledges it.
-- Queued Message affects the next safe boundary, not the current turn.
-- Interrupt stops one current turn; it does not close the Member.
-- Close freezes this Team's MemberRun and cancels its current provider turn;
-  it does not close the machine-owned AgentSession or release Work bindings.
-- Reopen resumes the exact compatible native session under a new runtime
-  generation after delivery reconciliation.
-- Retire is permanent; unfinished Work must be reassigned or cancelled.
-
-Runtime control never accepts a Member-authored capability, permission
-envelope, provider profile, AgentSession object, or target placement. The
-server resolves exact self or exact machine Operator/NodeDaemon authority and
-the AgentMember ceiling. A Team Host cannot control the global Session;
-TeamMembership join/leave also cannot create or close it. StopSession fails
-closed while any active WorkExecutionBinding references the Session. If a
-provider is unavailable or cannot prove the native
-interrupt/close acknowledgement, the command fails closed or remains
-`RecoveryRequired`; never report it as completed or retry an unknown effect.
-
-Work ownership survives process exit — see shared hard invariants §9. Never clear ownership, duplicate side effects, or reconstruct a session from Harness messages after a crash.
-
-## Before Returning Control
-
-Verify that:
-
-- the latest Work version and status match the action you actually performed;
-- questions and peer notes are Messages linked with `work_id` when relevant;
-- durable follow-up is a Work, not prose hidden in chat;
-- blockers have structured reasons;
-- submission includes a result summary, any artifact/check refs required by
-  its criteria, and no false claim of Host acceptance;
-- Provider-native records remain the only transcript/tool/turn truth (shared hard invariants §3); and
-- your MemberRun stays available until the Host requests changes, accepts,
-  reassigns, closes, or retires it.
-
-## Flat AgentTeam Contract
-
-The organization contains multiple flat AgentTeams. A Team is durable and
-Mission-less: it belongs to no Mission and has one immutable Node placement.
-Members never create nested Teams. Cross-Team execution
-is an explicit Host-coordinated WorkDelegation, not hierarchy.
-
-`AgentMember` is your one durable agent identity and `TeamMembership` is only
-your participation in a Team; there is no second durable agent identity or
-execution join. The `AgentIdentity` name is a deprecated same-ID read-only
-compatibility projection of `AgentMember`.
-
-## Collaboration Envelope
-
-The harness injects these environment variables when starting your runtime. The variables bind your identity and scope; never infer identity from a display name:
-
-| Variable | Presence | Meaning |
-| --- | --- | --- |
-| `HARNESS_TEAM_RUN_ID` | Yes | The TeamRun you belong to |
-| `HARNESS_MEMBER_RUN_ID` | Yes | Your own run identity — validated on every member Work command |
-| `HARNESS_BIN` | Yes | Absolute path to the harness CLI to use |
-| `HARNESS_SPACE` | Yes | Current Execution Space |
-| `HARNESS_PROJECT` | Yes | Active Project Binding path |
-| `HARNESS_PROJECT_ID` | Yes | Active Project Binding id |
-| `HARNESS_WORK_ID` | When delivered with Work | The Work id for your current delivery |
-| `HARNESS_WORK_VERSION` | When delivered with Work | The Work version for your current delivery |
-
-`HARNESS_MEMBER_RUN_ID`, `HARNESS_TEAM_RUN_ID`, and the live Supervisor
-capability token are validated on every `member inbox`, `member work`, and
-`member message` command. These bound commands do not accept a caller-selected
-Member identity.
-
-**Legacy Wave note.** The word **wave** in a batch label is only a planning
-rhythm, not a governed object. The historical `Wave`, `WaveStatus`, and
-`wave_ids` are retired (DOC-108, and ADR 0051 before it): no writer exists on
-any surface, and no Member command reads them. Never create or mutate a Wave,
-or use capitalized `Wave` as an object name in new work.
-
-**Legacy Mission note.** Teams are durable and Mission-less. `Mission`, its
-append-only Mission Log, and their scoping of Work are retired history
-(DOC-108); a pre-cutover Team may still carry a read-only
-`legacy_mission_id` provenance field, which is not a scope.
-
-When developing Star Harness itself and the product contract is in question,
-read canonical repository files `docs/current/product/agent-team-works.md` and
-`docs/decisions/0050-agent-team-work-board-and-message-boundary.md`.
+Shared hard invariants live in
+[`skills/shared-references/SKILL.md`](../shared-references/SKILL.md); when a
+rule appears in both, the shared copy is authoritative. When developing Star
+Harness itself, product doctrine is canonical in Notion (see
+`docs/current/documentation-governance.md`, "Authority boundary"); the
+repository files carry the implementation-bound remainder.
