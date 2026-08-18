@@ -3722,6 +3722,62 @@
           "ref": "schemas/remote-fabric/schema-bundle.v1.json"
         }
       ]
+    },
+    {
+      "path": "skills/collaborate-as-agent-team-member/SKILL.md",
+      "ownerRole": "product",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "canonical Member collaboration contract (source of the plugin mirror)"
+      ],
+      "dependsOn": [],
+      "truthRefs": [],
+      "machineConsumers": [],
+      "reorgTrigger": "skill contract changes",
+      "authorityClass": "canonical_contract"
+    },
+    {
+      "path": "skills/shared-references/SKILL.md",
+      "ownerRole": "product",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "canonical shared hard-invariants reference (source of the plugin mirror)"
+      ],
+      "dependsOn": [],
+      "truthRefs": [],
+      "machineConsumers": [],
+      "reorgTrigger": "skill contract changes",
+      "authorityClass": "canonical_contract"
+    },
+    {
+      "path": "docs/decisions/0040-native-host-inbox-delivery.md",
+      "ownerRole": "architecture",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "kept architecture decision (DOC-16 Keep row)"
+      ],
+      "dependsOn": [],
+      "truthRefs": [],
+      "machineConsumers": [],
+      "reorgTrigger": "decision superseded",
+      "authorityClass": "canonical_contract"
+    },
+    {
+      "path": "docs/decisions/0053-finance-contract-layer-retirement.md",
+      "ownerRole": "architecture",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "kept architecture decision (DOC-16 Keep row)"
+      ],
+      "dependsOn": [],
+      "truthRefs": [],
+      "machineConsumers": [],
+      "reorgTrigger": "decision superseded",
+      "authorityClass": "canonical_contract"
     }
   ]
 }

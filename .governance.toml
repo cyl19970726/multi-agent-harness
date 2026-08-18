@@ -101,6 +101,15 @@ terms = [
     "Finance module",
     "Mission/Wave orchestration",
     "Company OS Docs",
+    "CompanyOS",
+    "Company OS",
+    "Company Store",
+    "Company Work",
+    "Company Approval",
+    "Approval ledger",
+    "Mission Log",
+    "AgentIdentity",
+    "StandingAgent",
 ]
 # Finance/CompanyOS vocabulary added when DOC-108 decommissioned the
 # append-only writers (issue #323). Terms are phrase-scoped (not bare
