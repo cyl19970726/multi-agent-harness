@@ -13,8 +13,8 @@ It installs experience adapters only:
   Host was busy; and
 - Dashboard deep-link guidance.
 
-Product architecture, Works/WorkDelivery, messages, Mission records and the
-append-only Mission Log, TeamRun lifecycle, and provider capability review
+Product architecture, Works/WorkDelivery, messages, the append-only WorkEvent
+lineage, TeamRun lifecycle, and provider capability review
 remain in Harness. Provider transcripts, tool activity, and subagent history
 remain in provider-native sessions.
 
@@ -77,15 +77,15 @@ Kimi plugin installer; do not claim it is globally installed today.
 On clients that support command manifests, the command basenames are:
 
 ```text
-/star-harness:mission-new
 /star-harness:team-start
 /star-harness:team-status
-/star-harness:new-run
 /star-harness:status
 /star-harness:dashboard
 ```
 
-The last three preserve the historical command basenames. The retired
+The historical `mission-new` and `new-run` commands were removed with the
+DOC-108 Mission retirement. `status` and `dashboard` preserve their historical
+command basenames. The retired
 `agent-team` namespace cannot remain registered by the new `star-harness`
 plugin id without installing a second compatibility plugin, which this package
 intentionally avoids so Skills and hooks have one owner.

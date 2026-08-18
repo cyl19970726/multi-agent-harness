@@ -8,8 +8,8 @@ It sits above the provider runtime implementation reference in
 provider implementations in [integration/codex.md](../integration/codex.md),
 [integration/claude.md](../integration/claude.md), and
 [integration/kimi.md](../integration/kimi.md). It does not redefine
-Mission/Mission Log, executor-native records, TeamWorks, Approvals, or
-organization authority.
+Work, Message, executor-native records, Team/organization authority, or the
+retired Mission/Mission Log objects.
 Continuous Member execution follows the separate
 [Member Continuation Model](member-continuation-model.md).
 
@@ -120,11 +120,11 @@ prompt artifact, not inline chat text**. The contract:
   full system prompt per delivery from this stack:
 
 ```text
-harness base system prompt          (Mission/Mission Log, honest execution records, decisions)
+harness base system prompt          (Team/Work model, honest execution records, decisions)
   -> repository / adapter rules      (project constraints, commands, safety)
   -> role-specific prompt            (prompt_ref → this member's responsibility)
-  -> execution context               (Mission, recent Mission Log judgment, run and Works)
-  -> optional company context        (TeamWork, source Document, Actors, approval policy)
+  -> execution context               (Team, recent Host judgment on the Work, run and Works)
+  -> optional global context         (TeamWork, source refs, Actors, approval policy)
   -> delivery envelope               (current Work version or Host/peer conversation)
   -> permission and evidence policy   (allowed tools, approval, report format)
 ```
@@ -159,7 +159,7 @@ contract for resolving and injecting skills:
   injects via the system prompt. Either way the rule is the same: the harness
   chooses skills, the platform consumes them.
 - **Kinds.** Two skill kinds are recognized: a **generic harness capability**
-  (how to use Mission/Mission Log and the selected executor honestly) and a
+  (how to use durable Teams, Work, and the selected executor honestly) and a
   **project/adapter skill** (how to use a project's CLI, Dashboard, acceptance
   evidence, and safety boundaries). Skills are optional tools, never product
   authority.
@@ -318,13 +318,15 @@ runtime model has six layers:
 2. The live runtime handle is process-local and disposable.
 3. An `ExecutionCycle` is one accepted input driven to the provider's settled
    boundary.
-4. `NativeContinuation` is a bounded provider projection, not a CompanyOS Goal.
+4. `NativeContinuation` is a bounded provider projection, not a durable Work
+   and never the retired CompanyOS Goal.
 5. `ExecutionDriver` selects exactly one top-level cycle owner.
 6. `RuntimeSupervisor`/NodeDaemon owns durable command authority and recovery.
 
-These layers sit on five separate planes: Message, Work, RuntimeCommand,
-ProviderObservation, and Company Approval. They may reference each other by id,
-but they do not impersonate each other or create a second ledger.
+These layers sit on four separate planes: Message, Work, RuntimeCommand, and
+ProviderObservation. They may reference each other by id, but they do not
+impersonate each other or create a second ledger. The former Company Approval
+plane is retired (DOC-108); Work review/acceptance carries what it carried.
 
 ```text
 provider event
@@ -396,8 +398,9 @@ native session through its claimed `CanonicalMessageDelivery`. Permission is
 not a message workflow: the
 AgentSession freezes one effective ceiling before provider start, and the
 adapter fails closed if the provider requests authority outside that ceiling.
-Protected project actions continue to use the existing Company Approval
-object/state machine. Ordinary provider tool lifecycle remains in the native
+Protected project actions carry their Human or policy approval on the Work
+review/acceptance record; the former Company Approval state machine is retired.
+Ordinary provider tool lifecycle remains in the native
 session. The shipped cutover adds no generic `PendingInteraction`,
 `PermissionRequest`, or `PermissionDecision` object.
 
@@ -418,7 +421,7 @@ coordination. Generalized:
 
 | Generic harness owns | Adapter / platform owns |
 | --- | --- |
-| Mission/Mission Log joins, Agent Team Works/messages, role routing | domain tool descriptors |
+| durable Team/Work joins, Agent Team Works/messages, role routing | domain tool descriptors |
 | evidence references, review gates, decisions | project dashboard, artifacts |
 | member identity, prompt/skill refs, permissions | domain logic, live execution, secrets |
 | the neutral launch spec and event reduction | platform-native CLI/SDK call shape |
@@ -563,8 +566,9 @@ abstraction remains additive future work under ADR 0017.
 
 ## Non-Goals
 
-- Do not redefine Mission/Mission Log, executor-native records, TeamWork, Approval or
-  organization authority here; those stay in their owning contracts.
+- Do not redefine Work, Message, executor-native records, TeamWork, or
+  organization authority here; those stay in their owning contracts, and the
+  retired Mission/Mission Log and Approval objects stay retired.
 - Do not let one platform's wire vocabulary become the neutral spec.
 - Do not treat provider-native subagents as durable members unless promoted.
 - Do not evolve the implemented contracts (skills, MCP, capability declaration)

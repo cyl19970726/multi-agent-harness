@@ -1,6 +1,6 @@
 {
   "name": "star-harness",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "Thin Agent Team integration for Kimi Code.",
   "interface": {
     "displayName": "Star Harness",

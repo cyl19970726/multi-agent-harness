@@ -11,7 +11,7 @@ Host Agent
   -> thin orchestration skill
   -> harness CLI (complete authoring and control)
   -> shared Rust application operations
-  -> Mission / append-only Mission Log / AgentTeam / AgentTeamRun / Store
+  -> AgentTeam / Work + append-only WorkEvent / AgentTeamRun / Store
   -> provider member adapter
 
 MCP       <- optional typed adapter over the same operations
@@ -19,7 +19,7 @@ Dashboard <- HTTP + SSE projections of the same store
 ```
 
 Skills may teach the Host when to form a team and when to append a judgment,
-replan, recovery, or closeout-evidence entry to the Mission Log, but they do
+replan, recovery, or closeout-evidence entry to the Work record, but they do
 not own product truth or execute runtime operations. Commands and hooks are
 optional conveniences. Provider-specific integration packs configure these
 parts; they do not fork the core model.
@@ -27,8 +27,8 @@ parts; they do not fork the core model.
 ## Current Executable Boundary
 
 - Host: Codex can call the stdio MCP server after local registration below.
-- Coordination: Mission context, its append-only Mission Log, each Mission's
-  one flat AgentTeam, and Team/Node/Project-fenced AgentTeamRuns are native.
+- Coordination: durable flat AgentTeams, their Work boards with append-only
+  WorkEvent lineage, and Team/Node/Project-fenced AgentTeamRuns are native.
 - Member execution: Codex app-server (`codex_app_server`), Kimi ACP
   (`kimi_acp`), and Claude Agent SDK streaming (`claude_agent_sdk`) are the
   executable Team Member modes. Codex app-server is the only Codex Team mode;
@@ -41,7 +41,7 @@ parts; they do not fork the core model.
   generation and owns its live provider transports. Other CLI/MCP/Dashboard
   processes route mail and real controls to that owner over its loopback
   locator; the owner fences the generation again.
-- Message authoring binds the authenticated Actor plus exact AgentIdentity and
+- Message authoring binds the authenticated Actor plus exact AgentMember and
   AgentSession when applicable. Request bodies never select Host, Member,
   Operator or Service identity. An unbound MCP client cannot author Message;
   MCP currently exposes provider-answer routing only with its transport actor.
@@ -88,10 +88,11 @@ HARNESS_CAPTURE_API_PROXY=http://127.0.0.1:8787 npm run dashboard:dev
 The MCP URL opens `http://127.0.0.1:5173` and sets `api=.`. Port 8787 is an API
 origin, not a human Dashboard URL.
 
-`space_id` selects the technical Execution Space that owns Mission/Mission Log,
-Team, Workflow, and coordination state. `project_id` selects the Project Binding
+`space_id` selects the technical Execution Space that owns Team, Work,
+Message, Workflow, and coordination state (plus the retired Mission/Mission Log
+rows as read-only legacy history). `project_id` selects the Project Binding
 that owns provider cwd, instruction/Skill discovery, Git/worktree, and
-permission boundaries. Neither is a Company OS Project business object;
+permission boundaries. Neither is a retired Company OS Project business object;
 product copy should say **Execution Space** and **Project**.
 
 ## Store root is not execution root
@@ -161,10 +162,10 @@ path as an execution root is a routing defect.
    authenticated recipient action when that surface exposes it; review
    submitted Works through the separate Work acceptance commands. Legacy
    TeamMessage ACK commands are retired.
-9. Check Work results, artifacts, and checks; append the Host's actual judgment
-   (`accepted | revise | blocked`) and cited evidence to the Mission Log. Active
-   MemberRuns may carry forward; a Mission Log append never completes them
-   implicitly.
+9. Check Work results, artifacts, and checks; record the Host's actual judgment
+   (`accepted | revise | blocked`) and cited evidence on the Work record.
+   Active MemberRuns may carry forward; recording a Work judgment never
+   completes them implicitly.
 
 ## Message Receipt Boundary
 
@@ -184,9 +185,9 @@ queued
 Messages created while a Member is running are delivered at the next provider
 round boundary. An unclosed idle Member is automatically woken by new mail or
 ready owned WorkDelivery on the same MemberRun and provider-native session.
-Provider turn completion, Work submission, Mission Log append, TeamRun
-completion, and Mission completion do not end
-that lifetime. After a Host process restart, starting the TeamRun reattaches
+Provider turn completion, Work submission, Work acceptance, and TeamRun
+completion do not end
+that lifetime (nor did the retired Mission Log append or Mission completion). After a Host process restart, starting the TeamRun reattaches
 unclosed Members to their recorded native sessions; it reconciles the latest
 Work versions and never replays acknowledged conversation.
 
@@ -218,17 +219,18 @@ Member native session
   -> Host sends a causation-linked answer/review/acceptance
 ```
 
-Codex and Claude do not own separate mailbox Skills. Both use the canonical,
-compatibility-named `orchestrate-mission-waves` Host contract and
-`collaborate-as-agent-team-member` Member contract; app-server versus Agent SDK
-differences remain Adapter capabilities, not different team semantics.
+Codex and Claude do not own separate mailbox Skills. Both use the canonical
+`collaborate-as-agent-team-member` Member contract (the historical
+`orchestrate-mission-waves` Host skill was archived by DOC-108); app-server
+versus Agent SDK differences remain Adapter capabilities, not different team
+semantics.
 
 Stable external Agent mail uses `agent route-inbox` and a
 `CanonicalMessageDelivery` to bind one immutable Message and recipient
-AgentIdentity to the exact current AgentSession generation at claim time. This
+AgentMember to the exact current AgentSession generation at claim time. This
 is explicit transport state, not a second Agent identity: AgentMember is
 durable, MemberRun is one participation, AgentSession owns the provider binding,
-and Company membership is only an AgentMember ActorRef projection.
+and Team participation is only a TeamMembership over an AgentMember ActorRef.
 
 Recipient acknowledgement means “the recipient consumed this envelope,” not
 “the recipient agrees” and not “the Host accepts the work.” A reviewer must inspect the submitted Work,
@@ -274,8 +276,8 @@ result as accepted:
 The integration is usable only when a user can start from a Codex prompt and
 reconstruct the result from native state:
 
-- Mission, its one flat AgentTeam, and append-only Mission Log exist;
-- the TeamRun is linked to the Mission-owned stable AgentTeam; Mission Log
+- the durable flat AgentTeam and its Work board exist;
+- the TeamRun is linked to that stable AgentTeam; WorkEvent
   entries may cite important Work ids and outcomes in Markdown without owning
   the run;
 - actual MemberRuns have owned or claimed Works, WorkEvents, and WorkDelivery;
@@ -285,8 +287,8 @@ reconstruct the result from native state:
   respective event streams;
 - provider questions preserve route, reply actor, exact option id, and
   distinct transport/semantic status;
-- outcome, useful artifacts/checks, and an explicit Host Mission Log judgment
-  explain the plan decision;
+- outcome, useful artifacts/checks, and an explicit Host judgment recorded on
+  the Work explain the plan decision;
 - no durable thinking rows are created.
 
 Run the deterministic product gate with:

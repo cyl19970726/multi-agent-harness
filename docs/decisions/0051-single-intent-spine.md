@@ -7,7 +7,7 @@
 > `docs/current/architecture/architecture-map.md`.
 
 ```text
-status: accepted; staged breaking cutover (see Implementation Boundary)
+status: superseded (DOC-108); was: accepted; staged breaking cutover (see Implementation Boundary)
 owner_role: architecture
 date: 2026-08-05
 amends: ADR 0034 (Wave section)

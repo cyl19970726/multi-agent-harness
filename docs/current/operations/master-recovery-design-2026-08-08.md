@@ -49,7 +49,8 @@ introduce serialized compatibility claims while doing so.
 ### 2. Complete the active firm rename
 
 The canonical package and executable are `firm-cli` and `target/debug/firm`. Active CI, package
-scripts, dashboard runtime checks, Docs v2 smoke tests, Company OS finance/operator/org/work smoke
+scripts, dashboard runtime checks, Docs v2 smoke tests, the legacy Company OS
+finance/operator/org/work smoke
 tests, installer sources, native-session boundary docs, current skills, plugin mirrors, AGENTS and
 the documentation registry must agree. A user-facing `harness` compatibility command or environment
 name may remain when it is an intentional supported boundary.
@@ -58,11 +59,14 @@ Deleted historical designs and archives are not restored or made current by chan
 Active checks that only validate removed historical review/PRD artifacts are retired from CI or
 rewritten against a genuinely current contract.
 
-One stable Company OS trademark JSON fixture is explicitly promoted into
-`docs/current/company-os/fixtures` because active dashboard/operator acceptance consumes the data.
-Its manifest records historical blob `fcbdc293841529faa95c5481788957a68b882865`, deletion commit
-`8dff83b`, current ownership and checksum. This is governed deterministic test data, not product
-authority: no deleted design document or archive path is restored, and the fixture cannot establish
+A stable legacy Company OS trademark JSON fixture was once promoted into
+`docs/current/company-os/fixtures`. That directory no longer exists: it was
+removed with the DOC-108 cutover and nothing consumes it today. The historical
+manifest recorded blob `fcbdc293841529faa95c5481788957a68b882865`, deletion
+commit `8dff83b`, ownership and checksum, and is recoverable from Git history.
+The rule it illustrated still holds for any future governed deterministic test
+data: it is test data, not product
+authority: no deleted design document or archive path is restored, and such a fixture cannot establish
 current product claims by itself.
 
 ### 3. Exact, store-less build identity

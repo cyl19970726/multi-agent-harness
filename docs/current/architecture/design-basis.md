@@ -4,7 +4,7 @@
 status: canonical architecture rationale
 owner_role: product-architecture
 canonical_for: system decomposition, module core ideas, truth boundaries, and documentation structure
-supersedes: the Company OS decomposition (DOC-108)
+supersedes: the retired Company OS decomposition (DOC-108)
 ```
 
 The PRD explains why Star Harness exists. Architecture and schemas describe
@@ -79,8 +79,8 @@ flowchart TD
 | Skills/adapters | repeatable usage guidance and domain capability access | product authority or domain truth in generic core | capabilities reduce variance but never grant permission |
 
 There is no active `Goal`, `GoalPhase`, Project-like task container or Task
-Graph for new work. Mission, Mission Log, Wave, and the Company OS object set
-are retired by DOC-108 and exist only as read-only legacy history. Historical
+Graph for new work. The retired Mission, Mission Log, Wave, and Company OS
+object set exist only as read-only legacy history under DOC-108. Historical
 occurrences of the older stack exist only in migration, compatibility,
 research or archive contexts governed by ADR 0028.
 

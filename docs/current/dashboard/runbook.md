@@ -110,10 +110,11 @@ empty offline workspace (write actions disabled).
 
 The current execution surfaces show:
 
-- Missions: durable Markdown context, their Mission-owned Team, append-only
-  Mission Log judgments/replans/recovery, and closeout;
-- Agent Teams: one flat Node-placed Team per Mission with long-lived runs, including
-  ADR-0051-predecessor historical Wave rows only on Legacy/history surfaces;
+- Agent Teams: durable Markdown context, membership, and the append-only
+  WorkEvent judgments/replans/recovery and acceptance behind each Work;
+- Agent Teams placement: flat Node-placed Teams with long-lived runs; the
+  retired Mission, Mission Log, and Wave rows appear only on Legacy/history
+  surfaces;
 - Team War Room: member presence, four-phase Work projection, unified activity,
   identity-first Messages, per-recipient CanonicalMessageDelivery lineage,
   Agent Conversation, current Supervisor

@@ -7,7 +7,7 @@ canonical_for: Agent identity/session separation, NodeDaemon runtime ownership,
   messaging, provider dispatch, runtime control, recovery, and provider parity
 ```
 
-Provider runtime is machine-local infrastructure. It does not own Company
+Provider runtime is machine-local infrastructure. It does not own AgentMember
 identity, Team membership, Work responsibility, acceptance, or provider-native
 transcripts. One machine-scoped NodeDaemon owns every local AgentSession,
 provider process/thread, provider delivery, and runtime-control effect across
@@ -24,13 +24,13 @@ lease expiry alone is never treated as a provider-drain receipt.
 ## Canonical separation
 
 ```text
-AgentIdentity
-  ├─ TeamMembership (collaboration overlay)
+AgentMember
+  ├─ TeamMembership (participation in one flat Team)
   └─ AgentSession (machine-local provider runtime)
 
 Work revision
   └─ WorkExecutionBinding
-       └─ exact TeamMembership + AgentIdentity + AgentSession generation
+       └─ exact TeamMembership + AgentMember + AgentSession generation
 
 Message
   └─ MessageSubscription
@@ -45,9 +45,9 @@ The objects are intentionally independent:
 
 | Object | Owns | Never owns |
 | --- | --- | --- |
-| `AgentIdentity` | stable addressable agent identity and organization status | provider process, Team membership, Work, transcript |
-| `AgentSession` | one provider session on one Node and exact NodeDaemon generation | Team identity, Work acceptance |
-| `TeamMembership` | one AgentIdentity's active participation in one flat Team | provider lifecycle |
+| `AgentMember` | the sole durable addressable agent identity and organization status | provider process, Team membership, Work, transcript |
+| `AgentSession` | one provider session on one Node and exact NodeDaemon generation, hanging off its AgentMember | Team identity, Work acceptance |
+| `TeamMembership` | one AgentMember's active participation in one flat Team | identity, provider lifecycle |
 | `WorkExecutionBinding` | one exact Work revision bound to one membership and AgentSession generation | authored conversation |
 | `Message` | immutable identity-authored, source-NodeDaemon-attested conversation | Work ownership or runtime control |
 | `MessageSubscription` | authorized recipient policy and delivery mode | a second Message or browser-chosen recipient truth |
@@ -63,8 +63,13 @@ fingerprint, and last reconciliation time. These fields are control fences and
 projections only; they do not mirror native turns, tool calls, commands,
 files, transcript, or provider reasoning.
 
-`TeamRun` and `MemberRun` may remain as coordination and historical
-projections. They are not provider runtime authority. No CLI, HTTP, MCP,
+The `AgentIdentity` name is a deprecated same-ID read-only compatibility
+projection of `AgentMember`: legacy readers resolve the same row, and nothing
+may be bound to it as a second identity root.
+
+`TeamRun` and `MemberRun` remain internal diagnostics and history
+projections. They are not provider runtime authority and never scope durable
+identity or Work responsibility. No CLI, HTTP, MCP,
 Dashboard, adapter, or mutable Store seam may dispatch, resume, interrupt, or
 stop a provider through them.
 
@@ -98,7 +103,7 @@ fold target delivery into Control Plane truth.
 
 Work and Message are separate planes. `CanonicalWorkDelivery` carries an exact
 Work id/revision to an active `WorkExecutionBinding`. Claiming Work verifies the
-current membership, AgentIdentity, AgentSession generation, Node placement,
+current membership, AgentMember, AgentSession generation, Node placement,
 NodeDaemon lease, and Work owner under canonical Store authority. Work result,
 progress, finding, failure, revise, submit, gate, and acceptance remain Work
 operations.
@@ -140,7 +145,7 @@ resolves exact self or the exact machine Operator/NodeDaemon. Team Host
 authority is Team-scoped coordination authority and never controls the global
 machine Session. StartSession derives the local Node and active project
 registration independently of TeamMembership and enforces the frozen
-AgentIdentity permission ceiling under the same Store lock before any session,
+AgentMember permission ceiling under the same Store lock before any session,
 command, process, or provider side effect. Team join/leave does not create,
 resume, or close a Session. Likewise, Team `close-member` closes only that
 MemberRun generation and cancels its current provider turn; it leaves the
@@ -181,7 +186,7 @@ or remains unknown; resolution never blindly repeats the native effect.
 
 Codex, Claude, Kimi, and Pi expose separate, closed capability tuples:
 
-- requested permission must fit both the AgentIdentity ceiling and provider
+- requested permission must fit both the AgentMember ceiling and provider
   adapter capability, and the ceiling must be verifiably enforced — the
   adapter names its `security_enforcement_locus` in the provider profile
   (provider-native policy, adapter tool allowlist, adapter auto-approval, OS
@@ -252,10 +257,12 @@ read-only and is excluded from current projections and migration.
 
 ## Remote Node Fabric
 
-One logical Company Control Plane coordinates machines, while each machine has
-exactly one ExecutionNode/CompanyNode identity and one current NodeDaemonLease.
-`CompanyNode.id == ExecutionNode.id`; a NodeGatewayLease is only a child of the
-exact current NodeDaemonLease generation and never a second machine authority.
+One logical Fabric Control Plane coordinates machines, while each machine has
+exactly one `ExecutionNode` identity and one current NodeDaemonLease. A
+NodeGatewayLease is only a child of the exact current NodeDaemonLease
+generation and never a second machine authority. The former `CompanyNode`
+name is retired (DOC-108); it was always the same row, under the rule
+`CompanyNode.id == ExecutionNode.id`.
 Nodes initiate outbound TLS 1.3 mutual-authenticated WSS connections to the
 Control Plane. They do not expose an inbound collaboration listener and do not
 connect directly to sibling Nodes.

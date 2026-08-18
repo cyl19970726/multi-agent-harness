@@ -2,7 +2,7 @@
 
 This is the canonical product-level architecture map of the implemented
 execution foundation. The legacy Company OS product layers (Docs,
-Organization, Finance, Approval) and the Mission/Wave/Mission Log
+Organization, Finance, Approval) and the legacy Mission/Wave/Mission Log
 coordination objects are retired (DOC-108); their historical contracts remain
 in Git history and the superseded ADRs.
 
@@ -83,7 +83,8 @@ as historical exports.
 
 ## Retired layers
 
-ADR 0051 (Mission/Wave single-intent spine), ADR 0027 (Company OS primary
-model), and ADR 0026 (Mission/Wave foundation) are superseded by DOC-108: no
-Mission, Mission Log, Wave, or Company OS object is current authority. ADR
+ADR 0051 (Mission/Wave single-intent spine), ADR 0027 (the retired Company OS
+primary model), and ADR 0026 (Mission/Wave foundation) are superseded by
+DOC-108: no retired Mission, Mission Log, Wave, or Company OS object is
+current authority. ADR
 0029 (programmable document runtime) retired with the built-in Docs layer.

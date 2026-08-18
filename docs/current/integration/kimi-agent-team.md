@@ -144,7 +144,7 @@ The owner-private SSE emitted both `updated` and `terminal` envelopes scoped to
 1. The owner RoleView stayed enabled across Reopen and its native history grew
 from one episode to two under the same AgentSession id. This is live evidence
 for the intentionally independent MemberRun/AgentSession generation fences,
-not permission to relax the exact AgentIdentity, native-session, provider,
+not permission to relax the exact AgentMember, native-session, provider,
 Execution Space, Project, NodeDaemon, or privacy checks. The pre-cutover
 Mission `mission-dev26-kimi-0361-v2` (legacy history, DOC-108) records the
 defect, repair judgment, accepted Work revisions, runtime close receipt, and
@@ -201,5 +201,5 @@ Acceptance must repeat the busy-turn scenario after Supervisor replacement:
 two ordered deferred messages reach the same MemberRun/session exactly once,
 the Member submits the corrected Work version, and Host accepts or requests
 changes explicitly. An incompatible
-native session remains historical provider evidence while the durable Standing
-Agent and Company Work continue through an explicit new session.
+native session remains historical provider evidence while the durable
+AgentMember and its Work continue through an explicit new session.

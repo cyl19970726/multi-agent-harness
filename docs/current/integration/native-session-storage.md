@@ -121,7 +121,7 @@ promotes it into a coordination object. Automatic copying is prohibited.
 GET Harness Team/Member projection
   -> TeamRun/MemberRun/Work/WorkDelivery/messages/interactions/outcome (+ legacy Mission rows when present)
 
-GET authenticated AgentWorkspace for exact AgentIdentity
+GET authenticated AgentWorkspace for exact AgentMember
   -> provider adapter probe
   -> provider-native bounded read (latest 300 displayable items)
   -> SessionEventProjection grouped by provider turn/episode
@@ -131,6 +131,11 @@ UI merge
   -> source and durability badges
   -> native unavailable state does not erase Harness records
 ```
+
+The merged Team/Workspace presentation is a
+joined read model, not a transcript database: it is rebuilt from Harness
+coordination rows plus bounded provider-native reads, and is never persisted
+as a second history.
 
 The backend performs native reads so provider paths and credentials do not leak
 to browser code. The current response exposes `truncated` rather than a cursor;

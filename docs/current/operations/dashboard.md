@@ -22,19 +22,20 @@ AgentTeam (durable, flat)
 
 The Workbench must not require or introduce a dependency graph for Agent Team
 or Work objects. Retired coordination pages (Mission detail, Team War Room,
-Company OS) are not part of active navigation or authoring; Agent Teams
+and the retired Company OS pages) are not part of active navigation or
+authoring; Agent Teams
 navigation lists durable Teams and their runs.
 
 ## Key Questions
 
 | Question | Workbench answer |
 | --- | --- |
-| What durable outcome are we pursuing? | Mission header with Markdown context, status, owning Team, and closeout summary. |
-| What should happen next? | Latest Mission Log judgment with context, cited Work, outcome, and next action. |
-| Which execution is active? | Mission-owned TeamRuns, Workflows, and Host work with honest native status; Log entries do not own them. |
+| What durable outcome are we pursuing? | Team header with Markdown context, status, accountable Team, and the Work board's acceptance summary. |
+| What should happen next? | Latest Host judgment on the Work record with context, cited Work, outcome, and next action. |
+| Which execution is active? | Team-owned TeamRuns, Workflows, and Host work with honest native status; Work records do not own them. |
 | Who owns Agent Team work? | Work owner, status, readiness, WorkDelivery receipt, submission, and review state. |
 | Which service owns the live Team? | Machine NodeDaemon generation plus its parent-fenced Team Supervisor generation, heartbeat, loopback locator, reconnect state, and control availability. |
-| Who sent this message? | Authenticated sender Actor plus exact AgentIdentity/AgentSession where applicable; UI never infers authorship from display text or Team role. |
+| Who sent this message? | Authenticated sender Actor plus exact AgentMember/AgentSession where applicable; UI never infers authorship from display text or Team role. |
 | What is each member doing? | Provider/model, lifecycle, current explicit action, pressure, heartbeat, and blockers. |
 | What did a Dynamic Workflow produce? | Workflow steps, artifact manifests, typed result/verdict, and patch state. |
 | What did the Host do directly? | Observable actions, artifacts, and outcome without invented child ownership. |
@@ -45,32 +46,29 @@ navigation lists durable Teams and their runs.
 
 ```mermaid
 flowchart TD
-  Missions[Mission list]
-  Mission[Mission detail]
-  Log[Mission Log]
-  Team[Agent Team war room]
+  Teams[Agent Team list]
+  Team[Agent Team detail]
   Works[Works Kanban and list]
+  Events[Append-only WorkEvent history]
   Workflow[Dynamic Workflow run]
   Host[Host execution summary]
   Member[Member detail]
   Artifacts[Artifacts and outcomes]
-  Decision[Host judgment / replan / recovery / closeout]
+  Decision[Host judgment / replan / recovery / acceptance]
   Warnings[Approvals and warnings]
 
-  Missions --> Mission
-  Mission --> Log
-  Mission --> Team
-  Log -. context .-> Team
-  Log -. context .-> Workflow
-  Log -. context .-> Host
-  Team --> Member
+  Teams --> Team
   Team --> Works
+  Works --> Events
+  Events -. context .-> Workflow
+  Events -. context .-> Host
+  Team --> Member
   Works --> Member
   Team --> Artifacts
   Workflow --> Artifacts
   Host --> Artifacts
   Artifacts --> Decision
-  Decision --> Log
+  Decision --> Events
   Team --> Warnings
   Workflow --> Warnings
 ```
@@ -79,15 +77,15 @@ flowchart TD
 
 | View | Purpose | Safe actions |
 | --- | --- | --- |
-| Mission list | Find active, blocked, completed, and proposed Missions. | create/open Mission |
-| Mission detail | Read durable context, its one Team, append-only Mission Log, and outcome. | append Mission Log, close |
-| Mission Log | Read Host judgments, replans, recovery, cited evidence, and closeout in order. | append judgment/replan/recovery/closeout entry, open linked execution |
-| Agent Team | Operate one Mission-owned, single-Node TeamRun across Mission plan changes. | create/assign/claim/review Works, delegate, message, inspect runtime, add/close/resume members |
+| Agent Team list | Find active, blocked, and completed durable Teams. | create/open Team |
+| Agent Team detail | Read durable Team context, its membership, its Work board, and outcomes. | create Work, accept, close |
+| Work history | Read Host judgments, replans, recovery, cited evidence, and acceptance in order from the append-only WorkEvent lineage. | append judgment/replan/recovery/acceptance event, open linked execution |
+| Agent Team run | Operate one Team/Node/Project-fenced TeamRun. | create/assign/claim/review Works, delegate, message, inspect runtime, add/close/resume members |
 | Works | Inspect assigned, unassigned, ready, active, blocked, review, done, and child Work without reading chat. | create, assign, claim, start, block, submit, request changes, accept, release, cancel, delegate |
 | Member detail | Inspect one MemberRun lane, My Works, ready pool, mailbox, native-session locator, and actions. | claim/start/submit Work, message, inspect, interrupt/close/resume when supported |
 | Dynamic Workflow | Inspect one WorkflowRun and its steps/artifacts/patches. | apply/reject patch, cite result from Host plan |
 | Host execution | Show direct Host outcome and optional observed delegation. | attach artifact/outcome |
-| Warnings/approvals | Surface unsafe or incomplete state. | approve/reject, retry, clarify, record Mission judgment |
+| Warnings/approvals | Surface unsafe or incomplete state. | approve/reject, retry, clarify, record the Host judgment on the Work |
 
 ## Agent Team Proof
 
@@ -119,10 +117,10 @@ submission, and acceptance as separate facts.
 | Member state | lifecycle, provider/model, latest explicit action, heartbeat, queue pressure |
 | Supervisor | current lease generation, owner/heartbeat, routed-control health, reconnect/close latch |
 | Delivery | authenticated Message sender, authorized recipients, claim, provider receipt, per-recipient acknowledgement, retry/reconciliation |
-| AgentMember mail | immutable Message plus one CanonicalMessageDelivery per recipient AgentIdentity, frozen to the exact AgentSession generation on claim |
+| AgentMember mail | immutable Message plus one CanonicalMessageDelivery per recipient AgentMember, frozen to the exact AgentSession generation on claim |
 | Workflow | WorkflowRun/Step, artifacts, result/verdict, patch state |
 | Host path | observable artifact/outcome without fake controlled children |
-| Mission Log decision | Host outcome, actor/time, note, artifacts, and next-plan/recovery context |
+| Work acceptance decision | Host outcome, actor/time, note, artifacts, and next-plan/recovery context |
 
 Fields that affect acceptance, authorization, or ownership belong in schemas
 and runtime contracts, not frontend-only state.
@@ -179,15 +177,17 @@ exists yet.
 
 ## Acceptance
 
-Workbench acceptance requires fixtures plus at least one live Mission showing:
+Workbench acceptance requires fixtures plus at least one live durable
+AgentTeam showing:
 
-1. Mission context plus append-only Mission Log without a legacy dependency graph;
-2. the Mission's flat AgentTeam and a Team/Node/Project-fenced TeamRun with
+1. Team context plus append-only WorkEvent lineage (historical Mission rows,
+   when present, appear only as read-only legacy context);
+2. the durable flat AgentTeam and a Team/Node/Project-fenced TeamRun with
    assigned, unassigned, claimed, delivered, reviewed, and child Work data;
 3. at least one independent WorkflowRun/Host-work projection or an explicit
    unsupported-state fixture;
-4. preserved terminal run history without making a Log entry own the run;
-5. artifacts/outcome and an explicit Host Mission Log decision;
+4. preserved terminal run history without making a WorkEvent own the run;
+5. artifacts/outcome and an explicit Host acceptance decision on the Work;
 6. authorization and failed-delivery alerts;
 7. honest correlation and provider capability degradation;
 8. no new thinking in durable snapshots after the transient migration;
@@ -199,8 +199,9 @@ Workbench acceptance requires fixtures plus at least one live Mission showing:
 
 ## Invariants
 
-1. Mission is the primary product navigation; Mission Log is its judgment history.
-2. A Mission Log entry is append-only and never owns lifecycle or execution.
+1. The durable AgentTeam is the primary product navigation; the Work board and
+   its append-only WorkEvent lineage are its judgment history.
+2. A WorkEvent is append-only and never owns lifecycle or execution.
 3. Executor-specific semantics remain visible rather than collapsed.
 4. Agent Team ownership starts with an atomic Work assignment or claim and its
    WorkEvent, never a Message or an unversioned display-only assignee field.

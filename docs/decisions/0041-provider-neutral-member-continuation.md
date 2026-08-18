@@ -41,7 +41,8 @@ or cycles, but Harness must not start an independent cycle while that provider
 mechanism owns the execution lease.
 
 Harness does not create a new Goal object. Work ownership remains the durable
-responsibility contract; Mission and Wave remain Host intent and judgment;
+responsibility contract; the retired Mission and Wave carried Host intent and
+judgment at decision time;
 provider-native goals, plans, turns, evaluators and subagents remain
 provider-owned execution state.
 

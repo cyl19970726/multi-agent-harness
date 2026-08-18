@@ -33,7 +33,7 @@ public authored Messages, responsibility, Work state, evidence, and exact
 authorized coordination-control targets, but no Member Thinking, tool output,
 provider observation, runtime command, AgentSession id/generation, native event,
 or workspace binding. Authored Messages remain separate coordination records
-and are visible through their authenticated sender AgentIdentity/Session,
+and are visible through their authenticated sender AgentMember/Session,
 recipients, optional Work link and per-recipient public delivery state.
 
 ## Read model

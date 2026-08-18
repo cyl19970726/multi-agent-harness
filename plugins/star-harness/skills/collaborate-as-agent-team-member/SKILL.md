@@ -15,7 +15,7 @@ and Report/Finding/Failure/Gate history; private execution mechanics are not
 product Work.
 
 Own one shared-board Work end to end. This skill is a procedural capability, not
-product authority. You are a durable AgentIdentity participating through one
+product authority. You are a durable AgentMember participating through one
 exact active TeamMembership. The machine-local NodeDaemon owns your current
 AgentSession and provider thread; Work responsibility is frozen separately in
 WorkExecutionBinding. MemberRun and Workspace rows are coordination/history
@@ -127,7 +127,7 @@ A successful self-claim is already responsibility possession inside this
 bound MemberRun/native turn. It records the `claimed` WorkEvent and returns the
 new Work version; it does not send a WorkDelivery back to yourself. After a
 runtime restart, continue the same `in_progress` Work only through the same
-stable AgentIdentity, active TeamMembership, exact WorkExecutionBinding, and
+stable AgentMember, active TeamMembership, exact WorkExecutionBinding, and
 current AgentSession generation. Inspect native history and the Workspace first,
 and never invent a provider receipt. Host assignment,
 resume, request-changes, and rebind are external changes and still arrive as
@@ -158,13 +158,13 @@ Legacy TeamRun send/ACK commands are retired because they let a caller select
 another Member's identity. Author or acknowledge through the authenticated
 Member Role Action (`send_message`, `reply_message`, or `request_decision`)
 exposed by the current server-built view. The server must
-resolve your stable AgentIdentity, exact current AgentSession generation,
+resolve your stable AgentMember, exact current AgentSession generation,
 TeamMembership, Work/Team scope, NodeDaemon generation, and subscription
 cursor; never supply or override those facts from a prompt, browser, or shell.
 
 For a decision-shaped question, address the Host and include the exact Work id,
 decision needed, options, and recommendation. For peer coordination, address
-the peer AgentIdentity in the same Team without transferring Work. For a reply,
+the peer AgentMember in the same Team without transferring Work. For a reply,
 preserve the server-returned correlation id and use the exact source Message id
 as causation. Acknowledge only the exact current recipient delivery/cursor.
 
@@ -329,7 +329,7 @@ destructive external actions without the applicable authority.
 Runtime control never accepts a Member-authored capability, permission
 envelope, provider profile, AgentSession object, or target placement. The
 server resolves exact self or exact machine Operator/NodeDaemon authority and
-the AgentIdentity ceiling. A Team Host cannot control the global Session;
+the AgentMember ceiling. A Team Host cannot control the global Session;
 TeamMembership join/leave also cannot create or close it. StopSession fails
 closed while any active WorkExecutionBinding references the Session. If a
 provider is unavailable or cannot prove the native
@@ -354,11 +354,15 @@ Verify that:
 
 ## Flat AgentTeam Contract
 
-The Organization contains multiple flat AgentTeams. Each Team belongs to one
-Mission and one Node; Members never create nested Teams. Cross-Team execution
+The organization contains multiple flat AgentTeams. A Team is durable and
+Mission-less: it belongs to no Mission and has one immutable Node placement.
+Members never create nested Teams. Cross-Team execution
 is an explicit Host-coordinated WorkDelegation, not hierarchy.
 
-Company organization membership projects your canonical AgentMember ActorRef; there is no second durable agent identity or execution join.
+`AgentMember` is your one durable agent identity and `TeamMembership` is only
+your participation in a Team; there is no second durable agent identity or
+execution join. The `AgentIdentity` name is a deprecated same-ID read-only
+compatibility projection of `AgentMember`.
 
 ## Collaboration Envelope
 
@@ -372,10 +376,8 @@ The harness injects these environment variables when starting your runtime. The 
 | `HARNESS_SPACE` | Yes | Current Execution Space |
 | `HARNESS_PROJECT` | Yes | Active Project Binding path |
 | `HARNESS_PROJECT_ID` | Yes | Active Project Binding id |
-| `HARNESS_MISSION_ID` | When Mission-scoped | The Mission this TeamRun serves |
 | `HARNESS_WORK_ID` | When delivered with Work | The Work id for your current delivery |
 | `HARNESS_WORK_VERSION` | When delivered with Work | The Work version for your current delivery |
-| `HARNESS_ORIGIN_WAVE_ID` | Historical | Deprecated; preserved for compatibility reads only |
 
 `HARNESS_MEMBER_RUN_ID`, `HARNESS_TEAM_RUN_ID`, and the live Supervisor
 capability token are validated on every `member inbox`, `member work`, and
@@ -383,11 +385,15 @@ capability token are validated on every `member inbox`, `member work`, and
 Member identity.
 
 **Legacy Wave note.** The word **wave** in a batch label is only a planning
-rhythm, not a governed object. The historical `Wave`, `WaveStatus`, `wave_ids`,
-Wave ledger, and `HARNESS_ORIGIN_WAVE_ID` remain Legacy read-only compatibility
-surfaces. Wave writes were retired by ADR 0051; `wave list|show|history` may
-only interpret historical evidence. Never create or mutate a Wave, or use
-capitalized `Wave` as an object name in new work.
+rhythm, not a governed object. The historical `Wave`, `WaveStatus`, and
+`wave_ids` are retired (DOC-108, and ADR 0051 before it): no writer exists on
+any surface, and no Member command reads them. Never create or mutate a Wave,
+or use capitalized `Wave` as an object name in new work.
+
+**Legacy Mission note.** Teams are durable and Mission-less. `Mission`, its
+append-only Mission Log, and their scoping of Work are retired history
+(DOC-108); a pre-cutover Team may still carry a read-only
+`legacy_mission_id` provenance field, which is not a scope.
 
 When developing Star Harness itself and the product contract is in question,
 read canonical repository files `docs/current/product/agent-team-works.md` and

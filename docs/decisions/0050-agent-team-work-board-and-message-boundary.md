@@ -4,7 +4,8 @@
 status: accepted; flat-Team amendment implemented by Wave 3
 owner_role: architecture
 canonical_for: Work as the Agent Team scheduling primitive, no Assignment
-  Message ownership, shared Kanban, claim authority, and Mission boundary
+  Message ownership, shared Kanban, claim authority, and the historical
+  Mission boundary (Mission itself is retired by DOC-108)
 ```
 
 ADR 0056 supersedes this ADR's PendingInteraction boundary. A provider question
@@ -23,11 +24,12 @@ Members could not atomically claim known ready work.
 The failure reconstruction and Claude Code comparison are preserved in
 Agent Team Shared Task List research.
 
-The product also needs one simple execution-board object that the Company
-operating surface can use. This ADR originally kept Company WorkItem as a
-permanently separate lifecycle. The Unified Work cutover removed that duplicate
-responsibility kernel while preserving Approval, Finance, Document, Mission,
-and provider-native truth as distinct relations. ADR 0052's recursive Team
+The product also needs one simple execution-board object that the global
+operating surface can use. This ADR originally kept the legacy Company WorkItem
+as a permanently separate lifecycle. The Unified Work cutover removed that
+duplicate responsibility kernel; the former Approval, Finance, Document, and
+Mission relations it preserved are themselves retired (DOC-108), leaving
+provider-native truth as the remaining distinct relation. ADR 0052's recursive Team
 proposal is superseded historical evidence and has no active authority here.
 
 ## Decision
@@ -35,9 +37,12 @@ proposal is superseded historical evidence and has no active authority here.
 ### Work is the base responsibility object
 
 Agent Team adds a `Work` object and a shared `Works` projection. Work is the
-authoritative Team responsibility object; Company Work is a read-only aggregate
-and owns no second task identity. Approval, Finance, and Docs remain separate
-related truth. Kanban is a view over Work, not another source of truth.
+authoritative Team responsibility object; the Global Work aggregate is
+read-only and owns no second task identity (it replaced the former Company Work
+aggregate).
+The Approval, Finance, and Docs relations named here are retired (DOC-108);
+Work review and acceptance carry what the generic Approval used to carry.
+Kanban is a view over Work, not another source of truth.
 
 ### Assignment is a Work operation
 
@@ -134,10 +139,10 @@ Assignment-message ownership.
   separate and observable.
 - Dashboard adds Works as a primary Team surface and task state no longer has
   to be inferred from Activity.
-- Organization projects multiple flat AgentTeams; the current StandingAgent
-  join remains compatibility truth only.
-- Current Company WorkItem can link execution Works during transition, but the
-  target does not retain two responsibility lifecycles.
+- The organization projects multiple flat AgentTeams; the legacy StandingAgent
+  join named here is retired compatibility truth only.
+- The legacy Company WorkItem could link execution Works during transition, but
+  the target does not retain two responsibility lifecycles.
 - Existing Assignment-message schemas, CLI writes, projections, warnings,
   fixtures, Skills, Plugin copies, and dogfood stores require a breaking cleanup.
 
@@ -179,7 +184,7 @@ deterministic flow.
 
 The cutover is atomic at the release boundary across root operating
 instructions, schemas, store projections, CLI/API/MCP, Supervisor/providers,
-Dashboard, Company OS joins, Skills, Plugin, fixtures, and active data. New code
+Dashboard, the retired Company OS joins, Skills, Plugin, fixtures, and data. New code
 does not read or write Agent Team Assignment Messages as responsibility.
 Execution Spaces containing legacy Assignment-message rows are refused and
 must be archived/reset or passed through a future explicit offline converter;

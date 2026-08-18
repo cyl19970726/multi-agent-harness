@@ -28,7 +28,7 @@ its stores remain only as export/verify sources for
 3. Selecting a Project Binding never moves or switches Agent
    Team, Message, or Workflow rows.
 4. Selecting an Execution Space never changes legacy Company truth.
-5. Provider cwd is never a Company Store or Execution Space directory.
+5. Provider cwd is never a legacy Company Store or Execution Space directory.
 6. Provider-native sessions remain the sole transcript/tool/turn truth and are
    referenced rather than copied.
 7. The latest Team Supervisor generation, MessageSubscription policies and
@@ -259,7 +259,7 @@ The Dashboard TopBar shows separate **Execution Space** and **Project
 Binding** controls. AgentWorkspace provider history resolves its
 Session from the selected Execution Space and its source from the server-owned
 Project Binding. Private live SSE additionally binds the authenticated exact
-AgentIdentity owner, so switching spaces or selecting another Member cannot
+AgentMember owner, so switching spaces or selecting another Member cannot
 display another execution object's provider data.
 
 ## Compatibility boundary

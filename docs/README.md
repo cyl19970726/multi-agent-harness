@@ -94,7 +94,7 @@ integrating project repository, not in the generic core docs.
 | --- | --- |
 | [agentfirm-development-loop](../.agents/skills/agentfirm-development-loop/SKILL.md) | The repository's only default development loop: Brain -> one Task -> Dev -> exact-revision Review; rejected work returns to the same Task. |
 | [collaborate-as-agent-team-member](../skills/collaborate-as-agent-team-member/SKILL.md) | Provider-neutral member guidance for Work claim/start/block/submit, Work-linked conversation, native subagents, evidence, and Host acceptance. |
-| [star-workflow](../skills/star-workflow/SKILL.md) | Optional Dynamic Workflow authoring capability; not Mission or Mission Log planning authority. |
+| [star-workflow](../skills/star-workflow/SKILL.md) | Optional Dynamic Workflow authoring capability; not the authority for Work planning, and never the retired Mission or Mission Log planning authority. |
 | [bootstrap-project-workflow](../skills/bootstrap-project-workflow/SKILL.md) | Current doc-sync compatibility methodology. It is no longer a mandatory Lead skill or default install. |
 | [design-notion-information-architecture](../.agents/skills/design-notion-information-architecture/SKILL.md) | Audit, redesign, migrate, and review governed Notion systems with explicit authority, reader journeys, semantic relations, cutover, and rollback. |
 

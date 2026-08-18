@@ -115,9 +115,9 @@ semantic
 understanding requires an explicit Work transition or conversational reply.
 
 When a turn completes, the Member returns to `idle` and the adapter
-keeps polling. Later mail starts one new turn on the same thread. Mission Log
-append, TeamRun completion, and Mission completion do not stop that loop; only
-explicit Close does.
+keeps polling. Later mail starts one new turn on the same thread. Work
+acceptance and TeamRun completion do not stop that loop (nor did the append to
+the retired Mission Log, or Mission completion); only explicit Close does.
 
 The complete message-selection and delivery contract is in
 [Codex Message Delivery](codex-message-delivery.md).

@@ -6,23 +6,33 @@ Contract: AFM-2026.08.2
 ## Purpose
 
 `Work` is the single durable unit of accountable execution inside an Agent
-Team. `TeamWork` is the explicit-context name for the same object. Company
-Work is a read-only aggregate over these objects and never owns a second task
-identity.
+Team, and this document is the one canonical Work authority. `TeamWork` is the
+explicit-context name for the same object. Global Work (DOC-106) is a read-only
+aggregate over these objects and never owns a second task identity. Workspace
+placement is not part of Work identity; it belongs to `MemberWorkspaceBinding`
+([docs/current/work-workspace.md](../work-workspace.md)).
 
 ## Identity and scope
 
 Every Work has:
 
 - stable `id` and monotonic `version`;
-- `team_id` and `team_run_id`;
+- `accountable_team_id` — the durable Team that owns the responsibility;
+- `team_run_id` — the run that surfaced the Work, kept for diagnostics and
+  history correlation; it never scopes Work identity or responsibility;
 - optional parent and prerequisite Work ids;
 - title, context Markdown, and completion criteria Markdown;
-- priority, claim mode, eligible members, owner Member, and active MemberRun;
+- priority, claim mode, eligible members, owner AgentMember, assignee
+  TeamMembership, and active MemberRun;
 - lifecycle axes, gates, artifacts, checks, and GitHub links;
 - creation actor and timestamps.
 
-The Work id and revision are preserved across Company views, dashboards,
+Responsibility hangs off the durable Team, never off a TeamRun: closing,
+restarting, or discarding a TeamRun never moves, invalidates, or re-scopes a
+Work. `team_id` is a deprecated pre-cutover alias of `accountable_team_id`,
+readable through the Rust serde alias and never written by current binaries.
+
+The Work id and revision are preserved across Global Work views, dashboards,
 messages, reports, evidence, gates, and decisions.
 
 ## Lifecycle
@@ -118,8 +128,9 @@ Canonical assignment binds a TeamMembership with an expected Work version
 (`firm team-run work assign --membership-id ...`); responsibility never depends
 on an active MemberRun or runtime.
 
-Milestone `work_refs` point to native Work ids. Milestones do not rewrite Work
-phase, condition, resolution, ownership, report, or gate state.
+The former Company Milestone `work_refs` join is retired history (DOC-108); no
+current object rewrites Work phase, condition, resolution, ownership, report,
+or gate state from outside the Work kernel.
 
 ## Runtime and delivery separation
 
@@ -132,13 +143,17 @@ These states are independent:
 | Work delivery | `WorkDelivery`: Work allocation/revision transport only |
 | Message delivery | `CanonicalMessageDelivery`: per-recipient queued/routed/claimed/provider-received/acknowledged/failed/expired/invalidated state |
 | runtime command | `RuntimeCommand`: fenced provider effects and live controls |
-| organization | Agent Membership identity and authority |
-| company governance | Approval, Finance, Docs, Milestone |
+| identity | `AgentMember` identity and its `TeamMembership` participation |
+
+There is no current company-governance plane: Approval, Finance, Docs, and
+Milestone were retired by DOC-108 and survive only as export/verify history.
+Work review and acceptance on the Work record replace the former generic
+Approval object.
 
 Adapters may correlate these planes by exact ids. They must not infer Work
 truth from name similarity, Message content/delivery state, provider
-completion, a RuntimeCommand result, or Company display state. A Message cannot
-assign Work or authorize a provider effect; a Work mutation or
+completion, a RuntimeCommand result, or any retired company display state. A
+Message cannot assign Work or authorize a provider effect; a Work mutation or
 CanonicalMessageDelivery transition cannot impersonate authored conversation.
 
 ## Removed compatibility design
@@ -169,8 +184,8 @@ The contract is accepted when:
   write the Legacy TeamMessage/ACK ledger;
 - WorkDelivery, CanonicalMessageDelivery, and RuntimeCommand tests prove that
   none of the three planes can impersonate another;
-- Company API/CLI returns a read-only native Work aggregate;
+- the Global Work API/CLI returns a read-only native Work aggregate;
 - dashboard shows exact Work ids and independent lifecycle axes;
-- old Company task ledgers, actions, routes, and bridge code are physically
-  absent;
-- focused Company OS and workspace checks pass on the same revision.
+- the legacy Company task ledgers, actions, routes, and bridge code are
+  physically absent;
+- focused Work-kernel and workspace checks pass on the same revision.

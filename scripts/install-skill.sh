@@ -136,8 +136,8 @@ To use Star Harness skills with Kimi:
   • Start a Kimi Code session inside that directory.
   • Or pass --skills-dir <path> pointing at the skills root.
 
-For the Star Harness plugin (orchestrate-mission-waves,
-collaborate-as-agent-team-member, hooks, MCP), see:
+For the Star Harness plugin (collaborate-as-agent-team-member,
+shared-references, hooks, MCP), see:
   plugins/star-harness/README.md
   plugins/star-harness/kimi.plugin.json
 

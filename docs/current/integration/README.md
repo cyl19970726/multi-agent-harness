@@ -168,9 +168,10 @@ README until they need their own file.
 7. Each MemberRun snapshots a mode-specific `ProviderIntegrationProfile`.
 8. Provider questions and answers become durable correlated Messages. Session
    permission is frozen before start and never becomes a second object;
-   protected project actions use the existing Approval ledger. There is no
-   generic `PendingInteraction`, `PermissionRequest`, or `PermissionDecision`
-   object. Thinking never promotes.
+   protected project actions carry their Human or policy approval on the Work
+   review/acceptance record; the generic Approval ledger is retired. There is
+   no generic `PendingInteraction`, `PermissionRequest`, or
+   `PermissionDecision` object. Thinking never promotes.
 9. Unknown reverse-RPC methods fail closed and surface as adapter gaps; they
    must not be translated into successful tool completion.
 10. A provider adapter must document native-store discovery, availability,
@@ -186,7 +187,7 @@ README until they need their own file.
     owns its run's provider transports, delivery claims, reconnect, and real
     controls. The adapter must verify transport health before claim and fence
     every routed operation.
-14. Team mail has authenticated sender AgentIdentity/Session provenance and one
+14. Team mail has authenticated sender AgentMember/Session provenance and one
     CanonicalMessageDelivery per authorized recipient. Delivery claim, provider
     receipt, recipient acknowledgement, semantic response, and Host acceptance
     are distinct facts.

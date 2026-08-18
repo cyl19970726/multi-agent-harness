@@ -8,11 +8,17 @@ verifiable; detailed implementation history remains recoverable from Git.
 
 ## Active Decision
 
-`Mission -> ordered Host-plan Wave` is the only planning hierarchy for new
-work. Mission-linked independent Agent Teams and other execution capabilities
-retain their own lifecycle under ADR 0034. The former Goal, GoalPhase,
-task-graph, and ledger-backed planning surfaces are not active product objects,
-authoring paths, navigation entries, or compatibility UI.
+The former Goal, GoalPhase, task-graph, and ledger-backed planning surfaces are
+not active product objects, authoring paths, navigation entries, or
+compatibility UI. That retirement is still current policy.
+
+> Historical note (DOC-108): at decision time this ADR named
+> `Mission -> ordered Host-plan Wave` as the only planning hierarchy for new
+> work, with Mission-linked independent Agent Teams keeping their own lifecycle
+> under ADR 0034. That replacement hierarchy is itself retired — Teams are
+> durable and Mission-less, Work is the coordination object, and Mission/Wave
+> write authority fails closed on every surface. The retirement policy in this
+> ADR survives that change unaltered.
 
 Historical data must be exported and verified before removal when preservation
 is required. For stores explicitly declared disposable, old rows may be

@@ -7,8 +7,8 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "repository entry point for the AI Company OS",
-        "Company OS product boundary and execution-foundation boundary"
+        "repository entry point for the AgentFirm execution foundation",
+        "AgentFirm product boundary and execution-foundation boundary"
       ],
       "dependsOn": [
         "docs/current/documentation-governance.md",
@@ -37,7 +37,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Start Here links, Company OS product boundary, or execution-foundation boundary no longer match implemented and gateable surfaces.",
+      "reorgTrigger": "Start Here links, AgentFirm product boundary, or execution-foundation boundary no longer match implemented behavior.",
       "authorityClass": "entry",
       "implementationState": "partial",
       "truthRefs": [
@@ -54,8 +54,8 @@
       "lifecycle": "stable",
       "canonicalFor": [
         "agent operating rules",
-        "Company OS self-hosting and documentation-governance boundary",
-        "native Mission and append-only Mission Log self-hosting workflow",
+        "AgentFirm self-hosting and documentation-governance boundary",
+        "durable Agent Team and Global Work self-hosting workflow",
         "executor-specific staged acceptance"
       ],
       "dependsOn": [
@@ -77,7 +77,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "The Company OS product boundary, Mission/Mission Log execution foundation, native self-hosting workflow, executor proof contract, or staged acceptance requirements change.",
+      "reorgTrigger": "The AgentFirm product boundary, durable Team + Global Work execution foundation, native self-hosting workflow, or execution invariants change.",
       "authorityClass": "entry",
       "implementationState": "partial",
       "truthRefs": [
@@ -233,8 +233,8 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "AI Company OS product requirements",
-        "Docs and mixed Organization product boundary",
+        "AgentFirm product requirements",
+        "AgentFirm product boundary and execution-foundation requirements",
         "execution-foundation requirements and near-term scenarios"
       ],
       "dependsOn": [
@@ -262,7 +262,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Company OS product boundary, Docs/Organization model, execution-foundation requirements, near-term scope, scenarios, or non-goals change.",
+      "reorgTrigger": "AgentFirm product boundary, execution-foundation requirements, near-term scope, or scenarios change.",
       "authorityClass": "canonical_contract",
       "implementationState": "partial",
       "truthRefs": [
@@ -290,7 +290,7 @@
       "status": "stable",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Mission and append-only Mission Log MVP slice",
+        "execution-foundation MVP slice (Mission/Mission Log wording is historical, DOC-108)",
         "executor acceptance gates",
         "retired coordination exclusion acceptance"
       ],
@@ -321,7 +321,7 @@
         "npx pnpm@9.15.4 check",
         "cargo test"
       ],
-      "reorgTrigger": "Mission/Mission Log MVP scope, executor acceptance, Legacy Wave retirement policy, or build order changes.",
+      "reorgTrigger": "Execution-foundation MVP scope, executor acceptance, legacy-history retirement policy, or build order changes.",
       "authorityClass": "canonical_contract",
       "implementationState": "verified",
       "truthRefs": [
@@ -375,7 +375,7 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "core object relationships",
-        "Mission/Mission Log semantics and Legacy Wave boundary",
+        "current concept model: durable Teams, AgentMember identity, Work kernel; legacy Mission rows are read-only history",
         "executor kinds and Agent Team Work/Message boundary",
         "optional governance object model (Review, Gap, Evaluation, LearningNote, Vision)",
         "closeout gate and open-enum vocabularies",
@@ -422,7 +422,7 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "Mission/Mission Log product hierarchy and Legacy Wave boundary",
+        "current product architecture: durable Teams and Global Work; legacy Mission hierarchy is read-only history",
         "executor kinds and shared infrastructure",
         "retired coordination boundary"
       ],
@@ -474,8 +474,8 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "Company OS and execution-foundation architecture diagrams",
-        "Docs and mixed Organization relationship map",
+        "AgentFirm execution-foundation architecture diagrams",
+        "execution-foundation relationship map",
         "executor capability map",
         "shared infrastructure map",
         "compatibility migration map"
@@ -497,7 +497,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "The Company OS product hierarchy, Docs/Organization relationship model, executor kinds, shared runtime diagrams, or compatibility migration map change.",
+      "reorgTrigger": "The product hierarchy, executor kinds, or shared runtime diagrams change.",
       "authorityClass": "canonical_contract",
       "implementationState": "partial",
       "truthRefs": [
@@ -529,7 +529,7 @@
         "source-of-truth rules",
         "provider-native execution versus Harness coordination truth",
         "projection semantics",
-        "Mission/Mission Log judgment, Mission-Team relation, and independent runtime edges",
+        "canonical data model: AgentMember identity root, durable Team edges, independent runtime edges; legacy Mission relations are read-only history",
         "optional governance object edges",
         "retired-field removal boundary"
       ],
@@ -553,7 +553,7 @@
         "npx pnpm@9.15.4 check",
         "cargo test"
       ],
-      "reorgTrigger": "Mission/Mission Log relationships, Mission-Team/runtime edges, optional governance edges, projections, source-of-truth rules, or schema responsibilities change.",
+      "reorgTrigger": "Canonical data-model relationships, identity root, runtime edges, projections, or source-of-truth boundaries change.",
       "authorityClass": "canonical_contract",
       "implementationState": "partial",
       "truthRefs": [
@@ -622,7 +622,7 @@
       "status": "stable",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Mission/Mission Log Workbench information architecture",
+        "operations dashboard information architecture for durable Teams and Global Work",
         "executor control-plane views",
         "Agent Team ownership visibility",
         "retired-surface exclusion boundary"
@@ -651,7 +651,7 @@
         "npx pnpm@9.15.4 check",
         "harness governance check"
       ],
-      "reorgTrigger": "Mission/Mission Log navigation, executor views, read models, safe actions, or retired-surface boundaries change.",
+      "reorgTrigger": "Dashboard navigation, executor views, read models, safe actions, or retired-surface boundaries change.",
       "authorityClass": "implementation_reference",
       "implementationState": "partial",
       "truthRefs": [
@@ -676,7 +676,7 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "Agent Workbench frontend design index",
-        "Mission/Mission Log frontend implementation boundary",
+        "dashboard frontend implementation boundary",
         "Workbench page-spec map",
         "Workbench page-local layout contract map",
         "Workbench implementation-readiness summary"
@@ -1144,7 +1144,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Mission/Mission Log page list, Legacy Wave page status, page-spec template, or page-spec boundary changes.",
+      "reorgTrigger": "Dashboard page list, legacy page status, page-spec template, or page-spec boundary changes.",
       "authorityClass": "entry",
       "implementationState": "partial",
       "truthRefs": [
@@ -1409,7 +1409,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "The Agent Team object set, Mission-Team relations, TeamRun lifecycle, delegation guardrails, plugin call-surface split, or the non-durable thinking policy changes.",
+      "reorgTrigger": "Historical Agent Team object set, TeamRun lifecycle wording, delegation guardrails, or plugin call-surface history is reinterpreted.",
       "authorityClass": "canonical_contract",
       "implementationState": "partial",
       "truthRefs": [
@@ -1893,7 +1893,7 @@
       "status": "deprecated",
       "lifecycle": "stable",
       "canonicalFor": [
-        "Company OS primary product model decision",
+        "historical Company OS primary product model decision (superseded by DOC-108)",
         "Docs and mixed Organization supersession of future-layer framing"
       ],
       "dependsOn": [
@@ -1907,8 +1907,8 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "The primary Company OS model, product center, Unified Work boundary, or ADR 0026 supersession boundary changes.",
-      "authorityClass": "canonical_contract",
+      "reorgTrigger": "The historical primary Company OS model, product center, Unified Work boundary, or ADR 0026 supersession boundary changes.",
+      "authorityClass": "historical_evidence",
       "implementationState": "partial",
       "truthRefs": [
         {
@@ -1989,7 +1989,7 @@
         "npx pnpm@9.15.4 check"
       ],
       "reorgTrigger": "Page-tier model, CustomPageDefinition/Package boundaries, scoped query/action policy, or standard-view fallback requirements change.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "historical_evidence",
       "implementationState": "partial",
       "truthRefs": []
     },
@@ -1999,7 +1999,7 @@
       "status": "deprecated",
       "lifecycle": "stable",
       "canonicalFor": [
-        "Company OS SQL read model decision",
+        "historical Company OS SQL read model decision (superseded by DOC-108)",
         "canonical Store versus derived read/query/index layer boundary"
       ],
       "dependsOn": [
@@ -2017,8 +2017,8 @@
         "node scripts/check-company-os-docs-cli-smoke.mjs",
         "cargo run -q -p firm-cli -- governance check"
       ],
-      "reorgTrigger": "Company OS Store, Docs query/search/View/health/diff/export read model, SQLite/PostgreSQL adapter, or canonical write path changes.",
-      "authorityClass": "canonical_contract",
+      "reorgTrigger": "the retired Company OS Store, Docs query/search/View/health/diff/export read model, SQLite/PostgreSQL adapter, or canonical write path changes.",
+      "authorityClass": "historical_evidence",
       "implementationState": "partial",
       "truthRefs": [
         {
@@ -2052,7 +2052,7 @@
         "cargo run -q -p firm-cli -- governance check"
       ],
       "reorgTrigger": "Docs becomes Human-editor-first, PageDefinition/PagePackage source-of-truth boundaries change, or code-declared page publish gates change.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "historical_evidence",
       "implementationState": "partial",
       "truthRefs": [
         {
@@ -2444,7 +2444,7 @@
       "status": "deprecated",
       "lifecycle": "stable",
       "canonicalFor": [
-        "current Mission and append-only Mission Log authority",
+        "historical single-intent-spine decision (Mission authority retired by DOC-108)",
         "retirement of Wave authoring, gates, and current planning semantics",
         "Legacy Wave read-only compatibility boundary"
       ],
@@ -2463,8 +2463,8 @@
         "npx pnpm@9.15.4 check:docs-governance",
         "npx pnpm@9.15.4 acceptance:legacy-retirement"
       ],
-      "reorgTrigger": "Mission or Mission Log semantics, Wave retirement, or Legacy Wave read-only compatibility changes.",
-      "authorityClass": "canonical_contract",
+      "reorgTrigger": "Historical Mission or Mission Log semantics, Wave retirement, or Legacy Wave read-only compatibility changes.",
+      "authorityClass": "historical_evidence",
       "implementationState": "verified",
       "truthRefs": [
         {
@@ -2680,9 +2680,9 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "implemented identity boundary between Company Store, Execution Space, and Project Binding",
-        "Company OS truth ownership independent from Git repository paths",
-        "standalone execution capability without a Company Store",
+        "historical identity boundary between the retired Company Store, Execution Space, and Project Binding",
+        "historical Company OS truth-ownership decision (superseded by DOC-108)",
+        "standalone execution capability without the retired Company Store",
         "migration direction from project-derived compatibility stores"
       ],
       "dependsOn": [
@@ -2725,12 +2725,12 @@
     {
       "path": "docs/current/product/agent-team-works.md",
       "ownerRole": "execution-foundation",
-      "status": "planned",
+      "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
         "Agent Team Work, shared Kanban, assignment and atomic claim",
         "WorkEvent/WorkDelivery and identity-first Message/CanonicalMessageDelivery boundary",
-        "flat cross-Team WorkDelegation and Mission-Team one-to-one relationship"
+        "flat cross-Team WorkDelegation on durable Mission-less Teams"
       ],
       "dependsOn": [
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
@@ -2749,7 +2749,7 @@
         "official Claude Code Agent Teams documentation",
         "npx pnpm@9.15.4 check:docs-governance"
       ],
-      "reorgTrigger": "Work schema, lifecycle axes, claim, delivery, creation authority, flat cross-Team delegation, Team Workbench, Company aggregation, or Mission boundary changes.",
+      "reorgTrigger": "Work kernel semantics, Team Workbench, Global Work aggregation, or accountable-Team identity changes.",
       "authorityClass": "canonical_contract",
       "implementationState": "design_only",
       "truthRefs": [
@@ -2810,9 +2810,7 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "Agent Team dogfood method and defect-to-repair loop",
-        "mixed-provider live evidence bundle and exit criteria",
-        "Organization execution-foundation dogfood boundary"
+        "execution-foundation dogfood boundary (durable Teams + Global Work)"
       ],
       "dependsOn": [
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
@@ -2834,7 +2832,7 @@
         "npx pnpm@9.15.4 check:star-harness-plugin",
         "harness governance check"
       ],
-      "reorgTrigger": "Agent Team live acceptance, defect triage, Organization runtime projection, Provider update governance, or closeout criteria change.",
+      "reorgTrigger": "Dogfood loop scope, Team/Work runtime projection, or acceptance boundary changes.",
       "authorityClass": "canonical_contract",
       "implementationState": "implemented",
       "truthRefs": [
@@ -2910,7 +2908,7 @@
         "npx pnpm@9.15.4 check:docs-governance"
       ],
       "reorgTrigger": "AgentMember, MemberRun, Organization projection, or lifecycle ownership semantics change.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "historical_evidence",
       "implementationState": "implemented",
       "truthRefs": [
         {
@@ -2946,7 +2944,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check:docs-governance"
       ],
-      "reorgTrigger": "Supervising Operator, durable Lead, Runtime Supervisor, Standing Agent Inbox, or Company OS self-hosting semantics change.",
+      "reorgTrigger": "Supervising Operator, durable Lead, Runtime Supervisor, Standing Agent Inbox, or historical Company OS self-hosting semantics change.",
       "authorityClass": "canonical_contract",
       "implementationState": "partial",
       "truthRefs": [
@@ -2986,7 +2984,7 @@
         "npx pnpm@9.15.4 check:docs-governance"
       ],
       "reorgTrigger": "The decision to adopt or defer scoped Company authority brokerage changes.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "historical_evidence",
       "implementationState": "design_only",
       "truthRefs": []
     },
@@ -3011,7 +3009,7 @@
         "npx pnpm@9.15.4 check:docs-governance"
       ],
       "reorgTrigger": "The decision to adopt or defer the Human-rooted Company Constitution changes.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "historical_evidence",
       "implementationState": "design_only",
       "truthRefs": []
     },
@@ -3063,7 +3061,7 @@
       "lifecycle": "stable",
       "canonicalFor": [
         "implemented Harness CLI command surface",
-        "Company OS CLI coverage and missing dedicated command groups"
+        "harness CLI coverage and missing dedicated command groups"
       ],
       "dependsOn": [
         "crates/firm-cli/src/main.rs"
@@ -3078,7 +3076,7 @@
         "node scripts/check-company-os-operator-cli-smoke.mjs",
         "harness governance check"
       ],
-      "reorgTrigger": "Top-level harness commands, Company OS CLI groups, Store/API resources, skill suite, or validation scripts change.",
+      "reorgTrigger": "Top-level harness commands, CLI groups, Store/API resources, skill suite, or validation scripts change.",
       "authorityClass": "implementation_reference",
       "implementationState": "verified",
       "truthRefs": [
@@ -3402,7 +3400,7 @@
         "cargo run -q -p firm-cli -- governance check"
       ],
       "reorgTrigger": "The Docs page model, revision contract, storage boundary, or blob strategy changes.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "historical_evidence",
       "implementationState": "design_only",
       "truthRefs": []
     },
@@ -3713,7 +3711,7 @@
       "lastVerifiedWith": [
         "pnpm acceptance:remote-fabric"
       ],
-      "reorgTrigger": "Company Control Plane topology or cross-Node route authority changes.",
+      "reorgTrigger": "Fabric Control Plane topology or cross-Node route authority changes.",
       "authorityClass": "canonical_contract",
       "implementationState": "implemented",
       "truthRefs": [
@@ -3722,6 +3720,168 @@
           "ref": "schemas/remote-fabric/schema-bundle.v1.json"
         }
       ]
+    },
+    {
+      "path": "skills/collaborate-as-agent-team-member/SKILL.md",
+      "ownerRole": "product",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "canonical Member collaboration contract (source of the plugin mirror)"
+      ],
+      "dependsOn": [],
+      "truthRefs": [
+        {
+          "kind": "test",
+          "ref": "scripts/sync-star-harness-plugin-skills.mjs"
+        },
+        {
+          "kind": "test",
+          "ref": "scripts/check-runtime-message-fabric.mjs"
+        }
+      ],
+      "machineConsumers": [
+        "scripts/check-runtime-message-fabric.mjs",
+        "scripts/sync-star-harness-plugin-skills.mjs"
+      ],
+      "reorgTrigger": "skill contract changes",
+      "authorityClass": "canonical_contract",
+      "lastVerifiedWith": [
+        "node scripts/check-runtime-message-fabric.mjs",
+        "node scripts/sync-star-harness-plugin-skills.mjs --check"
+      ],
+      "implementationState": "implemented",
+      "reviewAfter": "2026-11-18"
+    },
+    {
+      "path": "skills/shared-references/SKILL.md",
+      "ownerRole": "product",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "canonical shared hard-invariants reference (source of the plugin mirror)"
+      ],
+      "dependsOn": [],
+      "truthRefs": [
+        {
+          "kind": "test",
+          "ref": "scripts/sync-star-harness-plugin-skills.mjs"
+        }
+      ],
+      "machineConsumers": [
+        "scripts/sync-star-harness-plugin-skills.mjs"
+      ],
+      "reorgTrigger": "skill contract changes",
+      "authorityClass": "canonical_contract",
+      "lastVerifiedWith": [
+        "node scripts/sync-star-harness-plugin-skills.mjs --check"
+      ],
+      "implementationState": "implemented",
+      "reviewAfter": "2026-11-18"
+    },
+    {
+      "path": "docs/decisions/0040-native-host-inbox-delivery.md",
+      "ownerRole": "architecture",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "kept native Host Inbox delivery decision (DOC-16 Keep row)"
+      ],
+      "dependsOn": [],
+      "truthRefs": [
+        {
+          "kind": "test",
+          "ref": "crates/firm-cli/tests/team_run_api.rs"
+        }
+      ],
+      "machineConsumers": [
+        "crates/firm-governance/src/lib.rs"
+      ],
+      "reorgTrigger": "decision superseded",
+      "authorityClass": "canonical_contract",
+      "lastVerifiedWith": [
+        "cargo run -q -p firm-cli -- governance check"
+      ],
+      "implementationState": "implemented",
+      "reviewAfter": "2027-02-18"
+    },
+    {
+      "path": "docs/decisions/0053-finance-contract-layer-retirement.md",
+      "ownerRole": "architecture",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "kept Finance contract-layer retirement decision (DOC-16 Keep row)"
+      ],
+      "dependsOn": [],
+      "truthRefs": [
+        {
+          "kind": "test",
+          "ref": "crates/firm-cli/tests/legacy_company_os.rs"
+        }
+      ],
+      "machineConsumers": [
+        "crates/firm-governance/src/lib.rs"
+      ],
+      "reorgTrigger": "decision superseded",
+      "authorityClass": "canonical_contract",
+      "lastVerifiedWith": [
+        "cargo run -q -p firm-cli -- governance check"
+      ],
+      "implementationState": "implemented",
+      "reviewAfter": "2027-02-18"
+    },
+    {
+      "path": "docs/agentfirm-role-views.md",
+      "ownerRole": "architecture",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "closed RoleView filter contract for Global Work and role surfaces"
+      ],
+      "dependsOn": [],
+      "truthRefs": [
+        {
+          "kind": "schema",
+          "ref": "schemas/role-views/agentfirm.role_views.v1"
+        }
+      ],
+      "machineConsumers": [
+        "crates/firm-governance/src/lib.rs"
+      ],
+      "lastVerifiedWith": [
+        "cargo run -q -p firm-cli -- governance check"
+      ],
+      "implementationState": "implemented",
+      "reviewAfter": "2026-11-18",
+      "reorgTrigger": "RoleView filter contract, cursor rules, or SSE invalidation changes.",
+      "authorityClass": "canonical_contract"
+    },
+    {
+      "path": "docs/current/architecture/provider-event-projection.md",
+      "ownerRole": "architecture",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "provider observation projection and exact-owner read boundary"
+      ],
+      "dependsOn": [],
+      "truthRefs": [
+        {
+          "kind": "store",
+          "ref": "crates/firm-store/src/trust_kernel.rs"
+        }
+      ],
+      "machineConsumers": [
+        "crates/firm-governance/src/lib.rs"
+      ],
+      "lastVerifiedWith": [
+        "cargo run -q -p firm-cli -- governance check"
+      ],
+      "implementationState": "implemented",
+      "reviewAfter": "2026-11-18",
+      "reorgTrigger": "Provider observation binding, owner boundary, or projection rules change.",
+      "authorityClass": "canonical_contract"
     }
   ]
 }

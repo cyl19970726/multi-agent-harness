@@ -152,13 +152,14 @@ standalone and is not a standing organization.
 | Object | Meaning | Rule |
 | --- | --- | --- |
 | `AgentTeam` | Durable flat execution agency with Host membership and immutable Node placement. | Created without any Mission; no parent/child Team topology. |
-| `AgentTeamRun` | One Team execution with frozen Team, Node, and Project Binding. | Every terminal run remains read-only history. |
-| `AgentIdentity` | Durable addressable agent identity and organization status. | It is not a provider process, Team membership, Work owner, or native transcript. |
-| `AgentSession` | One machine-local provider session owned by an exact NodeDaemon generation. | It has no Team identity and cannot outlive or bypass its NodeDaemon authority. |
-| `TeamMembership` | The collaboration overlay joining an AgentIdentity to one flat Team on the Team's immutable Node. | It does not own the provider session or Work result. |
-| `WorkExecutionBinding` | Exact Work revision → membership → AgentIdentity → AgentSession generation binding. | A successor Session cannot inherit active Work implicitly. |
-| `MemberRun` | Run-scoped coordination/history projection for role and Work attribution. | It is not provider runtime authority and cannot dispatch, interrupt, resume, or stop a provider. |
-| `Work` | TeamRun-scoped responsibility, owner, readiness, state, criteria and result. | Assignment, claim, block, submission and acceptance are Work operations governed by ADR 0050. |
+| `AgentTeamRun` | One Team execution with frozen Team, Node, and Project Binding. | Internal diagnostics and history only; every terminal run remains read-only and it never scopes durable identity or responsibility. |
+| `AgentMember` | The sole durable addressable agent identity and organization status. | It is not a provider process, Team membership, Work owner, or native transcript. |
+| `AgentIdentity` | Deprecated same-ID read-only compatibility projection of `AgentMember`. | Retained for legacy readers only; it is never a second identity root and nothing may be bound to it independently. |
+| `AgentSession` | One machine-local provider session owned by an exact NodeDaemon generation, hanging off its `AgentMember`. | It has no Team identity and cannot outlive or bypass its NodeDaemon authority. |
+| `TeamMembership` | The participation record joining an AgentMember to one flat Team on the Team's immutable Node. | It carries no identity and does not own the provider session or Work result. |
+| `WorkExecutionBinding` | Exact Work revision → membership → AgentMember → AgentSession generation binding. | A successor Session cannot inherit active Work implicitly. |
+| `MemberRun` | Run-scoped coordination/history projection for role and Work attribution. | Internal diagnostics and history only; it is not provider runtime authority and cannot dispatch, interrupt, resume, or stop a provider. |
+| `Work` | Durable-Team-scoped responsibility (`accountable_team_id`), owner, readiness, state, criteria and result. | `team_run_id` only correlates the run that surfaced it; assignment, claim, block, submission and acceptance are Work operations governed by ADR 0050. |
 | `WorkOperation` | Crash-atomic Store replay row containing one WorkEvent, its complete resulting Work, delivery creates/updates, and target-caused WorkDelegation revisions. | It prevents Work, delivery, and cross-Team roll-up projections from becoming independently visible; Hosts still act on Work, not WorkOperation. |
 | `WorkDelivery` | Reliable delivery of one Work version to a Member runtime. | It reuses delivery machinery but is not authored conversation or Work ownership. |
 | `Message` | Immutable identity-authored, source-NodeDaemon-attested conversation envelope addressed through canonical subscriptions. | It cannot carry Work ownership or runtime-control authority. |
@@ -176,9 +177,9 @@ Runtime control authority is resolved by the server as exact self or the exact
 machine Operator/NodeDaemon. Team Host authority is Team-scoped and cannot
 start, stop, resume, or cancel a global AgentSession. Callers cannot submit
 capabilities, provider profiles, permission envelopes, full AgentSession
-objects, or a different machine placement. A standalone AgentIdentity may own
+objects, or a different machine placement. A standalone AgentMember may own
 a machine Session without TeamMembership; join/leave never creates or closes
-that Session. A Team and AgentIdentity have at most one active
+that Session. A Team and AgentMember have at most one active
 TeamMembership generation; duplicate historical authority makes RoleViews fail
 closed. Unknown provider effects remain Operator-visible RecoveryRequired work
 until an evidence-backed, generation-fenced resolution records certainty

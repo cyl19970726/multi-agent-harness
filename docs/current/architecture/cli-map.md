@@ -50,7 +50,7 @@ Active repository skills:
 - `skills/star-workflow`
 - `skills/bootstrap-project-workflow`
 
-The Company OS operator skills and the Mission-orchestration skill were
+The retired Company OS operator skills and the Mission-orchestration skill were
 archived to `archive/skills/` with the DOC-108 cutover and must not be
 installed or treated as current operating contracts. Skills are
 distribution/operator guidance. They are not the authority for product

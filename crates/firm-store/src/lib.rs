@@ -10135,14 +10135,6 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
-    /// ADR 0051 changed `compare_and_close_mission` to skip the Legacy-Wave gate
-    /// check entirely for a Mission whose `legacy_wave_ids` is empty (the only
-    /// shape a NEW Mission can have now, since Legacy Wave create is retired). This
-    /// proves the OTHER branch is untouched: a Mission that already
-    /// accumulated `legacy_wave_ids` before the cutover still requires every one
-    /// of them to be an accepted, completed Legacy Wave -- its in-flight contract
-    /// does not silently change underneath it.
-
     #[test]
     fn concurrent_appends_write_complete_jsonl_rows() {
         let root = std::env::temp_dir().join(format!(

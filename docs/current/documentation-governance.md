@@ -20,7 +20,7 @@ not seven independent sources of product truth.
 | --- | --- | --- | --- |
 | Product | `docs/current/product/` | product mission, system ownership, object meaning, governance and UX contracts | yes, through a small context pack |
 | Architecture | `docs/current/architecture/architecture*.md`, `docs/current/architecture/concept-model.md`, `docs/current/architecture/data-model.md`, `docs/decisions/` | implemented boundaries, durable decisions, source-of-truth and migration rules | selected files only |
-| Execution | `docs/current/dashboard/`, `docs/current/integration/`, runtime/workflow docs | Mission and Mission Log, executors, providers, operator surfaces and runbooks | only for execution work |
+| Execution | `docs/current/dashboard/`, `docs/current/integration/`, runtime/workflow docs | Agent Teams, Work and Messages, executors, providers, operator surfaces and runbooks | only for execution work |
 | Design evidence | `design/<workstream>/` (git history) | versioned Expected, Actual, prompts, specs, overlays, comparisons and reviews | only for the selected workstream |
 | Operations | `docs/current/operations/getting-started.md`, `docs/current/operations/operations.md`, `docs/current/architecture/schemas.md`, `docs/current/operations/governance-engine.md` | commands, release and governance gates | only for implementation/operations |
 | Research | `research/` (git history) | unresolved evidence, comparisons and bounded proposals attached to an active decision or TeamWork | never default context |

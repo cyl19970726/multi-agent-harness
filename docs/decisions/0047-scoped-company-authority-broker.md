@@ -1,13 +1,17 @@
 # ADR 0047: Scoped Company authority broker
 
 
-> **Superseded by DOC-108 (legacy CompanyOS retirement, 2026-08-17).**
-> This ADR is retained as historical evidence only; its object model is not
-> current authority. See `docs/current/product/prd.md` and
-> `docs/current/architecture/architecture-map.md`.
+> **Partially superseded by DOC-108 (legacy CompanyOS retirement, 2026-08-17).**
+> The Company-broker object model is retired and not current authority. Per
+> the DOC-16 Merge row, these safety principles SURVIVE as current authority
+> (carried by the execution-foundation docs): root transport secrets never
+> enter Agent runtimes; protected external effects require Human or policy
+> approval (see `docs/current/architecture/member-continuation-model.md` and
+> `docs/current/operations/operations.md`); denial audit, idempotency, and
+> uncertain-effect reconciliation.
 
 ```text
-status: accepted target contract; Agent Team execution chain amended by ADR 0050; implementation pending
+status: superseded (DOC-108); was: accepted target contract; Agent Team execution chain amended by ADR 0050; implementation pending
 date: 2026-07-31
 owner_role: company-authority-architecture
 ```

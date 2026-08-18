@@ -48,7 +48,8 @@ Close is reversible runtime shutdown, not deletion or retirement.
   provider-native transcript remain.
 - Mail queued before Close is frozen. Closed members cannot send, receive,
   claim, or acknowledge mail; ordinary delivery never reopens them.
-- Wave, TeamRun, and Mission completion never imply Close.
+- TeamRun completion never implies Close (nor did the retired Wave/Mission
+  completions).
 
 ### Reopen
 

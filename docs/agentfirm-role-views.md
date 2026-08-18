@@ -47,7 +47,7 @@ an embedded desktop host can fail closed on a handshake mismatch.
 
 ## Query and invalidation
 
-Company Work accepts only the closed filter set documented by the schema. The
+Global Work accepts only the closed filter set documented by the schema. The
 default order is `updated_at desc, work_id asc`; its cursor is bound to filters,
 sort, and the source event sequence. SSE is invalidation-only for the canonical
 trust ledger. Clients refetch the relevant RoleView instead of folding events.
@@ -61,5 +61,5 @@ pnpm acceptance:wave4:deterministic
 ```
 
 Read builders do not initialize or reconcile a Store. The focused Rust purity
-test proves an empty/nonexistent Store remains absent after a Company RoleView
-read.
+test proves an empty/nonexistent Store remains absent after a Global-Work
+RoleView read.

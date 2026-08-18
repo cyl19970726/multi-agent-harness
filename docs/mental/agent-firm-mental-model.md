@@ -15,20 +15,22 @@ This is the authoritative mental model. When any other document (ADR, skill, pro
 ## Firm
 
 A Firm is the top-level operating context: one operator's execution
-foundation. It has two facets: Organization (who) and Execution (what's being
-done). Company-memory/Knowledge management lives outside this repository's
-current authority (DOC-108): the retired Company/Docs layers remain exportable
-history, never a current facet.
+foundation. It has two facets: Teams and Members (who) and Execution (what's
+being done). The retired Company Organization/Docs modules are not a facet:
+company-memory/knowledge management lives outside this repository's current
+authority (DOC-108) as exportable history only.
 
 ---
 
-## Organization
+## Teams and Members
 
-Organization answers "who exists and how are they organized."
+Teams and Members answer "who exists and how are they organized."
 
-**Agent Teams**: An independent unit of execution with a Host AgentMember and Members. The Organization contains flat AgentTeams — no nesting or parent/child Team authority. A Team is created without any Mission; pre-cutover Teams may carry read-only `legacy_mission_id` provenance. Every Team has immutable `node_id` placement on one machine. A Team's Members never cross machines. `labels` are optional filtering metadata; placement identity is not optional metadata.
+**Agent Teams**: An independent unit of execution with a Host AgentMember and Members. The Firm contains flat AgentTeams — no nesting or parent/child Team authority. A Team is created without any Mission; pre-cutover Teams may carry read-only `legacy_mission_id` provenance. Every Team has immutable `node_id` placement on one machine. A Team's Members never cross machines. `labels` are optional filtering metadata; placement identity is not optional metadata.
 
-**Agent Memberships**: Durable agent identities that persist across Team Runs. Not tied to any single execution. Examples: governance Agent auditing docs/works periodically, scheduled-task Agent running on a timer.
+**Agent Members**: `AgentMember` is the sole durable agent identity. It persists across Team Runs and is not tied to any single execution. Examples: governance Agent auditing works periodically, scheduled-task Agent running on a timer.
+
+**Team Memberships**: `TeamMembership` records only a member's participation in one Team, in generations. It never carries identity, and it is never a second identity root; the `AgentIdentity` name is a deprecated same-ID read-only compatibility projection of `AgentMember`.
 
 **Actors**: Four types — Human, Agent, External, Service. `ActorRef` (type + id) references a participant wherever needed.
 
@@ -85,8 +87,8 @@ One logical Firm may place different AgentTeams on different ExecutionNodes. Eac
 | Agent Team execution | ✅ Live | Full lifecycle |
 | Work — gates | ✅ Live | Open persistence/closed default registry, four built-ins, authority-bound Review, Store acceptance invariant |
 | Work — workspace | ✅ Live | PR #406 — WorkWorkspace, ensure/cleanup, --worktree CLI |
-| Organization — Agent Teams | ✅ Live | flat Teams; optional legacy Mission provenance; immutable node_id placement; labels |
-| Organization — Agent Memberships | ✅ Live | durable AgentMember identity + TeamMembership generations (DEV-35) |
+| Teams and Members — Agent Teams | ✅ Live | flat Teams; optional legacy Mission provenance; immutable node_id placement; labels |
+| Teams and Members — Agent Members | ✅ Live | durable AgentMember identity + TeamMembership participation generations (DEV-35) |
 | Work — labels / tags | ❌ Not started | Filter + tag UI |
 | Docs system | Retired (DOC-108) | Built-in Docs removed; historical data export/verify-only |
 | Cross-machine communication | ✅ Live | peer-Team messaging over the canonical fabric (DEV-37) |

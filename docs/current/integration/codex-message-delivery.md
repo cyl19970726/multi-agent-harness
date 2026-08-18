@@ -17,7 +17,7 @@ chat, tools and execution history. Codex does not poll Harness storage.
 ```text
 Message
   -> authorized MessageSubscription expansion
-  -> one CanonicalMessageDelivery per recipient AgentIdentity
+  -> one CanonicalMessageDelivery per recipient AgentMember
   -> exact current AgentSession resolved at claim time
   -> NodeDaemon-fenced provider dispatch
   -> app-server turn/start or turn/steer
@@ -36,8 +36,8 @@ bounded Dynamic Workflow or historical behavior and is not a Team fallback.
 | Object | Meaning |
 | --- | --- |
 | `Message` | one immutable, source-authored communication envelope |
-| `MessageSubscription` | durable routing policy for one AgentIdentity |
-| `CanonicalMessageDelivery` | independent delivery truth for one Message and recipient AgentIdentity |
+| `MessageSubscription` | durable routing policy for one AgentMember |
+| `CanonicalMessageDelivery` | independent delivery truth for one Message and recipient AgentMember |
 | `WorkDelivery` | one assigned or changed Work revision; never chat |
 | `RuntimeCommand` | one authorized provider effect; never chat or Work ownership |
 
@@ -56,18 +56,18 @@ no Message kind carries runtime authority.
 ## Identity, Addressing And Initial State
 
 - Every Message freezes its source Execution Space, Node, NodeDaemon authority
-  generation, authenticated sender Actor, optional sender AgentIdentity and
+  generation, authenticated sender Actor, optional sender AgentMember and
   AgentSession, address kind, target, recipients, content fingerprint and
   idempotency key.
 - Authorized subscriptions expand one Message into one
-  `CanonicalMessageDelivery` per recipient AgentIdentity. A Team address never
+  `CanonicalMessageDelivery` per recipient AgentMember. A Team address never
   becomes one shared mutable delivery.
 - Delivery begins `queued` or, while crossing a Node boundary, `routed`. The
   target NodeDaemon alone may claim it and freezes the exact current
   AgentSession id and generation at that point.
 - Direct, Team, topic and authorized-broadcast addresses obey their selected
   subscription and membership policy. Team-scoped conversation may link a
-  TeamRun, but AgentIdentity remains the recipient authority.
+  TeamRun, but AgentMember remains the recipient authority.
 - Work owner/version and WorkEvents prove responsibility. WorkDelivery carries
   the exact Work id/version that enters the Member's safe-boundary context.
 - Message may link a Work and preserve correlation/reply lineage. It never
@@ -103,7 +103,7 @@ Provider side effects may start a turn, so delivery is fenced before injection:
 
 ```text
 latest queued CanonicalMessageDelivery
-  -> verify Message, subscription, AgentIdentity and target Node authority
+  -> verify Message, subscription, AgentMember and target Node authority
   -> resolve and freeze one current AgentSession generation
   -> claim under current NodeDaemon / Team Supervisor authority
   -> submit envelope to the same-process app-server adapter
@@ -144,11 +144,11 @@ Each delivered turn contains the smallest stable coordination envelope:
 
 ```text
 project_id
-mission_id (derived from AgentTeam)
+mission_id (legacy provenance derived from AgentTeam; absent for new Teams)
 agent_team_id / execution_node_id
 team_run_id / member_run_id
 work_id / work_version / work_delivery_id
-authenticated sender AgentIdentity/Session and recipient AgentIdentity
+authenticated sender AgentMember/Session and recipient AgentMember
 team roster and roles
 owned paths / worktree / permission boundary
 Work context and completion criteria
@@ -162,7 +162,7 @@ uses the recorded native thread id and verified `thread/resume`.
 
 Harness does not rebuild continuity by concatenating Messages. Provider-native
 subagents remain inside the Member's own thread tree and do not receive Harness
-mailbox identities unless the Host explicitly creates a durable AgentIdentity,
+mailbox identities unless the Host explicitly creates a durable AgentMember,
 Team membership and AgentSession for them.
 
 ## Read Surfaces And Authority

@@ -2,7 +2,8 @@
 
 ```text
 status: accepted historical substrate; current semantics amended by ADRs 0032,
-  0034, 0044, 0050, and 0056
+  0044, 0050, and 0056 (its ADR 0034 Mission/Wave amendment is itself retired
+  legacy history under DOC-108)
 owner_role: architecture
 canonical_for: origin of the AgentTeamRun/MemberRun control-plane boundary;
   current responsibility, lifecycle, and delivery rules live in the amending ADRs

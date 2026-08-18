@@ -117,8 +117,8 @@ the coordination store. Provider cwd resolves the attached
 
 - no second organization-agent identity beside AgentMember;
 - no Company task ledger, migration fallback, or dual-write Work path;
-- no Mission/Wave/Mission Log or Company OS writers, readers as current
-  authority, or dual runtime control;
+- no writers for the retired Mission/Wave/Mission Log or Company OS objects, no
+  reads of them as current authority, and no dual runtime control;
 - no raw provider transcripts or thinking as Harness evidence;
 - no name-based mapping of responsibility or identity.
 

@@ -16,10 +16,11 @@ decisions stay in [frontend-architecture.md](frontend-architecture.md) and ADR
 [0016](../../decisions/0016-tailwind-shadcn-adoption.md) (stack). Acceptance gates stay in
 acceptance.md.
 
-Mission + Mission Log direction is canonical in ../architecture-map.md and
-ADR 0051. ADR 0026 preserves the predecessor Mission/Wave design as history. Existing
-Vision/Goal/Task work-board and Goal Workbench contracts are archived; they no
-longer define the top-level product IA.
+Durable AgentTeams + Work direction is canonical in ../architecture-map.md.
+The retired Mission + Mission Log direction (ADR 0051) and its predecessor
+Mission/Wave design (ADR 0026) are history. The archived Vision/Goal/Task
+work-board and Goal Workbench contracts are also history; they no longer
+define the top-level product IA.
 
 ## Documentation placement
 
@@ -71,11 +72,11 @@ The UI must make this workflow inspectable without raw JSON or hidden chat
 context:
 
 ```text
-Mission context -> append-only Mission Log judgment/replan/recovery entries
+durable Team context -> append-only WorkEvent judgment/replan/recovery lineage
   -> one flat AgentTeam on one ExecutionNode
   -> shared Works / WorkDelivery / linked conversation / native sessions
   -> Member submit -> Host accept or request changes
-  -> Host judgment -> plan adjustment, recovery, or Mission closeout
+  -> Host judgment -> plan adjustment, recovery, or Work acceptance
 ```
 
 The retired coordination views are absent from active product navigation and
@@ -115,7 +116,7 @@ copied into Mission/Log IA.
 Work lifecycle actions belong to their Team Workspace surfaces. Execution
 pressure belongs to the TeamRun or MemberRun record that produced it. There is
 no replacement global Goal-era decision or warnings page, and the retired
-Mission/Company OS pages have no successor page in this shell.
+Mission and retired Company OS pages have no successor page in this shell.
 
 ## Source Of Truth Boundary
 

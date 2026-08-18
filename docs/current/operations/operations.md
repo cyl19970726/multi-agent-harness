@@ -81,8 +81,9 @@ When a live Member appears stuck, inspect MemberRun/Supervisor health, Inbox
 delivery, unresolved `provider_interaction_request` Messages, WorkDelivery,
 RuntimeCommand status, AgentSession control state, and provider
 capability/profile admission first. There is no generic PendingInteraction
-object; inspect the existing Approval ledger only when a protected project
-action required approval. Then use bounded provider-native session forensics
+object; for a protected project action, inspect the Work review/acceptance
+record that carries the Human or policy approval (the retired generic Approval
+ledger no longer exists). Then use bounded provider-native session forensics
 through its `NativeSessionRef`. Compare tool/process evidence with the Member
 narrative; never read an entire large JSONL into the Host context or copy the
 transcript into Harness. The output is a diagnosis and next control action,

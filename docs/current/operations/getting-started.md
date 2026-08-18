@@ -2,7 +2,7 @@
 
 Choose the execution surface first:
 
-- install **Star Harness** for Mission, Mission Log, and persistent Agent Teams;
+- install **Star Harness** for durable Agent Teams, Work, and Messages;
 - install **star-workflow** for bounded, one-shot Dynamic Workflow; and
 - start one Harness service plus the Workbench for shared state and controls.
 
@@ -58,9 +58,9 @@ claude plugin install star-harness@multi-agent-harness --scope user
 ```
 
 Start a new task/session, then verify that `star-harness` is enabled and that
-the `orchestrate-mission-waves` compatibility-named skill and
-`collaborate-as-agent-team-member` skill
-are visible. The bundled MCP entry runs `firm mcp`, so the `firm` binary
+the `collaborate-as-agent-team-member` skill is visible (the historical
+`orchestrate-mission-waves` Host skill was archived by DOC-108 and is no
+longer shipped). The bundled MCP entry runs `firm mcp`, so the `firm` binary
 must be on `PATH`.
 
 The separate `star-workflow` plugin remains available for Dynamic Workflow:
@@ -79,8 +79,9 @@ cargo build -p firm-cli
 ./target/debug/firm project list
 ```
 
-An **Execution Space** owns Mission/Mission Log, Agent Team, Workflow, and coordination
-state. A **Project Binding** independently selects provider cwd, project
+An **Execution Space** owns Agent Team, Work, Message, Workflow, and
+coordination state (plus the retired Mission/Mission Log rows as read-only
+legacy history). A **Project Binding** independently selects provider cwd, project
 instructions, Skills, Git/worktree, and permission boundaries. Select them
 explicitly with `--space` / `HARNESS_SPACE` and
 `--project` / `HARNESS_PROJECT`, or `firm space switch` and
