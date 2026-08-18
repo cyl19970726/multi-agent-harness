@@ -29,7 +29,7 @@ pub enum ProjectionAccessError {
     CrossProjectBinding,
     #[error("provider event projection belongs to another Team")]
     CrossTeam,
-    #[error("private Session events require the exact AgentIdentity owner")]
+    #[error("private Session events require the exact AgentMember owner")]
     NotSessionOwner,
     #[error("projection authority does not match the folded AgentSession generation")]
     StaleSessionAuthority,
