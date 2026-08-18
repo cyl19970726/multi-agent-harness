@@ -177,9 +177,11 @@ exists yet.
 
 ## Acceptance
 
-Workbench acceptance requires fixtures plus at least one live Mission showing:
+Workbench acceptance requires fixtures plus at least one live durable
+AgentTeam showing:
 
-1. Mission context plus append-only Mission Log without a legacy dependency graph;
+1. Team context plus append-only WorkEvent lineage (historical Mission rows,
+   when present, appear only as read-only legacy context);
 2. the durable flat AgentTeam and a Team/Node/Project-fenced TeamRun with
    assigned, unassigned, claimed, delivered, reviewed, and child Work data;
 3. at least one independent WorkflowRun/Host-work projection or an explicit

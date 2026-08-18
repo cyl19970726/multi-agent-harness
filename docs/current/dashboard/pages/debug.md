@@ -30,7 +30,8 @@ Canonical objects:
   retired Missions, Mission Log entries, and Waves in Legacy/history only,
   identity-first Messages, MessageSubscriptions, per-recipient
   CanonicalMessageDeliveries, actions, sessions,
-  documents, actors, TeamWorks, Approvals, finance records, and evidence;
+  TeamWorks and evidence, plus the retired documents, actors, Approvals, and
+  finance records in Legacy/history only;
 - source labels;
 - live/offline load state.
 

@@ -26,7 +26,7 @@ authority (DOC-108) as exportable history only.
 
 Teams and Members answer "who exists and how are they organized."
 
-**Agent Teams**: An independent unit of execution with a Host AgentMember and Members. The Organization contains flat AgentTeams — no nesting or parent/child Team authority. A Team is created without any Mission; pre-cutover Teams may carry read-only `legacy_mission_id` provenance. Every Team has immutable `node_id` placement on one machine. A Team's Members never cross machines. `labels` are optional filtering metadata; placement identity is not optional metadata.
+**Agent Teams**: An independent unit of execution with a Host AgentMember and Members. The Firm contains flat AgentTeams — no nesting or parent/child Team authority. A Team is created without any Mission; pre-cutover Teams may carry read-only `legacy_mission_id` provenance. Every Team has immutable `node_id` placement on one machine. A Team's Members never cross machines. `labels` are optional filtering metadata; placement identity is not optional metadata.
 
 **Agent Members**: `AgentMember` is the sole durable agent identity. It persists across Team Runs and is not tied to any single execution. Examples: governance Agent auditing works periodically, scheduled-task Agent running on a timer.
 

@@ -31,7 +31,7 @@ unconsumed; the on-demand latest projection omits it and reports truncation.
 
 ## Identity and source authority
 
-Every observation binds exact AgentIdentity, AgentSession id/generation, and
+Every observation binds the exact AgentMember (recorded under its same-ID deprecated AgentIdentity compatibility naming), AgentSession id/generation, and
 NodeDaemon id/generation from server context. Provider JSON cannot select those
 fields, visibility, collaboration/Evidence references, or RuntimeCommand
 authority. The V1 observation schema carries no collaboration-reference field.
@@ -56,7 +56,7 @@ control action and is not implied by reading this projection.
 
 ## Privacy projections
 
-`SessionEventProjection` is available only to the exact AgentIdentity owner of
+`SessionEventProjection` is available only to the exact owner AgentMember of
 the current AgentSession generation. Team Host status does not bypass this
 boundary. `TeamRuntimeActivity` is the only provider-derived shape eligible for
 a future Team projection: it is a separately constructed allowlist containing
@@ -71,7 +71,7 @@ holds at most 24 items per exact Execution Space + Project Binding +
 AgentSession + MemberRun generation for 10 seconds. The SSE event name is
 `live_provider_activity`, and the envelope is
 `agentfirm.live_provider_activity_event.v1`. Delivery requires an authenticated
-SSE subscription whose actor is the exact owner AgentIdentity. Same-project
+SSE subscription whose actor is the exact owner AgentMember. Same-project
 Hosts, siblings, anonymous streams, cross-project streams, and later reconnects
 receive no Member-private overlay. Terminal turn state clears the overlay
 immediately; disconnect, TTL expiry, or process restart loses it.

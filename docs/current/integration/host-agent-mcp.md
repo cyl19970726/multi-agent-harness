@@ -230,7 +230,7 @@ Stable external Agent mail uses `agent route-inbox` and a
 AgentMember to the exact current AgentSession generation at claim time. This
 is explicit transport state, not a second Agent identity: AgentMember is
 durable, MemberRun is one participation, AgentSession owns the provider binding,
-and Company membership is only an AgentMember ActorRef projection.
+and Team participation is only a TeamMembership over an AgentMember ActorRef.
 
 Recipient acknowledgement means “the recipient consumed this envelope,” not
 “the recipient agrees” and not “the Host accepts the work.” A reviewer must inspect the submitted Work,

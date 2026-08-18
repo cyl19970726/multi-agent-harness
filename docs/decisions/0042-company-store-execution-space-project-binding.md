@@ -269,12 +269,14 @@ reconstructable.
 
 ## Acceptance
 
-1. Standalone execution can create Mission/Wave/Agent Team/Workflow records
-   without any legacy Company Store.
+1. Standalone execution can create Agent Team/Workflow records (and, at
+   decision time, the since-retired Mission/Wave records) without any
+   legacy Company Store.
 2. A legacy Company Store could contain Wanchengwanling and AgentOS operating
    areas in one company truth boundary while mapping external repositories.
-3. One Mission can use multiple Project Bindings through separate TeamRuns or
-   MemberRuns without duplicating Mission/Wave history.
+3. At decision time, one legacy Mission could use multiple Project Bindings
+   through separate TeamRuns or MemberRuns without duplicating its history;
+   the same multi-binding rule now applies to durable Teams.
 4. Switching Company never silently switches Execution Space; switching
    Execution Space never rewrites Company truth; selecting Project Binding never
    reroutes Company writes.

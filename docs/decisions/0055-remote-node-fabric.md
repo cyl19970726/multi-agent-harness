@@ -1,7 +1,12 @@
 # ADR 0055: Remote Node Fabric and sole cross-Node route truth
 
+> **Naming partially superseded by DOC-108 (2026-08-18).** The decision was
+> recorded with "Company Control Plane" / "CompanyNode" naming; DOC-16
+> supersedes only that naming (now Fabric Control Plane / ExecutionNode,
+> same rows and rules). The route-truth decision itself remains current.
+
 **Date:** 2026-08-11
-**Status:** accepted, implemented
+**Status:** accepted, implemented; Company naming superseded (DOC-108)
 **Canonical contract:**
 [Remote Node Fabric](../current/architecture/remote-node-fabric.md)
 

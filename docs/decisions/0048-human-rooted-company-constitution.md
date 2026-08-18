@@ -1,10 +1,13 @@
 # ADR 0048: Human-rooted Company Constitution
 
 
-> **Superseded by DOC-108 (legacy CompanyOS retirement, 2026-08-17).**
-> This ADR is retained as historical evidence only; its object model is not
-> current authority. See `docs/current/product/prd.md` and
-> `docs/current/architecture/architecture-map.md`.
+> **Partially superseded by DOC-108 (legacy CompanyOS retirement, 2026-08-17).**
+> The Company-constitution object model is retired and not current authority.
+> Per the DOC-16 Merge row, these principles SURVIVE as current authority
+> (carried by the execution-foundation docs): Human authority over protected
+> or irreversible external effects; the Runtime Supervisor cannot create
+> intent, grants, or Work acceptance; attenuation, revocation, and
+> no-authority-widening.
 
 ```text
 status: superseded (DOC-108); was: accepted target contract; implementation pending

@@ -47,7 +47,7 @@ consequences, affected modules, and validation path.
 | [0047](0047-scoped-company-authority-broker.md) | superseded by DOC-108 | The Company authority broker plan retired with the Company layer |
 | [0048](0048-human-rooted-company-constitution.md) | superseded by DOC-108 | The Company constitution plan retired with the Company layer |
 | [0049](0049-member-coordination-and-runtime-lifecycle.md) | active, implemented | Member coordination and disposable adapter runtime have separate Close, Reopen, and Retire semantics |
-| [0050](0050-agent-team-work-board-and-message-boundary.md) | superseded by the Agent Firm Mental Model; implementation pending | Work is the scheduling primitive; permanent Company WorkItem separation is superseded |
+| [0050](0050-agent-team-work-board-and-message-boundary.md) | accepted; flat-Team amendment implemented; historical Mission boundary retired (DOC-108) | Work is the scheduling primitive; the retired Company WorkItem separation stays superseded |
 | [0051](0051-single-intent-spine.md) | superseded by DOC-108 | The Mission/Mission Log spine is retired; Work + Messages replaced it |
 | [0052](0052-nested-agent-teams-are-the-agent-organization.md) | superseded by [mental model](../mental/agent-firm-mental-model.md) | Proposed a recursive AgentTeam topology; that proposal is superseded by flat Agent Teams (no nesting). See the Agent Firm Mental Model. |
 | [0053](0053-finance-contract-layer-retirement.md) | accepted; staged retirement | Finance contract layer retired; Commitment/Payment code remains dormant until decommission |

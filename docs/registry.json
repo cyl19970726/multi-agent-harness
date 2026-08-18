@@ -234,7 +234,7 @@
       "lifecycle": "stable",
       "canonicalFor": [
         "AgentFirm product requirements",
-        "Docs and mixed Organization product boundary",
+        "AgentFirm product boundary and execution-foundation requirements",
         "execution-foundation requirements and near-term scenarios"
       ],
       "dependsOn": [
@@ -475,7 +475,7 @@
       "lifecycle": "stable",
       "canonicalFor": [
         "AgentFirm execution-foundation architecture diagrams",
-        "Docs and mixed Organization relationship map",
+        "execution-foundation relationship map",
         "executor capability map",
         "shared infrastructure map",
         "compatibility migration map"
@@ -2725,7 +2725,7 @@
     {
       "path": "docs/current/product/agent-team-works.md",
       "ownerRole": "execution-foundation",
-      "status": "planned",
+      "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
         "Agent Team Work, shared Kanban, assignment and atomic claim",
@@ -2749,7 +2749,7 @@
         "official Claude Code Agent Teams documentation",
         "npx pnpm@9.15.4 check:docs-governance"
       ],
-      "reorgTrigger": "Work schema, lifecycle axes, claim, delivery, creation authority, flat cross-Team delegation, Team Workbench, Company aggregation, or Mission boundary changes.",
+      "reorgTrigger": "Work kernel semantics, Team Workbench, Global Work aggregation, or accountable-Team identity changes.",
       "authorityClass": "canonical_contract",
       "implementationState": "design_only",
       "truthRefs": [
@@ -2810,9 +2810,7 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "Agent Team dogfood method and defect-to-repair loop",
-        "mixed-provider live evidence bundle and exit criteria",
-        "Organization execution-foundation dogfood boundary"
+        "execution-foundation dogfood boundary (durable Teams + Global Work)"
       ],
       "dependsOn": [
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
@@ -2834,7 +2832,7 @@
         "npx pnpm@9.15.4 check:star-harness-plugin",
         "harness governance check"
       ],
-      "reorgTrigger": "Agent Team live acceptance, defect triage, Organization runtime projection, Provider update governance, or closeout criteria change.",
+      "reorgTrigger": "Dogfood loop scope, Team/Work runtime projection, or acceptance boundary changes.",
       "authorityClass": "canonical_contract",
       "implementationState": "implemented",
       "truthRefs": [
@@ -3713,7 +3711,7 @@
       "lastVerifiedWith": [
         "pnpm acceptance:remote-fabric"
       ],
-      "reorgTrigger": "Company Control Plane topology or cross-Node route authority changes.",
+      "reorgTrigger": "Fabric Control Plane topology or cross-Node route authority changes.",
       "authorityClass": "canonical_contract",
       "implementationState": "implemented",
       "truthRefs": [
@@ -3832,6 +3830,58 @@
       ],
       "implementationState": "implemented",
       "reviewAfter": "2027-02-18"
+    },
+    {
+      "path": "docs/agentfirm-role-views.md",
+      "ownerRole": "architecture",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "closed RoleView filter contract for Global Work and role surfaces"
+      ],
+      "dependsOn": [],
+      "truthRefs": [
+        {
+          "kind": "schema",
+          "ref": "schemas/role-views/agentfirm.role_views.v1"
+        }
+      ],
+      "machineConsumers": [
+        "crates/firm-governance/src/lib.rs"
+      ],
+      "lastVerifiedWith": [
+        "cargo run -q -p firm-cli -- governance check"
+      ],
+      "implementationState": "implemented",
+      "reviewAfter": "2026-11-18",
+      "reorgTrigger": "RoleView filter contract, cursor rules, or SSE invalidation changes.",
+      "authorityClass": "canonical_contract"
+    },
+    {
+      "path": "docs/current/architecture/provider-event-projection.md",
+      "ownerRole": "architecture",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "provider observation projection and exact-owner read boundary"
+      ],
+      "dependsOn": [],
+      "truthRefs": [
+        {
+          "kind": "store",
+          "ref": "crates/firm-store/src/trust_kernel.rs"
+        }
+      ],
+      "machineConsumers": [
+        "crates/firm-governance/src/lib.rs"
+      ],
+      "lastVerifiedWith": [
+        "cargo run -q -p firm-cli -- governance check"
+      ],
+      "implementationState": "implemented",
+      "reviewAfter": "2026-11-18",
+      "reorgTrigger": "Provider observation binding, owner boundary, or projection rules change.",
+      "authorityClass": "canonical_contract"
     }
   ]
 }
