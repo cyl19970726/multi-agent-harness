@@ -2071,7 +2071,12 @@ fn exact_self_session_projection_follows_fresh_start_settle_sync() {
     ]);
     // DOC-108 retired the Mission writers; seed legacy provenance directly.
     let mission_id = "mission-settle-sync".to_string();
-    firm_env::seed_historical_mission(&home, &project_id, &mission_id, "Fresh-start Session binding");
+    firm_env::seed_historical_mission(
+        &home,
+        &project_id,
+        &mission_id,
+        "Fresh-start Session binding",
+    );
     let host_id = "agent-settle-sync-host";
     let host = create_canonical_agent_member(
         &home,
@@ -3276,7 +3281,12 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
     ]);
     // DOC-108 retired the Mission writers; seed legacy provenance directly.
     let mission_id = "mission-delivery-projection".to_string();
-    firm_env::seed_historical_mission(&home, &project_id, &mission_id, "Delivery projection contract");
+    firm_env::seed_historical_mission(
+        &home,
+        &project_id,
+        &mission_id,
+        "Delivery projection contract",
+    );
     let host_id = "agent-acceptance-host";
     let member_id = "agent-acceptance-member";
     for (id, name, role) in [

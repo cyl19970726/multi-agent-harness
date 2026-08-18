@@ -21,30 +21,30 @@ use harness_core::{
     HostDispatchConfig, LaunchMcp, LaunchPermission, LaunchSpec, LegacyWave, MemberAction,
     MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver, MemberRunStatus,
     MemberWorkspaceSnapshot, MessageTerminalSource, MissionLogEntry, NativeSessionAvailability,
-    NativeSessionRef, NodeDaemonLeaseStatus,
-    NodeProjectRegistration, NodeProjectRegistrationStatus, OrdinaryMessageBoundary,
-    ProjectContext, ProjectKind, ProviderAccountRef, ProviderCapabilities,
-    ProviderCapacityConfidence, ProviderCapacityEvidence, ProviderCapacitySnapshot,
-    ProviderCapacityState, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
-    ProviderCompatibilityAdmissionPolicy, ProviderCompatibilityBlockBoundary,
-    ProviderCompatibilityBlockCause, ProviderCompatibilityBlockSource, ProviderCompatibilityStatus,
-    ProviderDispatchAttempt, ProviderDispatchIntent, ProviderEventFidelity,
-    ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
-    ProviderIntegrationProfile, ProviderInteractionMessageOption, ProviderInteractionMode,
-    ProviderInteractionRequestBody, ProviderInteractionResponseBody, ProviderInteractionType,
-    ProviderLaunchConfig, ProviderLaunchProfile, ProviderLaunchStatus, ProviderProcess,
-    ProviderProcessHealth, ProviderProcessStatus, ProviderResponseIntent,
-    ProviderRuntimeContextFact, ProviderRuntimeProjection, ProviderWorkDispatch,
-    ProviderWorkDispatchStatus, RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage,
-    RegistryMessageIntent, Review, SecurityEnforcementLocus, SecurityEnforcementLocusKind,
-    SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus,
-    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection, TeamRecipientKind,
-    TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease,
-    Validate, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition,
-    WorkDelegation, WorkDelegationState, WorkPhase, WorkPriority, WorkRef, WorkResolution,
-    WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch,
-    WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
-    WorkflowTerminalReason, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
+    NativeSessionRef, NodeDaemonLeaseStatus, NodeProjectRegistration,
+    NodeProjectRegistrationStatus, OrdinaryMessageBoundary, ProjectContext, ProjectKind,
+    ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
+    ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityAdmission,
+    ProviderCompatibilityAdmissionLifecycle, ProviderCompatibilityAdmissionPolicy,
+    ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
+    ProviderCompatibilityBlockSource, ProviderCompatibilityStatus, ProviderDispatchAttempt,
+    ProviderDispatchIntent, ProviderEventFidelity, ProviderExecutionControls,
+    ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
+    ProviderInteractionMessageOption, ProviderInteractionMode, ProviderInteractionRequestBody,
+    ProviderInteractionResponseBody, ProviderInteractionType, ProviderLaunchConfig,
+    ProviderLaunchProfile, ProviderLaunchStatus, ProviderProcess, ProviderProcessHealth,
+    ProviderProcessStatus, ProviderResponseIntent, ProviderRuntimeContextFact,
+    ProviderRuntimeProjection, ProviderWorkDispatch, ProviderWorkDispatchStatus,
+    RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage, RegistryMessageIntent,
+    Review, SecurityEnforcementLocus, SecurityEnforcementLocusKind, SenderKind, TeamActorKind,
+    TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
+    TeamMemberCloseStatus, TeamMessageProjection, TeamRecipientKind, TeamRecipientRef,
+    TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Validate, Work,
+    WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition, WorkDelegation,
+    WorkDelegationState, WorkPhase, WorkPriority, WorkRef, WorkResolution, WorkflowArtifactFile,
+    WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
+    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
     canonical_surface, CanonicalMemberRunAdmission, HarnessStore, HostAttentionClaimResult,
@@ -259,7 +259,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                 source: StoreSource::WorkflowChildEnv,
                 project_selection_explicit: false,
                 context: None,
-                    execution_space_context: None,
+                execution_space_context: None,
             });
         }
     }
@@ -286,7 +286,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                 source: StoreSource::CwdWalkUp,
                 project_selection_explicit: false,
                 context: None,
-                    execution_space_context: None,
+                execution_space_context: None,
             });
         }
     };
@@ -438,7 +438,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                             source: StoreSource::RegistryCurrent,
                             project_selection_explicit: false,
                             context,
-                                            execution_space_context: None,
+                            execution_space_context: None,
                         });
                     }
                     Ok(Some(_)) => {
@@ -468,7 +468,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                             source: StoreSource::CwdWalkUp,
                             project_selection_explicit: false,
                             context: None,
-                                            execution_space_context: None,
+                            execution_space_context: None,
                         });
                     }
                 }
@@ -486,7 +486,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                 source: StoreSource::RegistryCurrent,
                 project_selection_explicit: false,
                 context: Some(ctx),
-                    execution_space_context: None,
+                execution_space_context: None,
             });
         }
     }
@@ -4195,7 +4195,10 @@ pub(crate) fn retired_wave_write_error(command: &str) -> CliError {
 /// there is exactly one place (this function plus
 /// [`retired_mission_write_command`]) that states the retirement.
 pub(crate) fn retired_mission_write_command(command: &str) -> bool {
-    matches!(command, "create" | "update-context" | "close" | "log-append")
+    matches!(
+        command,
+        "create" | "update-context" | "close" | "log-append"
+    )
 }
 
 pub(crate) fn retired_mission_write_error(command: &str) -> CliError {
@@ -23246,7 +23249,6 @@ impl ServeProjects {
         }
         map
     }
-
 }
 
 fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]) -> CliResult<()> {
@@ -26083,7 +26085,6 @@ fn handle_http_connection(
         return Ok(());
     }
 
-
     if path_only == "/v1/live/member-activity" {
         write_http_json(
             &mut stream,
@@ -26501,7 +26502,6 @@ fn handle_space_switch(
         .map_err(execution_space_err)?;
     Ok((space.id.clone(), HarnessStore::new(space.store_root)))
 }
-
 
 /// Render the compatibility context as a native Project Binding. The old
 /// project-derived store remains visible only as an explicitly labelled
@@ -43568,7 +43568,6 @@ mod tests {
         assert!(unsafe_id.to_string().contains("unsafe native session id"));
     }
 
-
     #[test]
     fn member_run_open_native_print_only_never_launches_an_application() {
         let root =
@@ -52430,7 +52429,12 @@ mod tests {
         }
         // Mission writers are likewise absent after DOC-108: the cheatsheets
         // document only the read-only legacy Mission reads.
-        for retired in ["mission create", "update-context", "mission close", "log append"] {
+        for retired in [
+            "mission create",
+            "update-context",
+            "mission close",
+            "log append",
+        ] {
             assert!(
                 !CHEATSHEET_MISSION.contains(retired),
                 "CHEATSHEET_MISSION documents retired `{retired}`; DOC-108 retired Mission \

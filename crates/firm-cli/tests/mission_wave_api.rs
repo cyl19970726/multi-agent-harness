@@ -177,10 +177,7 @@ fn seed_historical_mission_log(
 ) {
     use std::io::Write as _;
 
-    let path = home
-        .spaces_dir()
-        .join(project_id)
-        .join("mission_log.jsonl");
+    let path = home.spaces_dir().join(project_id).join("mission_log.jsonl");
     let mut ledger = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -796,14 +793,7 @@ fn legacy_mission_and_wave_writes_are_retired_everywhere() {
             "--context",
             "x",
         ],
-        vec![
-            "mission",
-            "close",
-            "--id",
-            "mission-host",
-            "--outcome",
-            "x",
-        ],
+        vec!["mission", "close", "--id", "mission-host", "--outcome", "x"],
         vec![
             "mission",
             "log",
@@ -941,7 +931,14 @@ fn legacy_mission_and_wave_writes_are_retired_everywhere() {
     let log = run_json(
         &home,
         &project_id,
-        &["mission", "log", "show", "--mission-id", "mission-host", "--json"],
+        &[
+            "mission",
+            "log",
+            "show",
+            "--mission-id",
+            "mission-host",
+            "--json",
+        ],
     );
     assert_eq!(log.as_array().map(Vec::len), Some(1));
     assert_eq!(log[0]["kind"].as_str(), Some("closeout_evidence"));
@@ -1819,20 +1816,48 @@ fn mission_log_cli_show_reads_history_and_append_is_retired() {
     // write nothing.
     for args in [
         vec![
-            "mission", "log", "append", "--mission-id", "mission-log-happy", "--kind", "judgment",
-            "--body", "   ",
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-log-happy",
+            "--kind",
+            "judgment",
+            "--body",
+            "   ",
         ],
         vec![
-            "mission", "log", "append", "--mission-id", "mission-log-happy", "--kind", "narration",
-            "--body", "not a real kind",
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-log-happy",
+            "--kind",
+            "narration",
+            "--body",
+            "not a real kind",
         ],
         vec![
-            "mission", "log", "append", "--mission-id", "mission-log-happy", "--kind", "judgment",
-            "--body", "must not persist",
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-log-happy",
+            "--kind",
+            "judgment",
+            "--body",
+            "must not persist",
         ],
         vec![
-            "mission", "log", "append", "--mission-id", "mission-log-does-not-exist", "--kind",
-            "judgment", "--body", "orphan",
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-log-does-not-exist",
+            "--kind",
+            "judgment",
+            "--body",
+            "orphan",
         ],
     ] {
         let mut full = vec!["--project", project_id.as_str()];
@@ -1875,7 +1900,12 @@ fn mission_log_cli_show_reads_history_and_append_is_retired() {
         (1, "judgment", "First judgment.", "host"),
         (2, "replan", "Re-planned after review.", "operator-a"),
         (3, "recovery", "Recovered after a supervisor death.", "host"),
-        (4, "closeout_evidence", "Everything verified; closing.", "host"),
+        (
+            4,
+            "closeout_evidence",
+            "Everything verified; closing.",
+            "host",
+        ),
     ] {
         seed_historical_mission_log(
             &home,

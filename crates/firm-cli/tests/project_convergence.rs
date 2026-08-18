@@ -96,7 +96,16 @@ fn cli_write_after_switch_is_visible_in_serve_snapshot() {
     // A's central store through the active Space marker.
     let elsewhere = home.base().join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
-    let host = create_canonical_agent_member(&home, &elsewhere, &id_a, "agent-converge-host", "converge-host", "host", "codex", &[]);
+    let host = create_canonical_agent_member(
+        &home,
+        &elsewhere,
+        &id_a,
+        "agent-converge-host",
+        "converge-host",
+        "host",
+        "codex",
+        &[],
+    );
     assert!(host.status.success(), "host create failed: {host:?}");
     let node = run_firm(&home, &elsewhere, &["node", "init"]);
     assert!(node.status.success(), "node init failed: {node:?}");

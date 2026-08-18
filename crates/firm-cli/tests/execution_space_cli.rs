@@ -130,7 +130,9 @@ fn project_binding_selection_never_changes_execution_store() {
     assert!(store.join("agentfirm_trust_operations.jsonl").is_file());
     let project_store = home.projects_dir().join(&second_binding);
     assert!(
-        !project_store.join("agentfirm_trust_operations.jsonl").is_file(),
+        !project_store
+            .join("agentfirm_trust_operations.jsonl")
+            .is_file(),
         "selecting a Project Binding must not create execution truth in its compatibility store"
     );
 }

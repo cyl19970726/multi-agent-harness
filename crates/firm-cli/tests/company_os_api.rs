@@ -39,7 +39,10 @@ fn company_os_writers_are_retired_with_explicit_410() {
     let (_home, serve) = serve("company-os-retired-writers");
 
     for (path, body) in [
-        ("/v1/company-os/actors", json!({"actor_type": "human", "actor": {"id": "human-root"}})),
+        (
+            "/v1/company-os/actors",
+            json!({"actor_type": "human", "actor": {"id": "human-root"}}),
+        ),
         (
             "/v1/company-os/milestones",
             json!({"mode": "administrative", "record": {"id": "milestone-1"}}),

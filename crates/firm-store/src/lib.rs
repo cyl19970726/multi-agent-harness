@@ -11,10 +11,9 @@ use firm_core::{
     content_hash_hex16, AgentTeam, AgentTeamRun, Decision, DelegationRun, Evidence, ExecutionNode,
     ExecutionNodeStatus, Gap, GitHubLink, HostAttention, HostAttentionInbox, HostAttentionKind,
     HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind, HostBindingLeaseStatus,
-    LegacyWave, MemberAction, MessageTerminalSource,
-    Mission, MissionLogEntry, NodeDaemonLease, NodeDaemonLeaseStatus,
-    NodeProjectRegistration, NodeProjectRegistrationStatus, Proposal, ProviderChildThread,
-    ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
+    LegacyWave, MemberAction, MessageTerminalSource, Mission, MissionLogEntry, NodeDaemonLease,
+    NodeDaemonLeaseStatus, NodeProjectRegistration, NodeProjectRegistrationStatus, Proposal,
+    ProviderChildThread, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
     ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
     ProviderCompatibilityStatus, ProviderExecutionStatus, ProviderIntegrationProfile,
     ProviderLaunchProfile, ProviderProcess, ProviderRuntimeProjection, ProviderWorkDispatch,
@@ -38,7 +37,6 @@ mod collaboration_fabric;
 pub use collaboration::*;
 pub use collaboration_fabric::*;
 pub mod remote_fabric_store;
-
 
 unsafe extern "C" {
     fn flock(fd: i32, operation: i32) -> i32;
@@ -8800,13 +8798,12 @@ mod tests {
     use firm_core::{
         DelegationMode, DelegationStatus, HostAttentionKind, LegacyWave, LegacyWaveExecutorKind,
         LegacyWaveGateStatus, LegacyWaveStatus, MemberActionStatus, MemberExecutionDriver,
-        MemberRunStatus, MemberWorkspaceSnapshot, Mission,
-        MissionStatus, OrdinaryMessageBoundary, ProviderCompatibilityBlockBoundary,
-        ProviderCompatibilityBlockSource, ProviderDispatchAttempt, ProviderDispatchIntent,
-        ProviderEventFidelity, ProviderFeatureMode, ProviderInteractionMode,
-        ProviderResponseIntent, RegistryMessageIntent, SenderKind, TeamActorKind, TeamActorRef,
-        TeamDeliveryPolicy, TeamDeliveryStatus, TeamRunEventSourceKind, TeamRunStatus,
-        WorkPriority,
+        MemberRunStatus, MemberWorkspaceSnapshot, Mission, MissionStatus, OrdinaryMessageBoundary,
+        ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockSource,
+        ProviderDispatchAttempt, ProviderDispatchIntent, ProviderEventFidelity,
+        ProviderFeatureMode, ProviderInteractionMode, ProviderResponseIntent,
+        RegistryMessageIntent, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
+        TeamDeliveryStatus, TeamRunEventSourceKind, TeamRunStatus, WorkPriority,
     };
 
     use super::*;
@@ -10146,7 +10143,6 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
-
     /// ADR 0051 changed `compare_and_close_mission` to skip the Legacy-Wave gate
     /// check entirely for a Mission whose `legacy_wave_ids` is empty (the only
     /// shape a NEW Mission can have now, since Legacy Wave create is retired). This
@@ -10154,11 +10150,6 @@ mod tests {
     /// accumulated `legacy_wave_ids` before the cutover still requires every one
     /// of them to be an accepted, completed Legacy Wave -- its in-flight contract
     /// does not silently change underneath it.
-
-
-
-
-
 
     #[test]
     fn concurrent_appends_write_complete_jsonl_rows() {

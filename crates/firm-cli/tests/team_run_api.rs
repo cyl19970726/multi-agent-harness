@@ -261,12 +261,7 @@ fn seed_runtime_team(home: &TempHome, project_id: &str, env: &[(&str, &str)]) {
         );
     }
     // DOC-108 retired the Mission writers; seed legacy provenance directly.
-    firm_env::seed_historical_mission(
-        home,
-        project_id,
-        FIXTURE_MISSION_ID,
-        "Runtime Regression",
-    );
+    firm_env::seed_historical_mission(home, project_id, FIXTURE_MISSION_ID, "Runtime Regression");
     let node = run(&["node", "init"]);
     let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node JSON");
     let node_id = node["id"].as_str().expect("node id");
@@ -420,10 +415,7 @@ fn seed_historical_mission_log(
 ) {
     use std::io::Write as _;
 
-    let path = home
-        .spaces_dir()
-        .join(project_id)
-        .join("mission_log.jsonl");
+    let path = home.spaces_dir().join(project_id).join("mission_log.jsonl");
     let mut ledger = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -1612,7 +1604,14 @@ fn mission_log_cli_and_legacy_wave_read_are_independent_of_team_run() {
     let log = command_json(
         &home,
         &project_id,
-        &["mission", "log", "show", "--mission-id", "mission-cli", "--json"],
+        &[
+            "mission",
+            "log",
+            "show",
+            "--mission-id",
+            "mission-cli",
+            "--json",
+        ],
     );
     assert_eq!(log.as_array().map(Vec::len), Some(0));
 }
@@ -1996,10 +1995,7 @@ fn post_mutation_response_is_bounded_and_dashboard_can_refresh_from_get_snapshot
     let large_context = "x".repeat(20_000);
     {
         use std::io::Write as _;
-        let path = home
-            .spaces_dir()
-            .join(&_project_id)
-            .join("missions.jsonl");
+        let path = home.spaces_dir().join(&_project_id).join("missions.jsonl");
         let mut ledger = std::fs::OpenOptions::new()
             .create(true)
             .append(true)

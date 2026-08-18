@@ -108,7 +108,12 @@ fn init_pi_project(home: &TempHome, name: &str) -> String {
         String::from_utf8_lossy(&host.stderr)
     );
     // DOC-108 retired the Mission writers; seed legacy provenance directly.
-    firm_env::seed_historical_mission(home, &project_id, "mission-pi-fixture", "Pi Journey Fixture");
+    firm_env::seed_historical_mission(
+        home,
+        &project_id,
+        "mission-pi-fixture",
+        "Pi Journey Fixture",
+    );
     let node = run(&["node", "init"]);
     let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node JSON");
     let node_id = node["id"].as_str().expect("node id");
