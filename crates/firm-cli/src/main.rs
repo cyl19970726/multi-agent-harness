@@ -14934,55 +14934,39 @@ impl TeamSupervisorRegistration {
         let heartbeat_valid = Arc::new(AtomicBool::new(true));
         let authority_gate = Arc::new(Mutex::new(()));
         let heartbeat_store = store.clone();
-        let heartbeat_team_run_id = team_run_id.to_string();
-        let heartbeat_supervisor_id = supervisor_id.clone();
         let heartbeat_stop_thread = Arc::clone(&heartbeat_stop);
         let heartbeat_valid_thread = Arc::clone(&heartbeat_valid);
         let heartbeat_authority_gate = Arc::clone(&authority_gate);
         let generation = lease.generation;
-        let heartbeat_interval_ms = (ttl_ms / 3).clamp(50, 1_000);
+        let heartbeat_policy = SupervisorHeartbeatPolicy {
+            team_run_id: team_run_id.to_string(),
+            supervisor_id: supervisor_id.clone(),
+            generation,
+            ttl_ms,
+            heartbeat_interval_ms: (ttl_ms / 3).clamp(50, 1_000),
+            max_transient_failures: MAX_TRANSIENT_SUPERVISOR_RENEWAL_FAILURES,
+        };
         let heartbeat_thread = std::thread::spawn(move || {
-            while !heartbeat_stop_thread.load(Ordering::Acquire) {
-                std::thread::sleep(Duration::from_millis(heartbeat_interval_ms));
-                if heartbeat_stop_thread.load(Ordering::Acquire) {
-                    break;
-                }
-                // Serialize the complete renewal-or-loss decision with live
-                // Close admission. If renewal fails, loss is latched before a
-                // Close can claim the old generation; if Close won the gate,
-                // its Store transaction is the earlier linearization point.
-                let _authority_guard = heartbeat_authority_gate
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                if let Some(marker) = supervisor_test_heartbeat_failure_marker() {
-                    let _ = latch_supervisor_lease_lost_and_mark(
-                        &heartbeat_valid_thread,
-                        &heartbeat_team_run_id,
-                        &heartbeat_supervisor_id,
-                        generation,
-                        "test-injected heartbeat renewal/store failure",
-                        Some(&marker),
-                    );
-                    break;
-                }
-                if let Err(error) = heartbeat_store.renew_team_supervisor_lease(
-                    &heartbeat_team_run_id,
-                    &heartbeat_supervisor_id,
-                    generation,
-                    current_unix_ms_u64(),
-                    ttl_ms,
-                ) {
-                    let _ = latch_supervisor_lease_lost_and_mark(
-                        &heartbeat_valid_thread,
-                        &heartbeat_team_run_id,
-                        &heartbeat_supervisor_id,
-                        generation,
-                        &error.to_string(),
-                        None,
-                    );
-                    break;
-                }
-            }
+            let heartbeat_store = heartbeat_store;
+            let heartbeat_policy = heartbeat_policy;
+            run_supervisor_heartbeat_loop(
+                &heartbeat_policy,
+                &heartbeat_stop_thread,
+                &heartbeat_valid_thread,
+                &heartbeat_authority_gate,
+                || {
+                    heartbeat_store
+                        .renew_team_supervisor_lease(
+                            &heartbeat_policy.team_run_id,
+                            &heartbeat_policy.supervisor_id,
+                            heartbeat_policy.generation,
+                            current_unix_ms_u64(),
+                            heartbeat_policy.ttl_ms,
+                        )
+                        .map(|_lease| ())
+                },
+                supervisor_test_heartbeat_failure_marker,
+            );
         });
         let control_stop = Arc::new(AtomicBool::new(false));
         let control_store = store.clone();
@@ -15054,6 +15038,193 @@ impl Drop for TeamSupervisorRegistration {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .remove(&self.team_run_id);
+    }
+}
+
+/// Bounded number of consecutive transient renewal failures the heartbeat
+/// tolerates before treating the durable lease as lost. With the default
+/// 15s TTL and a ~1s heartbeat cadence the retry window stays well inside
+/// the TTL, so a recovering store never costs the lease.
+const MAX_TRANSIENT_SUPERVISOR_RENEWAL_FAILURES: usize = 3;
+
+/// Fixed identity + retry policy for one supervisor lease heartbeat thread.
+#[derive(Clone, Debug)]
+struct SupervisorHeartbeatPolicy {
+    team_run_id: String,
+    supervisor_id: String,
+    generation: u64,
+    ttl_ms: u64,
+    heartbeat_interval_ms: u64,
+    max_transient_failures: usize,
+}
+
+impl SupervisorHeartbeatPolicy {
+    /// Bounded exponential backoff for transient renewal failures. Capped at
+    /// a quarter of the TTL (or 3s), so retries can never starve the durable
+    /// lease to expiry before the consecutive-failure bound latches.
+    fn backoff_ms_for(&self, consecutive_failures: usize) -> u64 {
+        let max_backoff_ms = (self.ttl_ms / 4).min(3_000);
+        let shift = consecutive_failures.saturating_sub(1).min(20) as u32;
+        self.heartbeat_interval_ms
+            .saturating_mul(1u64 << shift)
+            .min(max_backoff_ms)
+    }
+}
+
+/// A renewal error is terminal when the current generation can never renew
+/// again: a parent NodeDaemon fence, a superseded/moved lease, or the durable
+/// lease row being gone. Those latch immediately. Every other StoreError (Io,
+/// LockTimeout, Json, unexpected Conflict) is treated as transient — the store
+/// emits those under lock contention or IO hiccups — and the bounded retry
+/// loop converts a genuinely persistent failure into a latch anyway.
+fn is_terminal_supervisor_renewal_error(error: &StoreError) -> bool {
+    matches!(
+        error,
+        StoreError::Conflict(message)
+            if message.starts_with("TEAM_SUPERVISOR_PARENT_FENCED:")
+                || message.contains("is no longer owned by")
+                || message.contains("has no Supervisor lease to renew")
+    )
+}
+
+/// stderr diagnostic shared by every heartbeat retry/recovery/latch decision;
+/// names the run, supervisor generation, the error, and the action taken.
+fn supervisor_heartbeat_diagnostic(
+    team_run_id: &str,
+    supervisor_id: &str,
+    generation: u64,
+    error: &str,
+    action: &str,
+) -> String {
+    format!(
+        "team run {team_run_id} supervisor {supervisor_id} generation {generation} \
+         heartbeat renewal failed: {error}; action={action}"
+    )
+}
+
+/// Drive one supervisor lease heartbeat until stopped or lease-loss latched.
+///
+/// A transient renewal error (lock contention, IO, corrupt read) no longer
+/// kills the thread: it is retried with bounded exponential backoff, and
+/// lease-loss is latched only after `max_transient_failures` consecutive
+/// failures or on a terminal fence (parent fenced / generation superseded /
+/// lease row gone), which latches immediately. Every retry, recovery, and
+/// latch writes a stderr diagnostic naming run, generation, error, and action.
+#[allow(clippy::too_many_arguments)]
+fn run_supervisor_heartbeat_loop(
+    policy: &SupervisorHeartbeatPolicy,
+    heartbeat_stop: &AtomicBool,
+    heartbeat_valid: &AtomicBool,
+    authority_gate: &Mutex<()>,
+    mut renew: impl FnMut() -> Result<(), StoreError>,
+    failure_marker: impl Fn() -> Option<PathBuf>,
+) {
+    let mut consecutive_transient_failures = 0usize;
+    while !heartbeat_stop.load(Ordering::Acquire) {
+        std::thread::sleep(Duration::from_millis(policy.heartbeat_interval_ms));
+        if heartbeat_stop.load(Ordering::Acquire) {
+            break;
+        }
+        // Serialize the complete renewal-or-loss decision with live Close
+        // admission. If renewal fails, loss is latched before a Close can
+        // claim the old generation; if Close won the gate, its Store
+        // transaction is the earlier linearization point.
+        let _authority_guard = authority_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // Test injection seam (reused from the inline loop): while the marker
+        // exists, simulate a transient store failure so the loop must survive
+        // and keep renewing once the marker is removed.
+        let result = match failure_marker() {
+            Some(_marker) => Err(StoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "test-injected transient heartbeat renewal/store failure",
+            ))),
+            None => renew(),
+        };
+        match result {
+            Ok(()) => {
+                if consecutive_transient_failures > 0 {
+                    eprintln!(
+                        "{}",
+                        supervisor_heartbeat_diagnostic(
+                            &policy.team_run_id,
+                            &policy.supervisor_id,
+                            policy.generation,
+                            "renewal recovered",
+                            &format!(
+                                "recovered_after_{consecutive_transient_failures}_consecutive_transient_failures"
+                            ),
+                        )
+                    );
+                }
+                consecutive_transient_failures = 0;
+            }
+            Err(error) if is_terminal_supervisor_renewal_error(&error) => {
+                let _ = latch_supervisor_lease_lost_and_mark(
+                    heartbeat_valid,
+                    &policy.team_run_id,
+                    &policy.supervisor_id,
+                    policy.generation,
+                    &error.to_string(),
+                    None,
+                );
+                eprintln!(
+                    "{}",
+                    supervisor_heartbeat_diagnostic(
+                        &policy.team_run_id,
+                        &policy.supervisor_id,
+                        policy.generation,
+                        &error.to_string(),
+                        "latched_lease_loss_terminal",
+                    )
+                );
+                break;
+            }
+            Err(error) => {
+                consecutive_transient_failures += 1;
+                let backoff_ms = policy.backoff_ms_for(consecutive_transient_failures);
+                eprintln!(
+                    "{}",
+                    supervisor_heartbeat_diagnostic(
+                        &policy.team_run_id,
+                        &policy.supervisor_id,
+                        policy.generation,
+                        &error.to_string(),
+                        &format!(
+                            "retry_backoff_{backoff_ms}ms_attempt_{consecutive_transient_failures}_{}",
+                            policy.max_transient_failures
+                        ),
+                    )
+                );
+                if consecutive_transient_failures >= policy.max_transient_failures {
+                    let _ = latch_supervisor_lease_lost_and_mark(
+                        heartbeat_valid,
+                        &policy.team_run_id,
+                        &policy.supervisor_id,
+                        policy.generation,
+                        &format!(
+                            "renewal failed after {consecutive_transient_failures} consecutive transient failures; last error: {error}"
+                        ),
+                        None,
+                    );
+                    eprintln!(
+                        "{}",
+                        supervisor_heartbeat_diagnostic(
+                            &policy.team_run_id,
+                            &policy.supervisor_id,
+                            policy.generation,
+                            &error.to_string(),
+                            &format!(
+                                "latched_lease_loss_after_{consecutive_transient_failures}_consecutive_transient_failures"
+                            ),
+                        )
+                    );
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(backoff_ms));
+            }
+        }
     }
 }
 
@@ -41571,6 +41742,379 @@ mod tests {
             b"heartbeat failure latched"
         );
         fs::remove_file(&marker).expect("remove heartbeat failure marker");
+    }
+
+    fn latest_heartbeat_ms(store: &HarnessStore, team_run_id: &str) -> u64 {
+        store
+            .latest_team_supervisor_lease(team_run_id)
+            .expect("supervisor lease read")
+            .expect("supervisor lease row")
+            .heartbeat_unix_ms
+    }
+
+    /// Wait until the durable heartbeat moves past `from` (bounded by 5s).
+    fn wait_until_heartbeat_advances(
+        store: &HarnessStore,
+        team_run_id: &str,
+        from: u64,
+        what: &str,
+    ) -> u64 {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let heartbeat = latest_heartbeat_ms(store, team_run_id);
+            if heartbeat != from {
+                return heartbeat;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the heartbeat to {what}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn heartbeat_survives_transient_renewal_failure_and_keeps_renewing() {
+        let (store, root) = temp_store("heartbeat-survives-transient");
+        let created = create_two_member_team_run(&store);
+        let lease = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-heartbeat-survives",
+                std::process::id(),
+                "tcp://127.0.0.1:1",
+                current_unix_ms_u64(),
+                600_000,
+            )
+            .expect("acquire Supervisor lease");
+        let initial = latest_heartbeat_ms(&store, &created.team_run.id);
+        let marker = std::env::temp_dir().join(format!(
+            "firm-heartbeat-transient-marker-{}",
+            generated_id("test")
+        ));
+
+        let policy = SupervisorHeartbeatPolicy {
+            team_run_id: created.team_run.id.clone(),
+            supervisor_id: lease.supervisor_id.clone(),
+            generation: lease.generation,
+            ttl_ms: 600_000,
+            heartbeat_interval_ms: 5,
+            max_transient_failures: 10,
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let valid = Arc::new(AtomicBool::new(true));
+        let gate = Arc::new(Mutex::new(()));
+        let stop_thread = Arc::clone(&stop);
+        let valid_thread = Arc::clone(&valid);
+        let gate_thread = Arc::clone(&gate);
+        let store_thread = store.clone();
+        let marker_thread = marker.clone();
+        let thread = std::thread::spawn(move || {
+            let store_thread = store_thread;
+            let policy_thread = policy;
+            let renew_policy = policy_thread.clone();
+            run_supervisor_heartbeat_loop(
+                &policy_thread,
+                &stop_thread,
+                &valid_thread,
+                &gate_thread,
+                || {
+                    store_thread
+                        .renew_team_supervisor_lease(
+                            &renew_policy.team_run_id,
+                            &renew_policy.supervisor_id,
+                            renew_policy.generation,
+                            current_unix_ms_u64(),
+                            renew_policy.ttl_ms,
+                        )
+                        .map(|_lease| ())
+                },
+                move || {
+                    if marker_thread.exists() {
+                        Some(marker_thread.clone())
+                    } else {
+                        None
+                    }
+                },
+            );
+        });
+
+        // The loop is renewing normally before the injected failure.
+        let first_renewal =
+            wait_until_heartbeat_advances(&store, &created.team_run.id, initial, "renew once");
+        assert!(
+            valid.load(Ordering::Acquire),
+            "heartbeat latched lease-loss while renewing normally"
+        );
+
+        // Inject a transient failure window. While the marker exists the loop
+        // must keep retrying (never latching); the durable heartbeat freezes
+        // because no real renewal is issued.
+        fs::write(&marker, b"transient").expect("write transient failure marker");
+        std::thread::sleep(Duration::from_millis(30));
+        let frozen_at = latest_heartbeat_ms(&store, &created.team_run.id);
+        std::thread::sleep(Duration::from_millis(60));
+        let still_frozen = latest_heartbeat_ms(&store, &created.team_run.id);
+        assert!(
+            frozen_at >= first_renewal,
+            "heartbeat moved backwards during the failure window"
+        );
+        assert_eq!(
+            frozen_at, still_frozen,
+            "heartbeat advanced while the injected transient failure was active; \
+             the loop may have latched or died"
+        );
+        assert!(
+            valid.load(Ordering::Acquire),
+            "heartbeat latched lease-loss on a transient failure"
+        );
+        assert!(
+            !thread.is_finished(),
+            "heartbeat thread died on a transient failure"
+        );
+
+        // Remove the failure: the same thread must resume renewing.
+        fs::remove_file(&marker).expect("remove transient failure marker");
+        let recovered_at =
+            wait_until_heartbeat_advances(&store, &created.team_run.id, still_frozen, "resume");
+        assert!(
+            recovered_at > still_frozen,
+            "heartbeat did not resume after the transient failure window"
+        );
+        assert!(
+            valid.load(Ordering::Acquire),
+            "heartbeat latched lease-loss after the transient failure cleared"
+        );
+        assert!(
+            !thread.is_finished(),
+            "heartbeat thread died after the transient failure cleared"
+        );
+
+        stop.store(true, Ordering::Release);
+        thread.join().expect("heartbeat thread stops cleanly");
+        std::fs::remove_dir_all(root).expect("cleanup");
+        let _ = fs::remove_file(&marker);
+    }
+
+    #[test]
+    fn heartbeat_latches_immediately_on_terminal_parent_fence() {
+        // A real TEAM_SUPERVISOR_PARENT_FENCED renewal error (exact production
+        // message) must latch lease-loss on the FIRST failed renewal: no
+        // retry, no backoff, and the thread exits.
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_thread = Arc::clone(&attempts);
+        let policy = SupervisorHeartbeatPolicy {
+            team_run_id: "team-run-terminal".to_string(),
+            supervisor_id: "supervisor-terminal".to_string(),
+            generation: 7,
+            ttl_ms: 600_000,
+            heartbeat_interval_ms: 5,
+            max_transient_failures: 3,
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let valid = Arc::new(AtomicBool::new(true));
+        let gate = Arc::new(Mutex::new(()));
+        let stop_thread = Arc::clone(&stop);
+        let valid_thread = Arc::clone(&valid);
+        let gate_thread = Arc::clone(&gate);
+        let thread = std::thread::spawn(move || {
+            run_supervisor_heartbeat_loop(
+                &policy,
+                &stop_thread,
+                &valid_thread,
+                &gate_thread,
+                move || {
+                    attempts_thread.fetch_add(1, Ordering::SeqCst);
+                    Err(StoreError::Conflict(
+                        "TEAM_SUPERVISOR_PARENT_FENCED: parent NodeDaemon generation is no longer active for TeamRun team-run-terminal".to_string(),
+                    ))
+                },
+                || None,
+            );
+        });
+        thread
+            .join()
+            .expect("heartbeat thread exits after a terminal fence");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "a terminal fence must latch on the first failed renewal without retries"
+        );
+        assert!(
+            !valid.load(Ordering::Acquire),
+            "heartbeat did not latch lease-loss on a terminal parent fence"
+        );
+    }
+
+    #[test]
+    fn heartbeat_latches_immediately_when_durable_lease_is_superseded() {
+        // Real store: releasing the durable lease behind the running heartbeat
+        // makes the next renewal hit the genuine "is no longer owned by"
+        // conflict, which must latch immediately without retries.
+        let (store, root) = temp_store("heartbeat-terminal-supersede");
+        let created = create_two_member_team_run(&store);
+        let lease = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-heartbeat-superseded",
+                std::process::id(),
+                "tcp://127.0.0.1:1",
+                current_unix_ms_u64(),
+                600_000,
+            )
+            .expect("acquire Supervisor lease");
+        store
+            .release_team_supervisor_lease(
+                &created.team_run.id,
+                &lease.supervisor_id,
+                lease.generation,
+                current_unix_ms_u64(),
+            )
+            .expect("release durable lease behind the heartbeat");
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_thread = Arc::clone(&attempts);
+        let policy = SupervisorHeartbeatPolicy {
+            team_run_id: created.team_run.id.clone(),
+            supervisor_id: lease.supervisor_id.clone(),
+            generation: lease.generation,
+            ttl_ms: 600_000,
+            heartbeat_interval_ms: 5,
+            max_transient_failures: 3,
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let valid = Arc::new(AtomicBool::new(true));
+        let gate = Arc::new(Mutex::new(()));
+        let stop_thread = Arc::clone(&stop);
+        let valid_thread = Arc::clone(&valid);
+        let gate_thread = Arc::clone(&gate);
+        let store_thread = store.clone();
+        let thread = std::thread::spawn(move || {
+            let store_thread = store_thread;
+            let policy_thread = policy;
+            let renew_policy = policy_thread.clone();
+            run_supervisor_heartbeat_loop(
+                &policy_thread,
+                &stop_thread,
+                &valid_thread,
+                &gate_thread,
+                move || {
+                    attempts_thread.fetch_add(1, Ordering::SeqCst);
+                    store_thread
+                        .renew_team_supervisor_lease(
+                            &renew_policy.team_run_id,
+                            &renew_policy.supervisor_id,
+                            renew_policy.generation,
+                            current_unix_ms_u64(),
+                            renew_policy.ttl_ms,
+                        )
+                        .map(|_lease| ())
+                },
+                || None,
+            );
+        });
+        thread
+            .join()
+            .expect("heartbeat thread exits after supersession");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "a superseded durable lease must latch on the first failed renewal without retries"
+        );
+        assert!(
+            !valid.load(Ordering::Acquire),
+            "heartbeat did not latch lease-loss on a superseded durable lease"
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn supervisor_renewal_error_classification() {
+        assert!(
+            !is_terminal_supervisor_renewal_error(&StoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "store write lock contention"
+            ))),
+            "IO/lock-contention errors must be transient"
+        );
+        assert!(
+            !is_terminal_supervisor_renewal_error(&StoreError::LockTimeout(
+                "store lock".to_string()
+            )),
+            "lock timeouts must be transient"
+        );
+        assert!(
+            is_terminal_supervisor_renewal_error(&StoreError::Conflict(
+                "TEAM_SUPERVISOR_PARENT_FENCED: Node n has no active parent".to_string()
+            )),
+            "parent fence must be terminal"
+        );
+        assert!(
+            is_terminal_supervisor_renewal_error(&StoreError::Conflict(
+                "TEAM_SUPERVISOR_PARENT_FENCED: parent NodeDaemon generation is no longer active for TeamRun r".to_string()
+            )),
+            "parent fence must be terminal"
+        );
+        assert!(
+            is_terminal_supervisor_renewal_error(&StoreError::Conflict(
+                "Supervisor lease for team run r is no longer owned by s generation 1".to_string()
+            )),
+            "superseded lease must be terminal"
+        );
+        assert!(
+            is_terminal_supervisor_renewal_error(&StoreError::Conflict(
+                "team run r has no Supervisor lease to renew".to_string()
+            )),
+            "missing lease row must be terminal"
+        );
+        assert!(
+            !is_terminal_supervisor_renewal_error(&StoreError::Conflict(
+                "some unrelated store conflict".to_string()
+            )),
+            "unexpected conflicts must fall back to transient retries"
+        );
+    }
+
+    #[test]
+    fn supervisor_heartbeat_diagnostics_name_run_generation_error_and_action() {
+        let retry = supervisor_heartbeat_diagnostic(
+            "team-run-x",
+            "supervisor-y",
+            7,
+            "io error: store write lock contention",
+            "retry_backoff_1000ms_attempt_2_3",
+        );
+        for token in [
+            "team run team-run-x",
+            "supervisor supervisor-y",
+            "generation 7",
+            "io error: store write lock contention",
+            "action=retry_backoff_1000ms_attempt_2_3",
+        ] {
+            assert!(
+                retry.contains(token),
+                "retry diagnostic missing {token:?}: {retry}"
+            );
+        }
+
+        let terminal = supervisor_heartbeat_diagnostic(
+            "team-run-x",
+            "supervisor-y",
+            7,
+            "TEAM_SUPERVISOR_PARENT_FENCED: parent NodeDaemon generation is no longer active for TeamRun team-run-x",
+            "latched_lease_loss_terminal",
+        );
+        for token in [
+            "team run team-run-x",
+            "generation 7",
+            "TEAM_SUPERVISOR_PARENT_FENCED",
+            "action=latched_lease_loss_terminal",
+        ] {
+            assert!(
+                terminal.contains(token),
+                "terminal latch diagnostic missing {token:?}: {terminal}"
+            );
+        }
     }
 
     #[test]
