@@ -32,6 +32,10 @@ use thiserror::Error;
 mod trust_kernel;
 pub use trust_kernel::*;
 
+mod wake_hint;
+pub(crate) use wake_hint::wake_relevant_commit;
+pub use wake_hint::{bump_wake_hint, wake_hint_path, WAKE_HINT_FILE};
+
 mod collaboration;
 mod collaboration_fabric;
 pub use collaboration::*;
@@ -6311,6 +6315,7 @@ impl HarnessStore {
             }
         }
         self.append_jsonl_unlocked("team_member_close_requests.jsonl", value)?;
+        crate::bump_wake_hint(self.root(), "member_close");
         Ok(value.clone())
     }
 
@@ -6399,6 +6404,7 @@ impl HarnessStore {
             }
         }
         self.append_jsonl_unlocked("team_member_close_requests.jsonl", value)?;
+        crate::bump_wake_hint(self.root(), "member_close");
         Ok(value.clone())
     }
 
@@ -6461,6 +6467,7 @@ impl HarnessStore {
             }
         }
         self.append_jsonl_unlocked("team_member_close_requests.jsonl", value)?;
+        crate::bump_wake_hint(self.root(), "member_close");
         Ok(value.clone())
     }
 
