@@ -4,9 +4,9 @@ This repository builds Star Harness itself. Product truth lives in canonical
 docs, schemas, ADRs, and implemented stores. Execution claims must additionally
 be reconstructable from the native runtime records of the executor used.
 
-This root file states product identity, hard invariants, repository execution
-rules, routing links, and proportional acceptance. The full operating detail
-lives in [docs/current/product/agent-operating-rules.md](docs/current/product/agent-operating-rules.md);
+This root file is deliberately small: it carries only product identity, the
+hard invariants an agent must hold before acting, and routing. Process detail
+(repository execution rules, proportional acceptance) lives in [docs/current/product/agent-operating-rules.md](docs/current/product/agent-operating-rules.md);
 canonical contracts live in the docs linked under [Routing](#routing). Where
 this file and a canonical doc conflict, the canonical doc wins — fix this file.
 
@@ -191,47 +191,6 @@ doc carries the contract behind each rule.
     installed, loaded, or referenced from active repository instructions. The
     generic harness core stays domain-neutral.
 
-## Repository Execution Rules
-
-- Repository development follows
-  [.agents/skills/agentfirm-development-loop/SKILL.md](.agents/skills/agentfirm-development-loop/SKILL.md):
-  Brain assigns one Task -> Dev works freely -> Dev submits an exact revision
-  -> Reviewer returns Pass or Changes Required -> Pass completes the Task or
-  Changes Required returns the same Task to Dev. There is no Candidate or
-  pre-review readiness stage. Run focused checks while working; run the
-  submission-level checks once when Dev is ready for Review. Preserve
-  unaffected evidence after rejection and review the delta by default.
-- Harness Member execution is suspended for repository repair until the
-  explicit dogfood admission standard passes. A Primary Codex Session may use
-  bounded temporary Sub-Agents internally, but must not label that as Harness
-  Member or Agent Team execution. Product TeamWork acceptance, Evidence,
-  Finding, Failure, Acceptor, Gate, and Decision contracts remain intact and
-  separate from developer self-review.
-- A native Agent Team run is required when the claim under test is the
-  native runtime itself or when a Spec explicitly selects it. Such a run is
-  product evidence, not a prerequisite that silently replaces the repository
-  development record. A small typo or single-line doc fix may be owner-local,
-  but the final summary must identify the proportional exception.
-- Harness dogfood runs follow
-  [docs/current/product/agent-team-dogfood-loop.md](docs/current/product/agent-team-dogfood-loop.md):
-  classify defects, repair on a clean lane, rerun the original scenario, then
-  expand the pressure matrix. Never weaken a scenario or edit store evidence to
-  make a run appear green.
-- Scenario execution rosters and research budgets (for example the current
-  dogfood roster) are scenario policy, not repository-wide invariants: they
-  live in [docs/current/operations/operations.md](docs/current/operations/operations.md) and the owning scenario
-  skill ([archive/skills/dogfood-company-os/SKILL.md](archive/skills/dogfood-company-os/SKILL.md) (archived with the DOC-108 cutover))
-  and must not be broadened into root instructions.
-- Prefer the progression `doc -> skill -> schema -> CLI/API -> dashboard ->
-  plugin`. The Agent Dashboard is the operator view for harness state; product
-  dashboards for adapted projects remain separate.
-- Local gates and commands: [docs/current/operations/operations.md](docs/current/operations/operations.md).
-  `acceptance:legacy-retirement` (formerly `acceptance:mission-wave`) proves
-  the deterministic current Agent Team, MCP, Kimi ACP adapter, and Dashboard
-  contracts plus the retired Mission/Wave legacy read and retired-write
-  behavior; a real-provider claim still requires a separately recorded native
-  live run.
-
 ## Routing
 
 - Product requirements: [docs/current/product/prd.md](docs/current/product/prd.md); architecture:
@@ -257,96 +216,35 @@ doc carries the contract behind each rule.
   Project Bindings). ADR 0026/0027/0034/0051 are superseded legacy
   Mission/Wave/Company-OS history (DOC-108), never deleted.
 
-## Proportional Acceptance
+## Code structure
 
-Every non-trivial Team-run Work slice advances in four small stages:
-**Context** (Work intent, current Host judgment, permissions, risk, and
-decision boundary are clear), **Execution** (the selected Host, Team, or
-Workflow owns its internal plan and emits honest native records), **Outcome**
-(explicit Work submissions, checks, artifacts, blockers, and review results
-are recorded), and **Advance** (the Host accepts or requests changes on the
-Work record and starts the next slice; unrelated active Works may carry
-forward unchanged). Review depth is proportional to risk;
-Proposal/Decision/outcome evaluation is not a universal product chain.
+Structure is a first principle here because this repository is edited mostly by
+agents, and an agent pays for every line it must scan to find one seam.
 
-Each MemberRun snapshots its concrete `ProviderIntegrationProfile`; platform
-capability, execution-mode capability, adapter coverage, and product permission
-are separate claims. Provider-native questions that actually pause a turn are
-`provider_interaction_request` Messages and their answers are correlated
-`provider_interaction_response` Messages. Permissions are
-frozen on AgentSession start: in-ceiling operations proceed directly and
-out-of-ceiling operations fail closed without a second permission object.
-Ordinary Host/Member planning remains correlated identity-first Message conversation. A provider
-`completed` status is not by itself proof of semantic success, answer, or
-approval.
+- A source file over ~1500 lines is a defect to be scheduled, not a style
+  preference. `crates/firm-cli/src/main.rs` is currently 53k lines and is the
+  standing counter-example, not a precedent.
+- Prefer one seam per module: command dispatch, HTTP routing, help text and
+  provider runtimes do not belong in one file.
+- Keep tests out of the middle of an implementation file. Put them at the end
+  or in `tests/`; interleaved `#[cfg(test)]` blocks make "which tests cover
+  this?" unanswerable without reading everything.
+- A new file is cheaper than a new 500-line function. Splitting is mechanical
+  and test-guarded; growth is neither.
 
-The current trusted-development Team policy gives Codex, Claude, and Kimi
-members full execution access so unattended work is not blocked by ordinary
-tool authorization. This is a product policy, not a Provider capability and not
-approval for protected external effects. Members decide when isolation is
-useful and may create their own same-repository Git worktree; the Host declares
-owned/conflicting paths and acceptance boundaries, not Git mechanics. Members
-must report the actual worktree, branch, commit, checks, and conflicts.
+The governance `size` gate warns (never blocks) on oversized files so existing
+debt can retire in order instead of freezing work.
 
-New Agent Team members use only their persistent bidirectional mode:
-`codex_app_server`, `kimi_acp`, or `claude_agent_sdk`. Bounded
-`codex_exec`/`claude_cli` paths belong to Dynamic Workflow and historical
-reads; they are not Team fallbacks. The one declared exception is
-`external_interactive`: a user's own already-open interactive provider CLI
-session may join a run as a non-driven member that Harness never spawns or
-drives — it polls its inbox and replies over the trusted loopback CLI/MCP,
-and it has no provider-native session record (evidence claims about its work
-cannot resolve to one). The Host explicitly creates, messages,
-inspects, interrupts, closes, reopens, and retires members. Interrupt stops one
-current turn. Close releases the managed runtime and freezes the mailbox while
-retaining the same MemberRun and provider-native session; Reopen increments its
-runtime generation and resumes that exact session. Deactivate/Retire is the
-permanent coordination end. TeamRun completion never implies Close.
-Physical live control handles remain process-local to the Harness
-service that started them. A durable Team Supervisor lease is the cross-process
-control authority and contains a loopback service locator. Dashboard, CLI, and
-MCP clients route controls to that owner; the owner revalidates supervisor id,
-generation, status, and expiry immediately before driving its handle. After a
-crash, a new Supervisor generation reattaches the recorded native sessions;
-uncertain claimed deliveries require explicit reconciliation, never blind
-replay.
+## Where the rest lives
 
-Harness has no Plan Mode or Plan Gate. When the Host wants a plan first, it asks
-through an ordinary correlated Markdown message; the Member replies, the Host
-argues or approves in the same chain, and provider-native plan/goal features
-remain internal execution aids.
+This file states first principles only. Everything procedural is one hop away:
 
-Work is durable responsibility; a provider-native Goal is only one
-possible continuation mechanism for executing it. Each active MemberRun/native
-session/writable Workspace must have exactly one top-level execution driver:
-either Harness starts the next provider cycle (`host_driven`) or an observed
-provider-native continuation loop does (`provider_driven`). Never activate a
-native goal and also issue an ordinary Harness start for the same work. A
-provider-driven member may complete many native cycles without creating a new
-MemberRun, but provider satisfaction never implies Host acceptance. Providers
-without a reviewed native continuation capability remain first-class
-host-driven members. See `docs/current/architecture/member-continuation-model.md` and ADR 0041.
+- Repository execution rules and proportional acceptance:
+  [docs/current/product/agent-operating-rules.md](docs/current/product/agent-operating-rules.md)
+- Host and Member collaboration procedure:
+  [skills/collaborate-as-agent-team-member/SKILL.md](skills/collaborate-as-agent-team-member/SKILL.md)
+- Gates and commands:
+  [docs/current/operations/operations.md](docs/current/operations/operations.md)
 
-Provider-native or chat-side subagents are implementation details of the Host
-or member that invoked them. Optional hooks may record honest attribution, but
-the harness must not claim lifecycle control it does not have.
-
-Do not claim that Agent Team work was accepted unless the store shows the
-durable `AgentTeam`, the `AgentTeamRun` records, role-specific MemberRuns with
-owned or claimed Works, versioned WorkEvents and delivery facts, Work-linked
-messages where conversation occurred, explicit submitted results and Host
-acceptance on the Work record — with execution claims resolvable to the
-provider-native session.
-
-Sensitive actions (authentication, payment, license acceptance, permission
-changes, organization changes) still require the appropriate Human or policy
-approval under Hard Invariant 6; no Work or Message record replaces that
-approval.
-
-A Team-run Work slice is done only when the store can explain why the work
-existed, which teams/runs and Works were used, which WorkEvents allocated,
-blocked, submitted, or accepted responsibility, which Messages explained
-coordination, which outcomes/checks/artifacts and provider-native sessions
-support acceptance, and what should be reused, improved, split, or followed up
-next. If a future agent cannot reconstruct the answer from repository files
-and native harness state, the work is not fully accepted.
+Keep it that way: a rule earns a place here only if an agent would act wrongly
+without it before reading anything else.

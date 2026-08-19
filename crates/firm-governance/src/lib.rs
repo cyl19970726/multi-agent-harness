@@ -76,6 +76,15 @@ pub struct GovernanceConfig {
     pub skill_roots: Vec<String>,
     /// Max markdown line count before the `size` gate warns.
     pub max_lines: usize,
+    /// Source roots scanned by the `size` gate (Rust sources). Empty disables
+    /// the source half of the gate.
+    #[serde(default)]
+    pub source_roots: Vec<String>,
+    /// Max source line count before the `size` gate warns. Structure debt is
+    /// surfaced, never blocked, so existing oversized files can retire in
+    /// order instead of freezing work.
+    #[serde(default = "default_source_max_lines")]
+    pub source_max_lines: usize,
     /// Root scanned for `*-agent-member.json` skill_ref validation (optional).
     #[serde(default)]
     pub member_data_root: Option<String>,
@@ -170,6 +179,8 @@ impl GovernanceConfig {
             .collect(),
             skill_roots: ["skills", ".agents/skills"].iter().map(|v| s(v)).collect(),
             max_lines: 500,
+            source_roots: vec!["crates".into()],
+            source_max_lines: default_source_max_lines(),
             member_data_root: Some(s(".agents/data")),
             registry: Some(RegistryConfig {
                 path: s("docs/registry.json"),
@@ -274,6 +285,8 @@ impl GovernanceConfig {
             doc_roots: ["README.md", "docs"].iter().map(|v| s(v)).collect(),
             skill_roots: ["skills", ".agents/skills"].iter().map(|v| s(v)).collect(),
             max_lines: 500,
+            source_roots: vec!["crates".into()],
+            source_max_lines: default_source_max_lines(),
             member_data_root: None,
             registry: None,
             retired_vocabulary: None,
@@ -314,7 +327,13 @@ pub fn run_check_at(root: &Path, config: &GovernanceConfig, today: &str) -> Gove
     // && check:doc-governance` so green output reads the same as the legacy chain.
     let mut gates = vec![
         check_links(root, &config.doc_roots),
-        check_size(root, &config.doc_roots, config.max_lines),
+        check_size(
+            root,
+            &config.doc_roots,
+            config.max_lines,
+            &config.source_roots,
+            config.source_max_lines,
+        ),
         check_skills(
             root,
             &config.skill_roots,
@@ -389,7 +408,47 @@ pub fn check_links(root: &Path, doc_roots: &[String]) -> GateReport {
 // ---------------------------------------------------------------------------
 
 /// Markdown size: warn (never block) when a file exceeds `max_lines`.
-pub fn check_size(root: &Path, doc_roots: &[String], max_lines: usize) -> GateReport {
+fn default_source_max_lines() -> usize {
+    1500
+}
+
+/// Collect Rust sources beneath the configured source roots, skipping build
+/// output and vendored trees.
+fn collect_rust_sources(root: &Path, source_roots: &[String]) -> Vec<String> {
+    let mut files = Vec::new();
+    for source_root in source_roots {
+        let base = root.join(source_root);
+        let mut stack = vec![base];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if path.is_dir() {
+                    if name != "target" && name != "node_modules" && !name.starts_with('.') {
+                        stack.push(path);
+                    }
+                } else if name.ends_with(".rs") {
+                    if let Ok(rel) = path.strip_prefix(root) {
+                        files.push(rel.display().to_string());
+                    }
+                }
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+pub fn check_size(
+    root: &Path,
+    doc_roots: &[String],
+    max_lines: usize,
+    source_roots: &[String],
+    source_max_lines: usize,
+) -> GateReport {
     let files = collect_markdown(root, doc_roots);
     let mut warnings = Vec::new();
     for rel in &files {
@@ -402,6 +461,17 @@ pub fn check_size(root: &Path, doc_roots: &[String], max_lines: usize) -> GateRe
         if line_count > max_lines {
             warnings.push(format!(
                 "{rel}: {line_count} lines exceeds {max_lines}; keep merged only with a reason"
+            ));
+        }
+    }
+    for rel in collect_rust_sources(root, source_roots) {
+        let Ok(text) = std::fs::read_to_string(root.join(&rel)) else {
+            continue;
+        };
+        let line_count = text.split('\n').count();
+        if line_count > source_max_lines {
+            warnings.push(format!(
+                "{rel}: {line_count} lines exceeds {source_max_lines}; split a seam out of it"
             ));
         }
     }
@@ -1465,7 +1535,7 @@ mod tests {
         let root = tmp("size");
         write(&root, "docs/big.md", &"x\n".repeat(600));
         write(&root, "docs/ok.md", "small");
-        let r = check_size(&root, &["docs".into()], 500);
+        let r = check_size(&root, &["docs".into()], 500, &[], 1500);
         assert_eq!(r.severity, Severity::Warning);
         assert!(!r.is_blocking_failure());
         assert_eq!(r.warnings.len(), 1);
@@ -1487,6 +1557,28 @@ mod tests {
         let mut r = registry.unwrap();
         r.core_docs = vec!["README.md".into()];
         r
+    }
+
+    #[test]
+    fn size_warns_on_oversized_sources_without_blocking() {
+        let root = tmp("size-sources");
+        write(&root, "crates/small/src/lib.rs", "fn ok() {}\n");
+        let big = (0..1600)
+            .map(|i| format!("// line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        write(&root, "crates/big/src/main.rs", &big);
+        // Build output must never be scanned.
+        write(&root, "crates/big/target/debug/generated.rs", &big);
+        let r = check_size(&root, &["docs".into()], 500, &["crates".into()], 1500);
+        assert!(
+            r.failures.is_empty(),
+            "structure debt warns, never blocks: {:?}",
+            r.failures
+        );
+        assert_eq!(r.warnings.len(), 1, "got {:?}", r.warnings);
+        assert!(r.warnings[0].contains("crates/big/src/main.rs"));
+        assert!(r.warnings[0].contains("split a seam out of it"));
     }
 
     #[test]
