@@ -117,6 +117,10 @@ terms = [
 # keep their vocabulary.
 allowed_paths = [
     "docs/current/operations/governance-engine.md",
+    # Dated live-acceptance records are historical evidence by construction:
+    # they narrate what a specific pre-cutover run did, in that run's
+    # vocabulary. Their header states the date and the pre-DOC-108 scope.
+    "docs/current/integration/live-agent-team-acceptance-2026-07-21.md",
 ]
 context_markers = [
     "archive",

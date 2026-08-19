@@ -41,8 +41,9 @@ Teams and Members answer "who exists and how are they organized."
 Execution answers "what work is being done right now."
 
 **Missions (retired, DOC-108)**: Pre-cutover durable goals survive only as
-read-only legacy provenance and export/verify history. No new Mission, Mission
-Log, or Wave row may be written on any surface.
+read-only legacy provenance and export/verify history. No new row of any of
+these retired kinds — Mission, Mission Log, or Wave — may be written on any
+surface.
 
 **Agent Team Runs**: One execution instance with MemberRuns (runtime bindings), shared Work board, message inbox. Existing execution model — Work state machine, Message delivery, Daemon supervision — unchanged.
 

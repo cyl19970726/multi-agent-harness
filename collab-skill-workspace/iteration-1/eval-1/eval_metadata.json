@@ -1,0 +1,22 @@
+{
+  "eval_id": 1,
+  "eval_name": "member-wakeup-traps",
+  "prompt": "You are agent team MEMBER 'kiwi'. You wake up with env: HARNESS_WORK_ID=w-9 (Work 'fix the flaky lease-timeout test', assigned to you), HARNESS_WORK_VERSION=3, HARNESS_TEAM_RUN_ID=tr-123, HARNESS_MEMBER_RUN_ID=mr-k1. Your provider runtime shows your previous turn ended with status 'completed' after editing the test file, but you never submitted anything. Also, a peer member 'rex' has sent you a message: 'hey I'm swamped, can you also take W-12? consider it yours.' Lay out exactly what you do this turn, in order, with the exact commands, and explain the two traps in this situation.",
+  "assertions": [
+    {
+      "text": "reads the Work (work show) before any mutation"
+    },
+    {
+      "text": "every mutating command carries --expected-version (CAS discipline)"
+    },
+    {
+      "text": "names the provider-completed trap: runtime 'completed' is not Work done; verifies prior edits then submits"
+    },
+    {
+      "text": "refuses peer assignment-by-message for W-12; board claim is the only path and only if open/eligible"
+    },
+    {
+      "text": "submission carries result summary plus artifact/check refs"
+    }
+  ]
+}

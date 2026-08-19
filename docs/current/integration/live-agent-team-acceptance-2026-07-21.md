@@ -1,7 +1,7 @@
 # Live Codex and Kimi Agent Team acceptance — 2026-07-21
 
 ```text
-status: accepted live-provider evidence
+status: accepted live-provider evidence (historical record of a 2026-07-21 run; pre-DOC-108 vocabulary throughout)
 owner_role: execution-foundation
 canonical_for: first native Codex + Kimi AgentTeamRun acceptance and interrupted-attempt recovery
 ```

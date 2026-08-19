@@ -685,6 +685,150 @@ fn governance_report(
 /// Prevent retired product vocabulary from being presented as current in
 /// active registry documents. Historical and migration material remains
 /// available through archival/deprecated entries or explicit context markers.
+/// One scan unit for the retired-vocabulary check: the sentence text plus the
+/// 1-based line where it starts, so a failure still points at a real line.
+struct RetiredVocabularySentence {
+    text: String,
+    line: usize,
+    /// The block's source lines, so a failure points at the line carrying the
+    /// term rather than at the start of a wrapped paragraph.
+    lines: Vec<(usize, String)>,
+}
+
+impl RetiredVocabularySentence {
+    fn line_of(&self, term: &str) -> usize {
+        self.lines
+            .iter()
+            .find(|(_, line)| line.contains(term))
+            .map(|(number, _)| *number)
+            .unwrap_or(self.line)
+    }
+}
+
+/// Split a Markdown document into sentence-sized scan units.
+///
+/// Blocks break on blank lines, headings, fences and table rows, so unrelated
+/// prose never shares a unit. Inside a block the wrapped lines are joined
+/// first (a hard wrap must not tear a labeled sentence in half) and then split
+/// on sentence punctuation; table rows split per cell instead, because a
+/// marker in one cell says nothing about another.
+fn retired_vocabulary_sentences(text: &str) -> Vec<RetiredVocabularySentence> {
+    let mut units = Vec::new();
+    let mut block: Vec<(usize, &str)> = Vec::new();
+    let push_block = |block: &mut Vec<(usize, &str)>,
+                      units: &mut Vec<RetiredVocabularySentence>| {
+        if block.is_empty() {
+            return;
+        }
+        let start_line = block[0].0;
+        let block_lines: Vec<(usize, String)> =
+            block.iter().map(|(n, l)| (*n, (*l).to_string())).collect();
+        let is_table_row = block.len() == 1 && block[0].1.trim_start().starts_with('|');
+        let joined = block
+            .iter()
+            .map(|(_, line)| line.trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        block.clear();
+        // Map each character offset in the joined text back to its source
+        // line, so a failure points at the line carrying the term even when
+        // the sentence is wrapped across several lines.
+        let mut offsets: Vec<(usize, usize)> = Vec::new();
+        let mut cursor = 0usize;
+        for (number, line) in &block_lines {
+            offsets.push((cursor, *number));
+            cursor += line.trim().chars().count() + 1;
+        }
+        let pieces: Vec<String> = if is_table_row {
+            // A table row is one statement: its status/disposition cell labels
+            // the whole row, so per-cell splitting would flag correctly
+            // labeled rows.
+            vec![joined.clone()]
+        } else {
+            split_into_sentences(&joined)
+        };
+        let mut consumed = 0usize;
+        for piece in pieces {
+            let piece_start = consumed;
+            consumed += piece.chars().count();
+            if piece.trim().is_empty() {
+                continue;
+            }
+            let piece_end = consumed;
+            let lines = block_lines
+                .iter()
+                .zip(offsets.iter())
+                .filter(|(_, (offset, _))| *offset < piece_end)
+                .filter(|((_, line), (offset, _))| {
+                    offset + line.trim().chars().count() >= piece_start
+                })
+                .map(|((number, line), _)| (*number, line.clone()))
+                .collect::<Vec<_>>();
+            units.push(RetiredVocabularySentence {
+                text: piece,
+                line: lines.first().map(|(n, _)| *n).unwrap_or(start_line),
+                lines,
+            });
+        }
+    };
+    let mut in_fence = false;
+    for (index, line) in text.lines().enumerate() {
+        let line_no = index + 1;
+        let trimmed = line.trim_start();
+        let is_fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
+        if is_fence {
+            push_block(&mut block, &mut units);
+            in_fence = !in_fence;
+            continue;
+        }
+        // Fenced content is line-oriented (status blocks, code, command
+        // transcripts); joining it as prose would fuse unrelated fields.
+        let standalone = in_fence || trimmed.starts_with('#') || trimmed.starts_with('|');
+        if trimmed.is_empty() {
+            push_block(&mut block, &mut units);
+            continue;
+        }
+        if standalone {
+            push_block(&mut block, &mut units);
+            block.push((line_no, line));
+            push_block(&mut block, &mut units);
+            continue;
+        }
+        block.push((line_no, line));
+    }
+    push_block(&mut block, &mut units);
+    units
+}
+
+/// Sentence split on terminal punctuation followed by whitespace. Keeps the
+/// punctuation with its sentence so quoted contract phrases stay intact.
+fn split_into_sentences(text: &str) -> Vec<String> {
+    let mut sentences = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0i32;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        current.push(ch);
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = (depth - 1).max(0),
+            _ => {}
+        }
+        // A parenthetical `(DOC-108; ADR 0027 superseded)` is one clause: its
+        // label must still cover the term it qualifies.
+        if depth == 0
+            && matches!(ch, '.' | ';' | '!' | '?')
+            && chars.peek().is_some_and(|next| next.is_whitespace())
+        {
+            sentences.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.trim().is_empty() {
+        sentences.push(current);
+    }
+    sentences
+}
+
 pub fn check_retired_vocabulary(
     root: &Path,
     registry_cfg: &RegistryConfig,
@@ -741,17 +885,23 @@ pub fn check_retired_vocabulary(
             continue;
         };
         checked += 1;
-        for (index, line) in text.lines().enumerate() {
-            let lower = line.to_lowercase();
-            let is_explicit_history = context_markers.iter().any(|marker| lower.contains(marker));
-            if is_explicit_history {
+        // Sentence-scoped, not line-scoped. A context marker exempts only the
+        // sentence it appears in: a line may carry an unrelated `legacy` (say,
+        // modifying a different noun) while a neighbouring clause asserts a
+        // retired object as current authority, and line scoping laundered
+        // exactly that shape past the gate. Joining a wrapped paragraph before
+        // splitting also stops a hard wrap from tearing a legitimately labeled
+        // sentence in half.
+        for sentence in retired_vocabulary_sentences(&text) {
+            let lower = sentence.text.to_lowercase();
+            if context_markers.iter().any(|marker| lower.contains(marker)) {
                 continue;
             }
             for term in &cfg.terms {
-                if line.contains(term) {
+                if sentence.text.contains(term) {
                     failures.push(format!(
                         "{path}:{}: retired vocabulary `{term}` needs explicit historical context or replacement",
-                        index + 1
+                        sentence.line_of(term)
                     ));
                 }
             }
@@ -1555,6 +1705,82 @@ mod tests {
         assert_eq!(r.failures.len(), 1, "got {:?}", r.failures);
         assert!(r.failures[0].contains("README.md:1"));
         assert!(r.failures[0].contains("Goal -> Task"));
+    }
+
+    #[test]
+    fn retired_vocabulary_scope_is_the_sentence_not_the_line() {
+        let root = tmp("retired-vocabulary-sentence");
+        // Cross-clause laundering: the marker labels the first clause, the
+        // second asserts a retired object as current authority. Line scoping
+        // exempted the whole line; sentence scoping sees two statements.
+        write(
+            &root,
+            "README.md",
+            "The old model is retired. Goal -> Task remains the current planning authority.",
+        );
+        // A hard wrap must not tear a labeled sentence in half: the marker and
+        // the term belong to one statement that happens to span two lines.
+        write(
+            &root,
+            "docs/history.md",
+            "The retired model is preserved for provenance, so Goal -> Task rows\nremain readable and are never rewritten.",
+        );
+        // A table row is one statement; its disposition cell labels the row.
+        write(
+            &root,
+            "docs/archive.md",
+            "| Selector | Retired (DOC-108) | Goal -> Task registry removed |",
+        );
+        let registry = serde_json::json!({
+            "schema": "agent_harness.docs_registry.v1",
+            "documents": [
+                valid_doc("README.md"),
+                valid_doc("docs/history.md"),
+                valid_doc("docs/archive.md")
+            ]
+        });
+        write(&root, "docs/registry.json", &registry.to_string());
+        let cfg = RetiredVocabularyConfig {
+            terms: vec!["Goal -> Task".into()],
+            allowed_paths: Vec::new(),
+            context_markers: vec!["retired".into()],
+        };
+        let r = check_retired_vocabulary(&root, &reg_cfg(), &cfg);
+        assert_eq!(r.failures.len(), 1, "got {:?}", r.failures);
+        assert!(
+            r.failures[0].contains("README.md:1"),
+            "a marker in a neighbouring clause must not exempt this one: {:?}",
+            r.failures
+        );
+    }
+
+    #[test]
+    fn retired_vocabulary_reports_the_line_carrying_the_term() {
+        let root = tmp("retired-vocabulary-lineno");
+        // The term sits on the third line of a wrapped paragraph; the failure
+        // must point there, not at the paragraph's first line.
+        write(
+            &root,
+            "README.md",
+            "Provider cwd is always a project root\nor a validated worktree, never\na Goal -> Task directory.",
+        );
+        let registry = serde_json::json!({
+            "schema": "agent_harness.docs_registry.v1",
+            "documents": [valid_doc("README.md")]
+        });
+        write(&root, "docs/registry.json", &registry.to_string());
+        let cfg = RetiredVocabularyConfig {
+            terms: vec!["Goal -> Task".into()],
+            allowed_paths: Vec::new(),
+            context_markers: vec!["retired".into()],
+        };
+        let r = check_retired_vocabulary(&root, &reg_cfg(), &cfg);
+        assert_eq!(r.failures.len(), 1, "got {:?}", r.failures);
+        assert!(
+            r.failures[0].contains("README.md:3"),
+            "expected the term's own line: {:?}",
+            r.failures
+        );
     }
 
     #[test]

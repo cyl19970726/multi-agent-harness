@@ -1,0 +1,29 @@
+{
+  "expectations": [
+    {
+      "text": "reads the Work (work show) before any mutation",
+      "passed": true,
+      "evidence": "Step 1 ('Get the board's truth about W-9') runs `team-run work show --work-id \"$HARNESS_WORK_ID\" --json` first, before the submit (step 5) or claim (step 6) commands."
+    },
+    {
+      "text": "every mutating command carries --expected-version (CAS discipline)",
+      "passed": true,
+      "evidence": "`member work submit --work-id ... --expected-version <version-from-step-1> ...` (step 5) and `member work claim --work-id w-12 --expected-version <version-from-work-show> --idempotency-key ...` (step 6) both carry --expected-version."
+    },
+    {
+      "text": "names the provider-completed trap: runtime 'completed' is not Work done; verifies prior edits then submits",
+      "passed": true,
+      "evidence": "'Trap 1 — treating \"completed\" as \"submitted\" (false-receipt trap)' explicitly quotes the skill: 'A tool status of `completed` is not the semantic answer' and 'RULE ZERO: done = merged PR with green CI.' Step 3 inspects git status/diff/log to recover prior edits, step 4 re-verifies the fix, then step 5 submits."
+    },
+    {
+      "text": "refuses peer assignment-by-message for W-12; board claim is the only path and only if open/eligible",
+      "passed": true,
+      "evidence": "Step 6: 'A chat message cannot move it... kiwi does nothing further to it except reply' if bound to rex; 'If it truly shows unassigned/ready, kiwi may claim it ... using `member work claim`' only after checking `work show --work-id w-12`. Trap 2 section reinforces: 'the board ... is the sole authority for who owns W-12 — not what a peer said in chat.'"
+    },
+    {
+      "text": "submission carries result summary plus artifact/check refs",
+      "passed": true,
+      "evidence": "Step 5 submit command includes `--result-summary \"## RESULT ... ## SUMMARY ... ## COVERAGE ...\"`, `--artifact-ref \"<PR URL>\"`, and `--check-ref \"cargo test <lease_timeout_test> x20 => all pass\"`."
+    }
+  ]
+}

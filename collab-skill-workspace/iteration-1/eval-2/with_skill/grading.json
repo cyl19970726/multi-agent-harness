@@ -1,0 +1,24 @@
+{
+  "expectations": [
+    {
+      "text": "does not edit outside the Boundary paths (no firm-store change)",
+      "passed": true,
+      "evidence": "'I do **not** touch `crates/firm-store/src/lib.rs`, not even for a 5-line fix.' Section '2. Do NOT fix the store bug myself, even though it's \"just 5 lines\"' contains no command and states 'this is the thing I deliberately don't run.'"
+    },
+    {
+      "text": "creates a team_claim follow-up Work (with required flags) or a decision-shaped message proposing it",
+      "passed": true,
+      "evidence": "Step 4 command: `team-run work create --team-run-id ... --as-member-run-id ... --title \"Fix root-cause bug in crates/firm-store/src/lib.rs blocking w-9\" --context ... --completion-criteria \"...\" --claim-mode team_claim --idempotency-key ...` — a full follow-up Work with team-run-id/title/completion-criteria/claim-mode team_claim."
+    },
+    {
+      "text": "explains unacked informational mail as next-safe-boundary delivery; does not spam or panic",
+      "passed": true,
+      "evidence": "Step 1: 'Two unacknowledged informational messages does not mean the Host is ignoring me. Per the shared model, ordinary mail is injected at the recipient's *next safe provider cycle*... \"likely between safe boundaries\" is an expected, honest state — not a stall.' Step 5 sends exactly one new message and states 'I do not resend or duplicate the earlier messages.'"
+    },
+    {
+      "text": "keeps own Work honest: continues in-boundary or blocks with a structured reason; no silent stall",
+      "passed": true,
+      "evidence": "Step 3: `member work block --work-id \"$HARNESS_WORK_ID\" --expected-version ... --reason \"w-9 completion criteria cannot be met from inside Boundary ...\"` — blocks with a specific structured reason rather than stalling silently; the text calls out 'the anti-pattern to avoid here is \"silent stall,\" and blocking with a structured reason is exactly the mechanism the skill gives for that.'"
+    }
+  ]
+}

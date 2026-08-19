@@ -128,8 +128,8 @@ MemberRun.worktree_ref
 
 All three selectors now exist independently:
 
-- `harness company ...`, `--company`, and `HARNESS_COMPANY` select Company
-  Store truth;
+- `harness company ...`, `--company`, and `HARNESS_COMPANY` selected Company
+  Store truth (that selector is retired by DOC-108);
 - `harness space ...`, `--space`, and `HARNESS_SPACE` select Mission/Wave,
   Agent Team, and Workflow coordination truth;
 - `harness project ...`, `--project`, and `HARNESS_PROJECT` select the Project
@@ -275,15 +275,16 @@ reconstructable.
    decision time, the since-retired Mission/Wave records) without any
    legacy Company Store.
 2. A legacy Company Store could contain Wanchengwanling and AgentOS operating
-   areas in one company truth boundary while mapping external repositories.
+   areas in one retired company truth boundary while mapping external
+   repositories.
 3. At decision time, one legacy Mission could use multiple Project Bindings
    through separate TeamRuns or MemberRuns without duplicating its history;
    the same multi-binding rule now applies to durable Teams.
 4. Switching Company never silently switches Execution Space; switching
    Execution Space never rewrites Company truth; selecting Project Binding never
    reroutes Company writes.
-5. Provider cwd is always a project root or validated worktree, never a Company
-   Store or Execution Space directory.
+5. Provider cwd is always a project root or validated worktree, never the
+   retired Company Store or an Execution Space directory.
 6. Execution completion or Wave advance cannot approve finance, legal,
    permission, or Organization changes.
 
