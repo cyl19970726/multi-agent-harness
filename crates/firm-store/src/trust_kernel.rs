@@ -123,11 +123,13 @@ pub(crate) fn current_member_lifecycle_matches(
 
 /// Fail-closed parity validation between the legacy ProviderRuntimeProjection
 /// and the canonical MemberRun. Rows written before the DOC-108 cutover
-/// legitimately materialized without a canonical `last_event_at` while the
-/// legacy projection kept advancing one; that exact shape (canonical `None`,
-/// legacy `Some`) is a known migration artifact, not corruption, so validation
-/// treats the legacy value as authoritative for it. Every other divergence —
-/// including both-`Some` disagreement on `last_event_at` — still fails closed.
+/// legitimately materialized with a canonical `None` where the legacy
+/// projection kept a `Some`; for ANY comparable optional lifecycle field that
+/// exact shape (canonical `None`, legacy `Some`) is a known migration fact,
+/// not corruption, so validation adopts the legacy value for it (the field is
+/// skipped) through the field-generic [`optional_field_mismatch`] rule. Every
+/// other divergence — including both-`Some` disagreement — still fails closed
+/// for every field, and scalar lifecycle fields always compare strictly.
 ///
 /// Sync decisions keep using the strict
 /// [`current_member_lifecycle_mismatch_fields`]: any real difference still
@@ -136,17 +138,35 @@ pub(crate) fn current_member_lifecycle_validation_mismatch_fields(
     canonical: &MemberRun,
     runtime: &ProviderRuntimeProjection,
 ) -> StoreResult<Vec<&'static str>> {
-    let mut mismatches = current_member_lifecycle_mismatch_fields(canonical, runtime)?;
-    mismatches.retain(|field| {
-        *field != "last_event_at"
-            || !(canonical.last_event_at.is_none() && runtime.last_event_at.is_some())
-    });
-    Ok(mismatches)
+    lifecycle_mismatch_fields(canonical, runtime, PreCutoverTolerance::AdoptLegacy)
 }
 
 pub(crate) fn current_member_lifecycle_mismatch_fields(
     canonical: &MemberRun,
     runtime: &ProviderRuntimeProjection,
+) -> StoreResult<Vec<&'static str>> {
+    lifecycle_mismatch_fields(canonical, runtime, PreCutoverTolerance::FailClosed)
+}
+
+/// How a canonical-`None` + legacy-`Some` divergence on an optional lifecycle
+/// field is treated. That shape is the known DOC-108 pre-cutover migration
+/// artifact and can only occur on optional fields, never on scalar ones.
+#[derive(Clone, Copy)]
+enum PreCutoverTolerance {
+    /// The row predates the cutover: adopt the legacy value (skip the field).
+    AdoptLegacy,
+    /// Any divergence fails closed.
+    FailClosed,
+}
+
+/// Shared parity comparison between the legacy ProviderRuntimeProjection and
+/// the canonical MemberRun. Every comparable optional lifecycle field runs
+/// through [`optional_field_mismatch`], which applies the field-generic
+/// pre-cutover tolerance; scalar fields always compare strictly.
+fn lifecycle_mismatch_fields(
+    canonical: &MemberRun,
+    runtime: &ProviderRuntimeProjection,
+    pre_cutover: PreCutoverTolerance,
 ) -> StoreResult<Vec<&'static str>> {
     let canonical_native = runtime
         .native_session
@@ -172,19 +192,54 @@ pub(crate) fn current_member_lifecycle_mismatch_fields(
     if canonical.runtime_status != canonical_runtime_status(runtime.status) {
         mismatches.push("runtime_status");
     }
-    if canonical.native_session != canonical_native {
-        mismatches.push("native_session");
+    if let Some(field) = optional_field_mismatch(
+        "native_session",
+        &canonical.native_session,
+        &canonical_native,
+        pre_cutover,
+    ) {
+        mismatches.push(field);
     }
     if canonical.started_at != runtime.started_at {
         mismatches.push("started_at");
     }
-    if canonical.last_event_at != runtime.last_event_at {
-        mismatches.push("last_event_at");
+    if let Some(field) = optional_field_mismatch(
+        "last_event_at",
+        &canonical.last_event_at,
+        &runtime.last_event_at,
+        pre_cutover,
+    ) {
+        mismatches.push(field);
     }
-    if canonical.finished_at != runtime.finished_at {
-        mismatches.push("finished_at");
+    if let Some(field) = optional_field_mismatch(
+        "finished_at",
+        &canonical.finished_at,
+        &runtime.finished_at,
+        pre_cutover,
+    ) {
+        mismatches.push(field);
     }
     Ok(mismatches)
+}
+
+/// Field-generic mismatch check for one optional lifecycle field. With
+/// [`PreCutoverTolerance::AdoptLegacy`], a canonical `None` paired with a
+/// legacy `Some` is the known pre-cutover migration shape for ANY field and is
+/// skipped (the legacy value is adopted). Every other divergence — including
+/// both-`Some` disagreement — reports the field.
+fn optional_field_mismatch<T: PartialEq>(
+    field: &'static str,
+    canonical: &Option<T>,
+    legacy: &Option<T>,
+    pre_cutover: PreCutoverTolerance,
+) -> Option<&'static str> {
+    if matches!(pre_cutover, PreCutoverTolerance::AdoptLegacy)
+        && canonical.is_none()
+        && legacy.is_some()
+    {
+        return None;
+    }
+    (canonical != legacy).then_some(field)
 }
 
 fn current_member_sync_payload(projection: &MemberRun) -> Value {
