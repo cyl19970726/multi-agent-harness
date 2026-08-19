@@ -15136,8 +15136,7 @@ fn run_supervisor_heartbeat_loop(
         // exists, simulate a transient store failure so the loop must survive
         // and keep renewing once the marker is removed.
         let result = match failure_marker() {
-            Some(_marker) => Err(StoreError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            Some(_marker) => Err(StoreError::Io(std::io::Error::other(
                 "test-injected transient heartbeat renewal/store failure",
             ))),
             None => renew(),
@@ -42031,9 +42030,8 @@ mod tests {
     #[test]
     fn supervisor_renewal_error_classification() {
         assert!(
-            !is_terminal_supervisor_renewal_error(&StoreError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "store write lock contention"
+            !is_terminal_supervisor_renewal_error(&StoreError::Io(std::io::Error::other(
+                "store write lock contention",
             ))),
             "IO/lock-contention errors must be transient"
         );
