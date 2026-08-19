@@ -3192,7 +3192,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-08-18",
+      "reviewAfter": "2026-11-19",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check:docs-governance"
       ],
