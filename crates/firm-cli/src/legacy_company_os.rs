@@ -718,6 +718,20 @@ pub fn export_archive(firm_home: &Path, output: &Path) -> Result<ExportSummary, 
     })
 }
 
+/// Exporter provenance recorded in the manifest, rendered for diagnostics.
+///
+/// `LEDGER_CONTRACT` grows as retired surfaces are added without bumping
+/// `ARCHIVE_VERSION` (the on-disk shape is unchanged), so an archive written by
+/// an earlier binary fails the contract-length cross-check. The manifest
+/// already carries the exporter identity, so that failure can name the binary
+/// that produced the archive instead of reporting a bare length difference.
+fn archive_provenance(manifest: &Manifest) -> String {
+    format!(
+        "archive produced by exporter {} (source revision {})",
+        manifest.exporter_version, manifest.source_revision
+    )
+}
+
 /// Verify an archive without consulting any live store: manifest hashes and
 /// byte/line counts, the ledger/exclusion contract cross-checks, and a
 /// restore-read proof that re-reads every ledger from an isolated temp-dir
@@ -846,11 +860,23 @@ pub fn verify_archive(archive: &Path) -> Result<VerifySummary, String> {
             ));
         }
         if store.ledgers.len() != LEDGER_CONTRACT.len() {
+            // Verification is not relaxed: the archive still fails. The message
+            // only becomes actionable, naming the exporter that wrote it and
+            // the direction of the drift.
+            let remedy = if store.ledgers.len() < LEDGER_CONTRACT.len() {
+                "written before this binary's ledger contract grew; \
+                 re-export with the current binary"
+            } else {
+                "written against a newer ledger contract this binary does not know; \
+                 verify with the binary that produced it"
+            };
             return Err(format!(
-                "store {} has {} ledger entries, contract requires {}",
+                "store {} has {} ledger entries, contract requires {}: {}, {}",
                 store.id,
                 store.ledgers.len(),
-                LEDGER_CONTRACT.len()
+                LEDGER_CONTRACT.len(),
+                archive_provenance(&manifest),
+                remedy
             ));
         }
         for (ledger, contract) in store.ledgers.iter().zip(LEDGER_CONTRACT.iter()) {
