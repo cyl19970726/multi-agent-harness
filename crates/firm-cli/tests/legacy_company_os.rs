@@ -375,6 +375,95 @@ fn verify_rejects_tampered_and_missing_archives_offline() {
         .contains("lists a contracted ledger as uncontracted"));
 }
 
+/// `LEDGER_CONTRACT` grows as retired surfaces are added, without bumping
+/// `ARCHIVE_VERSION` (the on-disk shape is unchanged). An archive written by an
+/// earlier exporter must still be rejected, but the rejection has to name the
+/// exporter that produced it and say what to do about it.
+#[test]
+fn verify_names_the_exporter_behind_a_contract_length_mismatch() {
+    let home = TempHome::new("legacy-company-os-contract-drift");
+    seed_home(&home);
+    let archive = home.base().join("archive-drift");
+    let output = run(&home, home.base(), &export_args(&archive));
+    assert!(output.status.success(), "export failed: {output:?}");
+
+    // The freshly exported archive verifies: the drift message below is about
+    // contract age, not a verifier that rejects everything.
+    let verify = run(&home, home.base(), &verify_args(&archive));
+    assert!(verify.status.success(), "clean verify failed: {verify:?}");
+
+    let manifest_path = archive.join("manifest.json");
+    let original: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+
+    // Shape an archive as an earlier exporter would have left it: one fewer
+    // contracted ledger, stamped with that exporter's own provenance.
+    let mut manifest = original.clone();
+    manifest["exporter_version"] = serde_json::json!("0.1.0-earlier");
+    manifest["source_revision"] = serde_json::json!("1111111111111111111111111111111111111111");
+    let store_id = manifest["stores"][0]["id"].as_str().unwrap().to_string();
+    let ledgers = manifest["stores"][0]["ledgers"].as_array_mut().unwrap();
+    ledgers.pop().expect("contracted ledgers in manifest");
+    let short_len = ledgers.len();
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let verify = run(&home, home.base(), &verify_args(&archive));
+    assert!(
+        !verify.status.success(),
+        "an older-contract archive must still fail verification: {verify:?}"
+    );
+    let stderr = String::from_utf8_lossy(&verify.stderr).to_string();
+    assert!(
+        stderr.contains(&format!(
+            "store {store_id} has {short_len} ledger entries, contract requires {}",
+            short_len + 1
+        )),
+        "the bare length facts must survive: {stderr}"
+    );
+    assert!(
+        stderr.contains("written before this binary's ledger contract grew"),
+        "the message must name the drift direction: {stderr}"
+    );
+    assert!(
+        stderr.contains("exporter 0.1.0-earlier"),
+        "the message must name the manifest's exporter version: {stderr}"
+    );
+    assert!(
+        stderr.contains("source revision 1111111111111111111111111111111111111111"),
+        "the message must name the manifest's source revision: {stderr}"
+    );
+    assert!(
+        stderr.contains("re-export with the current binary"),
+        "the message must say what to do next: {stderr}"
+    );
+
+    // Drift the other way: an archive from a newer exporter must not be told to
+    // re-export with this older binary.
+    let mut manifest = original;
+    manifest["exporter_version"] = serde_json::json!("99.0.0-newer");
+    let ledgers = manifest["stores"][0]["ledgers"].as_array_mut().unwrap();
+    let extra = ledgers[0].clone();
+    ledgers.push(extra);
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let verify = run(&home, home.base(), &verify_args(&archive));
+    assert!(!verify.status.success());
+    let stderr = String::from_utf8_lossy(&verify.stderr).to_string();
+    assert!(
+        stderr.contains("written against a newer ledger contract")
+            && stderr.contains("verify with the binary that produced it"),
+        "a newer archive must not be told to re-export with this binary: {stderr}"
+    );
+}
+
 #[test]
 fn export_with_explicit_firm_home_flag() {
     let home = TempHome::new("legacy-company-os-firm-home-flag");
