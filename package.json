@@ -21,6 +21,7 @@
     "check:member-execution-trust": "node scripts/generate-member-trust-error-contract.mjs && node scripts/check-member-execution-trust.mjs",
     "check:tool-descriptors": "node scripts/check-tool-descriptors.mjs",
     "check:native-session-boundary": "node scripts/check-native-session-boundary.mjs",
+    "check:dynamic-workflow-retirement-manifest": "node scripts/check-dynamic-workflow-retirement-manifest.mjs",
     "check:star-harness-plugin": "node scripts/sync-star-harness-plugin-skills.mjs --check && node scripts/check-star-harness-plugin.mjs && node scripts/check-star-harness-hook.mjs",
     "star-harness:install:check": "bash scripts/manage-star-harness-install.sh --check",
     "star-harness:install": "bash scripts/manage-star-harness-install.sh --apply",
