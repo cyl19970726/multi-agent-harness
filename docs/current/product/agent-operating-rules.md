@@ -59,6 +59,15 @@ and wins any conflict.
   pre-review readiness stage. Run focused checks while working; run the
   submission-level checks once when Dev is ready for Review. Preserve
   unaffected evidence after rejection and review the delta by default.
+- The ordinary Notion control plane is exactly two tables: one Development
+  Task table owns current state, and Development Documents stores readable
+  Dev/Spec submissions plus immutable Review documents. Review binds a directly
+  readable immutable version or exact Git SHA. Provider Sessions are executors,
+  not a mirrored task ledger. Stop new dispatch and reconcile the one Task when
+  Task, Session, submission, or Review state disagrees.
+- Large machine-readable inventories and structured manifests live in the
+  repository and are bound by SHA/path/hash as needed. Do not use Base64,
+  payload, or carrier-page assembly as the default document Review path.
 - Harness Member execution is suspended for repository repair until the
   explicit dogfood admission standard passes. A Primary Codex Session may use
   bounded temporary Sub-Agents internally, but must not label that as Harness

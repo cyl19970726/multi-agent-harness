@@ -13,17 +13,21 @@ clear.
 
 ## Authority boundary: Notion vs repository
 
-Notion is the product/development authority: product intent, Specs,
-decisions-of-record for the product model, task execution state, and review
-records live there (AgentFirm Home → 01 · Docs System → Canonical Docs; the
+Accepted Notion Docs own product intent, Specs, and product decisions. One
+Notion Development Task owns the current state of a change; the existing
+Development Documents table contains directly readable Dev/Spec submissions
+and immutable Review documents. These records live under AgentFirm Home (01 ·
+Docs System → Canonical Docs and 02 · Development System; the
 DEV-40 flip of 2026-08-18 promoted DOC-105..108 to the four Current
 Canonical rows under the now-Accepted AF-ADR-014). The repository owns
 versioned implementation truth bound to code and validated by governance
 gates — schemas, CLI/API
 surfaces, and the concrete facts a developer needs next to the code. When the
 two disagree, Notion is the product authority and the repository must either
-implement the change or record the gap in the Implementation Crosswalk and
-Development Work — never fork doctrine silently in repository prose.
+implement the change or record the gap in the Implementation Crosswalk and one
+Development Task — never fork doctrine silently in repository prose. Provider
+Sessions own execution transcripts and are executors only; they never become a
+Task or Review authority.
 
 ## Documentation modules
 
@@ -37,7 +41,7 @@ not seven independent sources of product truth.
 | Execution | `docs/current/dashboard/`, `docs/current/integration/`, runtime/workflow docs | Agent Teams, Work and Messages, executors, providers, operator surfaces and runbooks | only for execution work |
 | Design evidence | `design/<workstream>/` (git history) | versioned Expected, Actual, prompts, specs, overlays, comparisons and reviews | only for the selected workstream |
 | Operations | `docs/current/operations/getting-started.md`, `docs/current/operations/operations.md`, `docs/current/architecture/schemas.md`, `docs/current/operations/governance-engine.md` | commands, release and governance gates | only for implementation/operations |
-| Research | `research/` (git history) | unresolved evidence, comparisons and bounded proposals attached to an active decision or TeamWork | never default context |
+| Research | `research/` (git history) | unresolved evidence, comparisons and bounded proposals attached to an active decision or Development Task | never default context |
 | Historical evidence | verified external archives and Git history | provenance needed to interpret still-existing records or decisions | never default context |
 
 The legacy Company OS system split (Docs / Organization / Work / Finance /
@@ -91,7 +95,7 @@ answer the current decision.
 
 Old visual candidates, completion audits and historical evidence are loaded
 only to answer a historical or comparative question. Unresolved research must
-be attached to an active TeamWork or decision; abandoned standalone studies are
+be attached to an active Development Task or decision; abandoned standalone studies are
 deleted and remain recoverable from Git history.
 
 ## Creating or changing documentation
@@ -103,12 +107,14 @@ For every new request, Docs Governance follows this sequence:
 2. **Search the authority.** Extend the existing canonical document when its
    scope already owns the fact. A new file is not a substitute for editing the
    authority.
-3. **Design relations.** Name linked TeamWorks, Actors, Approvals, Finance
-   records, schemas, Actions and result Documents without copying their truth.
+3. **Design relations.** Link accepted Docs, the one current Development Task,
+   Dev/Review Documents, repository truth, and required evidence without
+   copying their state.
 4. **Choose lifecycle.** Record owner, status, canonical scope, review trigger,
    replacement and retirement policy.
-5. **Create governed Work when needed.** Material restructuring, new product
-   authority or cross-system changes require a TeamWork and proportional review.
+5. **Create a Development Task when needed.** Material restructuring, new
+   product authority, or cross-system changes use one Task and proportional
+   immutable Review; do not create a second delivery ledger.
 6. **Update entry points and registry.** One new authority must have one visible
    route and machine-readable governance metadata.
 7. **Validate and return the result.** Run governance checks, record evidence,
@@ -144,7 +150,7 @@ retention test:
    acceptance;
 4. it is required to reproduce a current compliance, migration or acceptance
    claim;
-5. it is unresolved research attached to an active decision or TeamWork;
+5. it is unresolved research attached to an active decision or Development Task;
 6. a live record or supported compatibility path still references it and cannot
    be migrated safely.
 
@@ -167,16 +173,16 @@ The Docs Governance audit combines machine signals with an ownership review:
 
 Run the audit after a product-model change, a large feature lands, a design
 workstream closes, or the active document count grows materially. The result is
-a bounded cleanup TeamWork, not a permanent record-keeping activity.
+a bounded cleanup Development Task, not a permanent record-keeping activity.
 
 ## Governance roles
 
 - **Docs Governance Agent** proposes placement, merging, metadata, link repair,
   review dates and retirement actions. It does not change another system's product
   truth by itself.
-- **System Governance Agent** for Docs, Work, Finance or Org/HR owns the content
-  decision within that system.
-- **Lead Agent** resolves cross-system conflicts and prioritizes restructuring.
+- **Owning product steward/Brain** owns the content decision in the
+  question-scoped system and routes one Development Task.
+- **Brain** resolves cross-system conflicts and prioritizes restructuring.
 - **Human Owner** approves changes to product authority, high-risk policy,
   permissions, legal/financial meaning or organization governance when policy
   requires it.
@@ -186,9 +192,9 @@ rights.
 
 ## The Docs Governance operating loop
 
-Docs Governance is an Organization capability, not a background formatter.
-Roles below (Docs/System/Lead/Human) are company choices, not a fixed hierarchy. It
-maintains four visible Work queues:
+Docs Governance is a product capability, not a background formatter or a
+second task system. Roles below are operating responsibilities, not a fixed
+hierarchy. It maintains four ordinary views over Development Tasks:
 
 | Queue | Trigger | Output |
 | --- | --- | --- |
@@ -197,9 +203,9 @@ maintains four visible Work queues:
 | Structural maintenance | a document becomes too large, a module gains new readers, or navigation no longer reveals the business shape | split/merge proposal, updated module/index/views and migration notes |
 | Retirement | a schema, product model, design or runbook is superseded | preserved evidence where required, forwarding note where old references exist, retired registry status and removal plan |
 
-Each queue item is a `TeamWork`, with the Docs Governance Agent assigned for
-information architecture. The Governance Agent of the affected system remains
-accountable for meaning. The Lead resolves cross-system ownership; the Human
+Each queue item is one Development Task, with the Docs Governance Agent assigned
+for information architecture. The steward of the affected system remains
+accountable for meaning. The Brain resolves cross-system ownership; the Human
 Owner approves protected policy or authority changes. Docs Governance may move
 and link information but cannot silently redefine legal, financial, permission
 or organization truth.
@@ -208,7 +214,8 @@ The document UI in the Agent Dashboard provides ordinary execution surfaces
 by default. Docs Governance should publish a small health view rather than a
 second task system: unowned canonical documents, conflicting scopes, broken
 relations, stale reviews, archival candidates, unresolved placement requests
-and recent structural decisions. All remediation remains normal TeamWorks.
+and recent structural decisions. All remediation remains normal Development
+Tasks.
 
 ## Required metadata and review
 
@@ -218,6 +225,12 @@ implementation state, truth references, canonical scope, dependencies, review
 date, verification and reorganization trigger. Review is event-driven as well
 as date-driven. A document must be reviewed when its schema, store, API, UI,
 ADR, owning module or acceptance scenario changes.
+
+The registry classifies repository documents and names their machine consumers.
+It does not own current product intent, the Development Task or Review
+lifecycle, the Implementation Crosswalk, or the lifecycle of
+`.agents/skills/agentfirm-development-loop`. That Skill is the reviewed
+repository projection of Development Playbook intent.
 
 These fields answer different questions and must not be inferred from one
 another:

@@ -19,8 +19,10 @@ tests, CI, executable contracts, and shipped behavior.
 - Start at [AgentFirm Home](https://app.notion.com/p/3b849a4fa3798115939cca2b0b9e6f2d)
   and verify its current authority notice before any Notion mutation.
 - Use the [Development System](https://app.notion.com/p/21e49a4fa37982a5b9f781cf04584034)
-  for the current Task and its immutable Review history. Delivery Runs are
-  Legacy / Advanced history, not a second current authority.
+  for its two ordinary tables: Development Tasks owns current work state;
+  Development Documents holds readable Dev/Spec submissions and immutable
+  Review history. Delivery Runs are Legacy / Advanced history, not a second
+  current authority.
 - Follow the [Development Playbook](https://app.notion.com/p/3b849a4fa37981a990a5cf0059dcfa4a)
   for Brain assignment, Dev work, exact-revision submission, Review, merge,
   and closeout.
@@ -28,10 +30,25 @@ tests, CI, executable contracts, and shipped behavior.
   READ ONLY / DO NOT CLAIM. Page location and relations never grant authority;
   authority follows the current AgentFirm Home notice.
 
-Notion owns current product intent and operating state. The repository owns
-what is actually implemented. When they diverge, record the gap in the
-Implementation Crosswalk and Development Work rather than silently rewriting
-either side.
+Accepted Notion docs own current product intent. This checkout's code, schemas,
+configuration, and applicable `AGENTS.md` files own executable constraints.
+When accepted intent is ahead of this checkout, treat target-only text as
+non-operative, record the Implementation Crosswalk delta, and fail closed; use
+the development Skill for the transition procedure.
+
+The Development System has two ordinary tables. One Development Task owns the
+current state of a change. Development Documents contains directly readable
+Dev/Spec submissions and immutable Review documents; a Review binds the exact
+document version or Git SHA it inspected. A provider Session is only an
+executor and native transcript owner, never a Task ledger or Review authority.
+If Task, Session, submission, or Review state disagrees, stop dispatching new
+work and reconcile the Task from those authoritative records first.
+
+All repository development uses the single
+[agentfirm-development-loop](.agents/skills/agentfirm-development-loop/SKILL.md).
+Before editing, inspect the actual branch, revision, worktree, and affected
+paths. Preserve user and other-session changes; do not reset, clean, revert, or
+reformat unrelated work. Resolve a real path collision through the Brain.
 
 ## Product Identity
 
@@ -241,6 +258,8 @@ This file states first principles only. Everything procedural is one hop away:
 
 - Repository execution rules and proportional acceptance:
   [docs/current/product/agent-operating-rules.md](docs/current/product/agent-operating-rules.md)
+- Repository development procedure:
+  [.agents/skills/agentfirm-development-loop/SKILL.md](.agents/skills/agentfirm-development-loop/SKILL.md)
 - Host and Member collaboration procedure:
   [skills/collaborate-as-agent-team-member/SKILL.md](skills/collaborate-as-agent-team-member/SKILL.md)
 - Gates and commands:

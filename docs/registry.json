@@ -205,9 +205,9 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "documentation module taxonomy",
-        "documentation authority and lifecycle",
-        "default context packs and archive policy"
+        "repository-document module taxonomy and lifecycle",
+        "question-scoped repository-document routing",
+        "default context packs and archive policy; not product intent, Development Task/Review, Crosswalk, or Skill lifecycle"
       ],
       "dependsOn": [
         "docs/current/operations/governance-engine.md",
@@ -221,7 +221,7 @@
       "lastVerifiedWith": [
         "harness governance check"
       ],
-      "reorgTrigger": "Documentation modules, authority classes, context packs, governance roles, lifecycle, registry fields, or archive policy change.",
+      "reorgTrigger": "Repository-document modules, authority classes, context packs, lifecycle, registry fields, or archive policy change.",
       "authorityClass": "canonical_contract",
       "implementationState": "partial",
       "truthRefs": []
@@ -805,8 +805,8 @@
       "canonicalFor": [
         "Git worktree workflow",
         "PR integration",
-        "execution-aware change attribution and review flow",
-        "Host-plan coordination for concurrent changes"
+        "Development Task to exact-version submission and immutable Review projection",
+        "Session binding and coordinator state reconciliation"
       ],
       "dependsOn": [
         "docs/current/architecture/concept-model.md",
@@ -824,7 +824,7 @@
         "npx pnpm@9.15.4 check",
         "harness governance check"
       ],
-      "reorgTrigger": "Host-plan coordination, execution concurrency, worktree, WorkflowPatch, PR, review, or development-batch integration workflow changes.",
+      "reorgTrigger": "Development Task, Session binding, worktree, PR, exact-version submission, Review, or integration workflow changes.",
       "authorityClass": "implementation_reference",
       "implementationState": "partial",
       "truthRefs": [

@@ -1,135 +1,120 @@
-# Repository Development: Spec, Git, PR, And Review
+# Repository Development: Task, Git, PR, And Review
 
-This document defines the repository delivery contract. Notion owns product
-intent and the canonical implementation Spec; GitHub owns executable issue and
-delivery facts; Git owns source history. Product TeamWork acceptance remains a
-separate runtime contract and is not replaced by developer self-review.
+This document projects the Development Playbook onto repository delivery.
+Accepted Notion Docs own product intent, one Notion Development Task owns the
+current state of a change, Development Documents preserve readable submissions
+and immutable Review verdicts, Git owns source history, and GitHub owns Issue,
+PR, CI, and merge facts. None is a universal authority.
 
-## Canonical Flow
+## Ordinary flow
 
 ```text
-Notion discussion
-  -> frozen implementation Spec
-  -> one umbrella GitHub Issue
-  -> one Primary Codex Session claims the Development Record
-  -> clean isolated worktree and one integration branch
-  -> implementation and focused checks
-  -> one PR linked to Spec and Issue
-  -> Completion Report on the frozen Candidate SHA
-  -> final-SHA self-review and required CI
-  -> narrow Host Gate when required
-  -> merge
-  -> Notion closeout and Issue closure
+Brain assigns one Development Task
+  -> Dev works in one explicit workspace
+  -> Dev submits an exact Git SHA or readable immutable document version
+  -> independent Reviewer returns Pass or Changes Required
+  -> Pass permits completion of that exact submission
+  -> Changes Required returns the same Task to Dev
 ```
 
-There is one accountable owner for a development Wave. Internal checkpoints
-and temporary Sub-Agents are implementation details, not separately claimable
-repository tasks. Notion cannot launch a local Codex Session; the Session is
-started externally and records its own active Session id during claim.
+There is no Candidate, Delivery Run, Claim, separate Planner, readiness gate,
+Host Gate, or second task ledger in the repository development lifecycle. A
+product Agent Team Work record is a separate runtime contract and does not
+replace the Development Task or Review.
 
-Here **development Wave** is only the established name for one repository
-delivery batch. It is not the retired runtime `Wave` structure and creates no
-lifecycle, advance action, or gate on any current object.
-
-## Truth Boundaries
+## Truth boundaries
 
 | Surface | Owns | Does not own |
 | --- | --- | --- |
-| Notion Spec | intent, included scope, non-goals, acceptance, amendments | runtime status or review verdict |
-| Development Record | active Session, branch, base/candidate/merge SHA, links, CI and Host Gate status | a second Work lifecycle |
-| Execution Report | high-signal findings, difficulties, decisions, verification, completion claim | Spec changes or reviewer verdict |
-| Review Report | exact-SHA review revisions, findings, acceptance matrix, Host decision | implementation transcript |
-| GitHub Issue | executable repository context and closure target | long-term product mental model |
-| Pull Request | final diff, checks, technical discussion, merge fact | replacing the canonical Spec |
+| Accepted Notion Doc/Spec | current product intent and shared decisions | repository implementation or Task status |
+| Development Task | current goal, owner, status, executor binding, submitted version, next action, blocker | transcript or Review verdict |
+| Dev Document | directly readable design/submission at a named immutable version | current Task state |
+| Review Document | verdict and findings for one exact SHA or document version | implementation or Task-state mutation |
+| Git | source history and exact revision identity | product intent or Review acceptance |
+| GitHub Issue / PR / CI | problem provenance, diff, checks, and merge facts | Notion Task status or product acceptance |
+| Provider Session | native transcript, tools, commands, and turn lifecycle | Task ledger or Review authority |
 
-## Claim And Isolation
+## Start and isolation
 
 Before editing:
 
-1. Read the Development Playbook, Development Record, Spec, and Issue.
-2. Confirm the record is Ready and has no Active Session.
-3. Fetch the latest remote base and create a clean isolated worktree.
-4. Record the Primary Session id, branch, exact Base SHA, Execution Report,
-   Review Report, and `In Progress` stage.
-5. Re-read the record and stop if another Session owns it.
+1. Read the Task, accepted Spec/ADR, applicable `AGENTS.md`, and this checkout's
+   relevant implementation contracts.
+2. Fetch the named remote base when the Task requires it and record the exact
+   starting SHA.
+3. Inspect the actual worktree and affected paths. Preserve other sessions' and
+   users' changes; use an isolated worktree when writable work would collide.
+4. Record the real owner, Session/thread binding, workspace, branch, starting
+   revision, and first action on the one Development Task.
+5. Re-read the Task. If Task and Session/workspace state disagree, stop and
+   reconcile them before dispatching or editing.
 
-Never start writable work on a dirty shared project root. Concurrent development Waves use
-separate worktrees and an explicit merge order. Shared hot files require a
-declared integration fence; later work must absorb, not overwrite, the earlier
-merged invariants.
+A Session is an executor, not a claim object. Changing a Notion owner does not
+wake a Session; assignment travels through its real execution channel.
 
-## Execution And Reporting
+## Execution and submission
 
-The Primary Session owns implementation, tests, documentation, PR maintenance,
-CI repair, and closeout. It records only high-signal findings: verified root
-cause, important failed approaches, scope-affecting decisions, blockers,
-handoffs, and evidence. Raw command streams, private checklists, provider
-transcripts, and Sub-Agent internals do not belong in Notion.
+Dev owns implementation, focused checks, documentation changes, and PR upkeep
+inside the Task boundary. Raw command streams, provider transcripts, private
+checklists, and subagent internals stay in provider-native records, not Notion.
 
-Harness Members are not admitted for repository repair until the explicit
-dogfood admission standard passes. A bootstrap or repair development Wave may use the
-Primary Codex Session and bounded temporary Sub-Agents, while honestly stating
-that this is not Harness Member execution.
+Submit:
 
-## Pull Request And Candidate SHA
+- Task ID and acceptance criteria;
+- exact Git SHA, or one named immutable and directly readable Dev Document
+  version;
+- concise change summary, checks, evidence, risks, and limitations;
+- PR/Issue links when relevant.
 
-One development Wave produces one integration PR. The PR links the Spec and umbrella Issue
-and states:
+Large machine-readable inventories and structured manifests belong in the
+repository. Review binds them by exact Git SHA, path, and file hash where
+useful. Notion explains the decision, schema, and checks; it is not a Base64
+transport, object store, or carrier-page assembly protocol.
 
-- what changed and what deliberately did not change;
-- data, migration, compatibility-read, and dual-write policy;
-- validation performed on the Candidate SHA;
-- known risks and follow-ups.
+Any change after submission creates another submission of the same Task and
+requires a new Review Document. Previous Review Documents remain immutable.
 
-Any code change creates a new Candidate SHA and invalidates prior affected CI,
-Completion, and Review claims. A green earlier revision cannot authorize a
-later revision.
+## Review and completion
 
-## Review And Host Gate
+Reviewer independently inspects the exact submitted artifact and does not edit
+it, merge it, or own Task state. Code Review binds one exact SHA. Document
+Review binds one directly readable named immutable version. The Review Document
+records `Pass` or `Changes Required`, findings, evidence, reviewer, submission
+number, and review time.
 
-Ordinary repository work uses final-diff self-review by the Primary Session;
-there is no mandatory second reviewer queue. An independent read-only reviewer
-is used when the Spec requires it or the change affects core persistence,
-cross-module public contracts, security/permissions, or irreversible data.
+On `Changes Required`, Brain preserves the Review and returns the same Task to
+Dev. On `Pass`, Brain verifies the completed or merged revision still matches
+the reviewed SHA/version, records the repository/merge facts, and marks the
+Task Done. CI green or PR merge alone is not Review acceptance.
 
-Review is bound to the exact Candidate SHA and records each acceptance item as
-`PASS`, `FAIL`, or `NOT PROVEN`. P0/P1 findings block merge. Later `CHANGES
-REQUIRED` supersedes an earlier PASS until a new SHA is reviewed. Host Gate is
-narrow: it authorizes merge only when the Development Record requires it; it
-does not replace product Work Gate, Acceptor, Evidence, Finding, Failure, or
-Decision semantics.
+## Coordinator state discipline
 
-## Merge And Closeout
+Before new dispatch, consume completed and attention-required Session results,
+update their Tasks and Development Documents, and release their work slots. A
+completed but unconsumed result remains active coordination debt.
 
-Merge only when the final SHA has required CI green, self-review passed, no
-open P0/P1, and Host approval when required. After GitHub records the merge:
+If the coordinator cannot state the current owner, bound Session, exact
+submission, latest Review verdict, and next action for every active Task, it
+stops dispatch and reconstructs those facts from the two Notion tables, Git,
+GitHub, and provider-native Session state. Sidebar badges and chat memory are
+notifications, not authority.
 
-1. record the merge SHA and closeout evidence in Notion;
-2. clear the Active Session id but retain Session lineage in the Execution
-   Report;
-3. close only Issues whose acceptance is fully satisfied;
-4. create explicit follow-up work for remaining non-blocking risks.
-
-PR merge is a repository fact. It does not by itself accept a product Work or
-prove live Agent Team execution.
-
-## Failure Semantics
+## Failure semantics
 
 - Do not make a flaky gate green by rerun, timeout inflation, or deleting the
   assertion.
 - Do not hide partial append-only success; report the successful prefix and
   exact failure.
-- Do not convert retryable Store contention into a permanent client error.
 - Do not claim live provider or Harness Member behavior from deterministic
   shims.
 - When blocked, preserve the exact branch/SHA, clean-or-dirty state, completed
   work, reproducible evidence, primary cause, remaining risk, and next action.
 
-## Required Local Gates
+## Required local gates
 
 Use focused checks during implementation. Before delivery, run the checks in
-[operations.md](operations.md) on one frozen SHA. The repository-owned clean
-archive gate is:
+[operations.md](operations.md) on the exact submitted revision. The
+repository-owned clean archive gate is:
 
 ```bash
 pnpm gate:clean-archive
