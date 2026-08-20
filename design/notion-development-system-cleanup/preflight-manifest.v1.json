@@ -11867,14 +11867,18 @@
         },
         "decision": "approved_safe_delete_candidate_but_gated",
         "actual_status": "retained_pending_document_layout_verification",
-        "gate": "Complete and record the Development Documents page-layout verification before any deletion attempt.",
+        "gate": "Complete and record the Development Documents page-layout verification before deleting this property or performing any other physical schema deletion.",
         "rollback": "Not applicable while retained. If later removed after the gate, recreate a person property with the exact name and verify all rows remain empty."
       }
     ],
     "process_sequence_deviation": {
       "observed": "Merge Authorization was removed and Migration Delta Required (Legacy Snapshot) was dropped after a preliminary Pass but before the Reviewer's final requirement to complete the A layout pass before destructive action was received.",
       "impact": "The action order violated the final review gate. The two mutations did not remove row values because both objects were verified zero-use at preflight.",
-      "corrective_gate": "No deletion of Assignee (Legacy Snapshot), no archive of DOC-102, and no other class-C mutation may occur until the Development Documents layout verification is complete and the exact post-cutover proposal receives independent Review.",
+      "corrective_gate": "Until Development Documents layout verification is complete and recorded, do not delete Assignee (Legacy Snapshot) or perform any other physical schema deletion. This layout gate does not block the exact seven 文档状态=Accepted row corrections listed below, and it does not block the recoverable archive of DOC-102 after the page is independently reviewed and reconfirmed blank and unbound.",
+      "non_schema_actions_not_blocked_by_layout_gate": [
+        "Set 文档状态=Accepted on exactly DOC-88, DOC-90, DOC-91, DOC-92, DOC-93, DOC-100, and DOC-101 under their recorded data-quality dispositions.",
+        "Archive DOC-102 only after independent Review reconfirms that the exact page remains blank and unbound; retain the ability to unarchive it."
+      ],
       "honesty_requirement": "Do not represent the preliminary Pass as satisfying the final gate; preserve this deviation in the immutable submission evidence."
     },
     "data_quality_dispositions": [
