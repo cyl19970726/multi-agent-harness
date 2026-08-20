@@ -1,14 +1,19 @@
 # Agent Operating Rules
 
-This repository builds Star Harness itself. Product truth lives in canonical
-docs, schemas, ADRs, and implemented stores. Execution claims must additionally
-be reconstructable from the native runtime records of the executor used.
+This repository builds Star Harness itself. Authority is question-scoped:
+accepted Notion Docs own current product intent; this checkout's code, schemas,
+configuration, and applicable `AGENTS.md` files own executable constraints;
+registered repository docs own only their named implementation/reference
+scope. Execution claims must additionally be reconstructable from the native
+runtime records of the executor used.
 
 This root file is deliberately small: it carries only product identity, the
 hard invariants an agent must hold before acting, and routing. Process detail
 (repository execution rules, proportional acceptance) lives in [docs/current/product/agent-operating-rules.md](docs/current/product/agent-operating-rules.md);
-canonical contracts live in the docs linked under [Routing](#routing). Where
-this file and a canonical doc conflict, the canonical doc wins — fix this file.
+canonical contracts live in the docs linked under [Routing](#routing). On an
+apparent conflict, identify the exact question and repair the non-owning
+projection. Neither this router nor any linked document wins outside its named
+scope.
 
 ## AgentFirm Execution Foundation Authority
 
@@ -44,8 +49,11 @@ executor and native transcript owner, never a Task ledger or Review authority.
 If Task, Session, submission, or Review state disagrees, stop dispatching new
 work and reconcile the Task from those authoritative records first.
 
-All repository development uses the single
+Creating, assigning, executing, reviewing, retrying, blocking, or completing a
+repository Development Task triggers the single
 [agentfirm-development-loop](.agents/skills/agentfirm-development-loop/SKILL.md).
+Reading, explaining, or exploring the repository without operating that
+lifecycle does not trigger it merely because the file exists here.
 Before editing, inspect the actual branch, revision, worktree, and affected
 paths. Preserve user and other-session changes; do not reset, clean, revert, or
 reformat unrelated work. Resolve a real path collision through the Brain.
@@ -201,12 +209,14 @@ doc carries the contract behind each rule.
     The unified Work kernel is the shipped authority: do not
     create a second organization-agent identity or recreate a retired
     company-scoped task ledger, migration fallback, or dual-write Work path.
-11. **Skill optionality.** Skills are optional capabilities, never the
-    authority for product architecture or Lead behavior. Do not load a skill
-    merely because you are working in this repository; canonical docs, schemas,
-    code, and ADRs win any conflict. Retired planning skills must not be
-    installed, loaded, or referenced from active repository instructions. The
-    generic harness core stays domain-neutral.
+11. **Skill optionality.** Skills are procedural capabilities, never product
+    architecture authority. Load the development Skill when operating the
+    repository Development Task lifecycle named above; do not load it for an
+    unrelated read-only question. Other Skills load only when their own trigger
+    applies. Accepted Docs and checked-out executable constraints remain the
+    question-scoped authorities. Retired planning skills must not be installed,
+    loaded, or referenced from active repository instructions. The generic
+    harness core stays domain-neutral.
 
 ## Routing
 

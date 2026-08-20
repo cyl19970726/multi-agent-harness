@@ -232,6 +232,30 @@ lifecycle, the Implementation Crosswalk, or the lifecycle of
 `.agents/skills/agentfirm-development-loop`. That Skill is the reviewed
 repository projection of Development Playbook intent.
 
+## Authority alignment evidence
+
+This source-to-target map records the repository entry-point repair without
+creating another ledger, snapshot, or authority:
+
+| Prior source or pattern | Question-scoped target owner | Current disposition |
+| --- | --- | --- |
+| global `mental/ > current/ > decisions/` precedence | accepted Notion Docs for product intent; checked-out repository truth for applied behavior | replaced by question-scoped routing in `docs/README.md` |
+| Root and companion docs each claiming to win conflicts | Root for repository-wide hard invariants/routing; each registered doc for its named scope | both now route by exact question, with no universal winner |
+| Development Record, Delivery Run, Candidate, and Host Gate lifecycle | one Notion Development Task | removed from the active repository workflow; retained terms are labelled Legacy/forbidden history only |
+| separate Review report or reconstructed payload | immutable Review Document in Development Documents | Review binds an exact Git SHA or directly readable immutable Dev/Spec version |
+| Session claim or sidebar state as coordination truth | Development Task for current state; provider-native Session for execution transcript | Session is an executor binding; disagreement stops dispatch and triggers reconciliation |
+| large inventories and encoded carrier pages in Notion | repository file at exact SHA/path/hash | Notion keeps the readable decision and Review, not the transport dataset |
+| lifecycle procedure copied across Root and companion docs | single `agentfirm-development-loop` Skill | Root supplies trigger/router; companion links without restating the procedure |
+
+The active Wave A entry points inspected by this map are root `AGENTS.md`,
+`docs/README.md`, this document, `agent-operating-rules.md`,
+`workflow-git-pr.md`, `docs/registry.json`, and the one development Skill plus
+its role references. Each governed question above has one owner; the remaining
+occurrences are navigation, procedural projection, evidence, or explicitly
+labelled history. This is the zero-duplicate-authority report, not a new
+lifecycle record. Change it only through an ordinary reviewed Development Task
+when one of these entry-point relationships changes.
+
 These fields answer different questions and must not be inferred from one
 another:
 

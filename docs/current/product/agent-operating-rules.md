@@ -14,8 +14,10 @@ relocation map — is canonical in Notion; see the single authority-boundary anc
 `docs/current/documentation-governance.md` (Authority boundary: Notion vs
 repository) for the current Notion location.
 This repository file survives only as the implementation-bound remainder
-below. Root [AGENTS.md](../../../AGENTS.md) still states the hard invariants
-and wins any conflict.
+below. Root [AGENTS.md](../../../AGENTS.md) states repository-wide hard
+invariants and routes to this file; this file owns only its declared
+implementation-detail scope. On an apparent conflict, select the owner of the
+exact question and repair the other projection. Neither file universally wins.
 
 ## Implementation-bound invariants
 
@@ -51,23 +53,12 @@ and wins any conflict.
 
 ## Repository execution rules (relocated from AGENTS.md)
 
-- Repository development follows
-  [.agents/skills/agentfirm-development-loop/SKILL.md](../../../.agents/skills/agentfirm-development-loop/SKILL.md):
-  Brain assigns one Task -> Dev works freely -> Dev submits an exact revision
-  -> Reviewer returns Pass or Changes Required -> Pass completes the Task or
-  Changes Required returns the same Task to Dev. There is no Candidate or
-  pre-review readiness stage. Run focused checks while working; run the
-  submission-level checks once when Dev is ready for Review. Preserve
-  unaffected evidence after rejection and review the delta by default.
-- The ordinary Notion control plane is exactly two tables: one Development
-  Task table owns current state, and Development Documents stores readable
-  Dev/Spec submissions plus immutable Review documents. Review binds a directly
-  readable immutable version or exact Git SHA. Provider Sessions are executors,
-  not a mirrored task ledger. Stop new dispatch and reconcile the one Task when
-  Task, Session, submission, or Review state disagrees.
-- Large machine-readable inventories and structured manifests live in the
-  repository and are bound by SHA/path/hash as needed. Do not use Base64,
-  payload, or carrier-page assembly as the default document Review path.
+- Creating, assigning, executing, reviewing, retrying, blocking, or completing
+  repository development follows the single
+  [.agents/skills/agentfirm-development-loop/SKILL.md](../../../.agents/skills/agentfirm-development-loop/SKILL.md).
+  That Skill owns the two-table workflow, exact readable submission policy,
+  Session reconciliation, machine-manifest placement, statuses, and messages;
+  this companion does not duplicate them.
 - Harness Member execution is suspended for repository repair until the
   explicit dogfood admission standard passes. A Primary Codex Session may use
   bounded temporary Sub-Agents internally, but must not label that as Harness
