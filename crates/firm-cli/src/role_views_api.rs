@@ -137,6 +137,9 @@ struct Facts {
     work_deliveries: Vec<Value>,
     work_events: Vec<Value>,
     side: Vec<Value>,
+    /// Read-only legacy-context annotations for tolerated DOC-108 pre-cutover
+    /// references (same shape as the #488 snapshot integrity_annotations).
+    integrity_annotations: Vec<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -290,11 +293,26 @@ impl Facts {
             all_latest_runs.insert(run.id.clone(), run.clone());
         }
         let mut latest_runs = BTreeMap::new();
+        let mut integrity_annotations = Vec::new();
         for (id, run) in all_latest_runs {
-            let resolved_space = store
-                .current_team_run_execution_space(&run)
+            // DOC-108 pre-cutover tolerance (#488 doctrine): a TeamRun whose
+            // AgentTeam exists only in the retired legacy teams.jsonl ledger
+            // may declare MemberRuns that never materialized canonically. The
+            // read-only resolver reports those refs instead of failing the
+            // view; they are rendered as read-only legacy context with an
+            // integrity annotation. A post-cutover TeamRun still fails closed.
+            let resolution = store
+                .current_team_run_execution_space_readonly(&run)
                 .map_err(|error| error.to_string())?;
-            if resolved_space == space_id {
+            for member_run_id in &resolution.tolerated_legacy_member_run_ids {
+                integrity_annotations.push(serde_json::json!({
+                    "kind": "pre_cutover_unmaterialized_member_run_ref",
+                    "team_run_id": id,
+                    "member_run_id": member_run_id,
+                    "annotation": harness_store::PRE_CUTOVER_UNMATERIALIZED_MEMBER_RUN_ANNOTATION,
+                }));
+            }
+            if resolution.execution_space_id == space_id {
                 latest_runs.insert(id, run);
             }
         }
@@ -416,6 +434,7 @@ impl Facts {
                 .map(|operation| serde_json::to_value(&operation.event).unwrap_or(Value::Null))
                 .collect(),
             side,
+            integrity_annotations,
         })
     }
 
@@ -1573,6 +1592,7 @@ fn global_work_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewRes
         work_deliveries: vec![],
         work_events: vec![],
         side: vec![],
+        integrity_annotations: vec![],
     };
     pending_migration.sort();
     pending_migration.dedup();
@@ -1999,8 +2019,38 @@ fn team_view(
     ))?;
     let collaboration = collaboration_projection(company_id, &team.id, None);
     if !host {
-        let latest_run = run.map(|run| json!({"id":run.id,"status":enum_string(&run.status),"previous_run_id":run.previous_run_id,"execution_node_id":run.execution_node_id,"project_binding_id":run.project_binding_id,"execution_root":run.execution_root,"created_at":run.created_at,"completed_at":run.completed_at}));
-        let data = json!({"team":{"team_id":team.id,"display_name":team.name,"team_revision":team_revision,"mission_id":team.mission_id,"host_agent_id":team.host_agent_id,"viewer_role":if exact_host_identity{"host"}else{"member"},"node_id":team.node_id,"placement_generation":run.and_then(|run|facts.run_revisions.get(&run.id).copied()),"status":enum_string(&team.status),"latest_run":latest_run},"pressure_summary":pressure_summary,"works":works,"members":members,"messages":messages,"activity":activity,"activity_truncated":activity_truncated,"reports":reports,"findings":findings,"failures":failures,"gate_requirements":requirements,"gate_evaluations":evaluations,"gate_waivers":waivers,"workspace_attention":workspace_attention,"delegation_provenance":delegations,"collaboration":collaboration,"page":{"as_of_event_sequence":facts.sequence,"item_count":works.len(),"next_cursor":null}});
+        let latest_run = run.map(|run| {
+            let mut card = json!({"id":run.id,"status":enum_string(&run.status),"previous_run_id":run.previous_run_id,"execution_node_id":run.execution_node_id,"project_binding_id":run.project_binding_id,"execution_root":run.execution_root,"created_at":run.created_at,"completed_at":run.completed_at});
+            // DOC-108 pre-cutover tolerance: when this exact TeamRun carries
+            // tolerated MemberRun refs (no canonical materialization), mark
+            // the run card so the frontend renders it as read-only legacy
+            // context instead of a live coordination row.
+            if facts.integrity_annotations.iter().any(|annotation| {
+                annotation["team_run_id"] == run.id.as_str()
+            }) {
+                if let Some(object) = card.as_object_mut() {
+                    object.insert(
+                        "integrity_annotation".to_string(),
+                        harness_store::PRE_CUTOVER_UNMATERIALIZED_MEMBER_RUN_ANNOTATION.into(),
+                    );
+                }
+            }
+            card
+        });
+        let team_integrity_annotations = facts
+            .integrity_annotations
+            .iter()
+            .filter(|annotation| {
+                annotation["team_run_id"].as_str().is_some_and(|run_id| {
+                    facts
+                        .runs
+                        .iter()
+                        .any(|run| run.id == run_id && run.agent_team_id == team.id)
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let data = json!({"team":{"team_id":team.id,"display_name":team.name,"team_revision":team_revision,"mission_id":team.mission_id,"host_agent_id":team.host_agent_id,"viewer_role":if exact_host_identity{"host"}else{"member"},"node_id":team.node_id,"placement_generation":run.and_then(|run|facts.run_revisions.get(&run.id).copied()),"status":enum_string(&team.status),"latest_run":latest_run},"pressure_summary":pressure_summary,"works":works,"members":members,"messages":messages,"activity":activity,"activity_truncated":activity_truncated,"reports":reports,"findings":findings,"failures":failures,"gate_requirements":requirements,"gate_evaluations":evaluations,"gate_waivers":waivers,"workspace_attention":workspace_attention,"delegation_provenance":delegations,"collaboration":collaboration,"integrity_annotations":team_integrity_annotations,"page":{"as_of_event_sequence":facts.sequence,"item_count":works.len(),"next_cursor":null}});
         return Ok(envelope(
             "team_workspace",
             &facts,

@@ -2886,3 +2886,241 @@ fn pre_cutover_member_run_materialization_tolerance_is_field_generic() {
     );
     assert!(error.contains("native_session"), "{error}");
 }
+
+/// Append one row to the retired legacy `teams.jsonl` ledger (pre-cutover
+/// AgentTeam shape). The canonical AgentTeam trust ledger never receives this
+/// id, so a TeamRun referencing it is the #488 dangling-AgentTeam migration
+/// fact.
+fn append_legacy_team(store: &HarnessStore, team_id: &str, host_agent_id: &str) {
+    append_legacy_projection(
+        store,
+        "teams.jsonl",
+        &serde_json::json!({
+            "id": team_id,
+            "name": team_id,
+            "description": "legacy fixture",
+            "host_agent_id": host_agent_id,
+            "member_ids": [],
+            "node_id": NODE,
+            "status": "active",
+            "mission_id": "mission-legacy",
+            "created_at": "t-pre-cutover",
+            "updated_at": "t-pre-cutover",
+        }),
+    );
+}
+
+/// Append one pre-cutover TeamRun row naming only legacy materialization. The
+/// caller independently appends the matching legacy `member_runs.jsonl` rows;
+/// nothing is ever admitted through the canonical trust kernel.
+fn append_pre_cutover_team_run(
+    store: &HarnessStore,
+    team_id: &str,
+    run_id: &str,
+    member_run_ids: &[&str],
+) -> AgentTeamRun {
+    let run = AgentTeamRun {
+        id: run_id.into(),
+        agent_team_id: team_id.into(),
+        execution_node_id: NODE.into(),
+        project_binding_id: "project-test".into(),
+        previous_run_id: None,
+        host_surface: "test".into(),
+        host_thread_id: None,
+        host_actor: None,
+        host_control_mode: Default::default(),
+        objective: "pre-cutover fixture".into(),
+        execution_root: None,
+        status: TeamRunStatus::Running,
+        member_run_ids: member_run_ids.iter().map(|id| (*id).into()).collect(),
+        budget_limit_usd: None,
+        created_at: "t-pre-cutover".into(),
+        updated_at: "t-pre-cutover".into(),
+        completed_at: None,
+    };
+    append_legacy_projection(store, "team_runs.jsonl", &run);
+    run
+}
+
+/// Append one legacy-only `member_runs.jsonl` row: the legacy
+/// ProviderRuntimeProjection exists but the canonical MemberRun is never
+/// admitted (the DOC-108 pre-cutover shape this tolerance targets).
+fn append_legacy_member_run(
+    store: &HarnessStore,
+    member_run_id: &str,
+    member_id: &str,
+    team_run_id: &str,
+) {
+    let canonical = member_run(member_run_id, member_id, team_run_id, false);
+    let runtime = runtime_member_run(&canonical, member_id);
+    append_legacy_projection(store, "member_runs.jsonl", &runtime);
+}
+
+/// DOC-108 pre-cutover doctrine on MemberRun materialization: a pre-cutover
+/// TeamRun (AgentTeam exists only in the retired legacy `teams.jsonl` ledger)
+/// may declare MemberRuns that never materialized as canonical trust
+/// aggregates. The read-only resolver tolerates those refs and reports them
+/// for an integrity annotation; the strict current-mutation resolver and every
+/// POST-cutover TeamRun still fail closed.
+#[test]
+fn pre_cutover_team_run_missing_canonical_member_run_tolerates_readonly_fails_closed_strict() {
+    let harness = TestStore::new("pre-cutover-unmaterialized-member-run");
+    // Scaffold a canonical post-cutover Team/run so the fixture store holds
+    // BOTH shapes and the pre-cutover detection has a canonical side to miss.
+    let canonical_run = seed_team(
+        &harness.store,
+        "pre-cutover-unmaterialized-member-run",
+        &["member-canonical"],
+    );
+
+    // Pre-cutover legacy ledgers: the AgentTeams exist only in teams.jsonl
+    // and each declared MemberRun only in member_runs.jsonl.
+    append_legacy_team(&harness.store, "team-pre-cutover-1", "member-canonical");
+    append_legacy_team(&harness.store, "team-pre-cutover-2", "member-canonical");
+    let run_pre_1 = append_pre_cutover_team_run(
+        &harness.store,
+        "team-pre-cutover-1",
+        "team-run-pre-cutover-1",
+        &["member-pre-cutover-1"],
+    );
+    append_legacy_member_run(
+        &harness.store,
+        "member-pre-cutover-1",
+        "member-pre-cutover-1",
+        "team-run-pre-cutover-1",
+    );
+    let run_pre_2 = append_pre_cutover_team_run(
+        &harness.store,
+        "team-pre-cutover-2",
+        "team-run-pre-cutover-2",
+        &["member-pre-cutover-2"],
+    );
+    append_legacy_member_run(
+        &harness.store,
+        "member-pre-cutover-2",
+        "member-pre-cutover-2",
+        "team-run-pre-cutover-2",
+    );
+
+    // Variant 1 (per-member): the read-only resolver tolerates the missing
+    // canonical MemberRun and reports the ref for annotation.
+    let resolution = harness
+        .store
+        .current_team_run_execution_space_readonly(&run_pre_1)
+        .expect("read-only resolution must tolerate a pre-cutover unmaterialized MemberRun");
+    assert_eq!(resolution.execution_space_id, SPACE);
+    assert_eq!(
+        resolution.tolerated_legacy_member_run_ids,
+        vec!["member-pre-cutover-1".to_string()]
+    );
+
+    // The same run fails closed on the strict current-mutation resolver.
+    let error = harness
+        .store
+        .current_team_run_execution_space(&run_pre_1)
+        .expect_err("strict resolver must fail closed on a missing canonical MemberRun")
+        .to_string();
+    assert!(
+        error.contains("MEMBER_RUN_MATERIALIZATION_INCOMPLETE"),
+        "{error}"
+    );
+    assert!(error.contains("no canonical MemberRun exists"), "{error}");
+
+    // Variant 2 (whole run): every declared MemberRun is unmaterialized, so
+    // no canonical scope resolves; the read-only resolver falls back to the
+    // node registration and reports every ref as tolerated legacy context.
+    let resolution = harness
+        .store
+        .current_team_run_execution_space_readonly(&run_pre_2)
+        .expect("read-only resolution must tolerate a fully-unmaterialized pre-cutover run");
+    assert_eq!(resolution.execution_space_id, SPACE);
+    assert_eq!(
+        resolution.tolerated_legacy_member_run_ids,
+        vec!["member-pre-cutover-2".to_string()]
+    );
+    let error = harness
+        .store
+        .current_team_run_execution_space(&run_pre_2)
+        .expect_err(
+            "strict resolver must fail closed when every declared MemberRun is unmaterialized",
+        )
+        .to_string();
+    assert!(
+        error.contains("MEMBER_RUN_MATERIALIZATION_INCOMPLETE"),
+        "{error}"
+    );
+
+    // A POST-cutover TeamRun (canonical AgentTeam) with a missing canonical
+    // MemberRun must still fail closed on the read-only resolver too.
+    let run_post = append_pre_cutover_team_run(
+        &harness.store,
+        &canonical_run.agent_team_id,
+        "team-run-post-cutover",
+        &["member-post-cutover"],
+    );
+    append_legacy_member_run(
+        &harness.store,
+        "member-post-cutover",
+        "member-canonical",
+        "team-run-post-cutover",
+    );
+    let error = harness
+        .store
+        .current_team_run_execution_space_readonly(&run_post)
+        .expect_err("post-cutover TeamRun must still fail closed on a missing canonical MemberRun")
+        .to_string();
+    assert!(
+        error.contains("MEMBER_RUN_MATERIALIZATION_INCOMPLETE"),
+        "{error}"
+    );
+    assert!(error.contains("no canonical MemberRun exists"), "{error}");
+}
+
+/// The readonly TeamRun-event read tolerates a pre-cutover TeamRun whose
+/// declared MemberRuns have no canonical materialization (same doctrine), so
+/// the snapshot's folded event log can render the run as read-only legacy
+/// context. The strict read still fails closed on the same shape.
+#[test]
+fn pre_cutover_team_run_events_readonly_tolerates_unmaterialized_member_runs() {
+    let harness = TestStore::new("pre-cutover-team-run-events-readonly");
+    seed_team(
+        &harness.store,
+        "pre-cutover-team-run-events-readonly",
+        &["member-canonical"],
+    );
+    append_legacy_team(
+        &harness.store,
+        "team-pre-cutover-events",
+        "member-canonical",
+    );
+    let run = append_pre_cutover_team_run(
+        &harness.store,
+        "team-pre-cutover-events",
+        "team-run-pre-cutover-events",
+        &["member-pre-cutover-events"],
+    );
+    append_legacy_member_run(
+        &harness.store,
+        "member-pre-cutover-events",
+        "member-pre-cutover-events",
+        "team-run-pre-cutover-events",
+    );
+
+    // The read-only event projection renders the run as legacy context.
+    let events = harness
+        .store
+        .current_team_run_events_readonly(&run.id)
+        .expect("read-only events must tolerate the pre-cutover TeamRun");
+    assert!(events.is_empty());
+
+    // The strict read still fails closed.
+    let error = harness
+        .store
+        .current_team_run_events(&run.id)
+        .expect_err("strict events read must fail closed on a missing canonical MemberRun")
+        .to_string();
+    assert!(
+        error.contains("MEMBER_RUN_MATERIALIZATION_INCOMPLETE"),
+        "{error}"
+    );
+}

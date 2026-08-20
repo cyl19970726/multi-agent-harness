@@ -323,6 +323,39 @@ pub struct HarnessStore {
     process_write_lock: Arc<AtomicBool>,
 }
 
+/// How a TeamRun declaring a MemberRun without canonical materialization
+/// is treated. The canonical row being absent while a legacy
+/// [`ProviderRuntimeProjection`] row exists is the known DOC-108 pre-cutover
+/// migration shape; it is tolerated only on read-only projections, and only
+/// when the TeamRun itself is a pre-cutover artifact (its AgentTeam exists
+/// only in the retired legacy `teams.jsonl` ledger). Mutation and control
+/// paths always fail closed on the same shape.
+#[derive(Clone, Copy)]
+enum PreCutoverMemberRunTolerance {
+    FailClosed,
+    TolerateReadOnly,
+}
+
+/// Read-only scope resolution for a TeamRun. `execution_space_id` is the
+/// resolved space exactly like the strict resolver; when the TeamRun is a
+/// pre-cutover artifact (DOC-108) and one or more declared MemberRuns never
+/// materialized canonically, those refs are reported through
+/// `tolerated_legacy_member_run_ids` instead of failing the read, so the
+/// caller renders them as read-only legacy context with an integrity
+/// annotation. A post-cutover TeamRun never fills that list: any missing
+/// canonical MemberRun still fails closed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TeamRunReadonlyResolution {
+    pub execution_space_id: String,
+    pub tolerated_legacy_member_run_ids: Vec<String>,
+}
+
+/// Integrity annotation attached wherever a pre-cutover TeamRun's declared
+/// MemberRun without canonical materialization is tolerated as a migration
+/// fact. Same doctrine and shape as the #488 dangling-AgentTeam annotation;
+/// the tolerated ref is legacy context, never current authority.
+pub const PRE_CUTOVER_UNMATERIALIZED_MEMBER_RUN_ANNOTATION: &str = "PRE_CUTOVER_UNMATERIALIZED_MEMBER_RUN_REF: the pre-cutover TeamRun (DOC-108) declares a MemberRun that materialized only in the retired legacy member_runs.jsonl ledger and never as a canonical MemberRun; rendered as read-only legacy context, never as current authority or a controllable runtime";
+
 impl HarnessStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
@@ -1792,8 +1825,23 @@ impl HarnessStore {
     /// any partially materialized or cross-space member set. Legacy JSONL
     /// rows remain readable for diagnostics, but they cannot authorize current
     /// mutations or controls unless every declared member has one matching
-    /// canonical MemberRun in the same Execution Space.
+    /// canonical MemberRun in the same Execution Space. Strict by default;
+    /// read-only pre-cutover tolerance is opt-in through
+    /// [`PreCutoverMemberRunTolerance::TolerateReadOnly`].
     fn current_team_run_execution_space_unlocked(&self, run: &AgentTeamRun) -> StoreResult<String> {
+        Ok(self
+            .resolve_team_run_execution_space_unlocked(
+                run,
+                PreCutoverMemberRunTolerance::FailClosed,
+            )?
+            .execution_space_id)
+    }
+
+    fn resolve_team_run_execution_space_unlocked(
+        &self,
+        run: &AgentTeamRun,
+        tolerance: PreCutoverMemberRunTolerance,
+    ) -> StoreResult<TeamRunReadonlyResolution> {
         if run.member_run_ids.is_empty() {
             let registrations = latest_by_id(
                 self.read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?,
@@ -1808,16 +1856,26 @@ impl HarnessStore {
             .map(|registration| registration.execution_space_id.clone())
             .collect::<std::collections::BTreeSet<_>>();
             return match registrations.len() {
-                1 => Ok(registrations
-                    .into_iter()
-                    .next()
-                    .expect("one active registration")),
+                1 => Ok(TeamRunReadonlyResolution {
+                    execution_space_id: registrations
+                        .into_iter()
+                        .next()
+                        .expect("one active registration"),
+                    tolerated_legacy_member_run_ids: Vec::new(),
+                }),
                 count => Err(StoreError::Conflict(format!(
                     "EXECUTION_SPACE_SCOPE_MISMATCH: empty TeamRun {} resolves to {count} active Execution Spaces",
                     run.id
                 ))),
             };
         }
+
+        let pre_cutover = match tolerance {
+            PreCutoverMemberRunTolerance::TolerateReadOnly => {
+                self.is_pre_cutover_team_run_unlocked(run)?
+            }
+            PreCutoverMemberRunTolerance::FailClosed => false,
+        };
 
         let legacy_by_id = latest_by_id(
             self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
@@ -1844,6 +1902,7 @@ impl HarnessStore {
         }
 
         let mut resolved_scope = None::<String>;
+        let mut tolerated_legacy_member_run_ids = Vec::new();
         for member_run_id in &run.member_run_ids {
             let legacy = legacy_by_id.get(member_run_id).ok_or_else(|| {
                 StoreError::Conflict(format!(
@@ -1863,6 +1922,16 @@ impl HarnessStore {
                 .unwrap_or(&[]);
             let (scope, canonical) = match rows {
                 [row] => row,
+                [] if pre_cutover => {
+                    // DOC-108 pre-cutover migration fact: the legacy
+                    // ProviderRuntimeProjection exists but the canonical
+                    // MemberRun never materialized. Report the ref so the
+                    // caller renders it as read-only legacy context instead
+                    // of failing the whole read. Mutation and control paths
+                    // never reach this arm because they resolve FailClosed.
+                    tolerated_legacy_member_run_ids.push(member_run_id.clone());
+                    continue;
+                }
                 [] => {
                     return Err(StoreError::Conflict(format!(
                         "MEMBER_RUN_MATERIALIZATION_INCOMPLETE: TeamRun {} declares MemberRun {} but no canonical MemberRun exists",
@@ -1904,12 +1973,67 @@ impl HarnessStore {
                 resolved_scope = Some(scope.clone());
             }
         }
-        resolved_scope.ok_or_else(|| {
-            StoreError::Conflict(format!(
-                "MEMBER_RUN_MATERIALIZATION_INCOMPLETE: TeamRun {} has no resolvable current MemberRuns",
-                run.id
-            ))
-        })
+        if let Some(scope) = resolved_scope {
+            return Ok(TeamRunReadonlyResolution {
+                execution_space_id: scope,
+                tolerated_legacy_member_run_ids,
+            });
+        }
+        if pre_cutover {
+            // A pre-cutover TeamRun whose every declared MemberRun lacks a
+            // canonical materialization resolves like the empty-member legacy
+            // case: from the node project registrations. Absent or ambiguous
+            // registrations still fail closed.
+            let registrations = latest_by_id(
+                self.read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?,
+                node_project_registration_identity,
+            )
+            .values()
+            .filter(|registration| {
+                registration.node_id == run.execution_node_id
+                    && registration.project_binding_id == run.project_binding_id
+                    && registration.status == NodeProjectRegistrationStatus::Active
+            })
+            .map(|registration| registration.execution_space_id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+            return match registrations.len() {
+                1 => Ok(TeamRunReadonlyResolution {
+                    execution_space_id: registrations
+                        .into_iter()
+                        .next()
+                        .expect("one active registration"),
+                    tolerated_legacy_member_run_ids,
+                }),
+                count => Err(StoreError::Conflict(format!(
+                    "EXECUTION_SPACE_SCOPE_MISMATCH: pre-cutover TeamRun {} resolves to {count} active Execution Spaces",
+                    run.id
+                ))),
+            };
+        }
+        Err(StoreError::Conflict(format!(
+            "MEMBER_RUN_MATERIALIZATION_INCOMPLETE: TeamRun {} has no resolvable current MemberRuns",
+            run.id
+        )))
+    }
+
+    /// DOC-108 pre-cutover detection: a TeamRun is a migration fact when its
+    /// AgentTeam exists only in the retired legacy `teams.jsonl` ledger and
+    /// never materialized as a canonical AgentTeam trust aggregate — the same
+    /// doctrine #488 applies to dangling TeamRun -> AgentTeam references. A
+    /// TeamRun whose AgentTeam IS canonical is post-cutover and always fails
+    /// closed on missing canonical MemberRuns; an AgentTeam absent from BOTH
+    /// ledgers remains a genuine dangling reference and never earns tolerance.
+    fn is_pre_cutover_team_run_unlocked(&self, run: &AgentTeamRun) -> StoreResult<bool> {
+        if self.latest_teams()?.contains_key(&run.agent_team_id) {
+            return Ok(false);
+        }
+        let mut legacy_team_ids = std::collections::BTreeSet::new();
+        for value in self.read_jsonl::<serde_json::Value>("teams.jsonl")? {
+            if let Some(id) = value.get("id").and_then(|id| id.as_str()) {
+                legacy_team_ids.insert(id.to_string());
+            }
+        }
+        Ok(legacy_team_ids.contains(&run.agent_team_id))
     }
 
     /// Public current-path resolver. The consistent fast path stays read-only.
@@ -1918,6 +2042,36 @@ impl HarnessStore {
     /// legacy-append -> canonical-replace writer window from durable corrupt
     /// state without making healthy status reads contend with writers.
     pub fn current_team_run_execution_space(&self, run: &AgentTeamRun) -> StoreResult<String> {
+        Ok(self
+            .resolve_team_run_execution_space_with_retry(
+                run,
+                PreCutoverMemberRunTolerance::FailClosed,
+            )?
+            .execution_space_id)
+    }
+
+    /// Public read-only resolver for server-built RoleViews: identical retry
+    /// semantics to [`Self::current_team_run_execution_space`], but a
+    /// pre-cutover TeamRun (DOC-108) may declare MemberRuns without canonical
+    /// materialization. Those refs are reported through
+    /// [`TeamRunReadonlyResolution::tolerated_legacy_member_run_ids`] so the
+    /// caller renders them as read-only legacy context with an integrity
+    /// annotation; every post-cutover fail-closed rule is unchanged.
+    pub fn current_team_run_execution_space_readonly(
+        &self,
+        run: &AgentTeamRun,
+    ) -> StoreResult<TeamRunReadonlyResolution> {
+        self.resolve_team_run_execution_space_with_retry(
+            run,
+            PreCutoverMemberRunTolerance::TolerateReadOnly,
+        )
+    }
+
+    fn resolve_team_run_execution_space_with_retry(
+        &self,
+        run: &AgentTeamRun,
+        tolerance: PreCutoverMemberRunTolerance,
+    ) -> StoreResult<TeamRunReadonlyResolution> {
         self.init()?;
         for _ in 0..20 {
             let current = self.require_team_run_unlocked(&run.id)?;
@@ -1927,8 +2081,8 @@ impl HarnessStore {
                     run.id
                 )));
             }
-            match self.current_team_run_execution_space_unlocked(&current) {
-                Ok(scope) => return Ok(scope),
+            match self.resolve_team_run_execution_space_unlocked(&current, tolerance) {
+                Ok(resolution) => return Ok(resolution),
                 Err(StoreError::Conflict(message))
                     if message.starts_with("MEMBER_RUN_MATERIALIZATION_INCOMPLETE:")
                         || message.starts_with("MEMBER_RUN_MATERIALIZATION_MISMATCH:") =>
@@ -1953,7 +2107,7 @@ impl HarnessStore {
                 run.id
             )));
         }
-        self.current_team_run_execution_space_unlocked(&locked_current)
+        self.resolve_team_run_execution_space_unlocked(&locked_current, tolerance)
     }
 
     /// Fence a current MemberRun mutation against the complete owning
@@ -8164,6 +8318,27 @@ impl HarnessStore {
         self.init()?;
         let run = self.require_team_run_unlocked(team_run_id)?;
         self.current_team_run_execution_space(&run)?;
+        Ok(self
+            .read_jsonl("team_run_events.jsonl")?
+            .into_iter()
+            .filter(|event: &TeamRunEvent| event.team_run_id == team_run_id)
+            .collect())
+    }
+
+    /// Read-only events projection for server-built RoleViews/snapshots: same
+    /// contract as [`Self::current_team_run_events`], but a pre-cutover
+    /// TeamRun (DOC-108) whose declared MemberRuns have no canonical
+    /// materialization is tolerated as read-only legacy context instead of
+    /// failing the read. Event rows for such a run are display history, never
+    /// authority. Mutation-adjacent callers (e.g. next-event-seq fencing) keep
+    /// the strict [`Self::current_team_run_events`].
+    pub fn current_team_run_events_readonly(
+        &self,
+        team_run_id: &str,
+    ) -> StoreResult<Vec<TeamRunEvent>> {
+        self.init()?;
+        let run = self.require_team_run_unlocked(team_run_id)?;
+        self.current_team_run_execution_space_readonly(&run)?;
         Ok(self
             .read_jsonl("team_run_events.jsonl")?
             .into_iter()

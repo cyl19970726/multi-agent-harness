@@ -8675,7 +8675,14 @@ fn canonical_team_messages_for_run(
     team_run_id: &str,
 ) -> CliResult<Vec<TeamMessageProjection>> {
     let run = latest_team_run(store, team_run_id)?;
-    let execution_space_id = team_run_execution_space_id(store, &run)?;
+    // Read-only scope resolution: this is a messages projection, never an
+    // authority decision, so a pre-cutover TeamRun (DOC-108) whose declared
+    // MemberRuns have no canonical materialization is tolerated as read-only
+    // legacy context. Mutation/control paths keep the strict resolver.
+    let execution_space_id = store
+        .current_team_run_execution_space_readonly(&run)
+        .map_err(|error| CliError::Usage(error.to_string()))?
+        .execution_space_id;
     let member_runs = latest_member_runs_in_append_order(store)?;
     let identity_to_runtime = member_runs
         .iter()
@@ -33693,7 +33700,25 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         canonical_message_deliveries.extend(deliveries.iter().cloned());
     }
     let mut team_messages = Vec::new();
+    let mut integrity_annotations = Vec::new();
     for run in &team_runs {
+        // DOC-108 pre-cutover tolerance (same doctrine as the #488 dangling
+        // AgentTeam tolerance): the run's scope is resolved read-only so a
+        // pre-cutover TeamRun whose declared MemberRuns never materialized
+        // canonically is rendered as read-only legacy context instead of
+        // failing the whole snapshot. Every post-cutover fail-closed rule is
+        // unchanged inside the resolver.
+        let resolution = store
+            .current_team_run_execution_space_readonly(run)
+            .map_err(|error| CliError::Usage(error.to_string()))?;
+        for member_run_id in &resolution.tolerated_legacy_member_run_ids {
+            integrity_annotations.push(serde_json::json!({
+                "kind": "pre_cutover_unmaterialized_member_run_ref",
+                "team_run_id": run.id,
+                "member_run_id": member_run_id,
+                "annotation": harness_store::PRE_CUTOVER_UNMATERIALIZED_MEMBER_RUN_ANNOTATION,
+            }));
+        }
         team_messages.extend(canonical_team_messages_for_run(store, &run.id)?);
     }
     team_messages.sort_by(|left, right| {
@@ -33834,7 +33859,6 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     // context with an explicit integrity annotation instead of failing the
     // whole snapshot; a team id missing from both ledgers still fails closed
     // inside `canonical_team_messages_for_run`.
-    let mut integrity_annotations = Vec::new();
     {
         let legacy_teams_by_id = legacy_team_definitions_by_id(store)?;
         let mut legacy_context_ids = BTreeSet::new();
@@ -34198,7 +34222,7 @@ fn current_team_run_events_in_append_order(
 ) -> CliResult<Vec<TeamRunEvent>> {
     let mut ids = Vec::new();
     let mut by_id = BTreeMap::new();
-    for event in store.current_team_run_events(team_run_id)? {
+    for event in store.current_team_run_events_readonly(team_run_id)? {
         ids.retain(|id| id != &event.id);
         ids.push(event.id.clone());
         by_id.insert(event.id.clone(), event);
