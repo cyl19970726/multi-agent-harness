@@ -111,7 +111,14 @@ assert.equal(operatorValidate(operatorFixture),false,"provider admission require
 operatorFixture.allowed_actions=[{kind:"diagnose",target_ref:{kind:"execution_node",id:"node-1"},required_version:1,disabled_reason:null,intent_binding:{provider:"codex",execution_mode:"codex_app_server",eligibility:"eligible",eligibility_fingerprint:"0123456789abcdef",project_binding_id:"project-1",source_store_identity:"/store/space-1",registration_identity:"node-1:space-1:project-1",registration_revision:1}}];
 assert.equal(operatorValidate(operatorFixture),false,"only provider admission may carry a tuple binding");
 
-const rust=fs.readFileSync(path.join(root,"crates/firm-cli/src/role_views_api.rs"),"utf8");
+const roleViewRoot=path.join(root,"crates/firm-cli/src/role_views_api");
+const rust=[
+  fs.readFileSync(path.join(root,"crates/firm-cli/src/role_views_api.rs"),"utf8"),
+  ...fs.readdirSync(roleViewRoot)
+    .filter(file=>file.endsWith(".rs")&&file!=="tests.rs")
+    .sort()
+    .map(file=>fs.readFileSync(path.join(roleViewRoot,file),"utf8")),
+].join("\n");
 for(const endpoint of ["global-work","team-workspace/","host-console/","agent-workspace/","member-workbench/","operator/"])assert.ok(rust.includes(`/v1/views/${endpoint}`),`missing ${endpoint}`);
 assert.ok(rust.includes("canonical_operations"),"views must use canonical event sequence");
 assert.ok(!/POST \/v1\/views\//.test(rust),"page-specific mutations are forbidden");

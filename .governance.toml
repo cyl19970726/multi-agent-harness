@@ -14,7 +14,7 @@ skill_roots = [
 max_lines = 500
 # Maintained source files share one hard architectural ceiling. Generated,
 # vendored, dependency, and build-output trees are excluded by the engine.
-source_roots = ["crates", "apps"]
+source_roots = ["crates", "apps", "scripts"]
 source_max_lines = 1500
 member_data_root = ".agents/data"
 

@@ -85,7 +85,7 @@ with two deliberate refinements: directory entries are sorted (deterministic
 output, unlike Node's `readdirSync`), and a missing root is skipped rather than throwing.
 On a repo where every root exists, the four ported gates retain the legacy
 documentation behavior. The source half of `size` is a hard architecture guard:
-configured maintained roots use one 1500-line ceiling with no grandfather
+configured maintained roots (`crates`, `apps`, and `scripts` here) use one 1500-line ceiling with no grandfather
 allowlist, while hidden, dependency, vendored, and build-output trees are
 excluded. `retired_vocabulary` is an opt-in native extension: it uses the
 registry to scan only active documents, so migration and archive evidence remain
