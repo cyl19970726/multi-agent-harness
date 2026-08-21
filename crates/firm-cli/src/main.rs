@@ -1374,9 +1374,9 @@ fn run() -> CliResult<()> {
         return cheatsheet_command(&args[1..]);
     }
     // Resolve the store root FIRST (strips a global `--store`/`--project` from
-    // `args` so the subcommand parsers never see them). `serve` and `run-script`
-    // started from different working directories converge on ONE store via the
-    // registry's current project (issue #89 item 3, now project-routed).
+    // `args` so the subcommand parsers never see them). Commands started from
+    // different working directories converge on one coordination store through
+    // the current Execution Space selection.
     let command = command_name_for_resolution(&args);
     let resolved = resolve_store(&mut args, command.as_deref())?;
     if store_source_debug {
@@ -22844,9 +22844,8 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
     let listener = TcpListener::bind(&addr)?;
     let bound_addr = listener.local_addr()?;
     println!("serving harness API on http://{bound_addr}");
-    // Show WHICH store this serve reads — the #1 confusion in issue #89 item 3 was
-    // serve and run-script silently using different `.harness` dirs. Print the
-    // absolute path so it can be compared against run-script's at a glance.
+    // Show exactly which coordination store this server reads so an operator can
+    // compare it with the selected Execution Space without relying on cwd.
     let store_display = std::fs::canonicalize(store.root())
         .unwrap_or_else(|_| store.root().to_path_buf())
         .display()
