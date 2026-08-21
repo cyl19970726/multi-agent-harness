@@ -428,6 +428,7 @@ fn canonical_or_legacy_env(canonical: &str, legacy: &str) -> Option<(String, boo
 /// should use [`resolve_store`] to also get the `StoreSource`/`ProjectContext`.
 /// Only used by tests today; `run()` calls [`resolve_store`] directly.
 #[cfg(test)]
+#[allow(dead_code)]
 pub(super) fn resolve_store_root(args: &mut Vec<String>) -> PathBuf {
     let command = args.first().cloned();
     resolve_store(args, command.as_deref())

@@ -310,7 +310,7 @@ pub(super) fn deliver_agent_messages_value(
             "terminal_source": delivery.terminal_source,
             "provider_request_id": delivery.provider_request_id,
             "exit_code": delivery.exit_code,
-            "tokens": delivery.tokens.map(TokenUsage::to_json),
+            "tokens": delivery.tokens.map(TokenUsage::into_json),
             "cost_usd": delivery.cost_usd,
             "model": delivery.model,
             "structured": delivery.structured

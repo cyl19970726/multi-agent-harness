@@ -13,7 +13,6 @@ mod workflow_history;
 pub(crate) use digest::sha256_hex;
 pub use export::export_archive;
 pub use verify::verify_archive;
-pub use workflow_history::restore_read_workflow_history;
 use workflow_history::{
     archive_workflow_history, parseable_jsonl_records, validate_workflow_archive_contract,
     verify_workflow_history, WorkflowArchiveContract, WORKFLOW_LEDGERS, WORKFLOW_PATCH_ROOT,

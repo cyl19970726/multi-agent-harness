@@ -175,6 +175,9 @@ pub(super) fn verify_workflow_history(
 /// Verify an archive and return its retired Workflow files as opaque bytes.
 /// This is deliberately a read-only restore seam: callers can inspect or copy
 /// the exact historical bytes without reopening any current writer.
+// The seam is intentionally not part of the normal CLI. It remains callable by
+// archive tooling and focused verification without reopening a product reader.
+#[allow(dead_code)]
 pub fn restore_read_workflow_history(archive: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
     verify_archive(archive)?;
     let manifest_path = archive.join("manifest.json");

@@ -129,7 +129,7 @@ pub(super) struct TokenUsage {
 }
 
 impl TokenUsage {
-    pub(super) fn to_json(self) -> serde_json::Value {
+    pub(super) fn into_json(self) -> serde_json::Value {
         serde_json::json!({
             "input": self.input,
             "output": self.output,

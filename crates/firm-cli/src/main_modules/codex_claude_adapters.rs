@@ -323,6 +323,7 @@ pub(super) fn extract_codex_reply_text(events: &[CodexExecEvent]) -> Option<Stri
 /// human-facing reply, this returns only the terminal one, so structured-output
 /// parsing reads the schema-constrained answer rather than an earlier streamed
 /// preamble (issue #139 item 2).
+#[allow(dead_code)]
 pub(super) fn extract_codex_final_message(events: &[CodexExecEvent]) -> Option<String> {
     let mut last = None;
     for event in events {

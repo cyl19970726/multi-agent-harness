@@ -705,6 +705,7 @@ pub(super) fn json_path_string(value: &serde_json::Value, path: &[&str]) -> Opti
 /// Used on every summary/error path that bounds an arbitrary (possibly non-ASCII)
 /// provider string — a formatting nicety must never be able to panic a live run
 /// after the agent work (and its tokens) are already spent. (issue #89, item 1)
+#[allow(dead_code)]
 pub(super) fn truncate_on_char_boundary(s: &str, max: usize) -> &str {
     if s.len() <= max {
         return s;

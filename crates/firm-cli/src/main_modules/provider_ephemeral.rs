@@ -2,16 +2,8 @@ use super::*;
 
 pub(super) struct NdjsonRun {
     pub(super) process_success: bool,
-    /// Process exit code when the child exited on its own; `None` when it was
-    /// killed on timeout or terminated by a signal (no code available).
-    pub(super) exit_code: Option<i32>,
-    /// True when the per-node timeout fired and we killed the child.
-    pub(super) timed_out: bool,
-    /// True when the per-leaf wall-clock timeout fired.
-    pub(super) wall_timed_out: bool,
     pub(super) events: Vec<serde_json::Value>,
     pub(super) stderr: String,
-    pub(super) warnings: Vec<String>,
 }
 
 /// Spawn a child that emits NDJSON on stdout, non-interactively (stdin closed).
@@ -202,13 +194,9 @@ pub(super) fn run_ndjson_child(
     let wall_clock_limit = wall_clock_ms.map(|ms| Duration::from_millis(ms.max(1)));
     let mut timed_out = false;
     let mut wall_timed_out = false;
-    let mut exit_code: Option<i32> = None;
     let process_success = loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                exit_code = status.code();
-                break status.success();
-            }
+            Ok(Some(status)) => break status.success(),
             Ok(None) => {
                 if let Some(wall) = wall_clock_limit {
                     if start.elapsed() > wall {
@@ -229,7 +217,7 @@ pub(super) fn run_ndjson_child(
         }
     };
 
-    let (events, mut warnings) = stdout_handle.join().unwrap_or_default();
+    let (events, _) = stdout_handle.join().unwrap_or_default();
     let mut stderr_log = stderr_handle.join().unwrap_or_default();
     if timed_out && stderr_log.is_empty() {
         stderr_log = format!("timeout waiting for {context}");
@@ -238,23 +226,9 @@ pub(super) fn run_ndjson_child(
         let wall_s = wall_clock_ms.unwrap_or(0).div_ceil(1_000);
         stderr_log = format!("{context} exceeded per-leaf wall-clock timeout of {wall_s}s");
     }
-    if timed_out {
-        warnings.push(format!("{context} timed out"));
-    }
-    if wall_timed_out {
-        let wall_s = wall_clock_ms.unwrap_or(0).div_ceil(1_000);
-        warnings.push(format!(
-            "{context} exceeded per-leaf wall-clock timeout of {wall_s}s"
-        ));
-    }
-
     Ok(NdjsonRun {
         process_success,
-        exit_code,
-        timed_out: timed_out || wall_timed_out,
-        wall_timed_out,
         events,
         stderr: stderr_log,
-        warnings,
     })
 }
