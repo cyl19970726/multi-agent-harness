@@ -1,0 +1,754 @@
+{
+  "schema_version": "notion-development-system-cutover-preflight.v1",
+  "task_id": "DEV-55",
+  "review_submission": 3,
+  "current_pre_cutover_final_review_expected": "Submission 3",
+  "actual_status": "proposed_only",
+  "product_effect": "none",
+  "authority": {
+    "selector": "AgentFirm Home authority notice",
+    "home_url": "https://app.notion.com/p/3b849a4fa3798115939cca2b0b9e6f2d",
+    "development_system_url": "https://app.notion.com/p/21e49a4fa37982a5b9f781cf04584034",
+    "playbook_url": "https://app.notion.com/p/3b849a4fa37981a990a5cf0059dcfa4a",
+    "source": {
+      "tasks_data_source_id": "collection://65102438-9f40-4bab-b0fa-1790b5f74c50",
+      "documents_data_source_id": "collection://534f364c-8c4e-483e-b7ae-2b6f361e6b1d",
+      "ordinary_review_view_id": "view://30b8cbd9-8c0b-405f-883a-e00687ac1dbc",
+      "remains_current_until": "the single Home authority-notice commit at T0"
+    },
+    "target": {
+      "tasks_data_source_id": null,
+      "documents_data_source_id": null,
+      "authority_before_cutover": "isolated staging snapshot only",
+      "authority_after_cutover": "the only writable Task and Development Document authority"
+    },
+    "repository_implementation_truth": "exact reviewed Git revision, schemas, code, tests and CI",
+    "prohibition": "No production/staging double write and no third current ledger."
+  },
+  "source_counts": {
+    "tasks_total": 55,
+    "tasks_done": 29,
+    "tasks_non_done": 26,
+    "tasks_archived_partition": 0,
+    "specs_total": 32,
+    "specs_current": 5,
+    "specs_accepted": 21,
+    "specs_superseded": 3,
+    "specs_draft": 3,
+    "specs_current_or_accepted": 26,
+    "ordinary_reviews_at_submission_3_preflight": 40,
+    "target_tasks": 21,
+    "target_specs": 19,
+    "note": "Fresh read-only inventory. Counts do not prove migration or fidelity."
+  },
+  "task_inventory": [
+    {
+      "id": "DEV-7",
+      "title": "Wave 6 · Cross-Machine Team Collaboration",
+      "source_url": "https://app.notion.com/p/3b849a4fa37981a2a2e4f94516363058",
+      "current_facts": "Doing; owner Codex task 01a00ac6-23fa-7eb1-9635-99ca17df3362; working 189124be1fde24f7d8e05eb4062371f63b9f0aa1; review fields empty; next still says amend/push PR #469 although that PR merged at e03e202e and Submission 4 was Changes Required at the unmerged working SHA.",
+      "disposition": "reconcile_then_migrate",
+      "reconciliation": "Continue the same DEV-7 from a new repair head; PR #469 remains landed history and is never reused.",
+      "target_transform": {
+        "status": "Doing",
+        "owner": "Codex task · 01a00ac6-23fa-7eb1-9635-99ca17df3362",
+        "development_revision": "189124be1fde24f7d8e05eb4062371f63b9f0aa1",
+        "submitted_revision": "",
+        "current_reviewer": "",
+        "blocker": "",
+        "next_action": "Start a new repair head from current master; preserve PR469 merge e03e202e as landed history; close DOC103 blockers; submit the same DEV-7 again; do not reuse merged PR469."
+      },
+      "target_spec_ids": ["DOC-106"],
+      "legacy_evidence_ids": ["DOC-21", "DOC-81", "DOC-83", "DOC-85", "DOC-103"],
+      "legacy_evidence_rule": "Resolve and record exact source URLs again at T0; these rows are excluded from target relations.",
+      "historical_max_submission": 4,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-8",
+      "title": "Wave 7 · Mac Host & Operational Trust",
+      "source_url": "https://app.notion.com/p/3b849a4fa37981768929fe11611979b1",
+      "current_facts": "Blocked; no owner or versions; next waits for DEV-7; blocker is upstream dependency; governing DOC-15 is Draft and excluded.",
+      "disposition": "reconcile_then_migrate",
+      "reconciliation": "Retain the outcome but make both prerequisites explicit; Draft DOC-15 is excluded and cannot act as current Spec.",
+      "target_transform": {
+        "status": "Blocked",
+        "owner": "Unassigned — Brain assigns after blocker clears",
+        "development_revision": "",
+        "submitted_revision": "",
+        "current_reviewer": "",
+        "blocker": "DEV-7 completion and an Accepted Mac Host Spec; DOC-15 is Draft and excluded.",
+        "next_action": "After DEV-7 is Done and a Mac Host Spec is Accepted, Brain assigns an owner and starts DEV-8; until then remain Blocked."
+      },
+      "target_spec_ids": [],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-9",
+      "title": "Wave 8 · Docs Authority Cutover & Surface Reduction",
+      "source_url": "https://app.notion.com/p/3b849a4fa379814db723ca220bfd83d1",
+      "current_facts": "Blocked waiting for DEV-8, but Home already declares explicit Notion document authority and the outcome is partially or wholly completed.",
+      "disposition": "close_omit",
+      "reconciliation": "Review the achieved authority cutover, close the stale Task in the source, and preserve it only in Legacy.",
+      "target_spec_ids": [],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-10",
+      "title": "Wave 9 · Signed Distribution, Upgrade & Release",
+      "source_url": "https://app.notion.com/p/3b849a4fa37981558e33c0757617af0b",
+      "current_facts": "Blocked; no owner or versions; waits for stale DEV-9; governing DOC-17 is Draft and excluded.",
+      "disposition": "reconcile_then_migrate",
+      "reconciliation": "Retain the outcome but remove the stale Wave chain; Draft DOC-17 is excluded and cannot act as current Spec.",
+      "target_transform": {
+        "status": "Blocked",
+        "owner": "Unassigned — Brain assigns after blocker clears",
+        "development_revision": "",
+        "submitted_revision": "",
+        "current_reviewer": "",
+        "blocker": "DEV-8 completion and an Accepted signed distribution/release Spec; DOC-17 is Draft and excluded.",
+        "next_action": "After DEV-8 is Done and a signed distribution/release Spec is Accepted, Brain assigns an owner and starts DEV-10; until then remain Blocked."
+      },
+      "target_spec_ids": [],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-15",
+      "title": "Rebuild frontend product design as a generic multi-session skill",
+      "source_url": "https://app.notion.com/p/3ba49a4fa3798161b8d0dde8826a8210",
+      "current_facts": "In Review at 9d9bc8804dca781547c25e0e69d064fd92e992bd, which is already an origin/master ancestor.",
+      "disposition": "close_omit",
+      "reconciliation": "Verify the landed revision, close Done in source, retain as Legacy history.",
+      "target_spec_ids": [],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-16",
+      "title": "Team Console Activity · Human-readable canonical timestamps",
+      "source_url": "https://app.notion.com/p/3ba49a4fa37981268088f9370ae959f5",
+      "current_facts": "Planned; owner Kimi Code; no versions/reviewer/blocker; next starts after P1 truth fixes and requires live screenshot acceptance.",
+      "disposition": "migrate",
+      "target_spec_ids": ["DOC-86"],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-17",
+      "title": "Parallel Task mutation ownership and fail-closed lease",
+      "source_url": "https://app.notion.com/p/3ba49a4fa37981e0bc78fc78d17769d4",
+      "current_facts": "Planned; no revision or accepted Spec; proposed mandatory CAS/lease conflicts with the accepted simple-loop rule that advanced controls require demonstrated need.",
+      "disposition": "close_omit",
+      "reconciliation": "Close unless new concurrency evidence first earns an independently reviewed Spec; do not migrate a default second lifecycle.",
+      "target_spec_ids": [],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-18",
+      "title": "Evidence execution-boundary integrity gate",
+      "source_url": "https://app.notion.com/p/3ba49a4fa37981f38aeae1fc67530bc8",
+      "current_facts": "Planned; unassigned process follow-up; no versions/reviewer/blocker; next defines trace/manifest contract and negative-boundary regression.",
+      "disposition": "migrate",
+      "target_spec_ids": [],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-21",
+      "title": "Restore exact-self provider-native Session history binding",
+      "source_url": "https://app.notion.com/p/3bc49a4fa37981eeb754e43b32696900",
+      "current_facts": "Planned; owner Kimi Code; no versions/reviewer/blocker; next reproduces session binding mismatch and implements generation/privacy/isolation gates.",
+      "disposition": "migrate",
+      "target_spec_ids": ["DOC-86"],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-22",
+      "title": "Stop Supervisor heartbeat from flashing and resetting Agent Workspace",
+      "source_url": "https://app.notion.com/p/3bc49a4fa37981d8a0e8c81ef0ff88d0",
+      "current_facts": "Planned; owner Kimi Code; next instruments SSE and validates initial versus background state in-browser.",
+      "disposition": "migrate",
+      "target_spec_ids": ["DOC-86"],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-23",
+      "title": "Restore global product navigation in Agent Member Workspace",
+      "source_url": "https://app.notion.com/p/3bc49a4fa3798108813bf6f14342932b",
+      "current_facts": "Planned; owner Kimi Code; next validates product switcher across desktop/tablet/mobile.",
+      "disposition": "migrate",
+      "target_spec_ids": ["DOC-86"],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-24",
+      "title": "Agent Team delivery projection · consistent status and Work correlation",
+      "source_url": "https://app.notion.com/p/3bc49a4fa37981b08f59c61483075766",
+      "current_facts": "Planned; owner Kimi Code; next audits the projection and validates server-built latest delivery/Work on a real Team.",
+      "disposition": "migrate",
+      "target_spec_ids": ["DOC-86"],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-25",
+      "title": "Host decision surface · review pressure and actionable Work detail",
+      "source_url": "https://app.notion.com/p/3bc49a4fa37981d181d4cc08e01e1740",
+      "current_facts": "Planned; owner Kimi Code; next adds server projection, Work details/actions and cross-surface validation.",
+      "disposition": "migrate",
+      "target_spec_ids": ["DOC-86"],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-27",
+      "title": "Managed Host session · direct Host conversation contract",
+      "source_url": "https://app.notion.com/p/3bc49a4fa379814193c0d2a379e3563d",
+      "current_facts": "Planned; owner Kimi Code; next freezes managed-versus-external Host contract and validates generation, controls and privacy.",
+      "disposition": "migrate",
+      "target_spec_ids": ["DOC-86"],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-28",
+      "title": "Team Workspace real-data adaptive density and presentation polish",
+      "source_url": "https://app.notion.com/p/3bc49a4fa37981238862f95b5c960044",
+      "current_facts": "Planned; owner Kimi Code; next follows P1 truth fixes with real sparse/full-store layout validation at 1440/900/390/320.",
+      "disposition": "migrate",
+      "target_spec_ids": ["DOC-86"],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-29",
+      "title": "P0-A1 · 事件驱动 NodeDaemon wake：非权威 hint + backoff reconcile 兜底",
+      "source_url": "https://app.notion.com/p/3bc49a4fa37981898deeec60be398b0b",
+      "current_facts": "In Review at 2dbd3d368e6586212573968a26738acfea9eb9d0; page says merged to master and SHA is an origin/master ancestor.",
+      "disposition": "close_omit",
+      "reconciliation": "Verify landed revision, close Done in source, retain only as Legacy.",
+      "target_spec_ids": [],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-41",
+      "title": "Run final two-machine Agent Team, provider recovery and real-store frontend cutover acceptance",
+      "source_url": "https://app.notion.com/p/3be49a4fa37981d9b356fd2baffd0f0c",
+      "current_facts": "Doing; owner Host Acceptance; round-1 live dogfood and PR #485/#486/#487 evidence recorded; round-2 two-machine, Trash/Restore, offline queue and export reverify remain.",
+      "disposition": "migrate",
+      "target_spec_ids": ["DOC-16", "DOC-105", "DOC-106", "DOC-107", "DOC-108"],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-42",
+      "title": "Bound Nodes / Operator Remote Fabric reads on large stores",
+      "source_url": "https://app.notion.com/p/3be49a4fa379819a96d8dd64954d3b27",
+      "current_facts": "Planned; stale next references inactive DEV-33; intended work is bounded/indexed reads over 617MB evidence.",
+      "disposition": "migrate",
+      "reconciliation": "Remove the stale DEV-33 dependency without changing scope.",
+      "target_transform": {
+        "status": "Planned",
+        "owner": "Unassigned — Brain must assign before Doing",
+        "development_revision": "",
+        "submitted_revision": "",
+        "current_reviewer": "",
+        "blocker": "",
+        "next_action": "Brain assigns an owner; profile the large-store Bound Nodes / Operator Remote Fabric reads; define the indexed and bounded read contract; validate it against the recorded 617MB evidence."
+      },
+      "target_spec_ids": ["DOC-107"],
+      "legacy_evidence_urls": ["https://app.notion.com/p/3be49a4fa379814e9f4deda42ef2c97f"],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-43",
+      "title": "Harden runtime recovery: verified-death lease release, task reaping, control timeouts, honest liveness",
+      "source_url": "https://app.notion.com/p/3c049a4fa37981559d5aff6d524198a0",
+      "current_facts": "Planned although next says blocked on independent Review of Draft DOC-122; blocker field is empty.",
+      "disposition": "reconcile_then_migrate",
+      "reconciliation": "Set the honest blocked state; Draft DOC-122 is excluded and cannot authorize execution.",
+      "target_transform": {
+        "status": "Blocked",
+        "owner": "Dev",
+        "development_revision": "",
+        "submitted_revision": "",
+        "current_reviewer": "",
+        "blocker": "DOC-122 is Draft and not Accepted.",
+        "next_action": "Complete independent Review and acceptance of DOC-122; then Brain returns DEV-43 to Doing and assigns the exact runtime-recovery implementation slice."
+      },
+      "target_spec_ids": [],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-44",
+      "title": "Remove retired/host-surface residue: tombstone MCP tools, space-bound Host surface, early admissibility validation, onboarding gaps",
+      "source_url": "https://app.notion.com/p/3c049a4fa37981ffab9ee10439ae0f29",
+      "current_facts": "Planned; next simultaneously claims DOC-122 dependency and partially unblocked onboarding work; blocker is empty.",
+      "disposition": "reconcile_then_migrate",
+      "reconciliation": "Use one user outcome and one honest blocked state; Draft DOC-122 is excluded.",
+      "target_transform": {
+        "status": "Blocked",
+        "owner": "Dev",
+        "development_revision": "",
+        "submitted_revision": "",
+        "current_reviewer": "",
+        "blocker": "DOC-122 decisions 5–6 are Draft and not Accepted.",
+        "goal_acceptance_override": "Advertised Host surface is truthful and usable: retired MCP tools are tombstoned, Host surface is space-bound, inadmissible actions fail early, and onboarding exposes the supported path.",
+        "next_action": "After DOC-122 decisions 5–6 are independently Accepted, Brain returns DEV-44 to Doing and assigns this single Host-surface outcome."
+      },
+      "target_spec_ids": [],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-45",
+      "title": "Reconcile pre-cutover store integrity: dangling TeamRun→AgentTeam tolerance and real-store snapshot completeness",
+      "source_url": "https://app.notion.com/p/3c049a4fa37981ea8bb8f8f86c1c6584",
+      "current_facts": "Planned; owner Dev; unblocked after PR #486 as the last known integrity layer.",
+      "disposition": "migrate",
+      "target_spec_ids": [],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-46",
+      "title": "DEV-41 round 2: two-machine, Trash/Restore, offline peer queue, export re-verify, scripted all-pages real-store frontend acceptance",
+      "source_url": "https://app.notion.com/p/3c049a4fa379819a9544c0a7074a1afb",
+      "current_facts": "Planned although next says blocked by runtime recovery and store integrity; blocker field and actual DEV-43/DEV-45 links are absent.",
+      "disposition": "reconcile_then_migrate",
+      "reconciliation": "Set Blocked and name the two real prerequisites.",
+      "target_transform": {
+        "status": "Blocked",
+        "owner": "Host Acceptance",
+        "development_revision": "",
+        "submitted_revision": "",
+        "current_reviewer": "",
+        "blocker": "DEV-43 runtime recovery and DEV-45 store integrity must both be Done.",
+        "next_action": "After DEV-43 and DEV-45 are Done, run DEV-41 round 2: two-machine, Trash/Restore, offline peer queue, export re-verification and scripted all-pages real-store frontend acceptance."
+      },
+      "target_spec_ids": [],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-47",
+      "title": "Governance gate hardening: paragraph-scoped vocabulary scan and DEV-40 deferred review items",
+      "source_url": "https://app.notion.com/p/3c049a4fa37981c68393d7c16d033ac7",
+      "current_facts": "Planned; owner Dev; unblocked and next items are enumerated.",
+      "disposition": "migrate",
+      "target_spec_ids": [],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-48",
+      "title": "De-quarantine the three load-sensitive timing tests with injectable clocks",
+      "source_url": "https://app.notion.com/p/3c049a4fa3798103903fe19ad72d1b01",
+      "current_facts": "Planned; owner Dev; unblocked; evidence points to issue #480.",
+      "disposition": "migrate",
+      "target_spec_ids": [],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-51",
+      "title": "Slim Root AGENTS and strengthen the single development Skill handoff contract",
+      "source_url": "https://app.notion.com/p/3c249a4fa3798132a326d058189baa28",
+      "current_facts": "Blocked; preserved input to completed DEV-53; working/review fcdf450eef5a9a8e4feb17bdae5bd600acd95128 is not in origin/master and must not be merged directly.",
+      "disposition": "close_omit",
+      "reconciliation": "Close as absorbed by DEV-53 and retain provenance only in Legacy.",
+      "target_spec_ids": [],
+      "historical_max_submission": 0,
+      "submission_evidence_scope": "ordinary Review inventory"
+    },
+    {
+      "id": "DEV-55",
+      "title": "Clean two-database development system cutover",
+      "source_url": "https://app.notion.com/p/3c349a4fa379812f9d8bf2b3d245bc31",
+      "current_facts": "Doing; owner current root task with temporary subagents; next is fresh preflight, minimum schemas, one-time cutover and rollback mapping.",
+      "disposition": "migrate",
+      "target_spec_ids": [],
+      "historical_max_submission": 2,
+      "submission_evidence_scope": "ordinary Review inventory"
+    }
+  ],
+  "target_task_projection_policy": {
+    "closed_set": ["DEV-7","DEV-8","DEV-10","DEV-16","DEV-18","DEV-21","DEV-22","DEV-23","DEV-24","DEV-25","DEV-27","DEV-28","DEV-41","DEV-42","DEV-43","DEV-44","DEV-45","DEV-46","DEV-47","DEV-48","DEV-55"],
+    "field_set": ["任务","任务编号","目标 / 验收标准","负责人","状态","下一步","阻塞原因","开发版本","送审版本","当前评审人","当前规范"],
+    "unchanged_field_rule": "For every closed-set row, copy the exact source value observed during the frozen T0 read for every field not explicitly overridden by target_transform; record source value, target value and normalized value hash in the migration ledger. No inference, blank-filling or status promotion is allowed.",
+    "transform_rows": ["DEV-7","DEV-8","DEV-10","DEV-42","DEV-43","DEV-44","DEV-46"],
+    "omitted_rows": ["DEV-9","DEV-15","DEV-17","DEV-29","DEV-51"],
+    "omitted_row_rule": "Leave every source field unchanged. Do not set Done without a Pass Review. These rows become visibly non-authoritative only when the entire source database becomes Legacy after the Home authority flip."
+  },
+  "spec_inventory": [
+    {"id":"DOC-1","title":"Wave 4A · Accepted Spec","source_url":"https://app.notion.com/p/3b849a4fa37981dcb63de52da873926a","status":"Current","body_readability":"partial_not_self_contained; body points to an old Production Source as normative","disposition":"supersede_omit","source_to_target_mapping":"Coverage must be reviewed against DOC-105 product model, DOC-84 provider projection and DOC-87 runtime contract; preserve the old page unchanged in Legacy."},
+    {"id":"DOC-16","title":"Product Authority Cutover · Notion, Repository Docs, ADRs & Skills","source_url":"https://app.notion.com/p/0a049a4fa3798238807081f33df4dfd7","status":"Accepted","body_readability":"direct_but_stale_status_wording","disposition":"revise_then_migrate"},
+    {"id":"DOC-14","title":"Wave 6 · Cross-Machine Team Collaboration — Program Spec","source_url":"https://app.notion.com/p/7f649a4fa37982afb3930198356e5c0e","status":"Accepted","body_readability":"direct_readable_but_retired_semantics","disposition":"revise_then_migrate","successor_class":"semantic_successor"},
+    {"id":"DOC-130","title":"AF-GOV-001 · Repository Development Governance Authority Architecture","source_url":"https://app.notion.com/p/3c249a4fa37981c39d6cc93166033fc4","status":"Accepted","body_readability":"direct_but_stale_status_wording; body still says Draft/no authority","disposition":"revise_then_migrate"},
+    {"id":"DOC-13","title":"Wave 5 · Remote Node Fabric — Program Spec","source_url":"https://app.notion.com/p/c7649a4fa3798375aa5d01d801e7c9c5","status":"Accepted","body_readability":"direct_but_historical_execution_wording","disposition":"supersede_omit"},
+    {"id":"DOC-125","title":"AF-APP-001 · Thin Composition Root and Application Use-Case Boundary","source_url":"https://app.notion.com/p/3c249a4fa379816cbe05e3bb78fc1339","status":"Accepted","body_readability":"direct_but_stale_status_wording","disposition":"revise_then_migrate"},
+    {"id":"DOC-12","title":"Wave 4C · NodeDaemon Runtime Ownership & Canonical Message Fabric Cutover — Program Spec","source_url":"https://app.notion.com/p/88249a4fa3798396812f813b45a5a807","status":"Accepted","body_readability":"direct_but_historical_execution_wording","disposition":"supersede_omit"},
+    {"id":"DOC-237","title":"AF-PKG-001 v5 — Readable package constitution","source_url":"https://app.notion.com/p/3c249a4fa37981c2ab71ef2562c01e0b","status":"Accepted","body_readability":"direct_but_stale_status_wording; body still says Draft; repository register link is valid","disposition":"revise_then_migrate"},
+    {"id":"DOC-239","title":"AF-RET-001 v5 — Readable retirement design","source_url":"https://app.notion.com/p/3c249a4fa37981fabfa7c15f90381693","status":"Accepted","body_readability":"direct_but_stale_status_wording","disposition":"revise_then_migrate"},
+    {"id":"DOC-87","title":"Spec · AgentFirm Coding Agent Runtime Control & Message Fabric（provider-neutral）","source_url":"https://app.notion.com/p/3bc49a4fa37981b38e57f9cbeba46d71","status":"Accepted","body_readability":"direct_but_stale_status_wording; still says review/PR pending","disposition":"revise_then_migrate"},
+    {"id":"DOC-105","title":"Agent Team Product Model vNext · Persistent Single-Node Peer Teams","source_url":"https://app.notion.com/p/3be49a4fa379817aa594fd8e7331c30d","status":"Accepted","body_readability":"direct_but_stale_status_wording; still says Governing Draft/not cut over","disposition":"revise_then_migrate"},
+    {"id":"DOC-238","title":"AF-EDGE-001 v5 — Readable external contract","source_url":"https://app.notion.com/p/3c249a4fa37981b788f9fc4fa4d8b856","status":"Accepted","body_readability":"direct_but_stale_status_wording","disposition":"revise_then_migrate"},
+    {"id":"DOC-32","title":"#420 · Unified TeamWork Clean Cutover — Implementation Spec","source_url":"https://app.notion.com/p/19849a4fa37982d9bf97810cbb907492","status":"Accepted","body_readability":"direct_readable_but_retired_owner_terms","disposition":"revise_then_migrate","successor_class":"semantic_successor"},
+    {"id":"DOC-107","title":"Product Surfaces Convergence & Real-Store Frontend Acceptance","source_url":"https://app.notion.com/p/3be49a4fa37981aa9439c1697d8368d8","status":"Accepted","body_readability":"direct_but_stale_status_wording; body says Submission 2 Draft","disposition":"revise_then_migrate"},
+    {"id":"DOC-72","title":"Agent Workspace · Unified Host and Member detail","source_url":"https://app.notion.com/p/3ba49a4fa37981afbeb7f4bd3053a2ea","status":"Current","body_readability":"direct_with_visual_assets_but_stale_authority_wording","disposition":"revise_then_migrate","successor_class":"semantic_successor","asset_gate":"Preserve and verify every visual asset by identity, count, rendering and hash where exportable."},
+    {"id":"DOC-73","title":"Agent Team Workspace · Works Activity Members convergence","source_url":"https://app.notion.com/p/3ba49a4fa37981bd9185f059d8200328","status":"Current","body_readability":"direct_with_visual_assets_but_retired_links_and_labels","disposition":"revise_then_migrate","successor_class":"semantic_successor","asset_gate":"Preserve and verify every visual asset by identity, count, rendering and hash where exportable."},
+    {"id":"DOC-70","title":"Agent Team UI · Approved Visual Reference & Fidelity Repair Spec","source_url":"https://app.notion.com/p/3ba49a4fa37981eaa1b4e3515312a888","status":"Current","body_readability":"direct_with_visual_assets_but_stale_semantics; includes retired Mission semantics and historical FAILED/P0 wording","disposition":"supersede_omit","source_to_target_mapping":"Keep the old page and seven visual assets unchanged in Legacy. Current AgentTeam/AgentMember semantics come from DOC-105/DOC-106; concrete current UI contracts come from DOC-72/DOC-73. Any future visual successor requires its own reviewed Spec; do not silently copy conflicting text."},
+    {"id":"DOC-84","title":"Canonical Provider Event Adapter & Session Projection — Spec","source_url":"https://app.notion.com/p/3bb49a4fa379815fa8ccc00753b69aad","status":"Accepted","body_readability":"direct_readable","disposition":"migrate"},
+    {"id":"DOC-106","title":"Global Work, Responsibility Projections & Peer Team Messaging","source_url":"https://app.notion.com/p/3be49a4fa3798126a598e634ed5d0807","status":"Accepted","body_readability":"direct_but_stale_status_wording","disposition":"revise_then_migrate"},
+    {"id":"DOC-9","title":"Wave 1 · Development Contract & Reliability Foundation — Program Spec","source_url":"https://app.notion.com/p/54349a4fa37982d3bceb81d5c39b8913","status":"Accepted","body_readability":"direct_but_historical_process_wording","disposition":"supersede_omit"},
+    {"id":"DOC-11","title":"Wave 4B · Local AgentFirm Product Loop — Program Spec","source_url":"https://app.notion.com/p/25049a4fa37982e9b7b081595cc73397","status":"Accepted","body_readability":"direct_but_historical_execution_wording","disposition":"supersede_omit"},
+    {"id":"DOC-10","title":"Wave 3 · AgentTeam Identity, Delegation & Node Runtime — Program Spec","source_url":"https://app.notion.com/p/cbe49a4fa3798238bd060140281f3982","status":"Accepted","body_readability":"direct_but_historical_execution_wording; body says PR Open/CI Pending","disposition":"supersede_omit"},
+    {"id":"DOC-126","title":"AF-RUN-001 · Runtime and Provider Adapter Package Boundary","source_url":"https://app.notion.com/p/3c249a4fa379819bb6a0ec8daf57535d","status":"Accepted","body_readability":"direct_but_stale_status_wording","disposition":"revise_then_migrate"},
+    {"id":"DOC-86","title":"Real Agent Team end-to-end acceptance defects · Runtime, projections, decisions and navigation","source_url":"https://app.notion.com/p/3bc49a4fa379814a927bd13c0f342369","status":"Current","body_readability":"direct_readable_but_unversioned","disposition":"migrate","review_gate":"Record unversioned source as an explicit exception and bind the target copy to the reviewed DEV-55 migration version."},
+    {"id":"DOC-108","title":"Legacy CompanyOS Retirement, Export & Clean Cutover","source_url":"https://app.notion.com/p/3be49a4fa37981afa320f6c8a5f3a8b4","status":"Accepted","body_readability":"direct_but_stale_status_wording","disposition":"revise_then_migrate"},
+    {"id":"DOC-127","title":"AF-DOM-001 · Domain and Store Aggregate Boundaries","source_url":"https://app.notion.com/p/3c249a4fa37981588ce8c862a44ab4e4","status":"Accepted","body_readability":"direct_but_stale_status_wording","disposition":"revise_then_migrate"}
+  ],
+  "editorial_successor_contract": {
+    "source_pages_remain_immutable": true,
+    "target_copy_corrections_only": ["DOC-16","DOC-130","DOC-125","DOC-237","DOC-239","DOC-87","DOC-105","DOC-238","DOC-107","DOC-106","DOC-126","DOC-108","DOC-127"],
+    "allowed_change": "Correct stale Draft, pending-review, unmerged or pre-cutover wording so the target copy states the already-accepted current status without changing architecture, scope, acceptance or executable claims.",
+    "forbidden_change": "Do not edit source pages, invent shipped behavior, broaden product intent, or hide a repository/Notion crosswalk delta.",
+    "acceptance": "DEV-55 target Review compares each source and target body and accepts every editorial delta explicitly."
+  },
+  "semantic_successor_contract": {
+    "source_pages_remain_immutable": true,
+    "requires_independent_target_copy_review": true,
+    "not_editorial_only": true,
+    "per_document": {
+      "DOC-14": "Remove Wave 5 pending language and retired Mission, AgentIdentity and Company Control Plane authority. Align current meaning to DOC-105, DOC-106 and DOC-108. DEV-7 uses DOC-106 as its current governing Spec; the DOC-14 successor is supporting architecture and must be omitted if Review finds it redundant, never bound as sole authority.",
+      "DOC-32": "Preserve the accepted Work kernel. Replace retired Mission and Company WorkItem ownership with AgentTeam and authoritative TeamWork plus the global read-only projection defined by DOC-105, DOC-106 and DOC-108.",
+      "DOC-72": "Correct only outstanding-work and status-authority wording; preserve the visual contract and every asset.",
+      "DOC-73": "Remove DOC-70 as current authority/link and replace Mission-era labels with AgentTeam, AgentTeamRun and Work vocabulary per DOC-105 and DOC-108; preserve visuals and assets."
+    },
+    "acceptance": "Review compares exact source and target bodies/assets, accepts each semantic delta, and rejects any unrelated scope or shipped-behavior claim."
+  },
+  "omitted_spec_mapping": {
+    "stale_wave_specs": ["DOC-9","DOC-10","DOC-11","DOC-12","DOC-13"],
+    "mapping": {
+      "development_governance": ["DOC-130", "the new Development System design page"],
+      "agent_team_work_node_message": ["DOC-105", "DOC-106"],
+      "runtime_provider": ["DOC-84", "DOC-87"],
+      "frontend": ["DOC-107", "DOC-72", "DOC-73"],
+      "repository_shipped_truth": "repository only; never migrate historical implementation-state prose as current Notion truth"
+    },
+    "DOC-1": "Reviewed coverage mapping to DOC-105, DOC-84 and DOC-87; omit old non-self-contained page.",
+    "DOC-70": "Preserve unchanged visual source in Legacy; current semantics are DOC-105/DOC-106 and concrete UI contracts DOC-72/DOC-73."
+  },
+  "target_ddl": {
+    "construction_rule": "Use plain schema, never Notion database_type=tasks; use SELECT rather than typed Task STATUS.",
+    "tasks": {
+      "staging_title": "Development Tasks · STAGING · DO NOT WRITE",
+      "property_count": 12,
+      "properties": [
+        {"name":"任务","type":"TITLE","required":"always"},
+        {"name":"任务编号","type":"RICH_TEXT","required":"always; unique by Brain validation","comment":"Stable DEV identity; do not use UNIQUE_ID because old DEV numbers must be imported."},
+        {"name":"目标 / 验收标准","type":"RICH_TEXT","required":"always"},
+        {"name":"负责人","type":"RICH_TEXT","required":"always","comment":"Current executor/session label, not a Notion user identity."},
+        {"name":"状态","type":"SELECT","options":["Planned","Doing","In Review","Changes Required","Blocked","Done"],"required":"always"},
+        {"name":"下一步","type":"RICH_TEXT","required":"iff status is not Done"},
+        {"name":"阻塞原因","type":"RICH_TEXT","required":"iff status is Blocked; empty otherwise"},
+        {"name":"开发版本","type":"RICH_TEXT","required":"once Dev reports an exact revision/version"},
+        {"name":"送审版本","type":"RICH_TEXT","required":"iff In Review; exact immutable revision/version"},
+        {"name":"当前评审人","type":"RICH_TEXT","required":"iff In Review; empty otherwise"},
+        {"name":"相关开发文档","type":"RELATION_DUAL_FROM_DOCUMENTS","target":"target Documents.关联任务"},
+        {"name":"当前规范","type":"RELATION","target":"target Documents","required":"optional; only Spec in Current/Accepted"}
+      ]
+    },
+    "documents": {
+      "staging_title": "Development Documents · STAGING · DO NOT WRITE",
+      "property_count": 11,
+      "properties": [
+        {"name":"文档","type":"TITLE","required":"always"},
+        {"name":"文档编号","type":"RICH_TEXT","required":"always; unique by Brain validation","comment":"Stable DOC identity; do not use UNIQUE_ID."},
+        {"name":"文档类型","type":"SELECT","options":["Spec","Review","Execution Report"],"required":"always"},
+        {"name":"文档状态","type":"SELECT","options":["Draft","Current","Accepted","Superseded"],"required":"always"},
+        {"name":"关联任务","type":"RELATION_DUAL","target":"target Tasks","dual_property":"相关开发文档","required":"Review exactly one; Spec zero or more"},
+        {"name":"提交次数","type":"NUMBER","required":"Review only; positive integer; unique with Task"},
+        {"name":"送审版本","type":"RICH_TEXT","required":"Review only; exact immutable revision/version"},
+        {"name":"评审结论","type":"SELECT","options":["Pass","Changes Required"],"required":"Review only"},
+        {"name":"评审意见","type":"RICH_TEXT","required":"Review only"},
+        {"name":"评审人","type":"RICH_TEXT","required":"Review only"},
+        {"name":"评审时间","type":"DATE","required":"Review only"}
+      ]
+    },
+    "creation_order": [
+      "Create Tasks with its first 10 properties.",
+      "Create Documents with 11 properties and a dual 关联任务 relation, which creates Tasks.相关开发文档.",
+      "Add Tasks.当前规范 relation to the target Documents data source.",
+      "Assert exact final counts and types: Tasks 12, Documents 11."
+    ]
+  },
+  "conditional_invariants": [
+    "Every Task has title, stable unique 任务编号, falsifiable goal/acceptance, owner/executor label and status.",
+    "下一步 is nonempty iff Task is not Done; Done clears it.",
+    "阻塞原因 is nonempty iff Blocked and empty otherwise.",
+    "In Review has exact 送审版本 and 当前评审人; 当前评审人 is empty outside In Review.",
+    "Done requires an Accepted Pass Review on the exact completion revision/version.",
+    "当前规范 contains only target Documents where type=Spec and state is Current or Accepted; the reverse 关联任务 includes that Task.",
+    "Every Review has exactly one Task, positive submission number, exact reviewed version, Pass or Changes Required, nonempty findings/reviewer/time, and Accepted state.",
+    "(Task, 提交次数) is unique by process; first post-cutover submission is historical_max_submission + 1.",
+    "Spec relates zero or more Tasks; governing Specs relate every governed migrated Task.",
+    "Execution Report is created only after cutover by exception.",
+    "All operational relations resolve only to target data sources; old URLs are labeled Legacy source links."
+  ],
+  "views": {
+    "tasks": [
+      {"name":"当前任务","layout":"table","filter":"状态 != Done","show":["任务","任务编号","状态","负责人","下一步","阻塞原因","送审版本","当前评审人"]},
+      {"name":"按状态","layout":"board","filter":"状态 != Done","group_by":"状态","show":["任务编号","负责人","下一步","送审版本"]},
+      {"name":"全部任务","layout":"table","filter":"none","show":["任务","任务编号","状态","负责人","下一步","阻塞原因","开发版本","送审版本","当前评审人"]}
+    ],
+    "documents": [
+      {"name":"当前规范","layout":"table","filter":"文档类型 = Spec AND 文档状态 IN (Current, Accepted)","show":["文档","文档编号","文档状态","关联任务"]},
+      {"name":"评审记录","layout":"table","filter":"文档类型 = Review","sort":"评审时间 DESC","show":["文档","关联任务","提交次数","送审版本","评审结论","评审人","评审时间"]},
+      {"name":"执行报告","layout":"table","filter":"文档类型 = Execution Report AND 文档状态 IN (Current, Accepted)","show":["文档","文档编号","文档状态","关联任务","送审版本"]},
+      {"name":"全部文档","layout":"table","filter":"none","audience":"admin only"}
+    ]
+  },
+  "layouts_and_templates": {
+    "task_first_screen": ["任务编号","状态","负责人","下一步","目标 / 验收标准"],
+    "task_secondary": ["nonempty 阻塞原因","开发版本","送审版本","当前评审人","当前规范","相关开发文档"],
+    "task_body_headings": ["上下文与边界","证据 / 相关链接","决策与偏差"],
+    "document_first_screen": ["文档编号","文档类型","文档状态","关联任务"],
+    "spec_body": ["问题、结果与当前权威","范围内 / 范围外","不变量","所选架构与禁止替代方案","迁移与回滚","验收","未决问题、owner 与 deadline"],
+    "review_body": ["结论","精确对象 / 版本","发现","检查与证据（含 repo SHA/path/hash）","限制"],
+    "execution_report_body": ["结果","精确版本","偏差","检查与证据","限制","下一步"],
+    "initial_automations_or_buttons": "none"
+  },
+  "ordinary_review_index": {
+    "view_url": "https://app.notion.com/p/02101e0dd5f7432eb40684c3bd384da8?v=30b8cbd98c0b405f883ae00687ac1dbc",
+    "source_read_window": {"before":"2026-08-21T07:22:41.291Z","after":"2026-08-21T07:22:42.489Z"},
+    "view_mode": true,
+    "has_more": false,
+    "row_count": 40,
+    "type_invariant": "Every returned row has 文档类型=Review. Legacy Review Result, Review Snapshot, Review Report, Protocol Event and Protocol Audit records are not ordinary submission authority under the accepted simple development model.",
+    "normalization": "UTF-8 compact JSON with recursively sorted object keys; array sorted by first task_id, submission, review_url; SHA-256 over the compact array only.",
+    "normalized_compact_sha256": "9739da3dca852f90444f6f687121657071ffa7c9337ff3af00d150cb12e5028a",
+    "rows": [
+      {"task_refs":[{"task_id":"DEV-12","source_task_url":"https://app.notion.com/p/3ba49a4fa37981c8bc53ced38cc2fd98"}],"review_url":"https://app.notion.com/p/3ba49a4fa37981eeb179ca9730ac9d13","type":"Review","submission":1},
+      {"task_refs":[{"task_id":"DEV-12","source_task_url":"https://app.notion.com/p/3ba49a4fa37981c8bc53ced38cc2fd98"}],"review_url":"https://app.notion.com/p/3ba49a4fa3798172b896ef5720a9b0dc","type":"Review","submission":2},
+      {"task_refs":[{"task_id":"DEV-12","source_task_url":"https://app.notion.com/p/3ba49a4fa37981c8bc53ced38cc2fd98"}],"review_url":"https://app.notion.com/p/3ba49a4fa37981c0bc02f6ee08077052","type":"Review","submission":3},
+      {"task_refs":[{"task_id":"DEV-12","source_task_url":"https://app.notion.com/p/3ba49a4fa37981c8bc53ced38cc2fd98"}],"review_url":"https://app.notion.com/p/3ba49a4fa3798126877aeb89f27afa99","type":"Review","submission":4},
+      {"task_refs":[{"task_id":"DEV-13","source_task_url":"https://app.notion.com/p/3ba49a4fa379817a8dfad49f9763a7ea"}],"review_url":"https://app.notion.com/p/3ba49a4fa37981e18325f0ee39399216","type":"Review","submission":1},
+      {"task_refs":[{"task_id":"DEV-13","source_task_url":"https://app.notion.com/p/3ba49a4fa379817a8dfad49f9763a7ea"}],"review_url":"https://app.notion.com/p/3ba49a4fa379819aaef3f1b51bc2135c","type":"Review","submission":2},
+      {"task_refs":[{"task_id":"DEV-13","source_task_url":"https://app.notion.com/p/3ba49a4fa379817a8dfad49f9763a7ea"}],"review_url":"https://app.notion.com/p/3ba49a4fa37981ea872bd485a0103d0c","type":"Review","submission":3},
+      {"task_refs":[{"task_id":"DEV-14","source_task_url":"https://app.notion.com/p/3ba49a4fa379819b8559d6e1b00feede"}],"review_url":"https://app.notion.com/p/3ba49a4fa37981a28a94e0747f0269ea","type":"Review","submission":1},
+      {"task_refs":[{"task_id":"DEV-14","source_task_url":"https://app.notion.com/p/3ba49a4fa379819b8559d6e1b00feede"}],"review_url":"https://app.notion.com/p/3ba49a4fa37981e5bf07f3f1bcd4e551","type":"Review","submission":2},
+      {"task_refs":[{"task_id":"DEV-19","source_task_url":"https://app.notion.com/p/3bb49a4fa3798190968ae75d6f699eb8"}],"review_url":"https://app.notion.com/p/3bb49a4fa37981ac9005f4dd3819c6b6","type":"Review","submission":1},
+      {"task_refs":[{"task_id":"DEV-26","source_task_url":"https://app.notion.com/p/3bc49a4fa379814f854dcd51d671feb1"},{"task_id":"DEV-33","source_task_url":"https://app.notion.com/p/3be49a4fa379811fabead004e69ed071"}],"review_url":"https://app.notion.com/p/3be49a4fa379817aadafd9dccd93145f","type":"Review","submission":4},
+      {"task_refs":[{"task_id":"DEV-30","source_task_url":"https://app.notion.com/p/3bc49a4fa37981af88eceb89720ee9fa"}],"review_url":"https://app.notion.com/p/3bc49a4fa37981ee9ef2ef45cb139175","type":"Review","submission":1},
+      {"task_refs":[{"task_id":"DEV-30","source_task_url":"https://app.notion.com/p/3bc49a4fa37981af88eceb89720ee9fa"}],"review_url":"https://app.notion.com/p/3bc49a4fa3798127a8cdd3c68fcb2b67","type":"Review","submission":2},
+      {"task_refs":[{"task_id":"DEV-30","source_task_url":"https://app.notion.com/p/3bc49a4fa37981af88eceb89720ee9fa"}],"review_url":"https://app.notion.com/p/3bc49a4fa379817ca3d9fc76ae8d59a6","type":"Review","submission":3},
+      {"task_refs":[{"task_id":"DEV-30","source_task_url":"https://app.notion.com/p/3bc49a4fa37981af88eceb89720ee9fa"}],"review_url":"https://app.notion.com/p/3bc49a4fa379813c873cd15bc5d51a96","type":"Review","submission":4},
+      {"task_refs":[{"task_id":"DEV-30","source_task_url":"https://app.notion.com/p/3bc49a4fa37981af88eceb89720ee9fa"}],"review_url":"https://app.notion.com/p/3bc49a4fa37981efb8e6c9882cdf2c76","type":"Review","submission":5},
+      {"task_refs":[{"task_id":"DEV-30","source_task_url":"https://app.notion.com/p/3bc49a4fa37981af88eceb89720ee9fa"}],"review_url":"https://app.notion.com/p/3bc49a4fa379817896e4d2715fe78a8d","type":"Review","submission":6},
+      {"task_refs":[{"task_id":"DEV-30","source_task_url":"https://app.notion.com/p/3bc49a4fa37981af88eceb89720ee9fa"}],"review_url":"https://app.notion.com/p/3bc49a4fa379815eb8bade0b1e1cd8d1","type":"Review","submission":7},
+      {"task_refs":[{"task_id":"DEV-30","source_task_url":"https://app.notion.com/p/3bc49a4fa37981af88eceb89720ee9fa"}],"review_url":"https://app.notion.com/p/3bc49a4fa379815cb072e68a3913809b","type":"Review","submission":8},
+      {"task_refs":[{"task_id":"DEV-30","source_task_url":"https://app.notion.com/p/3bc49a4fa37981af88eceb89720ee9fa"}],"review_url":"https://app.notion.com/p/3bc49a4fa3798118836afff412721e21","type":"Review","submission":9},
+      {"task_refs":[{"task_id":"DEV-30","source_task_url":"https://app.notion.com/p/3bc49a4fa37981af88eceb89720ee9fa"}],"review_url":"https://app.notion.com/p/3bc49a4fa3798131b49eef1534b3cb50","type":"Review","submission":10},
+      {"task_refs":[{"task_id":"DEV-30","source_task_url":"https://app.notion.com/p/3bc49a4fa37981af88eceb89720ee9fa"}],"review_url":"https://app.notion.com/p/3bd49a4fa3798156b236d1d85bdd2f55","type":"Review","submission":11},
+      {"task_refs":[{"task_id":"DEV-31","source_task_url":"https://app.notion.com/p/3bc49a4fa379810c8014e18ffc14cf2b"}],"review_url":"https://app.notion.com/p/3bd49a4fa37981e0b505d893039a8f67","type":"Review","submission":3},
+      {"task_refs":[{"task_id":"DEV-31","source_task_url":"https://app.notion.com/p/3bc49a4fa379810c8014e18ffc14cf2b"}],"review_url":"https://app.notion.com/p/3bd49a4fa37981dfbf70c4f58c0d05a2","type":"Review","submission":4},
+      {"task_refs":[{"task_id":"DEV-5","source_task_url":"https://app.notion.com/p/3b849a4fa37981ccbb24cbe33c327faf"}],"review_url":"https://app.notion.com/p/3b949a4fa379816c81d7fffb7fe2f42f","type":"Review","submission":4},
+      {"task_refs":[{"task_id":"DEV-5","source_task_url":"https://app.notion.com/p/3b849a4fa37981ccbb24cbe33c327faf"}],"review_url":"https://app.notion.com/p/3b949a4fa37981e99162e483e5f3efdf","type":"Review","submission":5},
+      {"task_refs":[{"task_id":"DEV-5","source_task_url":"https://app.notion.com/p/3b849a4fa37981ccbb24cbe33c327faf"}],"review_url":"https://app.notion.com/p/3b949a4fa37981d59537c9f2874aa80f","type":"Review","submission":6},
+      {"task_refs":[{"task_id":"DEV-50","source_task_url":"https://app.notion.com/p/3c249a4fa379817eb4dceb81461b1d1f"}],"review_url":"https://app.notion.com/p/3c249a4fa37981a3bd21c95d7125c330","type":"Review","submission":6},
+      {"task_refs":[{"task_id":"DEV-53","source_task_url":"https://app.notion.com/p/3c249a4fa3798128b2aae73436a4bb6a"}],"review_url":"https://app.notion.com/p/3c249a4fa37981a7a983e5709a02036d","type":"Review","submission":1},
+      {"task_refs":[{"task_id":"DEV-53","source_task_url":"https://app.notion.com/p/3c249a4fa3798128b2aae73436a4bb6a"}],"review_url":"https://app.notion.com/p/3c249a4fa37981cc83c5d259158ef323","type":"Review","submission":2},
+      {"task_refs":[{"task_id":"DEV-54","source_task_url":"https://app.notion.com/p/3c249a4fa37981beba8df3048a12ee67"}],"review_url":"https://app.notion.com/p/3c349a4fa37981eab88be811038a1a66","type":"Review","submission":1},
+      {"task_refs":[{"task_id":"DEV-55","source_task_url":"https://app.notion.com/p/3c349a4fa379812f9d8bf2b3d245bc31"}],"review_url":"https://app.notion.com/p/3c349a4fa37981349e24db4ef8723c22","type":"Review","submission":1},
+      {"task_refs":[{"task_id":"DEV-55","source_task_url":"https://app.notion.com/p/3c349a4fa379812f9d8bf2b3d245bc31"}],"review_url":"https://app.notion.com/p/3c349a4fa37981668fd1c2f57d15ab4c","type":"Review","submission":2},
+      {"task_refs":[{"task_id":"DEV-6","source_task_url":"https://app.notion.com/p/3b849a4fa37981708763d4416c5e5a6b"}],"review_url":"https://app.notion.com/p/3ba49a4fa37981daafc2cd80c13c3d0a","type":"Review","submission":1},
+      {"task_refs":[{"task_id":"DEV-6","source_task_url":"https://app.notion.com/p/3b849a4fa37981708763d4416c5e5a6b"}],"review_url":"https://app.notion.com/p/3ba49a4fa37981c0ba6fcb547aba8a6e","type":"Review","submission":2},
+      {"task_refs":[{"task_id":"DEV-6","source_task_url":"https://app.notion.com/p/3b849a4fa37981708763d4416c5e5a6b"}],"review_url":"https://app.notion.com/p/3ba49a4fa379812f9d4fd4b9bd26ead7","type":"Review","submission":3},
+      {"task_refs":[{"task_id":"DEV-7","source_task_url":"https://app.notion.com/p/3b849a4fa37981a2a2e4f94516363058"}],"review_url":"https://app.notion.com/p/3bb49a4fa379818ab5f6e4f9c5431e50","type":"Review","submission":1},
+      {"task_refs":[{"task_id":"DEV-7","source_task_url":"https://app.notion.com/p/3b849a4fa37981a2a2e4f94516363058"}],"review_url":"https://app.notion.com/p/3bb49a4fa37981b7953bf2301f665737","type":"Review","submission":2},
+      {"task_refs":[{"task_id":"DEV-7","source_task_url":"https://app.notion.com/p/3b849a4fa37981a2a2e4f94516363058"}],"review_url":"https://app.notion.com/p/3bb49a4fa379816cb858fcd691f13904","type":"Review","submission":3},
+      {"task_refs":[{"task_id":"DEV-7","source_task_url":"https://app.notion.com/p/3b849a4fa37981a2a2e4f94516363058"}],"review_url":"https://app.notion.com/p/3bd49a4fa3798143af12e2d4be28bb53","type":"Review","submission":4}
+    ]
+  },
+  "historical_submission_policy": {
+    "inventory_scope": "immutable 39-row ordinary Review view index above",
+    "per_migrated_task_max": {
+      "DEV-7": 4,
+      "DEV-8": 0,
+      "DEV-10": 0,
+      "DEV-16": 0,
+      "DEV-18": 0,
+      "DEV-21": 0,
+      "DEV-22": 0,
+      "DEV-23": 0,
+      "DEV-24": 0,
+      "DEV-25": 0,
+      "DEV-27": 0,
+      "DEV-28": 0,
+      "DEV-41": 0,
+      "DEV-42": 0,
+      "DEV-43": 0,
+      "DEV-44": 0,
+      "DEV-45": 0,
+      "DEV-46": 0,
+      "DEV-47": 0,
+      "DEV-48": 0,
+      "DEV-55": 2
+    },
+    "review_gate": "The accepted simple model makes only ordinary Review rows submission authority; Legacy protocol/snapshot/result rows are excluded. Submission 3 Review created after this manifest raises DEV-55 to 3. The first post-cutover Review must therefore use submission 4, after the T0 final delta confirms no newer old-system ordinary Review. Never reset or guess."
+  },
+  "submission_progression": {
+    "submission_1_review_url": "https://app.notion.com/p/3c349a4fa37981349e24db4ef8723c22",
+    "submission_2_review_url": "https://app.notion.com/p/3c349a4fa37981668fd1c2f57d15ab4c",
+    "submission_1_verdict": "Changes Required",
+    "submission_2_verdict": "Changes Required",
+    "submission_3_scope": "Evidence and exact-binding repair only; the accepted target design is unchanged.",
+    "evidence_report_policy": {
+      "DOC-244": "Superseded mixed-version report; it is not Submission 3 evidence and must not be cited as the current report.",
+      "submission_3_report": "Create a new separately readable report whose title, body, document properties and Task submission binding all name only the new exact Git SHA and manifest file SHA-256.",
+      "immutability": "Do not rewrite prior Review documents or reinterpret DOC-244 as exact Submission 3 evidence."
+    }
+  },
+  "relation_rewrite": {
+    "rule": "For every migrated Task and Spec, record source page/data source, target page/data source, action, source and target body/content hash, attachments/children disposition, source relation IDs to target relation IDs, retained labeled Legacy links and exceptions.",
+    "task_to_spec": "Rewrite only target 当前规范 ↔ 关联任务 relations using target identities.",
+    "legacy_links": "Source URLs may appear only as explicitly labeled Legacy source provenance, never as operational relations.",
+    "excluded_relation_types": ["old Review","Review Report","Execution Report","carrier","bundle","Review Snapshot","Review Result","Protocol Event","Protocol Audit","payload reference","delivery/run/session ledger"],
+    "known_gap": "DEV-41 points to DOC-105 while DOC-105 lacks the reverse relation; rebuild the semantically correct bidirectional target relation rather than copying the gap."
+  },
+  "content_and_asset_hash_plan": {
+    "before_copy": "Export/fetch each selected source body and child/attachment inventory; normalize only connector transport, calculate SHA-256 for body and each exportable asset, and store source counts/identities.",
+    "unchanged_copy": "Require source and target normalized body SHA-256 equality plus identical child/attachment identity/count and ordinary-reader rendering.",
+    "editorial_successor": "Store both hashes and a human-readable exact delta; Review must prove every changed hunk is allowed by editorial_successor_contract.",
+    "relations": "Hash a stable sorted source-ID→target-ID mapping separately from page content.",
+    "assets": "DOC-72 and DOC-73 require rendered presence, stable identity/count and byte hash where export is available; an expiring Notion URL is not asset identity.",
+    "secrets": "Do not commit private comments, credentials or raw private attachment payloads; store controlled-export location and SHA-256 when Git is inappropriate.",
+    "claim_boundary": "No hash is present yet; this section is the required execution plan, not evidence that copying occurred."
+  },
+  "exclusions": {
+    "migrate": "Only the 21 selected current Tasks and 19 selected current/accepted Specs.",
+    "do_not_copy": [
+      "all old Review rows",
+      "all old Execution Report rows",
+      "all 91 carrier pages",
+      "all 5 bundle pages",
+      "all payload/Base64 fragments",
+      "Review Snapshot, Review Result, Review Report, Protocol Event and Protocol Audit rows",
+      "Draft and Superseded Specs",
+      "Done Tasks",
+      "the seven explicitly omitted Current/Accepted Specs"
+    ],
+    "history_policy": "Preserve excluded records unchanged in the old databases after they become Legacy / READ ONLY; do not delete or mutate them during cutover."
+  },
+  "cutover": {
+    "staging": "Create a private isolated STAGING · DEV-55 · DO NOT WRITE / DO NOT CLAIM area. The old databases remain sole authority; staging copies are snapshots only.",
+    "preparation": [
+      "Rediscover Home, stable Development System, Playbook, source databases, permissions, views, templates, buttons, automations and integrations.",
+      "Build exact target schema/views/layout/templates without buttons or automations.",
+      "Run a synthetic Task→Review Pass and Changes Required lifecycle, then trash all synthetic rows.",
+      "Complete source→target mapping, content/assets/relations proof, submission-number gate, permission readback and rollback rehearsal.",
+      "Obtain independent pre-cutover Pass."
+    ],
+    "T0": [
+      "Brain announces a short source-write freeze.",
+      "Re-inventory the source once, capture the delta since preflight once, reconcile dispositions, and apply that delta to target once.",
+      "Verify selected bodies, assets, properties, conditional invariants, relations and hashes before entry-point changes.",
+      "No further old writes are allowed except reviewed Legacy labels, locks and permission changes."
+    ],
+    "authority_selector_invariant": "At every intermediate state, the exact Tasks and Documents data-source IDs named by AgentFirm Home are the only current authority. Labels, placement, relations and page titles never override Home.",
+    "single_commit_sequence": [
+      "Keep the stable Development System page URL and preserve all child database blocks.",
+      "Before freeze, place links to both systems under the stable hub. Label source: CURRENT only while Home selects SOURCE IDs. Label target: STAGING, authority only after Home selects TARGET IDs.",
+      "Playbook and agent instructions continue to resolve authority through Home; they must not hard-code target IDs before the commit.",
+      "Freeze source writes, perform the one T0 delta, and validate target bodies/assets/relations/permissions while Home still selects source IDs.",
+      "Flip the Home authority notice to the exact target Tasks and Documents data-source IDs. This one Home mutation is the sole authority commit point.",
+      "Fetch/read back Home and both selected target IDs. Only after the successful flip rename/move the old databases to Legacy, restrict/lock old writers, finalize the stable hub, and update Playbook presentation for the simple target flow.",
+      "If any post-flip finalization step fails, Home still uniquely selects target; either repair forward under the freeze or execute the defined Home-based rollback. Never make labels or temporary placement a second selector.",
+      "Unfreeze target writes only after ordinary-reader and agent resolution through Home passes."
+    ],
+    "post_commit": [
+      "Run ordinary-user entry→Task→Spec→Review smoke tests.",
+      "Create the final DEV-55 Review in the new Documents database at the exact migration version.",
+      "Only a Pass sets the new DEV-55 Task Done."
+    ]
+  },
+  "legacy_read_only": {
+    "hub": "Legacy Development System · READ ONLY / DO NOT CLAIM",
+    "task_title": "Legacy · Development Tasks · READ ONLY",
+    "document_title": "Legacy · Development Documents · READ ONLY",
+    "requirements": [
+      "Descriptions/callouts state authority ended at T0 and link to the current Development System.",
+      "Remove the old databases from the daily hub and all current agent entry links.",
+      "Disable/remove buttons and automations; remove or prefix templates so they cannot create current-looking records.",
+      "Lock database structure and pages where useful.",
+      "Normal users and integrations are view-only; retain exactly one recovery custodian.",
+      "Verify writer routing and zero source writes after T0."
+    ],
+    "honesty": "Notion owner/admin can still edit and a database lock does not prevent row edits. Claim operational read-only only after permissions, routing and automation checks pass."
+  },
+  "rollback": {
+    "before_home_commit": "Abandon/archive staging and restore any moved blocks/labels; the old system never stopped being authority.",
+    "after_home_commit": [
+      "Freeze target writes.",
+      "Capture the target-only delta and apply it to old exactly once.",
+      "Restore old titles, permissions, Development System placement and Playbook.",
+      "Switch Home authority notice back as the rollback commit point, then unfreeze old.",
+      "Preserve target as FAILED CUTOVER · READ ONLY for diagnosis; never dual-write."
+    ],
+    "triggers": ["missing selected record/body/attachment","wrong relation","permission loss","an old writer remains active","ambiguous reader/agent entry point","unreconciled delta"],
+    "authority": "Brain/human owner"
+  },
+  "ui_only_actions": [
+    "share and integration permissions",
+    "database/page locks",
+    "inspect and disable buttons/automations",
+    "create and save templates",
+    "page layout, hide-empty and apply-to-all",
+    "safe movement of inline child database blocks between hubs",
+    "ordinary-reader rendered journey verification"
+  ],
+  "ui_safety": "Do not use connector replace_content on the stable Development System page while it contains child databases; it can delete the inline database blocks.",
+  "pre_cutover_gates": [
+    "Fresh T0 inventory reconciles the 55 Task/32 Spec baseline and every selected disposition.",
+    "Exact property counts/types/options: Tasks 12 and Documents 11; no typed Tasks, Assignee, typed Status or Legacy fields.",
+    "Staging is private and isolated with zero sync/button/automation/integration path writing production.",
+    "Templates and layouts implement conditional rules without duplicating status/next in bodies.",
+    "Synthetic Pass and Changes Required lifecycle succeeds and synthetic rows are removed.",
+    "21 Task and 19 Spec mappings are complete; all exclusions are accounted for.",
+    "Bodies, children, attachments, relations and editorial deltas have exact evidence.",
+    "Historical submission-number gate passes.",
+    "Permissions and rollback steps are checked against actual identities and entry points.",
+    "Independent Review Pass binds the exact manifest/version."
+  ],
+  "post_cutover_gates": [
+    "Every selected source maps 1:1 to exactly one target; no excluded type was copied.",
+    "Stable IDs, titles, properties, bodies, child content and attachments match accepted hashes/deltas.",
+    "All operational relations target only target data sources and satisfy the current-Spec bidirectional invariant.",
+    "Home, stable Development System and Playbook resolve to target for an ordinary reader and agent.",
+    "Old databases have exact Legacy labels, verified view-only permissions/locks, disabled writers and zero current writes after T0.",
+    "The final DEV-55 Review exists in the new Documents database, binds the exact migration version, and Passes before DEV-55 becomes Done.",
+    "Rollback mapping and evidence remain accessible."
+  ],
+  "execution_status": {
+    "inventory_complete": true,
+    "design_complete": true,
+    "target_databases_created": false,
+    "records_migrated": false,
+    "editorial_successors_applied": false,
+    "source_tasks_reconciled": false,
+    "source_locked_read_only": false,
+    "home_authority_switched": false,
+    "post_cutover_review_passed": false
+  }
+}
