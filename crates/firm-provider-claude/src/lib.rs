@@ -40,7 +40,9 @@ use harness_runtime_contract::{
     NativeControlPrimitive, ProviderControlAction, ProviderControlPlan, ProviderNativeControl,
 };
 
+mod compatibility;
 mod error;
+pub use compatibility::*;
 pub use error::{ClaudeError, ClaudeResult};
 
 type CliResult<T> = ClaudeResult<T>;

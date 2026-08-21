@@ -42,6 +42,8 @@ pub enum CodexError {
 
 mod team_runtime;
 pub use team_runtime::*;
+mod compatibility;
+pub use compatibility::*;
 
 type CliResult<T> = CodexResult<T>;
 type CliError = CodexError;

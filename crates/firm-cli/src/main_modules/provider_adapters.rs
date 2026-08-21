@@ -1,5 +1,9 @@
 use super::*;
 
+pub(super) use harness_provider_kimi::{
+    extract_kimi_reply_text, extract_kimi_session_id, infer_kimi_status,
+};
+
 // Provider dispatch seam (BE-WP6)
 //
 // The harness core stays provider-neutral (ADR 0011); all provider-specific
@@ -217,72 +221,6 @@ pub(super) fn resolve_kimi_bin() -> String {
 // `ProviderCapabilities::kimi_exec`. `content` is normally a string but may be an
 // array of blocks (tool/structured turns) — both are handled.
 // ============================================================================
-
-/// The assistant reply: concatenate the `content` of every `role=="assistant"`
-/// frame in order. `content` is a string, or an array of blocks (each block's own
-/// string, or its `text`/`content` field). None when the turn produced no text.
-pub(super) fn extract_kimi_reply_text(frames: &[serde_json::Value]) -> Option<String> {
-    let mut parts: Vec<String> = Vec::new();
-    for frame in frames {
-        if frame.get("role").and_then(|r| r.as_str()) != Some("assistant") {
-            continue;
-        }
-        match frame.get("content") {
-            Some(serde_json::Value::String(s)) => {
-                if !s.trim().is_empty() {
-                    parts.push(s.trim().to_string());
-                }
-            }
-            Some(serde_json::Value::Array(blocks)) => {
-                for block in blocks {
-                    let text = block.as_str().or_else(|| {
-                        block
-                            .get("text")
-                            .or_else(|| block.get("content"))
-                            .and_then(|v| v.as_str())
-                    });
-                    if let Some(s) = text {
-                        if !s.trim().is_empty() {
-                            parts.push(s.trim().to_string());
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    (!parts.is_empty()).then(|| parts.join("\n"))
-}
-
-/// The resumable session id from the `session.resume_hint` meta frame, if present.
-pub(super) fn extract_kimi_session_id(frames: &[serde_json::Value]) -> Option<String> {
-    frames.iter().find_map(|frame| {
-        if frame.get("type").and_then(|t| t.as_str()) == Some("session.resume_hint") {
-            frame
-                .get("session_id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-        } else {
-            None
-        }
-    })
-}
-
-/// Session status for a `kimi -p` turn. There is no terminal success frame, so a
-/// clean child exit IS success; a non-zero exit (e.g. an arg error on stderr) is a
-/// failure; a clean exit with zero frames is stale (no reply produced).
-pub(super) fn infer_kimi_status(
-    frames: &[serde_json::Value],
-    process_success: bool,
-) -> ProviderExecutionStatus {
-    if !process_success {
-        ProviderExecutionStatus::Failed
-    } else if frames.is_empty() {
-        ProviderExecutionStatus::Stale
-    } else {
-        ProviderExecutionStatus::Succeeded
-    }
-}
 
 pub(super) fn start_kimi_runtime(
     store: &HarnessStore,

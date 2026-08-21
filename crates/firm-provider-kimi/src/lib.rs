@@ -33,6 +33,10 @@
 //!   them: thinking is not evidence, replayable history, or peer-visible
 //!   state. The driver itself stays a faithful transport.
 
+mod compatibility;
+
+pub use compatibility::*;
+
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
