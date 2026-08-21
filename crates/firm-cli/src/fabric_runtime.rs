@@ -39,7 +39,7 @@ mod queue_authority;
 use queue_authority::*;
 #[path = "fabric_runtime/collaboration_outbound.rs"]
 mod collaboration_outbound;
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 use collaboration_outbound::source_work_attestation_id;
 #[path = "fabric_runtime/cli_routing.rs"]
 mod cli_routing;

@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::io::Write as _;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use harness_core::{

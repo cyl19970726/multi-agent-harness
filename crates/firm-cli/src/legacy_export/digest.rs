@@ -27,7 +27,8 @@ pub(crate) fn sha256_hex(input: &[u8]) -> String {
     padded.extend_from_slice(&bit_len.to_be_bytes());
 
     let mut state = INITIAL;
-    for chunk in padded.chunks_exact(64) {
+    for chunk_start in (0..padded.len()).step_by(64) {
+        let chunk = &padded[chunk_start..chunk_start + 64];
         let mut words = [0_u32; 64];
         for (index, word) in words.iter_mut().take(16).enumerate() {
             let start = index * 4;
