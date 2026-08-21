@@ -6,42 +6,6 @@ use super::*;
 // Capability honesty
 // ---------------------------------------------------------------------------
 
-/// Per-capability execution status (DOC-89 §8.1). Order matters only for
-/// reporting; every entry must carry `evidence` naming the proof.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum CapabilityStatus {
-    Supported,
-    Unsupported,
-    Degraded,
-    // No binding reports Experimental today; the status exists so a future
-    // binding (e.g. a DeepSeek native bridge canary) can ship honestly
-    // between Unsupported and Supported.
-    #[allow(dead_code)]
-    Experimental,
-}
-
-impl CapabilityStatus {
-    #[cfg(test)]
-    pub(crate) fn is_supported(self) -> bool {
-        matches!(self, CapabilityStatus::Supported)
-    }
-}
-
-/// One semantic intent → execution status + evidence. `evidence` names the
-/// proof (RPC contract, test, or transport fact); a binding without proof
-/// reports `Unsupported`/`Experimental`, never `Supported`.
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct CapabilityBinding {
-    pub capability: &'static str,
-    pub status: CapabilityStatus,
-    pub evidence: String,
-    /// Security-relevant capabilities name the real enforcement mechanism;
-    /// absence means none was verified.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub security_enforcement_locus: Option<String>,
-}
-
 pub(super) fn canonical_runtime_binding(
     session: &harness_core::agentfirm_api::AgentSession,
 ) -> harness_core::agentfirm_api::RuntimeCommandBinding {

@@ -1,42 +1,6 @@
 use super::*;
 
-/// A provider-STRUCTURED terminal failure: fields the provider transport
-/// itself reported, never prose.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderTerminalFailure {
-    /// The provider's own terminal reason token (for example `api_error`).
-    pub(crate) reason: String,
-    /// The provider's own HTTP status, when the transport reported one.
-    pub(crate) http_status: Option<i64>,
-}
-
-/// Prefix of the canonical token stored in `MemberAction.provider_status`.
-pub(super) const PROVIDER_TERMINAL_STATUS_PREFIX: &str = "provider_terminal";
-
-impl ProviderTerminalFailure {
-    /// `provider_terminal:<reason>:<http status or ->`.
-    pub(crate) fn to_provider_status(&self) -> String {
-        let status = self
-            .http_status
-            .map(|code| code.to_string())
-            .unwrap_or_else(|| "-".to_string());
-        format!(
-            "{PROVIDER_TERMINAL_STATUS_PREFIX}:{}:{status}",
-            self.reason.trim()
-        )
-    }
-
-    pub(super) fn parse(provider_status: &str) -> Option<Self> {
-        let rest = provider_status.strip_prefix(PROVIDER_TERMINAL_STATUS_PREFIX)?;
-        // Split from the RIGHT: the status is the last field, so a reason that
-        // itself contains `:` stays intact.
-        let (reason, status) = rest.strip_prefix(':')?.rsplit_once(':')?;
-        Some(Self {
-            reason: reason.to_string(),
-            http_status: status.parse::<i64>().ok(),
-        })
-    }
-}
+pub(crate) use harness_runtime_contract::ProviderTerminalFailure;
 
 /// Reasons a provider transport reports for a spent account.
 pub(super) const PROVIDER_EXHAUSTED_REASONS: &[&str] = &[

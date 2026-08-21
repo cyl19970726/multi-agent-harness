@@ -20,6 +20,114 @@ use harness_core::{
 };
 use thiserror::Error;
 
+/// Per-capability execution status. Every claimed status is accompanied by
+/// provider evidence in [`CapabilityBinding`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityStatus {
+    Supported,
+    Unsupported,
+    Degraded,
+    Experimental,
+}
+
+impl CapabilityStatus {
+    pub fn is_supported(self) -> bool {
+        matches!(self, Self::Supported)
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CapabilityBinding {
+    pub capability: &'static str,
+    pub status: CapabilityStatus,
+    pub evidence: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_enforcement_locus: Option<String>,
+}
+
+/// Non-invasive provider observation. It is deliberately not a transcript or
+/// a provider-event mirror.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CycleRuntimeObservation {
+    pub transport_alive: bool,
+    pub process_alive: bool,
+    pub is_streaming: Option<bool>,
+    pub pending_message_count: Option<u64>,
+    pub steering_mode: Option<String>,
+    pub follow_up_mode: Option<String>,
+    pub settled_boundary_observed: bool,
+}
+
+impl CycleRuntimeObservation {
+    pub fn terminal_cycle_observed(&self) -> bool {
+        self.transport_alive
+            && self.process_alive
+            && self.is_streaming == Some(false)
+            && self.settled_boundary_observed
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ControlTransportReceipt {
+    pub command: String,
+    pub response_id: Option<String>,
+    pub success: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct QuiesceOutcome {
+    pub drained: bool,
+    pub observation: CycleRuntimeObservation,
+    pub evidence: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderTerminalFailure {
+    pub reason: String,
+    pub http_status: Option<i64>,
+}
+
+impl ProviderTerminalFailure {
+    const STATUS_PREFIX: &'static str = "provider_terminal";
+
+    pub fn to_provider_status(&self) -> String {
+        let status = self
+            .http_status
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        format!("{}:{}:{status}", Self::STATUS_PREFIX, self.reason.trim())
+    }
+
+    pub fn parse(provider_status: &str) -> Option<Self> {
+        let rest = provider_status.strip_prefix(Self::STATUS_PREFIX)?;
+        let (reason, status) = rest.strip_prefix(':')?.rsplit_once(':')?;
+        Some(Self {
+            reason: reason.to_string(),
+            http_status: status.parse().ok(),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExecutionCycleOutcome {
+    pub final_text: String,
+    pub provider_terminal_failure: Option<ProviderTerminalFailure>,
+    pub interrupted: bool,
+    pub close_requested_by_harness: bool,
+    pub tool_call_count: u32,
+    pub input_acceptance_receipt: ControlTransportReceipt,
+    pub control_receipts: Vec<ControlTransportReceipt>,
+    pub terminal_observation: CycleRuntimeObservation,
+}
+
+#[derive(Debug)]
+pub enum SteerProviderResult {
+    Acknowledged(ControlTransportReceipt),
+    Unknown(String),
+    NotApplied(String),
+}
+
 // ---------------------------------------------------------------------------
 // Closed semantic surface over canonical capability bindings
 // ---------------------------------------------------------------------------

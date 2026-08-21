@@ -29,7 +29,6 @@ use std::cell::Cell;
 use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
-use serde::Serialize;
 use serde_json::Value;
 
 use harness_core::agentfirm_api::{AgentSessionStatus, PermissionCeiling};
@@ -111,12 +110,11 @@ pub(crate) struct PendingSteer {
     pub admission: crate::ProviderEffectAdmission,
 }
 
-#[derive(Debug)]
-pub(crate) enum SteerProviderResult {
-    Acknowledged(ControlTransportReceipt),
-    Unknown(String),
-    NotApplied(String),
-}
+pub(crate) use harness_runtime_contract::{
+    CapabilityBinding, CapabilityStatus, ControlTransportReceipt,
+    CycleRuntimeObservation as RuntimeObservation, ExecutionCycleOutcome, QuiesceOutcome,
+    SteerProviderResult,
+};
 
 #[derive(Debug, Default)]
 pub(crate) struct CycleControl {
@@ -129,63 +127,6 @@ pub(crate) struct CycleControl {
     /// must stop the cycle instead of silently continuing until a later
     /// natural settlement.
     pub fatal_error: Option<String>,
-}
-
-/// Non-invasive point-in-time provider observation. This is deliberately a
-/// small projection, never a copy of the native transcript.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct RuntimeObservation {
-    pub transport_alive: bool,
-    pub process_alive: bool,
-    pub is_streaming: Option<bool>,
-    pub pending_message_count: Option<u64>,
-    pub steering_mode: Option<String>,
-    pub follow_up_mode: Option<String>,
-    pub settled_boundary_observed: bool,
-}
-
-impl RuntimeObservation {
-    fn terminal_cycle_observed(&self) -> bool {
-        self.transport_alive
-            && self.process_alive
-            && self.is_streaming == Some(false)
-            && self.settled_boundary_observed
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct ControlTransportReceipt {
-    pub command: String,
-    pub response_id: Option<String>,
-    pub success: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct QuiesceOutcome {
-    pub drained: bool,
-    pub observation: RuntimeObservation,
-    pub evidence: String,
-}
-
-/// One ExecutionCycle's settled outcome. `interrupted` /
-/// `close_requested_by_harness` describe the cycle only — neither is a Work
-/// or Message acceptance.
-#[derive(Debug, Clone)]
-pub(crate) struct ExecutionCycleOutcome {
-    pub final_text: String,
-    /// A provider-structured terminal semantic failure. This is distinct from
-    /// transport uncertainty: the provider accepted the input and emitted a
-    /// terminal boundary, so the StartCycle effect remains Applied.
-    pub provider_terminal_failure: Option<crate::ProviderTerminalFailure>,
-    pub interrupted: bool,
-    pub close_requested_by_harness: bool,
-    pub tool_call_count: u32,
-    /// Provider response proving only that the cycle input crossed the
-    /// transport boundary. It is intentionally separate from terminal cycle
-    /// observation and never proves semantic completion.
-    pub input_acceptance_receipt: ControlTransportReceipt,
-    pub control_receipts: Vec<ControlTransportReceipt>,
-    pub terminal_observation: RuntimeObservation,
 }
 
 // ---------------------------------------------------------------------------

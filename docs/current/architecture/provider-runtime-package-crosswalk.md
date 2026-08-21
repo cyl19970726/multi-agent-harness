@@ -32,7 +32,7 @@ acceptance update.
 | Current source | Current responsibility | Classification | Target |
 | --- | --- | --- | --- |
 | `runtime_adapter_contract.rs` | provider-neutral lifecycle intents, fences, receipts, capability admission, conformance tests | current Team contract | `firm-runtime-contract` (extracted in DEV-58) |
-| `runtime_adapter.rs` | Team wake/claim/cycle/settle loop plus runtime control | current Team supervisor mixed with CLI/application state | `firm-runtime-supervisor` over narrow application/store ports |
+| `runtime_adapter.rs` | Team wake/claim/cycle/settle loop plus runtime control | current Team supervisor mixed with CLI/application state | provider-facing capability, observation, control receipt, cycle outcome, and structured failure types extracted to `firm-runtime-contract`; remaining loop targets `firm-runtime-supervisor` over narrow ports |
 | `runtime_adapter_capabilities.rs` | Team runtime selector, capability report, permission compilation | current catalog plus provider policy mixed together | canonical descriptor extracted to `firm-application`; provider-specific capability reports and permission compilers remain to move |
 | `provider_adapter.rs` | current provider-native control seam and standalone NodeSession control | current control contract mixed with implementations | runtime contract/application control plus provider bindings |
 | `provider_adapters.rs` | old Codex/Claude/Kimi/Pi one-shot registry | current compatibility delivery and Claude Host path; historical names; unsupported Pi stubs | split Host binding, compatibility delivery binding, and historical decoder; delete inapplicable stubs |
@@ -103,4 +103,7 @@ Landed DEV-58 milestones:
 - current Codex slice: extracts the app-server process, JSON-RPC protocol,
   thread/turn/Goal control, capacity decoder, and protocol tests to
   `firm-provider-codex`; durable AgentSession/RuntimeCommand ownership remains
-  above the provider package.
+  above the provider package;
+- current supervisor-language slice: makes capability evidence, cycle
+  observations/receipts/outcomes, and provider-structured terminal failures
+  owned by `firm-runtime-contract` instead of the CLI loop.
