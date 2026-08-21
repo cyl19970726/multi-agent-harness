@@ -7,6 +7,7 @@ members = [
   "crates/firm-provider-codex",
   "crates/firm-provider-kimi",
   "crates/firm-provider-pi",
+  "crates/firm-provider-claude",
   "crates/firm-provider-events",
   "crates/firm-fabric",
   "crates/firm-store",

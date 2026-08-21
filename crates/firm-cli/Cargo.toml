@@ -20,6 +20,7 @@ harness_runtime_host = { package = "firm-runtime-host", path = "../firm-runtime-
 harness_provider_codex = { package = "firm-provider-codex", path = "../firm-provider-codex" }
 harness_provider_kimi = { package = "firm-provider-kimi", path = "../firm-provider-kimi", features = ["test-support"] }
 harness_provider_pi = { package = "firm-provider-pi", path = "../firm-provider-pi" }
+harness_provider_claude = { package = "firm-provider-claude", path = "../firm-provider-claude" }
 harness_store = { package = "firm-store", path = "../firm-store" }
 harness_fabric = { package = "firm-fabric", path = "../firm-fabric" }
 harness_governance = { package = "firm-governance", path = "../firm-governance" }
