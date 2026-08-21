@@ -52,7 +52,7 @@ pub(crate) trait CodexAppServerBridge {
 
 impl CodexAppServerBridge for CodexAppServerClient {
     fn ensure_transport_alive(&mut self) -> CliResult<()> {
-        CodexAppServerClient::ensure_transport_alive(self)
+        Ok(CodexAppServerClient::ensure_transport_alive(self)?)
     }
 
     fn thread_id(&self) -> &str {
@@ -60,15 +60,15 @@ impl CodexAppServerBridge for CodexAppServerClient {
     }
 
     fn start_turn(&mut self, text: &str) -> CliResult<String> {
-        CodexAppServerClient::start_turn(self, text)
+        Ok(CodexAppServerClient::start_turn(self, text)?)
     }
 
     fn steer(&mut self, turn_id: &str, text: &str) -> CliResult<String> {
-        CodexAppServerClient::steer(self, turn_id, text)
+        Ok(CodexAppServerClient::steer(self, turn_id, text)?)
     }
 
     fn interrupt(&mut self, turn_id: &str) -> CliResult<()> {
-        CodexAppServerClient::interrupt(self, turn_id)
+        Ok(CodexAppServerClient::interrupt(self, turn_id)?)
     }
 
     fn recv(&self, timeout: Duration) -> Result<Value, RecvTimeoutError> {
@@ -76,19 +76,19 @@ impl CodexAppServerBridge for CodexAppServerClient {
     }
 
     fn read_thread(&mut self, include_turns: bool) -> CliResult<Value> {
-        CodexAppServerClient::read_thread(self, include_turns)
+        Ok(CodexAppServerClient::read_thread(self, include_turns)?)
     }
 
     fn read_thread_goal(&mut self) -> CliResult<Option<Value>> {
-        CodexAppServerClient::read_thread_goal(self)
+        Ok(CodexAppServerClient::read_thread_goal(self)?)
     }
 
     fn set_thread_goal_status(&mut self, status: &str) -> CliResult<Value> {
-        CodexAppServerClient::set_thread_goal_status(self, status)
+        Ok(CodexAppServerClient::set_thread_goal_status(self, status)?)
     }
 
     fn shutdown_with_receipt(&mut self) -> CliResult<CodexAppServerShutdownReceipt> {
-        CodexAppServerClient::shutdown_with_receipt(self)
+        Ok(CodexAppServerClient::shutdown_with_receipt(self)?)
     }
 }
 

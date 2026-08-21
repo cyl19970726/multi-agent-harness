@@ -39,7 +39,7 @@ acceptance update.
 | `codex_claude_adapters.rs` | Codex/Claude one-shot parsing, process launch, delivery, runtime-control facts | current Claude Host/direct delivery plus historical Codex paths; mixed coordination writes | provider transport/bindings; application owns durable facts |
 | `provider_ephemeral.rs` | generic child-tree teardown and NDJSON runner plus unused orphan-pidfile parameters | current Host/compatibility transport; orphan registration had no caller | `firm-runtime-host` (extracted in DEV-58); CLI retains only error translation |
 | `process_reaper.rs` | snapshot/read-model helpers and legacy Team tolerance | application/read-model; filename is misleading | application projection package/module |
-| `codex_app_server.rs`, `codex_team_runtime.rs` | Codex native protocol and Team binding | current Team provider | `firm-provider-codex` |
+| `codex_app_server.rs`, `codex_team_runtime.rs` | Codex native protocol and Team binding | current Team provider | app-server transport/protocol extracted to `firm-provider-codex`; Team/application binding remains to move |
 | `claude_agent_sdk.rs`, `claude_team_runtime.rs`, `apps/claude-member-runner` | Claude Rust bridge, Team binding, Node runner | current Team provider | `firm-provider-claude` plus versioned runner asset |
 | `kimi_acp.rs`, `kimi_team_runtime.rs` | Kimi ACP transport and Team binding | current Team provider; ACP transport also serves current Host | `firm-provider-kimi`, with distinct Team and Host bindings |
 | `pi_rpc/` | Pi RPC client and Team binding | current Team provider | `firm-provider-pi` |
@@ -99,4 +99,8 @@ Landed DEV-58 milestones:
   descriptor and made Team selection/provider reporting derive from it;
 - current transport slice: extracts provider-neutral process-group teardown,
   idle/wall timeouts, NDJSON collection, and stderr draining to
-  `firm-runtime-host`; removes unused orphan-pidfile and live-filename arguments.
+  `firm-runtime-host`; removes unused orphan-pidfile and live-filename arguments;
+- current Codex slice: extracts the app-server process, JSON-RPC protocol,
+  thread/turn/Goal control, capacity decoder, and protocol tests to
+  `firm-provider-codex`; durable AgentSession/RuntimeCommand ownership remains
+  above the provider package.

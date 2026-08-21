@@ -401,7 +401,7 @@ pub(super) fn run_codex_member_shared(
         Ok(client) => client,
         Err(error) => {
             settle_provider_effect_not_applied(ledger, &process_effect, error.to_string())?;
-            return Err(error);
+            return Err(error.into());
         }
     };
     let actual_model = app_server.model().to_string();
