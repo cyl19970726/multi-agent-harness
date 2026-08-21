@@ -60,29 +60,6 @@ pub(crate) enum ProviderControlDispatch {
     Replayed,
 }
 
-pub(crate) struct PiNativeControl<'a> {
-    pub close: &'a mut bool,
-    pub interrupt: &'a mut bool,
-}
-
-impl ProviderNativeControl for PiNativeControl<'_> {
-    fn provider(&self) -> &'static str {
-        "pi"
-    }
-
-    fn dispatch(&mut self, plan: &ProviderControlPlan) -> Result<(), String> {
-        if plan.primitive != NativeControlPrimitive::PiRpcInterrupt {
-            return Err(format!(
-                "PROVIDER_CONTROL_UNPROVEN: Pi adapter received {:?}",
-                plan.primitive
-            ));
-        }
-        *self.interrupt = true;
-        *self.close = plan.action == ProviderControlAction::CloseSession;
-        Ok(())
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ProviderAvailability {
     pub provider: String,

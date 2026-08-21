@@ -101,8 +101,8 @@ pub(crate) use capabilities::*;
 /// Harness control intents delivered mid-cycle. Ordinary Messages never
 /// appear here — they remain in the durable queue until the cycle settles.
 pub(crate) use harness_runtime_contract::{
-    CapabilityBinding, CapabilityStatus, ControlTransportReceipt, CycleControl,
-    ExecutionCycleOutcome, SteerProviderResult, SteerRequest, TeamRuntimeAdapter,
+    CapabilityBinding, CapabilityStatus, CycleControl, SteerProviderResult, SteerRequest,
+    TeamRuntimeAdapter,
 };
 
 struct PendingSteerSettlement {
