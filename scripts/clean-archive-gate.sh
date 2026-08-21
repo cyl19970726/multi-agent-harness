@@ -37,16 +37,12 @@ trap cleanup EXIT
 cd "$archive_root"
 
 # Runtime acceptance exercises project discovery and therefore needs Git
-# identity even though the source payload comes from `git archive`. Attach the
-# exact candidate commit without inheriting the caller's working tree.
-git init -q
-git remote add clean-archive-source "$repo_root"
-# Retirement and archive gates intentionally bind historical Git objects and
-# ancestry. Fetch the candidate's reachable history while still checking out
-# only the exact detached candidate; a shallow one-commit repository makes
-# those immutable proofs unverifiable during the final package gate.
-git fetch -q clean-archive-source "$candidate_sha"
-git checkout -q --detach FETCH_HEAD
+# identity even though the source payload comes from `git archive`. A local
+# no-checkout clone copies the repository object graph (including the history
+# proofs available from a shallow source) without inheriting working-tree
+# files. The exact detached candidate remains the only checked-out revision.
+git clone -q --no-checkout "$repo_root" .
+git checkout -q --detach "$candidate_sha"
 git -C "$repo_root" archive "$candidate_sha" | tar -x -C "$archive_root"
 if [ "$(git rev-parse HEAD)" != "$candidate_sha" ] || [ -n "$(git status --porcelain)" ]; then
   echo "clean-archive checkout does not match candidate $candidate_sha" >&2
