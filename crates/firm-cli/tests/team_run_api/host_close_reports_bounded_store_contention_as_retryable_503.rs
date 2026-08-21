@@ -28,7 +28,7 @@ fn host_close_reports_bounded_store_contention_as_retryable_503() {
         "/v1/team-runs",
         &serde_json::json!({
             "objective": "Exercise bounded Host close contention",
-            "members": [{"name": "close-busy", "role": "observer", "provider": "codex", "initial_work": "Wait for Host close"}]
+            "members": [{"name": "close-busy", "role": "observer", "provider": "codex"}]
         }),
     );
     assert_eq!(status, 200, "body: {created}");
@@ -55,7 +55,7 @@ fn host_close_reports_bounded_store_contention_as_retryable_503() {
             .flatten()
             .any(|member| {
                 member["id"].as_str() == Some(member_id.as_str())
-                    && member["status"].as_str() == Some("running")
+                    && member["status"].as_str() == Some("idle")
                     && member["native_session"]["native_session_id"]
                         .as_str()
                         .is_some()
@@ -67,7 +67,7 @@ fn host_close_reports_bounded_store_contention_as_retryable_503() {
     }
     assert!(
         live,
-        "member did not bind its live native session before contention test"
+        "idle member did not bind its live native session before contention test"
     );
 
     let lock_path = home.spaces_dir().join(&project_id).join(".store.lock");
