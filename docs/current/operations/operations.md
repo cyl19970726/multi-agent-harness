@@ -39,7 +39,7 @@ Current checks:
 - JSON parsing for schemas, docs, and examples;
 - schema fixture validation;
 - Markdown local link validation;
-- document size warning;
+- document size warning and a blocking 1500-line maintained-source ceiling;
 - skill frontmatter and UI metadata validation;
 - docs governance registry validation;
 - Agent Dashboard TypeScript typecheck and Vite production build.

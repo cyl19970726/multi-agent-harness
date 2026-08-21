@@ -75,16 +75,19 @@ drops the `[registry]` block and keeps `links` + `size`.
 | Kind | Severity | Checks | Ported from |
 | --- | --- | --- | --- |
 | `links` | blocker | every relative Markdown link resolves to a file | `check-doc-links.mjs` |
-| `size` | warning | markdown over `max_lines` (warn, never block) | `check-doc-size.mjs` |
+| `size` | blocker | markdown over `max_lines` warns; maintained `.rs/.ts/.tsx/.js/.mjs/.cjs` over `source_max_lines` blocks | doc-size port plus native architecture guard |
 | `skills` | blocker | SKILL.md frontmatter + `agents/openai.yaml` + member `skill_refs` resolve | `check-skills.mjs` |
 | `registry` | blocker | required fields, allowed enums, path/dependency existence, no duplicate paths or active canonical scopes, core docs and every Markdown file under configured coverage roots registered, valid `reviewAfter` | extended native port |
 | `retired_vocabulary` | blocker | exact retired phrases cannot appear as current language in active registered Markdown; archival/deprecated docs, configured owner paths and explicitly historical lines are allowed | native governance extension |
 
-The ports are faithful 1:1 (same roots, rules, and messages), with two
-deliberate refinements: directory entries are sorted (deterministic output,
-unlike Node's `readdirSync`), and a missing root is skipped rather than throwing.
+The documentation ports are faithful 1:1 (same roots, rules, and messages),
+with two deliberate refinements: directory entries are sorted (deterministic
+output, unlike Node's `readdirSync`), and a missing root is skipped rather than throwing.
 On a repo where every root exists, the four ported gates retain the legacy
-behavior. `retired_vocabulary` is an opt-in native extension: it uses the
+documentation behavior. The source half of `size` is a hard architecture guard:
+configured maintained roots (`crates`, `apps`, and `scripts` here) use one 1500-line ceiling with no grandfather
+allowlist, while hidden, dependency, vendored, and build-output trees are
+excluded. `retired_vocabulary` is an opt-in native extension: it uses the
 registry to scan only active documents, so migration and archive evidence remain
 readable without letting superseded product language return to normal planning
 context.

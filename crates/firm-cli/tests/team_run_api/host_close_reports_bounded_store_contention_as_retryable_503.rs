@@ -1,0 +1,108 @@
+use super::*;
+
+#[cfg(unix)]
+#[test]
+fn host_close_reports_bounded_store_contention_as_retryable_503() {
+    use std::fs::OpenOptions;
+    use std::os::fd::AsRawFd;
+
+    let home = TempHome::new("team-run-close-store-busy");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin =
+        fake_provider::install_codex_team_shim(&home.base().join("fakebin-close-store-busy"));
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("PATH", path.as_str()),
+            ("FIRM_TEST_STORE_WRITE_LOCK_TIMEOUT_MS", "30"),
+        ],
+    );
+    let (status, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Exercise bounded Host close contention",
+            "members": [{"name": "close-busy", "role": "observer", "provider": "codex", "initial_work": "Wait for Host close"}]
+        }),
+    );
+    assert_eq!(status, 200, "body: {created}");
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+    let mut live = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        live = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("running")
+            });
+        if live {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(live, "member did not become live before contention test");
+
+    let lock_path = home.spaces_dir().join(&project_id).join(".store.lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .expect("open project Store lock");
+    let mut locked = false;
+    for _ in 0..100 {
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            locked = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        locked,
+        "could not acquire deterministic Store contention lock"
+    );
+
+    let (status, busy) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
+        &serde_json::json!({"requested_by": "host", "reason": "deterministic contention"}),
+    );
+    assert_eq!(status, 503, "body: {busy}");
+    assert_eq!(busy["ok"], false);
+    assert_eq!(busy["error"], "store_busy");
+    assert_eq!(busy["retryable"], true);
+
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    let member = snapshot["member_runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|member| member["id"].as_str() == Some(member_id.as_str()))
+        .expect("member after exhausted close");
+    assert_eq!(member["coordination_status"], "active");
+
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_UN) }, 0);
+    drop(lock);
+}

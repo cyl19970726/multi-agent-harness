@@ -1,0 +1,41 @@
+use super::*;
+
+#[test]
+fn work_submit_emits_host_attention_for_bound_run() {
+    let (root, store, run, member, _) = work_test_fixture("work-submit-ha");
+    let work = store
+        .insert_work(
+            unassigned_test_work(&run.id, "work-submit-ha-1"),
+            host_work_context("we-submit-1", "create-submit-ha", "unix-ms:2"),
+        )
+        .expect("create Work");
+    let claimed = store
+        .claim_work(
+            &work.id,
+            work.version,
+            &member.id,
+            member_work_context(&member.id, "we-submit-2", "claim-submit-ha", "unix-ms:3"),
+        )
+        .expect("claim Work");
+    let _submitted = store
+        .submit_work(
+            &claimed.id,
+            claimed.version,
+            &member.id,
+            "done",
+            vec!["artifact://x".into()],
+            vec!["check://y".into()],
+            member_work_context(&member.id, "we-submit-3", "submit-submit-ha", "unix-ms:4"),
+        )
+        .expect("submit Work");
+    let attentions = store.host_attentions().expect("host attentions");
+    let review = attentions
+        .iter()
+        .find(|a| a.work_id == work.id && a.kind == HostAttentionKind::WorkReviewRequested);
+    assert!(
+        review.is_some(),
+        "bound run must emit WorkReviewRequested on submit"
+    );
+    assert_eq!(review.unwrap().team_run_id, run.id);
+    std::fs::remove_dir_all(root).expect("remove temp store");
+}

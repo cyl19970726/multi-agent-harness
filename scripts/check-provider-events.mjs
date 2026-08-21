@@ -62,6 +62,7 @@ const runtime = [
   "crates/firm-cli/src/codex_team_runtime.rs",
   "crates/firm-cli/src/claude_team_runtime.rs",
   "crates/firm-cli/src/kimi_team_runtime.rs",
+  "crates/firm-cli/src/main_modules/member_work_coordination.rs",
 ].map((path) => readFileSync(path, "utf8")).join("\n");
 const piRuntime = readFileSync("crates/firm-cli/src/pi_rpc.rs", "utf8");
 const architecture = readFileSync("docs/current/architecture/provider-event-projection.md", "utf8");
