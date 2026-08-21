@@ -102,8 +102,8 @@ pub(crate) use capabilities::*;
 /// appear here — they remain in the durable queue until the cycle settles.
 pub(crate) use harness_runtime_contract::{
     CapabilityBinding, CapabilityStatus, ControlTransportReceipt, CycleControl,
-    CycleRuntimeObservation as RuntimeObservation, ExecutionCycleOutcome, QuiesceOutcome,
-    SteerProviderResult, SteerRequest, TeamRuntimeAdapter,
+    CycleRuntimeObservation as RuntimeObservation, ExecutionCycleOutcome, SteerProviderResult,
+    SteerRequest, TeamRuntimeAdapter,
 };
 
 struct PendingSteerSettlement {

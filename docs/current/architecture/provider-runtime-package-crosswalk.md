@@ -42,7 +42,7 @@ acceptance update.
 | `codex_app_server.rs`, `codex_team_runtime.rs` | Codex native protocol and Team binding | current Team provider | app-server transport/protocol extracted to `firm-provider-codex`; Team/application binding remains to move |
 | `claude_agent_sdk.rs`, `claude_team_runtime.rs`, `apps/claude-member-runner` | Claude Rust bridge, Team binding, Node runner | current Team provider | `firm-provider-claude` plus versioned runner asset |
 | `kimi_acp.rs`, `kimi_team_runtime.rs` | Kimi ACP transport and Team binding | current Team provider; ACP transport also serves current Host | ACP process/protocol and its tests extracted to `firm-provider-kimi`; Team/application binding remains to move and Host consumes the same package through its own binding |
-| `pi_rpc/` | Pi RPC client and Team binding | current Team provider | `firm-provider-pi` |
+| `pi_rpc/` | Pi RPC client and Team binding | current Team provider | RPC process/session/prompt/steer/abort, native-session validation, permission argv admission, and client tests extracted to `firm-provider-pi`; Team/application binding remains to move |
 | `main_tests/workflow_runtime_tests.rs` and child directory | 114 source files no longer referenced by any test root after retirement | unreachable Dynamic Workflow residue | deleted in DEV-58 |
 | `main_tests/codex_exec.rs` | compiled historical parser/retirement characterization | historical read/retirement evidence | move beside the historical decoder or delete when equivalent archive verification proves coverage |
 
@@ -119,4 +119,8 @@ Landed DEV-58 milestones:
 - current Kimi slice: extracts Kimi ACP process/session/prompt/cancel/close,
   binary resolution, reverse-RPC ordering, and 20 protocol tests to
   `firm-provider-kimi`. Application callback errors cross the package boundary
-  with an explicit supervisor-lease-loss bit so fencing failures retain type.
+  with an explicit supervisor-lease-loss bit so fencing failures retain type;
+- current Pi slice: extracts Pi RPC process/session/prompt/steer/abort,
+  thinking-free native-session validation, flush proof, permission argv
+  admission, and client tests to `firm-provider-pi`; the same structured
+  callback-error bridge preserves supervisor fencing failures.

@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use super::client::{confirm_pi_session_flush, PiRpcClient, HANDSHAKE_TIMEOUT};
+use super::{confirm_pi_session_flush, PiRpcClient, HANDSHAKE_TIMEOUT};
 use crate::{CliError, CliResult};
 
 pub(crate) struct PiTeamRuntime {
@@ -171,7 +171,7 @@ impl crate::runtime_adapter::TeamRuntimeAdapter for PiTeamRuntime {
     }
 
     fn ensure_alive(&mut self) -> CliResult<()> {
-        self.client.ensure_transport_alive()
+        Ok(self.client.ensure_transport_alive()?)
     }
 
     fn native_session_locator(&self) -> &str {
@@ -239,11 +239,13 @@ impl crate::runtime_adapter::TeamRuntimeAdapter for PiTeamRuntime {
         on_event: &mut dyn FnMut(&serde_json::Value),
         poll_control: &mut dyn FnMut() -> crate::runtime_adapter::CycleControl,
     ) -> CliResult<crate::runtime_adapter::ExecutionCycleOutcome> {
-        let outcome = self.client.prompt(
+        let outcome = self.client.prompt_dyn(
             input,
             idle_timeout,
-            &mut *on_input_accepted,
-            &mut *on_steer_result,
+            &mut |receipt| on_input_accepted(receipt).map_err(crate::pi_rpc::callback_error),
+            &mut |request, result| {
+                on_steer_result(request, result).map_err(crate::pi_rpc::callback_error)
+            },
             &mut *on_event,
             &mut *poll_control,
         )?;

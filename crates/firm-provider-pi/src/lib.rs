@@ -29,12 +29,56 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-use crate::{kill_worker_tree, CliError, CliResult};
 use harness_core::agentfirm_api::PermissionCeiling;
+use harness_runtime_host::kill_process_tree;
 
-pub(super) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+pub type PiResult<T> = Result<T, PiError>;
 
-pub(crate) struct PiRpcClient {
+#[derive(Debug, thiserror::Error)]
+pub enum PiError {
+    #[error("{0}")]
+    Usage(String),
+    #[error("application callback failed: {detail}")]
+    Callback {
+        detail: String,
+        supervisor_lease_lost: bool,
+    },
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+}
+
+type CliResult<T> = PiResult<T>;
+type CliError = PiError;
+
+pub fn tools_allowlist_for_ceiling(ceiling: PermissionCeiling) -> PiResult<Option<&'static str>> {
+    match ceiling {
+        PermissionCeiling::ReadOnly => Ok(Some("read,grep,find,ls")),
+        PermissionCeiling::WorkspaceWrite => Err(PiError::Usage(
+            "PI_PERMISSION_ADMISSION_FAILED: workspace_write requires verified filesystem containment; Pi --tools only limits tool kinds"
+                .to_string(),
+        )),
+        PermissionCeiling::FullAccess => Ok(None),
+    }
+}
+
+pub fn admit_permission_ceiling(
+    ceiling: PermissionCeiling,
+    compiled_tools: Option<&str>,
+) -> PiResult<()> {
+    let expected = tools_allowlist_for_ceiling(ceiling)?;
+    if compiled_tools != expected {
+        return Err(PiError::Usage(format!(
+            "PI_PERMISSION_ADMISSION_FAILED: {ceiling:?} expected tools {expected:?}, got {compiled_tools:?}"
+        )));
+    }
+    Ok(())
+}
+
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+
+pub struct PiRpcClient {
     child: Child,
     stdin: BufWriter<ChildStdin>,
     next_request_id: u64,
@@ -50,11 +94,11 @@ pub(crate) struct PiRpcClient {
     /// quiescence claims. Durable permission intent alone cannot prove argv.
     permission_ceiling: PermissionCeiling,
     tools_allowlist: Option<String>,
-    last_observation: Option<crate::runtime_adapter::RuntimeObservation>,
+    last_observation: Option<harness_runtime_contract::CycleRuntimeObservation>,
     released: bool,
 }
 
-pub(crate) struct PiSpawnOptions<'a> {
+pub struct PiSpawnOptions<'a> {
     pub cwd: &'a Path,
     pub model: Option<&'a str>,
     pub resume_session_file: Option<&'a str>,
@@ -72,14 +116,14 @@ pub(crate) struct PiSpawnOptions<'a> {
     pub permission_ceiling: PermissionCeiling,
 }
 
-pub(crate) struct PiTurnOutcome {
+pub struct PiTurnOutcome {
     pub final_text: String,
     pub interrupted: bool,
     pub close_requested_by_harness: bool,
     pub tool_call_count: u32,
-    pub input_acceptance_receipt: crate::runtime_adapter::ControlTransportReceipt,
-    pub control_receipts: Vec<crate::runtime_adapter::ControlTransportReceipt>,
-    pub terminal_observation: crate::runtime_adapter::RuntimeObservation,
+    pub input_acceptance_receipt: harness_runtime_contract::ControlTransportReceipt,
+    pub control_receipts: Vec<harness_runtime_contract::ControlTransportReceipt>,
+    pub terminal_observation: harness_runtime_contract::CycleRuntimeObservation,
 }
 
 fn stderr_suffix(tail: &Arc<Mutex<String>>) -> String {
@@ -108,7 +152,7 @@ fn stderr_suffix(tail: &Arc<Mutex<String>>) -> String {
 /// `agent_settled` and a subsequent `get_state` reports idle, explicitly sync
 /// both the JSONL inode and its parent directory.  Merely finding the path is
 /// never accepted as flush evidence.
-pub(super) fn confirm_pi_session_flush(path: &Path) -> Result<String, String> {
+pub fn confirm_pi_session_flush(path: &Path) -> Result<String, String> {
     if !path.is_absolute() {
         return Err(format!(
             "Pi native session path is not absolute: {}",
@@ -177,11 +221,8 @@ pub(super) fn confirm_pi_session_flush(path: &Path) -> Result<String, String> {
 }
 
 impl PiRpcClient {
-    pub(crate) fn spawn(pi_bin: &str, options: PiSpawnOptions<'_>) -> CliResult<Self> {
-        crate::runtime_adapter::admit_pi_permission_ceiling(
-            options.permission_ceiling,
-            options.tools,
-        )?;
+    pub fn spawn(pi_bin: &str, options: PiSpawnOptions<'_>) -> CliResult<Self> {
+        admit_permission_ceiling(options.permission_ceiling, options.tools)?;
         if let Some(session_file) = options.resume_session_file {
             if !Path::new(session_file).is_file() {
                 return Err(CliError::Usage(format!(
@@ -350,8 +391,8 @@ impl PiRpcClient {
         data: &serde_json::Value,
         process_alive: bool,
         settled_boundary_observed: bool,
-    ) -> crate::runtime_adapter::RuntimeObservation {
-        crate::runtime_adapter::RuntimeObservation {
+    ) -> harness_runtime_contract::CycleRuntimeObservation {
+        harness_runtime_contract::CycleRuntimeObservation {
             transport_alive: process_alive,
             process_alive,
             is_streaming: data.get("isStreaming").and_then(|value| value.as_bool()),
@@ -370,11 +411,11 @@ impl PiRpcClient {
         }
     }
 
-    pub(crate) fn session_file(&self) -> &str {
+    pub fn session_file(&self) -> &str {
         &self.session_file
     }
 
-    pub(crate) fn ensure_transport_alive(&mut self) -> CliResult<()> {
+    pub fn ensure_transport_alive(&mut self) -> CliResult<()> {
         let reader_ended = self.reader.as_ref().is_some_and(JoinHandle::is_finished);
         let child_ended = self.child.try_wait().map_err(|error| {
             CliError::Usage(format!("failed to inspect pi rpc process: {error}"))
@@ -395,12 +436,12 @@ impl PiRpcClient {
     /// the durable RuntimeCommand can settle.
     fn apply_cycle_control(
         &mut self,
-        control: &mut crate::runtime_adapter::CycleControl,
+        control: &mut harness_runtime_contract::CycleControl,
         on_steer_result: &mut dyn FnMut(
-            &crate::runtime_adapter::SteerRequest,
-            &crate::runtime_adapter::SteerProviderResult,
+            &harness_runtime_contract::SteerRequest,
+            &harness_runtime_contract::SteerProviderResult,
         ) -> CliResult<()>,
-    ) -> CliResult<Vec<crate::runtime_adapter::ControlTransportReceipt>> {
+    ) -> CliResult<Vec<harness_runtime_contract::ControlTransportReceipt>> {
         if let Some(error) = control.fatal_error.take() {
             return Err(CliError::Usage(error));
         }
@@ -423,7 +464,7 @@ impl PiRpcClient {
                                 .to_string(),
                         )
                     })?;
-                    let receipt = crate::runtime_adapter::ControlTransportReceipt {
+                    let receipt = harness_runtime_contract::ControlTransportReceipt {
                         command: "steer".to_string(),
                         response_id: Some(response_id.clone()),
                         success: true,
@@ -433,7 +474,9 @@ impl PiRpcClient {
                     // RuntimeCommand must never escape as `steer_accepted`.
                     on_steer_result(
                         &pending,
-                        &crate::runtime_adapter::SteerProviderResult::Acknowledged(receipt.clone()),
+                        &harness_runtime_contract::SteerProviderResult::Acknowledged(
+                            receipt.clone(),
+                        ),
                     )?;
                     receipts.push(receipt);
                 }
@@ -443,7 +486,7 @@ impl PiRpcClient {
                     );
                     on_steer_result(
                         &pending,
-                        &crate::runtime_adapter::SteerProviderResult::Unknown(detail.clone()),
+                        &harness_runtime_contract::SteerProviderResult::Unknown(detail.clone()),
                     )?;
                     for undispatched in injects {
                         let not_applied = format!(
@@ -451,7 +494,7 @@ impl PiRpcClient {
                         );
                         on_steer_result(
                             &undispatched,
-                            &crate::runtime_adapter::SteerProviderResult::NotApplied(
+                            &harness_runtime_contract::SteerProviderResult::NotApplied(
                                 not_applied.clone(),
                             ),
                         )?;
@@ -463,7 +506,7 @@ impl PiRpcClient {
         if control.close || control.interrupt {
             let response =
                 self.request_blocking("abort", serde_json::json!({}), HANDSHAKE_TIMEOUT)?;
-            receipts.push(crate::runtime_adapter::ControlTransportReceipt {
+            receipts.push(harness_runtime_contract::ControlTransportReceipt {
                 command: "abort".to_string(),
                 response_id: response
                     .get("id")
@@ -481,7 +524,7 @@ impl PiRpcClient {
     /// design (DOC-89 §13.1), so production has no caller yet; the RPC-level
     /// unit test is the conformance consumer.
     #[allow(dead_code)]
-    pub(crate) fn follow_up(&mut self, text: &str) -> CliResult<serde_json::Value> {
+    pub fn follow_up(&mut self, text: &str) -> CliResult<serde_json::Value> {
         self.request_blocking(
             "follow_up",
             serde_json::json!({"message": text}),
@@ -493,7 +536,7 @@ impl PiRpcClient {
     /// pending message count from `get_state`). Observation only; it is not a
     /// durable Harness fact. Consumed by the RPC-level unit test today.
     #[allow(dead_code)]
-    pub(crate) fn queue_snapshot(&mut self) -> CliResult<serde_json::Value> {
+    pub fn queue_snapshot(&mut self) -> CliResult<serde_json::Value> {
         let observation = self.observe_runtime(false)?;
         Ok(serde_json::json!({
             "steering_mode": observation.steering_mode,
@@ -503,10 +546,10 @@ impl PiRpcClient {
         }))
     }
 
-    pub(super) fn observe_runtime(
+    pub fn observe_runtime(
         &mut self,
         settled_boundary_observed: bool,
-    ) -> CliResult<crate::runtime_adapter::RuntimeObservation> {
+    ) -> CliResult<harness_runtime_contract::CycleRuntimeObservation> {
         self.ensure_transport_alive()?;
         let state = self.request_blocking("get_state", serde_json::json!({}), HANDSHAKE_TIMEOUT)?;
         let data = state.get("data").ok_or_else(|| {
@@ -517,11 +560,11 @@ impl PiRpcClient {
         Ok(observation)
     }
 
-    pub(super) fn quiesce_runtime(&mut self) -> CliResult<crate::runtime_adapter::QuiesceOutcome> {
+    pub fn quiesce_runtime(&mut self) -> CliResult<harness_runtime_contract::QuiesceOutcome> {
         let observation = self.observe_runtime(true)?;
         let drained =
             observation.is_streaming == Some(false) && observation.pending_message_count == Some(0);
-        Ok(crate::runtime_adapter::QuiesceOutcome {
+        Ok(harness_runtime_contract::QuiesceOutcome {
             drained,
             evidence: if drained {
                 "Pi get_state observed isStreaming=false and pendingMessageCount=0".to_string()
@@ -535,7 +578,7 @@ impl PiRpcClient {
         })
     }
 
-    pub(super) fn writable_children_drain_proof(
+    pub fn writable_children_drain_proof(
         &self,
     ) -> (
         harness_core::agentfirm_api::RuntimePostconditionStatus,
@@ -568,10 +611,10 @@ impl PiRpcClient {
         }
     }
 
-    pub(super) fn release(&mut self) -> CliResult<crate::runtime_adapter::RuntimeObservation> {
+    pub fn release(&mut self) -> CliResult<harness_runtime_contract::CycleRuntimeObservation> {
         if !self.released {
             self.released = true;
-            kill_worker_tree(&mut self.child);
+            kill_process_tree(&mut self.child);
             if self
                 .child
                 .try_wait()
@@ -586,18 +629,17 @@ impl PiRpcClient {
                 ));
             }
         }
-        let mut observation =
-            self.last_observation
-                .clone()
-                .unwrap_or(crate::runtime_adapter::RuntimeObservation {
-                    transport_alive: false,
-                    process_alive: false,
-                    is_streaming: Some(false),
-                    pending_message_count: None,
-                    steering_mode: None,
-                    follow_up_mode: None,
-                    settled_boundary_observed: false,
-                });
+        let mut observation = self.last_observation.clone().unwrap_or(
+            harness_runtime_contract::CycleRuntimeObservation {
+                transport_alive: false,
+                process_alive: false,
+                is_streaming: Some(false),
+                pending_message_count: None,
+                steering_mode: None,
+                follow_up_mode: None,
+                settled_boundary_observed: false,
+            },
+        );
         observation.transport_alive = false;
         observation.process_alive = false;
         // A successful quiesce is the prerequisite for a successful Close;
@@ -611,14 +653,14 @@ impl PiRpcClient {
     ///
     /// `on_event` receives every non-response event so the orchestrator can
     /// project live tool activity. `poll_control` returns a
-    /// [`CycleControl`](crate::runtime_adapter::CycleControl): explicit Steer
+    /// [`CycleControl`](harness_runtime_contract::CycleControl): explicit Steer
     /// bodies are compiled into `steer` frames at this boundary, and
     /// close/interrupt sends `abort` while the loop continues reading until
     /// `agent_settled`.
     ///
     /// Returns `PiTurnOutcome` with `final_text` extracted from the last
     /// `turn_end.message` content blocks.
-    pub(crate) fn prompt<A, S, F, C>(
+    pub fn prompt<A, S, F, C>(
         &mut self,
         text: &str,
         idle_timeout: Duration,
@@ -628,20 +670,44 @@ impl PiRpcClient {
         mut poll_control: C,
     ) -> CliResult<PiTurnOutcome>
     where
-        A: FnMut(&crate::runtime_adapter::ControlTransportReceipt) -> CliResult<()>,
+        A: FnMut(&harness_runtime_contract::ControlTransportReceipt) -> CliResult<()>,
         S: FnMut(
-            &crate::runtime_adapter::SteerRequest,
-            &crate::runtime_adapter::SteerProviderResult,
+            &harness_runtime_contract::SteerRequest,
+            &harness_runtime_contract::SteerProviderResult,
         ) -> CliResult<()>,
         F: FnMut(&serde_json::Value),
-        C: FnMut() -> crate::runtime_adapter::CycleControl,
+        C: FnMut() -> harness_runtime_contract::CycleControl,
     {
+        self.prompt_dyn(
+            text,
+            idle_timeout,
+            &mut on_input_accepted,
+            &mut on_steer_result,
+            &mut on_event,
+            &mut poll_control,
+        )
+    }
+
+    pub fn prompt_dyn(
+        &mut self,
+        text: &str,
+        idle_timeout: Duration,
+        on_input_accepted: &mut dyn FnMut(
+            &harness_runtime_contract::ControlTransportReceipt,
+        ) -> CliResult<()>,
+        on_steer_result: &mut dyn FnMut(
+            &harness_runtime_contract::SteerRequest,
+            &harness_runtime_contract::SteerProviderResult,
+        ) -> CliResult<()>,
+        on_event: &mut dyn FnMut(&serde_json::Value),
+        poll_control: &mut dyn FnMut() -> harness_runtime_contract::CycleControl,
+    ) -> CliResult<PiTurnOutcome> {
         let prompt_response = self.request_blocking(
             "prompt",
             serde_json::json!({"message": text}),
             HANDSHAKE_TIMEOUT,
         )?;
-        let input_acceptance_receipt = crate::runtime_adapter::ControlTransportReceipt {
+        let input_acceptance_receipt = harness_runtime_contract::ControlTransportReceipt {
             command: "prompt".to_string(),
             response_id: prompt_response
                 .get("id")
@@ -683,7 +749,7 @@ impl PiRpcClient {
                         close_requested = control.close;
                     }
                     control_receipts
-                        .extend(self.apply_cycle_control(&mut control, &mut on_steer_result)?);
+                        .extend(self.apply_cycle_control(&mut control, on_steer_result)?);
 
                     match event_type {
                         "tool_execution_start" => {
@@ -706,7 +772,7 @@ impl PiRpcClient {
                     // Poll control intents even during idle.
                     let mut control = poll_control();
                     control_receipts
-                        .extend(self.apply_cycle_control(&mut control, &mut on_steer_result)?);
+                        .extend(self.apply_cycle_control(&mut control, on_steer_result)?);
                     if control.close || control.interrupt {
                         interrupted = true;
                         close_requested = control.close;
@@ -718,7 +784,7 @@ impl PiRpcClient {
                         }));
                         // Give a short grace window, then kill the process tree.
                         std::thread::sleep(Duration::from_secs(2));
-                        kill_worker_tree(&mut self.child);
+                        kill_process_tree(&mut self.child);
                         return Err(CliError::Usage(format!(
                             "pi rpc prompt timed out after {}s idle{}",
                             idle_timeout.as_secs(),
@@ -775,7 +841,7 @@ impl PiRpcClient {
     }
 
     /// Extract text from the last `turn_end.message` content blocks.
-    pub(crate) fn extract_turn_end_text(frame: &serde_json::Value) -> String {
+    pub fn extract_turn_end_text(frame: &serde_json::Value) -> String {
         let message = match frame.get("message") {
             Some(m) => m,
             None => return String::new(),
@@ -799,9 +865,9 @@ impl PiRpcClient {
     }
 
     /// Project a pi tool execution event to a typed, volatile live activity.
-    pub(crate) fn project_live(
+    pub fn project_live(
         event: &serde_json::Value,
-    ) -> Option<(crate::provider_event_api::LiveProviderActivityKind, String)> {
+    ) -> Option<(harness_runtime_contract::LiveProviderActivityKind, String)> {
         match event.get("type").and_then(|v| v.as_str()) {
             Some("tool_execution_start") => {
                 let tool = event.get("toolName").and_then(|v| v.as_str())?;
@@ -816,7 +882,7 @@ impl PiRpcClient {
                     _ => Some("Tool running".to_string()),
                 }?;
                 Some((
-                    crate::provider_event_api::LiveProviderActivityKind::ToolStarted,
+                    harness_runtime_contract::LiveProviderActivityKind::ToolStarted,
                     summary,
                 ))
             }
@@ -827,9 +893,9 @@ impl PiRpcClient {
                     .unwrap_or(false);
                 Some((
                     if failed {
-                        crate::provider_event_api::LiveProviderActivityKind::ToolFailed
+                        harness_runtime_contract::LiveProviderActivityKind::ToolFailed
                     } else {
-                        crate::provider_event_api::LiveProviderActivityKind::ToolCompleted
+                        harness_runtime_contract::LiveProviderActivityKind::ToolCompleted
                     },
                     if failed {
                         "tool failed".to_string()
@@ -842,7 +908,7 @@ impl PiRpcClient {
         }
     }
 
-    pub(super) fn request_blocking(
+    pub fn request_blocking(
         &mut self,
         command: &str,
         params: serde_json::Value,
@@ -905,7 +971,7 @@ impl PiRpcClient {
 // Provider-neutral adapter binding
 // ---------------------------------------------------------------------------
 
-/// The Pi binding of [`TeamRuntimeAdapter`](crate::runtime_adapter::TeamRuntimeAdapter):
+/// The Pi binding of [`TeamRuntimeAdapter`](harness_runtime_contract::TeamRuntimeAdapter):
 /// a live `pi --mode rpc` child as the process-local RuntimeHandle. Durable
 /// identity stays with AgentSession/NativeSessionRef; this handle is
 /// disposable and never an authority.

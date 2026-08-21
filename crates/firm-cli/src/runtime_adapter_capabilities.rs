@@ -108,14 +108,7 @@ pub(crate) fn preflight_profile_effect(
 pub(crate) fn pi_tools_allowlist_for_ceiling(
     ceiling: PermissionCeiling,
 ) -> CliResult<Option<&'static str>> {
-    match ceiling {
-        PermissionCeiling::ReadOnly => Ok(Some("read,grep,find,ls")),
-        PermissionCeiling::WorkspaceWrite => Err(CliError::Usage(
-            "PI_PERMISSION_ADMISSION_FAILED: workspace_write requires verified filesystem containment; Pi --tools only limits tool kinds"
-                .to_string(),
-        )),
-        PermissionCeiling::FullAccess => Ok(None),
-    }
+    Ok(harness_provider_pi::tools_allowlist_for_ceiling(ceiling)?)
 }
 
 /// The enforcement-locus claim matching `pi_tools_allowlist_for_ceiling`.
@@ -152,16 +145,12 @@ pub(crate) fn pi_security_enforcement_locus(
 /// `write`/`edit` can target paths outside the workspace. Consequently only
 /// read-only and explicitly trusted full-access launches are admissible until
 /// an OS sandbox or reviewed native bridge is part of the composition.
+#[cfg(test)]
 pub(crate) fn admit_pi_permission_ceiling(
     ceiling: PermissionCeiling,
     compiled_tools: Option<&str>,
 ) -> CliResult<harness_core::SecurityEnforcementLocus> {
-    let expected = pi_tools_allowlist_for_ceiling(ceiling)?;
-    if compiled_tools != expected {
-        return Err(CliError::Usage(format!(
-            "PI_PERMISSION_ADMISSION_FAILED: {ceiling:?} expected tools {expected:?}, got {compiled_tools:?}"
-        )));
-    }
+    harness_provider_pi::admit_permission_ceiling(ceiling, compiled_tools)?;
     Ok(pi_security_enforcement_locus(ceiling))
 }
 

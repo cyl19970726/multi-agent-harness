@@ -441,6 +441,7 @@ dependencies = [
  "firm-provider-codex",
  "firm-provider-events",
  "firm-provider-kimi",
+ "firm-provider-pi",
  "firm-runtime-contract",
  "firm-runtime-host",
  "firm-store",
@@ -517,6 +518,17 @@ dependencies = [
 name = "firm-provider-kimi"
 version = "0.1.0"
 dependencies = [
+ "firm-runtime-host",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "firm-provider-pi"
+version = "0.1.0"
+dependencies = [
+ "firm-core",
+ "firm-runtime-contract",
  "firm-runtime-host",
  "serde_json",
  "thiserror 1.0.69",
