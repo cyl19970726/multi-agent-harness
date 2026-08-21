@@ -56,13 +56,19 @@ fn host_close_reports_bounded_store_contention_as_retryable_503() {
             .any(|member| {
                 member["id"].as_str() == Some(member_id.as_str())
                     && member["status"].as_str() == Some("running")
+                    && member["native_session"]["native_session_id"]
+                        .as_str()
+                        .is_some()
             });
         if live {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(live, "member did not become live before contention test");
+    assert!(
+        live,
+        "member did not bind its live native session before contention test"
+    );
 
     let lock_path = home.spaces_dir().join(&project_id).join(".store.lock");
     let lock = OpenOptions::new()
