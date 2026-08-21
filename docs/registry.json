@@ -309,7 +309,7 @@
         "docs/current/integration/codex.md",
         "docs/current/integration/codex-message-delivery.md",
         "docs/current/operations/operations.md",
-        "examples/adapters/earning-engine/README.md"
+        "archive/dynamic-workflow/assets/earning-engine/README.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1294,7 +1294,7 @@
         "docs/current/integration/claude.md",
         "docs/decisions/0011-provider-neutral-runtime.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
-        "examples/adapters/earning-engine/adapter.json",
+        "archive/dynamic-workflow/assets/earning-engine/adapter.json",
         "crates/firm-core/src/lib.rs",
         "schemas/agent-member.schema.json",
         "docs/current/integration/kimi.md"

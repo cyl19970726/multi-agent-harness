@@ -412,11 +412,12 @@ permissions, subagents, background work, context/compaction, native-store
 discovery/read/resume, artifacts, auth/quota, and privacy in addition to
 enumerating tools.
 
-### The adapter boundary (generalized from earning-engine)
+### The adapter boundary (generalized from a historical example)
 
-The earning-engine example
-([adapter.json](../../../examples/adapters/earning-engine/adapter.json))
-shows the generic split: an adapter supplies project tools, evidence policy,
+The retired Dynamic Workflow earning-engine example is preserved as historical
+design evidence
+([adapter.json](../../../archive/dynamic-workflow/assets/earning-engine/adapter.json)).
+It shows the generic split: an adapter supplies project tools, evidence policy,
 dashboard links, permission policy, and skills, while the generic harness owns
 coordination. Generalized:
 
