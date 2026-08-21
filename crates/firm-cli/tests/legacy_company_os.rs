@@ -10,15 +10,6 @@ mod firm_env;
 use firm_env::TempHome;
 
 fn run(home: &TempHome, cwd: &Path, args: &[String]) -> Output {
-    run_with_env(home, cwd, args, &[])
-}
-
-fn run_with_env(
-    home: &TempHome,
-    cwd: &Path,
-    args: &[String],
-    extra_env: &[(&str, &str)],
-) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_firm"));
     command
         .args(args)
@@ -27,11 +18,7 @@ fn run_with_env(
         .env_remove("FIRM_ROOT")
         .env_remove("FIRM_PROJECT")
         .env_remove("FIRM_SPACE")
-        .env_remove("FIRM_COMPANY")
-        .env_remove("FIRM_WORKFLOW_CHILD_STORE_ROOT");
-    for (key, value) in extra_env {
-        command.env(key, value);
-    }
+        .env_remove("FIRM_COMPANY");
     command.output().expect("run harness")
 }
 
@@ -305,24 +292,18 @@ fn export_rejects_selectors_and_unsafe_destinations() {
 }
 
 #[test]
-fn export_ignores_workflow_child_store_env() {
-    let home = TempHome::new("legacy-company-os-no-child-store");
+fn export_ignores_unregistered_store_like_directory() {
+    let home = TempHome::new("legacy-company-os-unregistered-directory");
     seed_home(&home);
-    let decoy = home.base().join("workflow-child-store");
+    let decoy = home.base().join("unregistered-store");
     std::fs::create_dir(&decoy).unwrap();
     std::fs::write(
         decoy.join("missions.jsonl"),
         b"{\"id\":\"wrong-source-sentinel\"}\n",
     )
     .unwrap();
-    let archive = home.base().join("archive-no-child");
-    let decoy_text = decoy.display().to_string();
-    let output = run_with_env(
-        &home,
-        home.base(),
-        &export_args(&archive),
-        &[("FIRM_WORKFLOW_CHILD_STORE_ROOT", &decoy_text)],
-    );
+    let archive = home.base().join("archive-unregistered-directory");
+    let output = run(&home, home.base(), &export_args(&archive));
     assert!(output.status.success(), "export failed: {output:?}");
     let mut all_bytes = Vec::new();
     for entry in walk_archive(&archive) {
