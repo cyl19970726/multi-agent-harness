@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) fn compatibility_team_actor(id: &str, authn_source: &str) -> TeamActorRef {
     TeamActorRef {
         kind: if id == "host" {
@@ -808,7 +807,10 @@ pub(super) fn canonical_team_messages_for_run(
 /// projections. MemberRun materialization is the frozen run-scoped binding;
 /// Node registrations are only a fail-closed fallback for a pre-materialized
 /// run and must themselves be unambiguous.
-pub(super) fn team_run_execution_space_id(store: &HarnessStore, run: &AgentTeamRun) -> CliResult<String> {
+pub(super) fn team_run_execution_space_id(
+    store: &HarnessStore,
+    run: &AgentTeamRun,
+) -> CliResult<String> {
     store_conflict_as_usage(store.current_team_run_execution_space(run))
 }
 
@@ -1083,7 +1085,10 @@ pub(crate) fn team_run_mission_id(
         })
 }
 
-pub(super) fn team_run_display_json(store: &HarnessStore, run: &AgentTeamRun) -> CliResult<serde_json::Value> {
+pub(super) fn team_run_display_json(
+    store: &HarnessStore,
+    run: &AgentTeamRun,
+) -> CliResult<serde_json::Value> {
     // A current status projection is also an authority decision: never show a
     // partially materialized Legacy TeamRun as controllable current state.
     team_run_execution_space_id(store, run)?;

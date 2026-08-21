@@ -12,9 +12,9 @@ skill_roots = [
     ".agents/skills",
 ]
 max_lines = 500
-# Structure debt is surfaced, never blocked: oversized sources warn so they can
-# retire in order. See AGENTS.md "Code structure".
-source_roots = ["crates"]
+# Maintained source files share one hard architectural ceiling. Generated,
+# vendored, dependency, and build-output trees are excluded by the engine.
+source_roots = ["crates", "apps"]
 source_max_lines = 1500
 member_data_root = ".agents/data"
 

@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) const PROVIDER_MEMBER_CAS_RETRIES: usize = 3;
 
 /// Compare the immutable authority/provenance carried by a native Session

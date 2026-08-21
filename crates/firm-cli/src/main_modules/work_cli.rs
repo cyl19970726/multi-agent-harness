@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) fn team_run_work_command(
     store: &HarnessStore,
     resolved: &ResolvedStore,

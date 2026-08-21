@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Spin up a NEW one-shot EDITABLE ephemeral worker for one `agent()` node and
 /// reduce its result into a [`workflow::StepResult`].
 ///

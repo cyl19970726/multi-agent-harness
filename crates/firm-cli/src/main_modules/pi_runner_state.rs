@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) fn resolve_pi_bin() -> String {
     if let Ok(explicit) = std::env::var("PI_BIN") {
         if !explicit.trim().is_empty() {

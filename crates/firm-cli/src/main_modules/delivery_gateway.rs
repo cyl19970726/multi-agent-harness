@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) fn deliver_agent_messages_value(
     store: &HarnessStore,
     project_context: Option<&ProjectContext>,

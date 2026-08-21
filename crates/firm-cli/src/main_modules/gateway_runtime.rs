@@ -1,6 +1,5 @@
 use super::*;
 
-
 #[derive(Debug, Clone)]
 pub(super) struct GatewayOptions {
     pub(super) dry_run: bool,
@@ -291,7 +290,9 @@ pub(super) fn record_claimed_delivery_terminal(
     Ok(vec![evidence_id])
 }
 
-pub(super) fn message_status_for_delivery(status: &ProviderExecutionStatus) -> RegistryDeliveryStatus {
+pub(super) fn message_status_for_delivery(
+    status: &ProviderExecutionStatus,
+) -> RegistryDeliveryStatus {
     message_status_for_terminal(status, None)
 }
 
@@ -318,7 +319,10 @@ pub(super) fn provider_status_blocks_delivery(status: &ProviderExecutionStatus) 
     )
 }
 
-pub(super) fn delivery_error_message(status: &ProviderExecutionStatus, summary: &str) -> Option<String> {
+pub(super) fn delivery_error_message(
+    status: &ProviderExecutionStatus,
+    summary: &str,
+) -> Option<String> {
     matches!(
         status,
         ProviderExecutionStatus::Failed
@@ -343,7 +347,10 @@ pub(super) fn provider_developer_instructions(member: &ProviderLaunchProfile) ->
 // Test-only helper: builds the codex app-server turn input envelope. Exercised by
 // unit tests; not yet wired into the live delivery path (kept for the WP that lands it).
 #[cfg(test)]
-pub(super) fn build_turn_input(message: &RegistryMessage, delivery_attempt_id: &str) -> serde_json::Value {
+pub(super) fn build_turn_input(
+    message: &RegistryMessage,
+    delivery_attempt_id: &str,
+) -> serde_json::Value {
     serde_json::json!([{
         "type": "text",
         "text": format!(
@@ -495,7 +502,10 @@ pub(super) fn mark_runtime_delivery_terminal(
     Ok(())
 }
 
-pub(super) fn has_unresolved_delivery_attempt(store: &HarnessStore, agent_member_id: &str) -> CliResult<bool> {
+pub(super) fn has_unresolved_delivery_attempt(
+    store: &HarnessStore,
+    agent_member_id: &str,
+) -> CliResult<bool> {
     Ok(latest_messages_in_append_order(store)?
         .into_iter()
         .any(|message| {
@@ -584,7 +594,10 @@ pub(super) fn jsonrpc_error_messages(values: &[serde_json::Value]) -> Vec<String
 
 // Test-only helper: validates a codex app-server turn-start exchange; unit-tested only.
 #[cfg(test)]
-pub(super) fn turn_exchange_confirms_turn_start(values: &[serde_json::Value], request_id: &str) -> bool {
+pub(super) fn turn_exchange_confirms_turn_start(
+    values: &[serde_json::Value],
+    request_id: &str,
+) -> bool {
     values.iter().any(|value| {
         value.get("id").and_then(|id| id.as_str()) == Some(request_id)
             && value.get("error").is_none()
@@ -607,7 +620,9 @@ pub(super) fn turn_exchange_confirms_turn_start(values: &[serde_json::Value], re
 
 // Test-only helper: maps codex app-server values to a terminal source; unit-tested only.
 #[cfg(test)]
-pub(super) fn terminal_source_from_values(values: &[serde_json::Value]) -> Option<MessageTerminalSource> {
+pub(super) fn terminal_source_from_values(
+    values: &[serde_json::Value],
+) -> Option<MessageTerminalSource> {
     for value in values {
         let method = value.get("method").and_then(|method| method.as_str());
         if method == Some("turn/completed") {

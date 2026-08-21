@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) fn local_node_id_path() -> CliResult<PathBuf> {
     Ok(project::firm_home().map_err(project_err)?.join("NODE_ID"))
 }
@@ -60,7 +59,11 @@ pub(super) fn ensure_local_node_id() -> CliResult<String> {
     }
 }
 
-pub(super) fn node_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]) -> CliResult<()> {
+pub(super) fn node_command(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    args: &[String],
+) -> CliResult<()> {
     require_subcommand(args, "node init|list|show|drain|retire|project")?;
     match args[0].as_str() {
         "init" => {
@@ -203,7 +206,11 @@ pub(super) fn node_command(store: &HarnessStore, resolved: &ResolvedStore, args:
     Ok(())
 }
 
-pub(super) fn team_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]) -> CliResult<()> {
+pub(super) fn team_command(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    args: &[String],
+) -> CliResult<()> {
     require_subcommand(
         args,
         "team create|list|show|rename|add-member|remove-member|activate-member|activate|deactivate|trash|restore|message",

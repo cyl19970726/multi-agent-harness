@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) fn workflow_command(
     store: &HarnessStore,
     project_context: Option<&ProjectContext>,
@@ -292,7 +291,10 @@ pub(super) fn fire_workflow_completion_hook(run: &WorkflowRun) {
     }
 }
 
-pub(super) fn discarded_worktree_diff_warning(run_id: &str, step: &workflow::StepResult) -> Option<String> {
+pub(super) fn discarded_worktree_diff_warning(
+    run_id: &str,
+    step: &workflow::StepResult,
+) -> Option<String> {
     let details = step.details.as_ref()?;
     let display_diff = details.get("worktree_diff").and_then(|v| v.as_str())?;
     if display_diff.trim().is_empty() {
@@ -407,7 +409,9 @@ pub(super) fn string_array(value: Option<&serde_json::Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub(super) fn latest_workflow_patches_in_append_order(store: &HarnessStore) -> CliResult<Vec<WorkflowPatch>> {
+pub(super) fn latest_workflow_patches_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<WorkflowPatch>> {
     let mut latest: BTreeMap<String, WorkflowPatch> = BTreeMap::new();
     for patch in store.workflow_patches()? {
         latest.insert(patch.id.clone(), patch);
@@ -687,7 +691,10 @@ pub(super) fn patch_status_is_pending(patch: &WorkflowPatch) -> bool {
     patch.status == WorkflowPatchStatus::PendingApply
 }
 
-pub(super) fn resolve_workflow_patch(store: &HarnessStore, args: &[String]) -> CliResult<WorkflowPatch> {
+pub(super) fn resolve_workflow_patch(
+    store: &HarnessStore,
+    args: &[String],
+) -> CliResult<WorkflowPatch> {
     let key = value(args, "--patch")
         .or_else(|| args.iter().find(|arg| !arg.starts_with("--")).cloned())
         .ok_or_else(|| {

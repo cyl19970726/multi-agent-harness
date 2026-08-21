@@ -35,14 +35,15 @@ impl HttpExchange<'_> {
             )?;
             return Ok(true);
         }
-        let provider_message_answer = path_only
-            .strip_prefix("/v1/team-runs/")
-            .is_some_and(|rest| {
-                matches!(
-                    rest.split('/').collect::<Vec<_>>().as_slice(),
-                    [_, "messages", _, "answer"]
-                )
-            });
+        let provider_message_answer =
+            path_only
+                .strip_prefix("/v1/team-runs/")
+                .is_some_and(|rest| {
+                    matches!(
+                        rest.split('/').collect::<Vec<_>>().as_slice(),
+                        [_, "messages", _, "answer"]
+                    )
+                });
         let retired_message_write = method == "POST"
             && !provider_message_answer
             && (path_only == "/v1/messages"
@@ -72,7 +73,9 @@ impl HttpExchange<'_> {
                 )?;
                 return Ok(true);
             }
-            let credential = match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
+            let credential = match resolve_agentfirm_http_credential(
+                trust_transport_token.as_deref(),
+            ) {
                 Ok(value) => value,
                 Err(message) => {
                     write_http_json(
@@ -161,7 +164,9 @@ impl HttpExchange<'_> {
                 )?;
                 return Ok(true);
             }
-            let credential = match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
+            let credential = match resolve_agentfirm_http_credential(
+                trust_transport_token.as_deref(),
+            ) {
                 Ok(value) => value,
                 Err(message) => {
                     write_http_json(
@@ -183,7 +188,8 @@ impl HttpExchange<'_> {
                 )?;
                 return Ok(true);
             };
-            let Some(expected_revision) = trust_expected_version.filter(|version| *version > 0) else {
+            let Some(expected_revision) = trust_expected_version.filter(|version| *version > 0)
+            else {
                 write_http_json(
                     &mut stream,
                     "409 Conflict",
@@ -255,7 +261,9 @@ impl HttpExchange<'_> {
                 )?;
                 return Ok(true);
             }
-            let credential = match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
+            let credential = match resolve_agentfirm_http_credential(
+                trust_transport_token.as_deref(),
+            ) {
                 Ok(value) => value,
                 Err(message) => {
                     write_http_json(
@@ -294,7 +302,9 @@ impl HttpExchange<'_> {
                     return Ok(true);
                 }
             };
-            use harness_core::agentfirm_api::{AgentSession, AgentSessionStatus, RuntimeCommandKind};
+            use harness_core::agentfirm_api::{
+                AgentSession, AgentSessionStatus, RuntimeCommandKind,
+            };
             let now = now_string();
             let (target_node_id, target_identity_id, server_payload) = match request.command {
                 RuntimeCommandKind::AuthorMessage => {
@@ -312,7 +322,8 @@ impl HttpExchange<'_> {
                         }
                     };
                     let (message_admission_authority, delegation_authority) = {
-                        let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
+                        let firm_home =
+                            execution_space::firm_home().map_err(execution_space_err)?;
                         let local_node_id = read_local_node_id()?;
                         let scope = intent.draft.collaboration_scope.as_ref();
                         let delegation_scoped = scope
@@ -480,8 +491,9 @@ impl HttpExchange<'_> {
                             )
                         })?;
                     let provider_profile = team_member_provider_profile(provider_kind);
-                    let availability = crate::provider_adapter::provider_availability(provider_kind)
-                        .map_err(CliError::Usage)?;
+                    let availability =
+                        crate::provider_adapter::provider_availability(provider_kind)
+                            .map_err(CliError::Usage)?;
                     if !availability.available {
                         return Err(CliError::Usage(format!(
                             "PROVIDER_UNAVAILABLE: {} binary {} is not installed or failed its version probe",
@@ -543,8 +555,9 @@ impl HttpExchange<'_> {
                     )
                 }
                 RuntimeCommandKind::DispatchProvider => {
-                    let intent = match serde_json::from_value::<RuntimeDispatchIntent>(request.payload)
-                    {
+                    let intent = match serde_json::from_value::<RuntimeDispatchIntent>(
+                        request.payload,
+                    ) {
                         Ok(value) => value,
                         Err(error) => {
                             write_http_json(
@@ -575,7 +588,9 @@ impl HttpExchange<'_> {
                 RuntimeCommandKind::StopSession
                 | RuntimeCommandKind::ResumeSession
                 | RuntimeCommandKind::CancelProviderTurn => {
-                    let intent = match serde_json::from_value::<RuntimeSessionIntent>(request.payload) {
+                    let intent = match serde_json::from_value::<RuntimeSessionIntent>(
+                        request.payload,
+                    ) {
                         Ok(value) => value,
                         Err(error) => {
                             write_http_json(
@@ -700,21 +715,22 @@ impl HttpExchange<'_> {
             // original accepted envelope byte-for-byte.
             if request.command != RuntimeCommandKind::AuthorMessage {
                 let command_id = format!("runtime-command:{idempotency_key}");
-                let original = store_owned
-                    .canonical_operations_for_space(&project_id)?
-                    .into_iter()
-                    .find(|operation| {
-                        operation.event.aggregate_kind == "runtime_command"
-                            && operation.event.aggregate_id == command_id
-                            && operation.event.transition == "accepted"
-                    })
-                    .map(|operation| {
-                        serde_json::from_value::<harness_core::agentfirm_api::ControlCommandEnvelope>(
-                            operation.event.payload,
-                        )
-                        .map_err(CliError::Json)
-                    })
-                    .transpose()?;
+                let original =
+                    store_owned
+                        .canonical_operations_for_space(&project_id)?
+                        .into_iter()
+                        .find(|operation| {
+                            operation.event.aggregate_kind == "runtime_command"
+                                && operation.event.aggregate_id == command_id
+                                && operation.event.transition == "accepted"
+                        })
+                        .map(|operation| {
+                            serde_json::from_value::<
+                                harness_core::agentfirm_api::ControlCommandEnvelope,
+                            >(operation.event.payload)
+                            .map_err(CliError::Json)
+                        })
+                        .transpose()?;
                 if let Some(original) = original {
                     let exact_intent = original.command == request.command
                         && original.expires_unix_ms == request.expires_unix_ms
@@ -871,7 +887,9 @@ impl HttpExchange<'_> {
                                     "INVALID_COLLABORATION_MESSAGE_TRANSFER: {error}"
                                 ))
                             })?;
-                            let message = serde_json::from_value::<harness_core::agentfirm_api::Message>(
+                            let message = serde_json::from_value::<
+                                harness_core::agentfirm_api::Message,
+                            >(
                                 response.get("result").cloned().ok_or_else(|| {
                                     CliError::Usage("COLLABORATION_MESSAGE_RESULT_MISSING".into())
                                 })?,
@@ -960,20 +978,21 @@ impl HttpExchange<'_> {
                 )?;
                 return Ok(true);
             }
-            let credential = match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
-                Ok(credential) => credential,
-                Err(message) => {
-                    write_http_json(
-                        &mut stream,
-                        "401 Unauthorized",
-                        &serde_json::json!({
-                            "ok": false,
-                                "error": {"code": "UNAUTHORIZED_ACTOR", "message": message}
-                        }),
-                    )?;
-                    return Ok(true);
-                }
-            };
+            let credential =
+                match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
+                    Ok(credential) => credential,
+                    Err(message) => {
+                        write_http_json(
+                            &mut stream,
+                            "401 Unauthorized",
+                            &serde_json::json!({
+                                "ok": false,
+                                    "error": {"code": "UNAUTHORIZED_ACTOR", "message": message}
+                            }),
+                        )?;
+                        return Ok(true);
+                    }
+                };
             let Some(idempotency_key) = trust_idempotency_key.filter(|key| !key.trim().is_empty())
             else {
                 write_http_json(
@@ -1005,7 +1024,9 @@ impl HttpExchange<'_> {
                 expected_version,
                 request_fingerprint: None,
             };
-            if let Some((team_run_id, message_id)) = agentfirm_api::provider_answer_route(&path_only) {
+            if let Some((team_run_id, message_id)) =
+                agentfirm_api::provider_answer_route(&path_only)
+            {
                 match answer_provider_message_value(
                     &store_owned,
                     team_run_id,
@@ -1062,17 +1083,23 @@ impl HttpExchange<'_> {
                 let close_member_run_id = path_only
                     .strip_prefix("/v1/agentfirm/member-runs/")
                     .and_then(|rest| rest.strip_suffix("/close"))
-                    .filter(|member_run_id| !member_run_id.is_empty() && !member_run_id.contains('/'))
+                    .filter(|member_run_id| {
+                        !member_run_id.is_empty() && !member_run_id.contains('/')
+                    })
                     .map(str::to_string);
                 let interrupt_member_run_id = path_only
                     .strip_prefix("/v1/agentfirm/member-runs/")
                     .and_then(|rest| rest.strip_suffix("/interrupt"))
-                    .filter(|member_run_id| !member_run_id.is_empty() && !member_run_id.contains('/'))
+                    .filter(|member_run_id| {
+                        !member_run_id.is_empty() && !member_run_id.contains('/')
+                    })
                     .map(str::to_string);
                 let reopen_member_run_id = path_only
                     .strip_prefix("/v1/agentfirm/member-runs/")
                     .and_then(|rest| rest.strip_suffix("/reopen"))
-                    .filter(|member_run_id| !member_run_id.is_empty() && !member_run_id.contains('/'))
+                    .filter(|member_run_id| {
+                        !member_run_id.is_empty() && !member_run_id.contains('/')
+                    })
                     .map(str::to_string);
                 if interrupt_member_run_id.is_some() {
                     match role_actions_api::authorize_member_interrupt(
@@ -1168,31 +1195,35 @@ impl HttpExchange<'_> {
                             ))
                         })?;
                     if !member_before.is_external_interactive() {
-                        let close_result =
-                            if managed_member_runtime_close_is_settled(&role_store, &member_before)? {
-                                Ok(serde_json::json!({
-                                    "member_run_id": member_before.id,
-                                    "status": "closed",
-                                    "provider_effect_repeated": false,
-                                }))
-                            } else {
-                                dispatch_live_member_control(
-                                    &role_store,
-                                    LiveMemberControlRequest::Close {
-                                        team_run_id: permit.team_run_id.clone(),
-                                        member_run_id: permit.member_run_id.clone(),
-                                        reason: "authenticated Role Action close_member_run"
-                                            .to_string(),
-                                        requested_by: permit.requested_by.clone(),
-                                    },
-                                )
-                            };
-                        let close_settled =
-                            if managed_member_runtime_close_is_settled(&role_store, &member_before)? {
-                                true
-                            } else {
-                                await_managed_member_runtime_close_settled(&role_store, &member_before)?
-                            };
+                        let close_result = if managed_member_runtime_close_is_settled(
+                            &role_store,
+                            &member_before,
+                        )? {
+                            Ok(serde_json::json!({
+                                "member_run_id": member_before.id,
+                                "status": "closed",
+                                "provider_effect_repeated": false,
+                            }))
+                        } else {
+                            dispatch_live_member_control(
+                                &role_store,
+                                LiveMemberControlRequest::Close {
+                                    team_run_id: permit.team_run_id.clone(),
+                                    member_run_id: permit.member_run_id.clone(),
+                                    reason: "authenticated Role Action close_member_run"
+                                        .to_string(),
+                                    requested_by: permit.requested_by.clone(),
+                                },
+                            )
+                        };
+                        let close_settled = if managed_member_runtime_close_is_settled(
+                            &role_store,
+                            &member_before,
+                        )? {
+                            true
+                        } else {
+                            await_managed_member_runtime_close_settled(&role_store, &member_before)?
+                        };
                         match (close_result, close_settled) {
                             (Ok(provider_projection), true) => {
                                 let projection = latest_member_runs_in_append_order(&role_store)?
@@ -1301,10 +1332,12 @@ impl HttpExchange<'_> {
                             match activation {
                                 Ok(()) => write_http_json(&mut stream, "200 OK", &result)?,
                                 Err(error) => {
-                                    if let Some(observed) = await_managed_member_runtime_reopen_settled(
-                                        &role_store,
-                                        &reopened,
-                                    )? {
+                                    if let Some(observed) =
+                                        await_managed_member_runtime_reopen_settled(
+                                            &role_store,
+                                            &reopened,
+                                        )?
+                                    {
                                         let mut reconciled = serde_json::to_value(&result)?;
                                         reconciled["projection"] = serde_json::to_value(observed)?;
                                         reconciled["runtime_activation_reconciled"] =

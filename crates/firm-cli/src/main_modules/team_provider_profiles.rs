@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// One member spec for team-run creation, parsed from either the CLI
 /// `--member name:role:provider[/mode][:model][@path1,path2]` spelling or the
 /// HTTP JSON body. `/mode` selects the execution mode; the driven Agent Team
@@ -138,7 +137,10 @@ pub(super) fn validate_team_member_execution_mode(member: &TeamMemberSpec) -> Cl
     Ok(())
 }
 
-pub(super) fn validate_team_member_identity(store: &HarnessStore, member: &TeamMemberSpec) -> CliResult<()> {
+pub(super) fn validate_team_member_identity(
+    store: &HarnessStore,
+    member: &TeamMemberSpec,
+) -> CliResult<()> {
     let agent_member_id = member.agent_member_id.as_str();
     if agent_member_id.trim().is_empty() {
         return Err(CliError::Usage(
@@ -177,7 +179,9 @@ pub(super) fn profile_composition_fingerprint(
     })
 }
 
-pub(super) fn profile_capability_fingerprint(profile: &ProviderIntegrationProfile) -> Option<String> {
+pub(super) fn profile_capability_fingerprint(
+    profile: &ProviderIntegrationProfile,
+) -> Option<String> {
     Some(harness_store::canonical_json_fingerprint(
         &serde_json::json!({
             "fingerprint_kind": "agentfirm.provider_capabilities.v1",

@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) const GATEWAY_FRAME_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(super) struct Wave6ControlPlaneApplication {

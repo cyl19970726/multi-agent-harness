@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// DEV-24/25 end-to-end: the TeamWorkspace timeline must render the parent
 /// Message's delivery from the same canonical per-recipient truth as the
 /// delivery Activity row, carry the TeamMessage→Work correlation, and resolve

@@ -1,6 +1,5 @@
 use super::*;
 
-
 // ---------------------------------------------------------------------------
 // `harness team-run start` — durable Agent Team Supervisor.
 //
@@ -84,7 +83,8 @@ pub(super) static LIVE_PROVIDER_ACTIVITY_TOKEN: OnceLock<String> = OnceLock::new
 /// MCP server. The durable TeamMessageProjection remains the conversation record; this
 /// registry is only the live transport into the currently running provider
 /// turn and is deliberately not reconstructed after process restart.
-pub(super) static LIVE_MEMBER_CONTROLS: OnceLock<Mutex<HashMap<String, LiveMemberControl>>> = OnceLock::new();
+pub(super) static LIVE_MEMBER_CONTROLS: OnceLock<Mutex<HashMap<String, LiveMemberControl>>> =
+    OnceLock::new();
 pub(super) static LIVE_TEAM_SUPERVISORS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Clone)]

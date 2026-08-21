@@ -1,6 +1,5 @@
 use super::*;
 
-
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum LiveProviderActivityUpdate {
@@ -286,7 +285,11 @@ pub(super) fn claim_canonical_work_for_member(
     Ok(None)
 }
 
-pub(super) fn is_active_work_continuation_candidate(work: &Work, member_id: &str, all_works: &[Work]) -> bool {
+pub(super) fn is_active_work_continuation_candidate(
+    work: &Work,
+    member_id: &str,
+    all_works: &[Work],
+) -> bool {
     work.active_member_run_id.as_deref() == Some(member_id)
         && work.phase == WorkPhase::Active
         && work.condition == WorkCondition::Normal
@@ -743,7 +746,10 @@ impl TeamRunLedger {
         canonical_team_messages_for_run(&self.store, &self.run_id)
     }
 
-    pub(super) fn queued_works_for(&self, member_id: &str) -> CliResult<Vec<(Work, ProviderWorkDispatch)>> {
+    pub(super) fn queued_works_for(
+        &self,
+        member_id: &str,
+    ) -> CliResult<Vec<(Work, ProviderWorkDispatch)>> {
         let works = self
             .store
             .latest_works()?
@@ -777,7 +783,10 @@ impl TeamRunLedger {
         Ok(queued)
     }
 
-    pub(super) fn claim_canonical_work_for(&self, member_id: &str) -> CliResult<Option<ClaimedWork>> {
+    pub(super) fn claim_canonical_work_for(
+        &self,
+        member_id: &str,
+    ) -> CliResult<Option<ClaimedWork>> {
         let member = self
             .latest_member_run(member_id)?
             .ok_or_else(|| CliError::Usage(format!("member run not found: {member_id}")))?;
@@ -851,7 +860,11 @@ impl TeamRunLedger {
     /// the latest durable member action proves that the previous transport
     /// disconnected. This is separate from ordinary idle continuation so
     /// deterministic recovery tests can retain their bounded idle grace.
-    pub(super) fn complete_work_delivery(&self, claimed: &ClaimedWork, receipt: &str) -> CliResult<()> {
+    pub(super) fn complete_work_delivery(
+        &self,
+        claimed: &ClaimedWork,
+        receipt: &str,
+    ) -> CliResult<()> {
         let claim_id = claimed.delivery.claim_id.as_deref().ok_or_else(|| {
             CliError::Usage(format!(
                 "WorkDelivery {} has no durable claim",
@@ -895,7 +908,11 @@ impl TeamRunLedger {
     /// this member and Supervisor generation. Mark those attempts failed so
     /// the replacement transport can claim a new attempt. Claims that already
     /// carry a provider receipt are never selected and therefore never replayed.
-    pub(super) fn fail_unreceived_work_claims_for(&self, member_id: &str, reason: &str) -> CliResult<()> {
+    pub(super) fn fail_unreceived_work_claims_for(
+        &self,
+        member_id: &str,
+        reason: &str,
+    ) -> CliResult<()> {
         self.require_supervisor_lease()?;
         if let Some(execution_space_id) = self.store.trust_member_run_scope(member_id)? {
             for delivery in self
@@ -1005,7 +1022,10 @@ impl TeamRunLedger {
 
     /// Messages with a still-queued delivery to `member_id` (excluding the
     /// member's own sends, which it obviously already "has").
-    pub(super) fn queued_messages_for(&self, member_id: &str) -> CliResult<Vec<TeamMessageProjection>> {
+    pub(super) fn queued_messages_for(
+        &self,
+        member_id: &str,
+    ) -> CliResult<Vec<TeamMessageProjection>> {
         Ok(self
             .canonical_team_messages()?
             .into_iter()

@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Per-member recovery classification returned by the pure decision function.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(super) enum MemberRecoveryPath {
@@ -959,7 +958,10 @@ pub(super) fn member_board_state<'a>(
 /// measured cost this replaces). There is no `--json` form: the entire point
 /// is a bounded plain-text read, and a JSON wrapper would tax the same
 /// budget it exists to protect.
-pub(super) fn team_run_board_summary_text(store: &HarnessStore, team_run_id: &str) -> CliResult<String> {
+pub(super) fn team_run_board_summary_text(
+    store: &HarnessStore,
+    team_run_id: &str,
+) -> CliResult<String> {
     let run = latest_team_run(store, team_run_id)?;
     team_run_execution_space_id(store, &run)?;
     let works: Vec<Work> = store
@@ -1112,7 +1114,11 @@ pub(super) fn gh_json(args: &[&str]) -> CliResult<serde_json::Value> {
 /// Best-effort PR CI summary from `gh pr checks`. `gh pr view` already proved
 /// the link and auth above, so "no checks reported" (e.g. a PR merged without
 /// CI) yields `(None, None)` rather than failing the whole submit.
-pub(super) fn github_pr_ci_summary(owner: &str, repo: &str, number: u64) -> (Option<String>, Option<String>) {
+pub(super) fn github_pr_ci_summary(
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> (Option<String>, Option<String>) {
     let Ok(value) = gh_json(&[
         "pr",
         "checks",

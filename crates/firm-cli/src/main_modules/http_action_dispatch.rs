@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) fn http_action_error_response(error: CliError) -> (&'static str, serde_json::Value) {
     match error {
         CliError::Store(StoreError::LockTimeout(detail)) => (

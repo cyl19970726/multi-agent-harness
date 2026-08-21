@@ -1,6 +1,5 @@
 use super::*;
 
-
 // ============================================================================
 // WP-3: Claude stream-json event parser and delivery (replaces stub)
 // ============================================================================
@@ -82,7 +81,9 @@ pub(super) fn infer_claude_session_status(
 }
 
 /// Extract session_id from Claude stream events.
-pub(super) fn extract_session_id_from_claude_events(events: &[ClaudeStreamEvent]) -> Option<String> {
+pub(super) fn extract_session_id_from_claude_events(
+    events: &[ClaudeStreamEvent],
+) -> Option<String> {
     events.iter().find_map(|e| e.session_id())
 }
 
@@ -134,7 +135,9 @@ pub(super) fn extract_claude_reply_text(events: &[ClaudeStreamEvent]) -> Option<
 }
 
 /// Map ProviderExecutionStatus to terminal source.
-pub(super) fn status_to_terminal_source(status: &ProviderExecutionStatus) -> Option<MessageTerminalSource> {
+pub(super) fn status_to_terminal_source(
+    status: &ProviderExecutionStatus,
+) -> Option<MessageTerminalSource> {
     match status {
         ProviderExecutionStatus::Succeeded => Some(MessageTerminalSource::TurnCompleted),
         ProviderExecutionStatus::Failed => Some(MessageTerminalSource::Failed),

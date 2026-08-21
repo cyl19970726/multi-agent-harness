@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(crate) fn fabric_command(
     store: &HarnessStore,
     resolved: &ResolvedStore,

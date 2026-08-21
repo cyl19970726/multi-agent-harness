@@ -824,7 +824,10 @@ pub(super) fn host_context(
     }
 }
 
-pub(super) fn member_context(auth: &AuthenticatedMutation, member_run_id: &str) -> WorkCommandContext {
+pub(super) fn member_context(
+    auth: &AuthenticatedMutation,
+    member_run_id: &str,
+) -> WorkCommandContext {
     WorkCommandContext {
         event_id: format!("role-action:{}", auth.idempotency_key),
         performed_by_actor: TeamActorRef {

@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Spawn a one-shot `codex exec` with an EDITABLE (`--sandbox workspace-write`)
 /// sandbox, JSON event stream, running in `cwd`. Non-interactive (stdin closed)
 /// with a per-node timeout. When `schema_json` is set, `--output-schema <file>`

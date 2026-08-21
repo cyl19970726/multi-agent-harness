@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) enum ResolvedNodeTls {
     Files(NodeTlsIdentityFiles),
     Material(NodeTlsIdentityMaterial),

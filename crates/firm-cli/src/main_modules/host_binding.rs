@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) const HOST_BINDING_LEASE_DEFAULT_TTL_MS: u64 = 30_000;
 pub(super) const HOST_BINDING_LEASE_MIN_TTL_MS: u64 = 5_000;
 pub(super) const HOST_BINDING_LEASE_MAX_TTL_MS: u64 = 300_000;
@@ -207,7 +206,9 @@ pub(super) fn bind_host_with_validator<V: HostSessionValidator>(
     })
 }
 
-pub(super) fn parse_host_binding_lease_owner_kind(raw: &str) -> CliResult<HostBindingLeaseOwnerKind> {
+pub(super) fn parse_host_binding_lease_owner_kind(
+    raw: &str,
+) -> CliResult<HostBindingLeaseOwnerKind> {
     match raw {
         "interactive" => Ok(HostBindingLeaseOwnerKind::Interactive),
         "dispatcher" => Ok(HostBindingLeaseOwnerKind::Dispatcher),

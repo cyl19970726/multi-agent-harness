@@ -73,7 +73,7 @@ fn size_warns_over_limit_never_blocks() {
     write(&root, "docs/big.md", &"x\n".repeat(600));
     write(&root, "docs/ok.md", "small");
     let r = check_size(&root, &["docs".into()], 500, &[], 1500);
-    assert_eq!(r.severity, Severity::Warning);
+    assert_eq!(r.severity, Severity::Blocker);
     assert!(!r.is_blocking_failure());
     assert_eq!(r.warnings.len(), 1);
     assert!(r.warnings[0].contains("docs/big.md: 601 lines exceeds 500"));
@@ -97,7 +97,7 @@ fn reg_cfg() -> RegistryConfig {
 }
 
 #[test]
-fn size_warns_on_oversized_sources_without_blocking() {
+fn size_blocks_oversized_maintained_sources_across_supported_extensions() {
     let root = tmp("size-sources");
     write(&root, "crates/small/src/lib.rs", "fn ok() {}\n");
     let big = (0..1600)
@@ -105,17 +105,36 @@ fn size_warns_on_oversized_sources_without_blocking() {
         .collect::<Vec<_>>()
         .join("\n");
     write(&root, "crates/big/src/main.rs", &big);
+    write(&root, "apps/dashboard/src/Screen.tsx", &big);
+    write(&root, "apps/dashboard/tests/contract.mjs", &big);
     // Build output must never be scanned.
     write(&root, "crates/big/target/debug/generated.rs", &big);
-    let r = check_size(&root, &["docs".into()], 500, &["crates".into()], 1500);
-    assert!(
-        r.failures.is_empty(),
-        "structure debt warns, never blocks: {:?}",
-        r.failures
+    write(&root, "apps/dashboard/node_modules/vendor.js", &big);
+    let r = check_size(
+        &root,
+        &["docs".into()],
+        500,
+        &["crates".into(), "apps".into()],
+        1500,
     );
-    assert_eq!(r.warnings.len(), 1, "got {:?}", r.warnings);
-    assert!(r.warnings[0].contains("crates/big/src/main.rs"));
-    assert!(r.warnings[0].contains("split a seam out of it"));
+    assert!(r.is_blocking_failure());
+    assert_eq!(r.failures.len(), 3, "got {:?}", r.failures);
+    assert!(r
+        .failures
+        .iter()
+        .any(|line| line.contains("crates/big/src/main.rs")));
+    assert!(r
+        .failures
+        .iter()
+        .any(|line| line.contains("apps/dashboard/src/Screen.tsx")));
+    assert!(r
+        .failures
+        .iter()
+        .any(|line| line.contains("apps/dashboard/tests/contract.mjs")));
+    assert!(r
+        .failures
+        .iter()
+        .all(|line| line.contains("extract a cohesive owner boundary")));
 }
 
 #[test]

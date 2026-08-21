@@ -1,10 +1,12 @@
 use super::*;
 
-
 /// GET /v1/host-attentions?team_run_id=<id> — reconciled latest HostAttention
 /// rows for one TeamRun. The console reads these to show what needs Host
 /// action; transport intake only, nothing here mutates Work.
-pub(super) fn host_attentions_value(store: &HarnessStore, team_run_id: &str) -> CliResult<serde_json::Value> {
+pub(super) fn host_attentions_value(
+    store: &HarnessStore,
+    team_run_id: &str,
+) -> CliResult<serde_json::Value> {
     if team_run_id.trim().is_empty() {
         return Err(CliError::Usage(
             "team_run_id query parameter is required".to_string(),
@@ -840,7 +842,10 @@ pub(super) fn required_json_string(body: &serde_json::Value, key: &str) -> CliRe
     json_string(body, key).ok_or_else(|| CliError::Usage(format!("missing JSON field: {key}")))
 }
 
-pub(super) fn optional_json_string(body: &serde_json::Value, key: &str) -> CliResult<Option<String>> {
+pub(super) fn optional_json_string(
+    body: &serde_json::Value,
+    key: &str,
+) -> CliResult<Option<String>> {
     match body.get(key) {
         None | Some(serde_json::Value::Null) => Ok(None),
         Some(value) => value
@@ -870,7 +875,10 @@ pub(super) fn json_string_array(body: &serde_json::Value, key: &str) -> Vec<Stri
         .unwrap_or_default()
 }
 
-pub(super) fn optional_json_string_array(body: &serde_json::Value, key: &str) -> CliResult<Vec<String>> {
+pub(super) fn optional_json_string_array(
+    body: &serde_json::Value,
+    key: &str,
+) -> CliResult<Vec<String>> {
     match body.get(key) {
         None => Ok(Vec::new()),
         Some(serde_json::Value::Array(values)) => values

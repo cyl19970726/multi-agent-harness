@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// A provider-STRUCTURED terminal failure: fields the provider transport
 /// itself reported, never prose.
 #[derive(Debug, Clone, PartialEq, Eq)]

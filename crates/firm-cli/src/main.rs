@@ -96,12 +96,12 @@ use http_protocol::*;
 #[path = "main_modules/http_exchange.rs"]
 mod http_exchange;
 use http_exchange::*;
-#[path = "main_modules/http_trust_routes.rs"]
-mod http_trust_routes;
 #[path = "main_modules/http_get_routes.rs"]
 mod http_get_routes;
 #[path = "main_modules/http_post_routes.rs"]
 mod http_post_routes;
+#[path = "main_modules/http_trust_routes.rs"]
+mod http_trust_routes;
 
 #[path = "main_modules/user_commands.rs"]
 mod user_commands;

@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) fn route_command(
     wave4c_store: &HarnessStore,
     resolved: &ResolvedStore,

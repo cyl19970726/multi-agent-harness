@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) fn dashboard_command(
     store: &HarnessStore,
     _resolved: &ResolvedStore,
@@ -263,7 +262,10 @@ pub(super) fn http_get_json(base_url: &str, path: &str) -> CliResult<(u16, serde
 /// complete `Connection: close` response (the same transport quirk the serve
 /// integration test harness works around). Accept that ending only when the
 /// declared Content-Length is fully present; any other read error propagates.
-pub(super) fn read_http_response_to_string(stream: &mut TcpStream, raw: &mut String) -> CliResult<()> {
+pub(super) fn read_http_response_to_string(
+    stream: &mut TcpStream,
+    raw: &mut String,
+) -> CliResult<()> {
     match stream.read_to_string(raw) {
         Ok(_) => Ok(()),
         Err(error)
@@ -1056,7 +1058,11 @@ impl ServeProjects {
     }
 }
 
-pub(super) fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]) -> CliResult<()> {
+pub(super) fn serve_command(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    args: &[String],
+) -> CliResult<()> {
     let addr = value(args, "--addr").unwrap_or_else(|| "127.0.0.1:8787".into());
     let once = has_flag(args, "--once");
     // Tests can keep the transient live turn-event tee instead of truncating it on

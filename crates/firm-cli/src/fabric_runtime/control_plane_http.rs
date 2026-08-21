@@ -1,6 +1,5 @@
 use super::*;
 
-
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_collaboration_control_plane_http<K: harness_fabric::ArtifactKeyBackend>(
     method: &str,

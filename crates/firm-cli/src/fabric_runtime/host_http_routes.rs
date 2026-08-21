@@ -1,6 +1,5 @@
 use super::*;
 
-
 #[allow(clippy::too_many_arguments)]
 pub(super) fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
     method: &str,
@@ -372,7 +371,11 @@ pub(super) fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
     ))
 }
 
-pub(super) fn fabric_node_cursor(company_id: &str, node_id: &str, snapshot_revision: u64) -> String {
+pub(super) fn fabric_node_cursor(
+    company_id: &str,
+    node_id: &str,
+    snapshot_revision: u64,
+) -> String {
     harness_fabric::sha256_hex(format!(
         "agentfirm.remote-fabric.node-cursor.v1\n{company_id}\n{node_id}\n{snapshot_revision}"
     ))

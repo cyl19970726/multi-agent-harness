@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Age after which a `Running` WorkflowRun is assumed orphaned and reaped. The
 /// run-script path is SYNCHRONOUS — a run is only `Running` in the store while its
 /// host process is alive — so a row left `Running` past this age means the process
@@ -49,7 +48,9 @@ pub(super) fn is_supervisor_current(lease: &harness_core::TeamSupervisorLease) -
 
 /// Returns (is_live, human-readable diagnosis). The diagnosis lists which of the
 /// three liveness checks failed, or "live" when all pass.
-pub(super) fn supervisor_lease_live_diagnosis(lease: &harness_core::TeamSupervisorLease) -> (bool, String) {
+pub(super) fn supervisor_lease_live_diagnosis(
+    lease: &harness_core::TeamSupervisorLease,
+) -> (bool, String) {
     let status_active = lease.status == harness_core::TeamSupervisorLeaseStatus::Active;
     let not_expired = lease.expires_unix_ms > current_unix_ms_u64();
     let pid_alive = pid_exists_libc(lease.owner_process_id);
@@ -178,7 +179,10 @@ pub(super) fn worker_pid_dir(store: &HarnessStore) -> PathBuf {
     store.root().join("worker_pids")
 }
 
-pub(super) fn reap_orphaned_workers(store: &HarnessStore, dry_run: bool) -> CliResult<serde_json::Value> {
+pub(super) fn reap_orphaned_workers(
+    store: &HarnessStore,
+    dry_run: bool,
+) -> CliResult<serde_json::Value> {
     let dir = worker_pid_dir(store);
     let mut scanned = 0usize;
     let mut killed = 0usize;
@@ -411,7 +415,9 @@ pub(super) fn reap_stale_workflow_runs(store: &HarnessStore) -> CliResult<usize>
     Ok(reaped)
 }
 
-pub(super) fn latest_workflow_steps_in_append_order(store: &HarnessStore) -> CliResult<Vec<WorkflowStep>> {
+pub(super) fn latest_workflow_steps_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<WorkflowStep>> {
     let mut ids = Vec::new();
     let mut by_id = BTreeMap::new();
     for step in store.workflow_steps()? {
@@ -422,7 +428,9 @@ pub(super) fn latest_workflow_steps_in_append_order(store: &HarnessStore) -> Cli
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
-pub(super) fn latest_messages_in_append_order(store: &HarnessStore) -> CliResult<Vec<RegistryMessage>> {
+pub(super) fn latest_messages_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<RegistryMessage>> {
     let mut message_ids = Vec::new();
     let mut messages_by_id = BTreeMap::new();
     for message in store.messages()? {
@@ -436,7 +444,9 @@ pub(super) fn latest_messages_in_append_order(store: &HarnessStore) -> CliResult
         .collect())
 }
 
-pub(super) fn latest_runtimes(store: &HarnessStore) -> CliResult<BTreeMap<String, ProviderProcess>> {
+pub(super) fn latest_runtimes(
+    store: &HarnessStore,
+) -> CliResult<BTreeMap<String, ProviderProcess>> {
     let mut runtimes = BTreeMap::new();
     for runtime in store.runtimes()? {
         runtimes.insert(runtime.id.clone(), runtime);
@@ -444,7 +454,9 @@ pub(super) fn latest_runtimes(store: &HarnessStore) -> CliResult<BTreeMap<String
     Ok(runtimes)
 }
 
-pub(super) fn latest_members(store: &HarnessStore) -> CliResult<BTreeMap<String, ProviderLaunchProfile>> {
+pub(super) fn latest_members(
+    store: &HarnessStore,
+) -> CliResult<BTreeMap<String, ProviderLaunchProfile>> {
     let mut members = BTreeMap::new();
     for member in store.members()? {
         members.insert(member.id.clone(), member);

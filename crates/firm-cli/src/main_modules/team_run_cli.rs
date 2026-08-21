@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) fn team_run_command(
     store: &HarnessStore,
     resolved: &ResolvedStore,
@@ -959,7 +958,9 @@ pub(super) fn member_run_command(store: &HarnessStore, args: &[String]) -> CliRe
 /// Resolve an explicit provider-owned UI target without changing the native
 /// session binding. Claude Desktop imports SDK/CLI sessions through this deep
 /// link and deterministically exposes them as `local_<native-id>`.
-pub(super) fn native_session_open_target(member: &ProviderRuntimeProjection) -> CliResult<serde_json::Value> {
+pub(super) fn native_session_open_target(
+    member: &ProviderRuntimeProjection,
+) -> CliResult<serde_json::Value> {
     let session = member.native_session.as_ref().ok_or_else(|| {
         CliError::Usage(format!(
             "member run {} has no bound provider-native session",

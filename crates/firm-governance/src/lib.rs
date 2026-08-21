@@ -76,13 +76,11 @@ pub struct GovernanceConfig {
     pub skill_roots: Vec<String>,
     /// Max markdown line count before the `size` gate warns.
     pub max_lines: usize,
-    /// Source roots scanned by the `size` gate (Rust sources). Empty disables
-    /// the source half of the gate.
+    /// Source roots scanned by the `size` gate (maintained Rust and JavaScript
+    /// family sources). Empty disables the source half of the gate.
     #[serde(default)]
     pub source_roots: Vec<String>,
-    /// Max source line count before the `size` gate warns. Structure debt is
-    /// surfaced, never blocked, so existing oversized files can retire in
-    /// order instead of freezing work.
+    /// Max source line count before the `size` gate blocks the change.
     #[serde(default = "default_source_max_lines")]
     pub source_max_lines: usize,
     /// Root scanned for `*-agent-member.json` skill_ref validation (optional).
@@ -179,7 +177,7 @@ impl GovernanceConfig {
             .collect(),
             skill_roots: ["skills", ".agents/skills"].iter().map(|v| s(v)).collect(),
             max_lines: 500,
-            source_roots: vec!["crates".into()],
+            source_roots: vec!["crates".into(), "apps".into()],
             source_max_lines: default_source_max_lines(),
             member_data_root: Some(s(".agents/data")),
             registry: Some(RegistryConfig {
@@ -285,7 +283,7 @@ impl GovernanceConfig {
             doc_roots: ["README.md", "docs"].iter().map(|v| s(v)).collect(),
             skill_roots: ["skills", ".agents/skills"].iter().map(|v| s(v)).collect(),
             max_lines: 500,
-            source_roots: vec!["crates".into()],
+            source_roots: vec!["crates".into(), "apps".into()],
             source_max_lines: default_source_max_lines(),
             member_data_root: None,
             registry: None,
@@ -404,7 +402,7 @@ pub fn check_links(root: &Path, doc_roots: &[String]) -> GateReport {
 }
 
 // ---------------------------------------------------------------------------
-// gate: size  (port of scripts/check-doc-size.mjs — WARNING only)
+// gate: size
 // ---------------------------------------------------------------------------
 
 /// Markdown size: warn (never block) when a file exceeds `max_lines`.
@@ -412,9 +410,9 @@ fn default_source_max_lines() -> usize {
     1500
 }
 
-/// Collect Rust sources beneath the configured source roots, skipping build
-/// output and vendored trees.
-fn collect_rust_sources(root: &Path, source_roots: &[String]) -> Vec<String> {
+/// Collect maintained sources beneath the configured roots, skipping hidden,
+/// build-output, dependency, and vendored trees.
+fn collect_sources(root: &Path, source_roots: &[String]) -> Vec<String> {
     let mut files = Vec::new();
     for source_root in source_roots {
         let base = root.join(source_root);
@@ -430,7 +428,10 @@ fn collect_rust_sources(root: &Path, source_roots: &[String]) -> Vec<String> {
                     if name != "target" && name != "node_modules" && !name.starts_with('.') {
                         stack.push(path);
                     }
-                } else if name.ends_with(".rs") {
+                } else if matches!(
+                    path.extension().and_then(|extension| extension.to_str()),
+                    Some("rs" | "ts" | "tsx" | "js" | "mjs" | "cjs")
+                ) {
                     if let Ok(rel) = path.strip_prefix(root) {
                         files.push(rel.display().to_string());
                     }
@@ -451,6 +452,7 @@ pub fn check_size(
 ) -> GateReport {
     let files = collect_markdown(root, doc_roots);
     let mut warnings = Vec::new();
+    let mut failures = Vec::new();
     for rel in &files {
         let text = match std::fs::read_to_string(root.join(rel)) {
             Ok(t) => t,
@@ -464,29 +466,31 @@ pub fn check_size(
             ));
         }
     }
-    for rel in collect_rust_sources(root, source_roots) {
+    for rel in collect_sources(root, source_roots) {
         let Ok(text) = std::fs::read_to_string(root.join(&rel)) else {
             continue;
         };
         let line_count = text.split('\n').count();
         if line_count > source_max_lines {
-            warnings.push(format!(
-                "{rel}: {line_count} lines exceeds {source_max_lines}; split a seam out of it"
+            failures.push(format!(
+                "{rel}: {line_count} lines exceeds {source_max_lines}; extract a cohesive owner boundary"
             ));
         }
     }
     // Faithful to check-doc-size.mjs: it prints EITHER the warnings OR the
     // success line, never both. An empty summary suppresses the success line when
     // there are warnings (the printer skips empty summaries).
-    let summary = if warnings.is_empty() {
-        format!("all markdown files are <= {max_lines} lines")
+    let summary = if warnings.is_empty() && failures.is_empty() {
+        format!(
+            "all markdown files are <= {max_lines} lines and maintained sources are <= {source_max_lines} lines"
+        )
     } else {
         String::new()
     };
     GateReport {
         kind: "size".into(),
-        severity: Severity::Warning,
-        failures: Vec::new(),
+        severity: Severity::Blocker,
+        failures,
         warnings,
         summary,
     }

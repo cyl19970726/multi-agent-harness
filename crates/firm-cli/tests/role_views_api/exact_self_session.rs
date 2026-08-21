@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// DEV-21 end-to-end: a fresh Team start materializes the MemberRun and
 /// AgentSession without a provider-native Session id; the provider settle then
 /// persists it through `save_member_run`, which must sync the trust MemberRun

@@ -330,7 +330,9 @@ impl HttpExchange<'_> {
                 // the coordination store (`store_owned`), never the Company OS
                 // store: it answers "which build served this, which store did it
                 // read, how far has that store's op log advanced".
-                "/v1/meta" => write_http_json(&mut stream, "200 OK", &dashboard_meta(&store_owned)?)?,
+                "/v1/meta" => {
+                    write_http_json(&mut stream, "200 OK", &dashboard_meta(&store_owned)?)?
+                }
                 // GET /v1/projects — enumerate known projects (registry + on-disk stores
                 // + reserved `_global`) for the dashboard picker. `current` marks the
                 // active project (multi-project P6 / project-api task).
@@ -397,7 +399,9 @@ impl HttpExchange<'_> {
                     let private_agent_member_id = match trust_transport_token.as_deref() {
                         None => None,
                         Some(_) => {
-                            match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
+                            match resolve_agentfirm_http_credential(
+                                trust_transport_token.as_deref(),
+                            ) {
                                 Ok(credential)
                                     if credential.actor.kind
                                         == harness_core::agentfirm_api::ActorKind::AgentMember =>
@@ -417,7 +421,8 @@ impl HttpExchange<'_> {
                         }
                     };
                     let private_project_binding_id = if private_agent_member_id.is_some() {
-                        match projects.exact_project_context_for(project_param.as_deref(), &project_id)
+                        match projects
+                            .exact_project_context_for(project_param.as_deref(), &project_id)
                         {
                             Ok(project) => Some(project.id),
                             Err(error) => {

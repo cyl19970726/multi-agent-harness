@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) fn steer_team_member_value(
     store: &HarnessStore,
     team_run_id: &str,

@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Bounded number of consecutive transient renewal failures the heartbeat
 /// tolerates before treating the durable lease as lost. With the default
 /// 15s TTL and a ~1s heartbeat cadence the retry window stays well inside

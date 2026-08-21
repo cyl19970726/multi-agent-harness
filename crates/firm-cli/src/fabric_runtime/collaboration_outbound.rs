@@ -1,6 +1,5 @@
 use super::*;
 
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn queue_collaboration_proposal(
     store: &HarnessStore,

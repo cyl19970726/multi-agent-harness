@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Terminal outcome of one member's orchestration, for the run summary.
 pub(super) struct MemberOutcome {
     pub(super) name: String,
@@ -129,7 +128,11 @@ impl Drop for ProviderChildGuard {
 }
 
 impl MemberOutcome {
-    pub(super) fn new(member: &ProviderRuntimeProjection, status: MemberRunStatus, summary: String) -> Self {
+    pub(super) fn new(
+        member: &ProviderRuntimeProjection,
+        status: MemberRunStatus,
+        summary: String,
+    ) -> Self {
         Self {
             name: member.name.clone(),
             role: member.role.clone(),

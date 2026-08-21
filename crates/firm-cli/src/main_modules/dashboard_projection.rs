@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let members = latest_members(store)?;
     let teams = latest_teams(store)?;
@@ -422,7 +421,10 @@ pub(super) fn retain_json_rows(
     }
 }
 
-pub(super) fn latest_member(store: &HarnessStore, member_id: &str) -> CliResult<ProviderLaunchProfile> {
+pub(super) fn latest_member(
+    store: &HarnessStore,
+    member_id: &str,
+) -> CliResult<ProviderLaunchProfile> {
     latest_members(store)?
         .remove(member_id)
         .ok_or_else(|| CliError::Usage(format!("agent member not found: {member_id}")))
@@ -434,7 +436,9 @@ pub(super) fn latest_message(store: &HarnessStore, message_id: &str) -> CliResul
         .ok_or_else(|| CliError::Usage(format!("message not found: {message_id}")))
 }
 
-pub(super) fn latest_messages(store: &HarnessStore) -> CliResult<BTreeMap<String, RegistryMessage>> {
+pub(super) fn latest_messages(
+    store: &HarnessStore,
+) -> CliResult<BTreeMap<String, RegistryMessage>> {
     let mut messages = BTreeMap::new();
     for message in store.messages()? {
         messages.insert(message.id.clone(), message);
@@ -442,7 +446,10 @@ pub(super) fn latest_messages(store: &HarnessStore) -> CliResult<BTreeMap<String
     Ok(messages)
 }
 
-pub(super) fn latest_runtime(store: &HarnessStore, runtime_id: &str) -> CliResult<Option<ProviderProcess>> {
+pub(super) fn latest_runtime(
+    store: &HarnessStore,
+    runtime_id: &str,
+) -> CliResult<Option<ProviderProcess>> {
     let mut runtimes = BTreeMap::new();
     for runtime in store.runtimes()? {
         runtimes.insert(runtime.id.clone(), runtime);
@@ -450,7 +457,9 @@ pub(super) fn latest_runtime(store: &HarnessStore, runtime_id: &str) -> CliResul
     Ok(runtimes.remove(runtime_id))
 }
 
-pub(super) fn latest_workflow_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<WorkflowRun>> {
+pub(super) fn latest_workflow_runs_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<WorkflowRun>> {
     let mut ids = Vec::new();
     let mut by_id = BTreeMap::new();
     for run in store.workflow_runs()? {
@@ -461,7 +470,9 @@ pub(super) fn latest_workflow_runs_in_append_order(store: &HarnessStore) -> CliR
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
-pub(super) fn latest_team_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<AgentTeamRun>> {
+pub(super) fn latest_team_runs_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<AgentTeamRun>> {
     let mut ids = Vec::new();
     let mut by_id = BTreeMap::new();
     for run in store.team_runs()? {
@@ -517,7 +528,9 @@ pub(super) fn latest_team_member_close_requests_in_append_order(
         .collect())
 }
 
-pub(super) fn latest_member_actions_in_append_order(store: &HarnessStore) -> CliResult<Vec<MemberAction>> {
+pub(super) fn latest_member_actions_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<MemberAction>> {
     let mut ids = Vec::new();
     let mut by_id = BTreeMap::new();
     for action in store.member_actions()? {
@@ -531,14 +544,18 @@ pub(super) fn latest_member_actions_in_append_order(store: &HarnessStore) -> Cli
 /// Project the product-visible MemberAction view. Legacy v0 reasoning rows
 /// remain in the append-only ledger but are never surfaced to a new operator
 /// or MCP consumer as durable state.
-pub(super) fn visible_member_actions_in_append_order(store: &HarnessStore) -> CliResult<Vec<MemberAction>> {
+pub(super) fn visible_member_actions_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<MemberAction>> {
     Ok(latest_member_actions_in_append_order(store)?
         .into_iter()
         .filter(|action| action.action_type != "thinking")
         .collect())
 }
 
-pub(super) fn latest_delegation_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<DelegationRun>> {
+pub(super) fn latest_delegation_runs_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<DelegationRun>> {
     let mut ids = Vec::new();
     let mut by_id = BTreeMap::new();
     for run in store.delegation_runs()? {

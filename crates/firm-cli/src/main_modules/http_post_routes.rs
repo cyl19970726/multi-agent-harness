@@ -75,7 +75,7 @@ impl HttpExchange<'_> {
             }
             return Ok(true);
         }
-        
+
         if path_only == "/v1/spaces/switch" {
             match handle_space_switch(projects, &body_json) {
                 Ok((id, _switch_store)) => write_http_json(
@@ -94,7 +94,7 @@ impl HttpExchange<'_> {
             }
             return Ok(true);
         }
-        
+
         if path_only == "/v1/live/member-activity" {
             write_http_json(
                 &mut stream,
@@ -107,7 +107,7 @@ impl HttpExchange<'_> {
             )?;
             return Ok(true);
         }
-        
+
         // POST /v1/live/provider-activity — private loopback ingress from the one
         // local NodeDaemon. The body cannot select an AgentSession: serve resolves
         // the exact current session from canonical runtime state or fails closed.
@@ -156,7 +156,9 @@ impl HttpExchange<'_> {
                 let member = latest_member_runs_in_append_order(&store_owned)?
                     .into_iter()
                     .find(|member| member.id == member_run_id)
-                    .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+                    .ok_or_else(|| {
+                        CliError::Usage(format!("member run not found: {member_run_id}"))
+                    })?;
                 require_live_member_run_generation(
                     &member.id,
                     member.runtime_generation,
@@ -249,7 +251,7 @@ impl HttpExchange<'_> {
             }
             return Ok(true);
         }
-        
+
         // POST /v1/team-runs/{id}/members/{member-id}/reopen — reactivate the same
         // ProviderRuntimeProjection and, when no Supervisor currently owns the run, start one so a
         // managed adapter process resumes the recorded provider-native session.
@@ -292,7 +294,7 @@ impl HttpExchange<'_> {
                 return Ok(true);
             }
         }
-        
+
         // POST /v1/team-runs/{id}/members/{member-id}/resume — capability-gated
         // alias over the reopen machinery for resuming the recorded native
         // session; refuses active members (message/steer is their continuation).
@@ -335,7 +337,7 @@ impl HttpExchange<'_> {
                 return Ok(true);
             }
         }
-        
+
         // POST /v1/team-runs/{id}/start — ask the one machine NodeDaemon to adopt
         // the attempt. The HTTP server never starts an in-process or per-run
         // supervisor, so every public control surface shares the same parent fence.
@@ -391,7 +393,7 @@ impl HttpExchange<'_> {
             }
             return Ok(true);
         }
-        
+
         // Raw --store compatibility mode has no registered project_root. Do not
         // mislabel its centralized store_root as an execution workspace.
         let project_context = projects

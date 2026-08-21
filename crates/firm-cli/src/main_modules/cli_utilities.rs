@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) fn require_subcommand(args: &[String], usage: &str) -> CliResult<()> {
     if args.is_empty() {
         Err(CliError::Usage(format!("usage: harness {usage}")))
@@ -116,7 +115,12 @@ pub(super) fn generated_id(prefix: &str) -> String {
     generated_id_from_parts(prefix, millis, process_id, counter)
 }
 
-pub(super) fn generated_id_from_parts(prefix: &str, millis: u128, process_id: u32, counter: u64) -> String {
+pub(super) fn generated_id_from_parts(
+    prefix: &str,
+    millis: u128,
+    process_id: u32,
+    counter: u64,
+) -> String {
     format!("{prefix}-{millis}-p{process_id}-{counter}")
 }
 

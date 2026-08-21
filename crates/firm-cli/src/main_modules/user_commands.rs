@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) fn member_trust_command(
     store: &HarnessStore,
     resolved: &ResolvedStore,

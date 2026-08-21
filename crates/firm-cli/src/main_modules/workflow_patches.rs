@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) fn workflow_patch_command(
     store: &HarnessStore,
     project_context: Option<&ProjectContext>,
@@ -48,7 +47,11 @@ pub(super) fn workflow_patch_command(
     }
 }
 
-pub(super) fn manifest_path_with_root(repo_root: &Path, artifact_root: Option<&str>, path: &str) -> PathBuf {
+pub(super) fn manifest_path_with_root(
+    repo_root: &Path,
+    artifact_root: Option<&str>,
+    path: &str,
+) -> PathBuf {
     let raw = Path::new(path);
     if raw.is_absolute() {
         return raw.to_path_buf();

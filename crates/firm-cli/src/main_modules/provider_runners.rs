@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// One persistent member supervisor. Provider transports and turns are
 /// disposable generations beneath the durable ProviderRuntimeProjection/native-session
 /// binding. A transport that disappears after binding is journaled as

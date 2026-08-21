@@ -33,11 +33,11 @@ use operator_actions::*;
 use protocol::*;
 use work_records::*;
 
-pub use protocol::{is_http_mutation_path, is_retired_legacy_write_path, RoleActionResult};
 pub(crate) use protocol::{
     authorize_member_close, authorize_member_interrupt, provider_admission_action_binding,
     OPERATOR_PROVIDER_ADMISSION_TUPLES,
 };
+pub use protocol::{is_http_mutation_path, is_retired_legacy_write_path, RoleActionResult};
 
 pub fn execute(
     store: &HarnessStore,

@@ -1,6 +1,5 @@
 use super::*;
 
-
 // Provider dispatch seam (BE-WP6)
 //
 // The harness core stays provider-neutral (ADR 0011); all provider-specific

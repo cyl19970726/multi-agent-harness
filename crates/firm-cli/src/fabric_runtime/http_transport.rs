@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) struct HttpRequest {
     pub(super) stream: TcpStream,
     pub(super) method: String,
@@ -14,7 +13,8 @@ pub(super) const MAX_FABRIC_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 // Artifact completion uses a closed JSON envelope with hexadecimal content.
 // Reserve bounded space for the signed capability and JSON framing without
 // widening any other Host REST endpoint beyond the normal 1 MiB limit.
-pub(super) const ARTIFACT_COMPLETE_HTTP_BODY_LIMIT: usize = MAX_FABRIC_ARTIFACT_BYTES * 2 + 256 * 1024;
+pub(super) const ARTIFACT_COMPLETE_HTTP_BODY_LIMIT: usize =
+    MAX_FABRIC_ARTIFACT_BYTES * 2 + 256 * 1024;
 
 pub(super) fn is_artifact_complete_path(path: &str) -> bool {
     path.strip_prefix("/v1/fabric/artifacts/")

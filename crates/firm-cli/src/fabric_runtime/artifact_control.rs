@@ -1,6 +1,5 @@
 use super::*;
 
-
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CollaborationDecisionHttpRequest {

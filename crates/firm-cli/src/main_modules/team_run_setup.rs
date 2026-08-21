@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Parse one `--member name:role:provider[/mode][:model][@path1,path2][#brief]` spec.
 ///
 /// The brief is split off FIRST and is free text: it may contain `@` and `:`,

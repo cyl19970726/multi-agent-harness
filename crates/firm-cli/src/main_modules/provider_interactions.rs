@@ -1,6 +1,5 @@
 use super::*;
 
-
 #[cfg(test)]
 mod tests_live_provider_preview {
     use super::*;
@@ -1122,7 +1121,10 @@ pub(super) fn command_stdout(command: &str, args: &[&str]) -> CliResult<String> 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-pub(super) fn owned_path_violations(changed_paths: &[String], owned_paths: &[String]) -> Vec<String> {
+pub(super) fn owned_path_violations(
+    changed_paths: &[String],
+    owned_paths: &[String],
+) -> Vec<String> {
     if owned_paths.is_empty() {
         return Vec::new();
     }

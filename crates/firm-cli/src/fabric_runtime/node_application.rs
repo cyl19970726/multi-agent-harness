@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) struct Wave4cApplication {
     pub(super) probe: ProbeApplication,
     pub(super) firm_home: PathBuf,

@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Normalize a `schema=` dict into a real JSON Schema suitable for the providers'
 /// native structured-output flags (claude `--json-schema`, codex `--output-schema`).
 /// Two input shapes are accepted: an ALREADY-valid JSON Schema (has `type` or
@@ -473,7 +472,10 @@ pub(super) fn codex_delivery_telemetry(
     (parse_codex_usage(raw_events), None, spec.model.clone())
 }
 
-pub(super) fn codex_delivery_structured(reply: Option<&str>, spec: &LaunchSpec) -> Option<serde_json::Value> {
+pub(super) fn codex_delivery_structured(
+    reply: Option<&str>,
+    spec: &LaunchSpec,
+) -> Option<serde_json::Value> {
     spec.output_schema
         .as_ref()
         .and_then(|_| reply.and_then(extract_json_object))

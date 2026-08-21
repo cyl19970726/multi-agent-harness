@@ -1,7 +1,9 @@
 use super::*;
 
-
-pub(super) fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<ProviderLaunchProfile> {
+pub(super) fn start_agent_runtime(
+    store: &HarnessStore,
+    agent_id: &str,
+) -> CliResult<ProviderLaunchProfile> {
     let mut member = latest_member(store, agent_id)?;
     ensure_member_accepts_delivery(&member)?;
     if let Some(runtime_id) = member.provider_runtime_id.as_deref() {
@@ -107,7 +109,8 @@ pub(super) struct WorkflowDeliveryOptions {
 }
 
 pub(super) const HARNESS_WORKFLOW_CHILD_STORE_ROOT_ENV: &str = "HARNESS_WORKFLOW_CHILD_STORE_ROOT";
-pub(super) const HARNESS_WORKFLOW_ALLOW_STORE_MUTATION_ENV: &str = "HARNESS_WORKFLOW_ALLOW_STORE_MUTATION";
+pub(super) const HARNESS_WORKFLOW_ALLOW_STORE_MUTATION_ENV: &str =
+    "HARNESS_WORKFLOW_ALLOW_STORE_MUTATION";
 
 pub(super) fn workflow_child_store_root(session_dir: &Path) -> PathBuf {
     session_dir.join("nested-harness-store")
@@ -638,7 +641,10 @@ pub(super) fn workflow_repo_root(project: &ProjectContext) -> PathBuf {
 ///
 /// Returns a display string (the `Command::current_dir` callers already pass a
 /// string) defaulting to `"."` only if even the process cwd is unreadable.
-pub(super) fn delivery_worker_cwd(member: &ProviderLaunchProfile, project: &ProjectContext) -> String {
+pub(super) fn delivery_worker_cwd(
+    member: &ProviderLaunchProfile,
+    project: &ProjectContext,
+) -> String {
     if let Some(worktree) = member.provider_cwd_hint.clone() {
         return worktree;
     }
@@ -691,7 +697,11 @@ pub(super) fn step_write_mode_direct(spec: &workflow::AgentStepSpec) -> bool {
 /// should not silently turn a read-only scan/review into a git-worktree
 /// requirement. `write_mode="direct"` writes the shared project root in place, so
 /// it never isolates either.
-pub(super) fn step_needs_isolation(writable: bool, isolation: Option<&str>, write_mode: Option<&str>) -> bool {
+pub(super) fn step_needs_isolation(
+    writable: bool,
+    isolation: Option<&str>,
+    write_mode: Option<&str>,
+) -> bool {
     if write_mode == Some(workflow::WRITE_MODE_DIRECT) {
         return false;
     }

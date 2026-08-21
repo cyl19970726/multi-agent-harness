@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(super) fn native_session_ref(
     member: &ProviderRuntimeProjection,
     native_session_id: impl Into<String>,
@@ -166,7 +165,8 @@ pub(super) const CLAUDE_RUNTIME_CONTEXT_KEYS: &[&str] = &[
 ];
 
 /// Keys that indicate a credential exists, without revealing it.
-pub(super) const CLAUDE_CREDENTIAL_ENV_KEYS: &[&str] = &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+pub(super) const CLAUDE_CREDENTIAL_ENV_KEYS: &[&str] =
+    &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 
 #[derive(Clone, Copy)]
 pub(super) struct CapacityProbeOptions {
@@ -196,7 +196,10 @@ pub(super) fn capacity_now() -> (String, u64) {
 /// different products even though both are spelled "codex". Only the mode this
 /// preflight actually probes may be named, so a caller cannot ask for one mode
 /// and receive another mode's observation under its label.
-pub(super) fn capacity_execution_mode(provider: &str, requested: Option<&str>) -> CliResult<String> {
+pub(super) fn capacity_execution_mode(
+    provider: &str,
+    requested: Option<&str>,
+) -> CliResult<String> {
     let probed = team_member_provider_profile(provider).execution_mode;
     match requested.map(str::trim).filter(|mode| !mode.is_empty()) {
         Some(mode) if mode == probed => Ok(probed),
