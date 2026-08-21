@@ -4765,7 +4765,7 @@
           "Review Results": [],
           "Protocol Event Record": []
         },
-        "disposition": "archive_only_after_independent_review_as_blank_unbound_review"
+        "disposition": "move_to_trash_only_after_independent_review_as_blank_unbound_review"
       },
       {
         "url": "https://app.notion.com/p/3bd49a4fa3798143af12e2d4be28bb53",
@@ -11844,6 +11844,7 @@
         },
         "decision": "approved_safe_delete_candidate",
         "actual_status": "removed",
+        "post_cutover_verified_absent": true,
         "data_loss_assessment": "No row value loss: the option had zero observed records at preflight.",
         "rollback": "Recreate a select option named Merge Authorization with its preflight color/description if a reader or view unexpectedly depends on the option definition; then re-fetch the Development Documents schema and confirm record counts and existing type values are unchanged."
       },
@@ -11856,6 +11857,7 @@
         },
         "decision": "approved_safe_delete_candidate",
         "actual_status": "dropped",
+        "post_cutover_verified_absent": true,
         "data_loss_assessment": "No affirmative row value was lost; the removed property carried no true state.",
         "rollback": "Recreate a checkbox property with the exact name Migration Delta Required (Legacy Snapshot), leave every row false, mark it Legacy/stop-write, and re-fetch the Development Tasks schema and counts."
       },
@@ -11865,19 +11867,54 @@
         "preflight_evidence": {
           "observed_nonempty_rows": 0
         },
-        "decision": "approved_safe_delete_candidate_but_gated",
-        "actual_status": "retained_pending_document_layout_verification",
-        "gate": "Complete and record the Development Documents page-layout verification before deleting this property or performing any other physical schema deletion.",
-        "rollback": "Not applicable while retained. If later removed after the gate, recreate a person property with the exact name and verify all rows remain empty."
+        "decision": "retain_platform_required_hidden_zero_use",
+        "actual_status": "retained_platform_required_hidden_zero_use",
+        "post_cutover_evidence": {
+          "task_rows": 54,
+          "nonempty_rows": 0,
+          "connector_drop_attempts": 2,
+          "connector_result": "validation_error",
+          "ui_property_editor": "Delete property aria-disabled=true",
+          "platform_interpretation": "Notion typed Tasks system field"
+        },
+        "operating_rule": "Keep hidden from current layouts and views and stop all future writes. Do not claim this platform-required field was dropped.",
+        "rollback": "Not applicable: the property was retained and no row value changed."
       }
     ],
+    "layout_verification": {
+      "captured_at": "2026-08-21T06:15:19Z",
+      "captured_at_local": "2026-08-21T14:15:19+08:00",
+      "actual_status": "applied_and_validated",
+      "apply_to_all_pages": true,
+      "visible_core_properties": 13,
+      "collapsed_legacy_properties": 39,
+      "ordinary_reader_validation": [
+        {
+          "record_class": "Review",
+          "url": "https://app.notion.com/p/3c249a4fa37981a3bd21c95d7125c330",
+          "result": "pass"
+        },
+        {
+          "record_class": "Accepted Spec",
+          "url": "https://app.notion.com/p/3c249a4fa37981c2ab71ef2562c01e0b",
+          "result": "pass"
+        },
+        {
+          "record_class": "Legacy",
+          "url": "https://app.notion.com/p/3c249a4fa37981c9964af1f2513f7ae5",
+          "result": "pass"
+        }
+      ]
+    },
     "process_sequence_deviation": {
       "observed": "Merge Authorization was removed and Migration Delta Required (Legacy Snapshot) was dropped after a preliminary Pass but before the Reviewer's final requirement to complete the A layout pass before destructive action was received.",
       "impact": "The action order violated the final review gate. The two mutations did not remove row values because both objects were verified zero-use at preflight.",
       "corrective_gate": "Until Development Documents layout verification is complete and recorded, do not delete Assignee (Legacy Snapshot) or perform any other physical schema deletion. This layout gate does not block the exact seven 文档状态=Accepted row corrections listed below, and it does not block the recoverable archive of DOC-102 after the page is independently reviewed and reconfirmed blank and unbound.",
+      "corrective_gate_status": "satisfied_by_apply_to_all_and_three_ordinary_reader_passes",
+      "assignee_deletion_outcome": "Attempted only after layout validation; Notion rejected connector deletion twice and disabled UI deletion, so the zero-use field remains hidden and stop-write.",
       "non_schema_actions_not_blocked_by_layout_gate": [
         "Set 文档状态=Accepted on exactly DOC-88, DOC-90, DOC-91, DOC-92, DOC-93, DOC-100, and DOC-101 under their recorded data-quality dispositions.",
-        "Archive DOC-102 only after independent Review reconfirms that the exact page remains blank and unbound; retain the ability to unarchive it."
+        "Move DOC-102 to Notion Trash only after independent Review reconfirms that the exact page remains blank and unbound; retain recovery from Trash."
       ],
       "honesty_requirement": "Do not represent the preliminary Pass as satisfying the final gate; preserve this deviation in the immutable submission evidence."
     },
@@ -11890,6 +11927,9 @@
         "evidence": "Complete titled Review linked to DEV-30.",
         "proposed_mutation": "Set 文档状态 to Accepted.",
         "review_gate": "Apply only as an approved data-quality correction; preserve Review body and all relations.",
+        "actual_status": "applied_and_verified",
+        "post_mutation_status": "Accepted",
+        "other_fields_unchanged": true,
         "rollback": "Restore 文档状态 to empty if post-mutation verification shows the page is not a complete immutable Review."
       },
       {
@@ -11900,6 +11940,9 @@
         "evidence": "Complete titled Review linked to DEV-30.",
         "proposed_mutation": "Set 文档状态 to Accepted.",
         "review_gate": "Apply only as an approved data-quality correction; preserve Review body and all relations.",
+        "actual_status": "applied_and_verified",
+        "post_mutation_status": "Accepted",
+        "other_fields_unchanged": true,
         "rollback": "Restore 文档状态 to empty if post-mutation verification shows the page is not a complete immutable Review."
       },
       {
@@ -11910,6 +11953,9 @@
         "evidence": "Complete titled Review linked to DEV-30.",
         "proposed_mutation": "Set 文档状态 to Accepted.",
         "review_gate": "Apply only as an approved data-quality correction; preserve Review body and all relations.",
+        "actual_status": "applied_and_verified",
+        "post_mutation_status": "Accepted",
+        "other_fields_unchanged": true,
         "rollback": "Restore 文档状态 to empty if post-mutation verification shows the page is not a complete immutable Review."
       },
       {
@@ -11920,6 +11966,9 @@
         "evidence": "Complete titled Review linked to DEV-30.",
         "proposed_mutation": "Set 文档状态 to Accepted.",
         "review_gate": "Apply only as an approved data-quality correction; preserve Review body and all relations.",
+        "actual_status": "applied_and_verified",
+        "post_mutation_status": "Accepted",
+        "other_fields_unchanged": true,
         "rollback": "Restore 文档状态 to empty if post-mutation verification shows the page is not a complete immutable Review."
       },
       {
@@ -11930,6 +11979,9 @@
         "evidence": "Complete titled Review linked to DEV-30.",
         "proposed_mutation": "Set 文档状态 to Accepted.",
         "review_gate": "Apply only as an approved data-quality correction; preserve Review body and all relations.",
+        "actual_status": "applied_and_verified",
+        "post_mutation_status": "Accepted",
+        "other_fields_unchanged": true,
         "rollback": "Restore 文档状态 to empty if post-mutation verification shows the page is not a complete immutable Review."
       },
       {
@@ -11940,6 +11992,9 @@
         "evidence": "Complete titled Review linked to DEV-31.",
         "proposed_mutation": "Set 文档状态 to Accepted.",
         "review_gate": "Apply only as an approved data-quality correction; preserve Review body and all relations.",
+        "actual_status": "applied_and_verified",
+        "post_mutation_status": "Accepted",
+        "other_fields_unchanged": true,
         "rollback": "Restore 文档状态 to empty if post-mutation verification shows the page is not a complete immutable Review."
       },
       {
@@ -11950,6 +12005,9 @@
         "evidence": "Complete titled Review linked to DEV-31.",
         "proposed_mutation": "Set 文档状态 to Accepted.",
         "review_gate": "Apply only as an approved data-quality correction; preserve Review body and all relations.",
+        "actual_status": "applied_and_verified",
+        "post_mutation_status": "Accepted",
+        "other_fields_unchanged": true,
         "rollback": "Restore 文档状态 to empty if post-mutation verification shows the page is not a complete immutable Review."
       },
       {
@@ -11958,12 +12016,116 @@
         "title": null,
         "preflight_status": null,
         "evidence": "Blank Review with no title, no Task relation, and no evidence relations in the preflight inventory.",
-        "corrected_disposition": "archive_only_after_independent_review_as_blank_unbound_review",
-        "proposed_mutation": "Archive the page only after Review; do not delete it.",
+        "corrected_disposition": "move_to_trash_only_after_independent_review_as_blank_unbound_review",
+        "executed_mutation": "Notion UI Actions → Move to Trash.",
         "review_gate": "Independent Reviewer must confirm the page remains blank and unbound at the exact mutation point.",
-        "rollback": "Unarchive DOC-102 and restore its prior empty fields if the archive target or dependency check was wrong."
+        "review_gate_status": "satisfied",
+        "actual_status": "moved_to_trash_recoverable",
+        "active_review_view_count_before": 38,
+        "active_review_view_count_after": 37,
+        "absent_from_active_review_view": true,
+        "archived_partition_count": 0,
+        "archived_partition_semantics": "Notion Trash is not the connector archived partition; do not report archived=true.",
+        "recoverable_from_trash": true,
+        "rollback": "Restore DOC-102 from Notion Trash if the target or dependency check was wrong; its prior fields were empty."
       }
-    ]
+    ],
+    "final_validation": {
+      "captured_at": "2026-08-21T06:15:19Z",
+      "captured_at_local": "2026-08-21T14:15:19+08:00",
+      "development_documents_layout": {
+        "apply_to_all_pages": "pass",
+        "visible_core_properties": 13,
+        "collapsed_legacy_properties": 39,
+        "ordinary_reader_sample_classes": [
+          "Review",
+          "Accepted Spec",
+          "Legacy"
+        ],
+        "ordinary_reader_result": "pass"
+      },
+      "review_status_repairs": {
+        "document_numbers": [
+          "DOC-88",
+          "DOC-90",
+          "DOC-91",
+          "DOC-92",
+          "DOC-93",
+          "DOC-100",
+          "DOC-101"
+        ],
+        "post_mutation_status": "Accepted",
+        "other_fields_unchanged": true,
+        "result": "pass"
+      },
+      "doc_102": {
+        "url": "https://app.notion.com/p/3bd49a4fa37980eb9879cef0988e9784",
+        "action": "moved_to_trash",
+        "recoverable_from_trash": true,
+        "active_review_view_count_before": 38,
+        "active_review_view_count_after": 37,
+        "absent_from_active_review_view": true,
+        "archived_partition_count": 0,
+        "archive_claim": false,
+        "result": "pass"
+      },
+      "task_schema": {
+        "task_rows": 54,
+        "assignee_legacy_snapshot_present": true,
+        "assignee_legacy_snapshot_nonempty_rows": 0,
+        "assignee_legacy_snapshot_visibility": "hidden",
+        "assignee_legacy_snapshot_write_policy": "stop_write",
+        "migration_delta_required_legacy_snapshot_present": false
+      },
+      "document_schema": {
+        "merge_authorization_option_present": false
+      },
+      "historical_evidence": {
+        "carriers": 91,
+        "bundle_snapshots": 5,
+        "task_scope_mutation": "none",
+        "disposition": "retained_untouched"
+      },
+      "result": "pass_with_platform_required_assignee_retained"
+    },
+    "broader_cleanup_follow_up_boundary": {
+      "current_task": "DEV-54 ends at default-surface slimming, stop-write enforcement, zero-use cleanup allowed by Notion, exact Review status repairs, and recoverable removal of the blank DOC-102 from active use.",
+      "selected_future_model": "A separate clean two-database cutover: one new plain/non-typed Development Tasks database and one new clean Development Documents database.",
+      "future_migration_scope": {
+        "development_tasks": "Migrate only active/current authoritative Tasks. The exact Task inventory and inclusion rule must be established by the new Task preflight.",
+        "development_documents": "Migrate only Current or Accepted authoritative Specs. The exact Spec inventory must be established by the new Task preflight.",
+        "explicitly_not_migrated": [
+          "the 91 carrier records",
+          "the five bundle snapshots",
+          "legacy Review Snapshot rows",
+          "legacy Review Result rows",
+          "legacy Review Report rows",
+          "legacy Protocol Event rows",
+          "legacy Protocol Audit rows",
+          "old Review rows"
+        ]
+      },
+      "authority_transition": {
+        "before_cutover": "The existing two databases remain the sole current authority. The new two databases are migration targets only and receive no operational dual writes.",
+        "cutover_gate": "An independent Review must Pass the exact migrated inventory, relations, views, authority notice, rollback evidence, and no-double-write checks before authority changes.",
+        "cutover_action": "Only after that Pass may AgentFirm Home and the Development Playbook switch their links and authority notice to the new two databases.",
+        "after_cutover": "The previous Development Tasks and Development Documents databases become Legacy / READ ONLY evidence. They are not fallback writers and do not remain a second current authority."
+      },
+      "invariants": [
+        "Exactly two current development databases after cutover: Development Tasks and Development Documents.",
+        "No third task ledger, review ledger, protocol ledger, or current authority is introduced.",
+        "No double write before, during, or after cutover.",
+        "Legacy carrier, bundle, protocol, and old Review rows stay only in the old read-only databases and never enter the new clean databases."
+      ],
+      "excluded_from_dev_54": [
+        "creating the new two databases",
+        "migrating any Task, Spec, relation, view, or authority link",
+        "switching AgentFirm Home or Development Playbook authority",
+        "changing the old two databases to Legacy / READ ONLY",
+        "purging or disposing of any old database, row, property, relation, or evidence"
+      ],
+      "future_requirement": "Create a separate migration Task with a fresh exact preflight inventory, source-to-target map, permissions, rollback posture, ordinary-reader acceptance, and independent Review. Disposal of the old read-only databases or any retained history is a later separate decision and Review; it is not part of the clean cutover Task."
+    }
   },
   "validation_plan": [
     "Re-fetch AgentFirm Home and both database/data-source identities immediately before mutation.",
