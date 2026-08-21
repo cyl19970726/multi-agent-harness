@@ -204,15 +204,19 @@ Codex, Claude, Kimi, and Pi expose separate, closed capability tuples:
   Claude, Kimi, and Pi, including permission mapping, safe-injection downgrade,
   terminal acknowledgement, replay, and recovery. It is contract evidence,
   not a claim that an unavailable provider passed a live run;
-- the persistent Team member loop is provider-neutral
-  (`crates/firm-cli/src/runtime_adapter.rs`): wake → claim → ExecutionCycle →
-  settle is shared, and each binding compiles the semantic intents
+- the persistent Team member loop is provider-neutral: the monotonic round
+  progression lives in `firm-runtime-supervisor` over an application port,
+  while `firm-runtime-contract` owns the provider-facing lifecycle language.
+  Wake → claim → ExecutionCycle → settle is shared, and each provider package
+  compiles the semantic intents
   (open/resume, start cycle, inject current cycle, queue at native boundary,
   interrupt, continuation inspection/control, narrow Team Close, strong
   quiesce, and release) into provider primitives with an executable per-intent
   capability report. Pi, Codex app-server, Claude Agent SDK, and Kimi ACP all
-  enter through this shared loop; their provider modules own only native
-  transport, observation, permission mapping, and exact-version receipts;
+  enters through this shared loop; `firm-provider-{codex,claude,kimi,pi}` own
+  native transport, observation, permission mapping, and exact-version
+  receipts, while application composition owns Work/Message/RuntimeCommand
+  preparation and settlement;
 - Team `CloseRuntime` and strong runtime replacement are deliberately separate
   intents. `CloseRuntime` terminates and reaps the Harness-owned provider
   handle, freezes the Member mailbox, and retains the native session id for an

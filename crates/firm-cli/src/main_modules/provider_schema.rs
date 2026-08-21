@@ -14,36 +14,7 @@ use super::*;
 /// always truthy). Any other hint stays a `string` field with the hint kept as its
 /// `description`, exactly as before.
 pub(super) fn schema_to_json_schema(schema: &serde_json::Value) -> serde_json::Value {
-    let Some(obj) = schema.as_object() else {
-        return schema.clone();
-    };
-    if obj.contains_key("type") || obj.contains_key("properties") {
-        return schema.clone();
-    }
-    let mut props = serde_json::Map::new();
-    for (k, v) in obj {
-        let hint = v.as_str().unwrap_or("");
-        let json_type = match hint.trim().to_ascii_lowercase().as_str() {
-            "bool" | "boolean" => "boolean",
-            "int" | "integer" => "integer",
-            "number" | "float" | "double" => "number",
-            _ => "string",
-        };
-        let mut field = serde_json::Map::new();
-        field.insert("type".into(), serde_json::Value::from(json_type));
-        // Keep the hint as the description only when it carries real meaning — a
-        // bare type word ("bool") becomes the type and needs no description.
-        if json_type == "string" && !hint.is_empty() {
-            field.insert("description".into(), serde_json::Value::from(hint));
-        }
-        props.insert(k.clone(), serde_json::Value::Object(field));
-    }
-    serde_json::json!({
-        "type": "object",
-        "properties": props,
-        "required": obj.keys().cloned().collect::<Vec<_>>(),
-        "additionalProperties": false,
-    })
+    harness_core::normalize_output_schema(schema)
 }
 
 /// The REQUIRED top-level keys a schema declares. The schema is a JSON object;

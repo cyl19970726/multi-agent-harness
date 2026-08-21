@@ -28,12 +28,15 @@ Team control contract           acquire Supervisor generation, type actors,
                                 claim/receipt/ACK mail, reconnect and fence
 ```
 
-The executor selects the transport. Agent Team requires a persistent,
-bidirectional member mode: `codex_app_server`, `kimi_acp`, or
-`claude_agent_sdk`. The retired Dynamic Workflow used bounded exec/CLI modes
-such as `codex_exec` and `claude_cli`; they are not current execution routes.
-There is no silent fallback between these
-contracts. The declared exception is `external_interactive`: a user's own
+The execution surface selects the transport. Agent Team requires a persistent,
+bidirectional member mode: `codex_app_server`, `kimi_acp`,
+`claude_agent_sdk`, or the reviewed Pi RPC binding. Bounded exec/CLI modes such
+as `codex_exec`, `claude_cli`, and `kimi_exec` are never Agent Team fallbacks.
+Where the still-current `/v1/agents/*` compatibility API or reviewed headless
+Host path uses one, it is represented by a distinct compatibility or Host
+binding and implemented inside the provider package. It does not restore the
+retired Dynamic Workflow executor model. There is no silent fallback between
+these contracts. The declared exception is `external_interactive`: a user's own
 already-open interactive provider session joins as a non-driven member with no
 Harness-spawned transport at all (see the impersonation invariant below). The
 provider-native session store remains the sole durable transcript/tool/turn

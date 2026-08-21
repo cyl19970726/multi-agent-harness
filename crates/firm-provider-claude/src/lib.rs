@@ -42,8 +42,10 @@ use harness_runtime_contract::{
 
 mod compatibility;
 mod error;
+mod resident;
 pub use compatibility::*;
 pub use error::{ClaudeError, ClaudeResult};
+pub use resident::*;
 
 type CliResult<T> = ClaudeResult<T>;
 type CliError = ClaudeError;

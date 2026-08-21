@@ -36,8 +36,9 @@ acceptance update.
 | `runtime_adapter_capabilities.rs` | Team runtime selector, capability report, permission compilation | current catalog plus provider policy mixed together | canonical descriptor extracted to `firm-application`; provider-specific capability reports and permission compilers remain to move |
 | `provider_adapter.rs` | current provider-native control seam and standalone NodeSession control | current control contract mixed with implementations | runtime contract/application control plus provider bindings |
 | `provider_adapters.rs` | old Codex/Claude/Kimi/Pi one-shot registry | current compatibility delivery and formerly the Claude Host path; historical names; unsupported Pi stubs | renamed and narrowed to the explicit `CompatibilityDeliveryBinding` registry for Codex/Claude/Kimi; Pi's unsupported effect stub deleted; Claude Host bypasses this registry through its typed Host binding |
-| `codex_claude_adapters.rs` | Codex/Claude one-shot parsing, process launch, delivery, runtime-control facts | current Claude Host/direct delivery plus historical Codex paths; mixed coordination writes | provider transport/bindings; application owns durable facts |
-| `provider_ephemeral.rs` | generic child-tree teardown and NDJSON runner plus unused orphan-pidfile parameters | current Host/compatibility transport; orphan registration had no caller | `firm-runtime-host` (extracted in DEV-58); CLI retains only error translation |
+| `codex_claude_adapters.rs` | Codex/Claude one-shot parsing, process launch, delivery, runtime-control facts | current Claude Host/direct delivery plus historical Codex paths; mixed coordination writes | native command compilation, transport, and event reduction extracted to provider packages; CLI retains message-envelope composition and durable coordination settlement |
+| `provider_ephemeral.rs` | generic child-tree teardown and NDJSON runner plus unused orphan-pidfile parameters | current Host/compatibility transport; orphan registration had no caller | process transport extracted to `firm-runtime-host`; after provider packages consumed it directly, CLI retains only the shared child-tree teardown re-export used by application-owned guards |
+| `resident.rs` | optional persistent Claude stream-json child, pool, protocol frames, and tests | Claude compatibility transport living in CLI | moved intact to `firm-provider-claude`; CLI constructs its provider-owned config and consumes the typed result |
 | `process_reaper.rs` | snapshot/read-model helpers and legacy Team tolerance | application/read-model; filename is misleading | application projection package/module |
 | `codex_app_server.rs`, `codex_team_runtime.rs` | Codex native protocol and Team binding | current Team provider | app-server transport/protocol, complete Team binding, and deterministic tests extracted to `firm-provider-codex`; CLI retains a narrow application callback/error adapter |
 | `claude_agent_sdk.rs`, `claude_team_runtime.rs`, `apps/claude-member-runner` | Claude Rust bridge, Team binding, Node runner | current Team provider | runtime process, reviewed runner protocol/version gate, complete Team binding, and tests extracted to `firm-provider-claude`; CLI retains a narrow application error/trait adapter; versioned Node runner asset remains in `apps/claude-member-runner` |
@@ -156,4 +157,11 @@ Landed DEV-58 milestones:
   consumes only `SupervisorApplicationPort`; the executable composition keeps
   durable Work/Message/Store/RuntimeCommand preparation and settlement inside
   that application port. Provider packages and the supervisor package have no
-  dependency on CLI or Store implementations.
+  dependency on CLI or Store implementations;
+- current compatibility transport slice: moves Codex exec, Claude CLI/resident,
+  and Kimi exec command compilation, neutral permission mapping, resume flags,
+  MCP/schema compilation, NDJSON execution, event decoding, and transport tests
+  into their provider packages. `firm-cli` no longer implements those native
+  protocols; it composes the message/LaunchSpec/cwd and settles only the
+  compatibility coordination outcome. Output-schema shorthand normalization is
+  provider-neutral and therefore owned by `firm-core`.

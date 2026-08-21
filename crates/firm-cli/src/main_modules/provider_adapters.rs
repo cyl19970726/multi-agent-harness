@@ -1,8 +1,6 @@
 use super::*;
 
-pub(super) use harness_provider_kimi::{
-    extract_kimi_reply_text, extract_kimi_session_id, infer_kimi_status,
-};
+pub(super) use harness_provider_kimi::{extract_kimi_reply_text, infer_kimi_status};
 
 // Provider dispatch seam (BE-WP6)
 //
@@ -44,10 +42,6 @@ pub(super) trait CompatibilityDeliveryBinding: Sync {
         }
     }
 
-    /// Map a LaunchPermission to this provider's CLI permission flag value
-    /// (codex `--sandbox`, claude `--permission-mode`).
-    fn map_permission(&self, perm: LaunchPermission) -> &'static str;
-
     /// Spawn (or attach) the persistent runtime for a member of this provider.
     fn start_runtime(
         &self,
@@ -88,14 +82,6 @@ impl CompatibilityDeliveryBinding for CodexCompatibilityDelivery {
         ProviderCapabilities::codex_exec()
     }
 
-    fn map_permission(&self, perm: LaunchPermission) -> &'static str {
-        match perm {
-            LaunchPermission::ReadOnly => "read-only",
-            LaunchPermission::WorkspaceWrite => "workspace-write",
-            LaunchPermission::FullAccess => "danger-full-access",
-        }
-    }
-
     fn start_runtime(
         &self,
         store: &HarnessStore,
@@ -133,14 +119,6 @@ impl CompatibilityDeliveryBinding for ClaudeCompatibilityDelivery {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::claude_exec()
-    }
-
-    fn map_permission(&self, perm: LaunchPermission) -> &'static str {
-        match perm {
-            LaunchPermission::ReadOnly => "plan",
-            LaunchPermission::WorkspaceWrite => "acceptEdits",
-            LaunchPermission::FullAccess => "bypassPermissions",
-        }
     }
 
     fn start_runtime(
@@ -296,36 +274,22 @@ pub(super) fn run_kimi_exec_delivery_real(
         format!("{system_prompt}\n\n{message_content}")
     };
 
-    let mut cmd = Command::new(resolve_kimi_bin());
-    cmd.arg("-p")
-        .arg(&prompt_text)
-        .arg("--output-format")
-        .arg("stream-json");
-    // Resume uses `-S/--session <id>` in real kimi (not claude's `--resume`).
-    if let Some(resume_id) = &spec.resume {
-        cmd.arg("--session").arg(resume_id);
-    }
-    if let Some(model) = &spec.model {
-        cmd.arg("--model").arg(model);
-    }
-    // Headless `kimi -p` REJECTS permission flags (--plan/--auto/--yolo all error
-    // "Cannot combine --prompt with ..."), so none is passed. `--effort` /
-    // `--json-schema` / `--allowedTools` / `--mcp-config` / `--add-dir` are likewise
-    // not real kimi flags; schema/mcp/cost degrade to the harness fallbacks
-    // (capabilities().{schema,mcp,cost} = false) and writable roots are bounded by
-    // the harness-owned worktree, not a CLI flag.
-    cmd.current_dir(&cwd);
-
-    let run = run_ndjson_child(cmd, timeout_ms, None, "kimi -p process")?;
+    let run = harness_provider_kimi::run_kimi_compatibility(
+        &resolve_kimi_bin(),
+        &spec,
+        &prompt_text,
+        Path::new(&cwd),
+        Duration::from_millis(timeout_ms),
+    )
+    .map_err(CliError::Usage)?;
     // Kimi -p stream-json is not claude-shaped — derive the session id from the raw
     // frames (the caller parses reply/status the same way). The `events` slot of the
     // shared tuple is unused for kimi (left empty); the raw frames carry the data.
-    let session_id = extract_kimi_session_id(&run.events);
     Ok((
         run.process_success,
         Vec::new(),
-        run.events,
-        session_id,
+        run.raw_events,
+        run.session_id,
         run.stderr,
     ))
 }
@@ -397,20 +361,6 @@ impl CompatibilityDeliveryBinding for KimiCompatibilityDelivery {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::kimi_exec()
-    }
-
-    fn map_permission(&self, perm: LaunchPermission) -> &'static str {
-        // Real Kimi Code exposes STANDALONE permission flags (`kimi --help` v0.18):
-        // `--plan` / `--auto` / `-y/--yolo`. NOTE: the headless `-p` path does NOT
-        // use this — `kimi -p` REJECTS every permission flag ("Cannot combine
-        // --prompt with ..."), so the spawn/delivery paths pass none. Retained for
-        // trait conformance and a potential future interactive/acp invocation; it
-        // returns the standalone flag itself (not a `--permission-mode` value).
-        match perm {
-            LaunchPermission::ReadOnly => "--plan",
-            LaunchPermission::WorkspaceWrite => "--auto",
-            LaunchPermission::FullAccess => "--yolo",
-        }
     }
 
     fn start_runtime(

@@ -55,6 +55,7 @@ flowchart TB
 | Messages | identity-first authorship, MessageSubscription authorization, per-recipient CanonicalMessageDelivery | Work lifecycle mutation, RuntimeCommand authority |
 | Execution Spaces and Project Bindings | coordination storage vs provider cwd/instructions/Skills/plugins/MCP selection | each other's scope; `--project` never switches the coordination store |
 | Runtime | provider processes, native sessions, native activity readers/resume, plugins, MCP, and ephemeral projections | a second provider history or assignment inference |
+| Runtime packages | `firm-runtime-contract` lifecycle language, `firm-runtime-supervisor` round progression, provider-neutral `firm-runtime-host` process mechanics, and one package per provider protocol | authoritative Work/Message/RuntimeCommand writes, Host acceptance, or a provider protocol implemented in CLI composition |
 | Remote Node Fabric | cross-machine RoutedOperation/Attempt/Receipt, mTLS gateway generations, reconcile, and bounded artifacts | a second Node identity, Message/Work/RuntimeCommand truth |
 
 For persistent Agent Team members, Work ownership and continuous native

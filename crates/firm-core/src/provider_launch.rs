@@ -160,6 +160,42 @@ pub struct LaunchMcp {
     pub servers: Vec<LaunchMcpServer>,
 }
 
+/// Normalize the legacy flat output-schema shorthand into JSON Schema while
+/// preserving already-normalized schemas unchanged. Provider packages call
+/// this before compiling their native structured-output arguments.
+pub fn normalize_output_schema(schema: &serde_json::Value) -> serde_json::Value {
+    let Some(object) = schema.as_object() else {
+        return schema.clone();
+    };
+    if object.contains_key("type") || object.contains_key("properties") {
+        return schema.clone();
+    }
+    let properties = object
+        .iter()
+        .map(|(key, value)| {
+            let hint = value.as_str().unwrap_or("");
+            let json_type = match hint.trim().to_ascii_lowercase().as_str() {
+                "bool" | "boolean" => "boolean",
+                "int" | "integer" => "integer",
+                "number" | "float" | "double" => "number",
+                _ => "string",
+            };
+            let mut field =
+                serde_json::Map::from_iter([("type".into(), serde_json::Value::from(json_type))]);
+            if json_type == "string" && !hint.is_empty() {
+                field.insert("description".into(), serde_json::Value::from(hint));
+            }
+            (key.clone(), serde_json::Value::Object(field))
+        })
+        .collect::<serde_json::Map<_, _>>();
+    serde_json::json!({
+        "type": "object",
+        "properties": properties,
+        "required": object.keys().cloned().collect::<Vec<_>>(),
+        "additionalProperties": false,
+    })
+}
+
 /// The provider-neutral launch spec: one normalized per-turn request.
 ///
 /// This is the launch-spec table in

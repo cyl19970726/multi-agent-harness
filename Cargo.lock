@@ -502,7 +502,9 @@ version = "0.1.0"
 dependencies = [
  "firm-core",
  "firm-runtime-contract",
+ "firm-runtime-host",
  "libc",
+ "serde",
  "serde_json",
  "thiserror 1.0.69",
 ]

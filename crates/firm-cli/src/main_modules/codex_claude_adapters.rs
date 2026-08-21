@@ -1,8 +1,8 @@
 use super::*;
 
 pub(super) use harness_provider_claude::{
-    extract_claude_reply_text, extract_session_id_from_claude_events, infer_claude_session_status,
-    status_to_terminal_source, ClaudeStreamEvent,
+    extract_claude_reply_text, infer_claude_session_status, status_to_terminal_source,
+    ClaudeStreamEvent,
 };
 #[cfg(test)]
 pub(super) use harness_provider_codex::{extract_codex_final_message, parse_codex_ndjson};
@@ -14,59 +14,9 @@ pub(super) use harness_provider_codex::{
 /// Write a temporary MCP config JSON file for Claude.
 /// Returns the path to the temporary file, or None if mcp is empty/None.
 pub(super) fn write_temp_mcp_config(mcp: Option<&LaunchMcp>) -> CliResult<Option<String>> {
-    if let Some(mcp_config) = mcp {
-        if mcp_config.servers.is_empty() {
-            return Ok(None);
-        }
-
-        // Build MCP servers config as expected by Claude
-        let mut servers = serde_json::Map::new();
-        for server in &mcp_config.servers {
-            let mut server_obj = serde_json::Map::new();
-            server_obj.insert("id".to_string(), serde_json::json!(server.id));
-
-            if let Some(transport) = &server.transport {
-                server_obj.insert("transport".to_string(), serde_json::json!(transport));
-            }
-
-            if !server.command.is_empty() {
-                server_obj.insert("command".to_string(), serde_json::json!(server.command));
-            }
-
-            if let Some(url) = &server.url {
-                server_obj.insert("url".to_string(), serde_json::json!(url));
-            }
-
-            if !server.allowed_tools.is_empty() {
-                server_obj.insert(
-                    "allowed_tools".to_string(),
-                    serde_json::json!(server.allowed_tools),
-                );
-            }
-
-            servers.insert(server.id.clone(), serde_json::Value::Object(server_obj));
-        }
-
-        let config = serde_json::json!({
-            "mcp_servers": servers
-        });
-
-        // Write to temp file
-        let config_str = serde_json::to_string(&config)
-            .map_err(|e| CliError::Usage(format!("failed to serialize MCP config: {e}")))?;
-
-        let temp_path =
-            std::env::temp_dir().join(format!("mcp_config_{}.json", std::process::id()));
-        let temp_path_str = temp_path.to_string_lossy().to_string();
-
-        std::fs::write(&temp_path, config_str).map_err(|e| {
-            CliError::Usage(format!("failed to write MCP config to temp file: {e}"))
-        })?;
-
-        Ok(Some(temp_path_str))
-    } else {
-        Ok(None)
-    }
+    harness_provider_claude::write_claude_mcp_config(mcp)
+        .map(|path| path.map(|path| path.to_string_lossy().into_owned()))
+        .map_err(CliError::Usage)
 }
 
 pub(super) fn run_codex_exec_process(
@@ -96,130 +46,16 @@ pub(super) fn run_codex_exec_process(
     // Build LaunchSpec from member and message
     let spec = build_launch_spec(member, message);
 
-    let mut cmd = Command::new("codex");
-    cmd.arg("exec");
-
-    // Resume an existing session when the member already carries a provider
-    // thread id (from a prior delivery). `codex exec resume <id>` continues the
-    // same conversation so memory carries across deliveries. The resume
-    // subcommand inherits the original session's sandbox / working roots and
-    // does not accept `--sandbox` / `-C` / `--add-dir`, so those are only mapped
-    // on the fresh-session path below.
-    let resuming = spec.resume.is_some();
-    if let Some(resume_id) = &spec.resume {
-        cmd.arg("resume")
-            .arg("--json")
-            .arg(resume_id)
-            .arg(&message_content);
-    } else {
-        cmd.arg("--json").arg(&message_content);
-    }
-    cmd.env("CODEX_DEVELOPER_INSTRUCTIONS", developer_instructions);
-
-    // Map LaunchSpec to codex flags
-    apply_codex_model_and_effort_args(&mut cmd, &spec);
-    apply_codex_output_schema_arg(&mut cmd, &spec, session_dir)?;
-    apply_codex_mcp_args(&mut cmd, &spec)?;
-
-    if !resuming {
-        // Map permission to sandbox (fresh sessions only).
-        let sandbox = CodexCompatibilityDelivery.map_permission(spec.permission);
-        cmd.arg("--sandbox").arg(sandbox);
-
-        // Map workspace and writable roots (fresh sessions only).
-        if let Some(workspace) = &spec.workspace {
-            cmd.arg("-C").arg(workspace);
-        }
-        for root in &spec.writable_roots {
-            cmd.arg("--add-dir").arg(root);
-        }
-    }
-
-    cmd.current_dir(&cwd);
-
-    let run = run_ndjson_child(cmd, timeout_ms, None, "codex exec")?;
-    let events = run
-        .events
-        .iter()
-        .filter_map(|payload| serde_json::to_string(payload).ok())
-        .filter_map(|line| CodexExecEvent::parse_line(&line))
-        .collect();
-
-    Ok((run.process_success, events, run.events, run.stderr))
-}
-
-pub(super) fn apply_codex_model_and_effort_args(cmd: &mut Command, spec: &LaunchSpec) {
-    if let Some(model) = &spec.model {
-        cmd.arg("-m").arg(model);
-    }
-    // Reasoning effort: codex takes it as a config override (no dedicated flag).
-    if let Some(effort) = &spec.effort {
-        cmd.arg("-c")
-            .arg(format!("model_reasoning_effort={effort}"));
-    }
-}
-
-pub(super) fn apply_codex_output_schema_arg(
-    cmd: &mut Command,
-    spec: &LaunchSpec,
-    session_dir: &Path,
-) -> CliResult<()> {
-    if let Some(schema) = &spec.output_schema {
-        let schema_path = session_dir.join("output-schema.json");
-        let schema_json = schema_to_json_schema(schema);
-        fs::write(&schema_path, schema_json.to_string()).map_err(|e| {
-            CliError::Usage(format!(
-                "failed to write codex output schema to {}: {e}",
-                schema_path.display()
-            ))
-        })?;
-        cmd.arg("--output-schema").arg(&schema_path);
-    }
-    Ok(())
-}
-
-pub(super) fn apply_codex_mcp_args(cmd: &mut Command, spec: &LaunchSpec) -> CliResult<()> {
-    let Some(mcp) = &spec.mcp else {
-        return Ok(());
-    };
-
-    for server in &mcp.servers {
-        let id_key = codex_mcp_id_key(&server.id);
-        if !server.command.is_empty() {
-            // Codex stdio MCP config stores the binary separately from argv rest.
-            let bin = serde_json::to_string(&server.command[0])
-                .map_err(|e| CliError::Usage(format!("mcp command serialize: {e}")))?;
-            cmd.arg("-c")
-                .arg(format!("mcp_servers.{id_key}.command={bin}"));
-            if server.command.len() > 1 {
-                let args = serde_json::to_string(&server.command[1..])
-                    .map_err(|e| CliError::Usage(format!("mcp args serialize: {e}")))?;
-                cmd.arg("-c")
-                    .arg(format!("mcp_servers.{id_key}.args={args}"));
-            }
-        } else if let Some(url) = &server.url {
-            let u = serde_json::to_string(url)
-                .map_err(|e| CliError::Usage(format!("mcp url serialize: {e}")))?;
-            cmd.arg("-c").arg(format!("mcp_servers.{id_key}.url={u}"));
-        }
-        // Codex's mcp_servers schema has no allowed_tools field, so the neutral
-        // allowlist is intentionally not mapped; transport is implied by
-        // command-vs-url.
-    }
-
-    Ok(())
-}
-
-pub(super) fn codex_mcp_id_key(id: &str) -> String {
-    if !id.is_empty()
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        id.to_string()
-    } else {
-        serde_json::to_string(id).expect("serializing string key should not fail")
-    }
+    let run = harness_provider_codex::run_codex_compatibility(
+        &spec,
+        &message_content,
+        &developer_instructions,
+        Path::new(&cwd),
+        session_dir,
+        Duration::from_millis(timeout_ms),
+    )
+    .map_err(CliError::Usage)?;
+    Ok((run.process_success, run.events, run.raw_events, run.stderr))
 }
 
 /// This is the exec-stream variant of run_codex_app_server_exchange.
@@ -575,101 +411,31 @@ pub(super) fn run_claude_exec_delivery_real(
     // Build LaunchSpec from member and message
     let spec = build_launch_spec(member, message);
 
-    // Build command: claude -p "<message_content>" --output-format stream-json --verbose
-    // plus mapped flags from launch spec.
-    let mut cmd = Command::new("claude");
-    cmd.arg("-p")
-        .arg(&message_content)
-        .arg("--output-format")
-        .arg("stream-json")
-        .arg("--verbose");
-
-    // Resume an existing session when the member already carries a provider
-    // session id (from a prior delivery). `claude -p --resume <session_id>`
-    // continues the same conversation so memory carries across deliveries.
-    if let Some(resume_id) = &spec.resume {
-        cmd.arg("--resume").arg(resume_id);
-    }
-
-    // Append system prompt if present.
-    if !system_prompt.is_empty() {
-        cmd.arg("--append-system-prompt").arg(&system_prompt);
-    }
-
-    // Map LaunchSpec to claude flags
-    // Model selection
-    apply_claude_model_and_effort_args(&mut cmd, &spec);
-    apply_claude_output_schema_arg(&mut cmd, &spec);
-
-    // Permission mapping
-    let permission_mode = ClaudeCompatibilityDelivery.map_permission(spec.permission);
-    cmd.arg("--permission-mode").arg(permission_mode);
-
-    // Tools (allowed-tools if spec.tools is non-empty)
-    if !spec.tools.is_empty() {
-        let tools_arg = spec.tools.join(",");
-        cmd.arg("--allowedTools").arg(tools_arg);
-    }
-
-    // MCP config (write temp JSON if present)
-    if let Some(mcp_path) = write_temp_mcp_config(spec.mcp.as_ref())? {
-        cmd.arg("--mcp-config").arg(&mcp_path);
-    }
-
-    // Workspace roots (from spec.workspace and spec.writable_roots)
-    if let Some(workspace) = &spec.workspace {
-        cmd.arg("--add-dir").arg(workspace);
-    }
-    for root in &spec.writable_roots {
-        cmd.arg("--add-dir").arg(root);
-    }
-
-    // Add working directory.
-    cmd.current_dir(&cwd);
-
-    let run = run_ndjson_child(cmd, timeout_ms, None, "claude -p process")?;
-    let events = run
-        .events
-        .iter()
-        .filter_map(|payload| serde_json::to_string(payload).ok())
-        .filter_map(|line| ClaudeStreamEvent::parse_line(&line))
-        .collect::<Vec<_>>();
-
-    let session_id = extract_session_id_from_claude_events(&events);
+    let run = harness_provider_claude::run_claude_compatibility(
+        &spec,
+        &message_content,
+        &system_prompt,
+        Path::new(&cwd),
+        Duration::from_millis(timeout_ms),
+    )
+    .map_err(CliError::Usage)?;
     Ok((
         run.process_success,
-        events,
         run.events,
-        session_id,
+        run.raw_events,
+        run.session_id,
         run.stderr,
     ))
 }
 
-pub(super) fn apply_claude_model_and_effort_args(cmd: &mut Command, spec: &LaunchSpec) {
-    if let Some(model) = &spec.model {
-        cmd.arg("--model").arg(model);
-    }
-    // Reasoning effort: claude has a native session flag.
-    if let Some(effort) = &spec.effort {
-        cmd.arg("--effort").arg(effort);
-    }
-}
-
-pub(super) fn apply_claude_output_schema_arg(cmd: &mut Command, spec: &LaunchSpec) {
-    if let Some(schema) = &spec.output_schema {
-        cmd.arg("--json-schema")
-            .arg(schema_to_json_schema(schema).to_string());
-    }
-}
-
-/// Build a [`resident::ResidentConfig`] from the same launch inputs the default
+/// Build a provider-owned [`harness_provider_claude::ResidentConfig`] from the same launch inputs the default
 /// path uses, so the resident invocation surface matches `claude -p` flag for
 /// flag (only `-p <prompt>` becomes `--input-format stream-json`).
 pub(super) fn build_resident_config(
     member: &ProviderLaunchProfile,
     message: &RegistryMessage,
     project: &ProjectContext,
-) -> resident::ResidentConfig {
+) -> harness_provider_claude::ResidentConfig {
     let spec = build_launch_spec(member, message);
     let system_prompt = provider_developer_instructions(member);
     // Same cwd precedence as the default Claude path (P3, Stage 3):
@@ -686,7 +452,7 @@ pub(super) fn build_resident_config(
         add_dirs.push(root.clone());
     }
 
-    resident::ResidentConfig {
+    harness_provider_claude::ResidentConfig {
         binary: "claude".into(),
         model: spec.model.clone(),
         effort: spec.effort.clone(),
@@ -694,8 +460,7 @@ pub(super) fn build_resident_config(
             .output_schema
             .as_ref()
             .map(|schema| schema_to_json_schema(schema).to_string()),
-        permission_mode: ClaudeCompatibilityDelivery
-            .map_permission(spec.permission)
+        permission_mode: harness_provider_claude::claude_compatibility_permission(spec.permission)
             .to_string(),
         tools: spec.tools.clone(),
         system_prompt,
@@ -735,9 +500,10 @@ pub(super) fn run_claude_resident_delivery_real(
     let stderr_path = session_dir.join("claude.stderr");
     let timeout = Duration::from_millis(timeout_ms.max(1));
 
-    let mut resident = resident::ResidentClaude::spawn(config, &stderr_path).map_err(|error| {
-        CliError::Usage(format!("failed to spawn resident claude process: {error}"))
-    })?;
+    let mut resident = harness_provider_claude::ResidentClaude::spawn(config, &stderr_path)
+        .map_err(|error| {
+            CliError::Usage(format!("failed to spawn resident claude process: {error}"))
+        })?;
 
     // Drive exactly one turn. On error (timeout / dead child) the resident is
     // dropped (stdin closed, child reaped) and we surface a failed tuple,
