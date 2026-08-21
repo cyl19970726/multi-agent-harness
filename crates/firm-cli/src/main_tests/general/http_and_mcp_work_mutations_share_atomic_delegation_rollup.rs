@@ -1,4 +1,3 @@
-
 #[cfg(any())]
 #[test]
 fn http_and_mcp_work_mutations_share_atomic_delegation_rollup() {

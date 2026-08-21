@@ -1,4 +1,3 @@
-
 #[test]
 fn canonical_surface_equivalence() {
     use harness_store::canonical_surface;

@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn current_remote_fact_fixture() -> (

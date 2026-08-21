@@ -1,4 +1,3 @@
-
 use super::*;
 
 /// A member brief must survive the identity grammar: it is free text and

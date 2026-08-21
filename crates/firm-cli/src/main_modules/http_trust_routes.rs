@@ -715,22 +715,21 @@ impl HttpExchange<'_> {
             // original accepted envelope byte-for-byte.
             if request.command != RuntimeCommandKind::AuthorMessage {
                 let command_id = format!("runtime-command:{idempotency_key}");
-                let original =
-                    store_owned
-                        .canonical_operations_for_space(&project_id)?
-                        .into_iter()
-                        .find(|operation| {
-                            operation.event.aggregate_kind == "runtime_command"
-                                && operation.event.aggregate_id == command_id
-                                && operation.event.transition == "accepted"
-                        })
-                        .map(|operation| {
-                            serde_json::from_value::<
+                let original = store_owned
+                    .canonical_operations_for_space(&project_id)?
+                    .into_iter()
+                    .find(|operation| {
+                        operation.event.aggregate_kind == "runtime_command"
+                            && operation.event.aggregate_id == command_id
+                            && operation.event.transition == "accepted"
+                    })
+                    .map(|operation| {
+                        serde_json::from_value::<
                                 harness_core::agentfirm_api::ControlCommandEnvelope,
                             >(operation.event.payload)
                             .map_err(CliError::Json)
-                        })
-                        .transpose()?;
+                    })
+                    .transpose()?;
                 if let Some(original) = original {
                     let exact_intent = original.command == request.command
                         && original.expires_unix_ms == request.expires_unix_ms
