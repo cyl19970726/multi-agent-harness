@@ -180,3 +180,11 @@ Landed DEV-58 milestones:
   The MCP tool contract includes all four current Team bindings, including
   `pi_rpc`, and `check:provider-runtime-packages` continuously enforces the
   closed catalog and forbidden crate edges.
+- current Claude wire-contract slice: makes
+  `apps/claude-member-runner/contract/runner-v1.json` the single command/event
+  vocabulary plus protocol-version/fingerprint authority consumed by both
+  Rust and Node. Rust embeds and validates it before spawning the runner; Node
+  validates the start handshake before loading the provider SDK. Deterministic
+  tests on both sides reject drift. Headless Host dispatch now resolves only
+  through the canonical typed Host catalog, so Codex and Pi remain declared
+  unsupported rather than falling through a parallel string registry.

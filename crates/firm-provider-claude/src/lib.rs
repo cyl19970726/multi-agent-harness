@@ -39,6 +39,7 @@ mod error;
 mod host_runtime;
 mod permission;
 mod resident;
+mod runner_contract;
 pub use compatibility::*;
 pub use error::{ClaudeError, ClaudeResult};
 pub use host_runtime::*;
@@ -82,29 +83,6 @@ pub struct ClaudeTeamRuntimeConfig {
     pub setting_sources: Vec<String>,
     pub resume_session_id: Option<String>,
     pub environment: Vec<(OsString, OsString)>,
-}
-
-impl ClaudeTeamRuntimeConfig {
-    fn start_frame(&self) -> Value {
-        json!({
-            "command": "start",
-            "payload": {
-                "teamRunId": self.team_run_id,
-                "memberRunId": self.member_run_id,
-                "memberName": self.member_name,
-                "roleLabel": self.role_label,
-                "cwd": self.cwd.to_string_lossy(),
-                "ownedPaths": self.owned_paths,
-                "model": self.model,
-                "effort": self.effort,
-                "permissionMode": self.permission_mode,
-                "allowedTools": self.allowed_tools,
-                "disallowedTools": self.disallowed_tools,
-                "settingSources": self.setting_sources,
-                "resumeSessionId": self.resume_session_id,
-            }
-        })
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +210,9 @@ struct ClaudeRunnerTransport {
 impl ClaudeRunnerTransport {
     fn spawn(config: &ClaudeTeamRuntimeConfig) -> CliResult<Self> {
         verify_runner_sdk_version(&config.runner_path)?;
+        // Validate and freeze the shared Rust/Node protocol before spawning
+        // the runner or allowing it to load the provider SDK.
+        let start_frame = config.start_frame()?;
 
         let mut command = Command::new("node");
         command
@@ -296,7 +277,7 @@ impl ClaudeRunnerTransport {
             last_interrupt_resumed_same_session: false,
             close_reason: None,
         };
-        transport.write_frame(&config.start_frame())?;
+        transport.write_frame(&start_frame)?;
         Ok(transport)
     }
 

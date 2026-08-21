@@ -1,0 +1,28 @@
+{
+  "protocolVersion": "claude-agent-sdk-runner/v1",
+  "fingerprint": "claude-agent-sdk-runner/v1@2026-08-22",
+  "commands": [
+    "start",
+    "deliver",
+    "interrupt",
+    "set_permission_mode",
+    "close"
+  ],
+  "events": [
+    "member_started",
+    "session_bound",
+    "assistant_message",
+    "consumed",
+    "turn_complete",
+    "turn_idle",
+    "delivered",
+    "interrupted",
+    "query_ended_by_interrupt",
+    "member_resumed_after_interrupt",
+    "permission_mode_changed",
+    "cross_lane_write",
+    "registry_write_failed",
+    "member_closed",
+    "runner_error"
+  ]
+}

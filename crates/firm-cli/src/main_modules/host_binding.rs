@@ -359,25 +359,26 @@ pub(super) fn dispatch_headless_host_once(
         ))
     })?;
     let provider = canonical_surface(&run.host_surface).to_string();
-    if !matches!(provider.as_str(), "codex" | "claude" | "kimi") {
-        return Err(CliError::Usage(format!(
-            "Host surface {:?} has no headless resume adapter",
+    let descriptor = harness_application::provider_descriptor(&provider).ok_or_else(|| {
+        CliError::Usage(format!(
+            "Host surface {:?} is not a production coding-agent provider",
             run.host_surface
-        )));
-    }
-    if provider == "codex" {
-        return Err(CliError::Usage(
-            "HEADLESS_HOST_READ_ONLY_UNAVAILABLE: Codex exact-session resume inherits the existing session sandbox and cannot currently prove a read-only Host turn; use the interactive Host or a provider transport that enforces read-only resume"
-                .to_string(),
-        ));
-    }
+        ))
+    })?;
+    let host_binding = descriptor.headless_host.ok_or_else(|| {
+        if provider == "codex" {
+            CliError::Usage(
+                "HEADLESS_HOST_READ_ONLY_UNAVAILABLE: Codex exact-session resume inherits the existing session sandbox and cannot currently prove a read-only Host turn; use the interactive Host or a provider transport that enforces read-only resume"
+                    .to_string(),
+            )
+        } else {
+            CliError::Usage(format!(
+                "HEADLESS_HOST_UNSUPPORTED: provider {provider} has no reviewed exact-session read-only Host binding"
+            ))
+        }
+    })?;
     let project_context = headless_host_project_context(resolved, &run)?;
-    let execution_mode = match provider.as_str() {
-        "codex" => "codex_exec",
-        "claude" => "claude_cli",
-        "kimi" => "kimi_acp",
-        _ => unreachable!("unsupported Host provider was rejected above"),
-    };
+    let execution_mode = host_binding.execution_mode;
     let mut profile = team_member_provider_profile_for_mode(&provider, Some(execution_mode));
     let detected = team_member_provider_version_output(&provider);
     let probe_error = detected.as_ref().err().cloned();
@@ -460,18 +461,21 @@ pub(super) fn dispatch_headless_host_once(
                     delivery: None,
                     sender_kind: SenderKind::System,
                 };
-                if provider == "kimi" {
-                    let turn = harness_provider_kimi::run_kimi_host_turn(
-                        &project_context.project_root,
-                        thread_id,
-                        &message.content,
-                        Duration::from_millis(timeout_ms),
-                    )
-                    .map_err(|error| StoreError::Conflict(error.to_string()))?;
-                    return host_dispatcher::DispatcherConsumerSuccess::new(
-                        (turn.response_text, delivered_attention_ids),
-                        turn.provider_receipt_id,
-                    );
+                match host_binding.binding {
+                    harness_application::HostRuntimeKind::KimiAcp => {
+                        let turn = harness_provider_kimi::run_kimi_host_turn(
+                            &project_context.project_root,
+                            thread_id,
+                            &message.content,
+                            Duration::from_millis(timeout_ms),
+                        )
+                        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+                        return host_dispatcher::DispatcherConsumerSuccess::new(
+                            (turn.response_text, delivered_attention_ids),
+                            turn.provider_receipt_id,
+                        );
+                    }
+                    harness_application::HostRuntimeKind::ClaudeCli => {}
                 }
 
                 let outcome = run_claude_host_delivery(

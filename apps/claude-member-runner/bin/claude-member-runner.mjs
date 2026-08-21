@@ -33,7 +33,7 @@ async function loadSdk() {
 }
 
 async function main() {
-  const sdk = await loadSdk();
+  let sdk = null;
   let runner = null;
   let started = null;
   let buffer = "";
@@ -58,6 +58,9 @@ async function main() {
         switch (frame.command) {
           case COMMANDS.start:
             if (runner) throw new Error("member already started");
+            // parseCommand verifies the shared version/fingerprint first. The
+            // provider SDK is intentionally loaded only after that gate.
+            sdk ??= await loadSdk();
             runner = createMemberRunner({ sdk, config: frame.payload, emit });
             // Not awaited: `start()` resolves only when the member ends.
             started = runner.start().catch((error) => {

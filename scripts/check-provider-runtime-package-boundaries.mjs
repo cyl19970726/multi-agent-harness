@@ -48,6 +48,16 @@ requireText(
   /PROVIDERS: \[ProviderDescriptor; 4\]/,
   "canonical provider catalog must remain closed over the four production providers",
 );
+requireText(
+  "crates/firm-provider-claude/src/runner_contract.rs",
+  /runner-v1\.json/,
+  "Claude Rust binding must consume the shared versioned runner contract",
+);
+requireText(
+  "apps/claude-member-runner/src/protocol.mjs",
+  /runner-v1\.json/,
+  "Claude Node runner must consume the same versioned contract before SDK loading",
+);
 
 for (const retiredCliNativeFile of [
   "crates/firm-cli/src/main_modules/provider_ephemeral.rs",

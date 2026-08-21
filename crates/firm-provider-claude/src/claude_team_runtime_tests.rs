@@ -1,6 +1,40 @@
 use super::*;
 
 #[test]
+fn start_frame_uses_the_shared_versioned_runner_contract() {
+    let config = ClaudeTeamRuntimeConfig {
+        runner_path: PathBuf::from("runner.mjs"),
+        cwd: PathBuf::from("/tmp/project"),
+        team_run_id: "team-run-test".into(),
+        member_run_id: "member-run-test".into(),
+        member_name: "Claude test".into(),
+        role_label: "developer".into(),
+        owned_paths: Vec::new(),
+        model: None,
+        effort: None,
+        permission_mode: "bypassPermissions".into(),
+        allowed_tools: None,
+        disallowed_tools: None,
+        setting_sources: Vec::new(),
+        resume_session_id: None,
+        environment: Vec::new(),
+    };
+    let frame = config.start_frame().expect("shared contract must parse");
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../apps/claude-member-runner/contract/runner-v1.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        frame.pointer("/payload/protocolVersion"),
+        contract.get("protocolVersion")
+    );
+    assert_eq!(
+        frame.pointer("/payload/protocolFingerprint"),
+        contract.get("fingerprint")
+    );
+}
+
+#[test]
 fn capability_surface_does_not_overclaim_goal_steer_or_strict_quiesce() {
     let bindings = ClaudeTeamRuntime::capability_bindings();
     let status = |name: &str| {

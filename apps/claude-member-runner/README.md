@@ -56,6 +56,12 @@ second transcript.
 NDJSON on stdio, one process per member. `harness-cli` writes commands, reads
 events. stderr is diagnostics and is never parsed.
 
+`contract/runner-v1.json` is the single Rust/Node wire vocabulary and handshake
+authority. The start frame must carry its exact `protocolVersion` and
+`fingerprint`; Node validates both before loading the provider SDK, while Rust
+embeds the same fixture and rejects an invalid contract before spawning the
+runner.
+
 Commands: `start`, `deliver`, `interrupt`, `set_permission_mode`, `close`.
 Events: `member_started`, `session_bound`, `assistant_message`, `turn_complete`,
 `turn_idle`, `delivered`, `interrupted`, `permission_mode_changed`,
@@ -113,7 +119,7 @@ node --test "apps/claude-member-runner/test/*.test.mjs"
 
 # Dry run of the whole protocol against the fake SDK
 printf '%s\n' \
-  '{"command":"start","payload":{"teamRunId":"t","memberRunId":"m","memberName":"Demo","cwd":"/tmp/p"}}' \
+  '{"command":"start","payload":{"protocolVersion":"claude-agent-sdk-runner/v1","protocolFingerprint":"claude-agent-sdk-runner/v1@2026-08-22","teamRunId":"t","memberRunId":"m","memberName":"Demo","cwd":"/tmp/p"}}' \
   '{"command":"deliver","payload":{"id":"work-1","kind":"work","sender_runtime_id":"host","body":"Create the requested artifact and submit the Work."}}' \
   '{"command":"deliver","payload":{"id":"message-1","kind":"message","sender_runtime_id":"host","work_id":"work-1","body":"Please include verification output."}}' \
   '{"command":"close","payload":{"reason":"closed_by_host"}}' \
