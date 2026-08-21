@@ -1,0 +1,794 @@
+use super::*;
+
+
+pub(super) fn team_run_work_command(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    args: &[String],
+) -> CliResult<()> {
+    require_subcommand(
+        args,
+        "team-run work list|show|create|delegate|delegation|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|reconcile-delivery|migrate-responsibility|poll-github-ci",
+    )?;
+    if matches!(args[0].as_str(), "delegate" | "delegation") {
+        return Err(CliError::Usage(
+            "RETIRED_WRITE_AUTHORITY: local TeamRun WorkDelegation commands are retired; use the Company Control Plane collaboration API and collaboration_delegation MCP reads"
+                .into(),
+        ));
+    }
+    match args[0].as_str() {
+        "list" => {
+            let team_run_id = value(args, "--team-run-id");
+            let team_id = value(args, "--team-id");
+            if team_run_id.is_some() == team_id.is_some() {
+                return Err(CliError::Usage(
+                    "team-run work list requires exactly one of --team-run-id or --team-id"
+                        .to_string(),
+                ));
+            }
+            let phase = value(args, "--phase")
+                .map(|raw| parse_work_phase(&raw))
+                .transpose()?;
+            let condition = value(args, "--condition")
+                .map(|raw| parse_work_condition(&raw))
+                .transpose()?;
+            let resolution = value(args, "--resolution")
+                .map(|raw| parse_work_resolution(&raw))
+                .transpose()?;
+            let member_run_id = value(args, "--member-run-id");
+            // `--since <cursor>`: delta read against the WorkOperation append
+            // order (see `work_operation_cursors` for why that order, and not
+            // Work::version or updated_at, is the cursor). Independent of the
+            // --status/--member-run-id value filters below: a Work can match
+            // both, either, or neither.
+            let since = value(args, "--since")
+                .map(|raw| {
+                    raw.parse::<u64>().map_err(|_| {
+                        CliError::Usage(
+                            "--since must be an integer WorkOperation-order cursor (pass the \
+                             next_since a previous `work list --since` call returned)"
+                                .to_string(),
+                        )
+                    })
+                })
+                .transpose()?;
+            let brief = has_flag(args, "--brief");
+            // The cursor is intentionally a per-TeamRun total order. A Team
+            // can span several runs, so accepting `--since` with `--team-id`
+            // would silently compare unrelated run-local positions.
+            let cursors = if since.is_some() {
+                let run_id = team_run_id.as_deref().ok_or_else(|| {
+                    CliError::Usage(
+                        "--since requires --team-run-id; Team-scoped list cursors are not yet a durable cross-run order"
+                            .to_string(),
+                    )
+                })?;
+                Some(work_operation_cursors(store, run_id)?)
+            } else {
+                None
+            };
+            let mut works = store
+                .latest_works()?
+                .into_iter()
+                .filter(|work| {
+                    team_run_id
+                        .as_deref()
+                        .is_some_and(|run_id| work.team_run_id == run_id)
+                        || team_id
+                            .as_deref()
+                            .is_some_and(|id| work.accountable_team_id.as_deref() == Some(id))
+                })
+                .filter(|work| phase.is_none_or(|phase| work.phase == phase))
+                .filter(|work| condition.is_none_or(|condition| work.condition == condition))
+                .filter(|work| {
+                    resolution.is_none_or(|resolution| work.resolution == Some(resolution))
+                })
+                .filter(|work| {
+                    member_run_id.as_deref().is_none_or(|member| {
+                        work.active_member_run_id.as_deref() == Some(member)
+                    })
+                })
+                .filter(|work| {
+                    since.is_none_or(|cursor| {
+                        cursors
+                            .as_ref()
+                            .and_then(|cursors| cursors.get(&work.id))
+                            .is_some_and(|sequence| *sequence > cursor)
+                    })
+                })
+                .collect::<Vec<_>>();
+            works.sort_by(|left, right| {
+                work_priority_rank(right.priority)
+                    .cmp(&work_priority_rank(left.priority))
+                    .then_with(|| left.created_at.cmp(&right.created_at))
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+            if brief {
+                // Plain text, one Work per line, no JSON wrapper: --since
+                // still filters this list, but the next_since watermark below
+                // is JSON-only (there is no room for a 6th field in the fixed
+                // brief line shape without breaking its stable format).
+                for work in &works {
+                    println!("{}", format_work_brief_line(work));
+                }
+                Ok(())
+            } else if let Some(since) = since {
+                let next_since = cursors
+                    .as_ref()
+                    .and_then(|cursors| cursors.values().copied().max())
+                    .unwrap_or(0)
+                    .max(since);
+                print_json(&serde_json::json!({
+                    "since": since,
+                    "next_since": next_since,
+                    "works": works,
+                }))
+            } else {
+                print_json(&works)
+            }
+        }
+        "show" => {
+            let work_id = required(args, "--work-id")?;
+            let work = store
+                .latest_works()?
+                .into_iter()
+                .find(|work| work.id == work_id)
+                .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
+            let events = store
+                .work_events()?
+                .into_iter()
+                .filter(|event| event.work_id == work_id)
+                .collect::<Vec<_>>();
+            let deliveries = store
+                .latest_work_deliveries()?
+                .into_iter()
+                .filter(|delivery| delivery.work_id == work_id)
+                .collect::<Vec<_>>();
+            // GitHub linkage display (issue #369 Phase 2): render each stored
+            // link, live-refreshing state/CI through `gh` when available.
+            // `source` distinguishes a fresh observation from the stored
+            // snapshot so a reader never mistakes stale data for live state.
+            let mut github_links = Vec::new();
+            for link in &work.github_links {
+                let raw = format!("{}/{}#{}", link.owner, link.repo, link.number);
+                let live = match link.kind {
+                    GitHubLinkKind::Issue => github_issue_link(&raw).ok(),
+                    GitHubLinkKind::PullRequest => github_pr_link(&raw).ok(),
+                };
+                let shown = live.as_ref().unwrap_or(link);
+                github_links.push(serde_json::json!({
+                    "kind": shown.kind,
+                    "owner": shown.owner,
+                    "repo": shown.repo,
+                    "number": shown.number,
+                    "url": shown.url,
+                    "status": shown.status,
+                    "ci_status": shown.ci_status,
+                    "ci_url": shown.ci_url,
+                    "source": if live.is_some() { "live" } else { "snapshot" },
+                }));
+            }
+            print_json(&serde_json::json!({
+                "work": work,
+                "events": events,
+                "deliveries": deliveries,
+                "github_links": github_links,
+            }))
+        }
+        "delegate" => {
+            let source_run_id = required(args, "--team-run-id")?;
+            let source_work_id = required(args, "--work-id")?;
+            let expected_version = required_work_version(args)?;
+            let target_team_id = required(args, "--target-team-id")?;
+            let source = store
+                .latest_works()?
+                .into_iter()
+                .find(|work| work.id == source_work_id)
+                .ok_or_else(|| CliError::Usage(format!("Work not found: {source_work_id}")))?;
+            if source.team_run_id != source_run_id {
+                return Err(CliError::Usage(format!(
+                    "Work {source_work_id} belongs to TeamRun {}, not {source_run_id}",
+                    source.team_run_id
+                )));
+            }
+            let source_owner = source.owner_member_id.clone().ok_or_else(|| {
+                CliError::Usage("DELEGATION_NOT_AUTHORIZED: source Work has no durable owner".to_string())
+            })?;
+            let target_runs = latest_team_runs_in_append_order(store)?
+                .into_iter()
+                .filter(|run| run.agent_team_id == target_team_id)
+                .filter(|run| {
+                    !matches!(
+                        run.status,
+                        TeamRunStatus::Completed | TeamRunStatus::Failed | TeamRunStatus::Cancelled
+                    )
+                })
+                .collect::<Vec<_>>();
+            if target_runs.len() != 1 {
+                return Err(CliError::Usage(format!(
+                    "DELEGATION_TARGET_INVALID: target Team {target_team_id} must have exactly one active TeamRun, found {}",
+                    target_runs.len()
+                )));
+            }
+            let target_run = &target_runs[0];
+            let context = if let Some(member_run_id) = value(args, "--member-run-id") {
+                member_work_context(args, &source_run_id, &member_run_id)?
+            } else {
+                host_work_context(args)
+            };
+            let now = context.created_at.clone();
+            let request_hash = content_hash_hex16(&context.idempotency_key);
+            let target_work_id = value(args, "--target-work-id")
+                .unwrap_or_else(|| format!("delegated-work-{request_hash}"));
+            let target_work = Work {
+                id: target_work_id.clone(),
+                team_run_id: target_run.id.clone(),
+                accountable_team_id: Some(target_team_id.clone()),
+                assignee_membership_id: None,
+                parent_work_id: None,
+                title: required(args, "--target-title")?,
+                context_markdown: required(args, "--target-context")?,
+                completion_criteria_markdown: required(args, "--target-completion-criteria")?,
+                phase: WorkPhase::Open,
+                condition: WorkCondition::Normal,
+                resolution: None,
+                owner_member_id: None,
+                active_member_run_id: None,
+                claim_mode: WorkClaimMode::TeamClaim,
+                eligible_member_ids: Vec::new(),
+                prerequisite_work_ids: Vec::new(),
+                priority: source.priority,
+                created_by_actor: context.performed_by_actor.clone(),
+                created_by_member_id: None,
+                result_summary: None,
+                blocker_reason: None,
+                artifact_refs: Vec::new(),
+                check_refs: Vec::new(),
+                github_links: Vec::new(),
+                version: 0,
+                created_at: String::new(),
+                updated_at: String::new(),
+            };
+            let delegation = WorkDelegation {
+                id: value(args, "--delegation-id")
+                    .unwrap_or_else(|| format!("work-delegation-{request_hash}")),
+                source_work_ref: WorkRef {
+                    team_run_id: source_run_id,
+                    work_id: source_work_id,
+                },
+                source_work_version: expected_version,
+                source_owner_member_id: source_owner,
+                created_by_member_run_id: None,
+                target_agent_team_id: target_team_id,
+                target_work_ref: WorkRef {
+                    team_run_id: target_run.id.clone(),
+                    work_id: target_work_id,
+                },
+                delegated_by_actor: context.performed_by_actor.clone(),
+                state: WorkDelegationState::Active,
+                resolution_summary: None,
+                blocker_reason: None,
+                version: 1,
+                created_at: now.clone(),
+                updated_at: now,
+            };
+            let (delegation, target_work) = store
+                .create_work_delegation_with_target_work(delegation, target_work, context)?;
+            print_json(&serde_json::json!({
+                "delegation": delegation,
+                "target_work": target_work,
+            }))
+        }
+        "delegation" => {
+            require_subcommand(args, "team-run work delegation list|show|cancel")?;
+            match args[1].as_str() {
+                "list" => {
+                    let source_work_id = value(args, "--source-work-id");
+                    let target_team_id = value(args, "--target-team-id");
+                    let state = value(args, "--state");
+                    let delegations = store
+                        .latest_work_delegations()?
+                        .into_iter()
+                        .filter(|delegation| {
+                            source_work_id.as_deref().is_none_or(|id| {
+                                delegation.source_work_ref.work_id == id
+                            })
+                        })
+                        .filter(|delegation| {
+                            target_team_id.as_deref().is_none_or(|id| {
+                                delegation.target_agent_team_id == id
+                            })
+                        })
+                        .filter(|delegation| {
+                            state.as_deref().is_none_or(|state| {
+                                serde_snake_label(&delegation.state) == state
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    print_json(&delegations)
+                }
+                "show" => {
+                    let id = required(args, "--delegation-id")?;
+                    let delegation = store
+                        .latest_work_delegations()?
+                        .into_iter()
+                        .find(|delegation| delegation.id == id)
+                        .ok_or_else(|| CliError::Usage(format!("Delegation not found: {id}")))?;
+                    let events = store
+                        .work_delegation_events()?
+                        .into_iter()
+                        .filter(|event| event.delegation_id == id)
+                        .collect::<Vec<_>>();
+                    print_json(&serde_json::json!({"delegation": delegation, "events": events}))
+                }
+                "cancel" => {
+                    let delegation = store.cancel_work_delegation(
+                        &required(args, "--delegation-id")?,
+                        required_work_version(args)?,
+                        &required(args, "--reason")?,
+                        host_work_context(args),
+                    )?;
+                    print_json(&delegation)
+                }
+                other => Err(CliError::Usage(format!(
+                    "unknown delegation command: {other}"
+                ))),
+            }
+        }
+        "create" => {
+            let team_run_id = required(args, "--team-run-id")?;
+            let acting_member_run_id = value(args, "--as-member-run-id");
+            let owner_member_run_id = value(args, "--owner-member-run-id");
+            let context = if let Some(member_run_id) = acting_member_run_id.as_deref() {
+                member_work_context(args, &team_run_id, member_run_id)?
+            } else {
+                host_work_context(args)
+            };
+            let claim_mode = value(args, "--claim-mode")
+                .map(|raw| parse_work_claim_mode(&raw))
+                .transpose()?
+                .unwrap_or(if owner_member_run_id.is_some() {
+                    WorkClaimMode::HostAssign
+                } else {
+                    WorkClaimMode::TeamClaim
+                });
+            // `--github-issue owner/repo#N` links the Work to a GitHub issue;
+            // `--github-pr owner/repo#N` links it to a pull request (issue
+            // #369). Both auto-populate artifact_refs (object URL) and PR
+            // links also populate check_refs (CI checks URL). A create-time
+            // PR link is what lets the daemon poll CI on the open/in-progress
+            // Work and auto-submit when the PR merges (Phase 2).
+            let mut github_links = Vec::new();
+            let mut artifact_refs = Vec::new();
+            let mut check_refs = Vec::new();
+            if let Some(raw) = value(args, "--github-issue") {
+                let link = github_issue_link(&raw)?;
+                if !artifact_refs.contains(&link.url) {
+                    artifact_refs.push(link.url.clone());
+                }
+                github_links.push(link);
+            }
+            if let Some(raw) = value(args, "--github-pr") {
+                let link = github_pr_link(&raw)?;
+                if !artifact_refs.contains(&link.url) {
+                    artifact_refs.push(link.url.clone());
+                }
+                if let Some(ci_url) = &link.ci_url {
+                    if !check_refs.contains(ci_url) {
+                        check_refs.push(ci_url.clone());
+                    }
+                }
+                github_links.push(link);
+            }
+            let context_markdown = value(args, "--context").unwrap_or_default();
+            let work = Work {
+                id: value(args, "--work-id").unwrap_or_else(|| generated_id("work")),
+                team_run_id,
+                accountable_team_id: None,
+                assignee_membership_id: None,
+                created_by_member_id: None,
+                parent_work_id: value(args, "--parent-work-id"),
+                title: required(args, "--title")?,
+                context_markdown,
+                completion_criteria_markdown: required(args, "--completion-criteria")?,
+                phase: WorkPhase::Open,
+        condition: WorkCondition::Normal,
+        resolution: None,
+                owner_member_id: None,
+                active_member_run_id: owner_member_run_id,
+                claim_mode,
+                eligible_member_ids: many(args, "--eligible-member-id"),
+                prerequisite_work_ids: many(args, "--prerequisite-work-id"),
+                priority: value(args, "--priority")
+                    .map(|raw| parse_work_priority(&raw))
+                    .transpose()?
+                    .unwrap_or(WorkPriority::Normal),
+                created_by_actor: context.performed_by_actor.clone(),
+                result_summary: None,
+                blocker_reason: None,
+                artifact_refs,
+                check_refs,
+                github_links,
+                version: 0,
+                created_at: String::new(),
+                updated_at: String::new(),
+            };
+            print_json(&store.insert_work(work, context)?)
+        }
+        "assign" => {
+            let membership_id = value(args, "--membership-id");
+            let member_run_id = value(args, "--member-run-id");
+            if membership_id.is_some() == member_run_id.is_some() {
+                return Err(CliError::Usage(
+                    "team-run work assign requires exactly one of --membership-id (canonical TeamMembership responsibility, DOC-106) or --member-run-id (legacy runtime-bound assignment)"
+                        .to_string(),
+                ));
+            }
+            if let Some(membership_id) = membership_id {
+                let space_id = resolved
+                    .execution_space_context
+                    .as_ref()
+                    .map(|space| space.id.clone())
+                    .ok_or_else(|| {
+                        CliError::Usage(
+                            "membership assignment requires an explicitly selected --space"
+                                .to_string(),
+                        )
+                    })?;
+                let work = store.assign_work_to_membership(
+                    &required(args, "--work-id")?,
+                    required_work_version(args)?,
+                    &membership_id,
+                    &space_id,
+                    host_work_context(args),
+                )?;
+                append_work_event(
+                    store,
+                    &work,
+                    TeamRunEventSourceKind::Host,
+                    None,
+                    "assigned",
+                    &format!("Work assigned to TeamMembership {membership_id}"),
+                )?;
+                print_json(&work)
+            } else {
+                let member_run_id = member_run_id.unwrap_or_default();
+                let work = store.assign_work(
+                    &required(args, "--work-id")?,
+                    required_work_version(args)?,
+                    &member_run_id,
+                    host_work_context(args),
+                )?;
+                append_work_event(
+                    store,
+                    &work,
+                    TeamRunEventSourceKind::Host,
+                    Some(member_run_id.clone()),
+                    "assigned",
+                    &format!("Work assigned to {member_run_id}"),
+                )?;
+                print_json(&work)
+            }
+        }
+        "migrate-responsibility" => {
+            let space_id = resolved
+                .execution_space_context
+                .as_ref()
+                .map(|space| space.id.clone())
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "responsibility migration requires an explicitly selected --space"
+                            .to_string(),
+                    )
+                })?;
+            let report =
+                store.migrate_work_responsibility(&space_id, host_work_context(args))?;
+            print_json(&report)
+        }
+        "claim" => {
+            let team_run_id = required(args, "--team-run-id")?;
+            let member_run_id = required(args, "--member-run-id")?;
+            let work = store.claim_work(
+                &required(args, "--work-id")?,
+                required_work_version(args)?,
+                &member_run_id,
+                member_work_context(args, &team_run_id, &member_run_id)?,
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Member,
+                Some(member_run_id.clone()),
+                "claimed",
+                &format!("Work claimed by {member_run_id}"),
+            )?;
+            print_json(&work)
+        }
+        "start" => {
+            let team_run_id = required(args, "--team-run-id")?;
+            let member_run_id = required(args, "--member-run-id")?;
+            let work = store.start_work(
+                &required(args, "--work-id")?,
+                required_work_version(args)?,
+                &member_run_id,
+                member_work_context(args, &team_run_id, &member_run_id)?,
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Member,
+                Some(member_run_id.clone()),
+                "started",
+                &format!("Work started by {member_run_id}"),
+            )?;
+            print_json(&work)
+        }
+        "block" => {
+            let team_run_id = required(args, "--team-run-id")?;
+            let work_id = required(args, "--work-id")?;
+            let expected_version = required_work_version(args)?;
+            let reason = required(args, "--reason")?;
+            if let Some(member_run_id) = value(args, "--member-run-id") {
+                let work = store.block_work(
+                    &work_id,
+                    expected_version,
+                    &member_run_id,
+                    &reason,
+                    member_work_context(args, &team_run_id, &member_run_id)?,
+                )?;
+                append_work_event(
+                    store,
+                    &work,
+                    TeamRunEventSourceKind::Member,
+                    Some(member_run_id.clone()),
+                    "blocked",
+                    &format!("Work blocked by {member_run_id}: {reason}"),
+                )?;
+                roll_up_target_work_delegations(store, &work, args)?;
+                print_json(&work)
+            } else {
+                let work = store.block_work_as_host(
+                    &work_id,
+                    expected_version,
+                    &reason,
+                    host_work_context(args),
+                )?;
+                append_work_event(
+                    store,
+                    &work,
+                    TeamRunEventSourceKind::Host,
+                    None,
+                    "blocked",
+                    &format!("Work blocked by host: {reason}"),
+                )?;
+                roll_up_target_work_delegations(store, &work, args)?;
+                print_json(&work)
+            }
+        }
+        "resume" => {
+            let team_run_id = required(args, "--team-run-id")?;
+            let work_id = required(args, "--work-id")?;
+            let expected_version = required_work_version(args)?;
+            let resolution = required(args, "--resolution")?;
+            if let Some(member_run_id) = value(args, "--member-run-id") {
+                let work = store.resume_work(
+                    &work_id,
+                    expected_version,
+                    &member_run_id,
+                    &resolution,
+                    member_work_context(args, &team_run_id, &member_run_id)?,
+                )?;
+                append_work_event(
+                    store,
+                    &work,
+                    TeamRunEventSourceKind::Member,
+                    Some(member_run_id.clone()),
+                    "resumed",
+                    &format!("Work resumed by {member_run_id}: {resolution}"),
+                )?;
+                roll_up_target_work_delegations(store, &work, args)?;
+                print_json(&work)
+            } else {
+                let work = store.resume_work_as_host(
+                    &work_id,
+                    expected_version,
+                    &resolution,
+                    host_work_context(args),
+                )?;
+                append_work_event(
+                    store,
+                    &work,
+                    TeamRunEventSourceKind::Host,
+                    None,
+                    "resumed",
+                    &format!("Work resumed by host: {resolution}"),
+                )?;
+                roll_up_target_work_delegations(store, &work, args)?;
+                print_json(&work)
+            }
+        }
+        "release" => {
+            let team_run_id = required(args, "--team-run-id")?;
+            let work_id = required(args, "--work-id")?;
+            let expected_version = required_work_version(args)?;
+            if let Some(member_run_id) = value(args, "--member-run-id") {
+                let work = store.release_work(
+                    &work_id,
+                    expected_version,
+                    &member_run_id,
+                    member_work_context(args, &team_run_id, &member_run_id)?,
+                )?;
+                append_work_event(
+                    store,
+                    &work,
+                    TeamRunEventSourceKind::Member,
+                    Some(member_run_id.clone()),
+                    "released",
+                    &format!("Work released by {member_run_id}"),
+                )?;
+                print_json(&work)
+            } else {
+                let work = store.release_work_as_host(
+                    &work_id,
+                    expected_version,
+                    host_work_context(args),
+                )?;
+                append_work_event(
+                    store,
+                    &work,
+                    TeamRunEventSourceKind::Host,
+                    None,
+                    "released",
+                    "Work released by host",
+                )?;
+                print_json(&work)
+            }
+        }
+        "submit" => {
+            let team_run_id = required(args, "--team-run-id")?;
+            let member_run_id = required(args, "--member-run-id")?;
+            // `--github-pr owner/repo#N` attaches the PR to the submission,
+            // auto-fetches its CI status via the `gh` API, and auto-populates
+            // artifact_refs (PR URL) + check_refs (CI checks URL) (issue #369).
+            let mut artifact_refs = many(args, "--artifact-ref");
+            let mut check_refs = many(args, "--check-ref");
+            let mut github_links = Vec::new();
+            let result = required(args, "--result")?;
+            if let Some(raw) = value(args, "--github-pr") {
+                let link = github_pr_link(&raw)?;
+                if !artifact_refs.contains(&link.url) {
+                    artifact_refs.push(link.url.clone());
+                }
+                if let Some(ci_url) = &link.ci_url {
+                    if !check_refs.contains(ci_url) {
+                        check_refs.push(ci_url.clone());
+                    }
+                }
+                github_links.push(link);
+            }
+            let work = store.submit_work_with_revision_and_links(
+                &required(args, "--work-id")?,
+                required_work_version(args)?,
+                &member_run_id,
+                &required(args, "--result")?,
+                artifact_refs,
+                check_refs,
+                github_links,
+                value(args, "--base-revision"),
+                value(args, "--candidate-revision"),
+                member_work_context(args, &team_run_id, &member_run_id)?,
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Member,
+                Some(member_run_id.clone()),
+                "submitted",
+                &format!("Work submitted by {member_run_id}: {result}"),
+            )?;
+            print_json(&work)
+        }
+        "poll-github-ci" => {
+            let team_run_id = required(args, "--team-run-id")?;
+            let summary = poll_team_run_github_linkages(store, &team_run_id)?;
+            print_json(&serde_json::json!({
+                "team_run_id": team_run_id,
+                "works_checked": summary.works_checked,
+                "links_refreshed": summary.links_refreshed,
+                "auto_submitted": summary.auto_submitted,
+                "blocked_on_failure": summary.blocked_on_failure,
+                "gate_ready": summary.gate_ready,
+                "gh_unavailable": summary.gh_unavailable,
+            }))
+        }
+        "request-changes" => {
+            let reason = required(args, "--reason")?;
+            let work = store.request_work_changes(
+                &required(args, "--work-id")?,
+                required_work_version(args)?,
+                &reason,
+                host_work_context(args),
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Host,
+                None,
+                "changes_requested",
+                &format!("Changes requested: {reason}"),
+            )?;
+            print_json(&work)
+        }
+        "accept" => {
+            let work_id = required(args, "--work-id")?;
+            let expected_version = required_work_version(args)?;
+            if has_flag(args, "--skip-gates") {
+                return Err(CliError::Usage(
+                    "--skip-gates is retired: declared Work gates are a Store invariant and cannot be bypassed"
+                        .to_string(),
+                ));
+            }
+            let work = store.accept_work(
+                &work_id,
+                expected_version,
+                host_work_context(args),
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Host,
+                None,
+                "accepted",
+                &format!("Work accepted: {}", work.title),
+            )?;
+            roll_up_target_work_delegations(store, &work, args)?;
+            print_json(&work)
+        }
+        "cancel" => {
+            let reason = required(args, "--reason")?;
+            let work = store.cancel_work(
+                &required(args, "--work-id")?,
+                required_work_version(args)?,
+                &reason,
+                host_work_context(args),
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Host,
+                None,
+                "cancelled",
+                &format!("Work cancelled: {reason}"),
+            )?;
+            roll_up_target_work_delegations(store, &work, args)?;
+            print_json(&work)
+        }
+        "retarget" => print_json(&store.retarget_work_execution(
+            &required(args, "--work-id")?,
+            required_work_version(args)?,
+            &required(args, "--successor-team-run-id")?,
+            value(args, "--successor-member-run-id").as_deref(),
+            host_work_context(args),
+        )?),
+        "reconcile-projection" => print_json(&store.reconcile_work_projection_provenance(
+            &required(args, "--work-id")?,
+            required_work_version(args)?,
+            host_work_context(args),
+        )?),
+        "reconcile-delivery" => print_json(&store.reconcile_stale_work_delivery_claim(
+            &required(args, "--team-run-id")?,
+            &required(args, "--delivery-id")?,
+            &required(args, "--supervisor-id")?,
+            required(args, "--supervisor-generation")?
+                .parse::<u64>()
+                .map_err(|_| {
+                    CliError::Usage("--supervisor-generation must be an integer".to_string())
+                })?,
+            current_unix_ms_u64(),
+            &now_string(),
+        )?),
+        other => Err(CliError::Usage(format!(
+            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|review|request-changes|accept|cancel|retarget|reconcile-projection|reconcile-delivery"
+        ))),
+    }
+}
