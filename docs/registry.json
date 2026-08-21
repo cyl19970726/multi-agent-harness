@@ -983,7 +983,8 @@
         "docs/current/product/mvp.md",
         "docs/current/architecture/schemas.md",
         "apps/claude-member-runner/bin/claude-member-runner.mjs",
-        "crates/firm-cli/src/resident.rs",
+        "crates/firm-provider-claude/src/resident.rs",
+        "apps/claude-member-runner/contract/runner-v1.json",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md"
       ],
       "machineConsumers": [
@@ -1709,7 +1710,7 @@
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
         "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
-        "crates/firm-cli/src/pi_rpc.rs",
+        "crates/firm-provider-pi/src/team_runtime.rs",
         "crates/firm-cli/src/main.rs"
       ],
       "machineConsumers": [
@@ -1734,7 +1735,7 @@
         },
         {
           "kind": "api",
-          "ref": "crates/firm-cli/src/pi_rpc.rs"
+          "ref": "crates/firm-provider-pi/src/team_runtime.rs"
         },
         {
           "kind": "api",
@@ -1913,7 +1914,7 @@
         "check-doc-links",
         "check-doc-governance"
       ],
-      "reviewAfter": "2026-08-20",
+      "reviewAfter": "2026-09-22",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],

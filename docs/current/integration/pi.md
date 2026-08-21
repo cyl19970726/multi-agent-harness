@@ -13,9 +13,9 @@ Agent Runtime; this file records only Pi-specific
 transport, session, delivery, privacy, and capability boundaries.
 
 Pi is the first binding of the provider-neutral Team runtime adapter
-(`crates/firm-cli/src/runtime_adapter.rs`): the member loop (wake → claim →
-cycle → settle) is shared, and Pi compiles the semantic intents into its RPC
-primitives. Its executable capability report is published as
+(`crates/firm-provider-pi/src/team_runtime.rs`): the application member loop
+(wake → claim → cycle → settle) is shared, and the provider package compiles
+semantic intents into Pi RPC primitives. Its executable capability report is published as
 `runtime_capability_bindings` on the `firm member providers` report.
 
 ## Current Mode Boundary
