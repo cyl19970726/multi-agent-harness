@@ -446,8 +446,6 @@ const forbiddenSignatures =
 const activeRoots = [
   "Cargo.toml",
   "Cargo.lock",
-  "crates/firm-core/src/lib.rs",
-  "crates/firm-store/src/lib.rs",
   "crates/firm-cli/Cargo.toml",
   "crates/firm-cli/src/main.rs",
   "crates/firm-cli/src/store_resolution.rs",
@@ -475,6 +473,28 @@ for (const path of activeFiles) {
   }
 }
 assertEqual(forbiddenHits, [], "active forbidden Dynamic Workflow signatures");
+
+// Core decode types and Store readers remain solely for lossless historical
+// export/verification. They are not active capability, but every old Store
+// writer must terminate at the explicit fail-closed boundary.
+const coreText = readFileSync(join(ROOT, "crates/firm-core/src/lib.rs"), "utf8");
+if (!coreText.includes("Retired Dynamic Workflow historical decode objects")) {
+  fail("firm-core historical Workflow decode types are not marked retired");
+}
+const storeText = readFileSync(join(ROOT, "crates/firm-store/src/lib.rs"), "utf8");
+for (const writer of [
+  "append_workflow_run",
+  "append_workflow_step",
+  "append_workflow_patch",
+  "append_workflow_artifact_manifest",
+]) {
+  const start = storeText.indexOf(`pub fn ${writer}`);
+  if (start < 0) fail(`${writer}: historical compatibility writer seam is absent`);
+  const body = storeText.slice(start, storeText.indexOf("\n    }", start) + 6);
+  if (!body.includes("reject_dynamic_workflow_write") || body.includes("append_jsonl")) {
+    fail(`${writer}: writer does not fail closed`);
+  }
+}
 
 const packageJson = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 for (const scriptName of ["check", "check:fast"]) {
