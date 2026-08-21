@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn new_agent_team_rejects_codex_exec_as_workflow_only() {
+fn new_agent_team_rejects_retired_codex_exec() {
     let (store, root) = temp_store("team-reject-codex-exec");
     let result = create_team_run(
         &store,
@@ -36,7 +36,7 @@ fn new_agent_team_rejects_codex_exec_as_workflow_only() {
         Err(error) => error,
     };
     assert!(
-        matches!(error, CliError::Usage(ref message) if message.contains("workflow-only")),
+        matches!(error, CliError::Usage(ref message) if message == "codex_exec is retired; Agent Team Codex members use codex_app_server"),
         "unexpected error: {error:?}"
     );
 
@@ -66,7 +66,7 @@ fn new_agent_team_rejects_codex_exec_as_workflow_only() {
         Err(error) => error,
     };
     assert!(
-        matches!(add_error, CliError::Usage(ref message) if message.contains("workflow-only")),
+        matches!(add_error, CliError::Usage(ref message) if message == "codex_exec is retired; Agent Team Codex members use codex_app_server"),
         "unexpected add-member error: {add_error:?}"
     );
     let _ = std::fs::remove_dir_all(root);

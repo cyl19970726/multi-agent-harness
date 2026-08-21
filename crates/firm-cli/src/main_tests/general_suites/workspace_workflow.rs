@@ -6,8 +6,8 @@ mod cheatsheet_command_dispatches_by_scope;
 mod cheatsheet_subcommands_exist_in_dispatch;
 #[path = "../general/claude_member_runtime_start_dispatches_to_claude_stub.rs"]
 mod claude_member_runtime_start_dispatches_to_claude_stub;
-#[path = "../general/new_agent_team_rejects_codex_exec_as_workflow_only.rs"]
-mod new_agent_team_rejects_codex_exec_as_workflow_only;
+#[path = "../general/new_agent_team_rejects_retired_codex_exec.rs"]
+mod new_agent_team_rejects_retired_codex_exec;
 #[path = "../general/pre_spawn_workspace_publish_bounds_repeated_conflicts_locally.rs"]
 mod pre_spawn_workspace_publish_bounds_repeated_conflicts_locally;
 #[path = "../general/pre_spawn_workspace_publish_rebases_benign_drift_and_fences_provenance.rs"]
