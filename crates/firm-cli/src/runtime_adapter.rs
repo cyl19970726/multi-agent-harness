@@ -25,7 +25,8 @@
 //! - one execution driver per native session + writable workspace: the
 //!   supervisor lease + generation fencing stays the single-driver seam.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
@@ -36,7 +37,6 @@ use harness_core::agentfirm_api::{AgentSessionStatus, PermissionCeiling};
 use crate::provider_adapter::{
     self, PendingProviderControl, ProviderControlDispatch, ProviderNativeControl,
 };
-use crate::provider_event_api::LiveProviderActivityKind;
 use crate::supervisor_wake::{WakeBackoff, WakePolicy};
 use crate::{
     active_work_continuation_prompt, emit_live_provider_activity, mark_message_delivered,
@@ -102,31 +102,27 @@ pub(crate) use capabilities::*;
 
 /// Harness control intents delivered mid-cycle. Ordinary Messages never
 /// appear here — they remain in the durable queue until the cycle settles.
-#[derive(Debug)]
-pub(crate) struct PendingSteer {
-    pub content: String,
-    pub success_reply: Value,
-    pub reply: SyncSender<CliResult<Value>>,
-    pub admission: crate::ProviderEffectAdmission,
-}
-
 pub(crate) use harness_runtime_contract::{
-    CapabilityBinding, CapabilityStatus, ControlTransportReceipt,
-    CycleRuntimeObservation as RuntimeObservation, ExecutionCycleOutcome, QuiesceOutcome,
-    SteerProviderResult,
+    CapabilityBinding, CapabilityStatus, ControlTransportReceipt, CycleControl,
+    CycleRuntimeObservation as RuntimeObservation, ExecutionCycleOutcome, LiveProviderActivityKind,
+    QuiesceOutcome, SteerProviderResult, SteerRequest,
 };
 
-#[derive(Debug, Default)]
-pub(crate) struct CycleControl {
-    pub close: bool,
-    pub interrupt: bool,
-    /// Explicit Steer command bodies to compile into current-cycle injection
-    /// at the binding's next control boundary.
-    pub injects: Vec<PendingSteer>,
-    /// A control failed before reaching the provider boundary. The binding
-    /// must stop the cycle instead of silently continuing until a later
-    /// natural settlement.
-    pub fatal_error: Option<String>,
+struct PendingSteerSettlement {
+    success_reply: Value,
+    reply: Option<std::sync::mpsc::SyncSender<CliResult<Value>>>,
+    admission: crate::ProviderEffectAdmission,
+}
+
+impl Drop for PendingSteerSettlement {
+    fn drop(&mut self) {
+        if let Some(reply) = self.reply.take() {
+            let _ = reply.send(Err(CliError::Usage(
+                "RUNTIME_COMMAND_RECOVERY_REQUIRED: steer ended without provider settlement"
+                    .to_string(),
+            )));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -175,7 +171,7 @@ pub(crate) trait TeamRuntimeAdapter:
         input: &str,
         idle_timeout: Duration,
         on_input_accepted: &mut dyn FnMut(&ControlTransportReceipt) -> CliResult<()>,
-        on_steer_result: &mut dyn FnMut(&PendingSteer, &SteerProviderResult) -> CliResult<()>,
+        on_steer_result: &mut dyn FnMut(&SteerRequest, &SteerProviderResult) -> CliResult<()>,
         on_event: &mut dyn FnMut(&Value),
         poll_control: &mut dyn FnMut() -> CycleControl,
     ) -> CliResult<ExecutionCycleOutcome>;
@@ -629,6 +625,9 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
         // against the same Idle activity snapshot. Preserve that snapshot
         // until both commands settle, then publish the terminal Idle state.
         let terminal_control_dispatched = Cell::new(false);
+        let pending_steers: RefCell<HashMap<u64, PendingSteerSettlement>> =
+            RefCell::new(HashMap::new());
+        let next_steer_token = Cell::new(0u64);
 
         let round_start = member_row.clone();
         let turn_result = {
@@ -697,13 +696,22 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                     }
                     Ok(())
                 },
-                &mut |pending, result| {
+                &mut |request, result| {
                     ledger.require_supervisor_lease()?;
                     require_provider_session_authority(
                         ledger,
                         &member_row.agent_member_id,
                         true,
                     )?;
+                    let mut pending = pending_steers
+                        .borrow_mut()
+                        .remove(&request.token)
+                        .ok_or_else(|| {
+                            CliError::Usage(format!(
+                                "RUNTIME_COMMAND_RECOVERY_REQUIRED: unknown steer token {}",
+                                request.token
+                            ))
+                        })?;
                     match result {
                         SteerProviderResult::Acknowledged(receipt) => {
                             settle_provider_effect(
@@ -716,7 +724,13 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                                 })),
                                 None,
                             )?;
-                            let _ = pending.reply.send(Ok(pending.success_reply.clone()));
+                            if let Some(response_id) = receipt.response_id.as_ref() {
+                                pending.success_reply["provider_response_id"] =
+                                    response_id.clone().into();
+                            }
+                            if let Some(reply) = pending.reply.take() {
+                                let _ = reply.send(Ok(pending.success_reply.clone()));
+                            }
                             Ok(())
                         }
                         SteerProviderResult::Unknown(detail) => {
@@ -727,9 +741,11 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                                 None,
                                 Some(detail.clone()),
                             )?;
-                            let _ = pending.reply.send(Err(CliError::Usage(format!(
-                                "RUNTIME_COMMAND_RECOVERY_REQUIRED: {detail}"
-                            ))));
+                            if let Some(reply) = pending.reply.take() {
+                                let _ = reply.send(Err(CliError::Usage(format!(
+                                    "RUNTIME_COMMAND_RECOVERY_REQUIRED: {detail}"
+                                ))));
+                            }
                             Ok(())
                         }
                         SteerProviderResult::NotApplied(detail) => {
@@ -738,9 +754,9 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                                 &pending.admission,
                                 detail.clone(),
                             )?;
-                            let _ = pending
-                                .reply
-                                .send(Err(CliError::Usage(detail.clone())));
+                            if let Some(reply) = pending.reply.take() {
+                                let _ = reply.send(Err(CliError::Usage(detail.clone())));
+                            }
                             Ok(())
                         }
                     }
@@ -903,19 +919,23 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
                                         harness_core::agentfirm_api::RuntimeCommandKind::InjectCurrentCycle,
                                         "cycle.inject_current",
                                     ) {
-                                        Ok(admission) => control.injects.push(PendingSteer {
-                                            content,
-                                            success_reply: serde_json::json!({
+                                        Ok(admission) => {
+                                            let token = next_steer_token.get();
+                                            next_steer_token.set(token.saturating_add(1));
+                                            pending_steers.borrow_mut().insert(token, PendingSteerSettlement {
+                                                success_reply: serde_json::json!({
                                                 "member_run_id": member_row.id,
                                                 "status": "steer_accepted",
                                                 "delivery": "steered",
                                                 "provider_ack": format!(
                                                     "{provider}_native_input_accepted"
                                                 ),
-                                            }),
-                                            reply,
-                                            admission,
-                                        }),
+                                                }),
+                                                reply: Some(reply),
+                                                admission,
+                                            });
+                                            control.injects.push(SteerRequest { token, content });
+                                        }
                                         Err(error) => {
                                             let _ = reply.send(Err(error));
                                         }

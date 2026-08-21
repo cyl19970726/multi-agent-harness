@@ -15,7 +15,7 @@ use harness_provider_events::{
     DecodeContext, ProjectionAuthority, ProjectionViewer, ProviderKind, ProviderProjectionService,
     TranscriptReadBoundary,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::{CliError, CliResult};
@@ -35,16 +35,7 @@ pub(crate) struct LiveProviderScope {
     pub agent_session_generation: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum LiveProviderActivityKind {
-    Thinking,
-    ResponseStreaming,
-    ToolStarted,
-    ToolCompleted,
-    ToolFailed,
-    InteractionWaiting,
-}
+pub(crate) use harness_runtime_contract::LiveProviderActivityKind;
 
 #[derive(Clone, Debug, Serialize)]
 struct LiveProviderItem {

@@ -397,7 +397,7 @@ impl PiRpcClient {
         &mut self,
         control: &mut crate::runtime_adapter::CycleControl,
         on_steer_result: &mut dyn FnMut(
-            &crate::runtime_adapter::PendingSteer,
+            &crate::runtime_adapter::SteerRequest,
             &crate::runtime_adapter::SteerProviderResult,
         ) -> CliResult<()>,
     ) -> CliResult<Vec<crate::runtime_adapter::ControlTransportReceipt>> {
@@ -435,9 +435,6 @@ impl PiRpcClient {
                         &pending,
                         &crate::runtime_adapter::SteerProviderResult::Acknowledged(receipt.clone()),
                     )?;
-                    let mut reply = pending.success_reply;
-                    reply["provider_response_id"] = response_id.into();
-                    let _ = pending.reply.send(Ok(reply));
                     receipts.push(receipt);
                 }
                 Err(error) => {
@@ -448,7 +445,6 @@ impl PiRpcClient {
                         &pending,
                         &crate::runtime_adapter::SteerProviderResult::Unknown(detail.clone()),
                     )?;
-                    let _ = pending.reply.send(Err(CliError::Usage(detail.clone())));
                     for undispatched in injects {
                         let not_applied = format!(
                             "PI_STEER_NOT_DISPATCHED: an earlier steer failed before this command: {detail}"
@@ -459,7 +455,6 @@ impl PiRpcClient {
                                 not_applied.clone(),
                             ),
                         )?;
-                        let _ = undispatched.reply.send(Err(CliError::Usage(not_applied)));
                     }
                     return Err(CliError::Usage(detail));
                 }
@@ -635,7 +630,7 @@ impl PiRpcClient {
     where
         A: FnMut(&crate::runtime_adapter::ControlTransportReceipt) -> CliResult<()>,
         S: FnMut(
-            &crate::runtime_adapter::PendingSteer,
+            &crate::runtime_adapter::SteerRequest,
             &crate::runtime_adapter::SteerProviderResult,
         ) -> CliResult<()>,
         F: FnMut(&serde_json::Value),

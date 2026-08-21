@@ -108,4 +108,8 @@ Landed DEV-58 milestones:
   observations/receipts/outcomes, and provider-structured terminal failures
   owned by `firm-runtime-contract` instead of the CLI loop; provider-native
   interrupt/close plans and their executable control port now live there too,
-  while RuntimeCommand preparation/settlement stays in the application layer.
+  while RuntimeCommand preparation/settlement stays in the application layer;
+- current cycle-control slice: replaces provider-visible durable steer state
+  with opaque `SteerRequest` tokens and keeps admissions/API replies inside the
+  supervisor. Providers can observe content and return receipts, but cannot
+  settle RuntimeCommands or answer callers directly.

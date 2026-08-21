@@ -231,7 +231,7 @@ impl crate::runtime_adapter::TeamRuntimeAdapter for PiTeamRuntime {
             &crate::runtime_adapter::ControlTransportReceipt,
         ) -> CliResult<()>,
         on_steer_result: &mut dyn FnMut(
-            &crate::runtime_adapter::PendingSteer,
+            &crate::runtime_adapter::SteerRequest,
             &crate::runtime_adapter::SteerProviderResult,
         ) -> CliResult<()>,
         on_event: &mut dyn FnMut(&serde_json::Value),

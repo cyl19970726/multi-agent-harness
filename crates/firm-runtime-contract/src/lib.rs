@@ -128,6 +128,31 @@ pub enum SteerProviderResult {
     NotApplied(String),
 }
 
+#[derive(Debug)]
+pub struct SteerRequest {
+    pub token: u64,
+    pub content: String,
+}
+
+#[derive(Debug, Default)]
+pub struct CycleControl {
+    pub close: bool,
+    pub interrupt: bool,
+    pub injects: Vec<SteerRequest>,
+    pub fatal_error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveProviderActivityKind {
+    Thinking,
+    ResponseStreaming,
+    ToolStarted,
+    ToolCompleted,
+    ToolFailed,
+    InteractionWaiting,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderControlAction {

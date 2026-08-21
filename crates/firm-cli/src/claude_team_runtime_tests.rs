@@ -227,7 +227,7 @@ fn live_claude_21220_round_interrupt_close_and_same_session_resume() {
         resume_session_id,
         environment: Vec::new(),
     };
-    let mut no_steer = |_pending: &PendingSteer, _result: &SteerProviderResult| Ok(());
+    let mut no_steer = |_pending: &SteerRequest, _result: &SteerProviderResult| Ok(());
     let mut no_event = |_event: &Value| {};
 
     let mut first = ClaudeRunnerTransport::spawn(&config(None)).unwrap();

@@ -21,8 +21,8 @@ use crate::provider_adapter::{
 };
 use crate::runtime_adapter::{
     CapabilityBinding, CapabilityStatus, ControlTransportReceipt, CycleControl,
-    ExecutionCycleOutcome, PendingSteer, RuntimeObservation as CycleRuntimeObservation,
-    SteerProviderResult, TeamRuntimeAdapter,
+    ExecutionCycleOutcome, RuntimeObservation as CycleRuntimeObservation, SteerProviderResult,
+    SteerRequest, TeamRuntimeAdapter,
 };
 use crate::runtime_adapter_contract::{
     AdmissionDecision, ControlIntent, ControlRequest, EffectInspection, EffectReceipt,
@@ -718,7 +718,7 @@ impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B>
         input: &str,
         idle_timeout: Duration,
         on_input_accepted: &mut dyn FnMut(&ControlTransportReceipt) -> CliResult<()>,
-        on_steer_result: &mut dyn FnMut(&PendingSteer, &SteerProviderResult) -> CliResult<()>,
+        on_steer_result: &mut dyn FnMut(&SteerRequest, &SteerProviderResult) -> CliResult<()>,
         on_event: &mut dyn FnMut(&Value),
         poll_control: &mut dyn FnMut() -> CycleControl,
     ) -> CliResult<ExecutionCycleOutcome> {
