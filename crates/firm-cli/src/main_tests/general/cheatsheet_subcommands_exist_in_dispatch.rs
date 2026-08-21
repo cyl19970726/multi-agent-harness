@@ -2,7 +2,8 @@ use super::*;
 
 #[test]
 fn cheatsheet_subcommands_exist_in_dispatch() {
-    let team_run_body = function_body(MAIN_RS_SOURCE, "team_run_command");
+    let source = cli_command_source();
+    let team_run_body = function_body(&source, "team_run_command");
     for leaf in [
         "create",
         "start",
@@ -22,7 +23,7 @@ fn cheatsheet_subcommands_exist_in_dispatch() {
                  real match arm in team_run_command"
         );
     }
-    let work_body = function_body(MAIN_RS_SOURCE, "team_run_work_command");
+    let work_body = function_body(&source, "team_run_work_command");
     for leaf in [
         "create",
         "list",
@@ -37,7 +38,7 @@ fn cheatsheet_subcommands_exist_in_dispatch() {
                  real match arm in team_run_work_command"
         );
     }
-    let mission_body = function_body(MAIN_RS_SOURCE, "mission_command");
+    let mission_body = function_body(&source, "mission_command");
     // Mission writers retired with the legacy CompanyOS cutover
     // (DOC-108); only the read-only legacy reads remain documented.
     for leaf in ["list", "show", "log"] {
@@ -48,7 +49,7 @@ fn cheatsheet_subcommands_exist_in_dispatch() {
         );
     }
     // `mission log` is its own nested dispatcher (ADR 0051 Mission Log).
-    let mission_log_body = function_body(MAIN_RS_SOURCE, "mission_log_command");
+    let mission_log_body = function_body(&source, "mission_log_command");
     assert!(
         subcommand_is_real(mission_log_body, "show"),
         "mission log show is documented in the cheatsheet but is not a \

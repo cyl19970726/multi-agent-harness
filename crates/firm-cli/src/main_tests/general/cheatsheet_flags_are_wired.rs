@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn cheatsheet_flags_are_wired() {
+    let source = cli_command_source();
     // Flags are read straight off the CHEATSHEET_* consts (not a
     // hand-duplicated list) so editing a const can never silently skip
     // this check.
@@ -18,9 +19,9 @@ fn cheatsheet_flags_are_wired() {
         );
         for flag in &flags {
             assert!(
-                flag_is_wired(MAIN_RS_SOURCE, flag),
+                flag_is_wired(&source, flag),
                 "[{scope}] {flag} is documented in the cheatsheet but is not read by \
-                     value()/many()/has_flag()/required() anywhere in main.rs -- it may be \
+                     value()/many()/has_flag()/required() anywhere in the CLI command modules -- it may be \
                      a typo, or a stale/renamed flag"
             );
         }

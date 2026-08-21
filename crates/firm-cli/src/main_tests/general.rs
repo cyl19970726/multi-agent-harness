@@ -1223,9 +1223,30 @@ fn claude_403_status() -> String {
 // `flag_checker_rejects_a_fabricated_flag` below proves the checker
 // actually discriminates real flags from made-up ones.
 
-/// This file's own source, embedded so the checks below can verify the
-/// cheatsheet consts against the real argv-parsing code.
-const MAIN_RS_SOURCE: &str = include_str!("../main.rs");
+/// Load the production command surface so the checks below follow commands
+/// across the composition root and its semantically owned modules. Test source
+/// is deliberately excluded so a fabricated flag in an assertion cannot make
+/// itself appear wired.
+fn cli_command_source() -> String {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut paths = vec![src.join("main.rs")];
+    paths.extend(
+        std::fs::read_dir(src.join("main_modules"))
+            .expect("main_modules directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "rs")),
+    );
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| {
+            std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 /// Extract every distinct `--flag-name` token in `text`, including ones
 /// glued to punctuation with no separating space (e.g. `[--to`,
@@ -1268,10 +1289,10 @@ fn extract_flags(text: &str) -> std::collections::BTreeSet<&str> {
 /// line with a bare `}`, so this stays correct without a full
 /// brace-matching lexer.
 fn function_body<'a>(source: &'a str, fn_name: &str) -> &'a str {
-    let needle = format!("\nfn {fn_name}(");
+    let needle = format!("fn {fn_name}(");
     let start = source
         .find(&needle)
-        .unwrap_or_else(|| panic!("fn {fn_name} not found in main.rs"));
+        .unwrap_or_else(|| panic!("fn {fn_name} not found in the CLI command source"));
     let end = source[start..]
         .find("\n}\n")
         .map(|offset| start + offset)
