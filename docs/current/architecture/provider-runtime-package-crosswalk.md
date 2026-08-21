@@ -39,7 +39,7 @@ acceptance update.
 | `codex_claude_adapters.rs` | Codex/Claude one-shot parsing, process launch, delivery, runtime-control facts | current Claude Host/direct delivery plus historical Codex paths; mixed coordination writes | provider transport/bindings; application owns durable facts |
 | `provider_ephemeral.rs` | generic child-tree teardown and NDJSON runner plus unused orphan-pidfile parameters | current Host/compatibility transport; orphan registration had no caller | `firm-runtime-host` (extracted in DEV-58); CLI retains only error translation |
 | `process_reaper.rs` | snapshot/read-model helpers and legacy Team tolerance | application/read-model; filename is misleading | application projection package/module |
-| `codex_app_server.rs`, `codex_team_runtime.rs` | Codex native protocol and Team binding | current Team provider | app-server transport/protocol extracted to `firm-provider-codex`; Team/application binding remains to move |
+| `codex_app_server.rs`, `codex_team_runtime.rs` | Codex native protocol and Team binding | current Team provider | app-server transport/protocol, complete Team binding, and deterministic tests extracted to `firm-provider-codex`; CLI retains a narrow application callback/error adapter |
 | `claude_agent_sdk.rs`, `claude_team_runtime.rs`, `apps/claude-member-runner` | Claude Rust bridge, Team binding, Node runner | current Team provider | runtime process, reviewed runner protocol/version gate, complete Team binding, and tests extracted to `firm-provider-claude`; CLI retains a narrow application error/trait adapter; versioned Node runner asset remains in `apps/claude-member-runner` |
 | `kimi_acp.rs`, `kimi_team_runtime.rs` | Kimi ACP transport and Team binding | current Team provider; ACP transport also serves current Host | ACP process/protocol and its tests extracted to `firm-provider-kimi`; Team/application binding remains to move and Host consumes the same package through its own binding |
 | `pi_rpc/` | Pi RPC client and Team binding | current Team provider | RPC process/session/prompt/steer/abort, native-session validation, permission argv admission, and client tests extracted to `firm-provider-pi`; Team/application binding remains to move |
@@ -128,4 +128,9 @@ Landed DEV-58 milestones:
   session/version fencing, complete `TeamRuntimeAdapter`/`RuntimeAdapter`
   implementation, close lifecycle, and tests to `firm-provider-claude`.
   `firm-cli` retains only a 184-line application adapter that preserves typed
-  supervisor callback errors and delegates the provider contract.
+  supervisor callback errors and delegates the provider contract;
+- current Codex Team slice: extracts the complete app-server Team lifecycle,
+  native Goal supervision, provider reverse-request boundary, steer/interrupt,
+  close/quiesce/release behavior, and deterministic tests to
+  `firm-provider-codex`. `firm-cli` retains only a 182-line application adapter
+  for durable provider-interaction callbacks and typed supervisor lease loss.

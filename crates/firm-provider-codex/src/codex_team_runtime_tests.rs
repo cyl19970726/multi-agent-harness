@@ -7,8 +7,11 @@ use harness_core::agentfirm_api::{
     PermissionCeiling, RuntimeActivity, RuntimeCommandBinding, RuntimeDriverRef, RuntimeResidency,
 };
 use harness_core::{
-    ProviderBindingAdmission, ProviderCapabilityBinding, ProviderCapabilityEvidence,
-    ProviderCapabilityEvidenceKind, ProviderCapabilityStatus,
+    AgentRuntimeProvider, ControlTopology, OrdinaryMessageBoundary, ProviderBindingAdmission,
+    ProviderCapabilityBinding, ProviderCapabilityEvidence, ProviderCapabilityEvidenceKind,
+    ProviderCapabilityStatus, ProviderCompatibilityStatus, ProviderEventFidelity,
+    ProviderFeatureMode, ProviderInteractionMode, SecurityEnforcementLocus,
+    SecurityEnforcementLocusKind,
 };
 
 use super::*;
@@ -141,8 +144,40 @@ impl CodexAppServerBridge for FakeBridge {
 }
 
 fn close_profile_and_session() -> (ProviderIntegrationProfile, AgentSession) {
-    let mut profile =
-        crate::team_member_provider_profile_for_mode("codex", Some("codex_app_server"));
+    let mut profile = ProviderIntegrationProfile {
+        agent_runtime_provider: Some(AgentRuntimeProvider("codex".to_string())),
+        model_route: None,
+        provider: "codex".to_string(),
+        execution_mode: "codex_app_server".to_string(),
+        execution_driver: harness_core::agentfirm_api::MemberExecutionDriver::HostDriven,
+        provider_version: None,
+        adapter_contract_version: Some("codex-app-server-v1".to_string()),
+        reviewed_provider_versions: vec![REVIEWED_CODEX_APP_SERVER_VERSION.to_string()],
+        compatibility_status: ProviderCompatibilityStatus::Unknown,
+        adapter_reviewed_at: None,
+        compatibility_note: None,
+        interaction_mode: ProviderInteractionMode::PauseAndResume,
+        ordinary_message_boundary: OrdinaryMessageBoundary::NextRoundBatched,
+        plan_mode: ProviderFeatureMode::Native,
+        goal_mode: ProviderFeatureMode::Native,
+        tool_event_fidelity: ProviderEventFidelity::Structured,
+        artifact_event_fidelity: ProviderEventFidelity::Structured,
+        supports_cancel: true,
+        supports_resume: true,
+        observes_native_subagents: false,
+        observes_background_tasks: false,
+        thinking_transient_only: true,
+        control_topology: ControlTopology::ExternalProtocol,
+        composition_fingerprint: None,
+        capability_fingerprint: None,
+        capability_bindings: Vec::new(),
+        binding_admission: ProviderBindingAdmission::Failed,
+        adapter_bridge_revision: Some("codex-app-server-v1".to_string()),
+        security_enforcement_locus: SecurityEnforcementLocus {
+            kind: SecurityEnforcementLocusKind::ProviderNativePolicy,
+            note: None,
+        },
+    };
     profile.composition_fingerprint = Some("composition-codex-test".to_string());
     profile.capability_fingerprint = Some("capabilities-codex-test".to_string());
     profile.binding_admission = ProviderBindingAdmission::Active;
@@ -371,7 +406,7 @@ fn failed_terminal_is_settled_and_close_does_not_interrupt_it_again() {
     );
     assert!(outcome.terminal_observation.settled_boundary_observed);
 
-    let close = crate::runtime_adapter_contract::RuntimeAdapter::close_runtime(
+    let close = harness_runtime_contract::RuntimeAdapter::close_runtime(
         &mut adapter,
         RuntimeFence {
             binding: &fence_binding,
@@ -528,7 +563,7 @@ fn close_reaps_once_and_retains_the_native_thread_without_claiming_quiesce() {
     let binding = binding(&session);
     let mut adapter = CodexTeamRuntime::new(FakeBridge::completed("completed"));
     TeamRuntimeAdapter::bind_authority_session(&mut adapter, session, &profile).unwrap();
-    let receipt = crate::runtime_adapter_contract::RuntimeAdapter::close_runtime(
+    let receipt = harness_runtime_contract::RuntimeAdapter::close_runtime(
         &mut adapter,
         RuntimeFence {
             binding: &binding,
@@ -546,7 +581,7 @@ fn close_reaps_once_and_retains_the_native_thread_without_claiming_quiesce() {
         .evidence
         .iter()
         .all(|item| !item.contains("flush") && !item.contains("writable")));
-    let error = crate::runtime_adapter_contract::RuntimeAdapter::close_runtime(
+    let error = harness_runtime_contract::RuntimeAdapter::close_runtime(
         &mut adapter,
         RuntimeFence {
             binding: &binding,
@@ -573,7 +608,7 @@ fn close_inhibits_provider_driven_goal_before_interrupting_its_active_turn() {
     let mut adapter = CodexTeamRuntime::new(bridge);
     TeamRuntimeAdapter::bind_authority_session(&mut adapter, session, &profile).unwrap();
 
-    let receipt = crate::runtime_adapter_contract::RuntimeAdapter::close_runtime(
+    let receipt = harness_runtime_contract::RuntimeAdapter::close_runtime(
         &mut adapter,
         RuntimeFence {
             binding: &binding,
@@ -606,7 +641,7 @@ fn strong_quiesce_controls_an_active_goal_but_fails_closed_on_unprovable_drain_a
     let mut adapter = CodexTeamRuntime::new(bridge);
     TeamRuntimeAdapter::bind_authority_session(&mut adapter, session, &profile).unwrap();
 
-    let error = crate::runtime_adapter_contract::RuntimeAdapter::quiesce(
+    let error = harness_runtime_contract::RuntimeAdapter::quiesce(
         &mut adapter,
         RuntimeFence {
             binding: &binding,

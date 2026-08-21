@@ -29,11 +29,19 @@ pub type CodexResult<T> = Result<T, CodexError>;
 pub enum CodexError {
     #[error("{0}")]
     Usage(String),
+    #[error("application callback failed: {detail}")]
+    Callback {
+        detail: String,
+        supervisor_lease_lost: bool,
+    },
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
 }
+
+mod team_runtime;
+pub use team_runtime::*;
 
 type CliResult<T> = CodexResult<T>;
 type CliError = CodexError;
