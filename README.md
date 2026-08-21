@@ -41,8 +41,7 @@ active development surface:
   delivery fabric, locally and across machines;
 - Execution Spaces own coordination; Project Bindings own provider cwd,
   instructions, Skills, plugins, and MCP configuration;
-- Dynamic Workflows, provider admission gates, plugins, MCP, artifacts, and
-  events.
+- provider admission gates, plugins, MCP, artifacts, and events.
 
 Legacy Mission/Wave/Mission Log rows and the retired Company OS ledgers are
 historical evidence only, proven by the export/verify round-trip.
@@ -68,19 +67,16 @@ weaken product TeamWork acceptance and Gate semantics. See
 ## Quickstart: current execution foundation
 
 ```bash
-scripts/install-skill.sh --agent both --skill star-workflow
 cargo build -p firm-cli
 ./target/debug/firm serve --addr 127.0.0.1:8787
 pnpm install
 pnpm dashboard:dev
 ```
 
-Run a Dynamic Workflow:
-
-```bash
-./target/debug/firm workflow run-script prog.star \
-  --timeout-ms 300000 --max-budget-usd 2.00
-```
+Dynamic Workflow and its `firm workflow` commands are retired. Use Agent Teams
+with Work, identity-first Messages, provider-native sessions, and fenced
+RuntimeCommands. Host/provider-local orchestration remains an implementation
+detail, not another durable ledger.
 
 One service can manage many projects. See [multi-project](docs/current/operations/multi-project.md)
 and [getting started](docs/current/operations/getting-started.md).
@@ -108,7 +104,7 @@ and [getting started](docs/current/operations/getting-started.md).
 | `schemas/` | Stable wire schemas for implemented objects, plus legacy read-compatibility schemas. |
 | `crates/` | Rust store, core, CLI, execution, and provider infrastructure. |
 | `apps/agent-dashboard/` | React/Vite operator dashboard for harness state. |
-| `skills/` | Optional capabilities, including Dynamic Workflow authoring and Agent Team member operation. |
+| `skills/` | Optional capabilities, including Agent Team member operation. Skills are not product authority. |
 | `archive/` | Retired skills and packages kept as historical references only. |
 | `examples/adapters/` | Domain adapters; business-specific logic stays outside the generic core. |
 

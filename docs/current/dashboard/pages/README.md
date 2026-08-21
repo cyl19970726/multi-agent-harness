@@ -4,6 +4,10 @@ This directory owns page-level product and UX specs for Agent Workbench. A page
 spec explains why a page or workspace exists, which canonical harness objects it
 owns, what workflow proof it must show, and which failure modes it prevents.
 
+Here, "workflow proof" means proof that a user's current task journey is
+understandable; it does not refer to the retired Dynamic Workflow product.
+Page specs must not restore its routes, controls, or live projections.
+
 Page specs own their own layout contracts. Each page file must include detailed
 desktop, tablet, and mobile ASCII diagrams plus first-viewport content, region
 dimensions, scroll ownership, and screenshot acceptance questions.

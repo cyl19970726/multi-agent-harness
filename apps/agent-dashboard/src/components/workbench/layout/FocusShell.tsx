@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
  * context rail that supplements rather than fragments the activity stream.
  *
  * The shell has no object-specific assumptions. MemberRun, AgentMembership and
- * WorkflowRun callers supply their own header, stream, composer, and context.
+ * Callers supply their own header, stream, composer, and context.
  */
 export function FocusShell({
   header,

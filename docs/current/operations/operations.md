@@ -1,5 +1,11 @@
 # Operations
 
+Dynamic Workflow has no current operational commands, services, Dashboard
+routes, plugins, or recovery loops. Historical records use only the lossless
+legacy archive export/verify/restore-read path. Operational automation must not
+restore its writers or treat Host/provider-local orchestration as another
+Harness ledger.
+
 ## Repository Delivery Gate
 
 Repository development uses the canonical

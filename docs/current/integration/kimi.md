@@ -12,8 +12,8 @@ not be redefined here.
 
 ## Persistent Agent Team mode
 
-Kimi Agent Team members use only `kimi_acp`; bounded `kimi_exec` remains a
-Dynamic Workflow and historical-read substrate. Planning, continuation,
+Kimi Agent Team members use only `kimi_acp`; bounded `kimi_exec` describes
+retired Dynamic Workflow and historical records only. Planning, continuation,
 requested/effective controls, busy-turn mailbox behavior, Interrupt, restart,
 and native-session resume are defined in the focused
 [Kimi ACP Agent Team runtime](kimi-agent-team.md) contract.

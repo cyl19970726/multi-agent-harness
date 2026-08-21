@@ -97,6 +97,14 @@ impl HarnessStore {
     }
 
     pub fn append_delegation_run(&self, value: &DelegationRun) -> StoreResult<()> {
+        if value.mode == firm_core::DelegationMode::DynamicWorkflow
+            || value.workflow_run_id.is_some()
+        {
+            return self.reject_dynamic_workflow_write(&format!(
+                "append DelegationRun {} with workflow binding",
+                value.id
+            ));
+        }
         self.append_jsonl("delegation_runs.jsonl", value)
     }
 

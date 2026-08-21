@@ -12,6 +12,11 @@ portable methodology stays in the
 [bootstrap-project-workflow](../../../skills/bootstrap-project-workflow/references/governance.md)
 skill (the Governance Contract); the firm binary is the enforcer.
 
+Governance must fail when current documentation or distribution metadata
+reintroduces Dynamic Workflow commands, routes, writers, live projections, or
+authoring skills. References to it are valid only when explicitly historical
+or when describing legacy archive export/verify/restore-read.
+
 ## Commands
 
 ```text

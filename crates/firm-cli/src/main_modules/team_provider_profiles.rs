@@ -99,14 +99,12 @@ pub(super) fn team_member_provider_profile(provider: &str) -> ProviderIntegratio
 pub(super) fn validate_team_member_execution_mode(member: &TeamMemberSpec) -> CliResult<()> {
     if member.provider == "codex" && member.execution_mode.as_deref() == Some("codex_exec") {
         return Err(CliError::Usage(
-            "codex_exec is workflow-only; Agent Team Codex members use codex_app_server"
-                .to_string(),
+            "codex_exec is retired; Agent Team Codex members use codex_app_server".to_string(),
         ));
     }
     if member.provider == "claude" && member.execution_mode.as_deref() == Some("claude_cli") {
         return Err(CliError::Usage(
-            "claude_cli is workflow-only; Agent Team Claude members use claude_agent_sdk"
-                .to_string(),
+            "claude_cli is retired; Agent Team Claude members use claude_agent_sdk".to_string(),
         ));
     }
     if member.execution_mode.as_deref() == Some(EXECUTION_MODE_EXTERNAL_INTERACTIVE) {
@@ -587,9 +585,8 @@ pub(super) fn team_member_provider_profile_for_mode(
             },
         });
     }
-    // Agent Team Claude members are persistent Agent SDK sessions. `claude -p`
-    // remains available to bounded Dynamic Workflow adapters and historical
-    // records, but is not a second Team Member mode.
+    // Agent Team Claude members are persistent Agent SDK sessions. Historical
+    // `claude_cli` records remain readable but cannot start a new member.
     if provider == "claude" && matches!(requested_mode, Some("claude_agent_sdk") | None) {
         return finalized_provider_integration_profile(ProviderIntegrationProfile {
             agent_runtime_provider: Some(harness_core::AgentRuntimeProvider(provider.to_string())),
@@ -640,9 +637,8 @@ pub(super) fn team_member_provider_profile_for_mode(
             },
         });
     }
-    // Agent Team Codex members are interactive by definition. `codex exec`
-    // remains the bounded substrate for Dynamic Workflow and legacy one-shot
-    // delivery paths; it is not a second Team Member product mode.
+    // Agent Team Codex members are interactive by definition. Historical
+    // `codex_exec` records remain readable but cannot start a new member.
     if provider == "codex" && matches!(requested_mode, Some("codex_app_server") | None) {
         return finalized_provider_integration_profile(ProviderIntegrationProfile {
             agent_runtime_provider: Some(harness_core::AgentRuntimeProvider(provider.to_string())),
@@ -692,9 +688,8 @@ pub(super) fn team_member_provider_profile_for_mode(
         });
     }
     // Agent Team Pi members use RPC mode (`pi --mode rpc`), a persistent
-    // bidirectional JSONL-over-stdio protocol. `pi -p` (print mode) remains
-    // available to bounded Dynamic Workflow adapters, but is not a second
-    // Team Member product mode.
+    // bidirectional JSONL-over-stdio protocol. Retired print-mode records do
+    // not create a second Team Member product mode.
     if provider == "pi" && matches!(requested_mode, Some("pi_rpc") | None) {
         return finalized_provider_integration_profile(ProviderIntegrationProfile {
             agent_runtime_provider: Some(harness_core::AgentRuntimeProvider(provider.to_string())),
@@ -849,7 +844,7 @@ pub(super) fn team_member_provider_profile_for_mode(
             security_enforcement_locus: SecurityEnforcementLocus {
                 kind: SecurityEnforcementLocusKind::ProviderNativePolicy,
                 note: Some(
-                    "--sandbox and --ask-for-approval CLI flags on the workflow launch path"
+                    "historical codex_exec sandbox and approval flags"
                         .to_string(),
                 ),
             },
@@ -893,7 +888,7 @@ pub(super) fn team_member_provider_profile_for_mode(
             security_enforcement_locus: SecurityEnforcementLocus {
                 kind: SecurityEnforcementLocusKind::ProviderNativePolicy,
                 note: Some(
-                    "--permission-mode and --allowedTools on the workflow launch path".to_string(),
+                    "historical claude_cli permission-mode and allowedTools flags".to_string(),
                 ),
             },
         },

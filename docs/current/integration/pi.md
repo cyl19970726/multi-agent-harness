@@ -23,7 +23,7 @@ primitives. Its executable capability report is published as
 | Executor | Mode | Status |
 | --- | --- | --- |
 | Agent Team Member | `pi_rpc` | implemented persistent JSONL-over-stdio mode |
-| Dynamic Workflow / bounded execution | Pi print mode | outside this Team adapter |
+| Retired Dynamic Workflow record | Pi print mode | historical only; outside this Team adapter |
 | Historical Team record | native Pi session JSONL | readable when the recorded file is available |
 
 New Pi MemberRuns use `pi --mode rpc`. Harness does not fall back from

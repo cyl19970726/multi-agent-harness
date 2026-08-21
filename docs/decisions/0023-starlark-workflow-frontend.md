@@ -2,7 +2,14 @@
 
 ## Status
 
-Accepted, then **superseded in part** by the convergence note below. Originally
+**Superseded by the Dynamic Workflow retirement cutover.** The authoring
+surface, runtime routes, projections, and plugins described below are
+historical only. Historical records remain available through lossless legacy
+archive export, verification, and restore-read; this text is retained as
+decision-time evidence, not current authority.
+
+This decision was accepted, then superseded in part by the convergence note
+below, before full retirement. It originally
 added a **third** authoring front-end to the workflow runtime shipped in
 [0022 (Dynamic Workflow Runtime — JSON-IR)](0022-dynamic-workflow-runtime-json-ir.md),
 and inherits its provider-neutral boundary from

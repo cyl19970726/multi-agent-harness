@@ -79,7 +79,7 @@ AgentTeam.
 | Agent Conversation Workspace | one shared Host/Member shell with Team roster, exact Session activity, authored Messages, Work responsibility, selected context, profile/configuration and server-authorized actions | browser-authored authority, a second Work/Message model, copied provider transcript, or cross-Agent provider-private events |
 | Global Work Index | the read-only Global Work aggregate over authoritative TeamWork | a second task ledger or a Work mutation path |
 | Operator View / Nodes | ExecutionNode and machine-scoped NodeDaemon state | per-Team daemon claims |
-| Workflows | WorkflowRun/WorkflowStep/result/artifacts | Agent Team semantics |
+| Legacy archive | Historical Dynamic Workflow export/verify/restore-read evidence | current execution, Agent Team semantics, or mutation actions |
 | Debug | raw snapshot and diagnostics | primary product navigation |
 
 ## Component Policy

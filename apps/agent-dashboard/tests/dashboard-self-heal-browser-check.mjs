@@ -35,8 +35,7 @@ const fixtureSnapshot = {
   team_run_events: await jsonl("team_run_events"),
   evidence: await jsonl("evidence"),
   members: [], messages: [], events: [], provider_child_threads: [],
-  workflow_runs: [], workflow_steps: [], workflow_patches: [],
-  workflow_artifact_manifests: [], team_supervisor_leases: [],
+  team_supervisor_leases: [],
   team_member_close_requests: [],
 };
 const teamRunId = fixtureSnapshot.team_runs[0]?.id;
@@ -115,11 +114,6 @@ const api = createHttpServer((request, response) => {
     current: state.registryEmpty ? "" : "space-a",
     spaces: state.registryEmpty ? [] : ["space-a", "space-b"].map((id) => ({ id, name: id, store_root: `/tmp/${id}`, is_current: id === "space-a" })),
   });
-  // DOC-108 removed `/v1/companies*` from the real Runtime entirely; the App
-  // no longer calls it (see App.tsx's bootstrap effect), so this mock omits
-  // the route too — a request here would be a regression, and should fall
-  // through to the generic 404 below like it does against the real server.
-  if (url.pathname === "/v1/workflows") return jsonResponse(response, 200, []);
   if (url.pathname === "/v1/meta") return jsonResponse(response, 200, {
     git_rev: "unknown",
     built_at: null,

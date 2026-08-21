@@ -131,7 +131,7 @@ async function main() {
     shellSource.includes("Provider cwd boundary:")
       && shellSource.includes("Skill discovery boundary:")
       && shellSource.includes("Execution coordination:")
-      && shellSource.includes("Project Binding does not own Mission, AgentTeam, or Workflow storage.")
+      && shellSource.includes("Project Binding does not own coordination storage.")
       && shellSource.includes("selected.project_root")
       && shellSource.includes("selected.store_root"),
     "TopBar keeps Project Binding boundaries independent from Execution Space storage",

@@ -4,7 +4,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use harness_core::{
     MemberActionStatus, RegistryDeliveryStatus, RegistryMessage, RegistryMessageIntent, SenderKind,
-    WorkflowRunStatus, WorkflowStepStatus,
 };
 
 use super::*;
@@ -40,66 +39,10 @@ fn test_message(id: &str) -> RegistryMessage {
     }
 }
 
-fn test_workflow_run(id: &str) -> WorkflowRun {
-    WorkflowRun {
-        id: id.into(),
-        workflow_name: "test".into(),
-        project_binding_id: None,
-        status: WorkflowRunStatus::Running,
-        step_ids: Vec::new(),
-        created_at: "unix-ms:1".into(),
-        ended_at: None,
-        summary: None,
-        args: None,
-        agents_spawned: 0,
-        final_output: None,
-        initiated_by: None,
-        design_intent: None,
-        spec: None,
-        host_pid: None,
-        dry_run: false,
-        terminal_reason: None,
-        partial_output_available: false,
-    }
-}
-
-fn test_workflow_step(id: &str, run_id: &str) -> WorkflowStep {
-    WorkflowStep {
-        id: id.into(),
-        run_id: run_id.into(),
-        phase: "test".into(),
-        label: "test-step".into(),
-        native_session: None,
-        status: WorkflowStepStatus::Running,
-        output_summary: None,
-        result: None,
-        started_at: "unix-ms:1".into(),
-        ended_at: None,
-        terminal_reason: None,
-        partial: false,
-    }
-}
-
 fn message_frame(line: &str) -> Vec<SseEventFrame> {
     serde_json::from_str::<RegistryMessage>(line)
         .ok()
         .map(SseEventFrame::RegistryMessage)
-        .into_iter()
-        .collect()
-}
-
-fn workflow_run_frame(line: &str) -> Vec<SseEventFrame> {
-    serde_json::from_str::<WorkflowRun>(line)
-        .ok()
-        .map(SseEventFrame::WorkflowRun)
-        .into_iter()
-        .collect()
-}
-
-fn workflow_step_frame(line: &str) -> Vec<SseEventFrame> {
-    serde_json::from_str::<WorkflowStep>(line)
-        .ok()
-        .map(SseEventFrame::WorkflowStep)
         .into_iter()
         .collect()
 }
@@ -386,75 +329,6 @@ fn compacted_file_is_rebroadcast_rather_than_silently_skipped() {
     std::fs::remove_dir_all(&root).expect("cleanup");
 }
 
-/// Workflow runs and steps should be streamed via SSE like other events (WP2).
-#[test]
-fn workflow_run_and_step_broadcast_exactly_once() {
-    let root = unique_dir("workflow");
-    std::fs::create_dir_all(&root).expect("create root");
-    let run_path = root.join("workflow_runs.jsonl");
-    let step_path = root.join("workflow_steps.jsonl");
-
-    let manager = SseManager::new();
-    let rx = manager.subscribe(TEST_PID);
-    let mut offsets: HashMap<(String, String), u64> = HashMap::new();
-
-    // Write a workflow run and a step
-    let run = test_workflow_run("run-1");
-    let step = test_workflow_step("step-1", "run-1");
-    let run_row = serde_json::to_string(&run).expect("ser run");
-    let step_row = serde_json::to_string(&step).expect("ser step");
-
-    let mut run_file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&run_path)
-        .expect("open run");
-    run_file
-        .write_all(format!("{run_row}\n").as_bytes())
-        .expect("write run");
-    run_file.flush().expect("flush run");
-
-    let mut step_file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&step_path)
-        .expect("open step");
-    step_file
-        .write_all(format!("{step_row}\n").as_bytes())
-        .expect("write step");
-    step_file.flush().expect("flush step");
-
-    // Poll both files
-    check_and_broadcast_appends(
-        TEST_PID,
-        &root,
-        "workflow_runs.jsonl",
-        &mut offsets,
-        workflow_run_frame,
-        &manager,
-    );
-    check_and_broadcast_appends(
-        TEST_PID,
-        &root,
-        "workflow_steps.jsonl",
-        &mut offsets,
-        workflow_step_frame,
-        &manager,
-    );
-
-    let mut ledgers = Vec::new();
-    while let Ok(frame) = rx.try_recv() {
-        match frame {
-            SseEventFrame::ProjectionInvalidated(invalidation) => ledgers.push(invalidation.ledger),
-            other => panic!("unexpected frame {other:?}"),
-        }
-    }
-
-    assert_eq!(ledgers, ["workflow_runs.jsonl", "workflow_steps.jsonl"]);
-
-    std::fs::remove_dir_all(&root).expect("cleanup");
-}
-
 /// Member actions are durable Agent Team execution records. They must take
 /// the same project-scoped tail path as the attempt/member/message rows so
 /// a background HTTP start updates an already-open console without polling.
@@ -705,8 +579,6 @@ fn snapshot_only_execution_ledgers_have_an_invalidation_path() {
         "provider_processes.jsonl",
         "evidence.jsonl",
         "provider_child_threads.jsonl",
-        "workflow_patches.jsonl",
-        "workflow_artifact_manifests.jsonl",
         "delegation_runs.jsonl",
         "work_operations.jsonl",
         "work_delivery_updates.jsonl",

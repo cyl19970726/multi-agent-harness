@@ -1115,11 +1115,10 @@ fn claude_cli_is_rejected_for_agent_team_members() {
             "Legacy:Role:claude/cli",
         ],
     );
-    assert!(!out.status.success(), "claude/cli must be workflow-only");
+    assert!(!out.status.success(), "claude/cli must remain retired");
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains(
-            "claude_cli is workflow-only; Agent Team Claude members use claude_agent_sdk"
-        ),
+        String::from_utf8_lossy(&out.stderr)
+            .contains("claude_cli is retired; Agent Team Claude members use claude_agent_sdk"),
         "rejection should explain the supported boundary: {out:?}"
     );
 }

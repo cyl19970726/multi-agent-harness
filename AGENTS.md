@@ -1,14 +1,19 @@
 # Agent Operating Rules
 
-This repository builds Star Harness itself. Product truth lives in canonical
-docs, schemas, ADRs, and implemented stores. Execution claims must additionally
-be reconstructable from the native runtime records of the executor used.
+This repository builds Star Harness itself. Authority is question-scoped:
+accepted Notion Docs own current product intent; this checkout's code, schemas,
+configuration, and applicable `AGENTS.md` files own executable constraints;
+registered repository docs own only their named implementation/reference
+scope. Execution claims must additionally be reconstructable from the native
+runtime records of the executor used.
 
 This root file is deliberately small: it carries only product identity, the
 hard invariants an agent must hold before acting, and routing. Process detail
 (repository execution rules, proportional acceptance) lives in [docs/current/product/agent-operating-rules.md](docs/current/product/agent-operating-rules.md);
-canonical contracts live in the docs linked under [Routing](#routing). Where
-this file and a canonical doc conflict, the canonical doc wins — fix this file.
+canonical contracts live in the docs linked under [Routing](#routing). On an
+apparent conflict, identify the exact question and repair the non-owning
+projection. Neither this router nor any linked document wins outside its named
+scope.
 
 ## AgentFirm Execution Foundation Authority
 
@@ -19,8 +24,10 @@ tests, CI, executable contracts, and shipped behavior.
 - Start at [AgentFirm Home](https://app.notion.com/p/3b849a4fa3798115939cca2b0b9e6f2d)
   and verify its current authority notice before any Notion mutation.
 - Use the [Development System](https://app.notion.com/p/21e49a4fa37982a5b9f781cf04584034)
-  for the current Task and its immutable Review history. Delivery Runs are
-  Legacy / Advanced history, not a second current authority.
+  for its two ordinary tables: Development Tasks owns current work state;
+  Development Documents holds readable Dev/Spec submissions and immutable
+  Review history. Delivery Runs are Legacy / Advanced history, not a second
+  current authority.
 - Follow the [Development Playbook](https://app.notion.com/p/3b849a4fa37981a990a5cf0059dcfa4a)
   for Brain assignment, Dev work, exact-revision submission, Review, merge,
   and closeout.
@@ -28,10 +35,28 @@ tests, CI, executable contracts, and shipped behavior.
   READ ONLY / DO NOT CLAIM. Page location and relations never grant authority;
   authority follows the current AgentFirm Home notice.
 
-Notion owns current product intent and operating state. The repository owns
-what is actually implemented. When they diverge, record the gap in the
-Implementation Crosswalk and Development Work rather than silently rewriting
-either side.
+Accepted Notion docs own current product intent. This checkout's code, schemas,
+configuration, and applicable `AGENTS.md` files own executable constraints.
+When accepted intent is ahead of this checkout, treat target-only text as
+non-operative, record the Implementation Crosswalk delta, and fail closed; use
+the development Skill for the transition procedure.
+
+The Development System has two ordinary tables. One Development Task owns the
+current state of a change. Development Documents contains directly readable
+Dev/Spec submissions and immutable Review documents; a Review binds the exact
+document version or Git SHA it inspected. A provider Session is only an
+executor and native transcript owner, never a Task ledger or Review authority.
+If Task, Session, submission, or Review state disagrees, stop dispatching new
+work and reconcile the Task from those authoritative records first.
+
+Creating, assigning, executing, reviewing, retrying, blocking, or completing a
+repository Development Task triggers the single
+[agentfirm-development-loop](.agents/skills/agentfirm-development-loop/SKILL.md).
+Reading, explaining, or exploring the repository without operating that
+lifecycle does not trigger it merely because the file exists here.
+Before editing, inspect the actual branch, revision, worktree, and affected
+paths. Preserve user and other-session changes; do not reset, clean, revert, or
+reformat unrelated work. Resolve a real path collision through the Brain.
 
 ## Product Identity
 
@@ -44,8 +69,10 @@ writers are closed on every surface and its rows are export/verify-only through
 `harness legacy-company-os export|verify`. See
 [docs/current/product/prd.md](docs/current/product/prd.md).
 
-Agent Team, Dynamic Workflow, Host execution, providers, plugins, and MCP are
-the shared execution foundation. Their native relations are:
+Agent Team and Host execution, providers, plugins, and MCP are the shared
+execution foundation. Dynamic Workflow is retired; its historical records are
+available only through lossless legacy archive export, verification, and
+restore-read. Their current native relations are:
 
 ```text
 AgentTeam -> immutable node_id -> one machine-scoped NodeDaemon
@@ -109,10 +136,11 @@ doc carries the contract behind each rule.
    `RuntimeCommand` are independent planes and cannot authorize or mutate one
    another. `TeamMessage`, `TeamMessageProjection`, `team_messages.jsonl`, and
    their ACK/manual-ACK writers are Legacy read/export evidence only. There is
-   no Assignment Message compatibility path. For `dynamic_workflow`,
-   WorkflowRun/WorkflowStep and its
-   result/artifacts are the execution truth; for `host`, record the observable
-   outcome and artifacts without inventing controlled child objects.
+   no Assignment Message compatibility path. Dynamic Workflow is retired: its
+   historical records are legacy archive evidence only and no current surface
+   may write or project them as live state. For `host`, record the observable
+   outcome and artifacts without inventing controlled child objects or another
+   task ledger.
 3. **Mission/Wave/Mission Log are legacy, export-only history.** DOC-108
    retired them from the current model: no Mission, Mission Log, or Wave row
    may be created, updated, advanced, gated, or closed on any surface (CLI,
@@ -184,12 +212,14 @@ doc carries the contract behind each rule.
     The unified Work kernel is the shipped authority: do not
     create a second organization-agent identity or recreate a retired
     company-scoped task ledger, migration fallback, or dual-write Work path.
-11. **Skill optionality.** Skills are optional capabilities, never the
-    authority for product architecture or Lead behavior. Do not load a skill
-    merely because you are working in this repository; canonical docs, schemas,
-    code, and ADRs win any conflict. Retired planning skills must not be
-    installed, loaded, or referenced from active repository instructions. The
-    generic harness core stays domain-neutral.
+11. **Skill optionality.** Skills are procedural capabilities, never product
+    architecture authority. Load the development Skill when operating the
+    repository Development Task lifecycle named above; do not load it for an
+    unrelated read-only question. Other Skills load only when their own trigger
+    applies. Accepted Docs and checked-out executable constraints remain the
+    question-scoped authorities. Retired planning skills must not be installed,
+    loaded, or referenced from active repository instructions. The generic
+    harness core stays domain-neutral.
 
 ## Routing
 
@@ -241,6 +271,8 @@ This file states first principles only. Everything procedural is one hop away:
 
 - Repository execution rules and proportional acceptance:
   [docs/current/product/agent-operating-rules.md](docs/current/product/agent-operating-rules.md)
+- Repository development procedure:
+  [.agents/skills/agentfirm-development-loop/SKILL.md](.agents/skills/agentfirm-development-loop/SKILL.md)
 - Host and Member collaboration procedure:
   [skills/collaborate-as-agent-team-member/SKILL.md](skills/collaborate-as-agent-team-member/SKILL.md)
 - Gates and commands:

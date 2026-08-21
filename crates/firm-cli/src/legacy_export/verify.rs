@@ -10,11 +10,23 @@ pub fn verify_archive(archive: &Path) -> Result<VerifySummary, String> {
         fs::read(&manifest_path).map_err(|e| format!("read {}: {e}", manifest_path.display()))?;
     let manifest: Manifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|e| format!("parse {}: {e}", manifest_path.display()))?;
-    if manifest.format != ARCHIVE_FORMAT || manifest.version != ARCHIVE_VERSION {
-        return Err(format!(
-            "unsupported archive format/version: {}/{}",
-            manifest.format, manifest.version
-        ));
+    let includes_workflow_history =
+        if manifest.format == ARCHIVE_FORMAT && manifest.version == ARCHIVE_VERSION {
+            true
+        } else if manifest.format == PREVIOUS_ARCHIVE_FORMAT
+            && manifest.version == PREVIOUS_ARCHIVE_VERSION
+        {
+            false
+        } else {
+            return Err(format!(
+                "unsupported archive format/version: {}/{}",
+                manifest.format, manifest.version
+            ));
+        };
+    if includes_workflow_history {
+        validate_workflow_archive_contract(manifest.workflow_archive.as_ref())?;
+    } else if manifest.workflow_archive.is_some() {
+        return Err("v1 archive must not claim the v2 workflow archive contract".into());
     }
     if manifest.sources.is_empty() {
         return Err("archive manifest must contain at least one source".into());
@@ -133,6 +145,9 @@ pub fn verify_archive(archive: &Path) -> Result<VerifySummary, String> {
                 bytes,
             });
         }
+        if includes_workflow_history {
+            verify_workflow_history(archive, source, &snapshot_paths, &entries)?;
+        }
         for ledger in &source.linked_ledgers {
             let archive_path = format!("sources/{}/records/{ledger}", source.id);
             let entry = entries
@@ -238,7 +253,7 @@ pub fn verify_archive(archive: &Path) -> Result<VerifySummary, String> {
     }
 
     Ok(VerifySummary {
-        format: ARCHIVE_FORMAT.into(),
+        format: manifest.format,
         archive: canonical_string(archive),
         files: manifest.files.len(),
         edges: expected_edges.len() as u64,

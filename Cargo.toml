@@ -4,7 +4,6 @@ members = [
   "crates/firm-provider-events",
   "crates/firm-fabric",
   "crates/firm-store",
-  "crates/firm-workflow",
   "crates/firm-governance",
   "crates/firm-cli"
 ]

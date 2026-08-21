@@ -420,23 +420,6 @@ mod dashboard_doctor_tests {
     }
 }
 
-pub(super) fn hook_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "hook record --agent <agent> [--runtime <runtime>]")?;
-    match args[0].as_str() {
-        "record" => {
-            let provider = value(args, "--provider")
-                .or_else(|| std::env::var("HARNESS_PROVIDER").ok())
-                .filter(|provider| !provider.is_empty())
-                .unwrap_or_else(|| CodexAdapter.name().to_string());
-            let adapter = provider_adapter(&provider)
-                .ok_or_else(|| unknown_provider_error(&provider, "hook record"))?;
-            adapter.record_hook_event(store, args)?;
-        }
-        other => return Err(CliError::Usage(format!("unknown hook command: {other}"))),
-    }
-    Ok(())
-}
-
 pub(super) fn broadcast_live_provider_activity(
     manager: &sse::SseManager,
     execution_space_id: &str,
@@ -536,21 +519,6 @@ pub(super) fn handle_sse_stream(
                     sse::SseEventFrame::RegistryMessage(msg) => {
                         if let Ok(json) = serde_json::to_value(&msg) {
                             if sse::write_sse_frame(&mut stream, "message", &json).is_err() {
-                                break; // Client disconnected
-                            }
-                        }
-                    }
-                    // WP2: workflow run and step frames
-                    sse::SseEventFrame::WorkflowRun(run) => {
-                        if let Ok(json) = serde_json::to_value(&run) {
-                            if sse::write_sse_frame(&mut stream, "workflow_run", &json).is_err() {
-                                break; // Client disconnected
-                            }
-                        }
-                    }
-                    sse::SseEventFrame::WorkflowStep(step) => {
-                        if let Ok(json) = serde_json::to_value(&step) {
-                            if sse::write_sse_frame(&mut stream, "workflow_step", &json).is_err() {
                                 break; // Client disconnected
                             }
                         }
@@ -1137,22 +1105,6 @@ pub(super) fn serve_command(
         sse_manager.clone(),
     )
     .map_err(CliError::Io)?;
-
-    // Start the abandoned-run reaper per watched coordination store: periodically flip
-    // `Running` runs whose driver process has died (or legacy runs past the stale
-    // window) to `Failed`, so the dashboard never shows a phantom-running workflow
-    // after a driver is killed/crashes. The terminal rows it appends are tailed and
-    // broadcast by the SSE watcher above, so a live dashboard updates without a
-    // refetch.
-    for store_root in watch_map.values() {
-        let reaper_store = HarnessStore::new(store_root.clone());
-        std::thread::spawn(move || loop {
-            std::thread::sleep(REAP_POLL_INTERVAL);
-            let _ = reap_stale_workflow_runs(&reaper_store);
-            let _ = workflow_gc_worktrees(&reaper_store, None);
-            let _ = reap_orphaned_workers(&reaper_store, false);
-        });
-    }
 
     for stream in listener.incoming() {
         let stream = match stream {

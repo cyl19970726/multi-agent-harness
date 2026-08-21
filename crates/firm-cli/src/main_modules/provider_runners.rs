@@ -336,8 +336,7 @@ pub(super) fn run_member_orchestration(
 }
 
 /// Drive one interactive Codex Team Member through one app-server process and
-/// native thread. Bounded `codex exec` remains a Dynamic Workflow substrate,
-/// not an alternative Agent Team Member mode.
+/// native thread. Retired `codex exec` is not an alternative Agent Team Member mode.
 pub(super) fn run_codex_member_shared(
     ledger: &TeamRunLedger,
     objective: &str,

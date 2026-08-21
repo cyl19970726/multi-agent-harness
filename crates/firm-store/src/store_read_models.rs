@@ -183,18 +183,23 @@ impl HarnessStore {
         self.read_jsonl("provider_child_threads.jsonl")
     }
 
+    /// Typed historical compatibility reader. Archive/export code must read
+    /// the ledger as opaque bytes so unknown or malformed rows are preserved.
     pub fn workflow_runs(&self) -> StoreResult<Vec<WorkflowRun>> {
         self.read_jsonl("workflow_runs.jsonl")
     }
 
+    /// Typed historical compatibility reader; never use it for archive truth.
     pub fn workflow_steps(&self) -> StoreResult<Vec<WorkflowStep>> {
         self.read_jsonl("workflow_steps.jsonl")
     }
 
+    /// Typed historical compatibility reader; never use it for archive truth.
     pub fn workflow_patches(&self) -> StoreResult<Vec<WorkflowPatch>> {
         self.read_jsonl("workflow_patches.jsonl")
     }
 
+    /// Typed historical compatibility reader; never use it for archive truth.
     pub fn workflow_artifact_manifests(&self) -> StoreResult<Vec<WorkflowArtifactManifest>> {
         self.read_jsonl("workflow_artifact_manifests.jsonl")
     }

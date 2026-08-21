@@ -1,8 +1,4 @@
-//! Read-only archive support for the retired Goal / Task-Graph records.
-//!
-//! The archive deliberately preserves source JSONL bytes. It does not deserialize
-//! rows into the current Rust domain model, rename Tasks to Work, or create
-//! Mission/Wave compatibility projections.
+//! Read-only, byte-preserving archive support for retired coordination records.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -10,19 +6,22 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-
 mod digest;
 mod export;
 mod verify;
-
+mod workflow_history;
 pub(crate) use digest::sha256_hex;
 pub use export::export_archive;
 pub use verify::verify_archive;
-
-const ARCHIVE_FORMAT: &str = "legacy-goal-task-v1";
-const ARCHIVE_VERSION: u32 = 1;
+use workflow_history::{
+    archive_workflow_history, parseable_jsonl_records, validate_workflow_archive_contract,
+    verify_workflow_history, WorkflowArchiveContract, WORKFLOW_LEDGERS, WORKFLOW_PATCH_ROOT,
+};
+const ARCHIVE_FORMAT: &str = "legacy-coordination-history-v2";
+const ARCHIVE_VERSION: u32 = 2;
+const PREVIOUS_ARCHIVE_FORMAT: &str = "legacy-goal-task-v1";
+const PREVIOUS_ARCHIVE_VERSION: u32 = 1;
 const EXPORTER_VERSION: &str = env!("CARGO_PKG_VERSION");
-
 // This is an authorization contract, not a pattern-based repair. The one
 // historical mismatch accepted by R0 is pinned to the exact project, source
 // row, identity, target, bytes, and semantic predicate observed during the
@@ -37,7 +36,6 @@ const AUTHORIZED_ANOMALY_TARGET: &str = "goal-custom-workflow-phase-runner-v1";
 const AUTHORIZED_ANOMALY_RAW_SHA256: &str =
     "66d5c9d0a7a133a6adb021c95ea7b7d9ded1f16d87b08dcead8edb58934c9a55";
 const AUTHORIZED_ANOMALY_DECISION_KIND: &str = "phase_verdict";
-
 const LEGACY_LEDGERS: &[&str] = &[
     "goals.jsonl",
     "tasks.jsonl",
@@ -46,7 +44,6 @@ const LEGACY_LEDGERS: &[&str] = &[
     "goal_cases.jsonl",
     "goal_orchestration_runs.jsonl",
 ];
-
 const INTERPRETATION_PATHS: &[&str] = &[
     "schemas/goal.schema.json",
     "schemas/task.schema.json",
@@ -66,10 +63,8 @@ const INTERPRETATION_PATHS: &[&str] = &[
     "skills/star-goal",
     "skills/star-planner",
 ];
-
 type FileMeta = (String, Option<String>, Option<bool>, Option<Vec<u64>>);
 type FileMetaMap = BTreeMap<String, FileMeta>;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportSummary {
     pub format: String,
@@ -100,6 +95,8 @@ struct Manifest {
     exporter_version: String,
     exported_at_unix_ms: u128,
     project: ManifestProject,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workflow_archive: Option<WorkflowArchiveContract>,
     sources: Vec<ManifestSource>,
     source_comparisons: Vec<SourceComparison>,
     interpretation_materials: Vec<InterpretationMaterial>,
@@ -663,6 +660,7 @@ fn archive_source(
 ) -> Result<SourceArchiveResult, String> {
     validate_source_id(&source.id)?;
     let prefix = format!("sources/{}", source.id);
+    archive_workflow_history(source, archive_root, file_meta, &prefix)?;
     let mut ledgers = Vec::new();
     for ledger in LEGACY_LEDGERS {
         let source_path = source.root.join(ledger);
@@ -718,7 +716,11 @@ fn archive_source(
         }
         let source_bytes =
             fs::read(&source_path).map_err(|e| format!("read {}: {e}", source_path.display()))?;
-        let records = jsonl_records(&source_bytes, &format!("{}/{ledger}", source.id))?;
+        let records = if WORKFLOW_LEDGERS.contains(&ledger.as_str()) {
+            parseable_jsonl_records(&source_bytes)
+        } else {
+            jsonl_records(&source_bytes, &format!("{}/{ledger}", source.id))?
+        };
         let linked_ids = records
             .iter()
             .filter(|record| record_has_legacy_link(&ledger, &record.value))

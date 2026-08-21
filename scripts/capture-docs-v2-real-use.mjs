@@ -77,11 +77,10 @@ try {
       return route.fulfill({ status: upstream.status, contentType: "application/json", body: await upstream.text() });
     }
     if (url.pathname === "/v1/snapshot") {
-      return json(JSON.stringify({ ok: true, result: { generated_at: "2026-08-06T00:00:00Z", teams: [], missions: [], waves: [], team_runs: [], member_runs: [], team_messages: [], member_actions: [], delegation_runs: [], team_run_events: [], evidence: [], members: [], messages: [], events: [], provider_child_threads: [], workflow_runs: [], workflow_steps: [], workflow_patches: [], workflow_artifact_manifests: [], team_supervisor_leases: [], team_member_close_requests: [] } }));
+      return json(JSON.stringify({ ok: true, result: { generated_at: "2026-08-06T00:00:00Z", teams: [], missions: [], waves: [], team_runs: [], member_runs: [], team_messages: [], member_actions: [], delegation_runs: [], team_run_events: [], evidence: [], members: [], messages: [], events: [], provider_child_threads: [], team_supervisor_leases: [], team_member_close_requests: [] } }));
     }
     if (url.pathname === "/v1/events") return route.fulfill({ status: 200, contentType: "text/event-stream", body: "" });
     if (["/v1/projects", "/v1/spaces", "/v1/companies"].includes(url.pathname)) return json('{"projects":[],"spaces":[],"companies":[],"current":""}');
-    if (url.pathname === "/v1/workflows") return json('{"workflows":[]}');
     if (url.pathname === "/v1/meta") return json('{"ok":true,"result":{"rev":"real-use","built_at":null}}');
     return json('{"ok":false,"error":"stub"}');
   });

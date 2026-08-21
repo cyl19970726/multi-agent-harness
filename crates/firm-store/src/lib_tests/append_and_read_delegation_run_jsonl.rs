@@ -12,7 +12,7 @@ fn append_and_read_delegation_run_jsonl() {
         mode: DelegationMode::HarnessWorker,
         provider: "claude".into(),
         provider_child_thread_id: None,
-        workflow_run_id: Some("wfr-1".into()),
+        workflow_run_id: None,
         objective: "Research X".into(),
         status: DelegationStatus::Running,
         evidence_ids: vec!["ev-1".into()],

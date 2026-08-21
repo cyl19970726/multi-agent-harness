@@ -366,22 +366,31 @@ impl HarnessStore {
     }
 
     pub fn append_workflow_run(&self, value: &WorkflowRun) -> StoreResult<()> {
-        self.append_jsonl("workflow_runs.jsonl", value)
+        self.reject_dynamic_workflow_write(&format!("append WorkflowRun {}", value.id))
     }
 
     pub fn append_workflow_step(&self, value: &WorkflowStep) -> StoreResult<()> {
-        self.append_jsonl("workflow_steps.jsonl", value)
+        self.reject_dynamic_workflow_write(&format!("append WorkflowStep {}", value.id))
     }
 
     pub fn append_workflow_patch(&self, value: &WorkflowPatch) -> StoreResult<()> {
-        self.append_jsonl("workflow_patches.jsonl", value)
+        self.reject_dynamic_workflow_write(&format!("append WorkflowPatch {}", value.id))
     }
 
     pub fn append_workflow_artifact_manifest(
         &self,
         value: &WorkflowArtifactManifest,
     ) -> StoreResult<()> {
-        self.append_jsonl("workflow_artifact_manifests.jsonl", value)
+        self.reject_dynamic_workflow_write(&format!("append WorkflowArtifactManifest {}", value.id))
+    }
+
+    /// Shared fail-closed seam for every retired Dynamic Workflow writer.
+    /// Runtime/CLI surfaces call this before performing any provider effect;
+    /// the Store remains the final boundary if a stale caller reaches it.
+    pub fn reject_dynamic_workflow_write(&self, operation: &str) -> StoreResult<()> {
+        Err(StoreError::Conflict(format!(
+            "RETIRED_DYNAMIC_WORKFLOW_WRITER: {operation}; historical workflow data is read/export/verify-only"
+        )))
     }
 
     /// Reconstruct one raw historical TeamRun projection during an explicit

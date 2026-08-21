@@ -21,9 +21,6 @@ cargo test -p firm-cli \
   --test project_registry \
   --test project_resolution \
   --test init_project \
-  --test workflow_cwd \
-  --test workflow_project_options \
-  --test global_project_workflow \
   --test delivery_project_context \
   --test codex_delivery_cwd \
   --test claude_delivery_cwd \

@@ -41,9 +41,7 @@ use harness_core::{
     TeamMemberCloseStatus, TeamMessageProjection, TeamRecipientKind, TeamRecipientRef,
     TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Validate, Work,
     WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition, WorkDelegation,
-    WorkDelegationState, WorkPhase, WorkPriority, WorkRef, WorkResolution, WorkflowArtifactFile,
-    WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
-    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    WorkDelegationState, WorkPhase, WorkPriority, WorkRef, WorkResolution,
     EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
@@ -88,7 +86,6 @@ mod store_resolution;
 #[cfg(unix)]
 mod supervisor_daemon;
 mod supervisor_wake;
-mod workflow;
 
 #[path = "main_modules/http_protocol.rs"]
 mod http_protocol;
@@ -178,21 +175,12 @@ use http_io::*;
 #[path = "main_modules/runtime_delivery_setup.rs"]
 mod runtime_delivery_setup;
 use runtime_delivery_setup::*;
-#[path = "main_modules/ephemeral_spawn.rs"]
-mod ephemeral_spawn;
-use ephemeral_spawn::*;
-#[path = "main_modules/workflow_schema.rs"]
-mod workflow_schema;
-use workflow_schema::*;
 #[path = "main_modules/provider_ephemeral.rs"]
 mod provider_ephemeral;
 use provider_ephemeral::*;
-#[path = "main_modules/workflow_run.rs"]
-mod workflow_run;
-use workflow_run::*;
-#[path = "main_modules/workflow_patches.rs"]
-mod workflow_patches;
-use workflow_patches::*;
+#[path = "main_modules/provider_schema.rs"]
+mod provider_schema;
+use provider_schema::*;
 #[path = "main_modules/delivery_gateway.rs"]
 mod delivery_gateway;
 use delivery_gateway::*;
@@ -304,10 +292,7 @@ fn init_routed(store: &HarnessStore, resolved: &ResolvedStore) -> CliResult<()> 
     // Override path (`--store`/`FIRM_ROOT`/`HARNESS_ROOT`): raw-path behavior.
     if matches!(
         resolved.source,
-        StoreSource::StoreFlag
-            | StoreSource::WorkflowChildEnv
-            | StoreSource::FirmRootEnv
-            | StoreSource::HarnessRootEnv
+        StoreSource::StoreFlag | StoreSource::FirmRootEnv | StoreSource::HarnessRootEnv
     ) {
         store.init()?;
         println!("initialized {}", store.root().display());
@@ -418,9 +403,9 @@ fn run() -> CliResult<()> {
         return governance_command(&args[1..]);
     }
     // Legacy export is deliberately resolved outside the normal store fallback
-    // chain. It requires one valid explicit project, wins over workflow-child
-    // store guards, and never falls back to cwd/current/global when the selector
-    // is invalid. Verification is fully offline and resolves no live store.
+    // chain. It requires one valid explicit project and never falls back to
+    // cwd/current/global when the selector is invalid. Verification is fully
+    // offline and resolves no live store.
     if args.first().map(String::as_str) == Some("legacy-goal-task") {
         return legacy_goal_task_command(&mut args);
     }
@@ -437,9 +422,9 @@ fn run() -> CliResult<()> {
         return cheatsheet_command(&args[1..]);
     }
     // Resolve the store root FIRST (strips a global `--store`/`--project` from
-    // `args` so the subcommand parsers never see them). `serve` and `run-script`
-    // started from different working directories converge on ONE store via the
-    // registry's current project (issue #89 item 3, now project-routed).
+    // `args` so the subcommand parsers never see them). Commands started from
+    // different working directories converge on one coordination store through
+    // the current Execution Space selection.
     let command = command_name_for_resolution(&args);
     let resolved = resolve_store(&mut args, command.as_deref())?;
     if store_source_debug {
@@ -488,8 +473,8 @@ fn run() -> CliResult<()> {
         "company" => company_command(&store, &args[1..])?,
         "work" => global_work_command(&args[1..])?,
         "dashboard" => dashboard_command(&store, &resolved, &args[1..])?,
-        "workflow" => workflow_command(&store, resolved.context.as_ref(), &args[1..])?,
-        "hook" => hook_command(&store, &args[1..])?,
+        "workflow" => return Err(retired_dynamic_workflow_error()),
+        "hook" => return Err(retired_provider_hook_error()),
         "serve" => serve_command(&store, &resolved, &args[1..])?,
         #[cfg(unix)]
         "fabric" => fabric_runtime::fabric_command(&store, &resolved, &args[1..])?,
@@ -500,6 +485,20 @@ fn run() -> CliResult<()> {
         command => return Err(CliError::Usage(format!("unknown command: {command}"))),
     }
     Ok(())
+}
+
+fn retired_dynamic_workflow_error() -> CliError {
+    CliError::Usage(
+        "`harness workflow` is retired. Current execution uses Agent Team or Host execution; historical Dynamic Workflow data is available only through the documented legacy export and verify path."
+            .to_string(),
+    )
+}
+
+fn retired_provider_hook_error() -> CliError {
+    CliError::Usage(
+        "`harness hook` is retired with Dynamic Workflow provider-hook ingestion. Provider-native events stay in provider-native session storage."
+            .to_string(),
+    )
 }
 
 fn handle_http_connection(
@@ -631,10 +630,6 @@ fn handle_http_connection(
     }
     Ok(())
 }
-#[cfg(test)]
-#[path = "main_tests/workflow_runtime_tests.rs"]
-mod workflow_runtime_tests;
-
 #[cfg(test)]
 #[path = "main_tests/general.rs"]
 mod tests;

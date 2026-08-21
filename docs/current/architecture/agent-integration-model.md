@@ -30,8 +30,9 @@ Team control contract           acquire Supervisor generation, type actors,
 
 The executor selects the transport. Agent Team requires a persistent,
 bidirectional member mode: `codex_app_server`, `kimi_acp`, or
-`claude_agent_sdk`. Dynamic Workflow may use bounded exec/CLI modes such as
-`codex_exec` and `claude_cli`. There is no silent fallback between these
+`claude_agent_sdk`. The retired Dynamic Workflow used bounded exec/CLI modes
+such as `codex_exec` and `claude_cli`; they are not current execution routes.
+There is no silent fallback between these
 contracts. The declared exception is `external_interactive`: a user's own
 already-open interactive provider session joins as a non-driven member with no
 Harness-spawned transport at all (see the impersonation invariant below). The
@@ -388,8 +389,8 @@ snapshots `ProviderIntegrationProfile`, which names the concrete mode
 (`codex_app_server`, `kimi_acp`, or `claude_agent_sdk` for new Team members),
 interaction contract, tool/artifact event fidelity, cancel/resume
 support, native-child observation, and transient-thinking policy. The separate
-`codex_exec` and `claude_cli` profiles remain useful to Dynamic Workflow and
-legacy one-shot records; neither is a selectable Agent Team mode.
+`codex_exec` and `claude_cli` profiles describe legacy one-shot records only;
+neither is a current execution route or selectable Agent Team mode.
 
 Provider questions that require an answer are correlated request/response
 Message kinds rather than hidden adapter callbacks or a separate interaction
@@ -411,11 +412,12 @@ permissions, subagents, background work, context/compaction, native-store
 discovery/read/resume, artifacts, auth/quota, and privacy in addition to
 enumerating tools.
 
-### The adapter boundary (generalized from earning-engine)
+### The adapter boundary (generalized from a historical example)
 
-The earning-engine example
-([adapter.json](../../../examples/adapters/earning-engine/adapter.json))
-shows the generic split: an adapter supplies project tools, evidence policy,
+The retired Dynamic Workflow earning-engine example is preserved as historical
+design evidence
+([adapter.json](../../../archive/dynamic-workflow/assets/earning-engine/adapter.json)).
+It shows the generic split: an adapter supplies project tools, evidence policy,
 dashboard links, permission policy, and skills, while the generic harness owns
 coordination. Generalized:
 
@@ -513,8 +515,8 @@ is the concrete "define X, Y, Z" deliverable.
    the platform uses MCP, write the neutral `mcp` block and how the platform
    consumes it.
 3. **Implement Pillar 3 for the selected executor.** For Agent Team, implement
-   a persistent bidirectional mode; for Dynamic Workflow, implement bounded
-   exec-stream. Implement `AgentProvider` (start / deliver / probe / ingest),
+   a persistent bidirectional mode. Do not restore the retired bounded Dynamic
+   Workflow path. Implement `AgentProvider` (start / deliver / probe / ingest),
    write the `EventReducer` mapping, define the health-signal layers, map the
    neutral `permission` enum, and declare unsupported surfaces. Never silently
    fall back from Team mode to bounded exec. Integrate Team mode with durable

@@ -7,7 +7,7 @@ use super::*;
 // the store lease is the cross-process authority and crash-recovery boundary.
 // `harness serve` remains a read/broadcast plus control gateway. Registered
 // Agent Team modes are only Codex app-server, Kimi ACP, and Claude Agent SDK;
-// bounded exec/CLI modes belong to Dynamic Workflow.
+// Retired bounded exec/CLI modes never authorize Agent Team execution.
 //
 // Persistence and execution concurrency are intentionally separate. Every
 // unclosed Member owns one lightweight supervisor thread, while

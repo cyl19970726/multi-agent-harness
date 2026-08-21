@@ -474,59 +474,6 @@ impl HttpExchange<'_> {
                         }),
                     )?
                 }
-                step_path
-                    if step_path.starts_with("/v1/workflow-steps/")
-                        && step_path.ends_with("/native-activity") =>
-                {
-                    write_http_json(
-                        stream,
-                        "410 Gone",
-                        &serde_json::json!({
-                            "error": "legacy_native_activity_route_retired",
-                            "detail": "Workflow output remains Harness-owned result truth. Provider-native Session history is not exposed through this unscoped route."
-                        }),
-                    )?
-                }
-                // GET /v1/workflows — the registered (built-in) workflow catalog,
-                // run-independent { name, summary } pairs from the compiled registry.
-                "/v1/workflows" => {
-                    let registry = workflow::WorkflowRegistry::builtin();
-                    let defs: Vec<serde_json::Value> = registry
-                        .names()
-                        .into_iter()
-                        .filter_map(|name| registry.get(name))
-                        .map(|def| serde_json::json!({"name": def.name, "summary": def.summary}))
-                        .collect();
-                    write_http_json(stream, "200 OK", &serde_json::json!(defs))?
-                }
-                // GET /v1/workflows/{name}/source — the Rust source of the workflow
-                // module, so the Definition section can show the ground-truth body.
-                source_path
-                    if source_path.starts_with("/v1/workflows/")
-                        && source_path.ends_with("/source") =>
-                {
-                    let name = source_path
-                        .strip_prefix("/v1/workflows/")
-                        .and_then(|rest| rest.strip_suffix("/source"))
-                        .unwrap_or_default();
-                    let registry = workflow::WorkflowRegistry::builtin();
-                    if registry.get(name).is_some() {
-                        write_http_json(
-                            stream,
-                            "200 OK",
-                            &serde_json::json!({
-                                "path": "workflow.rs",
-                                    "source": include_str!("../workflow.rs"),
-                            }),
-                        )?
-                    } else {
-                        write_http_json(
-                            stream,
-                            "404 Not Found",
-                            &serde_json::json!({"error": "workflow_not_found", "name": name}),
-                        )?
-                    }
-                }
                 _ => write_http_json(
                     stream,
                     "404 Not Found",

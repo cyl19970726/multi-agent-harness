@@ -32,7 +32,7 @@ error and are documented here only as retired compatibility.
 | Members/providers | `member providers/preflight/inbox/message/work` | Implemented | Two separate axes. `member providers` reviews ADAPTER compatibility against the installed provider version. `member preflight` reports execution-mode-specific ACCOUNT capacity as a sibling of compatibility, never merged into it. See [integration/provider-capacity.md](../integration/provider-capacity.md). |
 | AgentMember execution trust | `member-trust mutate` plus TeamRun supervisor delivery | Implemented kernel | Canonical AgentMember, MemberRun, Message, delivery, Report, Finding, Evaluation, Gate, and Work acceptance mutations share one operation ledger and explicit authority context. The retired `agent` registry routes are not an execution authority. |
 | Global Work read | `work list` | Implemented | The read-only Global Work aggregate filters the one Work authority by accountable Team, assignee TeamMembership, phase, condition, resolution, priority, and owner; preserves exact ids and revisions. |
-| Dynamic Workflow | `workflow list/run/run-script/get-output/patch/gc-worktrees/reap-workers/reap` | Implemented | WorkflowRun/WorkflowStep remain their own execution truth. |
+| Dynamic Workflow | Former `workflow` command family | Retired | No current command route. Historical records are available only through legacy archive export, verify, and restore-read. |
 | Dashboard | `dashboard snapshot`, `dashboard doctor` | Implemented | Operator projection and read-only convergence checks. |
 | Serve/API | `serve [--addr] [--once]`, `mcp`, `node init/list/show/drain/retire/project`, `daemon start/status/stop/serve`, `hook record` | Implemented | One machine-scoped NodeDaemon supervises every admitted local TeamRun across registered Execution Spaces. All public start surfaces delegate to it and fail explicitly when unavailable; there is no per-run fallback. `hook record` is a compatibility ingress that validates the bound AgentMember and discards the provider frame. |
 | Mission legacy reads | `mission list`, `mission show`, `mission log show` | Retired compatibility | Read-only legacy reads over historical rows (DOC-108). `mission create/update-context/close/log append` and the `/v1/missions*` POST routes and `mission_*` MCP writers fail with an explicit DOC-108 retired-write error. |
@@ -47,7 +47,6 @@ Active repository skills:
 
 - `skills/collaborate-as-agent-team-member` (mirrored into the Star Harness plugin)
 - `skills/shared-references` (cross-reference, mirrored)
-- `skills/star-workflow`
 - `skills/bootstrap-project-workflow`
 
 The retired Company OS operator skills and the Mission-orchestration skill were

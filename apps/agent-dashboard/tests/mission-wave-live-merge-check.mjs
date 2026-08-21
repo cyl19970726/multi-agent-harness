@@ -105,7 +105,9 @@ async function main() {
     bad("Provider answer still emitted caller-selected identity or retired plan context");
   }
 
-  if (selectionSource.includes('params.delete("wave")')
+  if ((selectionSource.includes('params.delete("wave")')
+      || (selectionSource.includes('for (const retiredParam of ["mission", "wave"')
+        && selectionSource.includes("params.delete(retiredParam)")))
       && !selectionSource.includes("waveId?:")
       && !selectionSource.includes('params.get("wave")')) {
     ok("retired Wave deep links are discarded rather than restored into current navigation");

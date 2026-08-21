@@ -2,15 +2,16 @@
 
 Notion should show the simple workflow directly, not the machinery that could theoretically implement it.
 
-## Default databases
+## The two default tables
 
-### Tasks
+### Development Tasks
 
 Use one current Task database with:
 
 - Task ID
 - Goal / Acceptance
 - Owner
+- Current Session / executor
 - Status
 - Next Action
 - Blocker
@@ -26,19 +27,30 @@ filtering need.
 
 Use only these statuses: `Planned`, `Doing`, `In Review`, `Changes Required`, `Blocked`, `Done`.
 
-### Reviews
+### Development Documents
 
-Use one Review history database or typed document view with:
+Use the existing Development Documents table for both human-readable Dev/Spec
+submissions and immutable Review Documents. Keep a simple type field such as
+`Dev Document`, `Spec`, or `Review` and common relations to the owning Task.
+
+A reviewed Dev Document has a named immutable version and directly readable
+body. A Review Document has:
 
 - Task relation
 - Submission Number
-- Review Revision / Version
+- exact Git SHA or directly readable Dev Document version
 - Verdict
 - Findings
 - Reviewer
 - Reviewed At
 
-One submission produces one Review record. Prior Reviews stay visible.
+One submission produces one Review Document. Prior Dev and Review Documents
+stay visible. Do not add a third submissions, snapshots, payload, carrier,
+protocol-event, or Session-state table.
+
+Large machine-readable inventories and structured manifests live in the
+repository; Notion links their exact Git SHA, path, and file hash and keeps the
+human decision and review readable.
 
 ## Migration from the advanced model
 
@@ -47,7 +59,11 @@ One submission produces one Review record. Prior Reviews stay visible.
 - Demote the other object and advanced Protocol Event, Snapshot/Result split, CAS, fingerprint, and Merge Authorization fields to hidden `Legacy / Advanced` history.
 - Preserve historical records and relations. Do not delete them merely to make the default view look clean.
 - Remove advanced fields from default views, templates, Playbook steps, and agent instructions.
-- A combined legacy Review may remain historical, but new submissions use one simple Review record.
+- A combined legacy Review may remain historical, but new submissions use one
+  simple Review Document.
+- Mark carrier/payload fragments as Legacy / Advanced transport evidence and
+  hide them from ordinary views; preserve rather than deleting historical
+  evidence.
 
 ## Verification
 
@@ -56,8 +72,10 @@ After migration, verify:
 1. A user can understand current work from one Task page.
 2. Dev can submit without Candidate or a readiness gate.
 3. Reviewer can Pass or return the same Task.
-4. Review history retains every submission and exact revision/version.
+4. Development Documents retains every submission and exact revision/version.
 5. No default view or Playbook asks users to maintain Work and Run together.
 6. Advanced legacy records are clearly non-authoritative and hidden from ordinary operation.
 7. An independently actionable repository defect can be traced from one
    GitHub Issue to one current Notion Task without duplicate status writing.
+8. A Session is visible only as the Task's current executor binding; Task state
+   is never inferred from a sidebar badge or mirrored Session ledger.

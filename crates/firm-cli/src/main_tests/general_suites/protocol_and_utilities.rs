@@ -80,8 +80,6 @@ mod pi_full_access_profile_denies_quiesce_without_child_inventory;
 mod pi_profile_persists_the_canonical_capability_dependency_closure;
 #[path = "../general/provider_callback_drift_allows_only_transient_status_and_timestamp.rs"]
 mod provider_callback_drift_allows_only_transient_status_and_timestamp;
-#[path = "../general/provider_hook_ingress_validates_binding_and_discards_native_frame.rs"]
-mod provider_hook_ingress_validates_binding_and_discards_native_frame;
 #[path = "../general/provider_operational_admission_is_exact_and_separate_from_source_review.rs"]
 mod provider_operational_admission_is_exact_and_separate_from_source_review;
 #[path = "../general/read_allowed_doc_rejects_traversal_and_non_docs_paths.rs"]

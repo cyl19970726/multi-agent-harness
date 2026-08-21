@@ -12,6 +12,11 @@ survives only as the implementation-bound remainder below, and stays
 registered in `docs/registry.json` as a `core_docs` entry enforced by
 `harness governance check`.
 
+Dynamic Workflow is retired. Current execution architecture consists of Agent
+Team coordination and Host/provider-local implementation details; historical
+Workflow records are available only through legacy archive
+export/verify/restore-read and are never a second live ledger.
+
 ## Implementation-bound invariants
 
 | Surface | Owns | Refuses |

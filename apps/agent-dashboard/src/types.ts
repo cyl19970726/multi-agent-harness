@@ -22,7 +22,7 @@ export interface Project {
   owns_execution_store?: boolean;
 }
 
-/** Provider-neutral Mission/Team/Workflow coordination namespace. */
+/** Provider-neutral coordination namespace. */
 export interface ExecutionSpace {
   id: string;
   name?: string;
@@ -270,7 +270,7 @@ export interface Mission {
 }
 
 /** @deprecated ADR 0051 pre-cutover history only. */
-export type LegacyWaveExecutorKind = "agent_team" | "dynamic_workflow" | "host";
+export type LegacyWaveExecutorKind = "agent_team" | "host";
 
 /** @deprecated ADR 0051 pre-cutover history only. */
 export type LegacyWaveStatus =
@@ -1018,10 +1018,9 @@ export interface DelegationRun {
   id: string;
   team_run_id?: string;
   parent_member_run_id?: string;
-  mode?: "provider_native" | "harness_worker" | "dynamic_workflow" | string;
+  mode?: "provider_native" | "harness_worker" | string;
   provider?: string | null;
   provider_child_thread_id?: string | null;
-  workflow_run_id?: string | null;
   objective?: string | null;
   status?: string;
   evidence_ids?: string[];
@@ -1088,8 +1087,6 @@ export interface DashboardSnapshot {
    * frames replace the prior preview; refresh/reconnect starts empty.
    */
   live_member_activity?: Record<string, LiveMemberActivity>;
-  workflow_runs?: WorkflowRun[];
-  workflow_steps?: WorkflowStep[];
   /** Native durable Mission rows. */
   missions?: Mission[];
   /** ADR 0051 pre-cutover rows, exposed only in an isolated historical view. */
@@ -1121,180 +1118,6 @@ export interface DashboardSnapshot {
   member_actions?: MemberAction[];
   delegation_runs?: DelegationRun[];
   team_run_events?: TeamRunEvent[];
-}
-
-/**
- * A registered (built-in) workflow's run-independent metadata, from
- * `GET /v1/workflows`. The catalog is fetched separately from the snapshot.
- */
-export interface WorkflowDef {
-  name: string;
-  summary: string;
-}
-
-/** Lifecycle of a {@link WorkflowRun} (mirrors harness-core `WorkflowRunStatus`). */
-export type WorkflowRunStatus =
-  | "pending"
-  | "running"
-  | "paused"
-  | "completed"
-  | "failed";
-
-/** Status of a single {@link WorkflowStep} (mirrors harness-core `WorkflowStepStatus`). */
-export type WorkflowStepStatus =
-  | "queued"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cached";
-
-export type WorkflowTerminalReason =
-  | "canceled_by_operator"
-  | "driver_exited"
-  | "orphan_reaped"
-  | "leaf_timeout"
-  | "idle_timeout"
-  | "provider_failed"
-  | "verdict_failed"
-  | "completed";
-
-/**
- * One run of a built-in (registered) workflow. Mirrors harness-core
- * `WorkflowRun` (lib.rs:1261-1273) verbatim, snake_case. `step_ids` orders the
- * steps in the sequence they were started.
- */
-export interface WorkflowRun {
-  id: string;
-  workflow_name: string;
-  status: WorkflowRunStatus | string;
-  step_ids: string[];
-  created_at: string;
-  ended_at?: string | null;
-  summary?: string | null;
-  /** JSON parameterization the dynamic `run-script` program was authored with. */
-  args?: unknown;
-  /** How many agent steps this run spawned (the per-run agent count). */
-  agents_spawned?: number;
-  /** Collected structured output of the run (one entry per step). */
-  final_output?: unknown;
-  /**
-   * Who initiated this run — an agent member id (a Codex / Claude member) or
-   * "operator" for a human-triggered CLI run. `undefined` for legacy rows that
-   * predate the field.
-   */
-  initiated_by?: string | null;
-  /**
-   * The mandatory `design_intent` a Starlark program declares via its
-   * `workflow(name, design_intent)` header — the WHY behind the run's shape.
-   * `undefined` for registry runs / legacy rows.
-   */
-  design_intent?: string | null;
-  /**
-   * The authored source the dynamic `run-script` path was run with — the raw
-   * Starlark program text snapshotted as `{ lang: "starlark", script }`, the
-   * small durable audit record of the run shape. `undefined` for registry runs /
-   * legacy rows.
-   */
-  spec?: unknown;
-  /**
-   * True when this run was a `--dry-run` validation (mock driver, no provider
-   * spawned, no tokens). Surfaced as a "dry-run" badge so a validation run is
-   * never mistaken for a real one. `undefined`/false for live and legacy rows.
-   */
-  dry_run?: boolean;
-  terminal_reason?: WorkflowTerminalReason | string | null;
-  partial_output_available?: boolean;
-}
-
-/**
- * Normalized token usage for one worker turn (mirrors the Rust `TokenUsage`).
- * `total` is `input + output`; provider subset counters (codex cached /
- * reasoning, claude cache_*) are NOT re-added.
- */
-export interface WorkflowStepTokens {
-  input: number;
-  output: number;
-  total: number;
-}
-
-/**
- * Structured failure carried on a step's {@link WorkflowStepResult} when it did
- * NOT succeed. `reason` is the classified bucket; `detail` is human-facing
- * context (typically the worker's stderr).
- */
-export interface WorkflowStepFailure {
-  failed: boolean;
-  /** Classified failure bucket. */
-  reason: "timeout" | "exit" | "spawn" | "delivery" | string;
-  detail: string;
-}
-
-/**
- * Structured result payload carried on a {@link WorkflowStep}. Mirrors the
- * harness-workflow `step_result_json` shape PLUS the observability fields the
- * runtime captures onto each step (see `build_step_details` in harness-cli). The
- * step's actor is a PROVIDER that ran in a NEW one-shot ephemeral worker
- * (codex/claude), not a pre-existing member; `isolation` is set when the node
- * opted into a throwaway git worktree.
- */
-export interface WorkflowStepResult {
-  phase?: string;
-  label?: string;
-  /** The provider that ran this step ("codex" | "claude" | "kimi"). */
-  provider?: string;
-  /** Per-node isolation mode this step ran under, if any ("worktree"). */
-  isolation?: string | null;
-  ok?: boolean;
-  native_session?: NativeSessionRef | null;
-  output_summary?: string;
-  /** The model the worker actually ran (the requested override), if any. */
-  model?: string | null;
-  /** Process exit code; null when the worker was killed on timeout / signal. */
-  exit_code?: number | null;
-  /** Wall-clock duration of the worker process, in milliseconds. */
-  duration_ms?: number;
-  /** Normalized token usage parsed from the worker's terminal event, if present. */
-  tokens?: WorkflowStepTokens | null;
-  /** The provider's exact billed cost in USD for the turn, when reported (claude
-   * `total_cost_usd`). Absent for codex, which emits only token usage. */
-  cost_usd?: number | null;
-  /** Present only when the step failed; describes why. */
-  failure?: WorkflowStepFailure | null;
-  /**
-   * The FULL worktree diff text for an `isolation: "worktree"` step, capped to
-   * 20k chars. Absent for shared-cwd steps. See {@link worktree_diff_truncated}.
-   */
-  worktree_diff?: string;
-  /** True when {@link worktree_diff} was truncated at the cap. */
-  worktree_diff_truncated?: boolean;
-  structured?: unknown;
-  schema_attempt_count?: number;
-  selected_json_index?: number | null;
-  schema_candidate_count?: number;
-  empty_field_count?: number;
-  schema_strict?: boolean;
-}
-
-/**
- * One agent step inside a {@link WorkflowRun}. Mirrors harness-core
- * `WorkflowStep` (lib.rs:1279-1292) verbatim, snake_case. There is NO
- * `member_id`; the step actor is a PROVIDER carried in `result.provider`, and
- * provider-native activity resolves via `native_session`.
- */
-export interface WorkflowStep {
-  id: string;
-  run_id: string;
-  phase: string;
-  label: string;
-  native_session?: NativeSessionRef | null;
-  status: WorkflowStepStatus | string;
-  output_summary?: string | null;
-  /** Structured result for this step, beyond the human-facing summary. */
-  result?: WorkflowStepResult | null;
-  started_at: string;
-  ended_at?: string | null;
-  terminal_reason?: WorkflowTerminalReason | string | null;
-  partial?: boolean;
 }
 
 export type DashboardAction = (path: string, body?: unknown) => Promise<void>;

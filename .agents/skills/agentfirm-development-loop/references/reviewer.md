@@ -4,10 +4,13 @@ Reviewer independently checks one submitted revision/version. Reviewer does not 
 
 ## Review
 
-1. Require Task ID, acceptance criteria, exact revision/version, and evidence.
-2. Confirm the inspected material matches that revision/version.
+1. Require Task ID, acceptance criteria, exact Git SHA or directly readable
+   immutable document version, and evidence.
+2. Confirm the inspected material directly matches that revision/version. Do
+   not accept a carrier/payload reconstruction as the ordinary review surface.
 3. Check correctness, acceptance criteria, and relevant risks.
-4. Create one Review record for this submission.
+4. Create one immutable Review Document in the existing Development Documents
+   table for this submission.
 
 ## Verdict
 

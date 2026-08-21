@@ -68,8 +68,7 @@ const snapshot = {
   team_run_events: await jsonl("team_run_events"),
   evidence: await jsonl("evidence"),
   members: [], messages: [], events: [], provider_child_threads: [],
-  workflow_runs: [], workflow_steps: [], workflow_patches: [],
-  workflow_artifact_manifests: [], team_supervisor_leases: [],
+  team_supervisor_leases: [],
   team_member_close_requests: [],
   company_os: {},
 };
@@ -160,7 +159,6 @@ async function mockRoutes(page) {
     if (url.pathname === "/v1/projects") return route.fulfill({ status: 200, contentType: "application/json", body: '{"projects":[],"current":""}' });
     if (url.pathname === "/v1/spaces") return route.fulfill({ status: 200, contentType: "application/json", body: '{"spaces":[],"current":""}' });
     if (url.pathname === "/v1/companies") return route.fulfill({ status: 200, contentType: "application/json", body: '{"companies":[],"current":""}' });
-    if (url.pathname === "/v1/workflows") return route.fulfill({ status: 200, contentType: "application/json", body: '{"workflows":[]}' });
     if (url.pathname === "/v1/events") return route.fulfill({ status: 200, contentType: "text/event-stream", body: "" });
     if (url.pathname.endsWith("/native-activity")) return route.fulfill({ status: 200, contentType: "application/json", body: '{"items":[],"truncated":false,"availability":"unknown","native_session_id":"","provider":"","execution_mode":""}' });
     // The persistent provenance footer (issue #307) polls this on its own;

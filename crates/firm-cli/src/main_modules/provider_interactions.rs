@@ -1078,68 +1078,6 @@ pub(super) fn active_work_continuation_prompt(
     )
 }
 
-pub(super) fn step_landing_diff(step: &workflow::StepResult) -> Option<String> {
-    let details = step.details.as_ref()?;
-    let diff = details
-        .get("landing_diff")
-        .and_then(|v| v.as_str())
-        .or_else(|| details.get("worktree_diff").and_then(|v| v.as_str()))?;
-    if diff.trim().is_empty() {
-        None
-    } else {
-        Some(diff.to_string())
-    }
-}
-
-/// Run `git -C <repo> <args...>`, returning Ok(stdout) or an actionable Usage error
-/// carrying stderr. Used by the landing path so each git failure names what failed.
-pub(super) fn git_in(repo_root: &Path, args: &[&str]) -> CliResult<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .args(args)
-        .output()?;
-    if !output.status.success() {
-        return Err(CliError::Usage(format!(
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-pub(super) fn command_stdout(command: &str, args: &[&str]) -> CliResult<String> {
-    let output = Command::new(command).args(args).output()?;
-    if !output.status.success() {
-        return Err(CliError::Usage(format!(
-            "{command} {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-pub(super) fn owned_path_violations(
-    changed_paths: &[String],
-    owned_paths: &[String],
-) -> Vec<String> {
-    if owned_paths.is_empty() {
-        return Vec::new();
-    }
-    changed_paths
-        .iter()
-        .filter(|path| {
-            !owned_paths.iter().any(|owned| {
-                let owned = owned.trim_end_matches('/');
-                path.as_str() == owned || path.starts_with(&format!("{owned}/"))
-            })
-        })
-        .cloned()
-        .collect()
-}
-
 pub(super) fn parse_unix_ms(value: &str) -> Option<u128> {
     value.strip_prefix("unix-ms:")?.parse().ok()
 }

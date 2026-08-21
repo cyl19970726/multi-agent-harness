@@ -51,7 +51,7 @@ Agent Company Workspace          # legacy shape; retired by DOC-108
 
 Those areas share Docs, Organization, Work, Finance, governance, and company
 identity even when implementation sources live in different Git repositories.
-Conversely, Mission/Wave, Agent Team, Dynamic Workflow, and Host execution must
+Conversely, Mission/Wave, Agent Team, the then-current Dynamic Workflow, and Host execution had to
 remain usable by people who never initialize the legacy Company OS.
 
 ## Decision
@@ -89,7 +89,7 @@ An Execution Space is a provider-neutral coordination namespace. It owns:
 - reusable Agent Team definitions and Mission relations;
 - AgentTeamRun, MemberRun, TeamMessage, PendingInteraction, outcomes, and
   artifact/check references;
-- Dynamic Workflow runs and steps;
+- historical Dynamic Workflow runs and steps (now legacy archive evidence only);
 - Host execution outcomes and execution-facing provider/runtime bindings.
 
 The key invariant is:

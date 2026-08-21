@@ -45,7 +45,7 @@ and the Member Continuation Model.
 | Product surface | Mode | Status |
 | --- | --- | --- |
 | Agent Team Member | `kimi_acp` | persistent bidirectional Team mode |
-| Dynamic Workflow / bounded execution | `kimi_exec` | one-shot `kimi -p` mode |
+| Retired Dynamic Workflow record | `kimi_exec` | historical one-shot metadata; not startable |
 | Historical Team record | `kimi_exec` | readable, never startable |
 
 Harness never silently falls back from ACP to one-shot print mode.

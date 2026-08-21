@@ -28,7 +28,7 @@ implementation-bound remainder below.
 
 - Persistent Team execution modes: Codex → `codex_app_server`, Claude →
   `claude_agent_sdk`, Kimi → `kimi_acp`. Bounded `codex_exec`/`claude_cli`
-  belong to Dynamic Workflow only, never Team members.
+  describe retired Dynamic Workflow records only, never current Team members.
 - Provider delivery/terminal-state receipts differ by adapter: Codex's
   `turn/start` response is the WorkDelivery provider receipt (persist it
   before `turn/completed` to avoid a crash window that can execute the same

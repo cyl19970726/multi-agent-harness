@@ -323,6 +323,7 @@ pub(super) fn extract_codex_reply_text(events: &[CodexExecEvent]) -> Option<Stri
 /// human-facing reply, this returns only the terminal one, so structured-output
 /// parsing reads the schema-constrained answer rather than an earlier streamed
 /// preamble (issue #139 item 2).
+#[allow(dead_code)]
 pub(super) fn extract_codex_final_message(events: &[CodexExecEvent]) -> Option<String> {
     let mut last = None;
     for event in events {
@@ -1094,64 +1095,6 @@ pub(super) fn run_claude_resident_delivery_real(
     resident.shutdown();
 
     Ok((turn.success, events, raw_events, session_id, stderr_log))
-}
-
-pub(super) fn parse_hook_payload(input: &str) -> serde_json::Value {
-    if input.trim().is_empty() {
-        serde_json::json!({})
-    } else {
-        serde_json::from_str(input).unwrap_or_else(|error| {
-            serde_json::json!({
-                "parse_error": error.to_string(),
-                "raw": input
-            })
-        })
-    }
-}
-
-pub(super) fn record_provider_hook_event(
-    store: &HarnessStore,
-    args: &[String],
-    provider: &str,
-) -> CliResult<()> {
-    store.init()?;
-    let mut stdin = String::new();
-    std::io::stdin().read_to_string(&mut stdin)?;
-    accept_provider_hook_event(store, args, provider, &parse_hook_payload(&stdin))
-}
-
-pub(super) fn accept_provider_hook_event(
-    store: &HarnessStore,
-    args: &[String],
-    provider: &str,
-    _payload: &serde_json::Value,
-) -> CliResult<()> {
-    let agent_id = value(args, "--agent")
-        .or_else(|| env::var("HARNESS_AGENT_MEMBER_ID").ok())
-        .ok_or_else(|| CliError::Usage("--agent is required".into()))?;
-    let runtime_id = value(args, "--runtime").or_else(|| env::var("HARNESS_AGENT_RUNTIME_ID").ok());
-    let member = latest_member(store, &agent_id)?;
-    if member.provider != provider {
-        return Err(CliError::Usage(format!(
-            "provider hook binding mismatch: AgentMember {agent_id} uses {}, not {provider}",
-            member.provider
-        )));
-    }
-    if let Some(runtime_id) = runtime_id {
-        let runtime = latest_runtime(store, &runtime_id)?.ok_or_else(|| {
-            CliError::Usage(format!("provider hook runtime {runtime_id} does not exist"))
-        })?;
-        if runtime.agent_member_id != agent_id || runtime.provider != provider {
-            return Err(CliError::Usage(format!(
-                "provider hook runtime {runtime_id} is not bound to {provider} AgentMember {agent_id}"
-            )));
-        }
-    }
-    // Compatibility ingress only. Provider hooks are neither AgentSession
-    // lifecycle authority nor Evidence/Delivery authority; the NodeDaemon and
-    // canonical transport writers own those transitions. The raw frame is
-    // deliberately discarded after validating the bound AgentMember.
-    Ok(())
 }
 
 pub(super) fn append_harness_runtime_control_fact(

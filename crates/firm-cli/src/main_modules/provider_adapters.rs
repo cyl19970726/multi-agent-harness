@@ -8,30 +8,8 @@ use super::*;
 // fail fast with an explicit error rather than silently assuming Codex.
 // ---------------------------------------------------------------------------
 
-/// Everything a one-shot ephemeral provider spawn needs, bundled so the
-/// `ProviderAdapter::spawn_ephemeral` dispatch method takes a single arg and
-/// stays object-safe. Mirrors the params of the per-provider spawn helpers.
-pub(super) struct EphemeralSpawnContext<'a> {
-    pub(super) session_dir: &'a Path,
-    pub(super) session_id: &'a str,
-    pub(super) run_id: &'a str,
-    pub(super) spec: &'a workflow::AgentStepSpec,
-    pub(super) schema_json: Option<&'a serde_json::Value>,
-    pub(super) prompt: &'a str,
-    pub(super) cwd: &'a Path,
-    pub(super) model: Option<&'a str>,
-    pub(super) effort: Option<&'a str>,
-    pub(super) service_tier: Option<&'a str>,
-    pub(super) timeout_ms: u64,
-    pub(super) wall_clock_ms: Option<u64>,
-    pub(super) max_budget_usd: Option<f64>,
-}
-
-/// Provider-specific behaviour boundary (Issue #107 Gap 1). Stage 3 carries the
-/// provider's canonical name and the workflow ephemeral spawn dispatch. Every
-/// provider dispatch site in the CLI routes through this trait and the
-/// `provider_adapter` registry, which is the single source of truth for the
-/// providers the harness supports.
+/// Provider-specific behaviour boundary. Every current provider dispatch site
+/// routes through this trait and the `provider_adapter` registry.
 pub(super) trait ProviderAdapter: Sync {
     /// Canonical provider id as used in `member.provider` and `agent(provider=...)`.
     fn name(&self) -> &'static str;
@@ -57,7 +35,7 @@ pub(super) trait ProviderAdapter: Sync {
             // Conservative default: a provider that adopts the default posture is
             // assumed UNABLE to enforce read-only, so its read-only leaves are
             // worktree-isolated rather than trusted (matches the serde default and the
-            // unknown-provider fallback in `provider_enforces_read_only`).
+            // unknown-provider fallback).
             enforces_read_only: false,
         }
     }
@@ -69,13 +47,6 @@ pub(super) trait ProviderAdapter: Sync {
     /// Map a LaunchPermission to this provider's CLI permission flag value
     /// (codex `--sandbox`, claude `--permission-mode`).
     fn map_permission(&self, perm: LaunchPermission) -> &'static str;
-
-    /// Record a provider hook event into the neutral event log. Each plugin
-    /// must pass its explicit provider identity; the shared recorder preserves
-    /// native session/turn identity without copying the provider transcript.
-    fn record_hook_event(&self, store: &HarnessStore, args: &[String]) -> CliResult<()> {
-        record_provider_hook_event(store, args, self.name())
-    }
 
     /// Spawn (or attach) the persistent runtime for a member of this provider.
     fn start_runtime(
@@ -102,8 +73,6 @@ pub(super) trait ProviderAdapter: Sync {
         timeout_ms: u64,
         project: &ProjectContext,
     ) -> CliResult<DeliveryOutcome>;
-
-    fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn>;
 }
 
 pub(super) struct CodexAdapter;
@@ -161,27 +130,6 @@ impl ProviderAdapter for CodexAdapter {
             project,
         )
     }
-
-    fn record_hook_event(&self, store: &HarnessStore, args: &[String]) -> CliResult<()> {
-        record_provider_hook_event(store, args, self.name())
-    }
-
-    fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
-        spawn_codex_ephemeral(
-            ctx.session_dir,
-            ctx.session_id,
-            ctx.run_id,
-            ctx.spec,
-            ctx.schema_json,
-            ctx.prompt,
-            ctx.cwd,
-            ctx.model,
-            ctx.effort,
-            ctx.service_tier,
-            ctx.timeout_ms,
-            ctx.wall_clock_ms,
-        )
-    }
 }
 impl ProviderAdapter for ClaudeAdapter {
     fn name(&self) -> &'static str {
@@ -231,23 +179,6 @@ impl ProviderAdapter for ClaudeAdapter {
             delivery_id,
             timeout_ms,
             project,
-        )
-    }
-
-    fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
-        spawn_claude_ephemeral(
-            ctx.session_dir,
-            ctx.session_id,
-            ctx.run_id,
-            ctx.spec,
-            ctx.schema_json,
-            ctx.prompt,
-            ctx.cwd,
-            ctx.model,
-            ctx.effort,
-            ctx.timeout_ms,
-            ctx.wall_clock_ms,
-            ctx.max_budget_usd,
         )
     }
 }
@@ -386,112 +317,6 @@ pub(super) fn infer_kimi_status(
     }
 }
 
-/// Spawn a one-shot ephemeral `kimi` worker with Kimi's REAL CLI surface
-/// (verified live, v0.18): `-p <prompt> --output-format stream-json [--model]` and
-/// NO permission flag (`-p` rejects them). Resolves the binary via
-/// [`resolve_kimi_bin`], tees to `kimi.stream-json.ndjson`, and parses the
-/// flat kimi-native stream (see the banner above) — budget/schema/effort/extra-dirs
-/// degrade to harness-owned handling (see `ProviderCapabilities::kimi_exec`).
-#[allow(clippy::too_many_arguments)]
-pub(super) fn spawn_kimi_ephemeral(
-    session_dir: &Path,
-    session_id: &str,
-    run_id: &str,
-    spec: &workflow::AgentStepSpec,
-    schema_json: Option<&serde_json::Value>,
-    prompt: &str,
-    cwd: &Path,
-    model: Option<&str>,
-    effort: Option<&str>,
-    timeout_ms: u64,
-    wall_clock_ms: Option<u64>,
-    max_budget_usd: Option<f64>,
-) -> CliResult<EphemeralSpawn> {
-    let prompt_with_images;
-    let prompt = if spec.image.is_empty() {
-        prompt
-    } else {
-        prompt_with_images = format!(
-            "Attached image files (read them with the Read tool): {}\n\n{}",
-            spec.image.join(", "),
-            prompt
-        );
-        &prompt_with_images
-    };
-    let mut cmd = Command::new(resolve_kimi_bin());
-    apply_workflow_child_store_guard(&mut cmd, session_dir, workflow_store_mutation_allowed());
-    cmd.arg("-p")
-        .arg(prompt)
-        .arg("--output-format")
-        .arg("stream-json")
-        .current_dir(cwd);
-    if let Some(model) = model {
-        cmd.arg("--model").arg(model);
-    }
-    // Headless `kimi -p` REJECTS every permission flag (verified live, v0.18:
-    // "Cannot combine --prompt with --plan/--auto/--yolo"), so none is passed — `-p`
-    // has its own non-interactive permission behavior; writable vs read-only is
-    // bounded by the harness-owned worktree, not a CLI flag (capabilities() marks
-    // tool-scoping off). `--max-budget-usd`/`--json-schema`/`--effort`/`--add-dir`
-    // are likewise not real kimi flags: budget -> harness timeout; schema-mode nodes
-    // -> the caller's text-extract fallback on the reply (capabilities().schema=false).
-    let _ = (schema_json, effort, max_budget_usd);
-
-    let run = run_ndjson_child(
-        cmd,
-        session_dir,
-        session_id,
-        KimiAdapter.live_ndjson_file_name(),
-        timeout_ms,
-        wall_clock_ms,
-        Some(OrphanRegistration {
-            dir: session_dir
-                .parent()
-                .and_then(|delivery_dir| delivery_dir.parent())
-                .unwrap_or(session_dir)
-                .join("worker_pids"),
-            run_id: run_id.to_string(),
-            cmd_marker: "kimi".to_string(),
-        }),
-        "ephemeral worker",
-    )?;
-    // Kimi `-p --output-format stream-json` is NOT claude-shaped (verified live):
-    // flat frames `{"role":"assistant","content":"..."}` + a
-    // `{"type":"session.resume_hint",...}` meta frame, no claude result/usage/model
-    // frame. Use the kimi-native parsers on the raw JSON frames.
-    let frames = &run.events;
-    let ok = matches!(
-        infer_kimi_status(frames, run.process_success),
-        ProviderExecutionStatus::Succeeded
-    );
-    let reply = extract_kimi_reply_text(frames);
-    // -p stream-json carries no usage/model/cost frame; degrade per kimi_exec()
-    // (cost=false). Schema-mode nodes use the caller's text-extract fallback on `reply`.
-    let tokens = None;
-    let model = None;
-    let structured = None;
-    let cost_usd = None;
-
-    Ok(EphemeralSpawn {
-        ok,
-        reply,
-        native_session: extract_kimi_session_id(frames)
-            .map(|id| provider_native_session_ref("kimi", id)),
-        stderr: run.stderr,
-        exit_code: run.exit_code,
-        timed_out: run.timed_out,
-        wall_timed_out: run.wall_timed_out,
-        tokens,
-        model,
-        structured,
-        cost_usd,
-        warnings: run.warnings,
-    })
-}
-
-/// Start the (on-demand) Kimi runtime. Like claude/codex, no persistent process
-/// is held; each delivery spawns a fresh `kimi -p` turn. Mirrors
-/// [`start_claude_runtime`] with the `kimi` binary.
 pub(super) fn start_kimi_runtime(
     store: &HarnessStore,
     member: &ProviderLaunchProfile,
@@ -731,23 +556,6 @@ impl ProviderAdapter for KimiAdapter {
             project,
         )
     }
-
-    fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
-        spawn_kimi_ephemeral(
-            ctx.session_dir,
-            ctx.session_id,
-            ctx.run_id,
-            ctx.spec,
-            ctx.schema_json,
-            ctx.prompt,
-            ctx.cwd,
-            ctx.model,
-            ctx.effort,
-            ctx.timeout_ms,
-            ctx.wall_clock_ms,
-            ctx.max_budget_usd,
-        )
-    }
 }
 
 impl ProviderAdapter for PiAdapter {
@@ -806,13 +614,6 @@ impl ProviderAdapter for PiAdapter {
     ) -> CliResult<DeliveryOutcome> {
         Err(CliError::Usage(
             "pi one-shot delivery is not yet implemented; use the persistent Team Member path"
-                .to_string(),
-        ))
-    }
-
-    fn spawn_ephemeral(&self, _ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
-        Err(CliError::Usage(
-            "pi ephemeral spawn is not yet implemented; use the persistent Team Member path"
                 .to_string(),
         ))
     }

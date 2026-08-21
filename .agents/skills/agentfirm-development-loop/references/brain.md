@@ -25,15 +25,21 @@ one common architecture or acceptance contract.
 
 ## Plan and assign
 
-1. Write a concrete goal and acceptance criteria.
-2. Create one Task with owner, status, next action, and the source GitHub Issue
+1. Reconcile active Tasks with their bound Sessions, submitted versions, and
+   latest Review Documents. Consume completed and attention-required results
+   before creating more work.
+2. If any mapping disagrees or the current owner, exact submission, verdict, or
+   next action is unknown, stop dispatch and repair the one Task first.
+3. Write a concrete goal and acceptance criteria.
+4. Create one Task with owner, status, next action, and the source GitHub Issue
    link when one exists.
-3. Send `TASK_ASSIGNED` to Dev with Task ID, Issue link when present, goal and
+5. Send `TASK_ASSIGNED` to Dev with Task ID, Issue link when present, goal and
    acceptance, starting revision/context, constraints, evidence, and immediate
    next action.
-4. Dev confirms the Task ID and actual starting context; no separate Claim
+6. Dev confirms the Task ID and actual starting context; no separate Claim
    object or message type is created.
-5. Set Task to `Doing` when work starts.
+7. Record the real Session/thread binding and set Task to `Doing` when work
+   starts. Do not dispatch another Task until this binding is visible.
 
 Do not introduce Candidate, readiness approval, a separate Run, or a separate Planner for an ordinary Task.
 
@@ -69,8 +75,8 @@ On `READY_FOR_REVIEW`:
 
 On `REVIEW_RESULT`:
 
-- `Pass`: preserve the Review record and set Task to `Done` after any required exact-revision completion check.
-- `Changes Required`: preserve the Review record, set Task to `Changes Required`, route findings to the same Dev, then set it to `Doing` when work resumes.
+- `Pass`: preserve the Review Document and set Task to `Done` after any required exact-revision completion check.
+- `Changes Required`: preserve the Review Document, set Task to `Changes Required`, route findings to the same Dev, then set it to `Doing` when work resumes.
 
 On `ATTENTION_REQUIRED`, set Task to `Blocked`, record the blocker and decision owner, and notify only the person able to resolve it.
 
@@ -79,6 +85,10 @@ When the resolver decides, record the decision, clear Blocker, and return the sa
 ## Waiting
 
 Do not continuously wait on active or idle agents. After assignment or review routing, use bounded follow-through only when the user asked to carry the Task to completion. Otherwise resume when a message arrives.
+
+A completed but unconsumed Session result still occupies a work slot. Consume
+it, update the Task and Development Documents, and release the slot before
+dispatching replacement work.
 
 ## Brain output
 

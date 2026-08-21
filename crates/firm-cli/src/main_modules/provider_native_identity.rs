@@ -97,7 +97,7 @@ pub(super) fn provider_version_output(provider: &str) -> Result<String, String> 
 ///
 /// Claude Agent SDK bundles its own Claude Code executable. The unrelated
 /// `claude` on PATH may be a different version, so using `claude --version`
-/// here would audit the Workflow adapter while labeling the result as the Team
+/// here would audit a retired one-shot adapter while labeling the result as the Team
 /// adapter. Live MemberRuns still replace this static package fact with
 /// `system(init).claude_code_version`.
 pub(super) fn team_member_provider_version_output(provider: &str) -> Result<String, String> {

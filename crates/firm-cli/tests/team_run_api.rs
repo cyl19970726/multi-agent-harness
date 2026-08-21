@@ -56,6 +56,30 @@ const FIXTURE_HOST_ID: &str = "agent-runtime-host";
 mod fixtures;
 use fixtures::{assert_trust_native_binding_synced, wait_for_file};
 
+#[test]
+fn dynamic_workflow_http_and_snapshot_surfaces_are_absent() {
+    let home = TempHome::new("dynamic-workflow-http-retired");
+    let _project_id = init_project(&home, "alpha");
+    let serve = ServeHandle::spawn(&home, home.base(), &[]);
+
+    let (route_status, route_body) = serve.get_json("/v1/workflows");
+    assert_eq!(route_status, 404, "body: {route_body}");
+
+    let (snapshot_status, snapshot) = serve.get_json("/v1/snapshot");
+    assert_eq!(snapshot_status, 200, "snapshot: {snapshot}");
+    for key in [
+        "workflow_runs",
+        "workflow_steps",
+        "workflow_patches",
+        "workflow_artifact_manifests",
+    ] {
+        assert!(
+            snapshot.get(key).is_none(),
+            "retired key {key} leaked: {snapshot}"
+        );
+    }
+}
+
 fn current_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

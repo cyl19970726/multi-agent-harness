@@ -196,7 +196,7 @@ fn export_preserves_bytes_latest_rows_and_verifies_closure() {
 
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(archive.join("manifest.json")).unwrap()).unwrap();
-    assert_eq!(manifest["format"], "legacy-goal-task-v1");
+    assert_eq!(manifest["format"], "legacy-coordination-history-v2");
     assert_eq!(manifest["project"]["id"], id);
     assert_eq!(manifest["closure"]["unresolved_required_edges"], 0);
     assert_eq!(manifest["known_anomalies"].as_array().unwrap().len(), 0);
@@ -225,6 +225,91 @@ fn export_preserves_bytes_latest_rows_and_verifies_closure() {
     let report: serde_json::Value = serde_json::from_slice(&verify.stdout).unwrap();
     assert_eq!(report["closure"], "verified");
     assert_eq!(report["known_anomalies"], 0);
+}
+
+#[test]
+fn workflow_history_is_opaque_verified_and_restore_readable() {
+    let home = TempHome::new("legacy-export-workflow-opaque");
+    let (project, id, store) = initialize_project(&home);
+    seed_closed_legacy_store(&store);
+    let workflow_files: [(&str, &[u8]); 4] = [
+        (
+            "workflow_runs.jsonl",
+            b"{\"id\":\"known\",\"goal_id\":\"g1\",\"future_field\":{\"nested\":true}}\nnot-json-at-all\n",
+        ),
+        ("workflow_steps.jsonl", b"{\"id\":\"step-1\"}\n"),
+        ("workflow_patches.jsonl", b"{\"unknown_patch_shape\":42}\n"),
+        (
+            "workflow_artifact_manifests.jsonl",
+            b"{\"id\":\"manifest-1\",\"files\":\"historically-malformed\"}\n",
+        ),
+    ];
+    for (name, bytes) in workflow_files {
+        std::fs::write(store.join(name), bytes).unwrap();
+    }
+    let patch_bytes = b"diff --git a/unknown b/unknown\n\0opaque-patch-bytes\n";
+    let patch_path = store.join("workflow-patches/run-1/step-1.patch");
+    std::fs::create_dir_all(patch_path.parent().unwrap()).unwrap();
+    std::fs::write(&patch_path, patch_bytes).unwrap();
+
+    let archive = home.base().join("workflow-history-v2");
+    let export = run(&home, &project, &export_args(&id, &archive));
+    assert!(export.status.success(), "export failed: {export:?}");
+    let second_archive = home.base().join("workflow-history-v2-second");
+    let second_export = run(&home, &project, &export_args(&id, &second_archive));
+    assert!(
+        second_export.status.success(),
+        "second export failed: {second_export:?}"
+    );
+    for (name, bytes) in workflow_files {
+        assert_eq!(
+            std::fs::read(archive.join("sources/central/workflow/raw").join(name)).unwrap(),
+            bytes
+        );
+    }
+    assert_eq!(
+        std::fs::read(archive.join("sources/central/workflow/patches/run-1/step-1.patch")).unwrap(),
+        patch_bytes
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(archive.join("manifest.json")).unwrap()).unwrap();
+    let second_manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(second_archive.join("manifest.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["workflow_archive"]["encoding"], "opaque-bytes");
+    assert_eq!(manifest["workflow_archive"]["restore_mode"], "read-only");
+    let workflow_digests = |value: &serde_json::Value| {
+        value["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry["category"].as_str(),
+                    Some("raw_workflow_ledger" | "raw_workflow_patch")
+                )
+            })
+            .map(|entry| (entry["path"].clone(), entry["sha256"].clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        workflow_digests(&manifest),
+        workflow_digests(&second_manifest)
+    );
+    let edges = std::fs::read_to_string(archive.join("edges.jsonl")).unwrap();
+    assert!(edges.contains("\"source_ledger\":\"workflow_runs.jsonl\""));
+    assert!(run(&home, &project, &verify_args(&archive))
+        .status
+        .success());
+
+    std::fs::write(
+        archive.join("sources/central/workflow/raw/workflow_steps.jsonl"),
+        b"tampered\n",
+    )
+    .unwrap();
+    let verify = run(&home, &project, &verify_args(&archive));
+    assert!(!verify.status.success());
+    assert!(String::from_utf8_lossy(&verify.stderr).contains("SHA-256 mismatch"));
 }
 
 #[test]

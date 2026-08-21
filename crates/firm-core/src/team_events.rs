@@ -53,6 +53,8 @@ pub struct MemberAction {
 pub enum DelegationMode {
     ProviderNative,
     HarnessWorker,
+    /// Historical decode value only. Current schemas and Store writers reject
+    /// new Dynamic Workflow delegation rows.
     DynamicWorkflow,
 }
 

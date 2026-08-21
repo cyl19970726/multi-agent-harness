@@ -17,7 +17,7 @@ pub(super) fn deliver_agent_messages_value(
     // stores may infer a project from their historical metadata.
     let project = project_context
         .cloned()
-        .unwrap_or_else(|| workflow_project_context(store));
+        .unwrap_or_else(|| default_project_context(store));
     let mut member = latest_member(store, &agent_id)?;
     ensure_member_accepts_delivery(&member)?;
     let mut runtime = match member.provider_runtime_id.as_deref() {
@@ -310,7 +310,7 @@ pub(super) fn deliver_agent_messages_value(
             "terminal_source": delivery.terminal_source,
             "provider_request_id": delivery.provider_request_id,
             "exit_code": delivery.exit_code,
-            "tokens": delivery.tokens.map(TokenUsage::to_json),
+            "tokens": delivery.tokens.map(TokenUsage::into_json),
             "cost_usd": delivery.cost_usd,
             "model": delivery.model,
             "structured": delivery.structured

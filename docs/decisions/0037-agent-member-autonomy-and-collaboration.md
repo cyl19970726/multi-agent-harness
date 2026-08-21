@@ -64,7 +64,7 @@ Create a separate reviewer member when acceptance needs independence.
 | Host can finish safely in its current context | Host |
 | One accountable lane needs sustained multi-turn work, a Workspace, chat, or resume | Agent Team member |
 | A bounded internal subtask returns to one accountable member | provider-native subagent |
-| Deterministic repeated steps own their own step state | Dynamic Workflow |
+| Deterministic repeated steps owned their own step state | Dynamic Workflow (retired; historical decision context) |
 
 Two independent feature modules should normally use two members. Each member
 owns its module from design through implementation and validation and may

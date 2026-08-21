@@ -7,10 +7,6 @@ pub(super) fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::
     let messages = latest_messages_in_append_order(store)?;
     let evidence = store.evidence()?;
     let provider_child_threads = store.provider_child_threads()?;
-    let workflow_runs = latest_workflow_runs_in_append_order(store)?;
-    let workflow_steps = latest_workflow_steps_in_append_order(store)?;
-    let workflow_patches = latest_workflow_patches_in_append_order(store)?;
-    let workflow_artifact_manifests = latest_workflow_artifact_manifests_in_append_order(store)?;
     let missions = store.latest_missions()?;
     let legacy_waves = store.latest_legacy_waves()?;
     // Unlike Mission, a MissionLogEntry is never revised in place — every
@@ -230,10 +226,6 @@ pub(super) fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::
         "messages": messages,
         "evidence": evidence,
         "provider_child_threads": provider_child_threads,
-        "workflow_runs": workflow_runs,
-        "workflow_steps": workflow_steps,
-        "workflow_patches": workflow_patches,
-        "workflow_artifact_manifests": workflow_artifact_manifests,
         "missions": missions,
         "legacy_waves": legacy_waves,
         "mission_log": mission_log,
@@ -386,16 +378,7 @@ pub(super) fn dashboard_team_run_snapshot(
             .as_deref()
             .is_some_and(|id| json_field_eq(row, "mission_id", id))
     });
-    for key in [
-        "messages",
-        "events",
-        "evidence",
-        "provider_child_threads",
-        "workflow_runs",
-        "workflow_steps",
-        "workflow_patches",
-        "workflow_artifact_manifests",
-    ] {
+    for key in ["messages", "events", "evidence", "provider_child_threads"] {
         retain_json_rows(&mut snapshot, key, |_| false);
     }
     if let Some(object) = snapshot.as_object_mut() {
@@ -455,19 +438,6 @@ pub(super) fn latest_runtime(
         runtimes.insert(runtime.id.clone(), runtime);
     }
     Ok(runtimes.remove(runtime_id))
-}
-
-pub(super) fn latest_workflow_runs_in_append_order(
-    store: &HarnessStore,
-) -> CliResult<Vec<WorkflowRun>> {
-    let mut ids = Vec::new();
-    let mut by_id = BTreeMap::new();
-    for run in store.workflow_runs()? {
-        ids.retain(|id| id != &run.id);
-        ids.push(run.id.clone());
-        by_id.insert(run.id.clone(), run);
-    }
-    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
 pub(super) fn latest_team_runs_in_append_order(

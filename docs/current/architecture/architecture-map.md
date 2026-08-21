@@ -23,7 +23,6 @@ flowchart TB
   Daemon["machine-scoped NodeDaemon\ndurable RuntimeCommand authority"]
   Fabric["Remote Node Fabric\nControl Plane · outbound NodeGateway · durable routes"]
   Runtime["Providers · sessions · plugins · MCP"]
-  Workflow["Dynamic Workflow"]
   Spaces["Execution Spaces\ncoordination storage"]
   Bindings["Project Bindings\nprovider cwd · instructions · Skills · plugins · MCP config"]
 
@@ -41,7 +40,6 @@ flowchart TB
   Supervisor --> Daemon
   Daemon --> Runtime
   Fabric --> Daemon
-  Workflow --> Runtime
   Runs --> Spaces
   Runtime --> Bindings
 ```

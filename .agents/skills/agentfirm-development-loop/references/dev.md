@@ -33,6 +33,12 @@ Send `READY_FOR_REVIEW` with:
 
 Do not continue changing the submitted revision and still call it the same submission. New changes produce the next submission of the same Task.
 
+For a document submission, provide one directly readable named immutable
+version. For a code or machine-data submission, provide the exact Git SHA and
+paths; add a file hash when the file itself is the reviewed artifact. Large
+inventories and structured manifests belong in the repository, not in encoded
+or sharded Notion carrier pages.
+
 ## After Changes Required
 
 Continue the same Task. Address the findings, preserve still-valid evidence, and submit a new exact revision/version. Do not create a replacement Task unless the Brain changes the scope.

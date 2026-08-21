@@ -33,8 +33,8 @@ parts; they do not fork the core model.
   (`kimi_acp`), and Claude Agent SDK streaming (`claude_agent_sdk`) are the
   executable Team Member modes. Codex app-server is the only Codex Team mode;
   Agent SDK streaming is the only Claude Team mode. Bounded `codex_exec` and
-  `claude_cli` belong to Dynamic Workflow and other one-shot paths. They cannot
-  create or start Team members. Harness never silently falls back.
+  `claude_cli` describe retired one-shot records only. They cannot create or
+  start Team members or Dynamic Workflow runs. Harness never silently falls back.
 - `team_run_start` reserves the run and returns immediately while members run
   in the background.
 - The service that starts a TeamRun acquires the latest durable Supervisor

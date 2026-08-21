@@ -1,0 +1,13 @@
+{
+  "id": "wave-historical-workflow",
+  "mission_id": "mission-historical",
+  "index": 1,
+  "title": "Historical Dynamic Workflow wave",
+  "objective": "Preserve the retired executor value for archive decoding.",
+  "status": "failed",
+  "executor_kind": "dynamic_workflow",
+  "executor_run_ids": ["workflow-run-historical"],
+  "gate_status": "pending",
+  "created_at": "2026-07-01T00:00:00Z",
+  "updated_at": "2026-07-01T00:01:00Z"
+}

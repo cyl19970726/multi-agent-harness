@@ -205,9 +205,9 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "documentation module taxonomy",
-        "documentation authority and lifecycle",
-        "default context packs and archive policy"
+        "repository-document module taxonomy and lifecycle",
+        "question-scoped repository-document routing",
+        "default context packs and archive policy; not product intent, Development Task/Review, Crosswalk, or Skill lifecycle"
       ],
       "dependsOn": [
         "docs/current/operations/governance-engine.md",
@@ -221,7 +221,7 @@
       "lastVerifiedWith": [
         "harness governance check"
       ],
-      "reorgTrigger": "Documentation modules, authority classes, context packs, governance roles, lifecycle, registry fields, or archive policy change.",
+      "reorgTrigger": "Repository-document modules, authority classes, context packs, lifecycle, registry fields, or archive policy change.",
       "authorityClass": "canonical_contract",
       "implementationState": "partial",
       "truthRefs": []
@@ -309,7 +309,7 @@
         "docs/current/integration/codex.md",
         "docs/current/integration/codex-message-delivery.md",
         "docs/current/operations/operations.md",
-        "examples/adapters/earning-engine/README.md"
+        "archive/dynamic-workflow/assets/earning-engine/README.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -805,8 +805,8 @@
       "canonicalFor": [
         "Git worktree workflow",
         "PR integration",
-        "execution-aware change attribution and review flow",
-        "Host-plan coordination for concurrent changes"
+        "Development Task to exact-version submission and immutable Review projection",
+        "Session binding and coordinator state reconciliation"
       ],
       "dependsOn": [
         "docs/current/architecture/concept-model.md",
@@ -824,7 +824,7 @@
         "npx pnpm@9.15.4 check",
         "harness governance check"
       ],
-      "reorgTrigger": "Host-plan coordination, execution concurrency, worktree, WorkflowPatch, PR, review, or development-batch integration workflow changes.",
+      "reorgTrigger": "Development Task, Session binding, worktree, PR, exact-version submission, Review, or integration workflow changes.",
       "authorityClass": "implementation_reference",
       "implementationState": "partial",
       "truthRefs": [
@@ -881,7 +881,7 @@
       "canonicalFor": [
         "Codex provider integration",
         "Codex app-server Agent Team mode",
-        "Codex Workflow and historical mode boundary",
+        "Codex retired Dynamic Workflow and historical mode boundary",
         "Codex lifecycle, hooks, skills, and plugins"
       ],
       "dependsOn": [
@@ -973,7 +973,7 @@
       "canonicalFor": [
         "Claude Code provider integration",
         "Claude Agent SDK streaming Agent Team mode",
-        "Claude Workflow and historical mode boundary",
+        "Claude retired Dynamic Workflow and historical mode boundary",
         "Claude lifecycle and native subagent boundary"
       ],
       "dependsOn": [
@@ -996,7 +996,7 @@
         "cargo test -p firm-cli",
         "harness governance check"
       ],
-      "reorgTrigger": "Claude Agent SDK streaming, session protocol, lifecycle controls, native subagents, or Workflow-only CLI boundary changes.",
+      "reorgTrigger": "Claude Agent SDK streaming, session protocol, lifecycle controls, native subagents, or the retired one-shot boundary changes.",
       "authorityClass": "implementation_reference",
       "implementationState": "partial",
       "truthRefs": [
@@ -1294,7 +1294,7 @@
         "docs/current/integration/claude.md",
         "docs/decisions/0011-provider-neutral-runtime.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
-        "examples/adapters/earning-engine/adapter.json",
+        "archive/dynamic-workflow/assets/earning-engine/adapter.json",
         "crates/firm-core/src/lib.rs",
         "schemas/agent-member.schema.json",
         "docs/current/integration/kimi.md"
@@ -1333,7 +1333,7 @@
       "lifecycle": "stable",
       "canonicalFor": [
         "historical headless exec-stream substrate decision",
-        "bounded Dynamic Workflow exec-stream context",
+        "retired Dynamic Workflow exec-stream context",
         "superseded Agent Team mode-selection rationale"
       ],
       "dependsOn": [
@@ -1352,7 +1352,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Historical interpretation changes or bounded Workflow exec-stream is retired.",
+      "reorgTrigger": "Historical interpretation of the retired exec-stream substrate changes.",
       "authorityClass": "historical_evidence",
       "implementationState": "partial",
       "truthRefs": [
@@ -1462,14 +1462,13 @@
       "status": "stable",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "two-step quickstart (install star-workflow skill + start serve)",
-        "skill install paths (script / npx skills / plugin)",
-        "serve + run-script same-store invariant",
-        "author + run + read-back a workflow"
+        "Agent Team quickstart",
+        "Execution Space and Project Binding setup",
+        "service and Dashboard startup",
+        "retired Dynamic Workflow boundary"
       ],
       "dependsOn": [
         "README.md",
-        "skills/star-workflow/SKILL.md",
         "docs/current/operations/multi-project.md"
       ],
       "machineConsumers": [
@@ -1480,7 +1479,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "The quickstart steps, skill install paths, serve/run-script store resolution, or the host-function surface change.",
+      "reorgTrigger": "Agent Team setup, provider modes, Execution Space/Project Binding selection, or retirement boundaries change.",
       "authorityClass": "implementation_reference",
       "implementationState": "partial",
       "truthRefs": []
@@ -1580,16 +1579,15 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "workflow runtime",
-        "run-script surface",
-        "WorkflowRun/WorkflowStep shape",
-        "starlark host API"
+        "Dynamic Workflow retirement boundary",
+        "historical Workflow record archive policy",
+        "current Agent Team and Host coordination replacement"
       ],
       "dependsOn": [
-        "crates/firm-workflow/src/lib.rs",
-        "crates/firm-workflow/src/starlark_front.rs",
-        "crates/firm-core/src/lib.rs",
-        "skills/star-workflow/SKILL.md"
+        "docs/current/architecture/concept-model.md",
+        "docs/current/product/agent-operating-rules.md",
+        "docs/decisions/0022-dynamic-workflow-runtime-json-ir.md",
+        "docs/decisions/0023-starlark-workflow-frontend.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1599,15 +1597,10 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "The workflow runtime primitives, run-script surface, or WorkflowRun/WorkflowStep shape change.",
-      "authorityClass": "implementation_reference",
-      "implementationState": "verified",
-      "truthRefs": [
-        {
-          "kind": "test",
-          "ref": "cargo test -p firm-workflow"
-        }
-      ]
+      "reorgTrigger": "The legacy archive contract or current execution authority changes.",
+      "authorityClass": "canonical_contract",
+      "implementationState": "partial",
+      "truthRefs": []
     },
     {
       "path": "docs/current/integration/kimi.md",
@@ -1616,7 +1609,7 @@
       "lifecycle": "volatile",
       "canonicalFor": [
         "Kimi provider integration overview",
-        "Kimi bounded Workflow and historical mode",
+        "Kimi retired Dynamic Workflow and historical mode",
         "Kimi native record and permission limitations"
       ],
       "dependsOn": [

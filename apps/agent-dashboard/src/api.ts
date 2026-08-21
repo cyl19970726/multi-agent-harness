@@ -17,9 +17,6 @@ import type {
   TeamSupervisorLease,
   TeamRun,
   TeamRunEvent,
-  WorkflowDef,
-  WorkflowRun,
-  WorkflowStep,
 } from "./types";
 
 export interface ActionResponse {
@@ -301,22 +298,9 @@ export async function fetchHostAttentions(
   return payload.attentions ?? [];
 }
 
-export async function fetchNativeWorkflowStepActivity(
-  baseUrl: string,
-  workflowStepId: string,
-  project?: string | null,
-  space?: string | null,
-): Promise<NativeActivityProjection> {
-  const normalized = normalizeBaseUrl(baseUrl);
-  if (!normalized) throw new Error("Harness API URL is required");
-  const response = await fetch(`${normalized}${withQuery(`/v1/workflow-steps/${encodeURIComponent(workflowStepId)}/native-activity`, { space, project })}`);
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return (await response.json()) as NativeActivityProjection;
-}
-
 /**
  * Enumerate Project Bindings. These entries define execution/source boundaries
- * and do not own Mission/Team/Workflow storage.
+ * and do not own coordination storage.
  */
 export async function fetchProjects(
   baseUrl: string,
@@ -421,24 +405,6 @@ export async function fetchDocRegistry(baseUrl: string): Promise<DocRegistryEntr
 }
 
 /**
- * Fetch the registered workflow catalog via `GET /v1/workflows` — the
- * run-independent `{ name, summary }` defs from the compiled registry. Only the
- * live source serves this; offline returns an empty list (caller shows an
- * "unavailable" empty state). Network/HTTP errors propagate to the caller.
- */
-export async function fetchWorkflowDefs(baseUrl: string): Promise<WorkflowDef[]> {
-  const normalized = normalizeBaseUrl(baseUrl);
-  if (!normalized) {
-    throw new Error("Harness API URL is required");
-  }
-  const response = await fetch(`${normalized}/v1/workflows`);
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
-  }
-  return (await response.json()) as WorkflowDef[];
-}
-
-/**
  * A single frame off the backend `/v1/events` SSE stream. The backend emits
  * Harness-owned coordination deltas plus a timestamp-only `snapshot` frame.
  * Provider-native activity is read through NativeSessionRef endpoints.
@@ -448,8 +414,6 @@ export type SseFrame =
   | { kind: "projection_invalidated"; invalidation: ProjectionInvalidation | null }
   | { kind: "agent_event"; event: ProviderDispatchEvent }
   | { kind: "message"; message: Message }
-  | { kind: "workflow_run"; run: WorkflowRun }
-  | { kind: "workflow_step"; step: WorkflowStep }
   // A single team-run log entry (team-console): appended to team_run_events,
   // latest-wins by id so a replayed frame self-heals.
   | { kind: "team_run_event"; event: TeamRunEvent }
@@ -554,14 +518,6 @@ export function openEventStream(
     const data = parse<Message>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "message", message: data });
   });
-  source.addEventListener("workflow_run", (event) => {
-    const data = parse<WorkflowRun>(event as MessageEvent);
-    if (data) handlers.onFrame({ kind: "workflow_run", run: data });
-  });
-  source.addEventListener("workflow_step", (event) => {
-    const data = parse<WorkflowStep>(event as MessageEvent);
-    if (data) handlers.onFrame({ kind: "workflow_step", step: data });
-  });
   source.addEventListener("team_run_event", (event) => {
     const data = parse<TeamRunEvent>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "team_run_event", event: data });
@@ -616,8 +572,6 @@ export function applyFrame(snapshot: DashboardSnapshot, frame: SseFrame): Dashbo
     case "projection_invalidated":
     case "agent_event":
     case "message":
-    case "workflow_run":
-    case "workflow_step":
     case "team_run_event":
     case "mission":
     case "agent_team_run":

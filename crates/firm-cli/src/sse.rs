@@ -11,7 +11,7 @@ use std::time::Duration;
 use crossbeam::channel::{bounded, Receiver, Sender};
 use harness_core::{
     AgentTeamRun, MemberAction, Mission, ProviderRuntimeProjection, RegistryMessage,
-    TeamMemberCloseRequest, TeamRunEvent, TeamSupervisorLease, WorkflowRun, WorkflowStep,
+    TeamMemberCloseRequest, TeamRunEvent, TeamSupervisorLease,
 };
 
 /// An event frame sent to SSE clients. Durable frames are reconstructed by tailing
@@ -27,10 +27,6 @@ pub enum SseEventFrame {
     },
     /// A message was created or delivery status changed
     RegistryMessage(RegistryMessage),
-    /// A workflow run status changed (WP2)
-    WorkflowRun(WorkflowRun),
-    /// A workflow step started or completed (WP2)
-    WorkflowStep(WorkflowStep),
     /// A folded team-run event was recorded (Agent Team v0).
     TeamRunEvent(TeamRunEvent),
     /// A native Mission was created or updated.
@@ -420,8 +416,6 @@ fn seed_offsets_at_eof(
 /// coordination store.
 const WATCHED_FILES: &[&str] = &[
     "messages.jsonl",
-    "workflow_runs.jsonl",
-    "workflow_steps.jsonl",
     "team_run_events.jsonl",
     "missions.jsonl",
     "waves.jsonl",
@@ -441,8 +435,6 @@ const EXECUTION_INVALIDATION_FILES: &[&str] = &[
     "provider_processes.jsonl",
     "evidence.jsonl",
     "provider_child_threads.jsonl",
-    "workflow_patches.jsonl",
-    "workflow_artifact_manifests.jsonl",
     "delegation_runs.jsonl",
     "work_operations.jsonl",
     "work_delivery_updates.jsonl",
@@ -808,36 +800,6 @@ fn poll_project(
         |line| {
             if let Ok(msg) = serde_json::from_str::<RegistryMessage>(line) {
                 vec![SseEventFrame::RegistryMessage(msg)]
-            } else {
-                Vec::new()
-            }
-        },
-        manager,
-    );
-
-    check_and_broadcast_appends(
-        project_id,
-        store_root,
-        "workflow_runs.jsonl",
-        consumed_offsets,
-        |line| {
-            if let Ok(run) = serde_json::from_str::<WorkflowRun>(line) {
-                vec![SseEventFrame::WorkflowRun(run)]
-            } else {
-                Vec::new()
-            }
-        },
-        manager,
-    );
-
-    check_and_broadcast_appends(
-        project_id,
-        store_root,
-        "workflow_steps.jsonl",
-        consumed_offsets,
-        |line| {
-            if let Ok(step) = serde_json::from_str::<WorkflowStep>(line) {
-                vec![SseEventFrame::WorkflowStep(step)]
             } else {
                 Vec::new()
             }

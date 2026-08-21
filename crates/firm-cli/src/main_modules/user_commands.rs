@@ -86,7 +86,7 @@ pub(super) fn retired_command(command: &str) -> bool {
 
 pub(super) fn retired_surface_error(command: &str) -> CliError {
     CliError::Usage(format!(
-        "`harness {command}` was retired with the Goal/GoalPhase/Task Graph coordination stack; use Mission plus its append-only Mission Log, agent-team, dynamic-workflow, or host execution. Historical data remains available only through `harness legacy-goal-task export|verify`."
+        "`harness {command}` was retired with the Goal/GoalPhase/Task Graph coordination stack; use Agent Team or Host execution. Historical data remains available only through `harness legacy-goal-task export|verify`."
     ))
 }
 

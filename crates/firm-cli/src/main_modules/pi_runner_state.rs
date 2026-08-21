@@ -31,8 +31,7 @@ pub(super) fn resolve_pi_bin() -> String {
 }
 
 /// Drive one Pi Team Member through one pi RPC process and native session.
-/// Bounded `pi -p` print mode remains a Dynamic Workflow substrate, not an
-/// alternative Agent Team Member mode.
+/// Retired `pi -p` print mode is not an alternative Agent Team Member mode.
 pub(super) fn run_pi_team_member(
     ledger: &TeamRunLedger,
     objective: &str,

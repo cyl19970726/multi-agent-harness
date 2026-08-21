@@ -144,6 +144,15 @@ pub fn export_archive(
             id: resolved_project_id.clone(),
             project_root: Some(canonical_string(project_root)),
         },
+        workflow_archive: Some(WorkflowArchiveContract {
+            encoding: "opaque-bytes".into(),
+            ledgers: WORKFLOW_LEDGERS
+                .iter()
+                .map(|value| (*value).into())
+                .collect(),
+            patch_root: WORKFLOW_PATCH_ROOT.into(),
+            restore_mode: "read-only".into(),
+        }),
         source_comparisons: compare_manifest_sources(&manifest_sources),
         interpretation_materials,
         sources: manifest_sources,

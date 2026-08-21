@@ -9,6 +9,10 @@ AgentTeam (durable, flat) → TeamRuns → MemberRuns → Work → Result
               └──────────── WorkDelegation ────────→ peer Team
 ```
 
+"workflow" here means the product journey shown above, not the retired Dynamic
+Workflow executor. Local Host/provider plans and native subagents are
+implementation details and do not create another durable ledger.
+
 ## Required slice
 
 1. AgentTeam is durable and flat; it is created without any Mission.

@@ -287,7 +287,6 @@ pub(super) fn print_help() {
                  [--policy strict|advisory] [--actor <id>] [--json]
       An active/selected Execution Space requires the global --project flag;
       FIRM_PROJECT and ambient Project Binding defaults do not authorize admission.
-  workflow list|run|run-script|get-output|patch|gc-worktrees|reap-workers
   dashboard snapshot
   dashboard doctor --team-run-id <id> --api <base-url> [--expected-git-rev <rev>]
   hook record --agent <agent> [--runtime <runtime>]

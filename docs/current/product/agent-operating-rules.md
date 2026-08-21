@@ -14,8 +14,10 @@ relocation map — is canonical in Notion; see the single authority-boundary anc
 `docs/current/documentation-governance.md` (Authority boundary: Notion vs
 repository) for the current Notion location.
 This repository file survives only as the implementation-bound remainder
-below. Root [AGENTS.md](../../../AGENTS.md) still states the hard invariants
-and wins any conflict.
+below. Root [AGENTS.md](../../../AGENTS.md) states repository-wide hard
+invariants and routes to this file; this file owns only its declared
+implementation-detail scope. On an apparent conflict, select the owner of the
+exact question and repair the other projection. Neither file universally wins.
 
 ## Implementation-bound invariants
 
@@ -44,21 +46,20 @@ and wins any conflict.
   `HARNESS_SPACE` / `firm space switch`; `--project <id|path>` /
   `HARNESS_PROJECT` / `firm project switch`; `--store` / `HARNESS_ROOT` are
   deprecation-warned back-compat overrides. `AgentTeamRun.project_binding_id`
-  and `WorkflowRun.project_binding_id` pin the execution resource once set
-  and later selector changes must not retarget them. The reserved GLOBAL
+  pins the execution resource once set and later selector changes must not
+  retarget it. Historical Workflow binding fields remain archive evidence only.
+  The reserved GLOBAL
   `_global` (`~/`) project is non-git and rejects
   `writable`/`isolation="worktree"` nodes with an actionable message.
 
 ## Repository execution rules (relocated from AGENTS.md)
 
-- Repository development follows
-  [.agents/skills/agentfirm-development-loop/SKILL.md](../../../.agents/skills/agentfirm-development-loop/SKILL.md):
-  Brain assigns one Task -> Dev works freely -> Dev submits an exact revision
-  -> Reviewer returns Pass or Changes Required -> Pass completes the Task or
-  Changes Required returns the same Task to Dev. There is no Candidate or
-  pre-review readiness stage. Run focused checks while working; run the
-  submission-level checks once when Dev is ready for Review. Preserve
-  unaffected evidence after rejection and review the delta by default.
+- Creating, assigning, executing, reviewing, retrying, blocking, or completing
+  repository development follows the single
+  [.agents/skills/agentfirm-development-loop/SKILL.md](../../../.agents/skills/agentfirm-development-loop/SKILL.md).
+  That Skill owns the two-table workflow, exact readable submission policy,
+  Session reconciliation, machine-manifest placement, statuses, and messages;
+  this companion does not duplicate them.
 - Harness Member execution is suspended for repository repair until the
   explicit dogfood admission standard passes. A Primary Codex Session may use
   bounded temporary Sub-Agents internally, but must not label that as Harness
@@ -123,8 +124,8 @@ must report the actual worktree, branch, commit, checks, and conflicts.
 
 New Agent Team members use only their persistent bidirectional mode:
 `codex_app_server`, `kimi_acp`, or `claude_agent_sdk`. Bounded
-`codex_exec`/`claude_cli` paths belong to Dynamic Workflow and historical
-reads; they are not Team fallbacks. The one declared exception is
+`codex_exec`/`claude_cli` paths describe retired Dynamic Workflow and historical
+records only; they are not current routes or Team fallbacks. The one declared exception is
 `external_interactive`: a user's own already-open interactive provider CLI
 session may join a run as a non-driven member that Harness never spawns or
 drives — it polls its inbox and replies over the trusted loopback CLI/MCP,

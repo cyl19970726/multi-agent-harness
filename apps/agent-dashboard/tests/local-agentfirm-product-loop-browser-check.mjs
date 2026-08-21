@@ -50,7 +50,6 @@ try{
     else if(url.pathname==="/v1/spaces")body={spaces:[{id:"fixture-space",name:"Fixture",is_current:true}]};
     else if(url.pathname==="/v1/companies")body={companies:[]};
     else if(url.pathname==="/v1/snapshot"||url.pathname==="/v1/team-runs/run-fixture-1/snapshot")body={generated_at:"2026-08-10T00:00:00Z",teams:[{id:"team-fixture-1",name:"Fixture Team",mission_id:"mission-fixture-1",node_id:"node-fixture-1"}],team_runs:[{id:"run-fixture-1",agent_team_id:"team-fixture-1"}],execution_nodes:[{id:"node-fixture-1"}],company_os:{}};
-    else if(url.pathname==="/v1/workflows")body={workflows:[]};
     else if(url.pathname==="/v1/views/global-work")body=fixtures["global-work"];
     else if(url.pathname.includes("team-workspace"))body=fixtures["team-workspace"];
     else if(url.pathname.includes("host-console"))body=fixtures["host-console"];
