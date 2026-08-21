@@ -3,8 +3,8 @@
   "task_id": "DEV-55",
   "review_submission": 4,
   "current_staging_cutover_review_expected": "Submission 4",
-  "actual_status": "staging_built_non_authoritative_no_cutover",
-  "product_effect": "Seven independently reviewed source Task control-plane reconciliations were applied; no product-authority, data-model, runtime, repository-implementation or Home cutover effect occurred.",
+  "actual_status": "cutover_committed_target_is_sole_authority_legacy_permissions_and_final_review_pending",
+  "product_effect": "The Home authority selector cut over once to the two target data sources, making them the sole current Development Task and Development Document authority. Seven previously reviewed source Task reconciliations and one final T0 DEV-55 delta are reflected; no product model, runtime or repository implementation behavior changed.",
   "authority": {
     "selector": "AgentFirm Home authority notice",
     "home_url": "https://app.notion.com/p/3b849a4fa3798115939cca2b0b9e6f2d",
@@ -2106,6 +2106,7 @@
       "cutover_gate": "Re-fetch immediately before T0 and block only if it has acquired a target/source relation, appeared in an authority entry point, or otherwise ceased to be isolated."
     },
     "ui_only_gates": {
+      "snapshot_scope": "pre-cutover staging state; superseded by post_cutover_actual for current facts",
       "permissions": "pending",
       "layouts": "pending",
       "templates": "pending",
@@ -2156,6 +2157,82 @@
       "authority_unchanged": true
     }
   },
+  "post_cutover_actual": {
+    "authority_commit": {
+      "committed_at": "2026-08-21T17:16:00+08:00",
+      "final_readback_at": "2026-08-21T17:21:31+08:00",
+      "selector": "AgentFirm Home authority notice",
+      "tasks_data_source_id": "collection://b6d95714-f798-4478-9d3b-fc6dcba8ab69",
+      "documents_data_source_id": "collection://150fba04-285b-4410-b992-270ff8511f2d",
+      "sole_current_authority": true,
+      "dual_write_observed": false
+    },
+    "T0_delta": {
+      "source_reinventory_completed": true,
+      "delta_count": 1,
+      "task_ids": ["DEV-55"],
+      "applied_once_to_target": true,
+      "unreconciled_delta_count": 0
+    },
+    "stable_hub": {
+      "url": "https://app.notion.com/p/21e49a4fa37982a5b9f781cf04584034",
+      "target_tasks_database_id": "19373521160142bfbd09453ecccd1612",
+      "target_documents_database_id": "5ecff733b05c4526a9dd4ae1222913f9",
+      "target_databases_are_canonical_under_hub": true,
+      "old_databases_removed_from_daily_authority_path": true
+    },
+    "legacy": {
+      "page_id": "3c349a4f-a379-8115-9bfc-e2e43f1b2663",
+      "page_url": "https://app.notion.com/p/3c349a4fa37981159bfce2e43f1b2663",
+      "old_databases_moved_under_page": true,
+      "authority": "none",
+      "operational_status": "operational_read_only_by_authority_routing_and_policy",
+      "operational_read_only_evidence": {
+        "legacy_titles_and_descriptions_present": true,
+        "isolated_under_legacy_hub": true,
+        "home_selects_target_only": true,
+        "button_properties_present": false,
+        "templates_present": false,
+        "workspace_automations": "upgrade-only; no active workspace automation available",
+        "normal_user_share_discovered": false,
+        "repository_old_data_source_id_references_outside_migration_manifests": 0,
+        "repository_check": "rg for both old data-source IDs, excluding this cutover manifest and design/notion-development-system-cleanup/preflight-manifest.v1.json historical migration evidence, returned zero. The cleanup manifest intentionally retains old IDs as audit provenance, never as a writer route."
+      },
+      "permissions_verified_view_only": false,
+      "database_locks_verified": false,
+      "writer_and_automation_shutdown_verified": false,
+      "explicit_ACL_verified": false,
+      "integration_revocation_verified": false,
+      "owner_editability": "Notion owners/admins remain technically able to edit; platform limitation",
+      "claim_boundary": "Operational read-only follows from unique Home authority routing, Legacy labels/descriptions, isolated placement, writer-entry removal and policy. It is not a cryptographic immutability, database-lock, explicit-ACL or integration-revocation claim.",
+      "status": "operational read-only by authority routing and policy; lock, explicit ACL and integration revocation remain unproven"
+    },
+    "playbook": {
+      "url": "https://app.notion.com/p/3b849a4fa37981a990a5cf0059dcfa4a",
+      "conditional_field_correction_applied": true,
+      "readback_verified": true,
+      "corrected_contract": "Task identity, goal, owner and status are always present; 下一步 is required only for non-Done Tasks; 阻塞原因 only for Blocked; 送审版本 and 当前评审人 only for In Review; Review-only Document fields are populated only for ordinary Review records."
+    },
+    "reader_and_integrity_smoke": {
+      "target_task_current_callouts": 21,
+      "home_to_task_to_spec_journey": "pass",
+      "target_relations_only": true,
+      "temporary_test_row": "moved to Notion Trash",
+      "target_review_row_count": 0,
+      "target_review_status": "empty as designed; final post-cutover DEV-55 Review pending"
+    },
+    "limitations": [
+      "Legacy is operationally read-only by unique authority routing and policy, but database locks, explicit ACL enforcement and integration revocation remain unproven; Notion owners/admins remain technically editable.",
+      "The target Documents database intentionally has no Review row yet; DEV-55 cannot become Done until the exact post-cutover Review Pass is created there.",
+      "The excluded failed DOC-72 child-copy quarantine page remains a private non-authoritative cleanup item unless separate Trash evidence is supplied.",
+      "The readback proves the selected reader journey and recorded integrity checks, not every possible workspace permission identity or UI layout."
+    ],
+    "repair_posture": {
+      "forward_repair_default": "While Home uniquely selects the validated target and selected records/relations remain intact, freeze affected writes and repair missing Legacy hardening or reader-surface details forward on the target/Legacy boundary.",
+      "rollback_trigger": "Rollback if a selected current record/body/asset/relation is missing or corrupt, Home becomes ambiguous, an old writer remains current, permission loss blocks ordinary access, or the T0 delta is not reconciled.",
+      "rollback_sequence": "Freeze target; capture target-only delta once; restore old titles, placement, permissions and writer routing; switch Home back as the sole rollback commit; apply the captured delta once to old; unfreeze old; preserve target as FAILED CUTOVER / READ ONLY. Never dual-write."
+    }
+  },
   "execution_status": {
     "inventory_complete": true,
     "design_complete": true,
@@ -2163,15 +2240,19 @@
     "staging_records_copied": true,
     "staging_relations_wired": true,
     "staging_exact_readback_complete": true,
-    "records_migrated": false,
-    "editorial_successors_applied_in_non_authoritative_staging": true,
+    "records_migrated": true,
+    "editorial_successors_applied": true,
     "source_tasks_reconciled": true,
     "quarantine_disposed": false,
     "quarantine_isolated_nonblocking": true,
-    "staging_review_passed": false,
-    "T0_started": false,
+    "staging_review_passed": true,
+    "T0_started": true,
+    "T0_delta_applied": true,
     "source_locked_read_only": false,
-    "home_authority_switched": false,
+    "home_authority_switched": true,
+    "target_is_sole_current_authority": true,
+    "legacy_operational_read_only_by_routing_and_policy": true,
+    "legacy_permission_and_lock_evidence_complete": false,
     "post_cutover_review_passed": false
   }
 }
