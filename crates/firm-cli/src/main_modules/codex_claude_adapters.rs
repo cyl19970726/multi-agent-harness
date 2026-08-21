@@ -404,7 +404,6 @@ pub(super) fn run_codex_exec_process(
     session_dir: &Path,
     member: &ProviderLaunchProfile,
     message: &RegistryMessage,
-    delivery_id: &str,
     timeout_ms: u64,
     project: &ProjectContext,
 ) -> CliResult<CodexExecDeliveryRun> {
@@ -469,16 +468,7 @@ pub(super) fn run_codex_exec_process(
 
     cmd.current_dir(&cwd);
 
-    let run = run_ndjson_child(
-        cmd,
-        session_dir,
-        delivery_id,
-        "codex.stream-json.ndjson",
-        timeout_ms,
-        None,
-        None,
-        "codex exec",
-    )?;
+    let run = run_ndjson_child(cmd, timeout_ms, None, "codex exec")?;
     let events = run
         .events
         .iter()
@@ -582,14 +572,8 @@ pub(super) fn run_codex_exec_delivery(
     fs::create_dir_all(&session_dir)?;
     let spec = build_launch_spec(member, message);
 
-    let (process_success, events, raw_events, _stderr_log) = run_codex_exec_process(
-        &session_dir,
-        member,
-        message,
-        delivery_id,
-        timeout_ms,
-        project,
-    )?;
+    let (process_success, events, raw_events, _stderr_log) =
+        run_codex_exec_process(&session_dir, member, message, timeout_ms, project)?;
     let (tokens, cost_usd, model) = codex_delivery_telemetry(&raw_events, &spec);
 
     // Infer the delivery status from events and process exit.
@@ -809,7 +793,7 @@ pub(super) fn run_claude_delivery(
     let (process_success, events, raw_events, session_id, _stderr_log) = if resident {
         run_claude_resident_delivery_real(&session_dir, member, message, timeout_ms, project)?
     } else {
-        run_claude_exec_delivery_real(&session_dir, member, message, timeout_ms, project)?
+        run_claude_exec_delivery_real(member, message, timeout_ms, project)?
     };
     let (tokens, cost_usd, model, raw_structured) = claude_delivery_telemetry(&raw_events);
 
@@ -853,7 +837,6 @@ pub(super) fn run_claude_delivery(
 /// Spawn `claude -p --output-format stream-json --verbose` and parse NDJSON output.
 /// WP-3: Real implementation replacing the stub; parses session_id and events.
 pub(super) fn run_claude_exec_delivery_real(
-    session_dir: &Path,
     member: &ProviderLaunchProfile,
     message: &RegistryMessage,
     timeout_ms: u64,
@@ -933,21 +916,7 @@ pub(super) fn run_claude_exec_delivery_real(
     // Add working directory.
     cmd.current_dir(&cwd);
 
-    let delivery_id = session_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default()
-        .to_string();
-    let run = run_ndjson_child(
-        cmd,
-        session_dir,
-        &delivery_id,
-        "claude.stream-json.ndjson",
-        timeout_ms,
-        None,
-        None,
-        "claude -p process",
-    )?;
+    let run = run_ndjson_child(cmd, timeout_ms, None, "claude -p process")?;
     let events = run
         .events
         .iter()

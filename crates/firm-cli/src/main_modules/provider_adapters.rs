@@ -40,10 +40,6 @@ pub(super) trait ProviderAdapter: Sync {
         }
     }
 
-    /// Filename used only inside the short-lived process transport directory.
-    /// It is reduced in memory and removed; it is never a Harness history record.
-    fn live_ndjson_file_name(&self) -> &'static str;
-
     /// Map a LaunchPermission to this provider's CLI permission flag value
     /// (codex `--sandbox`, claude `--permission-mode`).
     fn map_permission(&self, perm: LaunchPermission) -> &'static str;
@@ -87,10 +83,6 @@ impl ProviderAdapter for CodexAdapter {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::codex_exec()
-    }
-
-    fn live_ndjson_file_name(&self) -> &'static str {
-        "codex.stream-json.ndjson"
     }
 
     fn map_permission(&self, perm: LaunchPermission) -> &'static str {
@@ -138,10 +130,6 @@ impl ProviderAdapter for ClaudeAdapter {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::claude_exec()
-    }
-
-    fn live_ndjson_file_name(&self) -> &'static str {
-        "claude.stream-json.ndjson"
     }
 
     fn map_permission(&self, perm: LaunchPermission) -> &'static str {
@@ -366,7 +354,6 @@ pub(super) fn start_kimi_runtime(
 /// uses `-S/--session`, and claude-only flags (`--verbose` / `--permission-mode` /
 /// `--allowedTools` / `--json-schema` / `--mcp-config` / `--add-dir`) are dropped.
 pub(super) fn run_kimi_exec_delivery_real(
-    session_dir: &Path,
     member: &ProviderLaunchProfile,
     message: &RegistryMessage,
     timeout_ms: u64,
@@ -412,21 +399,7 @@ pub(super) fn run_kimi_exec_delivery_real(
     // the harness-owned worktree, not a CLI flag.
     cmd.current_dir(&cwd);
 
-    let delivery_id = session_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default()
-        .to_string();
-    let run = run_ndjson_child(
-        cmd,
-        session_dir,
-        &delivery_id,
-        KimiAdapter.live_ndjson_file_name(),
-        timeout_ms,
-        None,
-        None,
-        "kimi -p process",
-    )?;
+    let run = run_ndjson_child(cmd, timeout_ms, None, "kimi -p process")?;
     // Kimi -p stream-json is not claude-shaped — derive the session id from the raw
     // frames (the caller parses reply/status the same way). The `events` slot of the
     // shared tuple is unused for kimi (left empty); the raw frames carry the data.
@@ -459,7 +432,7 @@ pub(super) fn run_kimi_delivery(
         .join(delivery_id);
     fs::create_dir_all(&session_dir)?;
     let (process_success, _events, raw_events, session_id, _stderr_log) =
-        run_kimi_exec_delivery_real(&session_dir, member, message, timeout_ms, project)?;
+        run_kimi_exec_delivery_real(member, message, timeout_ms, project)?;
     // Kimi -p stream-json carries no usage/model/cost/structured frame; degrade per
     // kimi_exec(). Reply/status/session come from the kimi-native parsers on the raw
     // frames.
@@ -507,10 +480,6 @@ impl ProviderAdapter for KimiAdapter {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::kimi_exec()
-    }
-
-    fn live_ndjson_file_name(&self) -> &'static str {
-        "kimi.stream-json.ndjson"
     }
 
     fn map_permission(&self, perm: LaunchPermission) -> &'static str {
@@ -575,10 +544,6 @@ impl ProviderAdapter for PiAdapter {
             cost: false,
             enforces_read_only: false,
         }
-    }
-
-    fn live_ndjson_file_name(&self) -> &'static str {
-        "pi.stream-json.ndjson"
     }
 
     fn map_permission(&self, perm: LaunchPermission) -> &'static str {

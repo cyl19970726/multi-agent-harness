@@ -37,7 +37,7 @@ acceptance update.
 | `provider_adapter.rs` | current provider-native control seam and standalone NodeSession control | current control contract mixed with implementations | runtime contract/application control plus provider bindings |
 | `provider_adapters.rs` | old Codex/Claude/Kimi/Pi one-shot registry | current compatibility delivery and Claude Host path; historical names; unsupported Pi stubs | split Host binding, compatibility delivery binding, and historical decoder; delete inapplicable stubs |
 | `codex_claude_adapters.rs` | Codex/Claude one-shot parsing, process launch, delivery, runtime-control facts | current Claude Host/direct delivery plus historical Codex paths; mixed coordination writes | provider transport/bindings; application owns durable facts |
-| `provider_ephemeral.rs` | generic child-tree teardown and NDJSON runner with orphan pidfiles | child teardown is current Team infrastructure; NDJSON runner is current Host/compatibility transport | provider-neutral process transport owned below provider packages; remove Workflow vocabulary |
+| `provider_ephemeral.rs` | generic child-tree teardown and NDJSON runner plus unused orphan-pidfile parameters | current Host/compatibility transport; orphan registration had no caller | `firm-runtime-host` (extracted in DEV-58); CLI retains only error translation |
 | `process_reaper.rs` | snapshot/read-model helpers and legacy Team tolerance | application/read-model; filename is misleading | application projection package/module |
 | `codex_app_server.rs`, `codex_team_runtime.rs` | Codex native protocol and Team binding | current Team provider | `firm-provider-codex` |
 | `claude_agent_sdk.rs`, `claude_team_runtime.rs`, `apps/claude-member-runner` | Claude Rust bridge, Team binding, Node runner | current Team provider | `firm-provider-claude` plus versioned runner asset |
@@ -95,5 +95,8 @@ Landed DEV-58 milestones:
 
 - `e78b533c`: extracted `firm-runtime-contract`, moved its conformance tests,
   and deleted 114 unreachable post-retirement Workflow test sources;
-- current catalog slice: establishes `firm-application` as the canonical four-provider
-  descriptor and makes Team selection/provider reporting derive from it.
+- `c7aec277`: established `firm-application` as the canonical four-provider
+  descriptor and made Team selection/provider reporting derive from it;
+- current transport slice: extracts provider-neutral process-group teardown,
+  idle/wall timeouts, NDJSON collection, and stderr draining to
+  `firm-runtime-host`; removes unused orphan-pidfile and live-filename arguments.

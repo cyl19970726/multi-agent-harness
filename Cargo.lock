@@ -440,6 +440,7 @@ dependencies = [
  "firm-governance",
  "firm-provider-events",
  "firm-runtime-contract",
+ "firm-runtime-host",
  "firm-store",
  "hmac",
  "libc",
@@ -506,6 +507,15 @@ version = "0.1.0"
 dependencies = [
  "firm-core",
  "serde",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "firm-runtime-host"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
  "thiserror 1.0.69",
 ]
 
