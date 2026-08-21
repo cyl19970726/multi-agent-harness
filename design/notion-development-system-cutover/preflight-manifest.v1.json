@@ -1,10 +1,10 @@
 {
   "schema_version": "notion-development-system-cutover-preflight.v1",
   "task_id": "DEV-55",
-  "review_submission": 3,
-  "current_pre_cutover_final_review_expected": "Submission 3",
-  "actual_status": "proposed_only",
-  "product_effect": "none",
+  "review_submission": 4,
+  "current_staging_cutover_review_expected": "Submission 4",
+  "actual_status": "staging_built_non_authoritative_no_cutover",
+  "product_effect": "Seven independently reviewed source Task control-plane reconciliations were applied; no product-authority, data-model, runtime, repository-implementation or Home cutover effect occurred.",
   "authority": {
     "selector": "AgentFirm Home authority notice",
     "home_url": "https://app.notion.com/p/3b849a4fa3798115939cca2b0b9e6f2d",
@@ -17,8 +17,8 @@
       "remains_current_until": "the single Home authority-notice commit at T0"
     },
     "target": {
-      "tasks_data_source_id": null,
-      "documents_data_source_id": null,
+      "tasks_data_source_id": "collection://b6d95714-f798-4478-9d3b-fc6dcba8ab69",
+      "documents_data_source_id": "collection://150fba04-285b-4410-b992-270ff8511f2d",
       "authority_before_cutover": "isolated staging snapshot only",
       "authority_after_cutover": "the only writable Task and Development Document authority"
     },
@@ -36,7 +36,7 @@
     "specs_superseded": 3,
     "specs_draft": 3,
     "specs_current_or_accepted": 26,
-    "ordinary_reviews_at_submission_3_preflight": 40,
+    "ordinary_reviews_at_submission_4_preflight": 41,
     "target_tasks": 21,
     "target_specs": 19,
     "note": "Fresh read-only inventory. Counts do not prove migration or fidelity."
@@ -378,7 +378,7 @@
       "current_facts": "Doing; owner current root task with temporary subagents; next is fresh preflight, minimum schemas, one-time cutover and rollback mapping.",
       "disposition": "migrate",
       "target_spec_ids": [],
-      "historical_max_submission": 2,
+      "historical_max_submission": 3,
       "submission_evidence_scope": "ordinary Review inventory"
     }
   ],
@@ -531,13 +531,13 @@
   },
   "ordinary_review_index": {
     "view_url": "https://app.notion.com/p/02101e0dd5f7432eb40684c3bd384da8?v=30b8cbd98c0b405f883ae00687ac1dbc",
-    "source_read_window": {"before":"2026-08-21T07:22:41.291Z","after":"2026-08-21T07:22:42.489Z"},
+    "source_read_window": {"before":"2026-08-21T07:56:39.061Z","after":"2026-08-21T07:56:40.391Z"},
     "view_mode": true,
     "has_more": false,
-    "row_count": 40,
+    "row_count": 41,
     "type_invariant": "Every returned row has 文档类型=Review. Legacy Review Result, Review Snapshot, Review Report, Protocol Event and Protocol Audit records are not ordinary submission authority under the accepted simple development model.",
     "normalization": "UTF-8 compact JSON with recursively sorted object keys; array sorted by first task_id, submission, review_url; SHA-256 over the compact array only.",
-    "normalized_compact_sha256": "9739da3dca852f90444f6f687121657071ffa7c9337ff3af00d150cb12e5028a",
+    "normalized_compact_sha256": "3aa117e6f51b3cf050b694a6b7d5af83e1c6071d5c99b4f2264781dd8e3c8424",
     "rows": [
       {"task_refs":[{"task_id":"DEV-12","source_task_url":"https://app.notion.com/p/3ba49a4fa37981c8bc53ced38cc2fd98"}],"review_url":"https://app.notion.com/p/3ba49a4fa37981eeb179ca9730ac9d13","type":"Review","submission":1},
       {"task_refs":[{"task_id":"DEV-12","source_task_url":"https://app.notion.com/p/3ba49a4fa37981c8bc53ced38cc2fd98"}],"review_url":"https://app.notion.com/p/3ba49a4fa3798172b896ef5720a9b0dc","type":"Review","submission":2},
@@ -572,6 +572,7 @@
       {"task_refs":[{"task_id":"DEV-54","source_task_url":"https://app.notion.com/p/3c249a4fa37981beba8df3048a12ee67"}],"review_url":"https://app.notion.com/p/3c349a4fa37981eab88be811038a1a66","type":"Review","submission":1},
       {"task_refs":[{"task_id":"DEV-55","source_task_url":"https://app.notion.com/p/3c349a4fa379812f9d8bf2b3d245bc31"}],"review_url":"https://app.notion.com/p/3c349a4fa37981349e24db4ef8723c22","type":"Review","submission":1},
       {"task_refs":[{"task_id":"DEV-55","source_task_url":"https://app.notion.com/p/3c349a4fa379812f9d8bf2b3d245bc31"}],"review_url":"https://app.notion.com/p/3c349a4fa37981668fd1c2f57d15ab4c","type":"Review","submission":2},
+      {"task_refs":[{"task_id":"DEV-55","source_task_url":"https://app.notion.com/p/3c349a4fa379812f9d8bf2b3d245bc31"}],"review_url":"https://app.notion.com/p/3c349a4fa37981e3aefeddab44e8225a","type":"Review","submission":3},
       {"task_refs":[{"task_id":"DEV-6","source_task_url":"https://app.notion.com/p/3b849a4fa37981708763d4416c5e5a6b"}],"review_url":"https://app.notion.com/p/3ba49a4fa37981daafc2cd80c13c3d0a","type":"Review","submission":1},
       {"task_refs":[{"task_id":"DEV-6","source_task_url":"https://app.notion.com/p/3b849a4fa37981708763d4416c5e5a6b"}],"review_url":"https://app.notion.com/p/3ba49a4fa37981c0ba6fcb547aba8a6e","type":"Review","submission":2},
       {"task_refs":[{"task_id":"DEV-6","source_task_url":"https://app.notion.com/p/3b849a4fa37981708763d4416c5e5a6b"}],"review_url":"https://app.notion.com/p/3ba49a4fa379812f9d4fd4b9bd26ead7","type":"Review","submission":3},
@@ -604,19 +605,27 @@
       "DEV-46": 0,
       "DEV-47": 0,
       "DEV-48": 0,
-      "DEV-55": 2
+      "DEV-55": 3
     },
-    "review_gate": "The accepted simple model makes only ordinary Review rows submission authority; Legacy protocol/snapshot/result rows are excluded. Submission 3 Review created after this manifest raises DEV-55 to 3. The first post-cutover Review must therefore use submission 4, after the T0 final delta confirms no newer old-system ordinary Review. Never reset or guess."
+    "review_gate": "The accepted simple model makes only ordinary Review rows submission authority; Legacy protocol/snapshot/result rows are excluded. Submission 4 Review created after this manifest raises DEV-55 to 4. The first post-cutover Review must therefore use submission 5, after the T0 final delta confirms no newer old-system ordinary Review. Never reset or guess."
   },
   "submission_progression": {
     "submission_1_review_url": "https://app.notion.com/p/3c349a4fa37981349e24db4ef8723c22",
     "submission_2_review_url": "https://app.notion.com/p/3c349a4fa37981668fd1c2f57d15ab4c",
+    "submission_3_review_url": "https://app.notion.com/p/3c349a4fa37981e3aefeddab44e8225a",
     "submission_1_verdict": "Changes Required",
     "submission_2_verdict": "Changes Required",
-    "submission_3_scope": "Evidence and exact-binding repair only; the accepted target design is unchanged.",
+    "submission_3_verdict": "Pass",
+    "submission_4_scope": "Exact private staging state and cutover-readiness evidence; no T0 or Home authority flip claim.",
     "evidence_report_policy": {
       "DOC-244": "Superseded mixed-version report; it is not Submission 3 evidence and must not be cited as the current report.",
-      "submission_3_report": "Create a new separately readable report whose title, body, document properties and Task submission binding all name only the new exact Git SHA and manifest file SHA-256.",
+      "submission_3_report": {
+        "url": "https://app.notion.com/p/3c349a4fa379814fbf07c3251f287d9a",
+        "binding": "0c3165824c578c8afa76afcf539b72de4bd97e05",
+        "manifest_file_sha256": "d57425cfa1366487634c1c34b81bdbbb440b339108137df49578f9a64616166b",
+        "status": "separately readable exact evidence accepted by Submission 3"
+      },
+      "submission_4_report": "Create a new separately readable report after this amendment is committed; its title, body, document properties and Task submission binding must name only the new exact Git SHA and final manifest file SHA-256.",
       "immutability": "Do not rewrite prior Review documents or reinterpret DOC-244 as exact Submission 3 evidence."
     }
   },
@@ -634,7 +643,15 @@
     "relations": "Hash a stable sorted source-ID→target-ID mapping separately from page content.",
     "assets": "DOC-72 and DOC-73 require rendered presence, stable identity/count and byte hash where export is available; an expiring Notion URL is not asset identity.",
     "secrets": "Do not commit private comments, credentials or raw private attachment payloads; store controlled-export location and SHA-256 when Git is inappropriate.",
-    "claim_boundary": "No hash is present yet; this section is the required execution plan, not evidence that copying occurred."
+    "staged_evidence": "All 21 Task and 19 Spec mappings now carry source and target body SHA-256 evidence; DOC-72 also carries one child-page hash pair, and DOC-72/DOC-73 carry eight byte-counted asset hashes. These hashes prove the captured private staging objects only; they do not prove T0, Home authority cutover, permissions, locks or ordinary-reader acceptance.",
+    "raw_capture_boundary": "A hash over an uncanonicalized connector fetch that contains expiring signed asset query parameters is capture-only diagnostic evidence and must never be used as durable identity or equality evidence.",
+    "signed_asset_url_canonicalization": {
+      "scope": "DOC-72 and DOC-73 enhanced-Markdown body hashing",
+      "algorithm": "Take the exact inner text between the ordinary Notion fetch's <content> and </content> tags, excluding one structural newline immediately after the opening tag and one immediately before the closing tag; decode as UTF-8; normalize CRLF and CR to LF; scan absolute http/https URL tokens; when a URL query contains any listed rotating_parameter_signal, remove the complete query component while preserving scheme, authority, path, percent-encoding, fragment, surrounding Markdown and all other bytes; perform no URL decoding, reordering, whitespace folding, child-ID replacement or semantic normalization; SHA-256 the resulting UTF-8 bytes.",
+      "rotating_parameter_signals": ["X-Amz-Algorithm","X-Amz-Credential","X-Amz-Date","X-Amz-Expires","X-Amz-SignedHeaders","X-Amz-Signature","x-id","Signature","Expires","Key-Pair-Id"],
+      "raw_hash_class": "capture_only",
+      "canonical_hash_class": "durable_body_evidence"
+    }
   },
   "exclusions": {
     "migrate": "Only the 21 selected current Tasks and 19 selected current/accepted Specs.",
@@ -740,13 +757,1419 @@
     "The final DEV-55 Review exists in the new Documents database, binds the exact migration version, and Passes before DEV-55 becomes Done.",
     "Rollback mapping and evidence remain accessible."
   ],
+  "staging_actual": {
+    "captured_state": "private_staging_built_relations_wired_no_cutover",
+    "authority": {
+      "home_url": "https://app.notion.com/p/3b849a4fa3798115939cca2b0b9e6f2d",
+      "stable_development_system_url": "https://app.notion.com/p/21e49a4fa37982a5b9f781cf04584034",
+      "verified_at": "2026-08-21T08:00:53.597Z",
+      "source_tasks_data_source_id": "collection://65102438-9f40-4bab-b0fa-1790b5f74c50",
+      "source_documents_data_source_id": "collection://534f364c-8c4e-483e-b7ae-2b6f361e6b1d",
+      "home_still_selects_source": true,
+      "target_is_current_authority": false,
+      "T0_started": false,
+      "home_flip_performed": false
+    },
+    "source_write_evidence": {
+      "approved_writes_only": [
+        "DEV-7 next action",
+        "DEV-8 owner/status/blocker/next",
+        "DEV-10 owner/status/blocker/next",
+        "DEV-42 owner/next",
+        "DEV-43 status/blocker/next",
+        "DEV-44 goal/owner/status/blocker/next",
+        "DEV-46 status/blocker/next"
+      ],
+      "approved_reconciliation_count": 7,
+      "other_source_writes": 0,
+      "omitted_source_rows_changed": 0,
+      "source_database_schema_or_relations_changed": false
+    },
+    "databases": {
+      "tasks": {
+        "database_id": "19373521160142bfbd09453ecccd1612",
+        "database_url": "https://app.notion.com/p/19373521160142bfbd09453ecccd1612",
+        "data_source_id": "collection://b6d95714-f798-4478-9d3b-fc6dcba8ab69",
+        "title": "Development Tasks · STAGING · DO NOT WRITE · NOT AUTHORITY",
+        "expected_record_count": 21,
+        "property_count": 12,
+        "schema": [
+          {
+            "name": "任务",
+            "type": "title"
+          },
+          {
+            "name": "任务编号",
+            "type": "text"
+          },
+          {
+            "name": "目标 / 验收标准",
+            "type": "text"
+          },
+          {
+            "name": "负责人",
+            "type": "text"
+          },
+          {
+            "name": "状态",
+            "type": "select",
+            "options": [
+              {
+                "name": "Planned",
+                "color": "gray"
+              },
+              {
+                "name": "Doing",
+                "color": "blue"
+              },
+              {
+                "name": "In Review",
+                "color": "purple"
+              },
+              {
+                "name": "Changes Required",
+                "color": "red"
+              },
+              {
+                "name": "Blocked",
+                "color": "orange"
+              },
+              {
+                "name": "Done",
+                "color": "green"
+              }
+            ]
+          },
+          {
+            "name": "下一步",
+            "type": "text"
+          },
+          {
+            "name": "阻塞原因",
+            "type": "text"
+          },
+          {
+            "name": "开发版本",
+            "type": "text"
+          },
+          {
+            "name": "送审版本",
+            "type": "text"
+          },
+          {
+            "name": "当前评审人",
+            "type": "text"
+          },
+          {
+            "name": "相关开发文档",
+            "type": "relation",
+            "target": "collection://150fba04-285b-4410-b992-270ff8511f2d"
+          },
+          {
+            "name": "当前规范",
+            "type": "relation",
+            "target": "collection://150fba04-285b-4410-b992-270ff8511f2d"
+          }
+        ]
+      },
+      "documents": {
+        "database_id": "5ecff733b05c4526a9dd4ae1222913f9",
+        "database_url": "https://app.notion.com/p/5ecff733b05c4526a9dd4ae1222913f9",
+        "data_source_id": "collection://150fba04-285b-4410-b992-270ff8511f2d",
+        "title": "Development Documents · STAGING · DO NOT WRITE · NOT AUTHORITY",
+        "expected_record_count": 19,
+        "property_count": 11,
+        "schema": [
+          {
+            "name": "文档",
+            "type": "title"
+          },
+          {
+            "name": "文档编号",
+            "type": "text"
+          },
+          {
+            "name": "文档类型",
+            "type": "select",
+            "options": [
+              {
+                "name": "Spec",
+                "color": "blue"
+              },
+              {
+                "name": "Review",
+                "color": "green"
+              },
+              {
+                "name": "Execution Report",
+                "color": "yellow"
+              }
+            ]
+          },
+          {
+            "name": "文档状态",
+            "type": "select",
+            "options": [
+              {
+                "name": "Draft",
+                "color": "gray"
+              },
+              {
+                "name": "Current",
+                "color": "blue"
+              },
+              {
+                "name": "Accepted",
+                "color": "green"
+              },
+              {
+                "name": "Superseded",
+                "color": "red"
+              }
+            ]
+          },
+          {
+            "name": "关联任务",
+            "type": "relation",
+            "target": "collection://b6d95714-f798-4478-9d3b-fc6dcba8ab69"
+          },
+          {
+            "name": "提交次数",
+            "type": "number"
+          },
+          {
+            "name": "送审版本",
+            "type": "text"
+          },
+          {
+            "name": "评审结论",
+            "type": "select",
+            "options": [
+              {
+                "name": "Pass",
+                "color": "green"
+              },
+              {
+                "name": "Changes Required",
+                "color": "red"
+              }
+            ]
+          },
+          {
+            "name": "评审意见",
+            "type": "text"
+          },
+          {
+            "name": "评审人",
+            "type": "text"
+          },
+          {
+            "name": "评审时间",
+            "type": "date"
+          }
+        ]
+      },
+      "schema_readback_status": "exact_verified_after_color_normalization",
+      "schema_note": "Final readback proves exact 12/11 property counts, names, types, relations and option colors. All temporary __COLOR_FIX__ aliases were removed and every record value was restored to its exact canonical option name."
+    },
+    "views": [
+      {
+        "database": "tasks",
+        "id": "view://ad1e2373-0fda-45ed-9e74-5ecd12d0827e",
+        "name": "当前任务",
+        "type": "table",
+        "filter": "状态 != Done",
+        "show": [
+          "任务",
+          "任务编号",
+          "状态",
+          "负责人",
+          "下一步",
+          "阻塞原因",
+          "送审版本",
+          "当前评审人"
+        ]
+      },
+      {
+        "database": "tasks",
+        "id": "view://3c349a4f-a379-81ea-9668-000ce52498d1",
+        "name": "按状态",
+        "type": "board",
+        "filter": "状态 != Done",
+        "group_by": "状态",
+        "hide_empty_groups": true,
+        "show": [
+          "任务",
+          "任务编号",
+          "负责人",
+          "下一步",
+          "送审版本"
+        ]
+      },
+      {
+        "database": "tasks",
+        "id": "view://3c349a4f-a379-81ee-b09c-000c319ea5e0",
+        "name": "全部任务",
+        "type": "table",
+        "filter": null,
+        "show": [
+          "任务",
+          "任务编号",
+          "状态",
+          "负责人",
+          "下一步",
+          "阻塞原因",
+          "开发版本",
+          "送审版本",
+          "当前评审人"
+        ]
+      },
+      {
+        "database": "documents",
+        "id": "view://d87918c9-0a2f-479f-9303-1ac5e3ead0be",
+        "name": "当前规范",
+        "type": "table",
+        "filter": "文档类型 = Spec AND 文档状态 IN (Current, Accepted)",
+        "show": [
+          "文档",
+          "文档编号",
+          "文档状态",
+          "关联任务"
+        ]
+      },
+      {
+        "database": "documents",
+        "id": "view://3c349a4f-a379-81ac-acfe-000c8cfda571",
+        "name": "评审记录",
+        "type": "table",
+        "filter": "文档类型 = Review",
+        "sort": "评审时间 DESC",
+        "show": [
+          "文档",
+          "关联任务",
+          "提交次数",
+          "送审版本",
+          "评审结论",
+          "评审人",
+          "评审时间"
+        ]
+      },
+      {
+        "database": "documents",
+        "id": "view://3c349a4f-a379-81c4-9be2-000c52e51f51",
+        "name": "执行报告",
+        "type": "table",
+        "filter": "文档类型 = Execution Report AND 文档状态 IN (Current, Accepted)",
+        "show": [
+          "文档",
+          "文档编号",
+          "文档状态",
+          "关联任务",
+          "送审版本"
+        ]
+      },
+      {
+        "database": "documents",
+        "id": "view://3c349a4f-a379-8151-9389-000c439078c7",
+        "name": "全部文档",
+        "type": "table",
+        "filter": null,
+        "show": [
+          "文档",
+          "文档编号",
+          "文档类型",
+          "文档状态",
+          "关联任务",
+          "提交次数",
+          "送审版本",
+          "评审结论",
+          "评审意见",
+          "评审人",
+          "评审时间"
+        ]
+      }
+    ],
+    "task_mappings": [
+      {
+        "id": "DEV-7",
+        "source_url": "https://app.notion.com/p/3b849a4fa37981a2a2e4f94516363058",
+        "target_url": "https://app.notion.com/p/3c349a4fa379813b98f7c9f8e612ae56",
+        "target_properties": {
+          "任务": "Wave 6 · Cross-Machine Team Collaboration",
+          "任务编号": "DEV-7",
+          "目标 / 验收标准": "Organization-level collaboration across machines while each Team stays on one machine.",
+          "负责人": "Codex task · 01a00ac6-23fa-7eb1-9635-99ca17df3362",
+          "状态": "Doing",
+          "下一步": "Start a new repair head from current master; preserve PR469 merge e03e202e as landed history; close DOC103 blockers; submit the same DEV-7 again; do not reuse merged PR469.",
+          "阻塞原因": null,
+          "开发版本": "189124be1fde24f7d8e05eb4062371f63b9f0aa1",
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "105c0d064dcf4d28df5aa39efb7ceb6a65c0273a6e6c870463efe2c780170eae",
+        "target_body_sha256": "f3b9bf69fdbb3aa7acee95e028a631c5e9e11c471820dac2d107e3e1e7870e95",
+        "removed_headings": [
+          "Current state",
+          "Parallel ownership boundary",
+          "Working policy",
+          "2026-08-13 · Wave 5 集成检查点",
+          "2026-08-13 · Routed collaboration / target Work 检查点",
+          "Working Revision checkpoint · 2026-08-13 · `5f977bf4`",
+          "Working Revision checkpoint · 2026-08-13 · `3a302aaf`",
+          "Working Revision checkpoint · 2026-08-13 · `a14fbeba`",
+          "Working Revision checkpoint · 2026-08-13 · `26621c62`",
+          "Working Revision checkpoint · 2026-08-13 · `6731c022`",
+          "Working Revision checkpoint · 2026-08-13 · `02d055f0`",
+          "READY_FOR_REVIEW · Submitted Revision · 2026-08-13",
+          "Exact remote CI bound",
+          "REVIEW_RESULT · Submission 1 · Changes Required",
+          "Working Revision checkpoint · 2026-08-13 · Submission 1 authority repair",
+          "ATTENTION_REQUIRED · authorized Node B identity trust",
+          "READY_FOR_REVIEW · Submission 2 · 2026-08-13",
+          "REVIEW_RESULT · Submission 2 · Changes Required",
+          "Working Revision checkpoint · 2026-08-13 · Submission 2 repair",
+          "ATTENTION_REQUIRED · 2026-08-13 · Mac B v3 evidence rerun",
+          "ATTENTION_DECISION · DEV-7 BLOCKED · stop hardware attempts",
+          "DEV7_UNBLOCK_RESULT · hardware support complete, acceptance still blocked",
+          "DEV-7 UNBLOCK AUTHORIZATION · exact Tailscale acceptance boundary",
+          "Working Revision checkpoint · 2026-08-13 · `594e08d0`",
+          "READY_FOR_REVIEW · Submission 3 · 2026-08-13",
+          "REVIEW_RESULT · Submission 3 · Changes Required · 2026-08-14",
+          "Working Revision · Submission 3 P0 repair · 2026-08-14",
+          "ATTENTION_REQUIRED · 2026-08-15 · proxy resume was not persistent",
+          "READY_FOR_REVIEW · Submission 4 · 2026-08-15"
+        ]
+      },
+      {
+        "id": "DEV-8",
+        "source_url": "https://app.notion.com/p/3b849a4fa37981768929fe11611979b1",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981afa1b9e6aba9dcd21f",
+        "target_properties": {
+          "任务": "Wave 7 · Mac Host & Operational Trust",
+          "任务编号": "DEV-8",
+          "目标 / 验收标准": "Managed Mac NodeDaemon host, onboarding, diagnostics and sustained operational dogfood.",
+          "负责人": "Unassigned — Brain assigns after blocker clears",
+          "状态": "Blocked",
+          "下一步": "After DEV-7 is Done and a Mac Host Spec is Accepted, Brain assigns an owner and starts DEV-8; until then remain Blocked.",
+          "阻塞原因": "DEV-7 completion and an Accepted Mac Host Spec; DOC-15 is Draft and excluded.",
+          "开发版本": null,
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "b18a042414c06ff0fe978b6b7ee81deb68b5dcf1db4847cfca8353e01b608d28",
+        "target_body_sha256": "a728d3440bb8ec9583d17c708e156f0f0e5d507e6ea77b9897dc4002f35e8ab8",
+        "removed_headings": [
+          "Current migration meaning",
+          "Next action",
+          "Authority boundary"
+        ]
+      },
+      {
+        "id": "DEV-10",
+        "source_url": "https://app.notion.com/p/3b849a4fa37981558e33c0757617af0b",
+        "target_url": "https://app.notion.com/p/3c349a4fa3798156b1a1e76ce14baec7",
+        "target_properties": {
+          "任务": "Wave 9 · Signed Distribution, Upgrade & Release",
+          "任务编号": "DEV-10",
+          "目标 / 验收标准": "Signed, notarized, upgradeable Mac release with backup, rollback and release admission.",
+          "负责人": "Unassigned — Brain assigns after blocker clears",
+          "状态": "Blocked",
+          "下一步": "After DEV-8 is Done and a signed distribution/release Spec is Accepted, Brain assigns an owner and starts DEV-10; until then remain Blocked.",
+          "阻塞原因": "DEV-8 completion and an Accepted signed distribution/release Spec; DOC-17 is Draft and excluded.",
+          "开发版本": null,
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "2b636757c5d0f51589b9816302dba91f16dfb82974663d9ecd1f7c1dbee506bf",
+        "target_body_sha256": "941443e61eff3bb22d12c2d9ede8d022374065641317a4d5b56563e7a9cd3347",
+        "removed_headings": [
+          "Current migration meaning",
+          "Next action",
+          "Authority boundary"
+        ]
+      },
+      {
+        "id": "DEV-16",
+        "source_url": "https://app.notion.com/p/3ba49a4fa37981268088f9370ae959f5",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981dfb045e87fda8c948f",
+        "target_properties": {
+          "任务": "Team Console Activity · Human-readable canonical timestamps",
+          "任务编号": "DEV-16",
+          "目标 / 验收标准": "Format canonical unix-ms:<number> Activity timestamps as concise workspace-local human-readable dates/times while preserving the raw canonical millisecond value in semantic dateTime/title/provenance. Verify ordering and traceability at 1440×1000 and 390×844 against a real canonical Team store. This is presentation polish only; it must not change Activity authority, ordering, or reopen DEV-13.",
+          "负责人": "Kimi Code",
+          "状态": "Planned",
+          "下一步": "Claim after the P1 truth fixes; implement one shared canonical unix-ms formatter and run focused live Activity screenshot acceptance against DOC-86.",
+          "阻塞原因": null,
+          "开发版本": null,
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "7e87d8a60a85cf8df850f79f0e21a98364edfca64e560995026da6e0c2eab08c",
+        "target_body_sha256": "741a30241b45a765a0dc76689e03da51f0c6f1f0563544f7deeefc78ff76ef93",
+        "removed_headings": []
+      },
+      {
+        "id": "DEV-18",
+        "source_url": "https://app.notion.com/p/3ba49a4fa37981f38aeae1fc67530bc8",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981d68aa0e457eae23562",
+        "target_properties": {
+          "任务": "Evidence execution-boundary integrity gate",
+          "任务编号": "DEV-18",
+          "目标 / 验收标准": "Make evidence-scope claims mechanically derivable and verifiable from a runner's complete execution path and final artifact set. Claims such as Team-only must not be trusted from environment flags, filenames, directory names, or the main screenshot loop. The evidence gate must include setup, pre-loop, loop, post-loop and legacy continuation steps; record every route/surface visited and artifact created; reject manifests whose declared boundary differs from observed execution. Prove detection of a post-loop forbidden Host Console visit and of out-of-scope artifacts, plus a passing exact-SHA Team-only run.",
+          "负责人": "Unassigned — process/skill follow-up from DEV-13",
+          "状态": "Planned",
+          "下一步": "Specify one small execution-trace/manifest contract; instrument the existing browser runner end-to-end; add an allowlist boundary check and a negative regression covering legacy post-loop navigation; then update the frontend evidence skill to require the generated report.",
+          "阻塞原因": null,
+          "开发版本": null,
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "7467082e92775e5027de7c5b36fac6565cab6a5708cd32c7a8b4cf43d5608e75",
+        "target_body_sha256": "2f4252d931f056b526e25eb68bb59be1b436ce3d3ae3848fa315e8f0d92052a9",
+        "removed_headings": []
+      },
+      {
+        "id": "DEV-21",
+        "source_url": "https://app.notion.com/p/3bc49a4fa37981eeb754e43b32696900",
+        "target_url": "https://app.notion.com/p/3c349a4fa379814095a4faf70ec57997",
+        "target_properties": {
+          "任务": "Restore exact-self provider-native Session history binding",
+          "任务编号": "DEV-21",
+          "目标 / 验收标准": "Synchronize the provider-native Session reference onto the exact AgentSession generation so exact-self Host/Member RoleViews can project real native history, while host_member_public structurally excludes all private provider history/live data and cross-space/cross-project isolation remains fail-closed.",
+          "负责人": "Kimi Code",
+          "状态": "Planned",
+          "下一步": "Kimi Code: claim this Task, record isolated worktree/branch and exact starting master; reproduce the MemberRun.native_session versus AgentSession.native_session_ref mismatch; implement generation-fenced binding sync and focused privacy/isolation/history tests.",
+          "阻塞原因": null,
+          "开发版本": null,
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "80ea9fa64b1a4c22a175b746b136fa30df66dd2d5900c5fe52397051c8b0da95",
+        "target_body_sha256": "de2e257f390d733a33d7ec3de1660e83c8a9fe660db71d0cf89ed723dcbd154e",
+        "removed_headings": [
+          "TASK_ASSIGNED packet",
+          "Completion"
+        ]
+      },
+      {
+        "id": "DEV-22",
+        "source_url": "https://app.notion.com/p/3bc49a4fa37981d8a0e8c81ef0ff88d0",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981719fdcd165388a9475",
+        "target_properties": {
+          "任务": "Stop Supervisor heartbeat from flashing and resetting Agent Workspace",
+          "任务编号": "DEV-22",
+          "目标 / 验收标准": "Replace global heartbeat-driven Agent Workspace reloads with scoped invalidation and stale-while-revalidate behavior so active pages remain visually stable while relevant Work, Message, Session and permission changes still refresh authoritatively.",
+          "负责人": "Kimi Code",
+          "状态": "Planned",
+          "下一步": "Kimi Code: claim this Task; instrument SSE invalidation and RoleView request counts on the real TeamRun; separate initial loading from background revalidation; add a 30-second active-Supervisor stability browser gate.",
+          "阻塞原因": null,
+          "开发版本": null,
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "f4ce966c4aeb4ccdd4ac7d61ba0171fe23ee6ddc88c9d97c9c6c67999c69ac2b",
+        "target_body_sha256": "520b9dbfc0e01e849e1cbfaa1eb4b1155eb9e1be68c1489dcc03865f39a01e67",
+        "removed_headings": [
+          "TASK_ASSIGNED packet",
+          "Completion"
+        ]
+      },
+      {
+        "id": "DEV-23",
+        "source_url": "https://app.notion.com/p/3bc49a4fa3798108813bf6f14342932b",
+        "target_url": "https://app.notion.com/p/3c349a4fa379813aba44cd2ec5df24af",
+        "target_properties": {
+          "任务": "Restore global product navigation in Agent Member Workspace",
+          "任务编号": "DEV-23",
+          "目标 / 验收标准": "Keep a compact, visible and keyboard-accessible global product navigation path when a Host or Member enters the focused three-column Agent Workspace, without restoring the oversized sidebar or weakening the Workspace's chat/session hierarchy.",
+          "负责人": "Kimi Code",
+          "状态": "Planned",
+          "下一步": "Kimi Code: claim this Task; remove the quiet-mode suppression of compact navigation or replace it with an equivalent explicit product switcher; verify desktop/tablet/mobile navigation and no layout occlusion.",
+          "阻塞原因": null,
+          "开发版本": null,
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "b665c86a26964915e6e9afaee84e695b2079119f4d2f361588b9b208de07b36a",
+        "target_body_sha256": "e4d117f0e4b8ceae29d89795bdbcbe46d6aab2436c79f0e51875235148233952",
+        "removed_headings": [
+          "TASK_ASSIGNED packet",
+          "Completion"
+        ]
+      },
+      {
+        "id": "DEV-24",
+        "source_url": "https://app.notion.com/p/3bc49a4fa37981b08f59c61483075766",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981118c3be15ec72ed358",
+        "target_properties": {
+          "任务": "Agent Team delivery projection · consistent status and Work correlation",
+          "任务编号": "DEV-24",
+          "目标 / 验收标准": "Make Team/Agent Workspace message and delivery projections tell one authoritative story. Acknowledged delivery must not still appear Queued on the parent message; MessageDelivery activity must preserve the source TeamMessage Work relation through the server-built projection; Host actor names must resolve like Member names. No browser joins or fabricated correlation. Verify with the real Codex+Kimi Team store and canonical IDs.",
+          "负责人": "Kimi Code",
+          "状态": "Planned",
+          "下一步": "Claim the Task; audit TeamMessage/MessageDelivery RoleView projection ownership; add server-built latest-delivery and Work correlation; verify Activity, Host Agent Workspace and Kimi exact-self show consistent status.",
+          "阻塞原因": null,
+          "开发版本": null,
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "8f2d8bbf90471da6102ae5775663a540db2000d3c30f54fbe86845bb6fdabb72",
+        "target_body_sha256": "4a982afd56a9a5b5b2e276467dadd3f4821ad62c42639445fa9218d4dfec2ef1",
+        "removed_headings": [
+          "Repair status · 2026-08-14 (PR #465, branch codex/acceptance-wave2)"
+        ]
+      },
+      {
+        "id": "DEV-25",
+        "source_url": "https://app.notion.com/p/3bc49a4fa37981d181d4cc08e01e1740",
+        "target_url": "https://app.notion.com/p/3c349a4fa379814ebd31d7f4c4db60c1",
+        "target_properties": {
+          "任务": "Host decision surface · review pressure and actionable Work detail",
+          "任务编号": "DEV-25",
+          "目标 / 验收标准": "Make Host Console and Agent Workspace agree on what requires Host judgment. Review-ready and blocked Work must expose why it needs attention, its canonical Work detail, and only authorized next actions. Visual affordances labeled Open work/View ready work must be real keyboard-accessible actions, not dead text. Selection must survive background revalidation.",
+          "负责人": "Kimi Code",
+          "状态": "Planned",
+          "下一步": "Claim the Task; extend server-built Host decision/Work projections only where facts are missing; implement real Work detail/navigation and review/block actions; verify Host Console, Host Agent Workspace and Team Works stay consistent.",
+          "阻塞原因": null,
+          "开发版本": null,
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "dcac69b8425843152a4b883b70b2439d45e05e9b2c6f0adb141b950f9c3f8f4b",
+        "target_body_sha256": "8d3ffc5901a4951ac8cc36e631a25fb04b2a5939595d4b901bcaf9bc5d1acbae",
+        "removed_headings": [
+          "Repair status · 2026-08-14 (PR #465, branch codex/acceptance-wave2)"
+        ]
+      },
+      {
+        "id": "DEV-27",
+        "source_url": "https://app.notion.com/p/3bc49a4fa379814193c0d2a379e3563d",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981b7a758dde06430a2be",
+        "target_properties": {
+          "任务": "Managed Host session · direct Host conversation contract",
+          "任务编号": "DEV-27",
+          "目标 / 验收标准": "Support the product goal that users can select the Host Agent and talk to/control its managed provider-native Session from the same Agent Workspace. Host self-private history/live data must exist only when an exact managed Host AgentSession is bound; an external/non-driven Host must remain an honest unavailable state and cannot be mislabeled as a running provider.",
+          "负责人": "Kimi Code",
+          "状态": "Planned",
+          "下一步": "Claim the Task; freeze the managed-Host versus external-Host lifecycle contract; bind exact Host AgentSession generation and authorized controls; verify direct Host conversation without exposing Member-private provider data.",
+          "阻塞原因": null,
+          "开发版本": null,
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "3074c4976713533ad7ce3718b50d39053f761c3b3e6c29429579e6ddfb86952d",
+        "target_body_sha256": "25614af1fbbed4d411b55d8131ed767f03b0c43eaa62c6bae2cff994d9202190",
+        "removed_headings": [
+          "Repair status · 2026-08-14 (PR #465, branch codex/acceptance-wave2)"
+        ]
+      },
+      {
+        "id": "DEV-28",
+        "source_url": "https://app.notion.com/p/3bc49a4fa37981238862f95b5c960044",
+        "target_url": "https://app.notion.com/p/3c349a4fa379814b9fecc69d62f10239",
+        "target_properties": {
+          "任务": "Team Workspace real-data adaptive density and presentation polish",
+          "任务编号": "DEV-28",
+          "目标 / 验收标准": "Make Team Works, Activity and Members remain deliberate and readable with sparse real canonical data, without padding with fabricated records. Adapt column composition, labels, metadata and empty space to actual Work pressure; preserve the approved visual language and all RoleView authority.",
+          "负责人": "Kimi Code",
+          "状态": "Planned",
+          "下一步": "Claim after P1 truth fixes; compare real populated and sparse stores at 1440/900/390/320; implement adaptive layout and semantic labels within Team Workspace boundaries.",
+          "阻塞原因": null,
+          "开发版本": null,
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "97058eabed6e8a5397e71a633d40582e9312bf4e4bd3c3d0c93ef63e95f6417f",
+        "target_body_sha256": "48d423e6ebc94733277449d3b8bbe056b2578232bb69d9c210c6eda6c4107c2c",
+        "removed_headings": []
+      },
+      {
+        "id": "DEV-41",
+        "source_url": "https://app.notion.com/p/3be49a4fa37981d9b356fd2baffd0f0c",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981ff8e62d783ed96a32a",
+        "target_properties": {
+          "任务": "Run final two-machine Agent Team, provider recovery and real-store frontend cutover acceptance",
+          "任务编号": "DEV-41",
+          "目标 / 验收标准": "Prove one Team per machine, cross-machine peer communication, one Global Work authority, lifecycle/runtime separation, exact native-session recovery, retained Team UI, real large-store freshness, and legacy export/restore before final authority cutover.",
+          "负责人": "Host Acceptance",
+          "状态": "Doing",
+          "下一步": "Matrix covered round 1: one Team/machine, multi-provider members (K3 + DeepSeek), Work assign→start→submit→request-changes→resubmit (CAS throughout), close-member→reopen-member exact-session recovery (native_session_retained satisfied), daemon restart + machine-lease death detection, real-store frontend (workbench live, two integrity bugs surfaced → one FIXED by member PR #486, next: dangling TeamRun→AgentTeam tolerance). FINDINGS #1-12 (severity order): [STRUCTURAL] #11 force-killed NodeDaemon leaves AgentSessions bound to an unreleased predecessor lease; reattach honestly refuses; #12 team-run recover SKIPS instead of releasing verified-dead predecessor leases → run permanently unstartable (needs: recover releases expired+owner-dead leases after PID-death verification). [USABILITY] #5 member background task dies unreaped → member polls a dead task forever (kiwi wedged 22min); #8 HTTP interrupt route hangs without timeout against a wedged ACP turn; #9 board 'working' state does not reflect provider death (daemon heartbeat ≠ member progress; probe of the native session wire is the only truth). [RESIDUE] #6 team_run_send_message MCP tool is hard-retired (RETIRED_WRITE_AUTHORITY) but still exposed with an instructive description. [UX] #3 ceiling×provider admissibility not validated at member/team creation (fails late at start; kimi_acp requires full_access); #7 MCP Host surface is space-bound at registration, no space param; #1 PROJECT_NOT_REGISTERED_ON_NODE needs manual pre-registration; #2 daemon not auto-started; #4 ceilings immutable (correct no-widening, but failed runs leave zombie rows); #10 machine-lease TTL expiry correctly detected but is not a release. VERIFIED GOOD: close→reopen chain, admission honesty, CAS discipline, request-changes same-session revision, evidence-gated review. NOT YET: two-machine, Trash/Restore, offline peer queue, export re-verify — round 2. Also: 3rd CI timing flake quarantined (#480/#487).",
+          "阻塞原因": null,
+          "开发版本": "Round 1 live dogfood 2026-08-18: real Team (host=Claude Host thread 8fb33d51, members kiwi-fa=Kimi K3 + deep-fa=DeepSeek V4 Pro via kimi_acp model selection) on space dev41-dogfood; PR #485 (member-authored) merged; PR #486 (member-implemented, host-salvaged) in CI; PR #487 flake quarantine",
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "eb323a495a434cd8929d25d8b570f7a168174d51609afd11d9e61c5c2aa7681a",
+        "target_body_sha256": "2b3efd8bb8578bb4195ece02e77b148f78e21866fbaf369c7d5deb9a4de794c1",
+        "removed_headings": []
+      },
+      {
+        "id": "DEV-42",
+        "source_url": "https://app.notion.com/p/3be49a4fa379819a96d8dd64954d3b27",
+        "target_url": "https://app.notion.com/p/3c349a4fa3798191b36fc4135949d8cf",
+        "target_properties": {
+          "任务": "Bound Nodes / Operator Remote Fabric reads on large stores",
+          "任务编号": "DEV-42",
+          "目标 / 验收标准": "Replace the 100.285s Nodes/Operator RoleView path observed on the 617 MB real store with bounded or indexed Remote Fabric reads, without weakening exact Node/daemon authority or freshness. Define and enforce a measured latency/read-amplification budget on the retained large-store journey.",
+          "负责人": "Unassigned — Brain must assign before Doing",
+          "状态": "Planned",
+          "下一步": "Brain assigns an owner; profile the large-store Bound Nodes / Operator Remote Fabric reads; define the indexed and bounded read contract; validate it against the recorded 617MB evidence.",
+          "阻塞原因": null,
+          "开发版本": null,
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "1444500b9e46d0fa2a0717e03f91123efe9ebcfbf25c1476bdec2b888748a73a",
+        "target_body_sha256": "799dc9bf9efef135e9fa4b5c6d0820c20f323a7cd16731bce0a535f4de2343b9",
+        "removed_headings": []
+      },
+      {
+        "id": "DEV-43",
+        "source_url": "https://app.notion.com/p/3c049a4fa37981559d5aff6d524198a0",
+        "target_url": "https://app.notion.com/p/3c349a4fa3798119a4badc286f5bfd45",
+        "target_properties": {
+          "任务": "Harden runtime recovery: verified-death lease release, task reaping, control timeouts, honest liveness",
+          "任务编号": "DEV-43",
+          "目标 / 验收标准": "Implement DOC-122 decisions 1-4 (verified-death lease release in recover; member dead-task reaping; steer/interrupt bounded timeouts; stalled-vs-working liveness projection) with regression tests reproducing each round-1 failure shape; final proof = kill -9 the NodeDaemon mid-run, recover releases, start succeeds, members resume exact native sessions at a higher generation.",
+          "负责人": "Dev",
+          "状态": "Blocked",
+          "下一步": "Complete independent Review and acceptance of DOC-122; then Brain returns DEV-43 to Doing and assigns the exact runtime-recovery implementation slice.",
+          "阻塞原因": "DOC-122 is Draft and not Accepted.",
+          "开发版本": null,
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "target_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "removed_headings": []
+      },
+      {
+        "id": "DEV-44",
+        "source_url": "https://app.notion.com/p/3c049a4fa37981ffab9ee10439ae0f29",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981388a5bee50db7d98f2",
+        "target_properties": {
+          "任务": "Remove retired/host-surface residue: tombstone MCP tools, space-bound Host surface, early admissibility validation, onboarding gaps",
+          "任务编号": "DEV-44",
+          "目标 / 验收标准": "Advertised Host surface is truthful and usable: retired MCP tools are tombstoned, Host surface is space-bound, inadmissible actions fail early, and onboarding exposes the supported path.",
+          "负责人": "Dev",
+          "状态": "Blocked",
+          "下一步": "After DOC-122 decisions 5–6 are independently Accepted, Brain returns DEV-44 to Doing and assigns this single Host-surface outcome.",
+          "阻塞原因": "DOC-122 decisions 5–6 are Draft and not Accepted.",
+          "开发版本": null,
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "target_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "removed_headings": []
+      },
+      {
+        "id": "DEV-45",
+        "source_url": "https://app.notion.com/p/3c049a4fa37981ea8bb8f8f86c1c6584",
+        "target_url": "https://app.notion.com/p/3c349a4fa3798106bf65fa6303d268b5",
+        "target_properties": {
+          "任务": "Reconcile pre-cutover store integrity: dangling TeamRun→AgentTeam tolerance and real-store snapshot completeness",
+          "任务编号": "DEV-45",
+          "目标 / 验收标准": "GET /v1/snapshot succeeds on every real pre-cutover Execution Space in ~/.harness (spaces real-team-acceptance-20260814 and dev26-kimi-0361-dogfood-v2 are the live reproductions): a TeamRun whose AgentTeam row is missing renders as read-only legacy context with an integrity annotation instead of failing the whole snapshot; regression test seeds the dangling shape; both-sides-present divergence still fails closed. Follows the same tolerance doctrine as PR #486 (pre-cutover shapes are migration facts, not corruption).",
+          "负责人": "Dev",
+          "状态": "Planned",
+          "下一步": "Unblocked. PR #486 (merged when green) removed the first integrity layer; this is the second and last known one.",
+          "阻塞原因": null,
+          "开发版本": null,
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "target_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "removed_headings": []
+      },
+      {
+        "id": "DEV-46",
+        "source_url": "https://app.notion.com/p/3c049a4fa379819a9544c0a7074a1afb",
+        "target_url": "https://app.notion.com/p/3c349a4fa3798194b806d4ad02bdd15c",
+        "target_properties": {
+          "任务": "DEV-41 round 2: two-machine, Trash/Restore, offline peer queue, export re-verify, scripted all-pages real-store frontend acceptance",
+          "任务编号": "DEV-46",
+          "目标 / 验收标准": "Complete the DEV-41 matrix items round 1 did not cover: second machine with its own persistent Team + cross-machine peer messaging and offline-queue reconciliation; Team Trash/Restore with history intact; legacy export manifest + isolated restore/read re-verified post-DEV-40; the scripted dashboard-real-store browser check passing over the full ~/.harness store (needs the integrity reconciliation task); rerun the force-killed-daemon scenario end-to-end on the hardened recovery path.",
+          "负责人": "Host Acceptance",
+          "状态": "Blocked",
+          "下一步": "After DEV-43 and DEV-45 are Done, run DEV-41 round 2: two-machine, Trash/Restore, offline peer queue, export re-verification and scripted all-pages real-store frontend acceptance.",
+          "阻塞原因": "DEV-43 runtime recovery and DEV-45 store integrity must both be Done.",
+          "开发版本": null,
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "target_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "removed_headings": []
+      },
+      {
+        "id": "DEV-47",
+        "source_url": "https://app.notion.com/p/3c049a4fa37981c68393d7c16d033ac7",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981ec86bdf1606ca383e6",
+        "target_properties": {
+          "任务": "Governance gate hardening: paragraph-scoped vocabulary scan and DEV-40 deferred review items",
+          "任务编号": "DEV-47",
+          "目标 / 验收标准": "The retired-vocabulary gate becomes sentence/paragraph-scoped so an unrelated marker word on the same line can no longer launder a retired-term assertion (the exact mechanism behind DEV-40's only review blocker); plus the deferred items: ARCHIVE_VERSION note for pre-DEV-39 archives, architecture.md doctrine duplication (N1), work-workspace.md inbound link (N3), stale firm-store comment paths (N5), branch-protection note for full-acceptance (N7), double serialized cargo test on master push (N8).",
+          "负责人": "Dev",
+          "状态": "Planned",
+          "下一步": "Unblocked; small, well-bounded, all items enumerated in the DEV-40 task page and review records.",
+          "阻塞原因": null,
+          "开发版本": null,
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "target_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "removed_headings": []
+      },
+      {
+        "id": "DEV-48",
+        "source_url": "https://app.notion.com/p/3c049a4fa3798103903fe19ad72d1b01",
+        "target_url": "https://app.notion.com/p/3c349a4fa3798199a075c39484df63e2",
+        "target_properties": {
+          "任务": "De-quarantine the three load-sensitive timing tests with injectable clocks",
+          "任务编号": "DEV-48",
+          "目标 / 验收标准": "host_close_reports_bounded_store_contention_as_retryable_503, fresh_exhausted_capacity_blocks_start_and_leaves_work_queued, and status_remains_responsive_while_execution_space_scan_is_blocked become load-independent (injectable clock or deterministic windows), the --skip flags are removed from the PR tier, and repo issue #480 closes with evidence of N consecutive green PR-tier runs.",
+          "负责人": "Dev",
+          "状态": "Planned",
+          "下一步": "Unblocked; evidence trail in issue #480 (three flakes, each reproduced on provably unrelated diffs).",
+          "阻塞原因": null,
+          "开发版本": null,
+          "送审版本": null,
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "target_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "removed_headings": []
+      },
+      {
+        "id": "DEV-55",
+        "source_url": "https://app.notion.com/p/3c349a4fa379812f9d8bf2b3d245bc31",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981659f46e56854300cb5",
+        "target_properties": {
+          "任务": "Clean two-database development system cutover",
+          "任务编号": "DEV-55",
+          "目标 / 验收标准": "建立一套简单干净的 Development Tasks 与 Development Documents：只保留当前心智模型必需字段；经fresh exact inventory只迁移仍有效的非Done当前Task与Current/Accepted Spec；不迁移旧Review、carrier、bundle、protocol rows；独立Review后一次性切换Home/Playbook/开发系统入口；旧两表整体标记Legacy / READ ONLY；全程无双写、无第三当前ledger、无当前关系或可读正文丢失。",
+          "负责人": "Current root task with temporary subagents",
+          "状态": "Doing",
+          "下一步": "Apply only the reviewed source Task reconciliations and build private non-authoritative staging databases; then freeze exact target mappings/content evidence for a separate cutover Review.",
+          "阻塞原因": null,
+          "开发版本": "0c3165824c578c8afa76afcf539b72de4bd97e05",
+          "送审版本": "0c3165824c578c8afa76afcf539b72de4bd97e05",
+          "当前评审人": null,
+          "当前规范": null,
+          "相关开发文档": null
+        },
+        "source_body_sha256": "312ac10e34592170f2cb4d94719230a297aa275eaa651f4807085d3c7dc69cbb",
+        "target_body_sha256": "b94f617934843d2d89650bb59425cf6779057f56491ff40c224668a229f46d4b",
+        "removed_headings": []
+      }
+    ],
+    "spec_mappings":
+    [
+      {
+        "id": "DOC-16",
+        "source_url": "https://app.notion.com/p/0a049a4fa3798238807081f33df4dfd7",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981048098f7e06b4e54ba",
+        "source_body_sha256": "655b0fb5dd4a3fe38e93c187bf50e4690d820498bb253ad704dcca9deb13b6b2",
+        "target_body_sha256": "0f4278e5db892e3dcbd23bd1513eab5512a3fe5704c53ed89a462ab7f3d818ca",
+        "source_version": null,
+        "target_property_version": null,
+        "delta_class": "editorial_successor",
+        "allowed_delta": [
+          "Submission 3 Draft wording → Accepted/cutover completed",
+          "Draft successor heading → Accepted successor heading",
+          "DEV-32 Draft snapshot review wording → accepted snapshots",
+          "Draft deletion caveat → Accepted Spec does not by itself authorize deletion",
+          "DEV-32 Draft snapshot Review passes → exact snapshot Review passed"
+        ],
+        "target_task_ids": [
+          "DEV-41"
+        ]
+      },
+      {
+        "id": "DOC-14",
+        "source_url": "https://app.notion.com/p/7f649a4fa37982afb3930198356e5c0e",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981588645f14c156f30c3",
+        "source_body_sha256": "88124a78f2f5f348ae423ad7892987b5d21b937780e9741e459b36f2f5b03872",
+        "target_body_sha256": "b82d4619afd345b1763c5385463c0bb8a3cabd61cd3b7a694926f343aa9f7c10",
+        "source_version": "Program Spec snapshot 2026-08-10",
+        "target_property_version": null,
+        "mapping_version": "DEV-55 Packet B semantic successor · manifest 0c3165824c578c8afa76afcf539b72de4bd97e05",
+        "delta_class": "semantic_successor",
+        "allowed_delta": [
+          "Add DOC-105/106/108 authority alignment",
+          "Remove Wave 5 pending/merge dependency",
+          "Replace Mission/AgentIdentity/Company Control Plane authority with AgentTeam/AgentMember/current NodeDaemon and durable coordination vocabulary",
+          "Preserve company_id, WorkDelegation, Message, publication, artifact, acceptance/fault mechanics",
+          "Reviewer correction: `DOC-108 retires Company OS, Mission, and AgentMember as current authority.` → `DOC-108 retires Company OS, Mission, and AgentIdentity as current authority.`; exact single delta, +2 UTF-8 characters"
+        ],
+        "target_task_ids": []
+      },
+      {
+        "id": "DOC-130",
+        "source_url": "https://app.notion.com/p/3c249a4fa37981c39d6cc93166033fc4",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981a98920fe85edb846c5",
+        "source_body_sha256": "436106c7dbf407b206989036b0c11592912435afe23569cdbdce4a5efe505940",
+        "target_body_sha256": "e46091924fd2514ba30b4895a5caa306489485235410bc39abe41920e1410b59",
+        "source_version": "AF-GOV-001-v2",
+        "target_property_version": null,
+        "delta_class": "editorial_successor",
+        "allowed_delta": [
+          "Opening status Draft/authority none → Accepted/current repository development governance architecture"
+        ],
+        "target_task_ids": []
+      },
+      {
+        "id": "DOC-125",
+        "source_url": "https://app.notion.com/p/3c249a4fa379816cbe05e3bb78fc1339",
+        "target_url": "https://app.notion.com/p/3c349a4fa3798159a050d134648d3977",
+        "source_body_sha256": "0a0457f8fdbd1a25c37015b11c67bea07f29fcee91270f09d3a5e218e376114f",
+        "target_body_sha256": "201dc26e35bceddd7dbff7accd2b13c6a1b1a0d58c0909d9d5277c24e941efa5",
+        "source_version": "AF-APP-001-v2",
+        "target_property_version": null,
+        "delta_class": "editorial_successor",
+        "allowed_delta": [
+          "`AF-APP-001-v2` · Draft · → `AF-APP-001-v2` · Accepted ·"
+        ],
+        "target_task_ids": []
+      },
+      {
+        "id": "DOC-237",
+        "source_url": "https://app.notion.com/p/3c249a4fa37981c2ab71ef2562c01e0b",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981f788bccb8e696b2829",
+        "source_body_sha256": "1e6089dfb0a80725f227878216a3f1621eb7c85697eff9090ec16d25d258cd4b",
+        "target_body_sha256": "be13cc20306066e1b7d318923cf6422c10b4f33573eea5d6ece85ccd4d4d481b",
+        "source_version": "AF-PKG-001-v5-readable",
+        "target_property_version": null,
+        "delta_class": "editorial_successor",
+        "allowed_delta": [
+          "Draft → Accepted only; preserve b559 candidate, merge pending and not-shipped boundary"
+        ],
+        "target_task_ids": []
+      },
+      {
+        "id": "DOC-239",
+        "source_url": "https://app.notion.com/p/3c249a4fa37981fabfa7c15f90381693",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981ee9410e284c5361b93",
+        "source_body_sha256": "c5145ee5d1270ce3a02aac88e20184ff92846d7f689ecf70290b0ff42d08e106",
+        "target_body_sha256": "f8eccbd7b5cbcd00dd22e8b2707f459ee0a90cd8e06a20646e8ee2da4ca4b1f2",
+        "source_version": "AF-RET-001-v5-readable",
+        "target_property_version": null,
+        "delta_class": "editorial_successor",
+        "allowed_delta": [
+          "Draft design → Accepted design only; preserve b559/pending, not-shipped and conditional future retirement wording"
+        ],
+        "target_task_ids": []
+      },
+      {
+        "id": "DOC-87",
+        "source_url": "https://app.notion.com/p/3bc49a4fa37981b38e57f9cbeba46d71",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981acbc70ff4802f9ed2f",
+        "source_body_sha256": "3dcd946ae49ff2222a6fd2840a5169ee63e6c4e4631dd4d0cb517ab83131ddc1",
+        "target_body_sha256": "04e61b9b1351d6991cc2d77895c91b3601d804854ade69535a54ea84aca4c14a",
+        "source_version": null,
+        "target_property_version": null,
+        "delta_class": "editorial_successor",
+        "allowed_delta": [
+          "Only stale DEV-30 In Review/unmerged statements → Done at reviewed 0f0ca1a37070554fb6050c2a759ffd09d0118335 and PR #464 merge 104db6455df71e880dfae8ac1b217ad96198f742, both master ancestors"
+        ],
+        "target_task_ids": []
+      },
+      {
+        "id": "DOC-105",
+        "source_url": "https://app.notion.com/p/3be49a4fa379817aa594fd8e7331c30d",
+        "target_url": "https://app.notion.com/p/3c349a4fa379816696ddd37f022ff939",
+        "source_body_sha256": "431e40d6db8999ad56ce41fd0fe27dd275b4fd5c2286813c2c6e28556baebfc6",
+        "target_body_sha256": "9baa04806e217d7193cf556982dcdc5fed182263a3693ea0309e6bb8e3f6cf88",
+        "source_version": null,
+        "target_property_version": null,
+        "delta_class": "editorial_successor",
+        "allowed_delta": [
+          "Governing Draft/CompanyOS not cut over → Accepted current product model",
+          "Submission 2 Draft → Accepted/cutover completed",
+          "PR #469 merge e03e202e landed while later DEV-7 repair remains open"
+        ],
+        "target_task_ids": [
+          "DEV-41"
+        ]
+      },
+      {
+        "id": "DOC-238",
+        "source_url": "https://app.notion.com/p/3c249a4fa37981b788f9fc4fa4d8b856",
+        "target_url": "https://app.notion.com/p/3c349a4fa379810484c6e44051cb1785",
+        "source_body_sha256": "954357155d4a6b3adbe09c163ae2ba45549ac177dd6502526812e3ff25c9dc92",
+        "target_body_sha256": "2ecc82e1c14f550e1e392e9f8dcd3e66e51f35b0a5f698f69c5cf17829bf770a",
+        "source_version": "AF-EDGE-001-v5-readable",
+        "target_property_version": null,
+        "delta_class": "editorial_successor",
+        "allowed_delta": [
+          "Draft → Accepted only; preserve b559 candidate, merge pending and not-shipped boundary"
+        ],
+        "target_task_ids": []
+      },
+      {
+        "id": "DOC-32",
+        "source_url": "https://app.notion.com/p/19849a4fa37982d9bf97810cbb907492",
+        "target_url": "https://app.notion.com/p/3c349a4fa3798127907bf2b13fce0da0",
+        "source_body_sha256": "11eb75a459e0342f2d2d32a3f3cf90b2cc65f53dc6d73421eb18de1bcfbac3c8",
+        "target_body_sha256": "1337b0da26d5a9a91fc79ed1bfda7e90b005f0529876581b9e23932fa00ab963",
+        "source_version": "Accepted #420 clean-cutover spec",
+        "target_property_version": null,
+        "mapping_version": "DEV-55 Packet B semantic successor · manifest 0c3165824c578c8afa76afcf539b72de4bd97e05",
+        "delta_class": "semantic_successor",
+        "allowed_delta": [
+          "Add DOC-105/106/108 alignment",
+          "Preserve Work kernel/lifecycle/transition matrix/immutable records",
+          "Replace retired Company WorkItem/Company Assignment/Mission ownership with AgentTeam-accountable TeamWork and Global Work read-only aggregate"
+        ],
+        "target_task_ids": []
+      },
+      {
+        "id": "DOC-107",
+        "source_url": "https://app.notion.com/p/3be49a4fa37981aa9439c1697d8368d8",
+        "target_url": "https://app.notion.com/p/3c349a4fa3798134b26dfd464e7d8511",
+        "source_body_sha256": "ad045520b78a3a47784ef4a5c37895995baf5dd47c81f9cb86ba959bb9f447ec",
+        "target_body_sha256": "6d97342788fe1f3015aba9416a0d62831680e752fdd09ac754d3af9519f1ba43",
+        "source_version": null,
+        "target_property_version": null,
+        "delta_class": "editorial_successor",
+        "allowed_delta": [
+          "DOC-109 delta applied/submission 2 Draft → delta accepted/current only"
+        ],
+        "target_task_ids": [
+          "DEV-41",
+          "DEV-42"
+        ]
+      },
+      {
+        "id": "DOC-72",
+        "source_url": "https://app.notion.com/p/3ba49a4fa37981afbeb7f4bd3053a2ea",
+        "target_url": "https://app.notion.com/p/3c349a4fa379816aabbad3aa79cc4ced",
+        "source_body_sha256": "5bc720a97ff86b25b9118cb57fc6e600c5c519d91d2646e09adef5a6722adb97",
+        "target_body_sha256": "d13bd5dbcb27a1b131bcc927bce72e6b109d9d2b80c6cdd47ca23a83265abe1a",
+        "body_sha256_class": "canonical durable evidence using the referenced deterministic algorithm",
+        "canonical_body_hashes": {
+          "algorithm_ref": "content_and_asset_hash_plan.signed_asset_url_canonicalization",
+          "source_length": 26177,
+          "source_sha256": "5bc720a97ff86b25b9118cb57fc6e600c5c519d91d2646e09adef5a6722adb97",
+          "target_length": 26331,
+          "target_sha256": "d13bd5dbcb27a1b131bcc927bce72e6b109d9d2b80c6cdd47ca23a83265abe1a",
+          "postcondition": "zero rotating X-Amz fragments"
+        },
+        "capture_only_hashes": {
+          "extra_normalized_target_sha256": "053b41129de588ae9bf47b7b47a9bf20040e00c54f44587f3de281cca813e22c",
+          "reason_not_identity": "Creation packet also replaced asset URLs and normalized the DOC-72 child UUID; retained only as capture provenance."
+        },
+        "source_version": "5929b8ad3c92dbf3b95094c78d021b0d2387d1fe",
+        "target_property_version": null,
+        "delta_class": "semantic_successor",
+        "allowed_delta": [
+          "Current Work labels → Outstanding Work",
+          "Work lens status set → Open/Active/Review/Closed with Assigned/Unassigned inside Open and Eligibility as relation/filter",
+          "Selected Work status wording → canonical phase/condition/resolution",
+          "Documentation delta still open heading → Current Work and projection contract"
+        ],
+        "target_task_ids": [],
+        "child_mapping": {
+          "source_url": "https://app.notion.com/p/3bc49a4fa379813daa47e9528b6df62a",
+          "target_url": "https://app.notion.com/p/3c349a4fa3798124a977c1319a242d4c",
+          "source_body_sha256": "d5d3d475c1569bd4950dc9fc8a2b8a8021750f2644b0f58dd7000ca4d6ec8aea",
+          "target_body_sha256": "d5d3d475c1569bd4950dc9fc8a2b8a8021750f2644b0f58dd7000ca4d6ec8aea",
+          "exact_equal": true
+        },
+        "assets": [
+          {
+            "source_identity": "033c9de6-9623-44ee-99a5-4e0e0dc82fe4/doc72-member-workspace-quiet-operations-v2.svg",
+            "target_block_id": "3c349a4f-a379-81a6-a17d-00b290c9b824",
+            "bytes": 46151,
+            "sha256": "23f765df5b16f15862ee44d1bddae26c3cda9e8a18cdff5056580027f456ae1f"
+          },
+          {
+            "source_identity": "2375952c-e314-4739-9d2d-40c9e67a01cf/doc72-host-workspace-quiet-operations-v2.svg",
+            "target_block_id": "3c349a4f-a379-811a-976c-00b20f38cfb1",
+            "bytes": 46407,
+            "sha256": "7ec5b2a30881081fd5a075bc84d3306bb6af90884329adefab360754ff9fcd1f"
+          }
+        ]
+      },
+      {
+        "id": "DOC-73",
+        "source_url": "https://app.notion.com/p/3ba49a4fa37981bd9185f059d8200328",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981129c2df4aac98e82ce",
+        "source_body_sha256": "0085634020c12353c696f0096d7edd1c88be51335f0e891372776008ec89ad81",
+        "target_body_sha256": "36ff3156016bc352acb261a6cc9bd1c631c0390cfc149df09aaf6895a19d641c",
+        "body_sha256_class": "canonical durable evidence using the referenced deterministic algorithm",
+        "canonical_body_hashes": {
+          "algorithm_ref": "content_and_asset_hash_plan.signed_asset_url_canonicalization",
+          "source_length": 17406,
+          "source_sha256": "0085634020c12353c696f0096d7edd1c88be51335f0e891372776008ec89ad81",
+          "target_length": 17431,
+          "target_sha256": "36ff3156016bc352acb261a6cc9bd1c631c0390cfc149df09aaf6895a19d641c",
+          "postcondition": "zero rotating X-Amz fragments"
+        },
+        "capture_only_hashes": {
+          "extra_normalized_target_sha256": "47a0353c1d7fe5bf1dc9ddff63cf4a459de0e1df70e9190c4bb5e48d5b2eb1eb",
+          "reason_not_identity": "Creation packet also replaced asset URLs with asset:// filenames; retained only as capture provenance."
+        },
+        "source_version": "b362bc1ba1ebbeff26eb9a4a08bf3c6982ec764d",
+        "target_property_version": null,
+        "delta_class": "semantic_successor",
+        "allowed_delta": [
+          "Remove DOC-70 current authority/link",
+          "Embedded frames become visual evidence; current semantics follow DOC-105/DOC-108",
+          "Mission/latest attempt labels → AgentTeam/latest AgentTeamRun/Work"
+        ],
+        "target_task_ids": [],
+        "assets": [
+          {
+            "source_identity": "06ef430e-4a0c-44ef-979f-61d6a688e8a9/works-reference.svg",
+            "target_block_id": "3c349a4f-a379-813f-8a29-00b271e80768",
+            "bytes": 197472,
+            "sha256": "cf08d15caa4896fe8e849df1c168feb345cf5b635e8036141bd7fff736b6216b"
+          },
+          {
+            "source_identity": "e1d53bc0-fa4a-4ee5-be59-2ea5c21e3627/works-current-master.svg",
+            "target_block_id": "3c349a4f-a379-81e6-a643-00b2f8cf844d",
+            "bytes": 175276,
+            "sha256": "02f8e3330659227c9c6a68c46220fde4ecf408b33f7621c1bc9d2e311723d968"
+          },
+          {
+            "source_identity": "27de2a4b-5e77-4e75-9467-a469c3b0cf4f/activity-reference.svg",
+            "target_block_id": "3c349a4f-a379-8146-846a-00b21426475d",
+            "bytes": 180704,
+            "sha256": "40e04ba0cfa6075f5f20756b372f28aa42354747980a172ec1daced92980c9de"
+          },
+          {
+            "source_identity": "32bc3282-1da4-41af-acba-77cdfb96511c/activity-current-master.svg",
+            "target_block_id": "3c349a4f-a379-817d-92e8-00b2bf8ab9ef",
+            "bytes": 160348,
+            "sha256": "6b1c4a027e56088ca886b8918277d25ca7f024d8477a8e966a7dc102f07ff24c"
+          },
+          {
+            "source_identity": "4872143e-cf4e-4c71-a0df-649745c9148d/members-reference.svg",
+            "target_block_id": "3c349a4f-a379-8118-ac68-00b2dba3d610",
+            "bytes": 193348,
+            "sha256": "f6f9288fb358d4c651fb84abdf7ff6b7e3be49ca1881c009503536390bd5f27b"
+          },
+          {
+            "source_identity": "759ef1df-a66a-4e87-9c18-c3324317326a/members-current-master.svg",
+            "target_block_id": "3c349a4f-a379-81cc-aa36-00b2cb9a93d8",
+            "bytes": 147360,
+            "sha256": "9efe7cbb6a0640c77526686db6709d78133c17a8a92c0f10e9671ca23057082a"
+          }
+        ]
+      },
+      {
+        "id": "DOC-84",
+        "source_url": "https://app.notion.com/p/3bb49a4fa379815fa8ccc00753b69aad",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981f49552d572ee8cc9a8",
+        "source_body_sha256": "3f87122cb7f5cff09663c351fee1376e8191c06c5c0eb1bd4b9f1690914860bb",
+        "target_body_sha256": "3f87122cb7f5cff09663c351fee1376e8191c06c5c0eb1bd4b9f1690914860bb",
+        "source_version": "03d2ab4283450eaa5f07817303a460a47eacdd88",
+        "target_property_version": null,
+        "delta_class": "unchanged_copy",
+        "allowed_delta": [],
+        "target_task_ids": []
+      },
+      {
+        "id": "DOC-106",
+        "source_url": "https://app.notion.com/p/3be49a4fa3798126a598e634ed5d0807",
+        "target_url": "https://app.notion.com/p/3c349a4fa379815ebcdbe2ec63df73c8",
+        "source_body_sha256": "8aa71711d20f7066a96bc6a8a0874f7190e7d1e46bfbdb09e25162f8dda61364",
+        "target_body_sha256": "0e017cf03bf8251c237edfd5f537c27f57cd339c32656eb5c656059a3eca546f",
+        "source_version": null,
+        "target_property_version": null,
+        "delta_class": "editorial_successor",
+        "allowed_delta": [
+          "DOC-109 delta applied/submission 2 Draft → delta accepted/current only"
+        ],
+        "target_task_ids": [
+          "DEV-7",
+          "DEV-41"
+        ]
+      },
+      {
+        "id": "DOC-126",
+        "source_url": "https://app.notion.com/p/3c249a4fa379819bb6a0ec8daf57535d",
+        "target_url": "https://app.notion.com/p/3c349a4fa3798142953dd02555dea5b8",
+        "source_body_sha256": "2727f5ee32fc4dacde00890022bb073e09e6dc26e803f68854cfd7d2dba09204",
+        "target_body_sha256": "f93e332a786b784388eaab68df0dba221f0e04a2766c69840c970ba7d9cb200d",
+        "source_version": "AF-RUN-001-v2",
+        "target_property_version": null,
+        "delta_class": "editorial_successor",
+        "allowed_delta": [
+          "`AF-RUN-001-v2` · Draft · → `AF-RUN-001-v2` · Accepted ·"
+        ],
+        "target_task_ids": []
+      },
+      {
+        "id": "DOC-86",
+        "source_url": "https://app.notion.com/p/3bc49a4fa379814a927bd13c0f342369",
+        "target_url": "https://app.notion.com/p/3c349a4fa37981aa910fdd51395d0e01",
+        "source_body_sha256": "fb9981700e4eade1aab433a5ba943bb14ca011405f2277bffc2ec99968702469",
+        "target_body_sha256": "fb9981700e4eade1aab433a5ba943bb14ca011405f2277bffc2ec99968702469",
+        "source_version": "unversioned",
+        "target_property_version": null,
+        "delta_class": "unchanged_copy_with_version_binding_exception",
+        "allowed_delta": [],
+        "target_task_ids": [
+          "DEV-16",
+          "DEV-21",
+          "DEV-22",
+          "DEV-23",
+          "DEV-24",
+          "DEV-25",
+          "DEV-27",
+          "DEV-28"
+        ]
+      },
+      {
+        "id": "DOC-108",
+        "source_url": "https://app.notion.com/p/3be49a4fa37981afa320f6c8a5f3a8b4",
+        "target_url": "https://app.notion.com/p/3c349a4fa379810c9d8af61e6438e8e5",
+        "source_body_sha256": "a1f4d7eade1ad9f827f8070484a9f71d1f5ffa0ae78205b3cd4dc6c6f6f96fd1",
+        "target_body_sha256": "73898ab0f2d91387df2b61233ad222b7a447d479574a0b41529859e3b745be44",
+        "source_version": null,
+        "target_property_version": null,
+        "delta_class": "editorial_successor",
+        "allowed_delta": [
+          "DOC-109 delta applied/submission 2 Draft → delta accepted/current only"
+        ],
+        "target_task_ids": [
+          "DEV-41"
+        ]
+      },
+      {
+        "id": "DOC-127",
+        "source_url": "https://app.notion.com/p/3c249a4fa37981588ce8c862a44ab4e4",
+        "target_url": "https://app.notion.com/p/3c349a4fa3798160bf8cd38670bac3e9",
+        "source_body_sha256": "8a072ae12223ba5294b6698de38a920a58a24458d3b48c5f6d1a353267c5c2c4",
+        "target_body_sha256": "1280510ff8ad5c18e35cd3f02e451edb95252a048279b3d5dd318235e49c78ef",
+        "source_version": "AF-DOM-001-v2",
+        "target_property_version": null,
+        "delta_class": "editorial_successor",
+        "allowed_delta": [
+          "`AF-DOM-001-v2` · Draft · → `AF-DOM-001-v2` · Accepted ·"
+        ],
+        "target_task_ids": []
+      }
+    ],
+    "relation_readback": {
+      "verified_at": "2026-08-21T08:00:53.597Z",
+      "documents_to_tasks": {
+        "DOC-86": [
+          "DEV-16",
+          "DEV-21",
+          "DEV-22",
+          "DEV-23",
+          "DEV-24",
+          "DEV-25",
+          "DEV-27",
+          "DEV-28"
+        ],
+        "DOC-16": [
+          "DEV-41"
+        ],
+        "DOC-105": [
+          "DEV-41"
+        ],
+        "DOC-106": [
+          "DEV-7",
+          "DEV-41"
+        ],
+        "DOC-107": [
+          "DEV-41",
+          "DEV-42"
+        ],
+        "DOC-108": [
+          "DEV-41"
+        ]
+      },
+      "tasks_current_specs": {
+        "DEV-7": [
+          "DOC-106"
+        ],
+        "DEV-16": [
+          "DOC-86"
+        ],
+        "DEV-21": [
+          "DOC-86"
+        ],
+        "DEV-22": [
+          "DOC-86"
+        ],
+        "DEV-23": [
+          "DOC-86"
+        ],
+        "DEV-24": [
+          "DOC-86"
+        ],
+        "DEV-25": [
+          "DOC-86"
+        ],
+        "DEV-27": [
+          "DOC-86"
+        ],
+        "DEV-28": [
+          "DOC-86"
+        ],
+        "DEV-41": [
+          "DOC-16",
+          "DOC-105",
+          "DOC-106",
+          "DOC-107",
+          "DOC-108"
+        ],
+        "DEV-42": [
+          "DOC-107"
+        ]
+      },
+      "bidirectional_reverse_exact": true,
+      "all_relation_urls_target_only": true,
+      "source_relation_urls": [],
+      "nonempty_current_specs_are_current_or_accepted_specs": true
+    },
+    "spec_identity_and_review_fields": {
+      "status": "exact_verified",
+      "normalization": {
+        "target_spec_count": 19,
+        "nonempty_送审版本_cleared": 14,
+        "already_empty_送审版本_untouched": ["DOC-14","DOC-32","DOC-72","DOC-73","DOC-84"],
+        "送审版本_empty": 19,
+        "提交次数_unset": 19,
+        "评审结论_unset": 19,
+        "评审意见_empty": 19,
+        "评审人_empty": 19,
+        "评审时间_unset": 19
+      },
+      "post_write_invariants": {
+        "identity_title_id_type_status_unchanged": 19,
+        "relations_exact_and_order_unchanged": 19,
+        "body_byte_exact": 17,
+        "body_canonical_exact_after_stripping_rotating_signed_asset_query": ["DOC-72","DOC-73"],
+        "asset_identity_and_content_unchanged": true,
+        "source_home_playbook_permissions_views_untouched": true
+      },
+      "schema_rule": "Under the reviewed 11-field schema, 送审版本 and all other Review-only properties are populated only on Review documents, never Specs.",
+      "identity_rule": "A target Spec is identified by stable DOC ID/title plus its ordinary-readable body hash in this source-to-target ledger. Submission 4 Review binds the exact repository SHA together with the target URLs and hashes. Do not create a self-referential future Git SHA in Spec properties."
+    },
+    "quarantine": {
+      "page_url": "https://app.notion.com/p/3c349a4fa379819297c5f0f493a96fe0",
+      "title": "DEV-55 · FAILED CHILD COPY · PRIVATE QUARANTINE · SAFE TO TRASH",
+      "referenced_by_target_DOC72": false,
+      "current_disposition": "excluded_private_non_authoritative_artifact_deferred_recoverable_cleanup",
+      "authority_and_integrity_effect": "none; the page has no source or target ancestor, is absent from both target databases and all target relations, and is not referenced by target DOC-72",
+      "trash_status": "not_trashed; repeated UI attempts timed out",
+      "follow_up": "Move this exact page to Notion Trash through UI when available and record a post-trash readback. This cleanup is recoverable and does not block Submission 4 because authority selection, selected-record fidelity and relation integrity do not depend on it.",
+      "cutover_gate": "Re-fetch immediately before T0 and block only if it has acquired a target/source relation, appeared in an authority entry point, or otherwise ceased to be isolated."
+    },
+    "ui_only_gates": {
+      "permissions": "pending",
+      "layouts": "pending",
+      "templates": "pending",
+      "automations_and_buttons": "pending",
+      "locks": "pending",
+      "ordinary_reader_rendering": "pending",
+      "safe_hub_block_moves": "pending",
+      "T0_freeze_and_home_flip": "not_started"
+    },
+    "final_staging_readback": {
+      "method": "complete data-source search plus individual fetch of all selected records; connector SQL entitlement was exhausted",
+      "tasks": {
+        "count": 21,
+        "has_more": false,
+        "unique_stable_ids": 21,
+        "status_distribution": {
+          "Planned": 13,
+          "Blocked": 5,
+          "Doing": 3
+        }
+      },
+      "documents": {
+        "count": 19,
+        "has_more": false,
+        "unique_stable_ids": 19,
+        "type_distribution": {
+          "Spec": 19
+        },
+        "status_distribution": {
+          "Accepted": 16,
+          "Current": 3
+        },
+        "nonempty_review_verdict_count": 0
+      },
+      "schemas": {
+        "tasks_property_count": 12,
+        "documents_property_count": 11,
+        "temporary_option_alias_count": 0,
+        "exact_names_types_options_colors_verified": true
+      },
+      "views_verified": 7,
+      "excluded_document_categories_copied": 0,
+      "source_relation_urls_in_target": 0,
+      "stable_id_uniqueness_verified": true,
+      "body_hashes_and_allowed_deltas_accounted": true,
+      "DOC72_child_count": 1,
+      "visual_asset_count": 8,
+      "authority_unchanged": true
+    }
+  },
   "execution_status": {
     "inventory_complete": true,
     "design_complete": true,
-    "target_databases_created": false,
+    "target_databases_created": true,
+    "staging_records_copied": true,
+    "staging_relations_wired": true,
+    "staging_exact_readback_complete": true,
     "records_migrated": false,
-    "editorial_successors_applied": false,
-    "source_tasks_reconciled": false,
+    "editorial_successors_applied_in_non_authoritative_staging": true,
+    "source_tasks_reconciled": true,
+    "quarantine_disposed": false,
+    "quarantine_isolated_nonblocking": true,
+    "staging_review_passed": false,
+    "T0_started": false,
     "source_locked_read_only": false,
     "home_authority_switched": false,
     "post_cutover_review_passed": false
