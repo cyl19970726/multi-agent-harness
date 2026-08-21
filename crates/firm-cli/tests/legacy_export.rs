@@ -263,28 +263,19 @@ fn workflow_history_is_opaque_verified_and_restore_readable() {
     );
     for (name, bytes) in workflow_files {
         assert_eq!(
-            std::fs::read(
-                archive
-                    .join("sources/central/workflow/raw")
-                    .join(name)
-            )
-            .unwrap(),
+            std::fs::read(archive.join("sources/central/workflow/raw").join(name)).unwrap(),
             bytes
         );
     }
     assert_eq!(
-        std::fs::read(
-            archive.join("sources/central/workflow/patches/run-1/step-1.patch")
-        )
-        .unwrap(),
+        std::fs::read(archive.join("sources/central/workflow/patches/run-1/step-1.patch")).unwrap(),
         patch_bytes
     );
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(archive.join("manifest.json")).unwrap()).unwrap();
-    let second_manifest: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(second_archive.join("manifest.json")).unwrap(),
-    )
-    .unwrap();
+    let second_manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(second_archive.join("manifest.json")).unwrap())
+            .unwrap();
     assert_eq!(manifest["workflow_archive"]["encoding"], "opaque-bytes");
     assert_eq!(manifest["workflow_archive"]["restore_mode"], "read-only");
     let workflow_digests = |value: &serde_json::Value| {
@@ -301,7 +292,10 @@ fn workflow_history_is_opaque_verified_and_restore_readable() {
             .map(|entry| (entry["path"].clone(), entry["sha256"].clone()))
             .collect::<Vec<_>>()
     };
-    assert_eq!(workflow_digests(&manifest), workflow_digests(&second_manifest));
+    assert_eq!(
+        workflow_digests(&manifest),
+        workflow_digests(&second_manifest)
+    );
     let edges = std::fs::read_to_string(archive.join("edges.jsonl")).unwrap();
     assert!(edges.contains("\"source_ledger\":\"workflow_runs.jsonl\""));
     assert!(run(&home, &project, &verify_args(&archive))
