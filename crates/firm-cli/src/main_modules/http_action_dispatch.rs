@@ -18,34 +18,6 @@ pub(super) fn http_action_error_response(error: CliError) -> (&'static str, serd
     }
 }
 
-#[cfg(test)]
-mod tests_http_action_error_response {
-    use super::*;
-
-    #[test]
-    fn exhausted_store_contention_is_retryable_http_503() {
-        let (status, body) = http_action_error_response(CliError::Store(StoreError::LockTimeout(
-            "/tmp/store/.store.lock".into(),
-        )));
-        assert_eq!(status, "503 Service Unavailable");
-        assert_eq!(body["ok"], false);
-        assert_eq!(body["error"], "store_busy");
-        assert_eq!(body["retryable"], true);
-        assert!(body["detail"]
-            .as_str()
-            .is_some_and(|detail| detail.contains(".store.lock")));
-    }
-
-    #[test]
-    fn non_contention_action_errors_remain_non_retryable_client_errors() {
-        let (status, body) = http_action_error_response(CliError::Usage("invalid request".into()));
-        assert_eq!(status, "400 Bad Request");
-        assert_eq!(body["ok"], false);
-        assert_eq!(body["error"], "invalid request");
-        assert!(body.get("retryable").is_none());
-    }
-}
-
 pub(super) fn retired_http_path(path: &str) -> bool {
     path == "/v1/goals"
         || path.starts_with("/v1/goals/")
@@ -361,4 +333,32 @@ pub(super) fn handle_http_action(
         );
     }
     Err(CliError::Usage(format!("unknown action path: {path}")))
+}
+
+#[cfg(test)]
+mod tests_http_action_error_response {
+    use super::*;
+
+    #[test]
+    fn exhausted_store_contention_is_retryable_http_503() {
+        let (status, body) = http_action_error_response(CliError::Store(StoreError::LockTimeout(
+            "/tmp/store/.store.lock".into(),
+        )));
+        assert_eq!(status, "503 Service Unavailable");
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["error"], "store_busy");
+        assert_eq!(body["retryable"], true);
+        assert!(body["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains(".store.lock")));
+    }
+
+    #[test]
+    fn non_contention_action_errors_remain_non_retryable_client_errors() {
+        let (status, body) = http_action_error_response(CliError::Usage("invalid request".into()));
+        assert_eq!(status, "400 Bad Request");
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["error"], "invalid request");
+        assert!(body.get("retryable").is_none());
+    }
 }

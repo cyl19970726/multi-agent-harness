@@ -53,8 +53,8 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
         "eligible_member_ids":[worker_id]
     });
     assert_exact_role_action_replay(
-        &serve,
-        &action_route,
+        serve,
+        action_route,
         &host_matrix_work,
         &action_headers(TOKEN, "matrix-host-create", "0"),
         "host create",
@@ -88,7 +88,7 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
     // Running row here would let the independent NodeDaemon legitimately
     // settle it while this test compares store bytes.
     let interrupt_version = store
-        .trust_member_runs(&space_id)
+        .trust_member_runs(space_id)
         .expect("Interrupt canonical MemberRun")
         .into_iter()
         .find(|run| run.id == member_run_id)
@@ -203,7 +203,7 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
         if let Some(confirmation) = confirmation {
             headers.push(("X-AgentFirm-Confirm", confirmation));
         }
-        assert_exact_role_action_replay(&serve, &route, &body, &headers, label);
+        assert_exact_role_action_replay(serve, &route, &body, &headers, label);
     }
     let member_claim_work = serde_json::json!({
         "action":"create_work",
@@ -214,14 +214,14 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
         "eligible_member_ids":[worker_id]
     });
     assert_exact_role_action_replay(
-        &serve,
-        &action_route,
+        serve,
+        action_route,
         &member_claim_work,
         &action_headers(TOKEN, "matrix-member-claim-create", "0"),
         "member-claim create",
     );
     assert_exact_role_action_replay(
-    &serve,
+    serve,
     &format!("/v1/agentfirm/team-runs/{run_id}/works/work-member-claim-replay/claim?project={project_id}"),
     &serde_json::json!({"action":"claim_work"}),
     &action_headers(MEMBER_TOKEN, "matrix-member-claim", "1"),
@@ -252,7 +252,7 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
     ] {
         let route = format!("/v1/agentfirm/team-runs/{run_id}/works/work-member-claim-replay/{route_suffix}?project={project_id}");
         assert_exact_role_action_replay(
-            &serve,
+            serve,
             &route,
             &body,
             &action_headers(MEMBER_TOKEN, key, version),
@@ -268,14 +268,14 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
         "eligible_member_ids":[worker_id]
     });
     assert_exact_role_action_replay(
-        &serve,
-        &action_route,
+        serve,
+        action_route,
         &member_matrix_work,
         &action_headers(TOKEN, "matrix-member-create", "0"),
         "member-matrix create",
     );
     assert_exact_role_action_replay(
-    &serve,
+    serve,
     &format!("/v1/agentfirm/team-runs/{run_id}/works/work-member-replay-matrix/assign?project={project_id}"),
     &serde_json::json!({"action":"assign_work","member_run_id":member_run_id}),
     &action_headers(TOKEN, "matrix-member-assign", "1"),
@@ -314,7 +314,7 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
     for (route_suffix, label, version, key, body) in member_steps {
         let route = format!("/v1/agentfirm/team-runs/{run_id}/works/work-member-replay-matrix/{route_suffix}?project={project_id}");
         assert_exact_role_action_replay(
-            &serve,
+            serve,
             &route,
             &body,
             &action_headers(MEMBER_TOKEN, key, version),
@@ -428,7 +428,7 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
     // Closing an Active member advertises Reopen only; a caller cannot invoke
     // Resume against that Closed+Stopped projection as an alias for Reopen.
     let (status, lifecycle_before_close) =
-        serve.get_json_with_headers(&view_route, &[("X-AgentFirm-Token", TOKEN)]);
+        serve.get_json_with_headers(view_route, &[("X-AgentFirm-Token", TOKEN)]);
     assert_eq!(status, 200, "lifecycle RoleView: {lifecycle_before_close}");
     let close_action = lifecycle_before_close["allowed_actions"]
         .as_array()
@@ -503,7 +503,7 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
     );
     let closed_version = seeded_closed.canonical.projection.version.to_string();
     let (status, lifecycle_closed) =
-        serve.get_json_with_headers(&view_route, &[("X-AgentFirm-Token", TOKEN)]);
+        serve.get_json_with_headers(view_route, &[("X-AgentFirm-Token", TOKEN)]);
     assert_eq!(status, 200, "closed lifecycle RoleView: {lifecycle_closed}");
     let closed_actions = lifecycle_closed["allowed_actions"]
         .as_array()
@@ -556,7 +556,7 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
         "Closed Resume must have byte-zero durable side effects"
     );
     let reopened = assert_exact_role_action_replay(
-        &serve,
+        serve,
         &lifecycle_route("reopen"),
         &serde_json::json!({"action":"reopen_member_run"}),
         &action_headers(TOKEN, "matrix-member-reopen", &closed_version),
@@ -592,11 +592,11 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
         )
         .expect("seed duplicate active MemberRun");
     let (status, duplicate_member) =
-        serve.get_json_with_headers(&member_view_route, &[("X-AgentFirm-Token", MEMBER_TOKEN)]);
+        serve.get_json_with_headers(member_view_route, &[("X-AgentFirm-Token", MEMBER_TOKEN)]);
     assert_eq!(status, 409, "duplicate MemberRun: {duplicate_member}");
     assert_eq!(duplicate_member["error"]["code"], "IDENTITY_CONFLICT");
     let (status, conflicted_host) =
-        serve.get_json_with_headers(&view_route, &[("X-AgentFirm-Token", TOKEN)]);
+        serve.get_json_with_headers(view_route, &[("X-AgentFirm-Token", TOKEN)]);
     assert_eq!(status, 200, "conflicted Host RoleView: {conflicted_host}");
     assert_eq!(conflicted_host["allowed_actions"], serde_json::json!([]));
     assert!(conflicted_host["attention"]
@@ -703,7 +703,7 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
     );
     assert!(team_view["data"]["pressure_summary"]["ready_work"].is_u64());
     let (status, operator) =
-        serve.get_json_with_headers(&operator_route, &[("X-AgentFirm-Token", OPERATOR_TOKEN)]);
+        serve.get_json_with_headers(operator_route, &[("X-AgentFirm-Token", OPERATOR_TOKEN)]);
     assert_eq!(status, 200, "Operator RoleView: {operator}");
     assert_eq!(operator["data"]["node"]["node_id"], node_id);
     assert!(operator["data"]["node"]["node_revision"]
@@ -711,7 +711,7 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
         .is_some_and(|v| v >= 1));
 
     let (status, cross_team_denied) =
-        serve.get_json_with_headers(&member_view_route, &[("X-AgentFirm-Token", TOKEN)]);
+        serve.get_json_with_headers(member_view_route, &[("X-AgentFirm-Token", TOKEN)]);
     assert_eq!(
         status, 403,
         "Host must not read MemberWorkbench: {cross_team_denied}"

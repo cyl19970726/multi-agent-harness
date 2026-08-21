@@ -4,7 +4,7 @@ impl HttpExchange<'_> {
     #[allow(unused_variables)]
     pub(super) fn handle_dashboard_post(&mut self) -> CliResult<bool> {
         let projects = self.projects;
-        let mut stream = &mut *self.stream;
+        let stream = &mut *self.stream;
         let sse_manager = self.sse_manager.clone();
         let method = self.method.as_str();
         let path = &self.path;
@@ -24,11 +24,11 @@ impl HttpExchange<'_> {
         let body_json = if body.is_empty() {
             serde_json::json!({})
         } else {
-            match serde_json::from_slice::<serde_json::Value>(&body) {
+            match serde_json::from_slice::<serde_json::Value>(body) {
                 Ok(value) => value,
                 Err(error) => {
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "400 Bad Request",
                         &serde_json::json!({"ok": false, "error": format!("invalid JSON body: {error}")}),
                     )?;
@@ -41,7 +41,7 @@ impl HttpExchange<'_> {
         // export/verify-only through `harness legacy-company-os export|verify`.
         if company_os_path {
             write_http_json(
-                &mut stream,
+                stream,
                 "410 Gone",
                 &serde_json::json!({
                     "ok": false,
@@ -60,7 +60,7 @@ impl HttpExchange<'_> {
         if path_only == "/v1/projects/switch" {
             match handle_project_switch(projects, &body_json) {
                 Ok((id, _compatibility_store)) => write_http_json(
-                    &mut stream,
+                    stream,
                     "200 OK",
                     &serde_json::json!({
                         "ok": true,
@@ -68,7 +68,7 @@ impl HttpExchange<'_> {
                     }),
                 )?,
                 Err(error) => write_http_json(
-                    &mut stream,
+                    stream,
                     "400 Bad Request",
                     &serde_json::json!({"ok": false, "error": error.to_string()}),
                 )?,
@@ -79,7 +79,7 @@ impl HttpExchange<'_> {
         if path_only == "/v1/spaces/switch" {
             match handle_space_switch(projects, &body_json) {
                 Ok((id, _switch_store)) => write_http_json(
-                    &mut stream,
+                    stream,
                     "200 OK",
                     &serde_json::json!({
                         "ok": true,
@@ -87,7 +87,7 @@ impl HttpExchange<'_> {
                     }),
                 )?,
                 Err(error) => write_http_json(
-                    &mut stream,
+                    stream,
                     "400 Bad Request",
                     &serde_json::json!({"ok": false, "error": error.to_string()}),
                 )?,
@@ -97,7 +97,7 @@ impl HttpExchange<'_> {
 
         if path_only == "/v1/live/member-activity" {
             write_http_json(
-                &mut stream,
+                stream,
                 "410 Gone",
                 &serde_json::json!({
                     "ok": false,
@@ -118,7 +118,7 @@ impl HttpExchange<'_> {
                 || live_provider_activity_token.as_deref() != expected_token.map(String::as_str)
             {
                 write_http_json(
-                    &mut stream,
+                    stream,
                     "401 Unauthorized",
                     &serde_json::json!({"ok": false, "error": "invalid_live_provider_activity_token"}),
                 )?;
@@ -128,7 +128,7 @@ impl HttpExchange<'_> {
                 Ok(update) => update,
                 Err(error) => {
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "400 Bad Request",
                         &serde_json::json!({"ok": false, "error": format!("invalid live provider activity: {error}")}),
                     )?;
@@ -153,7 +153,7 @@ impl HttpExchange<'_> {
                         *member_run_generation,
                     ),
                 };
-                let member = latest_member_runs_in_append_order(&store_owned)?
+                let member = latest_member_runs_in_append_order(store_owned)?
                     .into_iter()
                     .find(|member| member.id == member_run_id)
                     .ok_or_else(|| {
@@ -164,8 +164,8 @@ impl HttpExchange<'_> {
                     member.runtime_generation,
                     source_member_run_generation,
                 )?;
-                let run = latest_team_run(&store_owned, &team_run_id)?;
-                let current_execution_space_id = team_run_execution_space_id(&store_owned, &run)?;
+                let run = latest_team_run(store_owned, &team_run_id)?;
+                let current_execution_space_id = team_run_execution_space_id(store_owned, &run)?;
                 if current_execution_space_id != *project_id {
                     return Err(CliError::Usage(format!(
                         "EXECUTION_SPACE_SCOPE_MISMATCH: TeamRun {team_run_id} belongs to Execution Space {current_execution_space_id}, not {project_id}"
@@ -173,8 +173,8 @@ impl HttpExchange<'_> {
                 }
                 let project_binding_id = run.project_binding_id.clone();
                 let scope = provider_event_api::exact_live_scope(
-                    &store_owned,
-                    &project_id,
+                    store_owned,
+                    project_id,
                     &project_binding_id,
                     &team_run_id,
                     &member,
@@ -231,7 +231,7 @@ impl HttpExchange<'_> {
                 };
                 Ok(broadcast_live_provider_activity(
                     &sse_manager,
-                    &project_id,
+                    project_id,
                     &project_binding_id,
                     &member.agent_member_id,
                     event,
@@ -239,12 +239,12 @@ impl HttpExchange<'_> {
             })();
             match result {
                 Ok(activity) => write_http_json(
-                    &mut stream,
+                    stream,
                     "202 Accepted",
                     &serde_json::json!({"ok": true, "result": activity}),
                 )?,
                 Err(error) => write_http_json(
-                    &mut stream,
+                    stream,
                     "400 Bad Request",
                     &serde_json::json!({"ok": false, "error": error.to_string()}),
                 )?,
@@ -268,7 +268,7 @@ impl HttpExchange<'_> {
                     )? {
                         Some(delegate_team_run_to_node_daemon_in_space(
                             store,
-                            &project_id,
+                            project_id,
                             team_run_id,
                             TEAM_RUN_START_DEFAULT_CONCURRENCY,
                         )?)
@@ -280,13 +280,13 @@ impl HttpExchange<'_> {
                 match result {
                     Ok(reopened) => {
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "202 Accepted",
                             &serde_json::json!({"ok": true, "result": reopened}),
                         )?;
                     }
                     Err(error) => write_http_json(
-                        &mut stream,
+                        stream,
                         "400 Bad Request",
                         &serde_json::json!({"ok": false, "error": error.to_string()}),
                     )?,
@@ -311,7 +311,7 @@ impl HttpExchange<'_> {
                     )? {
                         Some(delegate_team_run_to_node_daemon_in_space(
                             store,
-                            &project_id,
+                            project_id,
                             team_run_id,
                             TEAM_RUN_START_DEFAULT_CONCURRENCY,
                         )?)
@@ -323,13 +323,13 @@ impl HttpExchange<'_> {
                 match result {
                     Ok(resumed) => {
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "202 Accepted",
                             &serde_json::json!({"ok": true, "result": resumed}),
                         )?;
                     }
                     Err(error) => write_http_json(
-                        &mut stream,
+                        stream,
                         "400 Bad Request",
                         &serde_json::json!({"ok": false, "error": error.to_string()}),
                     )?,
@@ -364,7 +364,7 @@ impl HttpExchange<'_> {
                     })?;
                 let delegated = delegate_team_run_to_node_daemon_in_space(
                     store,
-                    &project_id,
+                    project_id,
                     team_run_id,
                     max_concurrency,
                 )?;
@@ -373,7 +373,7 @@ impl HttpExchange<'_> {
             match result {
                 Ok((node_daemon, running)) => {
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "202 Accepted",
                         &serde_json::json!({
                             "ok": true,
@@ -386,7 +386,7 @@ impl HttpExchange<'_> {
                     )?;
                 }
                 Err(error) => write_http_json(
-                    &mut stream,
+                    stream,
                     "400 Bad Request",
                     &serde_json::json!({"ok": false, "error": error.to_string()}),
                 )?,
@@ -399,22 +399,22 @@ impl HttpExchange<'_> {
         let project_context = projects
             .firm_home
             .as_ref()
-            .map(|_| projects.context_for(project_param.as_deref(), Some(&project_id), store));
+            .map(|_| projects.context_for(project_param.as_deref(), Some(project_id), store));
         match handle_http_action(
             store,
             project_context.as_ref(),
-            &project_id,
-            &path_only,
+            project_id,
+            path_only,
             &body_json,
         ) {
             Ok(response) => write_http_json(
-                &mut stream,
+                stream,
                 "200 OK",
                 &serde_json::json!({"ok": true, "result": response}),
             )?,
             Err(error) => {
                 let (status, body) = http_action_error_response(error);
-                write_http_json(&mut stream, status, &body)?;
+                write_http_json(stream, status, &body)?;
             }
         }
         Ok(true)

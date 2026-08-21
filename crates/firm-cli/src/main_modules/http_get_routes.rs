@@ -4,7 +4,7 @@ impl HttpExchange<'_> {
     #[allow(unused_variables)]
     pub(super) fn handle_get_routes(&mut self) -> CliResult<bool> {
         let projects = self.projects;
-        let mut stream = &mut *self.stream;
+        let stream = &mut *self.stream;
         let sse_manager = self.sse_manager.clone();
         let method = self.method.as_str();
         let path = &self.path;
@@ -30,7 +30,7 @@ impl HttpExchange<'_> {
                     }),
                     Err(message) => {
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "401 Unauthorized",
                             &serde_json::json!({"ok":false,"error":{"code":"NOT_AUTHORIZED","message":message}}),
                         )?;
@@ -47,15 +47,15 @@ impl HttpExchange<'_> {
                 .collect::<Vec<_>>();
             let role_view_store = if path_only.starts_with("/v1/views/") {
                 match projects.scoped_store_for_project(
-                    &store_owned,
-                    &project_id,
+                    store_owned,
+                    project_id,
                     project_param.as_deref(),
                 ) {
                     Ok(store) => store,
                     Err(error) => {
                         let detail = error.to_string();
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "404 Not Found",
                             &serde_json::json!({"ok":false,"error":{"code":"PROJECT_BINDING_NOT_FOUND","message":detail}}),
                         )?;
@@ -68,13 +68,13 @@ impl HttpExchange<'_> {
             if let Some(response) = role_views_api::handle_get(
                 &role_view_store,
                 &execution_space_stores,
-                &project_id,
-                &path_only,
-                &path,
+                project_id,
+                path_only,
+                path,
                 build_git_rev(),
                 role_view_identity.as_ref(),
             ) {
-                write_http_json(&mut stream, response.status, &response.body)?;
+                write_http_json(stream, response.status, &response.body)?;
                 return Ok(true);
             }
             // DOC-108: the legacy Company OS read surface is retired with its
@@ -83,7 +83,7 @@ impl HttpExchange<'_> {
             // `harness legacy-company-os export|verify`.
             if company_os_path {
                 write_http_json(
-                    &mut stream,
+                    stream,
                     "410 Gone",
                     &serde_json::json!({
                         "ok": false,
@@ -94,11 +94,11 @@ impl HttpExchange<'_> {
                 return Ok(true);
             }
             if path_only == "/v1/host-attentions" {
-                let team_run_id = query_param(&path, "team_run_id").unwrap_or_default();
+                let team_run_id = query_param(path, "team_run_id").unwrap_or_default();
                 match host_attentions_value(store, &team_run_id) {
-                    Ok(value) => write_http_json(&mut stream, "200 OK", &value)?,
+                    Ok(value) => write_http_json(stream, "200 OK", &value)?,
                     Err(CliError::Usage(detail)) => write_http_json(
-                        &mut stream,
+                        stream,
                         "404 Not Found",
                         &serde_json::json!({"error": "not_found", "detail": detail}),
                     )?,
@@ -107,17 +107,17 @@ impl HttpExchange<'_> {
                 return Ok(true);
             }
             if path_only == "/v1/team-runs/host-inbox" {
-                let surface = query_param(&path, "surface").unwrap_or_default();
-                let thread_id = query_param(&path, "thread_id").unwrap_or_default();
-                let include_all = query_param(&path, "all")
+                let surface = query_param(path, "surface").unwrap_or_default();
+                let thread_id = query_param(path, "thread_id").unwrap_or_default();
+                let include_all = query_param(path, "all")
                     .as_deref()
                     .is_some_and(|value| matches!(value, "1" | "true" | "yes"));
                 match host_inbox_for_native_thread(store, &surface, &thread_id, include_all) {
                     Ok(runs) => {
-                        write_http_json(&mut stream, "200 OK", &serde_json::json!({"runs": runs}))?
+                        write_http_json(stream, "200 OK", &serde_json::json!({"runs": runs}))?
                     }
                     Err(CliError::Usage(detail)) => write_http_json(
-                        &mut stream,
+                        stream,
                         "400 Bad Request",
                         &serde_json::json!({"error": "invalid_host_binding", "detail": detail}),
                     )?,
@@ -126,9 +126,9 @@ impl HttpExchange<'_> {
                 return Ok(true);
             }
             if path_only == "/v1/work-delegations" {
-                let source_work_id = query_param(&path, "source_work_id");
-                let target_team_id = query_param(&path, "target_agent_team_id");
-                let state = query_param(&path, "state");
+                let source_work_id = query_param(path, "source_work_id");
+                let target_team_id = query_param(path, "target_agent_team_id");
+                let state = query_param(path, "state");
                 let delegations = store
                     .latest_work_delegations()?
                     .into_iter()
@@ -149,7 +149,7 @@ impl HttpExchange<'_> {
                     })
                     .collect::<Vec<_>>();
                 write_http_json(
-                    &mut stream,
+                    stream,
                     "200 OK",
                     &serde_json::json!({"delegations": delegations}),
                 )?;
@@ -157,7 +157,7 @@ impl HttpExchange<'_> {
             }
             if path_only == "/v1/execution-nodes" {
                 write_http_json(
-                    &mut stream,
+                    stream,
                     "200 OK",
                     &serde_json::json!({
                         "nodes": store.latest_execution_nodes()?,
@@ -181,7 +181,7 @@ impl HttpExchange<'_> {
                             .collect::<Vec<_>>();
                         let daemon_lease = store.latest_node_daemon_lease(node_id)?;
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "200 OK",
                             &serde_json::json!({
                                 "node": node,
@@ -191,7 +191,7 @@ impl HttpExchange<'_> {
                         )?;
                     } else {
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "404 Not Found",
                             &serde_json::json!({"error": "execution_node_not_found"}),
                         )?;
@@ -212,13 +212,13 @@ impl HttpExchange<'_> {
                             .filter(|event| event.delegation_id == delegation_id)
                             .collect::<Vec<_>>();
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "200 OK",
                             &serde_json::json!({"delegation": delegation, "events": events}),
                         )?;
                     } else {
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "404 Not Found",
                             &serde_json::json!({"error": "work_delegation_not_found"}),
                         )?;
@@ -230,9 +230,9 @@ impl HttpExchange<'_> {
                 let parts = rest.split('/').collect::<Vec<_>>();
                 if let [team_run_id, "snapshot"] = parts.as_slice() {
                     match dashboard_team_run_snapshot(store, team_run_id) {
-                        Ok(snapshot) => write_http_json(&mut stream, "200 OK", &snapshot)?,
+                        Ok(snapshot) => write_http_json(stream, "200 OK", &snapshot)?,
                         Err(CliError::Usage(detail)) => write_http_json(
-                            &mut stream,
+                            stream,
                             "404 Not Found",
                             &serde_json::json!({"error": "team_run_not_found", "detail": detail}),
                         )?,
@@ -242,7 +242,7 @@ impl HttpExchange<'_> {
                 }
                 if let [team_run_id, "members", member_run_id, "inbox"] = parts.as_slice() {
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "410 Gone",
                         &serde_json::json!({
                             "ok": false,
@@ -269,7 +269,7 @@ impl HttpExchange<'_> {
                             .then_with(|| left.created_at.cmp(&right.created_at))
                             .then_with(|| left.id.cmp(&right.id))
                     });
-                    write_http_json(&mut stream, "200 OK", &serde_json::json!({"works": works}))?;
+                    write_http_json(stream, "200 OK", &serde_json::json!({"works": works}))?;
                     return Ok(true);
                 }
                 if let [team_run_id, "works", work_id] = parts.as_slice() {
@@ -289,13 +289,13 @@ impl HttpExchange<'_> {
                             .filter(|delivery| delivery.work_id == *work_id)
                             .collect::<Vec<_>>();
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "200 OK",
                             &serde_json::json!({"work": work, "events": events, "deliveries": deliveries}),
                         )?;
                     } else {
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "404 Not Found",
                             &serde_json::json!({"error": "work_not_found"}),
                         )?;
@@ -305,7 +305,7 @@ impl HttpExchange<'_> {
             }
             match path_only.as_str() {
                 "/health" | "/v1/health" => write_http_json(
-                    &mut stream,
+                    stream,
                     "200 OK",
                     &serde_json::json!({"status": "ok", "generated_at": now_string()}),
                 )?,
@@ -314,14 +314,14 @@ impl HttpExchange<'_> {
                     // projection; the execution store is the only source.
                     let snapshot = projects
                         .dashboard_snapshot_builds
-                        .build(|| dashboard_snapshot(&store_owned))?;
-                    write_http_json(&mut stream, "200 OK", &snapshot)?
+                        .build(|| dashboard_snapshot(store_owned))?;
+                    write_http_json(stream, "200 OK", &snapshot)?
                 }
                 "/v1/test/dashboard-snapshot-builds"
                     if dashboard_snapshot_build_test_pause().is_some() =>
                 {
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "200 OK",
                         &projects.dashboard_snapshot_builds.test_metrics(),
                     )?
@@ -330,9 +330,7 @@ impl HttpExchange<'_> {
                 // the coordination store (`store_owned`), never the Company OS
                 // store: it answers "which build served this, which store did it
                 // read, how far has that store's op log advanced".
-                "/v1/meta" => {
-                    write_http_json(&mut stream, "200 OK", &dashboard_meta(&store_owned)?)?
-                }
+                "/v1/meta" => write_http_json(stream, "200 OK", &dashboard_meta(store_owned)?)?,
                 // GET /v1/projects — enumerate known projects (registry + on-disk stores
                 // + reserved `_global`) for the dashboard picker. `current` marks the
                 // active project (multi-project P6 / project-api task).
@@ -344,7 +342,7 @@ impl HttpExchange<'_> {
                         .map(|ctx| project_context_json(&ctx, &current))
                         .collect();
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "200 OK",
                         &serde_json::json!({"projects": list, "current": current}),
                     )?
@@ -359,7 +357,7 @@ impl HttpExchange<'_> {
                         .find(|context| context.id == current);
                     let context_json = ctx.map(|c| project_context_json(&c, &current));
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "200 OK",
                         &serde_json::json!({
                             "current": current,
@@ -375,7 +373,7 @@ impl HttpExchange<'_> {
                         .map(|space| execution_space_json(space, &current))
                         .collect::<Vec<_>>();
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "200 OK",
                         &serde_json::json!({"spaces": list, "current": current}),
                     )?
@@ -387,7 +385,7 @@ impl HttpExchange<'_> {
                         .into_iter()
                         .find(|space| space.id == current);
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "200 OK",
                         &serde_json::json!({
                             "current": current,
@@ -411,7 +409,7 @@ impl HttpExchange<'_> {
                                 Ok(_) => None,
                                 Err(message) => {
                                     write_http_json(
-                                        &mut stream,
+                                        stream,
                                         "401 Unauthorized",
                                         &serde_json::json!({"ok":false,"error":{"code":"NOT_AUTHORIZED","message":message}}),
                                     )?;
@@ -422,12 +420,12 @@ impl HttpExchange<'_> {
                     };
                     let private_project_binding_id = if private_agent_member_id.is_some() {
                         match projects
-                            .exact_project_context_for(project_param.as_deref(), &project_id)
+                            .exact_project_context_for(project_param.as_deref(), project_id)
                         {
                             Ok(project) => Some(project.id),
                             Err(error) => {
                                 write_http_json(
-                                    &mut stream,
+                                    stream,
                                     "404 Not Found",
                                     &serde_json::json!({"ok":false,"error":{"code":"PROJECT_BINDING_NOT_FOUND","message":error.to_string()}}),
                                 )?;
@@ -442,8 +440,8 @@ impl HttpExchange<'_> {
                     // Private live provider activity additionally requires the
                     // exact AgentIdentity actor; Host authority never widens it.
                     handle_sse_stream(
-                        &store_owned,
-                        &project_id,
+                        store_owned,
+                        project_id,
                         private_project_binding_id.as_deref(),
                         None,
                         private_agent_member_id.as_deref(),
@@ -451,14 +449,14 @@ impl HttpExchange<'_> {
                         sse_manager,
                     )?
                 }
-                "/v1/docs" => match read_allowed_doc(&path) {
+                "/v1/docs" => match read_allowed_doc(path) {
                     Ok((doc_path, content)) => write_http_json(
-                        &mut stream,
+                        stream,
                         "200 OK",
                         &serde_json::json!({"path": doc_path, "content": content}),
                     )?,
                     Err(detail) => write_http_json(
-                        &mut stream,
+                        stream,
                         "404 Not Found",
                         &serde_json::json!({"error": "doc_not_found", "detail": detail}),
                     )?,
@@ -468,7 +466,7 @@ impl HttpExchange<'_> {
                         && member_path.ends_with("/native-activity") =>
                 {
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "410 Gone",
                         &serde_json::json!({
                             "error": "legacy_native_activity_route_retired",
@@ -481,7 +479,7 @@ impl HttpExchange<'_> {
                         && step_path.ends_with("/native-activity") =>
                 {
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "410 Gone",
                         &serde_json::json!({
                             "error": "legacy_native_activity_route_retired",
@@ -499,7 +497,7 @@ impl HttpExchange<'_> {
                         .filter_map(|name| registry.get(name))
                         .map(|def| serde_json::json!({"name": def.name, "summary": def.summary}))
                         .collect();
-                    write_http_json(&mut stream, "200 OK", &serde_json::json!(defs))?
+                    write_http_json(stream, "200 OK", &serde_json::json!(defs))?
                 }
                 // GET /v1/workflows/{name}/source — the Rust source of the workflow
                 // module, so the Definition section can show the ground-truth body.
@@ -514,7 +512,7 @@ impl HttpExchange<'_> {
                     let registry = workflow::WorkflowRegistry::builtin();
                     if registry.get(name).is_some() {
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "200 OK",
                             &serde_json::json!({
                                 "path": "workflow.rs",
@@ -523,14 +521,14 @@ impl HttpExchange<'_> {
                         )?
                     } else {
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "404 Not Found",
                             &serde_json::json!({"error": "workflow_not_found", "name": name}),
                         )?
                     }
                 }
                 _ => write_http_json(
-                    &mut stream,
+                    stream,
                     "404 Not Found",
                     &serde_json::json!({"error": "not_found", "path": path_only}),
                 )?,

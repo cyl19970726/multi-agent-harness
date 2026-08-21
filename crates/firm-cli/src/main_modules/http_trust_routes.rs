@@ -4,7 +4,7 @@ impl HttpExchange<'_> {
     #[allow(unused_variables)]
     pub(super) fn handle_trust_routes(&mut self) -> CliResult<bool> {
         let projects = self.projects;
-        let mut stream = &mut *self.stream;
+        let stream = &mut *self.stream;
         let sse_manager = self.sse_manager.clone();
         let method = self.method.as_str();
         let path = &self.path;
@@ -21,9 +21,9 @@ impl HttpExchange<'_> {
         let trust_confirmed_action = &self.trust_confirmed_action;
         let trust_identity_override_header = self.trust_identity_override_header;
         let live_provider_activity_token = &self.live_provider_activity_token;
-        if method == "POST" && role_actions_api::is_retired_legacy_write_path(&path_only) {
+        if method == "POST" && role_actions_api::is_retired_legacy_write_path(path_only) {
             write_http_json(
-                &mut stream,
+                stream,
                 "410 Gone",
                 &serde_json::json!({
                     "ok": false,
@@ -52,7 +52,7 @@ impl HttpExchange<'_> {
                 || path_only.starts_with("/v1/message-deliveries/"));
         if retired_message_write {
             write_http_json(
-                &mut stream,
+                stream,
                 "410 Gone",
                 &serde_json::json!({
                     "ok": false,
@@ -67,7 +67,7 @@ impl HttpExchange<'_> {
         if method == "POST" && path_only == "/v1/collaboration/delegations" {
             if trust_identity_override_header {
                 write_http_json(
-                    &mut stream,
+                    stream,
                     "401 Unauthorized",
                     &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":"request headers cannot select collaboration actor or authority identity"}}),
                 )?;
@@ -79,7 +79,7 @@ impl HttpExchange<'_> {
                 Ok(value) => value,
                 Err(message) => {
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "401 Unauthorized",
                         &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":message}}),
                     )?;
@@ -91,7 +91,7 @@ impl HttpExchange<'_> {
                 .filter(|key| !key.trim().is_empty())
             else {
                 write_http_json(
-                    &mut stream,
+                    stream,
                     "400 Bad Request",
                     &serde_json::json!({"ok":false,"error":{"code":"IDEMPOTENCY_CONFLICT","message":"Idempotency-Key is required"}}),
                 )?;
@@ -99,7 +99,7 @@ impl HttpExchange<'_> {
             };
             if trust_expected_version != Some(0) {
                 write_http_json(
-                    &mut stream,
+                    stream,
                     "409 Conflict",
                     &serde_json::json!({"ok":false,"error":{"code":"EXPECTED_REVISION_CONFLICT","message":"new Delegation proposal requires If-Match: 0"}}),
                 )?;
@@ -107,12 +107,12 @@ impl HttpExchange<'_> {
             }
             let request = match serde_json::from_slice::<
                 fabric_runtime::QueueCollaborationProposalRequest,
-            >(&body)
+            >(body)
             {
                 Ok(value) => value,
                 Err(error) => {
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "400 Bad Request",
                         &serde_json::json!({"ok":false,"error":{"code":"INVALID_PAYLOAD","message":error.to_string()}}),
                     )?;
@@ -122,9 +122,9 @@ impl HttpExchange<'_> {
             let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
             let local_node_id = read_local_node_id()?;
             match fabric_runtime::queue_collaboration_proposal(
-                &store_owned,
+                store_owned,
                 &firm_home,
-                &project_id,
+                project_id,
                 &local_node_id,
                 &credential,
                 idempotency_key,
@@ -132,7 +132,7 @@ impl HttpExchange<'_> {
                 current_unix_ms_u64(),
             ) {
                 Ok(value) => write_http_json(
-                    &mut stream,
+                    stream,
                     "202 Accepted",
                     &serde_json::json!({"ok":true,"queued":value}),
                 )?,
@@ -143,7 +143,7 @@ impl HttpExchange<'_> {
                         _ => "400 Bad Request",
                     };
                     write_http_json(
-                        &mut stream,
+                        stream,
                         status,
                         &serde_json::json!({"ok":false,"error":{"code":format!("{:?}",error.code).to_ascii_uppercase(),"message":error.message}}),
                     )?;
@@ -158,7 +158,7 @@ impl HttpExchange<'_> {
         if method == "POST" && collaboration_publication_delegation.is_some() {
             if trust_identity_override_header {
                 write_http_json(
-                    &mut stream,
+                    stream,
                     "401 Unauthorized",
                     &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":"request headers cannot select collaboration actor or authority identity"}}),
                 )?;
@@ -170,7 +170,7 @@ impl HttpExchange<'_> {
                 Ok(value) => value,
                 Err(message) => {
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "401 Unauthorized",
                         &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":message}}),
                     )?;
@@ -182,7 +182,7 @@ impl HttpExchange<'_> {
                 .filter(|key| !key.trim().is_empty())
             else {
                 write_http_json(
-                    &mut stream,
+                    stream,
                     "400 Bad Request",
                     &serde_json::json!({"ok":false,"error":{"code":"IDEMPOTENCY_CONFLICT","message":"Idempotency-Key is required"}}),
                 )?;
@@ -191,7 +191,7 @@ impl HttpExchange<'_> {
             let Some(expected_revision) = trust_expected_version.filter(|version| *version > 0)
             else {
                 write_http_json(
-                    &mut stream,
+                    stream,
                     "409 Conflict",
                     &serde_json::json!({"ok":false,"error":{"code":"EXPECTED_REVISION_CONFLICT","message":"If-Match exact Delegation revision is required"}}),
                 )?;
@@ -199,12 +199,12 @@ impl HttpExchange<'_> {
             };
             let request = match serde_json::from_slice::<
                 fabric_runtime::QueueRemoteFactPublicationRequest,
-            >(&body)
+            >(body)
             {
                 Ok(value) => value,
                 Err(error) => {
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "400 Bad Request",
                         &serde_json::json!({"ok":false,"error":{"code":"INVALID_PAYLOAD","message":error.to_string()}}),
                     )?;
@@ -213,7 +213,7 @@ impl HttpExchange<'_> {
             };
             if Some(request.delegation_id.as_str()) != collaboration_publication_delegation {
                 write_http_json(
-                    &mut stream,
+                    stream,
                     "400 Bad Request",
                     &serde_json::json!({"ok":false,"error":{"code":"INVALID_PAYLOAD","message":"path and body Delegation identities differ"}}),
                 )?;
@@ -222,9 +222,9 @@ impl HttpExchange<'_> {
             let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
             let local_node_id = read_local_node_id()?;
             match fabric_runtime::queue_remote_fact_publication(
-                &store_owned,
+                store_owned,
                 &firm_home,
-                &project_id,
+                project_id,
                 &local_node_id,
                 &credential,
                 idempotency_key,
@@ -233,7 +233,7 @@ impl HttpExchange<'_> {
                 current_unix_ms_u64(),
             ) {
                 Ok(value) => write_http_json(
-                    &mut stream,
+                    stream,
                     "202 Accepted",
                     &serde_json::json!({"ok":true,"queued":value}),
                 )?,
@@ -244,7 +244,7 @@ impl HttpExchange<'_> {
                         _ => "400 Bad Request",
                     };
                     write_http_json(
-                        &mut stream,
+                        stream,
                         status,
                         &serde_json::json!({"ok":false,"error":{"code":format!("{:?}",error.code).to_ascii_uppercase(),"message":error.message}}),
                     )?;
@@ -255,7 +255,7 @@ impl HttpExchange<'_> {
         if method == "POST" && path_only == "/v1/agentfirm/runtime-commands" {
             if trust_identity_override_header {
                 write_http_json(
-                    &mut stream,
+                    stream,
                     "401 Unauthorized",
                     &serde_json::json!({"ok": false, "error": {"code": "UNAUTHORIZED_ACTOR", "message": "request headers cannot select AgentFirm actor or authority identity"}}),
                 )?;
@@ -267,7 +267,7 @@ impl HttpExchange<'_> {
                 Ok(value) => value,
                 Err(message) => {
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "401 Unauthorized",
                         &serde_json::json!({"ok": false, "error": {"code": "UNAUTHORIZED_ACTOR", "message": message}}),
                     )?;
@@ -277,7 +277,7 @@ impl HttpExchange<'_> {
             let Some(idempotency_key) = trust_idempotency_key.filter(|key| !key.trim().is_empty())
             else {
                 write_http_json(
-                    &mut stream,
+                    stream,
                     "400 Bad Request",
                     &serde_json::json!({"ok": false, "error": {"code": "IDEMPOTENCY_KEY_REUSED", "message": "Idempotency-Key is required"}}),
                 )?;
@@ -285,17 +285,17 @@ impl HttpExchange<'_> {
             };
             let Some(expected_version) = trust_expected_version else {
                 write_http_json(
-                    &mut stream,
+                    stream,
                     "400 Bad Request",
                     &serde_json::json!({"ok": false, "error": {"code": "VERSION_CONFLICT", "message": "If-Match exact expected version is required"}}),
                 )?;
                 return Ok(true);
             };
-            let request = match serde_json::from_slice::<RuntimeCommandHttpRequest>(&body) {
+            let request = match serde_json::from_slice::<RuntimeCommandHttpRequest>(body) {
                 Ok(value) => value,
                 Err(error) => {
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "400 Bad Request",
                         &serde_json::json!({"ok": false, "error": {"code": "INVALID_STATE_TRANSITION", "message": error.to_string()}}),
                     )?;
@@ -314,7 +314,7 @@ impl HttpExchange<'_> {
                         Ok(value) => value,
                         Err(error) => {
                             write_http_json(
-                                &mut stream,
+                                stream,
                                 "400 Bad Request",
                                 &serde_json::json!({"ok":false,"error":{"code":"INVALID_STATE_TRANSITION","message":format!("invalid author_message intent: {error}")}}),
                             )?;
@@ -332,16 +332,16 @@ impl HttpExchange<'_> {
                         if delegation_scoped {
                             let Some(remote_transfer) = intent.remote_transfer.as_ref() else {
                                 write_http_json(
-                                    &mut stream,
+                                    stream,
                                     "400 Bad Request",
                                     &serde_json::json!({"ok":false,"error":{"code":"INVALID_PAYLOAD","message":"Delegation-scoped cross-node Message requires exact remote_transfer route facts"}}),
                                 )?;
                                 return Ok(true);
                             };
                             match fabric_runtime::resolve_collaboration_message_authority(
-                                    &store_owned,
+                                    store_owned,
                                     &firm_home,
-                                    &project_id,
+                                    project_id,
                                     &local_node_id,
                                     &credential,
                                     &intent.draft,
@@ -353,7 +353,7 @@ impl HttpExchange<'_> {
                                     ),
                                     Err(error) => {
                                         write_http_json(
-                                            &mut stream,
+                                            stream,
                                             "403 Forbidden",
                                             &serde_json::json!({"ok":false,"error":{"code":format!("{:?}",error.code).to_ascii_uppercase(),"message":error.message}}),
                                         )?;
@@ -365,9 +365,9 @@ impl HttpExchange<'_> {
                             // remote route: a same-Space same-Node target is
                             // delivered by the local authoring Store directly.
                             match resolve_peer_team_message_admission_authority(
-                                    &store_owned,
+                                    store_owned,
                                     &firm_home,
-                                    &project_id,
+                                    project_id,
                                     &local_node_id,
                                     &credential.actor,
                                     &intent.draft,
@@ -379,7 +379,7 @@ impl HttpExchange<'_> {
                                     ),
                                     Err(message) => {
                                         write_http_json(
-                                            &mut stream,
+                                            stream,
                                             "403 Forbidden",
                                             &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":message}}),
                                         )?;
@@ -389,7 +389,7 @@ impl HttpExchange<'_> {
                         } else {
                             if intent.remote_transfer.is_some() {
                                 write_http_json(
-                                    &mut stream,
+                                    stream,
                                     "400 Bad Request",
                                     &serde_json::json!({"ok":false,"error":{"code":"INVALID_PAYLOAD","message":"remote_transfer requires a CollaborationScope on the Message draft"}}),
                                 )?;
@@ -436,7 +436,7 @@ impl HttpExchange<'_> {
                         Ok(value) => value,
                         Err(error) => {
                             write_http_json(
-                                &mut stream,
+                                stream,
                                 "400 Bad Request",
                                 &serde_json::json!({"ok":false,"error":{"code":"INVALID_STATE_TRANSITION","message":format!("invalid start_session intent: {error}")}}),
                             )?;
@@ -444,7 +444,7 @@ impl HttpExchange<'_> {
                         }
                     };
                     let identity = store_owned
-                        .fabric_agent_identities(&project_id)?
+                        .fabric_agent_identities(project_id)?
                         .into_iter()
                         .find(|identity| identity.id == intent.agent_member_id)
                         .ok_or_else(|| CliError::Usage("AGENT_IDENTITY_NOT_FOUND".into()))?;
@@ -459,14 +459,14 @@ impl HttpExchange<'_> {
                         .is_some_and(|claimed| claimed != target_node_id)
                     {
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "403 Forbidden",
                             &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":"caller-selected StartSession Node does not match the server-resolved local machine Node"}}),
                         )?;
                         return Ok(true);
                     }
                     let member = store_owned
-                        .trust_agent_members(&project_id)?
+                        .trust_agent_members(project_id)?
                         .into_iter()
                         .find(|member| member.id == identity.id)
                         .ok_or_else(|| {
@@ -561,7 +561,7 @@ impl HttpExchange<'_> {
                         Ok(value) => value,
                         Err(error) => {
                             write_http_json(
-                                &mut stream,
+                                stream,
                                 "400 Bad Request",
                                 &serde_json::json!({"ok":false,"error":{"code":"INVALID_STATE_TRANSITION","message":format!("invalid provider dispatch intent: {error}")}}),
                             )?;
@@ -569,7 +569,7 @@ impl HttpExchange<'_> {
                         }
                     };
                     let session = store_owned
-                        .fabric_agent_sessions(&project_id)?
+                        .fabric_agent_sessions(project_id)?
                         .into_iter()
                         .find(|session| session.id == intent.session_id)
                         .ok_or_else(|| CliError::Usage("AGENT_SESSION_NOT_FOUND".into()))?;
@@ -594,7 +594,7 @@ impl HttpExchange<'_> {
                         Ok(value) => value,
                         Err(error) => {
                             write_http_json(
-                                &mut stream,
+                                stream,
                                 "400 Bad Request",
                                 &serde_json::json!({"ok":false,"error":{"code":"INVALID_STATE_TRANSITION","message":format!("invalid session control intent: {error}")}}),
                             )?;
@@ -602,7 +602,7 @@ impl HttpExchange<'_> {
                         }
                     };
                     let session = store_owned
-                        .fabric_agent_sessions(&project_id)?
+                        .fabric_agent_sessions(project_id)?
                         .into_iter()
                         .find(|session| session.id == intent.session_id)
                         .ok_or_else(|| CliError::Usage("AGENT_SESSION_NOT_FOUND".into()))?;
@@ -617,7 +617,7 @@ impl HttpExchange<'_> {
                 }
                 other => {
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "400 Bad Request",
                         &serde_json::json!({"ok":false,"error":{"code":"RUNTIME_COMMAND_UNSUPPORTED","message":format!("runtime command {other:?} has no reviewed HTTP intent schema")}}),
                     )?;
@@ -639,7 +639,7 @@ impl HttpExchange<'_> {
                     && lease.expires_unix_ms > current_unix_ms_u64()
             }) else {
                 write_http_json(
-                    &mut stream,
+                    stream,
                     "409 Conflict",
                     &serde_json::json!({"ok": false, "error": {"code": "SUPERVISOR_GENERATION_FENCED", "message": "target Node has no current daemon registered in this Execution Space"}}),
                 )?;
@@ -662,7 +662,7 @@ impl HttpExchange<'_> {
                 }
                 let Some(actor) = resolved else {
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "403 Forbidden",
                         &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":"credential is not exact self or exact machine Operator/NodeDaemon for the target AgentSession; Team Host authority is Team-scoped"}}),
                     )?;
@@ -716,7 +716,7 @@ impl HttpExchange<'_> {
             if request.command != RuntimeCommandKind::AuthorMessage {
                 let command_id = format!("runtime-command:{idempotency_key}");
                 let original = store_owned
-                    .canonical_operations_for_space(&project_id)?
+                    .canonical_operations_for_space(project_id)?
                     .into_iter()
                     .find(|operation| {
                         operation.event.aggregate_kind == "runtime_command"
@@ -743,7 +743,7 @@ impl HttpExchange<'_> {
                             .is_none_or(|node_id| node_id == original.target_node_id);
                     if !exact_intent {
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "409 Conflict",
                             &serde_json::json!({
                                 "ok": false,
@@ -753,7 +753,7 @@ impl HttpExchange<'_> {
                         return Ok(true);
                     }
                     let record = store_owned
-                        .runtime_commands(&project_id)?
+                        .runtime_commands(project_id)?
                         .into_iter()
                         .find(|record| record.id == command_id)
                         .ok_or_else(|| {
@@ -766,7 +766,7 @@ impl HttpExchange<'_> {
                             == harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
                     {
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "200 OK",
                             &serde_json::json!({
                                 "ok": true,
@@ -776,7 +776,7 @@ impl HttpExchange<'_> {
                         )?;
                     } else {
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "409 Conflict",
                             &serde_json::json!({
                                 "ok": false,
@@ -820,7 +820,7 @@ impl HttpExchange<'_> {
                     })?;
                 Some(
                     store_owned
-                        .fabric_agent_sessions(&project_id)?
+                        .fabric_agent_sessions(project_id)?
                         .into_iter()
                         .find(|session| session.id == session_id)
                         .ok_or_else(|| CliError::Usage("AGENT_SESSION_NOT_FOUND".into()))?,
@@ -869,7 +869,7 @@ impl HttpExchange<'_> {
             ) {
                 Ok(response) => {
                     if response.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
-                        write_http_json(&mut stream, "409 Conflict", &response)?;
+                        write_http_json(stream, "409 Conflict", &response)?;
                         return Ok(true);
                     }
                     if envelope.command == RuntimeCommandKind::AuthorMessage {
@@ -923,7 +923,7 @@ impl HttpExchange<'_> {
                             };
                             match fabric_runtime::queue_collaboration_message(
                                 &firm_home,
-                                &project_id,
+                                project_id,
                                 &envelope.target_node_id,
                                 &credential.actor,
                                 &envelope.idempotency_key,
@@ -933,7 +933,7 @@ impl HttpExchange<'_> {
                                 current_unix_ms_u64(),
                             ) {
                                 Ok(queued) => write_http_json(
-                                    &mut stream,
+                                    stream,
                                     "202 Accepted",
                                     &serde_json::json!({
                                         "ok": true,
@@ -942,30 +942,30 @@ impl HttpExchange<'_> {
                                     }),
                                 )?,
                                 Err(error) => write_http_json(
-                                    &mut stream,
+                                    stream,
                                     "409 Conflict",
                                     &serde_json::json!({"ok":false,"error":{"code":format!("{:?}",error.code).to_ascii_uppercase(),"message":error.message}}),
                                 )?,
                             }
                         } else {
-                            write_http_json(&mut stream, "200 OK", &response)?;
+                            write_http_json(stream, "200 OK", &response)?;
                         }
                     } else {
-                        write_http_json(&mut stream, "200 OK", &response)?;
+                        write_http_json(stream, "200 OK", &response)?;
                     }
                 }
                 Err(error) => write_http_json(
-                    &mut stream,
+                    stream,
                     "503 Service Unavailable",
                     &serde_json::json!({"ok": false, "error": {"code": "NODE_DAEMON_UNAVAILABLE", "message": error.to_string()}}),
                 )?,
             }
             return Ok(true);
         }
-        if method == "POST" && agentfirm_api::is_http_mutation_path(&path_only) {
+        if method == "POST" && agentfirm_api::is_http_mutation_path(path_only) {
             if trust_identity_override_header {
                 write_http_json(
-                    &mut stream,
+                    stream,
                     "401 Unauthorized",
                     &serde_json::json!({
                         "ok": false,
@@ -982,7 +982,7 @@ impl HttpExchange<'_> {
                     Ok(credential) => credential,
                     Err(message) => {
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "401 Unauthorized",
                             &serde_json::json!({
                                 "ok": false,
@@ -995,7 +995,7 @@ impl HttpExchange<'_> {
             let Some(idempotency_key) = trust_idempotency_key.filter(|key| !key.trim().is_empty())
             else {
                 write_http_json(
-                    &mut stream,
+                    stream,
                     "400 Bad Request",
                     &serde_json::json!({
                         "ok": false,
@@ -1006,7 +1006,7 @@ impl HttpExchange<'_> {
             };
             let Some(expected_version) = trust_expected_version else {
                 write_http_json(
-                    &mut stream,
+                    stream,
                     "400 Bad Request",
                     &serde_json::json!({
                         "ok": false,
@@ -1023,19 +1023,18 @@ impl HttpExchange<'_> {
                 expected_version,
                 request_fingerprint: None,
             };
-            if let Some((team_run_id, message_id)) =
-                agentfirm_api::provider_answer_route(&path_only)
+            if let Some((team_run_id, message_id)) = agentfirm_api::provider_answer_route(path_only)
             {
                 match answer_provider_message_value(
-                    &store_owned,
+                    store_owned,
                     team_run_id,
                     message_id,
-                    &serde_json::from_slice(&body).map_err(CliError::Json)?,
+                    &serde_json::from_slice(body).map_err(CliError::Json)?,
                     &auth.actor,
                     "http_token",
                 ) {
                     Ok(result) => write_http_json(
-                        &mut stream,
+                        stream,
                         "200 OK",
                         &serde_json::json!({"ok": true, "result": result}),
                     )?,
@@ -1047,7 +1046,7 @@ impl HttpExchange<'_> {
                             "409 Conflict"
                         };
                         write_http_json(
-                            &mut stream,
+                            stream,
                             status,
                             &serde_json::json!({"ok": false, "error": {"code": "PROVIDER_INTERACTION_ANSWER_REJECTED", "message": message}}),
                         )?;
@@ -1055,17 +1054,17 @@ impl HttpExchange<'_> {
                 }
                 return Ok(true);
             }
-            if role_actions_api::is_http_mutation_path(&path_only) {
+            if role_actions_api::is_http_mutation_path(path_only) {
                 let role_store = match projects.scoped_store_for_project(
-                    &store_owned,
-                    &project_id,
+                    store_owned,
+                    project_id,
                     project_param.as_deref(),
                 ) {
                     Ok(store) => store,
                     Err(error) => {
                         let detail = error.to_string();
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "404 Not Found",
                             &serde_json::json!({
                                 "ok": false,
@@ -1104,8 +1103,8 @@ impl HttpExchange<'_> {
                     match role_actions_api::authorize_member_interrupt(
                         &role_store,
                         &auth,
-                        &path_only,
-                        &body,
+                        path_only,
+                        body,
                     ) {
                         Ok(permit) => {
                             let control_body = serde_json::json!({
@@ -1119,7 +1118,7 @@ impl HttpExchange<'_> {
                                 &control_body,
                             ) {
                                 Ok(result) => write_http_json(
-                                    &mut stream,
+                                    stream,
                                     "200 OK",
                                     &serde_json::json!({
                                         "ok": true,
@@ -1128,7 +1127,7 @@ impl HttpExchange<'_> {
                                     }),
                                 )?,
                                 Err(error) => write_http_json(
-                                    &mut stream,
+                                    stream,
                                     "409 Conflict",
                                     &serde_json::json!({
                                         "ok": false,
@@ -1149,7 +1148,7 @@ impl HttpExchange<'_> {
                                     })
                                 });
                             write_http_json(
-                                &mut stream,
+                                stream,
                                 "409 Conflict",
                                 &serde_json::json!({"ok": false, "error": error}),
                             )?;
@@ -1162,8 +1161,8 @@ impl HttpExchange<'_> {
                     let permit = match role_actions_api::authorize_member_close(
                         &role_store,
                         &auth,
-                        &path_only,
-                        &body,
+                        path_only,
+                        body,
                         trust_confirmed_action.as_deref(),
                     ) {
                         Ok(permit) => permit,
@@ -1176,7 +1175,7 @@ impl HttpExchange<'_> {
                                     })
                                 });
                             write_http_json(
-                                &mut stream,
+                                stream,
                                 "409 Conflict",
                                 &serde_json::json!({"ok": false, "error": error}),
                             )?;
@@ -1235,7 +1234,7 @@ impl HttpExchange<'_> {
                                         ))
                                     })?;
                                 write_http_json(
-                                    &mut stream,
+                                    stream,
                                     "200 OK",
                                     &serde_json::json!({
                                         "ok": true,
@@ -1256,7 +1255,7 @@ impl HttpExchange<'_> {
                                         ))
                                     })?;
                                 write_http_json(
-                                    &mut stream,
+                                    stream,
                                     "200 OK",
                                     &serde_json::json!({
                                         "ok": true,
@@ -1269,7 +1268,7 @@ impl HttpExchange<'_> {
                                 )?;
                             }
                             (Ok(_), false) => write_http_json(
-                                &mut stream,
+                                stream,
                                 "409 Conflict",
                                 &serde_json::json!({
                                     "ok": false,
@@ -1280,7 +1279,7 @@ impl HttpExchange<'_> {
                                 }),
                             )?,
                             (Err(error), false) => write_http_json(
-                                &mut stream,
+                                stream,
                                 "409 Conflict",
                                 &serde_json::json!({
                                     "ok": false,
@@ -1299,8 +1298,8 @@ impl HttpExchange<'_> {
                 match role_actions_api::execute(
                     &role_store,
                     auth,
-                    &path_only,
-                    &body,
+                    path_only,
+                    body,
                     trust_confirmed_action.as_deref(),
                 ) {
                     Ok(result) => {
@@ -1321,7 +1320,7 @@ impl HttpExchange<'_> {
                                 )? {
                                     delegate_team_run_to_node_daemon_in_space(
                                         &role_store,
-                                        &project_id,
+                                        project_id,
                                         &reopened.team_run_id,
                                         TEAM_RUN_START_DEFAULT_CONCURRENCY,
                                     )?;
@@ -1329,7 +1328,7 @@ impl HttpExchange<'_> {
                                 Ok(())
                             })();
                             match activation {
-                                Ok(()) => write_http_json(&mut stream, "200 OK", &result)?,
+                                Ok(()) => write_http_json(stream, "200 OK", &result)?,
                                 Err(error) => {
                                     if let Some(observed) =
                                         await_managed_member_runtime_reopen_settled(
@@ -1344,10 +1343,10 @@ impl HttpExchange<'_> {
                                         reconciled["runtime_activation_note"] = serde_json::json!(
                                             "the direct NodeDaemon dispatch returned a transient error, but the exact higher-generation Attached runtime postcondition was observed before response"
                                         );
-                                        write_http_json(&mut stream, "200 OK", &reconciled)?;
+                                        write_http_json(stream, "200 OK", &reconciled)?;
                                     } else {
                                         write_http_json(
-                                            &mut stream,
+                                            stream,
                                             "409 Conflict",
                                             &serde_json::json!({
                                                 "ok": false,
@@ -1361,7 +1360,7 @@ impl HttpExchange<'_> {
                                 }
                             }
                         } else {
-                            write_http_json(&mut stream, "200 OK", &result)?;
+                            write_http_json(stream, "200 OK", &result)?;
                         }
                     }
                     Err(StoreError::Conflict(encoded)) => {
@@ -1369,7 +1368,7 @@ impl HttpExchange<'_> {
                             |_| serde_json::json!({"code": "INVALID_STATE_TRANSITION", "message": encoded}),
                         );
                         write_http_json(
-                            &mut stream,
+                            stream,
                             "409 Conflict",
                             &serde_json::json!({"ok": false, "error": error}),
                         )?;
@@ -1378,11 +1377,11 @@ impl HttpExchange<'_> {
                 }
                 return Ok(true);
             }
-            let command = match serde_json::from_slice::<agentfirm_api::TrustCommand>(&body) {
-                Ok(command) if command.matches_http_route(&path_only) => command,
+            let command = match serde_json::from_slice::<agentfirm_api::TrustCommand>(body) {
+                Ok(command) if command.matches_http_route(path_only) => command,
                 Ok(_) => {
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "400 Bad Request",
                         &serde_json::json!({
                             "ok": false, "error": {"code": "INVALID_STATE_TRANSITION", "message": "command payload does not match the exact endpoint"}
@@ -1392,7 +1391,7 @@ impl HttpExchange<'_> {
                 }
                 Err(error) => {
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "400 Bad Request",
                         &serde_json::json!({
                             "ok": false, "error": {"code": "INVALID_STATE_TRANSITION", "message": error.to_string()}
@@ -1401,14 +1400,14 @@ impl HttpExchange<'_> {
                     return Ok(true);
                 }
             };
-            match agentfirm_api::execute(&store_owned, auth, command) {
-                Ok(result) => write_http_json(&mut stream, "200 OK", &result)?,
+            match agentfirm_api::execute(store_owned, auth, command) {
+                Ok(result) => write_http_json(stream, "200 OK", &result)?,
                 Err(StoreError::Conflict(encoded)) => {
                     let error = serde_json::from_str::<serde_json::Value>(&encoded).unwrap_or_else(
                         |_| serde_json::json!({"code": "INVALID_STATE_TRANSITION", "message": encoded}),
                     );
                     write_http_json(
-                        &mut stream,
+                        stream,
                         "409 Conflict",
                         &serde_json::json!({"ok": false, "error": error}),
                     )?;
@@ -1417,9 +1416,9 @@ impl HttpExchange<'_> {
             }
             return Ok(true);
         }
-        if retired_http_path(&path_only) {
+        if retired_http_path(path_only) {
             write_http_json(
-                &mut stream,
+                stream,
                 "410 Gone",
                 &serde_json::json!({
                     "ok": false,
