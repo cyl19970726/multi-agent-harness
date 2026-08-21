@@ -431,6 +431,7 @@ dependencies = [
  "firm-fabric",
  "firm-governance",
  "firm-provider-events",
+ "firm-runtime-contract",
  "firm-store",
  "hmac",
  "libc",
@@ -488,6 +489,15 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "firm-runtime-contract"
+version = "0.1.0"
+dependencies = [
+ "firm-core",
+ "serde",
  "thiserror 1.0.69",
 ]
 

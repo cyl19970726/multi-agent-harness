@@ -74,8 +74,11 @@ gates durable Supervisor generations, authenticated identity-first Message
 authoring, atomic per-recipient delivery
 claim/provider receipt/per-recipient acknowledgement, cross-process control
 routing, reconnect, and
-explicit Close. Bounded Codex/Claude/Kimi exec paths belong to Dynamic
-Workflow and are never Agent Team fallbacks.
+explicit Close. Historical Codex/Claude/Kimi exec modes are never Agent Team
+fallbacks. The starting revision still uses isolated one-shot transports for
+the documented direct-delivery compatibility routes and the Claude headless
+Host resume path; DEV-58 separates those current call sites from historical
+mode decoding without restoring Dynamic Workflow.
 
 Real self-hosting follows the canonical
 [Agent Team Dogfood Loop](../product/agent-team-dogfood-loop.md). A failed live
@@ -235,8 +238,8 @@ firm space switch <execution-space-id>
 firm project switch <project-binding-id>
 ```
 
-`--space` / `HARNESS_SPACE` selects Agent Team, Workflow, and
-coordination storage. `--project` / `HARNESS_PROJECT` independently selects
+`--space` / `HARNESS_SPACE` selects current Agent Team coordination and the
+historical archive store. `--project` / `HARNESS_PROJECT` independently selects
 provider cwd, project instructions, Skills, Git/worktree, and permission
 boundaries. `--store` / `HARNESS_ROOT` remains a deprecation-warned
 compatibility override. Provider transcripts, tool streams, command output,

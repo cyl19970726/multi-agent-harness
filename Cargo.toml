@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/firm-core",
+  "crates/firm-runtime-contract",
   "crates/firm-provider-events",
   "crates/firm-fabric",
   "crates/firm-store",

@@ -151,8 +151,8 @@ doc carries the contract behind each rule.
    load it into normal planning context, create new records, use its commands,
    or add new dependencies. Historical stores must be exported and verified
    before their old ledgers or code are deleted.
-4. **Execution/Project separation.** Execution Spaces own Agent Team and
-   Workflow coordination; Project Bindings identify the
+4. **Execution/Project separation.** Execution Spaces own current Agent Team
+   coordination and historical archive selection; Project Bindings identify the
    repository where providers execute and discover instructions, Skills,
    plugins, and MCP configuration. Selecting `--project` never switches the
    coordination store. Provider cwd resolves the attached
@@ -251,9 +251,9 @@ doc carries the contract behind each rule.
 Structure is a first principle here because this repository is edited mostly by
 agents, and an agent pays for every line it must scan to find one seam.
 
-- A source file over ~1500 lines is a defect to be scheduled, not a style
-  preference. `crates/firm-cli/src/main.rs` is currently 53k lines and is the
-  standing counter-example, not a precedent.
+- A maintained source file over 1,500 lines is a defect and the blocking
+  governance gate enforces that ceiling. Passing the size gate does not prove
+  that package ownership or dependency direction is correct.
 - Prefer one seam per module: command dispatch, HTTP routing, help text and
   provider runtimes do not belong in one file.
 - Keep tests out of the middle of an implementation file. Put them at the end

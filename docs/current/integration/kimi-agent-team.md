@@ -7,7 +7,7 @@ canonical_for: Kimi persistent Agent Team execution, controls, mailbox boundary,
 ```
 
 This document defines Kimi's persistent Agent Team mode. The provider overview,
-installation, bounded Workflow mode, native record parsing, and permission
+installation, historical one-shot metadata, native record parsing, and permission
 limitations remain in [Kimi integration](kimi.md). Provider-neutral runtime
 rules remain in Agent runtime.
 
@@ -49,8 +49,9 @@ and the Member Continuation Model.
 | Historical Team record | `kimi_exec` | readable, never startable |
 
 Harness never silently falls back from ACP to one-shot print mode.
-`ProviderCapabilities::kimi_exec()` describes bounded Workflow execution and
-must not be used to infer Team capability.
+`ProviderCapabilities::kimi_exec()` describes legacy one-shot transport
+metadata and must not be used to infer Team capability or restore Dynamic
+Workflow execution.
 
 The installed Kimi Code probe reports `0.36.1`. After the Human-approved
 upgrade, deterministic adapter checks and live ACP canaries reviewed this

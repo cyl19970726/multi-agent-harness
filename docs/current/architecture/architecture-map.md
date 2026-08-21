@@ -79,6 +79,11 @@ outcomes, artifact/check references, evidence, and decisions are promoted into
 Harness coordination truth. The retired Company OS ledgers are readable only
 as historical exports.
 
+The in-progress package ownership migration is recorded in the
+[Provider Runtime Package Crosswalk](provider-runtime-package-crosswalk.md).
+Target entries in that crosswalk are non-operative until their exact revision
+lands; current code and gates remain implementation truth during migration.
+
 ## Retired layers
 
 ADR 0051 (Mission/Wave single-intent spine), ADR 0027 (the retired Company OS

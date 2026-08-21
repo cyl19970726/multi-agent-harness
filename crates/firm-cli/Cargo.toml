@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 harness_core = { package = "firm-core", path = "../firm-core" }
+harness_runtime_contract = { package = "firm-runtime-contract", path = "../firm-runtime-contract" }
 harness_store = { package = "firm-store", path = "../firm-store" }
 harness_fabric = { package = "firm-fabric", path = "../firm-fabric" }
 harness_governance = { package = "firm-governance", path = "../firm-governance" }

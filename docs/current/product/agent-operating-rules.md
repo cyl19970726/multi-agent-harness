@@ -95,8 +95,8 @@ exact question and repair the other projection. Neither file universally wins.
 
 Every non-trivial Team-run Work slice advances in four small stages:
 **Context** (Work intent, current Host judgment, permissions, risk, and
-decision boundary are clear), **Execution** (the selected Host, Team, or
-Workflow owns its internal plan and emits honest native records), **Outcome**
+decision boundary are clear), **Execution** (the selected Host or Team owns
+its internal plan and emits honest native records), **Outcome**
 (explicit Work submissions, checks, artifacts, blockers, and review results
 are recorded), and **Advance** (the Host accepts or requests changes on the
 Work record and starts the next slice; unrelated active Works may carry

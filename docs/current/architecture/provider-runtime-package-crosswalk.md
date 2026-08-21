@@ -1,0 +1,92 @@
+# Provider Runtime Package Crosswalk
+
+```text
+status: DEV-58 implementation crosswalk; target entries are non-operative until landed
+issue: https://github.com/cyl19970726/multi-agent-harness/issues/499
+starting_revision: 68fd9d33178f48d107a3a28d8580079263ff3e55
+```
+
+This crosswalk records the package-ownership migration for current Agent Team
+and Host provider runtimes. It does not restore Dynamic Workflow. Historical
+Workflow records remain export, verify, and restore-read evidence only.
+
+## Execution surfaces
+
+| Surface | Current implementation truth at the starting revision | Target owner |
+| --- | --- | --- |
+| Agent Team runtime | Persistent `codex_app_server`, `claude_agent_sdk`, `kimi_acp`, and `pi_rpc` bindings in `firm-cli` | provider packages implementing `firm-runtime-contract`, driven by a provider-neutral supervisor |
+| Interactive Host | Provider-native Host session outside a Harness transcript ledger | Host/application composition; no Team fallback |
+| Headless Host | Kimi ACP exact-session resume and Claude CLI exact-session resume in `host_binding`; Codex is rejected because read-only resume is not proven; Pi is unsupported | optional `HostRuntimeBinding` per provider, owned separately from Team lifecycle |
+| Direct `/v1/agents/*` delivery | Still-active compatibility routes use the old one-shot provider registry and message-delivery ledger | explicit compatibility application port until a separate accepted retirement decision; never represented as Dynamic Workflow or a Team binding |
+| Historical provider modes | `codex_exec`, `claude_cli`, `kimi_exec`, and old Pi records remain readable in profiles/native-session metadata | historical decoder only, except the exact current Host/direct-delivery call sites named above |
+| Dynamic Workflow | Runtime, crate, writers, commands, API, Dashboard, plugin, Skill, and examples are retired | no target runtime owner |
+
+The direct-delivery row is important: code movement must not silently delete a
+documented current route, but its existence also does not authorize a new
+executor model. The migration first isolates it from Team and Host contracts;
+retirement requires its own accepted product decision and route-level
+acceptance update.
+
+## Symbol ownership
+
+| Current source | Current responsibility | Classification | Target |
+| --- | --- | --- | --- |
+| `runtime_adapter_contract.rs` | provider-neutral lifecycle intents, fences, receipts, capability admission, conformance tests | current Team contract | `firm-runtime-contract` (extracted in DEV-58) |
+| `runtime_adapter.rs` | Team wake/claim/cycle/settle loop plus runtime control | current Team supervisor mixed with CLI/application state | `firm-runtime-supervisor` over narrow application/store ports |
+| `runtime_adapter_capabilities.rs` | Team runtime selector, capability report, permission compilation | current catalog plus provider policy mixed together | canonical catalog in application/runtime packages; provider-specific permission compilers in provider packages |
+| `provider_adapter.rs` | current provider-native control seam and standalone NodeSession control | current control contract mixed with implementations | runtime contract/application control plus provider bindings |
+| `provider_adapters.rs` | old Codex/Claude/Kimi/Pi one-shot registry | current compatibility delivery and Claude Host path; historical names; unsupported Pi stubs | split Host binding, compatibility delivery binding, and historical decoder; delete inapplicable stubs |
+| `codex_claude_adapters.rs` | Codex/Claude one-shot parsing, process launch, delivery, runtime-control facts | current Claude Host/direct delivery plus historical Codex paths; mixed coordination writes | provider transport/bindings; application owns durable facts |
+| `provider_ephemeral.rs` | generic child-tree teardown and NDJSON runner with orphan pidfiles | child teardown is current Team infrastructure; NDJSON runner is current Host/compatibility transport | provider-neutral process transport owned below provider packages; remove Workflow vocabulary |
+| `process_reaper.rs` | snapshot/read-model helpers and legacy Team tolerance | application/read-model; filename is misleading | application projection package/module |
+| `codex_app_server.rs`, `codex_team_runtime.rs` | Codex native protocol and Team binding | current Team provider | `firm-provider-codex` |
+| `claude_agent_sdk.rs`, `claude_team_runtime.rs`, `apps/claude-member-runner` | Claude Rust bridge, Team binding, Node runner | current Team provider | `firm-provider-claude` plus versioned runner asset |
+| `kimi_acp.rs`, `kimi_team_runtime.rs` | Kimi ACP transport and Team binding | current Team provider; ACP transport also serves current Host | `firm-provider-kimi`, with distinct Team and Host bindings |
+| `pi_rpc/` | Pi RPC client and Team binding | current Team provider | `firm-provider-pi` |
+| `main_tests/workflow_runtime_tests.rs` and child directory | 114 source files no longer referenced by any test root after retirement | unreachable Dynamic Workflow residue | deleted in DEV-58 |
+| `main_tests/codex_exec.rs` | compiled historical parser/retirement characterization | historical read/retirement evidence | move beside the historical decoder or delete when equivalent archive verification proves coverage |
+
+## Dependency target
+
+```text
+firm-core <- firm-runtime-contract
+firm-runtime-contract <- firm-runtime-supervisor
+firm-runtime-contract <- firm-provider-{codex,claude,kimi,pi}
+firm-core/store/runtime-contract/providers <- firm-application
+firm-application/providers/transports <- firm-cli
+```
+
+Forbidden edges:
+
+- `firm-core` to provider, Store implementation, CLI, or Node runner;
+- runtime contract to provider wire vocabulary;
+- provider package to authoritative Store writes or Host acceptance;
+- Host binding to Team lifecycle fallback;
+- historical mode to provider effects;
+- any package to a restored Dynamic Workflow writer or runtime registry.
+
+## Migration order
+
+1. Extract the provider-neutral runtime contract and its conformance tests.
+2. Delete unreachable post-retirement tests and classify every remaining
+   Workflow/provider-exec reference.
+3. Establish canonical provider descriptors with distinct Team, Host,
+   compatibility, event-decoder, probe, and historical-read capabilities.
+4. Extract the shared Team supervisor behind narrow ports.
+5. Move Codex, Claude, Kimi, and Pi one at a time without version upgrades.
+6. Remove the temporary CLI contract re-export and provider-native protocol
+   code from `firm-cli`.
+7. Run retirement, provider, repository, and clean-archive gates at one exact
+   revision before independent Review.
+
+## Completion evidence
+
+This document describes a migration, not a shipped claim. Completion requires:
+
+- the crate graph and source paths proving every target owner;
+- catalog completeness tests proving intentional unsupported gaps;
+- Dynamic Workflow retirement manifest verification;
+- provider behavior and permission characterization for Team and Host paths;
+- no current provider protocol implementation in `firm-cli`;
+- canonical repository checks at the submitted SHA and an independent Review
+  of that same SHA.

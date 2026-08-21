@@ -351,7 +351,7 @@ allowed, as long as protocol/delivery health is real:
 | Codex app-server Team member | process / protocol / native session / mailbox delivery |
 | Kimi ACP Team member | process / ACP protocol / native session / mailbox delivery |
 | Claude Agent SDK Team member | runner process / SDK stream / native session / mailbox delivery |
-| Bounded Workflow exec/CLI | process(per-turn) / native session / delivery |
+| One-shot Host/compatibility exec/CLI | process(per-turn) / native session / delivery |
 
 A platform that has no persistent process (exec-stream) reports `not
 applicable` for the process layer rather than faking it. The Dashboard must not
@@ -362,8 +362,8 @@ present process health as execution readiness when delivery health is unknown.
 A platform must map the **neutral permission** (Pillar 2 / launch spec) onto its
 own controls and **declare what it cannot do**. Unsupported surfaces must be
 explicit so the Dashboard shows honest capability state (invariant 4,
-[integration/README.md](../integration/README.md)). Example: a bounded Workflow
-CLI may have no mid-turn interrupt; that is a declared unsupported surface,
+[integration/README.md](../integration/README.md)). Example: a one-shot Host or
+compatibility CLI may have no mid-turn interrupt; that is a declared unsupported surface,
 not a reason to start it as an Agent Team member.
 
 ### Provider capability declaration (WP-6 — implemented)
@@ -374,8 +374,10 @@ streaming, resume, mid-turn approval, subagents, MCP, hooks, schema, cost, and
 enforced read-only execution. These booleans are execution-mode metadata, not
 provider-brand promises.
 
-Legacy `codex_exec`, `claude_exec`, and `kimi_exec` presets describe bounded
-Workflow execution and do not prove Agent Team suitability. Conservative
+Legacy `codex_exec`, `claude_exec`, and `kimi_exec` presets describe one-shot
+transport metadata and do not prove Agent Team suitability. Dynamic Workflow
+is retired; only explicitly documented Host/compatibility call sites may still
+execute such a transport. Conservative
 `false` values mean unsupported or unverified for that exact mode. In
 particular, `kimi_exec` cannot enforce read-only execution; this must remain an
 honest capability gap and must not silently change workspace isolation policy.
