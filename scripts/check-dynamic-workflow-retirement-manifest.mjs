@@ -383,7 +383,14 @@ for (const line of git(["ls-tree", "-r", startRevision]).split("\n").filter(Bool
 // unrelated operating Skills. Every other populated disposition required an
 // implementation change, removal, or verified archive move during DEV-56.
 const unchangedAllowed = new Set(["D20", "D24", "D25"]);
-const completionCounts = { archived: 0, removed: 0, changed: 0, unchanged_allowed: 0 };
+const completionCounts = {
+  archived: 0,
+  removed: 0,
+  changed: 0,
+  unchanged_allowed: 0,
+  unchanged_incomplete: 0,
+};
+const incompleteRows = [];
 for (const row of register.rows) {
   if (archivedSources.has(row.path)) {
     if (existsSync(join(ROOT, row.path))) fail(`${row.path}: active source survived archive move`);
@@ -401,7 +408,9 @@ for (const row of register.rows) {
     continue;
   }
   if (!unchangedAllowed.has(row.primary_disposition)) {
-    fail(`${row.path}: ${row.primary_disposition} remained byte-identical to the DEV-56 start revision`);
+    completionCounts.unchanged_incomplete += 1;
+    incompleteRows.push(`${row.path} (${row.primary_disposition})`);
+    continue;
   }
   completionCounts.unchanged_allowed += 1;
 }
@@ -410,6 +419,11 @@ assertEqual(
   register.rows.length,
   "completion classification total",
 );
+if (incompleteRows.length > 0) {
+  fail(
+    `retirement rows remained byte-identical to the DEV-56 start revision:\n${incompleteRows.join("\n")}`,
+  );
+}
 
 for (const path of completion.deleted_active_surfaces) {
   if (existsSync(join(ROOT, path))) fail(`${path}: retired active surface still exists`);
