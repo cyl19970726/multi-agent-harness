@@ -36,29 +36,9 @@ pub(crate) struct ProviderPermissionMapping {
     pub native_approval: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ProviderControlAction {
-    CancelProviderTurn,
-    CloseSession,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum NativeControlPrimitive {
-    CodexTurnInterrupt,
-    ClaudeAgentSdkInterrupt,
-    KimiAcpCancel,
-    PiRpcInterrupt,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct ProviderControlPlan {
-    pub provider: String,
-    pub action: ProviderControlAction,
-    pub primitive: NativeControlPrimitive,
-    pub requires_terminal_ack: bool,
-}
+pub(crate) use harness_runtime_contract::{
+    NativeControlPrimitive, ProviderControlAction, ProviderControlPlan, ProviderNativeControl,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct PendingProviderControl {
@@ -80,27 +60,6 @@ pub(crate) enum ProviderControlDispatch {
     Replayed,
 }
 
-/// The one executable boundary between AgentFirm's durable RuntimeCommand and
-/// provider-native control. Implementations must perform the real native
-/// operation; capability declarations and injected success closures do not
-/// satisfy this contract.
-pub(crate) trait ProviderNativeControl {
-    fn provider(&self) -> &'static str;
-    fn dispatch(&mut self, plan: &ProviderControlPlan) -> CliResult<()>;
-}
-
-/// Forwarding so boxed proxies from `TeamRuntimeAdapter::native_control`
-/// satisfy `execute_team_control`'s `impl ProviderNativeControl` parameter.
-impl ProviderNativeControl for Box<dyn ProviderNativeControl + '_> {
-    fn provider(&self) -> &'static str {
-        (**self).provider()
-    }
-
-    fn dispatch(&mut self, plan: &ProviderControlPlan) -> CliResult<()> {
-        (**self).dispatch(plan)
-    }
-}
-
 pub(crate) struct PiNativeControl<'a> {
     pub close: &'a mut bool,
     pub interrupt: &'a mut bool,
@@ -111,12 +70,12 @@ impl ProviderNativeControl for PiNativeControl<'_> {
         "pi"
     }
 
-    fn dispatch(&mut self, plan: &ProviderControlPlan) -> CliResult<()> {
+    fn dispatch(&mut self, plan: &ProviderControlPlan) -> Result<(), String> {
         if plan.primitive != NativeControlPrimitive::PiRpcInterrupt {
-            return Err(CliError::Usage(format!(
+            return Err(format!(
                 "PROVIDER_CONTROL_UNPROVEN: Pi adapter received {:?}",
                 plan.primitive
-            )));
+            ));
         }
         *self.interrupt = true;
         *self.close = plan.action == ProviderControlAction::CloseSession;

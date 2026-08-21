@@ -1049,15 +1049,16 @@ impl crate::provider_adapter::ProviderNativeControl for FaithfulProviderControlS
         self.provider
     }
 
-    fn dispatch(&mut self, plan: &crate::provider_adapter::ProviderControlPlan) -> CliResult<()> {
+    fn dispatch(
+        &mut self,
+        plan: &crate::provider_adapter::ProviderControlPlan,
+    ) -> Result<(), String> {
         if plan.primitive != self.primitive {
-            return Err(CliError::Usage("faithful shim primitive mismatch".into()));
+            return Err("faithful shim primitive mismatch".into());
         }
         self.native_effects += 1;
         if self.fail_after_dispatch {
-            Err(CliError::Usage(
-                "faithful shim transport lost after native dispatch".into(),
-            ))
+            Err("faithful shim transport lost after native dispatch".into())
         } else {
             Ok(())
         }

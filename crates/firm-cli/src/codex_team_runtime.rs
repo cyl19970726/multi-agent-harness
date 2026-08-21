@@ -615,12 +615,12 @@ impl ProviderNativeControl for CodexDeferredNativeControl<'_> {
         "codex"
     }
 
-    fn dispatch(&mut self, plan: &ProviderControlPlan) -> CliResult<()> {
+    fn dispatch(&mut self, plan: &ProviderControlPlan) -> Result<(), String> {
         if plan.primitive != NativeControlPrimitive::CodexTurnInterrupt {
-            return Err(CliError::Usage(format!(
+            return Err(format!(
                 "PROVIDER_CONTROL_UNPROVEN: Codex adapter received {:?}",
                 plan.primitive
-            )));
+            ));
         }
         *self.interrupt = true;
         *self.close = plan.action == ProviderControlAction::CloseSession;

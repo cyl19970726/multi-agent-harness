@@ -522,13 +522,16 @@ impl crate::provider_adapter::ProviderNativeControl for KimiNeutralNativeControl
         "kimi"
     }
 
-    fn dispatch(&mut self, plan: &crate::provider_adapter::ProviderControlPlan) -> CliResult<()> {
+    fn dispatch(
+        &mut self,
+        plan: &crate::provider_adapter::ProviderControlPlan,
+    ) -> Result<(), String> {
         use crate::provider_adapter::{NativeControlPrimitive, ProviderControlAction};
         if plan.primitive != NativeControlPrimitive::KimiAcpCancel {
-            return Err(CliError::Usage(format!(
+            return Err(format!(
                 "PROVIDER_CONTROL_UNPROVEN: Kimi adapter received {:?}",
                 plan.primitive
-            )));
+            ));
         }
         *self.interrupt = true;
         *self.close = plan.action == ProviderControlAction::CloseSession;

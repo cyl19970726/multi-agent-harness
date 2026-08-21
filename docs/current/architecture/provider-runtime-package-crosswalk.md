@@ -106,4 +106,6 @@ Landed DEV-58 milestones:
   above the provider package;
 - current supervisor-language slice: makes capability evidence, cycle
   observations/receipts/outcomes, and provider-structured terminal failures
-  owned by `firm-runtime-contract` instead of the CLI loop.
+  owned by `firm-runtime-contract` instead of the CLI loop; provider-native
+  interrupt/close plans and their executable control port now live there too,
+  while RuntimeCommand preparation/settlement stays in the application layer.
