@@ -107,9 +107,10 @@ const server = productionRustTree([
 ]);
 const providerAdapter = readFileSync("crates/firm-cli/src/provider_adapter.rs", "utf8");
 const providerRuntimeSources = {
-  CodexDeferredNativeControl: productionRust("crates/firm-cli/src/codex_team_runtime.rs"),
-  ClaudeControlFlags: productionRust("crates/firm-cli/src/claude_team_runtime.rs"),
-  KimiNeutralNativeControl: productionRust("crates/firm-cli/src/kimi_team_runtime.rs"),
+  CodexDeferredNativeControl: productionRust("crates/firm-provider-codex/src/team_runtime.rs"),
+  ClaudeControlFlags: productionRust("crates/firm-provider-claude/src/lib.rs"),
+  KimiNeutralNativeControl: productionRust("crates/firm-provider-kimi/src/team_runtime.rs"),
+  PiNativeControl: productionRust("crates/firm-provider-pi/src/team_runtime.rs"),
 };
 
 for (const token of [
@@ -157,7 +158,6 @@ for (const token of [
   "ProviderNativeControl",
   "execute_team_control",
   "settle_team_control",
-  "PiNativeControl",
   "provider_availability",
   "PROVIDER_CONTROL_FAILED",
 ]) {
@@ -165,7 +165,7 @@ for (const token of [
 }
 for (const [control, source] of Object.entries(providerRuntimeSources)) {
   if (!source.includes(`impl ProviderNativeControl for ${control}`)
-      && !source.includes(`impl crate::provider_adapter::ProviderNativeControl for ${control}`)) {
+      && !source.includes(`impl harness_runtime_contract::ProviderNativeControl for ${control}`)) {
     failures.push(`provider conformance is not executable: ${control}`);
   }
 }
