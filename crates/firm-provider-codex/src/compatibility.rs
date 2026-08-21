@@ -256,6 +256,7 @@ pub fn extract_codex_final_message(events: &[CodexExecEvent]) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn terminal_event_and_last_message_are_provider_owned() {
@@ -268,6 +269,41 @@ mod tests {
         assert_eq!(
             extract_codex_final_message(&events).as_deref(),
             Some("done")
+        );
+    }
+
+    #[test]
+    fn parser_skips_invalid_lines_and_preserves_native_ids() {
+        let input = b"{\"type\":\"thread.started\",\"thread_id\":\"thread-1\"}\ninvalid\n{\"type\":\"turn.completed\"}\n";
+        let events = parse_codex_ndjson(Cursor::new(input));
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            extract_thread_id_from_exec_events(&events).as_deref(),
+            Some("thread-1")
+        );
+        assert_eq!(
+            infer_provider_execution_status(&events, true),
+            ProviderExecutionStatus::Succeeded
+        );
+    }
+
+    #[test]
+    fn nonterminal_or_empty_success_never_invents_completion() {
+        let running = vec![CodexExecEvent {
+            event_type: "turn.started".into(),
+            payload: serde_json::json!({"type":"turn.started", "turn_id":"turn-1"}),
+        }];
+        assert_eq!(
+            extract_turn_id_from_exec_events(&running).as_deref(),
+            Some("turn-1")
+        );
+        assert_eq!(
+            infer_provider_execution_status(&running, true),
+            ProviderExecutionStatus::Stale
+        );
+        assert_eq!(
+            infer_provider_execution_status(&[], true),
+            ProviderExecutionStatus::Failed
         );
     }
 }

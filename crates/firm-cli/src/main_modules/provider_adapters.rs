@@ -156,25 +156,9 @@ impl CompatibilityDeliveryBinding for ClaudeCompatibilityDelivery {
 // Kimi adapter (goal-provider-neutral S4): a NATIVE third provider, registered
 // with ZERO new match arms.
 //
-// Kimi Code is non-interactive via `-p <prompt> --output-format stream-json`,
-// emitting claude-shaped line-delimited JSON (NDJSON): a `system` init frame
-// carrying `session_id`/`model`, `assistant` message frames, and a terminal
-// `result` frame. The CLI FLAG surface is verified against `kimi --help` v0.18 —
-// Kimi has NONE of claude's `--verbose` / `--permission-mode` / `--allowedTools` /
-// `--json-schema` / `--mcp-config` / `--add-dir` / `--append-system-prompt`; it
-// uses STANDALONE permission flags (`--plan` / `--auto` / `-y`), resumes with
-// `-S/--session`, and has no native schema/budget/effort, which degrade to the
-// harness fallbacks (see `ProviderCapabilities::kimi_exec`). The wire shape is
-// still proven deterministically against a fake `kimi` shim on PATH; the LIVE
-// authenticated run (post `kimi login`) is the operator's step.
-//
-// The binary is resolved by [`resolve_kimi_bin`] (KIMI_CODE_BIN override, else the
-// bare name `kimi` on PATH so a test shim / the installer's PATH entry wins, else
-// the default install path). Because Kimi is claude-shaped on the wire, the stream
-// interpreters (status/reply/usage/model/structured/session-id), the durable-trace
-// ingest, and the live NDJSON tee all reuse the existing claude-stream helpers —
-// they key on the wire SHAPE, not on the claude binary. Only the binary, the
-// live-file basename, and the CLI flags differ.
+// Kimi's native argv, resume flag, NDJSON transport, and flat-stream decoder
+// are provider-package responsibilities. This module only composes the
+// compatibility request and settles its coordination outcome.
 // ============================================================================
 
 /// Resolve the `kimi` (Kimi Code) executable. Order: the `KIMI_CODE_BIN` env
@@ -189,15 +173,8 @@ pub(super) fn resolve_kimi_bin() -> String {
 }
 
 // ============================================================================
-// Kimi-native stream parsing. Verified LIVE against `kimi -p --output-format
-// stream-json` (v0.18): the stream is FLAT NDJSON, NOT claude-shaped —
-//   {"role":"assistant","content":"<text>"}                       (the reply)
-//   {"role":"meta","type":"session.resume_hint",
-//    "session_id":"session_<uuid>","command":"kimi -r <id>", ...} (resume token)
-// There is no claude `system.init`/`result`/`usage` frame and no model frame in
-// `-p` mode, so success is the child exit code and tokens/model/cost degrade per
-// `ProviderCapabilities::kimi_exec`. `content` is normally a string but may be an
-// array of blocks (tool/structured turns) — both are handled.
+// Kimi-native stream reduction is re-exported from `firm-provider-kimi` for
+// application-level outcome construction below.
 // ============================================================================
 
 pub(super) fn start_kimi_runtime(
@@ -242,12 +219,8 @@ pub(super) fn start_kimi_runtime(
     })
 }
 
-/// Spawn `kimi -p --output-format stream-json` (real kimi flags) for one member
-/// delivery and parse the claude-shaped NDJSON. Mirrors
-/// [`run_claude_exec_delivery_real`] but on Kimi's CLI surface: the developer
-/// instructions are folded into the prompt (no `--append-system-prompt`), resume
-/// uses `-S/--session`, and claude-only flags (`--verbose` / `--permission-mode` /
-/// `--allowedTools` / `--json-schema` / `--mcp-config` / `--add-dir`) are dropped.
+/// Compose one Kimi compatibility request; the provider package owns argv,
+/// process transport, native resume semantics, and event decoding.
 pub(super) fn run_kimi_exec_delivery_real(
     member: &ProviderLaunchProfile,
     message: &RegistryMessage,

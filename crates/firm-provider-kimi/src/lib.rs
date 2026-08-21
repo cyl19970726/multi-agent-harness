@@ -34,8 +34,12 @@
 //!   state. The driver itself stays a faithful transport.
 
 mod compatibility;
+mod host_runtime;
+mod permission;
 
 pub use compatibility::*;
+pub use host_runtime::*;
+pub use permission::*;
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};

@@ -461,80 +461,16 @@ pub(super) fn dispatch_headless_host_once(
                     sender_kind: SenderKind::System,
                 };
                 if provider == "kimi" {
-                    let response = Arc::new(Mutex::new(String::new()));
-                    let response_sink = Arc::clone(&response);
-                    let receipt = Arc::new(Mutex::new(None::<String>));
-                    let receipt_sink = Arc::clone(&receipt);
-                    let mut client = kimi_acp::KimiAcpClient::spawn(
+                    let turn = harness_provider_kimi::run_kimi_host_turn(
                         &project_context.project_root,
-                        None,
-                        None,
-                        Some(thread_id),
-                        &[],
+                        thread_id,
+                        &message.content,
+                        Duration::from_millis(timeout_ms),
                     )
                     .map_err(|error| StoreError::Conflict(error.to_string()))?;
-                    let outcome = client
-                        .prompt(
-                            &message.content,
-                            Duration::from_millis(timeout_ms),
-                            move |provider_receipt_id| {
-                                *receipt_sink.lock().map_err(|error| {
-                                    kimi_acp::callback_error(CliError::Usage(format!(
-                                        "Host receipt lock poisoned: {error}"
-                                    )))
-                                })? = Some(provider_receipt_id.to_string());
-                                Ok(())
-                            },
-                            move |update| {
-                                if update.get("sessionUpdate").and_then(|kind| kind.as_str())
-                                    == Some("agent_message_chunk")
-                                {
-                                    if let Some(text) = update
-                                        .get("content")
-                                        .and_then(|content| content.get("text"))
-                                        .and_then(|text| text.as_str())
-                                    {
-                                        if let Ok(mut collected) = response_sink.lock() {
-                                            collected.push_str(text);
-                                        }
-                                    }
-                                }
-                            },
-                            |_| {
-                                Err(kimi_acp::callback_error(CliError::Usage(
-                                    "headless Host triage refuses provider permission requests"
-                                        .to_string(),
-                                )))
-                            },
-                            |_| Ok(()),
-                            || Ok(kimi_acp::PromptControl::Continue),
-                        )
-                        .map_err(|error| StoreError::Conflict(error.to_string()))?;
-                    if let Some(error) = outcome.provider_error {
-                        return Err(StoreError::Conflict(format!(
-                            "headless Kimi Host turn failed: {error}"
-                        )));
-                    }
-                    let receipt = receipt
-                        .lock()
-                        .map_err(|error| {
-                            StoreError::Conflict(format!("Host receipt lock poisoned: {error}"))
-                        })?
-                        .clone()
-                        .ok_or_else(|| {
-                            StoreError::Conflict(
-                                "headless Kimi Host turn returned no prompt receipt".to_string(),
-                            )
-                        })?;
-                    let summary = response
-                        .lock()
-                        .map_err(|error| {
-                            StoreError::Conflict(format!("Host response lock poisoned: {error}"))
-                        })?
-                        .clone();
                     return host_dispatcher::DispatcherConsumerSuccess::new(
-                        (summary, delivered_attention_ids),
-                        receipt,
+                        (turn.response_text, delivered_attention_ids),
+                        turn.provider_receipt_id,
                     );
                 }
 

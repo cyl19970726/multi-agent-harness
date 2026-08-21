@@ -92,6 +92,48 @@ pub fn run_claude_compatibility(
     })
 }
 
+/// Run the bounded real-request canary used by capacity admission. This is a
+/// provider probe, not a Team or Host binding.
+pub fn run_claude_capacity_canary(cwd: &Path, timeout: Duration) -> Result<String, String> {
+    let mut command = Command::new("claude");
+    command
+        .arg("-p")
+        .arg("Reply with exactly: HARNESS-CAPACITY-OK")
+        .arg("--output-format")
+        .arg("json")
+        .current_dir(cwd);
+    let run = harness_runtime_host::run_ndjson_child(
+        command,
+        timeout,
+        Some(timeout),
+        "Claude capacity canary",
+    )
+    .map_err(|error| error.to_string())?;
+    if !run.process_success {
+        return Err(if run.stderr.trim().is_empty() {
+            "Claude capacity canary failed without provider detail".to_string()
+        } else {
+            run.stderr.trim().to_string()
+        });
+    }
+    let result = run
+        .events
+        .last()
+        .ok_or_else(|| "Claude capacity canary returned no JSON result".to_string())?;
+    if result.get("is_error").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Err(result
+            .get("result")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Claude capacity canary reported an unspecified provider error")
+            .to_string());
+    }
+    Ok(result
+        .get("result")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string())
+}
+
 pub fn write_claude_mcp_config(mcp: Option<&LaunchMcp>) -> Result<Option<PathBuf>, String> {
     let Some(mcp) = mcp.filter(|mcp| !mcp.servers.is_empty()) else {
         return Ok(None);

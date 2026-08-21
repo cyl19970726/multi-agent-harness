@@ -24,27 +24,25 @@ use harness_core::agentfirm_api::{
 };
 use serde_json::{json, Value};
 
-use harness_runtime_contract::ProviderTerminalFailure;
 use harness_runtime_contract::{
-    AdmissionDecision, ControlIntent, ControlRequest, EffectInspection, EffectReceipt,
-    MemberRuntimeCloseReceipt, QuiesceReceipt, QuiesceReceiptBuilder, QuiesceStep,
-    ReconcileReceipt, ReleaseReceipt, RuntimeAdapter, RuntimeContractError, RuntimeDescription,
-    RuntimeFence, SemanticCapability,
-};
-use harness_runtime_contract::{
-    CapabilityBinding, CapabilityStatus, ControlTransportReceipt, CycleControl,
-    CycleRuntimeObservation as CycleObservation, ExecutionCycleOutcome, SteerProviderResult,
-    SteerRequest, TeamRuntimeAdapter,
-};
-use harness_runtime_contract::{
+    AdmissionDecision, CapabilityBinding, CapabilityStatus, ControlIntent, ControlRequest,
+    ControlTransportReceipt, CycleControl, CycleRuntimeObservation as CycleObservation,
+    EffectInspection, EffectReceipt, ExecutionCycleOutcome, MemberRuntimeCloseReceipt,
     NativeControlPrimitive, ProviderControlAction, ProviderControlPlan, ProviderNativeControl,
+    ProviderTerminalFailure, QuiesceReceipt, QuiesceReceiptBuilder, QuiesceStep, ReconcileReceipt,
+    ReleaseReceipt, RuntimeAdapter, RuntimeContractError, RuntimeDescription, RuntimeFence,
+    SemanticCapability, SteerProviderResult, SteerRequest, TeamRuntimeAdapter,
 };
 
 mod compatibility;
 mod error;
+mod host_runtime;
+mod permission;
 mod resident;
 pub use compatibility::*;
 pub use error::{ClaudeError, ClaudeResult};
+pub use host_runtime::*;
+pub use permission::*;
 pub use resident::*;
 
 type CliResult<T> = ClaudeResult<T>;

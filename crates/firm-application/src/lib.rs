@@ -5,5 +5,7 @@
 //! process and writes no coordination state.
 
 mod provider_catalog;
+mod team_runtime_policy;
 
 pub use provider_catalog::*;
+pub use team_runtime_policy::*;

@@ -3,7 +3,11 @@ use super::*;
 #[test]
 fn durable_provider_turn_summary_never_copies_native_response() {
     let native_response = "## RESULT\ndone\n## SUMMARY\nprivate provider transcript marker";
-    let summary = provider_turn_coordination_summary("Kimi", 7, !native_response.trim().is_empty());
+    let summary = harness_application::provider_turn_coordination_summary(
+        "Kimi",
+        7,
+        !native_response.trim().is_empty(),
+    );
 
     assert_eq!(
         summary,

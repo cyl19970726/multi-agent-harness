@@ -189,19 +189,6 @@ fn continuation_test_work(
     .expect("valid continuation test Work")
 }
 
-#[cfg(unix)]
-fn process_exists(pid: u32) -> bool {
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
-}
-
-#[cfg(unix)]
-fn process_group_command(script: &str) -> Command {
-    let mut command = Command::new("sh");
-    command.arg("-c").arg(script);
-    isolate_provider_child_process_group(&mut command);
-    command
-}
-
 fn native_open_test_member(
     provider: &str,
     mode: &str,

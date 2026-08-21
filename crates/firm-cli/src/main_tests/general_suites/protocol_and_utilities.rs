@@ -16,10 +16,6 @@ mod capability_profiles_only_attach_recorded_live_canary_evidence;
 mod cheatsheet_flags_are_wired;
 #[path = "../general/cheatsheet_length_budgets.rs"]
 mod cheatsheet_length_budgets;
-#[path = "../general/claude_runner_guard_disarms_after_normal_completion.rs"]
-mod claude_runner_guard_disarms_after_normal_completion;
-#[path = "../general/claude_runner_guard_kills_stale_active_process_group.rs"]
-mod claude_runner_guard_kills_stale_active_process_group;
 #[path = "../general/claude_runner_resolves_from_installed_harness_tree.rs"]
 mod claude_runner_resolves_from_installed_harness_tree;
 #[path = "../general/concurrent_migrations_cannot_both_publish_or_register_the_same_id.rs"]

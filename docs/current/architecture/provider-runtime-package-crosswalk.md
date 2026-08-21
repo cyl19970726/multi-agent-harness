@@ -32,12 +32,12 @@ acceptance update.
 | Current source | Current responsibility | Classification | Target |
 | --- | --- | --- | --- |
 | `runtime_adapter_contract.rs` | provider-neutral lifecycle intents, fences, receipts, capability admission, conformance tests | current Team contract | `firm-runtime-contract` (extracted in DEV-58) |
-| `runtime_adapter.rs` | Team wake/claim/cycle/settle loop plus runtime control | current Team supervisor mixed with CLI/application state | provider-facing language lives in `firm-runtime-contract`; monotonic shared round progression now lives in `firm-runtime-supervisor` over `SupervisorApplicationPort`, while the CLI composition implements the narrow durable Work/Message/Store/RuntimeCommand round port pending application-module relocation |
+| `runtime_adapter.rs` | Team wake/claim/cycle/settle loop plus runtime control | current Team durable port composition | provider-facing language lives in `firm-runtime-contract`; monotonic round progression lives in `firm-runtime-supervisor`; provider-neutral round classification, control acknowledgement, and circuit-breaker policy live in `firm-application`; CLI code is the durable Work/Message/Store/RuntimeCommand port and executable wiring |
 | `runtime_adapter_capabilities.rs` | Team runtime selector, capability report, permission compilation | current catalog plus provider policy mixed together | canonical descriptor extracted to `firm-application`; provider-specific capability reports and permission compilers remain to move |
 | `provider_adapter.rs` | current provider-native control seam and standalone NodeSession control | current control contract mixed with implementations | runtime contract/application control plus provider bindings |
 | `provider_adapters.rs` | old Codex/Claude/Kimi/Pi one-shot registry | current compatibility delivery and formerly the Claude Host path; historical names; unsupported Pi stubs | renamed and narrowed to the explicit `CompatibilityDeliveryBinding` registry for Codex/Claude/Kimi; Pi's unsupported effect stub deleted; Claude Host bypasses this registry through its typed Host binding |
 | `codex_claude_adapters.rs` | Codex/Claude one-shot parsing, process launch, delivery, runtime-control facts | current Claude Host/direct delivery plus historical Codex paths; mixed coordination writes | native command compilation, transport, and event reduction extracted to provider packages; CLI retains message-envelope composition and durable coordination settlement |
-| `provider_ephemeral.rs` | generic child-tree teardown and NDJSON runner plus unused orphan-pidfile parameters | current Host/compatibility transport; orphan registration had no caller | process transport extracted to `firm-runtime-host`; after provider packages consumed it directly, CLI retains only the shared child-tree teardown re-export used by application-owned guards |
+| `provider_ephemeral.rs` | generic child-tree teardown and NDJSON runner plus unused orphan-pidfile parameters | current Host/compatibility transport; orphan registration had no caller | process transport and process-tree tests extracted to `firm-runtime-host`; the CLI module and its now-redundant provider child guard are deleted |
 | `resident.rs` | optional persistent Claude stream-json child, pool, protocol frames, and tests | Claude compatibility transport living in CLI | moved intact to `firm-provider-claude`; CLI constructs its provider-owned config and consumes the typed result |
 | `process_reaper.rs` | snapshot/read-model helpers and legacy Team tolerance | application/read-model; filename is misleading | application projection package/module |
 | `codex_app_server.rs`, `codex_team_runtime.rs` | Codex native protocol and Team binding | current Team provider | app-server transport/protocol, complete Team binding, and deterministic tests extracted to `firm-provider-codex`; CLI retains a narrow application callback/error adapter |
@@ -45,7 +45,7 @@ acceptance update.
 | `kimi_acp.rs`, `kimi_team_runtime.rs` | Kimi ACP transport and Team binding | current Team provider; ACP transport also serves current Host | ACP process/protocol, complete Team binding, and tests extracted to `firm-provider-kimi`; CLI retains a narrow application callback/error adapter and Host consumes the same provider package through its own binding |
 | `pi_rpc/` | Pi RPC client and Team binding | current Team provider | RPC process/session/prompt/steer/abort, native-session validation, permission argv admission, complete Team binding, and client tests extracted to `firm-provider-pi`; CLI retains a narrow application callback/error adapter |
 | `main_tests/workflow_runtime_tests.rs` and child directory | 114 source files no longer referenced by any test root after retirement | unreachable Dynamic Workflow residue | deleted in DEV-58 |
-| `main_tests/codex_exec.rs` | compiled historical parser/retirement characterization | historical read/retirement evidence | move beside the historical decoder or delete when equivalent archive verification proves coverage |
+| `main_tests/codex_exec.rs` | compiled historical parser/retirement characterization, including a vacuous selector test | provider protocol tests mixed into CLI | meaningful parser/status/native-id cases moved beside the Codex compatibility decoder; redundant/vacuous CLI cases deleted |
 
 ## Dependency target
 
@@ -164,4 +164,19 @@ Landed DEV-58 milestones:
   into their provider packages. `firm-cli` no longer implements those native
   protocols; it composes the message/LaunchSpec/cwd and settles only the
   compatibility coordination outcome. Output-schema shorthand normalization is
-  provider-neutral and therefore owned by `firm-core`.
+  provider-neutral and therefore owned by `firm-core`;
+- current Host/probe/permission slice: gives Claude and Kimi dedicated
+  provider-owned Host entry points. Claude rejects missing exact-session or
+  non-read-only requests before effect and verifies returned session identity;
+  Kimi owns ACP attach/prompt/receipt/text reduction and denies permission
+  callbacks. The Claude capacity canary and all four native permission
+  compilers are provider-owned. CLI-side native protocol test helpers and
+  superseded one-shot/process-guard fixtures are removed after equivalent
+  provider/runtime-host tests pass.
+- current application-policy slice: moves provider-neutral Team round
+  classification, terminal-control acknowledgement, zero-output progression,
+  and circuit-breaker decisions into `firm-application`. The CLI loop now
+  implements the durable coordination port rather than owning those policies.
+  The MCP tool contract includes all four current Team bindings, including
+  `pi_rpc`, and `check:provider-runtime-packages` continuously enforces the
+  closed catalog and forbidden crate edges.

@@ -63,6 +63,19 @@ pub fn tools_allowlist_for_ceiling(ceiling: PermissionCeiling) -> PiResult<Optio
     }
 }
 
+pub fn compile_rpc_permission(
+    ceiling: PermissionCeiling,
+) -> PiResult<(&'static str, &'static str)> {
+    match ceiling {
+        PermissionCeiling::ReadOnly => Ok(("tool-allowlist-read-only", "none")),
+        PermissionCeiling::WorkspaceWrite => Err(PiError::Usage(
+            "Pi cannot contain workspace_write without an OS sandbox or controlled tool bridge"
+                .to_string(),
+        )),
+        PermissionCeiling::FullAccess => Ok(("unrestricted", "none")),
+    }
+}
+
 pub fn admit_permission_ceiling(
     ceiling: PermissionCeiling,
     compiled_tools: Option<&str>,

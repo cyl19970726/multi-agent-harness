@@ -7,3 +7,4 @@ repository.workspace = true
 
 [dependencies]
 serde.workspace = true
+firm-runtime-contract = { path = "../firm-runtime-contract" }

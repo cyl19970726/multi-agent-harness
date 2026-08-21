@@ -12,8 +12,6 @@ mod create_auto_binds_from_star_harness_env;
 mod create_refuses_partial_star_harness_env;
 #[path = "../general/create_warns_when_host_thread_id_is_none.rs"]
 mod create_warns_when_host_thread_id_is_none;
-#[path = "../general/extracts_thread_id_from_thread_start_response_before_turn_start.rs"]
-mod extracts_thread_id_from_thread_start_response_before_turn_start;
 #[path = "../general/host_lease_renew_and_release_reject_stale_exact_fence.rs"]
 mod host_lease_renew_and_release_reject_stale_exact_fence;
 #[path = "../general/host_session_validator_valid_receipt_creates_exact_interactive_lease.rs"]
@@ -27,7 +25,5 @@ mod member_to_host_is_delivered_manual_ack_but_member_mail_stays_queued;
 mod persistent_member_profiles_default_to_one_host_execution_driver;
 #[path = "../general/start_warns_and_auto_binds_when_unbound.rs"]
 mod start_warns_and_auto_binds_when_unbound;
-#[path = "../general/thread_idle_without_turn_id_is_terminal_source_for_active_stream.rs"]
-mod thread_idle_without_turn_id_is_terminal_source_for_active_stream;
 #[path = "../general/thread_idle_without_turn_id_reconciles_single_running_session.rs"]
 mod thread_idle_without_turn_id_reconciles_single_running_session;

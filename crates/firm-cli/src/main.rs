@@ -173,9 +173,6 @@ use http_io::*;
 #[path = "main_modules/runtime_delivery_setup.rs"]
 mod runtime_delivery_setup;
 use runtime_delivery_setup::*;
-#[path = "main_modules/provider_ephemeral.rs"]
-mod provider_ephemeral;
-use provider_ephemeral::*;
 #[path = "main_modules/provider_schema.rs"]
 mod provider_schema;
 use provider_schema::*;
@@ -645,9 +642,3 @@ mod sse_tests;
 #[cfg(test)]
 #[path = "main_tests/team_run_recover.rs"]
 mod tests_team_run_recover;
-
-// --- Tests for WP-2: codex exec --json delivery (Stage 1-3) ---
-
-#[cfg(test)]
-#[path = "main_tests/codex_exec.rs"]
-mod tests_wp2_codex_exec;

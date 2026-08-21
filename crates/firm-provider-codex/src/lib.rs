@@ -44,6 +44,8 @@ mod team_runtime;
 pub use team_runtime::*;
 mod compatibility;
 pub use compatibility::*;
+mod permission;
+pub use permission::*;
 
 type CliResult<T> = CodexResult<T>;
 type CliError = CodexError;

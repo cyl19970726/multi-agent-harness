@@ -43,6 +43,8 @@ npx pnpm@9.15.4 check
 Current checks:
 
 - JSON parsing for schemas, docs, and examples;
+- provider-runtime package boundaries, the closed four-provider catalog, and
+  forbidden provider-to-CLI/Store/application dependency edges;
 - schema fixture validation;
 - Markdown local link validation;
 - document size warning and a blocking 1500-line maintained-source ceiling;
@@ -68,17 +70,17 @@ npx pnpm@9.15.4 acceptance:legacy-retirement
 It covers the Agent Team create/start,
 shared Works/WorkDelivery, Work-linked conversation, Host-facing MCP transport, the
 Dashboard read model and operator controls, plus deterministic persistent
-Codex app-server, Claude Agent SDK, and Kimi ACP Team Member adapters, and the
+Codex app-server, Claude Agent SDK, Kimi ACP, and Pi RPC Team Member adapters, and the
 retired Mission/Wave legacy reads and retired-write errors. It also
 gates durable Supervisor generations, authenticated identity-first Message
 authoring, atomic per-recipient delivery
 claim/provider receipt/per-recipient acknowledgement, cross-process control
 routing, reconnect, and
 explicit Close. Historical Codex/Claude/Kimi exec modes are never Agent Team
-fallbacks. The starting revision still uses isolated one-shot transports for
-the documented direct-delivery compatibility routes and the Claude headless
-Host resume path; DEV-58 separates those current call sites from historical
-mode decoding without restoring Dynamic Workflow.
+fallbacks. Current direct-delivery compatibility routes and Claude/Kimi
+headless Host entry points use distinct typed bindings implemented by provider
+packages; historical mode decoding cannot authorize either surface. Dynamic
+Workflow remains retired and has no runtime fallback.
 
 Real self-hosting follows the canonical
 [Agent Team Dogfood Loop](../product/agent-team-dogfood-loop.md). A failed live

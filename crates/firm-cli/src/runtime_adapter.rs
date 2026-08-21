@@ -32,6 +32,9 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use harness_application::{
+    circuit_breaker_reason, decide_team_round, verified_terminal_control_ack, RoundActionStatus,
+};
 use harness_core::agentfirm_api::{AgentSessionStatus, PermissionCeiling};
 
 use crate::provider_adapter::{self, PendingProviderControl, ProviderControlDispatch};
@@ -39,17 +42,15 @@ use crate::supervisor_wake::{WakeBackoff, WakePolicy};
 use crate::{
     active_work_continuation_prompt, emit_live_provider_activity, mark_message_delivered,
     member_work_collaboration_envelope, native_session_ref, now_string, parse_round_result,
-    prepare_provider_effect, provider_turn_coordination_summary,
-    refresh_member_after_provider_callbacks, require_provider_session_authority,
-    settle_provider_effect, settle_provider_effect_not_applied, stop_member_for_latched_close,
-    team_messages_prompt, transition_provider_session_for_member, wait_for_idle_member_wake,
-    work_contract_prompt, ClaimedWork, CliError, CliResult, ControlReceiver, IdleMemberWake,
-    LiveMemberControlRegistration, LiveProviderTurnGuard, MemberActionStatus, MemberControlCommand,
-    MemberOutcome, MemberRoundResult, MemberRunStatus, MemberRuntimeContext,
-    ProviderRuntimeProjection, TeamMessageProjection, TeamRunEventSourceKind, TeamRunLedger,
+    prepare_provider_effect, refresh_member_after_provider_callbacks,
+    require_provider_session_authority, settle_provider_effect, settle_provider_effect_not_applied,
+    stop_member_for_latched_close, team_messages_prompt, transition_provider_session_for_member,
+    wait_for_idle_member_wake, work_contract_prompt, ClaimedWork, CliError, CliResult,
+    ControlReceiver, IdleMemberWake, LiveMemberControlRegistration, LiveProviderTurnGuard,
+    MemberActionStatus, MemberControlCommand, MemberOutcome, MemberRoundResult, MemberRunStatus,
+    MemberRuntimeContext, ProviderRuntimeProjection, TeamMessageProjection, TeamRunEventSourceKind,
+    TeamRunLedger,
 };
-
-const PROVIDER_UNPRODUCTIVE_ROUND_LIMIT: u32 = 3;
 
 /// Deterministic integration hook: pause after the provider terminal boundary
 /// is observed but before the current Supervisor/session authority is
@@ -953,17 +954,21 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 .iter()
                 .any(|receipt| receipt.command == "abort" && receipt.success);
             let cycle_terminal_observed = turn.terminal_observation.terminal_cycle_observed();
-            let cycle_control_ack = (turn.interrupted
-                && abort_receipt_observed
-                && cycle_terminal_observed)
-                .then(|| {
-                    serde_json::json!({
-                        "provider_terminal_event": "agent_settled",
-                        "control_transport_receipts": &turn.control_receipts,
-                        "post_abort_observation": &turn.terminal_observation,
-                    })
-                    .to_string()
-                });
+            let cycle_control_ack = verified_terminal_control_ack(
+                turn.interrupted,
+                abort_receipt_observed,
+                cycle_terminal_observed,
+                false,
+                false,
+            )
+            .then(|| {
+                serde_json::json!({
+                    "provider_terminal_event": "agent_settled",
+                    "control_transport_receipts": &turn.control_receipts,
+                    "post_abort_observation": &turn.terminal_observation,
+                })
+                .to_string()
+            });
             let had_pending_control =
                 !pending_control_effects.is_empty() || !pending_control_replies.is_empty();
             for pending in pending_control_effects.drain(..) {
@@ -1010,10 +1015,13 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 }
             }
 
-            let terminal_ack = (turn.interrupted
-                && abort_receipt_observed
-                && cycle_terminal_observed
-                && (!turn.close_requested_by_harness || close_receipt.is_some()))
+            let terminal_ack = verified_terminal_control_ack(
+                turn.interrupted,
+                abort_receipt_observed,
+                cycle_terminal_observed,
+                turn.close_requested_by_harness,
+                close_receipt.is_some(),
+            )
             .then(|| {
                 serde_json::json!({
                     "provider_terminal_event": "agent_settled",
@@ -1124,68 +1132,28 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
             } else {
                 let final_text = turn.final_text;
                 let provider_terminal_failure = turn.provider_terminal_failure;
-                let is_zero_output = provider_terminal_failure.is_none()
-                    && final_text.trim().is_empty()
-                    && turn.tool_call_count == 0;
-                if is_zero_output {
-                    zero_output_streak += 1;
-                } else {
-                    zero_output_streak = 0;
-                }
-                let action_status = if is_zero_output || provider_terminal_failure.is_some() {
-                    MemberActionStatus::Failed
-                } else {
-                    let result = parse_round_result(&final_text);
-                    if result == MemberRoundResult::Done {
-                        MemberActionStatus::Succeeded
-                    } else {
-                        MemberActionStatus::Failed
-                    }
-                };
-                let (action_type, action_title, round_summary, provider_status) = if let Some(
-                    failure,
-                ) =
-                    provider_terminal_failure.as_ref()
-                {
-                    let status = failure
-                        .http_status
-                        .map(|code| format!(" (HTTP {code})"))
-                        .unwrap_or_default();
-                    (
-                        "provider_error",
-                        format!("{display} provider round {round} failed"),
-                        format!(
-                            "{display} provider round {round} failed: {}{status}; transcript remains provider-native",
-                            failure.reason
-                        ),
-                        Some(failure.to_provider_status()),
-                    )
-                } else if is_zero_output {
-                    (
-                        "empty_provider_round",
-                        format!("{display} provider round {round} completed without output"),
-                        provider_turn_coordination_summary(display, round, false),
-                        None,
-                    )
-                } else {
-                    (
-                        "turn_completed",
-                        format!("{display} provider round {round} completed"),
-                        provider_turn_coordination_summary(
-                            display,
-                            round,
-                            !final_text.trim().is_empty(),
-                        ),
-                        None,
-                    )
+                let semantic_done = parse_round_result(&final_text) == MemberRoundResult::Done;
+                let decision = decide_team_round(
+                    display,
+                    round,
+                    &final_text,
+                    turn.tool_call_count,
+                    provider_terminal_failure.as_ref(),
+                    semantic_done,
+                    zero_output_streak,
+                );
+                zero_output_streak = decision.zero_output_streak;
+                let action_status = match decision.action_status {
+                    RoundActionStatus::Succeeded => MemberActionStatus::Succeeded,
+                    RoundActionStatus::Failed => MemberActionStatus::Failed,
                 };
                 let action = ledger.append_action_with_provider_status(
                     &member_row.id,
-                    action_type,
+                    decision.action_type,
                     action_status,
-                    &action_title,
-                    &round_summary,
-                    provider_status,
+                    &decision.action_title,
+                    &decision.summary,
+                    decision.provider_status,
                     &[],
                 )?;
                 ledger.fold_event(
@@ -1213,10 +1181,8 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                     &format!("member {} idle after round {round}", member_row.name),
                 )?;
 
-                if zero_output_streak >= PROVIDER_UNPRODUCTIVE_ROUND_LIMIT {
-                    let mut reason = format!(
-                    "{display} provider circuit breaker opened after {PROVIDER_UNPRODUCTIVE_ROUND_LIMIT} consecutive unproductive rounds (last outcome: empty terminal success). No durable agent output was produced. Provider capacity remains unknown because the runtime adapter has no reviewed quota receipt for this outcome. Inspect the provider-native session, account access, and model-specific controls before explicitly reopening the member."
-                );
+                if decision.circuit_breaker_open {
+                    let mut reason = circuit_breaker_reason(display);
                     if let Err(error) =
                         ledger.fail_unreceived_work_claims_for(&member_row.id, &reason)
                     {

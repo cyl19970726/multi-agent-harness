@@ -81,8 +81,8 @@ pub(super) fn tool_definitions() -> Value {
                             "properties": {
                                 "name": {"type": "string", "minLength": 1, "description": "Member display name, unique within the run."},
                                 "role": {"type": "string", "minLength": 1, "description": "e.g. coordinator / implementer / reviewer."},
-                                "provider": {"type": "string", "minLength": 1, "description": "Provider label. Harness-driven modes require a registered codex, kimi, or claude adapter; external_interactive accepts any non-empty label because Harness does not execute it."},
-                                "execution_mode": {"type": "string", "enum": ["codex_app_server", "kimi_acp", "claude_agent_sdk", "external_interactive"], "description": "Optional provider-specific Agent Team mode. Codex only accepts codex_app_server and Claude only accepts claude_agent_sdk; retired one-shot modes such as codex_exec and claude_cli are rejected. external_interactive declares the user's own already-open session: Harness spawns no provider process, does not constrain its provider label, and the member polls its own inbox."},
+                                "provider": {"type": "string", "minLength": 1, "description": "Provider label. Harness-driven modes require a registered codex, claude, kimi, or pi adapter; external_interactive accepts any non-empty label because Harness does not execute it."},
+                                "execution_mode": {"type": "string", "enum": ["codex_app_server", "claude_agent_sdk", "kimi_acp", "pi_rpc", "external_interactive"], "description": "Optional provider-specific Agent Team mode. Current bindings are codex_app_server, claude_agent_sdk, kimi_acp, and pi_rpc; retired one-shot modes such as codex_exec and claude_cli are rejected. external_interactive declares the user's own already-open session: Harness spawns no provider process, does not constrain its provider label, and the member polls its own inbox."},
                                 "model": {"type": "string", "minLength": 1, "description": "Optional provider model override."},
                                 "effort": {"type": "string", "minLength": 1, "description": "Optional provider-neutral reasoning-effort request. The adapter must record the provider-confirmed effective value or an unsupported/review_required status."},
                                 "service_tier": {"type": "string", "minLength": 1, "description": "Optional provider-neutral latency/service profile request, such as priority. This is not a universal fast boolean."},
@@ -223,7 +223,7 @@ pub(super) fn tool_definitions() -> Value {
                             "name": {"type": "string", "minLength": 1},
                             "role": {"type": "string", "minLength": 1},
                             "provider": {"type": "string", "minLength": 1},
-                            "execution_mode": {"type": "string", "enum": ["codex_app_server", "kimi_acp", "claude_agent_sdk", "external_interactive"]},
+                            "execution_mode": {"type": "string", "enum": ["codex_app_server", "claude_agent_sdk", "kimi_acp", "pi_rpc", "external_interactive"]},
                             "model": {"type": "string", "minLength": 1},
                             "effort": {"type": "string", "minLength": 1},
                             "service_tier": {"type": "string", "minLength": 1},
@@ -265,7 +265,7 @@ pub(super) fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_start",
-            "description": "Reserve and start a planning AgentTeamRun asynchronously, returning its running projection and exact Workspace-scoped UI URL immediately. Agent Team modes are Codex app-server (codex_app_server), Kimi ACP (kimi_acp), and Claude Agent SDK streaming (claude_agent_sdk); declared external_interactive members are user-driven and skipped by the supervisor. Retired one-shot modes such as codex_exec and claude_cli are rejected and never Team fallbacks. Provider cwd is the member worktree or selected Workspace project_root, never store_root. Provider transcripts and thinking remain in provider-native sessions.",
+            "description": "Reserve and start a planning AgentTeamRun asynchronously, returning its running projection and exact Workspace-scoped UI URL immediately. Agent Team modes are Codex app-server (codex_app_server), Claude Agent SDK streaming (claude_agent_sdk), Kimi ACP (kimi_acp), and Pi RPC (pi_rpc); declared external_interactive members are user-driven and skipped by the supervisor. Retired one-shot modes such as codex_exec and claude_cli are rejected and never Team fallbacks. Provider cwd is the member worktree or selected Workspace project_root, never store_root. Provider transcripts and thinking remain in provider-native sessions.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

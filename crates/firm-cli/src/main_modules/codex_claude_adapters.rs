@@ -4,8 +4,6 @@ pub(super) use harness_provider_claude::{
     extract_claude_reply_text, infer_claude_session_status, status_to_terminal_source,
     ClaudeStreamEvent,
 };
-#[cfg(test)]
-pub(super) use harness_provider_codex::{extract_codex_final_message, parse_codex_ndjson};
 pub(super) use harness_provider_codex::{
     extract_codex_reply_text, extract_thread_id_from_exec_events, extract_turn_id_from_exec_events,
     infer_provider_execution_status, CodexExecEvent,
@@ -163,7 +161,7 @@ pub(super) fn run_claude_host_delivery(
             member.provider, binding.execution_mode
         )));
     }
-    run_claude_delivery(
+    run_claude_delivery_surface(
         store,
         member,
         runtime,
@@ -171,6 +169,7 @@ pub(super) fn run_claude_host_delivery(
         delivery_id,
         timeout_ms,
         project,
+        true,
     )
 }
 
@@ -322,6 +321,29 @@ pub(super) fn run_claude_delivery(
     timeout_ms: u64,
     project: &ProjectContext,
 ) -> CliResult<DeliveryOutcome> {
+    run_claude_delivery_surface(
+        store,
+        member,
+        _runtime,
+        message,
+        delivery_id,
+        timeout_ms,
+        project,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_claude_delivery_surface(
+    store: &HarnessStore,
+    member: &ProviderLaunchProfile,
+    _runtime: &ProviderProcess,
+    message: &RegistryMessage,
+    delivery_id: &str,
+    timeout_ms: u64,
+    project: &ProjectContext,
+    host_surface: bool,
+) -> CliResult<DeliveryOutcome> {
     let session_dir = store
         .root()
         .join("runtimes")
@@ -329,18 +351,18 @@ pub(super) fn run_claude_delivery(
         .join(delivery_id);
     fs::create_dir_all(&session_dir)?;
 
-    // WP-3: Spawn real `claude -p --output-format stream-json --verbose`.
+    // The provider package executes and reduces the native Claude transport.
     //
     // Opt-in resident path (HARNESS_CLAUDE_RESIDENT=1): instead of spawning a
     // fresh `claude -p <prompt>` that exits per turn, hold a `claude
     // --input-format stream-json` process open and feed the turn as a stdin
     // frame (see `resident.rs`). The returned tuple shape is identical to the
     // default path, so status inference and telemetry stay provider-neutral.
-    let resident = env::var("HARNESS_CLAUDE_RESIDENT").as_deref() == Ok("1");
+    let resident = !host_surface && env::var("HARNESS_CLAUDE_RESIDENT").as_deref() == Ok("1");
     let (process_success, events, raw_events, session_id, _stderr_log) = if resident {
         run_claude_resident_delivery_real(&session_dir, member, message, timeout_ms, project)?
     } else {
-        run_claude_exec_delivery_real(member, message, timeout_ms, project)?
+        run_claude_exec_delivery_real(member, message, timeout_ms, project, host_surface)?
     };
     let (tokens, cost_usd, model, raw_structured) = claude_delivery_telemetry(&raw_events);
 
@@ -381,13 +403,14 @@ pub(super) fn run_claude_delivery(
     })
 }
 
-/// Spawn `claude -p --output-format stream-json --verbose` and parse NDJSON output.
-/// WP-3: Real implementation replacing the stub; parses session_id and events.
+/// Compose one Claude request and delegate the selected Host/compatibility
+/// transport to the provider package.
 pub(super) fn run_claude_exec_delivery_real(
     member: &ProviderLaunchProfile,
     message: &RegistryMessage,
     timeout_ms: u64,
     project: &ProjectContext,
+    host_surface: bool,
 ) -> CliResult<ClaudeDeliveryRun> {
     // Build the message content envelope (harness context).
     let message_content = format!(
@@ -411,13 +434,23 @@ pub(super) fn run_claude_exec_delivery_real(
     // Build LaunchSpec from member and message
     let spec = build_launch_spec(member, message);
 
-    let run = harness_provider_claude::run_claude_compatibility(
-        &spec,
-        &message_content,
-        &system_prompt,
-        Path::new(&cwd),
-        Duration::from_millis(timeout_ms),
-    )
+    let run = if host_surface {
+        harness_provider_claude::run_claude_host_turn(
+            &spec,
+            &message_content,
+            &system_prompt,
+            Path::new(&cwd),
+            Duration::from_millis(timeout_ms),
+        )
+    } else {
+        harness_provider_claude::run_claude_compatibility(
+            &spec,
+            &message_content,
+            &system_prompt,
+            Path::new(&cwd),
+            Duration::from_millis(timeout_ms),
+        )
+    }
     .map_err(CliError::Usage)?;
     Ok((
         run.process_success,
