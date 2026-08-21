@@ -184,6 +184,55 @@ pub trait ProviderNativeControl {
     fn dispatch(&mut self, plan: &ProviderControlPlan) -> Result<(), String>;
 }
 
+/// Provider-neutral executable binding for one persistent Agent Team member.
+/// The application supervisor owns queueing, authority, and durable effects;
+/// implementations own only native runtime behavior.
+pub trait TeamRuntimeAdapter: RuntimeAdapter {
+    type Error;
+
+    fn provider(&self) -> &'static str;
+    fn display_name(&self) -> &'static str;
+    fn capability_bindings() -> Vec<CapabilityBinding>
+    where
+        Self: Sized;
+    fn ensure_alive(&mut self) -> Result<(), Self::Error>;
+    fn native_session_locator(&self) -> &str;
+    fn native_locator_kind(&self) -> &'static str;
+    fn bind_authority_session(
+        &mut self,
+        session: AgentSession,
+        profile: &harness_core::ProviderIntegrationProfile,
+    ) -> Result<(), Self::Error>;
+    #[allow(clippy::type_complexity)]
+    fn run_cycle(
+        &mut self,
+        input: &str,
+        idle_timeout: std::time::Duration,
+        on_input_accepted: &mut dyn FnMut(&ControlTransportReceipt) -> Result<(), Self::Error>,
+        on_steer_result: &mut dyn FnMut(
+            &SteerRequest,
+            &SteerProviderResult,
+        ) -> Result<(), Self::Error>,
+        on_event: &mut dyn FnMut(&serde_json::Value),
+        poll_control: &mut dyn FnMut() -> CycleControl,
+    ) -> Result<ExecutionCycleOutcome, Self::Error>;
+    fn project_live(event: &serde_json::Value) -> Option<(LiveProviderActivityKind, String)>
+    where
+        Self: Sized;
+    fn native_control<'a>(
+        close: &'a mut bool,
+        interrupt: &'a mut bool,
+    ) -> Box<dyn ProviderNativeControl + 'a>
+    where
+        Self: Sized;
+    fn supports_inject_current_cycle(&self) -> bool {
+        false
+    }
+    fn supports_native_boundary_queue(&self) -> bool {
+        false
+    }
+}
+
 impl ProviderNativeControl for Box<dyn ProviderNativeControl + '_> {
     fn provider(&self) -> &'static str {
         (**self).provider()

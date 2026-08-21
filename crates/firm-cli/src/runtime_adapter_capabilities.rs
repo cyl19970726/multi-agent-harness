@@ -26,7 +26,7 @@ pub(super) fn canonical_runtime_binding(
     }
 }
 
-pub(super) fn preflight_start_cycle<A: TeamRuntimeAdapter>(
+pub(super) fn preflight_start_cycle<A: TeamRuntimeAdapter<Error = CliError>>(
     adapter: &A,
     session: &harness_core::agentfirm_api::AgentSession,
 ) -> CliResult<()> {

@@ -34,9 +34,7 @@ use serde_json::Value;
 
 use harness_core::agentfirm_api::{AgentSessionStatus, PermissionCeiling};
 
-use crate::provider_adapter::{
-    self, PendingProviderControl, ProviderControlDispatch, ProviderNativeControl,
-};
+use crate::provider_adapter::{self, PendingProviderControl, ProviderControlDispatch};
 use crate::supervisor_wake::{WakeBackoff, WakePolicy};
 use crate::{
     active_work_continuation_prompt, emit_live_provider_activity, mark_message_delivered,
@@ -104,8 +102,8 @@ pub(crate) use capabilities::*;
 /// appear here — they remain in the durable queue until the cycle settles.
 pub(crate) use harness_runtime_contract::{
     CapabilityBinding, CapabilityStatus, ControlTransportReceipt, CycleControl,
-    CycleRuntimeObservation as RuntimeObservation, ExecutionCycleOutcome, LiveProviderActivityKind,
-    QuiesceOutcome, SteerProviderResult, SteerRequest,
+    CycleRuntimeObservation as RuntimeObservation, ExecutionCycleOutcome, QuiesceOutcome,
+    SteerProviderResult, SteerRequest, TeamRuntimeAdapter,
 };
 
 struct PendingSteerSettlement {
@@ -122,92 +120,6 @@ impl Drop for PendingSteerSettlement {
                     .to_string(),
             )));
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// The adapter contract
-// ---------------------------------------------------------------------------
-
-/// The provider-neutral semantic-intent surface for a persistent Team member
-/// runtime. Intent names follow DOC-89 §8.1; bindings compile them into
-/// provider primitives (Pi: coding-agent RPC; Codex: app-server; a future
-/// DeepSeek native bridge needs no new core object to plug in here).
-pub(crate) trait TeamRuntimeAdapter:
-    crate::runtime_adapter_contract::RuntimeAdapter
-{
-    /// Closed provider-set member: "pi", "codex", ...
-    fn provider(&self) -> &'static str;
-    /// Display name for member-facing summaries ("Pi").
-    fn display_name(&self) -> &'static str;
-    /// Runtime truth behind any static capability matrix. Associated
-    /// function (not `&self`) so capability surfaces can report a binding's
-    /// honest status without spawning a live runtime.
-    fn capability_bindings() -> Vec<CapabilityBinding>
-    where
-        Self: Sized;
-
-    /// RuntimeHandle liveness; resume/reconnect the transport when needed.
-    fn ensure_alive(&mut self) -> CliResult<()>;
-    /// Opaque native-session locator (NativeSessionRef content, never a
-    /// transcript).
-    fn native_session_locator(&self) -> &str;
-    /// Locator kind tag for NativeSessionRef ("pi_session").
-    fn native_locator_kind(&self) -> &'static str;
-
-    /// Bind the exact persisted profile and durable AgentSession authority
-    /// before the canonical provider-neutral contract admits any effect.
-    fn bind_authority_session(
-        &mut self,
-        session: harness_core::agentfirm_api::AgentSession,
-        profile: &harness_core::ProviderIntegrationProfile,
-    ) -> CliResult<()>;
-
-    /// ExecutionCycle: drive one accepted input to its settled boundary.
-    /// `on_event` sees raw provider frames for live projection;
-    /// `poll_control` drains pending Harness control intents.
-    fn run_cycle(
-        &mut self,
-        input: &str,
-        idle_timeout: Duration,
-        on_input_accepted: &mut dyn FnMut(&ControlTransportReceipt) -> CliResult<()>,
-        on_steer_result: &mut dyn FnMut(&SteerRequest, &SteerProviderResult) -> CliResult<()>,
-        on_event: &mut dyn FnMut(&Value),
-        poll_control: &mut dyn FnMut() -> CycleControl,
-    ) -> CliResult<ExecutionCycleOutcome>;
-
-    /// Project one raw provider frame into a typed volatile live activity.
-    /// Associated function (not `&self`) so the live-projection closure can
-    /// run while the adapter is mutably borrowed by `run_cycle`.
-    fn project_live(event: &Value) -> Option<(LiveProviderActivityKind, String)>
-    where
-        Self: Sized;
-
-    /// Build the executable native-control proxy (interrupt/close) consumed
-    /// by `provider_adapter::execute_team_control`. Associated function
-    /// (not `&self`) so the generic loop can poll controls while the adapter
-    /// is mutably borrowed by `run_cycle`; bindings that need transport
-    /// access inside dispatch give their proxy a cloneable channel.
-    fn native_control<'a>(
-        close: &'a mut bool,
-        interrupt: &'a mut bool,
-    ) -> Box<dyn ProviderNativeControl + 'a>
-    where
-        Self: Sized;
-
-    /// inject_current_cycle (steer) support. Bindings that cannot inject
-    /// report false and the generic loop answers Steer commands with an
-    /// explicit unsupported error instead of dropping them.
-    fn supports_inject_current_cycle(&self) -> bool {
-        false
-    }
-
-    /// queue_at_native_boundary (follow_up) support report. The generic
-    /// loop keeps ordinary mail on the Harness queue regardless; this report
-    /// is consumed by capability surfaces and future dispatch policies.
-    #[allow(dead_code)]
-    fn supports_native_boundary_queue(&self) -> bool {
-        false
     }
 }
 
@@ -257,7 +169,7 @@ fn fail_pending_control_replies(replies: &mut Vec<PendingControlReply>, detail: 
 
 /// The two previously per-loop, twice-per-loop wake match blocks collapsed
 /// into one shared projection.
-fn idle_wake_into_cycle<A: TeamRuntimeAdapter>(
+fn idle_wake_into_cycle<A: TeamRuntimeAdapter<Error = CliError>>(
     wake: IdleMemberWake,
     ledger: &TeamRunLedger,
     objective: &str,
@@ -361,7 +273,7 @@ fn idle_wake_into_cycle<A: TeamRuntimeAdapter>(
 /// not the stronger Quiesce + Release operation: Team Close releases only the
 /// owned adapter/process handle and retains the machine-owned AgentSession and
 /// provider-native session for Reopen.
-fn close_idle_runtime<A: TeamRuntimeAdapter>(
+fn close_idle_runtime<A: TeamRuntimeAdapter<Error = CliError>>(
     ledger: &TeamRunLedger,
     member_row: &mut ProviderRuntimeProjection,
     adapter: &mut A,
@@ -394,7 +306,7 @@ fn close_idle_runtime<A: TeamRuntimeAdapter>(
 /// is deliberately independent from strong Quiesce/Release: it proves that
 /// the owned live handle is gone and the native session locator is retained,
 /// but makes no workspace-child or durable-flush claim.
-fn execute_member_runtime_close<A: TeamRuntimeAdapter>(
+fn execute_member_runtime_close<A: TeamRuntimeAdapter<Error = CliError>>(
     ledger: &TeamRunLedger,
     member_row: &mut ProviderRuntimeProjection,
     adapter: &mut A,
@@ -497,7 +409,7 @@ fn execute_member_runtime_close<A: TeamRuntimeAdapter>(
 /// Wait for the next wake and project it into a cycle input (or a terminal
 /// outcome). Shared by the first wait and the loop-tail wait.
 #[allow(clippy::too_many_arguments)]
-fn await_next_cycle<A: TeamRuntimeAdapter>(
+fn await_next_cycle<A: TeamRuntimeAdapter<Error = CliError>>(
     ledger: &TeamRunLedger,
     objective: &str,
     context: &MemberRuntimeContext,
@@ -536,7 +448,7 @@ fn await_next_cycle<A: TeamRuntimeAdapter>(
 /// The binding's prepare step owns provider-specific spawn/policy work and
 /// hands over a live adapter plus the registered control channel.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter>(
+pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliError>>(
     ledger: &TeamRunLedger,
     objective: &str,
     member_row: &mut ProviderRuntimeProjection,

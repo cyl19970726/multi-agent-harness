@@ -629,6 +629,8 @@ impl ProviderNativeControl for CodexDeferredNativeControl<'_> {
 }
 
 impl<'a, B: CodexAppServerBridge> TeamRuntimeAdapter for CodexTeamRuntime<'a, B> {
+    type Error = CliError;
+
     fn provider(&self) -> &'static str {
         "codex"
     }

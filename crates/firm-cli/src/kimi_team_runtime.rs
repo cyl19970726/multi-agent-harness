@@ -113,6 +113,8 @@ impl<'a> KimiTeamRuntime<'a> {
 }
 
 impl crate::runtime_adapter::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
+    type Error = CliError;
+
     fn provider(&self) -> &'static str {
         "kimi"
     }

@@ -112,4 +112,7 @@ Landed DEV-58 milestones:
 - current cycle-control slice: replaces provider-visible durable steer state
   with opaque `SteerRequest` tokens and keeps admissions/API replies inside the
   supervisor. Providers can observe content and return receipts, but cannot
-  settle RuntimeCommands or answer callers directly.
+  settle RuntimeCommands or answer callers directly;
+- current adapter-port slice: moves the executable `TeamRuntimeAdapter` trait
+  itself into `firm-runtime-contract`; the CLI supervisor currently consumes
+  it with its local error adapter pending the provider-package error split.

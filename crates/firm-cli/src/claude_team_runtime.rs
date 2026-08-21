@@ -852,6 +852,8 @@ impl ProviderNativeControl for ClaudeControlFlags<'_> {
 }
 
 impl TeamRuntimeAdapter for ClaudeTeamRuntime {
+    type Error = CliError;
+
     fn provider(&self) -> &'static str {
         "claude"
     }

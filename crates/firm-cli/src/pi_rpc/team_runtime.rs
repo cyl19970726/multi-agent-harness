@@ -55,6 +55,8 @@ impl PiTeamRuntime {
 }
 
 impl crate::runtime_adapter::TeamRuntimeAdapter for PiTeamRuntime {
+    type Error = CliError;
+
     fn provider(&self) -> &'static str {
         "pi"
     }

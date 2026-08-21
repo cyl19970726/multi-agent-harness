@@ -8,4 +8,5 @@ repository.workspace = true
 [dependencies]
 harness_core = { package = "firm-core", path = "../firm-core" }
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
