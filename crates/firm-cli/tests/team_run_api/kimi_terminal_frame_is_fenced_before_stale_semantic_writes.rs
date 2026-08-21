@@ -1,0 +1,69 @@
+use super::*;
+
+#[test]
+fn kimi_terminal_frame_is_fenced_before_stale_semantic_writes() {
+    let home = TempHome::new("team-run-kimi-terminal-fence");
+    let project_id = init_project_selector_clean(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let ready = home.base().join("kimi-terminal-received");
+    let release = home.base().join("kimi-terminal-release");
+    let ready_value = ready.display().to_string();
+    let release_value = release.display().to_string();
+    let mut serve_env = vec![
+        ("KIMI_CODE_BIN", fake_kimi.as_str()),
+        ("FAKE_KIMI_RESULT", "done"),
+        (
+            "FIRM_TEST_KIMI_TERMINAL_RECEIVED_READY",
+            ready_value.as_str(),
+        ),
+        (
+            "FIRM_TEST_KIMI_TERMINAL_RECEIVED_RELEASE",
+            release_value.as_str(),
+        ),
+        ("FIRM_TEAM_SUPERVISOR_LEASE_MS", "10000"),
+        ("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "10000"),
+    ];
+    serve_env.extend(NATIVE_SELECTOR_CLEAN_ENV.iter().copied());
+    let serve = ServeHandle::spawn_with_env(&home, home.base(), &[], &serve_env);
+    let (status, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Fence a Kimi terminal frame",
+            "members": [{
+                "name": "kimi-terminal-fence",
+                "role": "runtime_reliability",
+                "provider": "kimi",
+                "initial_work": "Exercise terminal fencing"
+            }]
+        }),
+    );
+    assert_eq!(status, 200, "body: {created}");
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .expect("member id")
+        .to_string();
+    let (status, body) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {body}");
+    wait_for_file(&ready, "Kimi terminal receive barrier");
+
+    let store = HarnessStore::new(home.spaces_dir().join(project_id));
+    let before = member_semantic_row_counts(&store, &member_id);
+    assert_eq!(before.2, 0, "terminal frame was processed before barrier");
+    replace_supervisor_lease(&store, &run_id);
+    std::fs::write(&release, b"release stale terminal").expect("release Kimi terminal");
+    std::thread::sleep(Duration::from_millis(300));
+
+    assert_eq!(
+        member_semantic_row_counts(&store, &member_id),
+        before,
+        "stale Kimi terminal result wrote native-session/member/action/Handoff state"
+    );
+}

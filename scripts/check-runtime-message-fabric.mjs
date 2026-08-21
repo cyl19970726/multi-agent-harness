@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { basename, join } from "node:path";
 
 function stripCfgItems(source, cfgName) {
   const lines = source.split("\n");
@@ -43,6 +44,26 @@ function productionRust(path) {
   );
 }
 
+function rustTree(paths, transform = (path) => readFileSync(path, "utf8")) {
+  const files = [];
+  const visit = (path) => {
+    if (statSync(path).isDirectory()) {
+      const name = basename(path);
+      if (name === "tests" || name === "lib_tests" || name.includes("_tests")) return;
+      for (const entry of readdirSync(path).sort()) visit(join(path, entry));
+      return;
+    }
+    const name = basename(path);
+    if (path.endsWith(".rs") && name !== "tests.rs" && !name.includes("_tests")) files.push(path);
+  };
+  for (const path of paths) visit(path);
+  return files.map((path) => transform(path)).join("\n");
+}
+
+function productionRustTree(paths) {
+  return rustTree(paths, productionRust);
+}
+
 const requiredSchemas = [
   "agent-identity",
   "agent-session",
@@ -66,10 +87,24 @@ for (const name of requiredSchemas) {
   if (schema.additionalProperties !== false) failures.push(`${path} must fail closed`);
 }
 
-const core = readFileSync("crates/firm-core/src/agentfirm_api.rs", "utf8");
-const store = readFileSync("crates/firm-store/src/trust_kernel.rs", "utf8");
-const daemon = readFileSync("crates/firm-cli/src/supervisor_daemon.rs", "utf8");
-const server = readFileSync("crates/firm-cli/src/main.rs", "utf8");
+const core = productionRustTree([
+  "crates/firm-core/src/agentfirm_api.rs",
+  "crates/firm-core/src/agentfirm_api",
+]);
+const store = rustTree([
+  "crates/firm-store/src/trust_kernel.rs",
+  "crates/firm-store/src/trust_kernel",
+]);
+const storeProduction = productionRustTree(["crates/firm-store/src"]);
+const daemon = productionRustTree([
+  "crates/firm-cli/src/supervisor_daemon.rs",
+  "crates/firm-cli/src/supervisor_daemon",
+]);
+const server = productionRustTree([
+  "crates/firm-cli/src/main.rs",
+  "crates/firm-cli/src/main_modules",
+  "crates/firm-cli/src/agentfirm_api.rs",
+]);
 const providerAdapter = readFileSync("crates/firm-cli/src/provider_adapter.rs", "utf8");
 const providerRuntimeSources = {
   CodexDeferredNativeControl: productionRust("crates/firm-cli/src/codex_team_runtime.rs"),
@@ -101,7 +136,7 @@ for (const token of [
   "settle_runtime_command",
   "recipient identity has multiple current AgentSessions",
 ]) {
-  if (!store.includes(token)) failures.push(`missing canonical Store authority: ${token}`);
+  if (!storeProduction.includes(token)) failures.push(`missing canonical Store authority: ${token}`);
 }
 if (!daemon.includes('"runtime" =>')) failures.push("NodeDaemon does not own RuntimeCommand admission");
 if (!daemon.includes("runtime_command_via_socket")) failures.push("runtime command socket transport missing");
@@ -146,30 +181,29 @@ for (const leakedNativeControl of [
     failures.push(`provider-native control leaked outside the closed adapter seam: ${leakedNativeControl}`);
   }
 }
-if (!store.includes("AgentSession RuntimeCommand requires exact self or exact machine NodeDaemon/Operator authority; Team Host authority is Team-scoped only")) {
+if (!storeProduction.includes("AgentSession RuntimeCommand requires exact self or exact machine NodeDaemon/Operator authority; Team Host authority is Team-scoped only")) {
   failures.push("Store does not enforce machine-scoped AgentSession control authority under lock");
 }
-if (!store.includes("AgentSession stop requires explicit release, rebind, or quiesce of active WorkExecutionBindings first")) {
+if (!storeProduction.includes("AgentSession stop requires explicit release, rebind, or quiesce of active WorkExecutionBindings first")) {
   failures.push("Store does not fence StopSession from active WorkExecutionBindings");
 }
-if (!store.includes("StartSession cannot widen the frozen AgentIdentity permission ceiling")) {
+if (!storeProduction.includes("StartSession cannot widen the frozen AgentIdentity permission ceiling")) {
   failures.push("Store does not enforce the AgentIdentity permission ceiling");
 }
-if (!store.includes("resolve_runtime_command_recovery")) {
+if (!storeProduction.includes("resolve_runtime_command_recovery")) {
   failures.push("Operator RecoveryRequired resolution authority is missing");
 }
 
 const activeRuntimeSources = [
-  "crates/firm-cli/src/main.rs",
-  "crates/firm-cli/src/mcp.rs",
-  "crates/firm-cli/src/supervisor_daemon.rs",
-  "crates/firm-store/src/trust_kernel.rs",
-  "crates/firm-core/src/agentfirm_api.rs",
+  ["CLI command surface", server],
+  ["MCP", productionRust("crates/firm-cli/src/mcp.rs")],
+  ["NodeDaemon", productionRust("crates/firm-cli/src/supervisor_daemon.rs")],
+  ["Store runtime authority", storeProduction],
+  ["core runtime contracts", core],
 ];
-for (const path of activeRuntimeSources) {
-  const text = productionRust(path);
+for (const [label, text] of activeRuntimeSources) {
   if (text.includes("ProviderDispatchEnvelope")) {
-    failures.push(`${path} retains the retired ProviderDispatchEnvelope contract`);
+    failures.push(`${label} retains the retired ProviderDispatchEnvelope contract`);
   }
 }
 if (server.includes("claim_round_triggering_messages_for") || server.includes("claim_next_work_for")) {
@@ -190,7 +224,7 @@ for (const token of [
 ]) {
   if (!server.includes(token)) failures.push(`missing executable hard-cutover fence: ${token}`);
 }
-const legacyStore = productionRust("crates/firm-store/src/lib.rs");
+const legacyStore = productionRustTree(["crates/firm-store/src"]);
 if (legacyStore.match(/pub fn append_team_message_checked[\s\S]{0,450}RETIRED_RUNTIME_WRITER/g)?.length !== 1) {
   failures.push("retired manual TeamMessage Store seam is not a single fail-closed entry point");
 }
@@ -253,7 +287,10 @@ for (const [command, marker] of [
     failures.push(`team-run ${command} CLI is not a hard-retired writer`);
   }
 }
-const mcp = readFileSync("crates/firm-cli/src/mcp.rs", "utf8");
+const mcp = rustTree([
+  "crates/firm-cli/src/mcp.rs",
+  "crates/firm-cli/src/mcp",
+]);
 const memberTrustTransport = productionRust("crates/firm-cli/src/agentfirm_api.rs");
 if (memberTrustTransport.includes("CreateMemberRun")
     || memberTrustTransport.includes('path.ends_with("/member-runs")')) {
@@ -278,8 +315,11 @@ for (const retiredLifecycleCall of [
     failures.push(`current Member lifecycle transport retains canonical-only mutation: ${retiredLifecycleCall}`);
   }
 }
-const trustKernelProduction = productionRust("crates/firm-store/src/trust_kernel.rs");
-const runtimeStoreProduction = productionRust("crates/firm-store/src/lib.rs");
+const trustKernelProduction = productionRustTree([
+  "crates/firm-store/src/trust_kernel.rs",
+  "crates/firm-store/src/trust_kernel",
+]);
+const runtimeStoreProduction = productionRustTree(["crates/firm-store/src"]);
 const firmStoreCargo = readFileSync("crates/firm-store/Cargo.toml", "utf8");
 const firmCliCargo = readFileSync("crates/firm-cli/Cargo.toml", "utf8");
 const firmCliProductionDependencies = firmCliCargo.split("[dev-dependencies]")[0];
@@ -360,7 +400,10 @@ for (const authorityToken of ["current_team_run_execution_space(run)", "EXECUTIO
     failures.push(`MCP TeamRun Execution Space resolver is missing: ${authorityToken}`);
   }
 }
-const roleViewTransport = productionRust("crates/firm-cli/src/role_views_api.rs");
+const roleViewTransport = productionRustTree([
+  "crates/firm-cli/src/role_views_api.rs",
+  "crates/firm-cli/src/role_views_api",
+]);
 for (const roleViewScopeToken of [
   "current_team_run_execution_space(&run)",
   "resolved_space == space_id",
@@ -394,9 +437,9 @@ const legacyTeamMessageLedgerMatches = [
 if (legacyTeamMessageLedgerMatches !== 1 || !legacyExport.includes('ledger: "team_messages.jsonl"')) {
   failures.push("team_messages historical allowlist must be exactly one explicit read-only Legacy export entry");
 }
-for (const path of activeRuntimeSources) {
-  if (productionRust(path).includes("provider_dispatch_events.jsonl")) {
-    failures.push(`${path} retains current provider_dispatch ledger authority`);
+for (const [label, text] of activeRuntimeSources) {
+  if (text.includes("provider_dispatch_events.jsonl")) {
+    failures.push(`${label} retains current provider_dispatch ledger authority`);
   }
 }
 

@@ -1,8 +1,4 @@
-//! Read-only archive support for the retired Goal / Task-Graph records.
-//!
-//! The archive deliberately preserves source JSONL bytes. It does not deserialize
-//! rows into the current Rust domain model, rename Tasks to Work, or create
-//! Mission/Wave compatibility projections.
+//! Read-only, byte-preserving archive support for retired coordination records.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -10,13 +6,23 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-
+mod digest;
+mod export;
+mod verify;
+mod workflow_history;
+pub(crate) use digest::sha256_hex;
+pub use export::export_archive;
+pub use verify::verify_archive;
+pub use workflow_history::restore_read_workflow_history;
+use workflow_history::{
+    archive_workflow_history, parseable_jsonl_records, validate_workflow_archive_contract,
+    verify_workflow_history, WorkflowArchiveContract, WORKFLOW_LEDGERS, WORKFLOW_PATCH_ROOT,
+};
 const ARCHIVE_FORMAT: &str = "legacy-coordination-history-v2";
 const ARCHIVE_VERSION: u32 = 2;
 const PREVIOUS_ARCHIVE_FORMAT: &str = "legacy-goal-task-v1";
 const PREVIOUS_ARCHIVE_VERSION: u32 = 1;
 const EXPORTER_VERSION: &str = env!("CARGO_PKG_VERSION");
-
 // This is an authorization contract, not a pattern-based repair. The one
 // historical mismatch accepted by R0 is pinned to the exact project, source
 // row, identity, target, bytes, and semantic predicate observed during the
@@ -31,7 +37,6 @@ const AUTHORIZED_ANOMALY_TARGET: &str = "goal-custom-workflow-phase-runner-v1";
 const AUTHORIZED_ANOMALY_RAW_SHA256: &str =
     "66d5c9d0a7a133a6adb021c95ea7b7d9ded1f16d87b08dcead8edb58934c9a55";
 const AUTHORIZED_ANOMALY_DECISION_KIND: &str = "phase_verdict";
-
 const LEGACY_LEDGERS: &[&str] = &[
     "goals.jsonl",
     "tasks.jsonl",
@@ -40,18 +45,6 @@ const LEGACY_LEDGERS: &[&str] = &[
     "goal_cases.jsonl",
     "goal_orchestration_runs.jsonl",
 ];
-
-/// Retired Dynamic Workflow journals. These are copied and verified as opaque
-/// bytes: historical or partially-written rows must not be normalized through
-/// the current Rust types merely to preserve them.
-const WORKFLOW_LEDGERS: &[&str] = &[
-    "workflow_runs.jsonl",
-    "workflow_steps.jsonl",
-    "workflow_patches.jsonl",
-    "workflow_artifact_manifests.jsonl",
-];
-const WORKFLOW_PATCH_ROOT: &str = "workflow-patches";
-
 const INTERPRETATION_PATHS: &[&str] = &[
     "schemas/goal.schema.json",
     "schemas/task.schema.json",
@@ -71,10 +64,8 @@ const INTERPRETATION_PATHS: &[&str] = &[
     "skills/star-goal",
     "skills/star-planner",
 ];
-
 type FileMeta = (String, Option<String>, Option<bool>, Option<Vec<u64>>);
 type FileMetaMap = BTreeMap<String, FileMeta>;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportSummary {
     pub format: String,
@@ -113,14 +104,6 @@ struct Manifest {
     files: Vec<ManifestFile>,
     known_anomalies: Vec<KnownAnomaly>,
     closure: ClosureSummary,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct WorkflowArchiveContract {
-    encoding: String,
-    ledgers: Vec<String>,
-    patch_root: String,
-    restore_mode: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -491,463 +474,6 @@ impl Drop for StagingDir {
     }
 }
 
-/// Create one immutable archive. The source store is only ever opened for read.
-pub fn export_archive(
-    store_root: &Path,
-    project_id: Option<&str>,
-    project_root: Option<&Path>,
-    output: &Path,
-) -> Result<ExportSummary, String> {
-    let project_root = project_root.ok_or_else(|| {
-        "legacy export needs an explicit project root; refusing implicit source discovery"
-            .to_string()
-    })?;
-    reject_symlink_or_non_directory(store_root, "primary source store")?;
-    reject_symlink_or_non_directory(project_root, "project root")?;
-    if output.exists() {
-        return Err(format!(
-            "archive destination already exists (refusing to overwrite): {}",
-            output.display()
-        ));
-    }
-    let mut sources = discover_sources(store_root, project_root)?;
-    reject_output_inside_roots(
-        &sources
-            .iter()
-            .map(|source| source.root.as_path())
-            .collect::<Vec<_>>(),
-        project_root,
-        output,
-    )?;
-    for source in &mut sources {
-        source.before = snapshot_directory(&source.root)?;
-    }
-
-    let parent = output
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent).map_err(|e| format!("create archive parent: {e}"))?;
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let output_name = output
-        .file_name()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| "archive destination needs a valid final path component".to_string())?;
-    let staging_path = parent.join(format!(
-        ".{output_name}.partial-{}-{suffix}",
-        std::process::id()
-    ));
-    fs::create_dir(&staging_path).map_err(|e| format!("create archive staging dir: {e}"))?;
-    let mut staging = StagingDir {
-        path: staging_path,
-        keep: false,
-    };
-
-    let resolved_project_id = project_id
-        .map(str::to_string)
-        .or_else(|| project_id_from_metadata(store_root))
-        .unwrap_or_else(|| {
-            store_root
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unidentified-project")
-                .to_string()
-        });
-
-    let mut ledgers = Vec::new();
-    let mut file_meta = FileMetaMap::new();
-    let mut linked_rows = 0_u64;
-    let mut manifest_sources = Vec::new();
-    for source in &sources {
-        let result = archive_source(source, &staging.path, &mut file_meta)?;
-        linked_rows += result.linked_rows;
-        ledgers.extend(result.ledgers);
-        manifest_sources.push(ManifestSource {
-            id: source.id.clone(),
-            kind: source.kind.clone(),
-            path: canonical_string(&source.root),
-            snapshot_sha256: snapshot_hash(&source.before)?,
-            snapshot_files: source.before.clone(),
-            linked_ledgers: result.linked_ledgers,
-        });
-    }
-
-    let inventory = build_inventory(&ledgers)?;
-    let (edges, known_anomalies) = build_edges(&resolved_project_id, &ledgers, &inventory)?;
-    validate_authorized_anomaly_contract(&resolved_project_id, &known_anomalies)?;
-    let edges_bytes = jsonl_bytes(&edges)?;
-    write_archive_file(&staging.path, "edges.jsonl", &edges_bytes)?;
-    file_meta.insert(
-        "edges.jsonl".into(),
-        ("foreign_key_edges".into(), None, None, None),
-    );
-
-    let interpretation_materials =
-        copy_interpretation_files(project_root, &staging.path, &mut file_meta)?;
-
-    // Re-snapshot every source only after all reads and interpretation copies.
-    // A difference means the archive could mix rows from different moments, so
-    // the staging directory is discarded and nothing is published.
-    for source in &sources {
-        ensure_source_unchanged(source)?;
-    }
-
-    let mut files = Vec::new();
-    for (path, (category, source_path, source_present, source_lines)) in file_meta {
-        let bytes = fs::read(staging.path.join(&path))
-            .map_err(|e| format!("read staged archive file {path}: {e}"))?;
-        files.push(ManifestFile {
-            path,
-            category,
-            sha256: sha256_hex(&bytes),
-            bytes: bytes.len() as u64,
-            line_count: physical_line_count(&bytes),
-            source_path,
-            source_present,
-            source_lines,
-        });
-    }
-    files.sort_by(|a, b| a.path.cmp(&b.path));
-
-    let required_edge_count = edges.iter().filter(|edge| edge.closure_required).count() as u64;
-    let unresolved_required_edges = edges
-        .iter()
-        .filter(|edge| {
-            edge.closure_required
-                && !target_exists(edge, &inventory)
-                && !known_anomalies
-                    .iter()
-                    .any(|anomaly| anomaly_matches_edge(anomaly, edge))
-        })
-        .count() as u64;
-    let manifest = Manifest {
-        format: ARCHIVE_FORMAT.into(),
-        version: ARCHIVE_VERSION,
-        exporter_version: EXPORTER_VERSION.into(),
-        exported_at_unix_ms: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
-        project: ManifestProject {
-            id: resolved_project_id.clone(),
-            project_root: Some(canonical_string(project_root)),
-        },
-        workflow_archive: Some(WorkflowArchiveContract {
-            encoding: "opaque-bytes".into(),
-            ledgers: WORKFLOW_LEDGERS
-                .iter()
-                .map(|value| (*value).into())
-                .collect(),
-            patch_root: WORKFLOW_PATCH_ROOT.into(),
-            restore_mode: "read-only".into(),
-        }),
-        source_comparisons: compare_manifest_sources(&manifest_sources),
-        interpretation_materials,
-        sources: manifest_sources,
-        files,
-        known_anomalies: known_anomalies.clone(),
-        closure: ClosureSummary {
-            edge_count: edges.len() as u64,
-            required_edge_count,
-            unresolved_required_edges,
-        },
-    };
-    let mut manifest_bytes =
-        serde_json::to_vec_pretty(&manifest).map_err(|e| format!("serialize manifest: {e}"))?;
-    manifest_bytes.push(b'\n');
-    write_archive_file(&staging.path, "manifest.json", &manifest_bytes)?;
-
-    fs::rename(&staging.path, output).map_err(|e| {
-        format!(
-            "publish archive {} -> {}: {e}",
-            staging.path.display(),
-            output.display()
-        )
-    })?;
-    staging.keep = true;
-
-    Ok(ExportSummary {
-        format: ARCHIVE_FORMAT.into(),
-        archive: canonical_string(output),
-        project_id: resolved_project_id,
-        source_stores: manifest
-            .sources
-            .iter()
-            .map(|source| source.path.clone())
-            .collect(),
-        files: manifest.files.len(),
-        linked_rows,
-        edges: edges.len() as u64,
-        unresolved_required_edges,
-        known_anomalies: known_anomalies.len() as u64,
-    })
-}
-
-/// Verify hashes, line counts, latest projections, edge regeneration, and
-/// referential closure without consulting the live store.
-pub fn verify_archive(archive: &Path) -> Result<VerifySummary, String> {
-    reject_symlink_ancestors(archive, "archive directory")?;
-    reject_symlink_or_non_directory(archive, "archive directory")?;
-    let manifest_path = archive.join("manifest.json");
-    let manifest_bytes =
-        fs::read(&manifest_path).map_err(|e| format!("read {}: {e}", manifest_path.display()))?;
-    let manifest: Manifest = serde_json::from_slice(&manifest_bytes)
-        .map_err(|e| format!("parse {}: {e}", manifest_path.display()))?;
-    let includes_workflow_history =
-        if manifest.format == ARCHIVE_FORMAT && manifest.version == ARCHIVE_VERSION {
-            true
-        } else if manifest.format == PREVIOUS_ARCHIVE_FORMAT
-            && manifest.version == PREVIOUS_ARCHIVE_VERSION
-        {
-            false
-        } else {
-            return Err(format!(
-                "unsupported archive format/version: {}/{}",
-                manifest.format, manifest.version
-            ));
-        };
-    if includes_workflow_history {
-        validate_workflow_archive_contract(manifest.workflow_archive.as_ref())?;
-    } else if manifest.workflow_archive.is_some() {
-        return Err("v1 archive must not claim the v2 workflow archive contract".into());
-    }
-    if manifest.sources.is_empty() {
-        return Err("archive manifest must contain at least one source".into());
-    }
-
-    let mut entries = BTreeMap::new();
-    for entry in &manifest.files {
-        validate_relative_archive_path(&entry.path)?;
-        reject_relative_symlink_components(archive, Path::new(&entry.path), "archive file")?;
-        if entries.insert(entry.path.clone(), entry).is_some() {
-            return Err(format!("duplicate manifest path: {}", entry.path));
-        }
-        let path = archive.join(&entry.path);
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|e| format!("inspect archived file {}: {e}", path.display()))?;
-        if !metadata.file_type().is_file() {
-            return Err(format!(
-                "manifest path is not a regular file: {}",
-                entry.path
-            ));
-        }
-        let bytes =
-            fs::read(&path).map_err(|e| format!("read archived file {}: {e}", path.display()))?;
-        let actual_hash = sha256_hex(&bytes);
-        if actual_hash != entry.sha256 {
-            return Err(format!(
-                "SHA-256 mismatch for {}: manifest {}, actual {}",
-                entry.path, entry.sha256, actual_hash
-            ));
-        }
-        if bytes.len() as u64 != entry.bytes {
-            return Err(format!(
-                "byte-count mismatch for {}: manifest {}, actual {}",
-                entry.path,
-                entry.bytes,
-                bytes.len()
-            ));
-        }
-        let lines = physical_line_count(&bytes);
-        if lines != entry.line_count {
-            return Err(format!(
-                "line-count mismatch for {}: manifest {}, actual {}",
-                entry.path, entry.line_count, lines
-            ));
-        }
-        if let Some(source_lines) = &entry.source_lines {
-            if source_lines.len() as u64 != lines {
-                return Err(format!(
-                    "source-line map length mismatch for {}: {} mappings for {} lines",
-                    entry.path,
-                    source_lines.len(),
-                    lines
-                ));
-            }
-        }
-    }
-
-    let mut ledgers = Vec::new();
-    let mut source_ids = BTreeSet::new();
-    for source in &manifest.sources {
-        validate_source_id(&source.id)?;
-        if !source_ids.insert(source.id.clone()) {
-            return Err(format!("duplicate archive source id: {}", source.id));
-        }
-        if source.snapshot_sha256 != snapshot_hash(&source.snapshot_files)? {
-            return Err(format!(
-                "source snapshot hash mismatch in manifest: {}",
-                source.id
-            ));
-        }
-        let mut snapshot_paths = BTreeMap::new();
-        for snapshot_file in &source.snapshot_files {
-            validate_relative_archive_path(&snapshot_file.path)?;
-            if snapshot_paths
-                .insert(snapshot_file.path.as_str(), snapshot_file)
-                .is_some()
-            {
-                return Err(format!(
-                    "duplicate source snapshot path for {}: {}",
-                    source.id, snapshot_file.path
-                ));
-            }
-        }
-        for ledger in LEGACY_LEDGERS {
-            let archive_path = format!("sources/{}/raw/{ledger}", source.id);
-            let entry = entries.get(&archive_path).ok_or_else(|| {
-                format!("manifest/archive missing required ledger: {archive_path}")
-            })?;
-            let bytes = fs::read(archive.join(&archive_path))
-                .map_err(|e| format!("read {archive_path}: {e}"))?;
-            validate_jsonl(&bytes, ledger)?;
-            if entry.category != "raw_legacy_ledger" {
-                return Err(format!(
-                    "wrong category for source {}/{ledger}: {}",
-                    source.id, entry.category
-                ));
-            }
-            let snapshot_file = snapshot_paths.get(*ledger).copied();
-            match (entry.source_present, snapshot_file) {
-                (Some(true), Some(snapshot_file))
-                    if snapshot_file.bytes == bytes.len() as u64
-                        && snapshot_file.sha256 == sha256_hex(&bytes) => {}
-                (Some(false), None) if bytes.is_empty() => {}
-                _ => {
-                    return Err(format!(
-                        "raw legacy ledger does not match source snapshot presence/hash: {}/{}",
-                        source.id, ledger
-                    ));
-                }
-            }
-            ledgers.push(ArchivedLedger {
-                source_id: source.id.clone(),
-                ledger: (*ledger).to_string(),
-                archive_path,
-                source_lines: (1..=physical_line_count(&bytes)).collect(),
-                bytes,
-            });
-        }
-        if includes_workflow_history {
-            verify_workflow_history(archive, source, &snapshot_paths, &entries)?;
-        }
-        for ledger in &source.linked_ledgers {
-            let archive_path = format!("sources/{}/records/{ledger}", source.id);
-            let entry = entries
-                .get(&archive_path)
-                .ok_or_else(|| format!("manifest/archive missing linked rows: {archive_path}"))?;
-            let bytes = fs::read(archive.join(&archive_path))
-                .map_err(|e| format!("read {archive_path}: {e}"))?;
-            if !snapshot_paths.contains_key(ledger.as_str()) {
-                return Err(format!(
-                    "linked ledger is absent from source snapshot: {}/{}",
-                    source.id, ledger
-                ));
-            }
-            validate_linked_records(&bytes, ledger, &archive_path)?;
-            let source_lines = entry
-                .source_lines
-                .clone()
-                .ok_or_else(|| format!("linked rows lack source-line map: {archive_path}"))?;
-            ledgers.push(ArchivedLedger {
-                source_id: source.id.clone(),
-                ledger: ledger.clone(),
-                archive_path,
-                bytes,
-                source_lines,
-            });
-        }
-    }
-    if manifest.source_comparisons != compare_manifest_sources(&manifest.sources) {
-        return Err("source comparison summary does not match source snapshots".into());
-    }
-    validate_interpretation_materials(&manifest, &entries)?;
-
-    for ledger in &ledgers {
-        let latest_path = format!("sources/{}/latest/{}", ledger.source_id, ledger.ledger);
-        if !entries.contains_key(&latest_path) {
-            return Err(format!("latest projection missing: {latest_path}"));
-        }
-        let expected = latest_projection(&ledger.bytes, &ledger.ledger)?;
-        let actual =
-            fs::read(archive.join(&latest_path)).map_err(|e| format!("read {latest_path}: {e}"))?;
-        if actual != expected {
-            return Err(format!("latest projection mismatch: {latest_path}"));
-        }
-    }
-
-    let inventory = build_inventory(&ledgers)?;
-    let (expected_edges, expected_anomalies) =
-        build_edges(&manifest.project.id, &ledgers, &inventory)?;
-    validate_authorized_anomaly_contract(&manifest.project.id, &expected_anomalies)?;
-    let expected_edge_bytes = jsonl_bytes(&expected_edges)?;
-    let actual_edge_bytes =
-        fs::read(archive.join("edges.jsonl")).map_err(|e| format!("read edges.jsonl: {e}"))?;
-    if actual_edge_bytes != expected_edge_bytes {
-        return Err("edges.jsonl does not match edges regenerated from archived rows".into());
-    }
-
-    let required_edge_count = expected_edges
-        .iter()
-        .filter(|edge| edge.closure_required)
-        .count() as u64;
-    if manifest.known_anomalies != expected_anomalies {
-        return Err(
-            "known anomaly whitelist does not match semantic predicates over raw rows".into(),
-        );
-    }
-    let unresolved = expected_edges
-        .iter()
-        .filter(|edge| {
-            edge.closure_required
-                && !target_exists(edge, &inventory)
-                && !expected_anomalies
-                    .iter()
-                    .any(|anomaly| anomaly_matches_edge(anomaly, edge))
-        })
-        .collect::<Vec<_>>();
-    if manifest.closure.edge_count != expected_edges.len() as u64
-        || manifest.closure.required_edge_count != required_edge_count
-        || manifest.closure.unresolved_required_edges != unresolved.len() as u64
-    {
-        return Err("manifest closure counts do not match regenerated edges".into());
-    }
-    if !unresolved.is_empty() {
-        let sample = unresolved
-            .iter()
-            .take(5)
-            .map(|edge| {
-                format!(
-                    "{}/{}:{} {} -> {}:{}",
-                    edge.source_id,
-                    edge.source_ledger,
-                    edge.source_store_line,
-                    edge.field,
-                    edge.target_kind,
-                    edge.target_id
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(format!(
-            "legacy foreign-key closure failed ({} unresolved): {sample}",
-            unresolved.len()
-        ));
-    }
-
-    Ok(VerifySummary {
-        format: manifest.format,
-        archive: canonical_string(archive),
-        files: manifest.files.len(),
-        edges: expected_edges.len() as u64,
-        closure: "verified".into(),
-        known_anomalies: expected_anomalies.len() as u64,
-    })
-}
-
 struct SourceArchiveResult {
     ledgers: Vec<ArchivedLedger>,
     linked_ledgers: Vec<String>,
@@ -1135,6 +661,7 @@ fn archive_source(
 ) -> Result<SourceArchiveResult, String> {
     validate_source_id(&source.id)?;
     let prefix = format!("sources/{}", source.id);
+    archive_workflow_history(source, archive_root, file_meta, &prefix)?;
     let mut ledgers = Vec::new();
     for ledger in LEGACY_LEDGERS {
         let source_path = source.root.join(ledger);
@@ -1167,8 +694,6 @@ fn archive_source(
             bytes,
         });
     }
-
-    archive_workflow_history(source, archive_root, file_meta, &prefix)?;
 
     let mut linked_ledgers = Vec::new();
     let mut linked_rows = 0_u64;
@@ -1250,188 +775,6 @@ fn archive_source(
         linked_ledgers,
         linked_rows,
     })
-}
-
-fn validate_workflow_archive_contract(
-    contract: Option<&WorkflowArchiveContract>,
-) -> Result<(), String> {
-    let contract = contract.ok_or_else(|| "v2 archive is missing workflow_archive".to_string())?;
-    let expected_ledgers = WORKFLOW_LEDGERS
-        .iter()
-        .map(|value| (*value).to_string())
-        .collect::<Vec<_>>();
-    if contract.encoding != "opaque-bytes"
-        || contract.ledgers != expected_ledgers
-        || contract.patch_root != WORKFLOW_PATCH_ROOT
-        || contract.restore_mode != "read-only"
-    {
-        return Err("workflow archive contract does not match the v2 exporter contract".into());
-    }
-    Ok(())
-}
-
-fn archive_workflow_history(
-    source: &SourceSpec,
-    archive_root: &Path,
-    file_meta: &mut FileMetaMap,
-    prefix: &str,
-) -> Result<(), String> {
-    for ledger in WORKFLOW_LEDGERS {
-        let source_path = source.root.join(ledger);
-        let (bytes, present) = if source_path.is_file() {
-            (
-                fs::read(&source_path)
-                    .map_err(|error| format!("read {}: {error}", source_path.display()))?,
-                true,
-            )
-        } else {
-            (Vec::new(), false)
-        };
-        let archive_path = format!("{prefix}/workflow/raw/{ledger}");
-        write_archive_file(archive_root, &archive_path, &bytes)?;
-        file_meta.insert(
-            archive_path,
-            (
-                "raw_workflow_ledger".into(),
-                Some(source_path.display().to_string()),
-                Some(present),
-                None,
-            ),
-        );
-    }
-
-    let patch_prefix = format!("{WORKFLOW_PATCH_ROOT}/");
-    for snapshot in source
-        .before
-        .iter()
-        .filter(|entry| entry.path.starts_with(&patch_prefix))
-    {
-        let relative = Path::new(&snapshot.path)
-            .strip_prefix(WORKFLOW_PATCH_ROOT)
-            .map_err(|error| format!("invalid workflow patch snapshot path: {error}"))?;
-        let relative_text = relative
-            .to_str()
-            .ok_or_else(|| format!("non-UTF-8 workflow patch path: {}", relative.display()))?;
-        validate_relative_archive_path(relative_text)?;
-        reject_relative_symlink_components(
-            &source.root,
-            Path::new(&snapshot.path),
-            "workflow patch",
-        )?;
-        let source_path = source.root.join(&snapshot.path);
-        let bytes = fs::read(&source_path)
-            .map_err(|error| format!("read {}: {error}", source_path.display()))?;
-        let archive_path = format!("{prefix}/workflow/patches/{relative_text}");
-        write_archive_file(archive_root, &archive_path, &bytes)?;
-        file_meta.insert(
-            archive_path,
-            (
-                "raw_workflow_patch".into(),
-                Some(source_path.display().to_string()),
-                Some(true),
-                None,
-            ),
-        );
-    }
-    Ok(())
-}
-
-fn verify_workflow_history(
-    archive: &Path,
-    source: &ManifestSource,
-    snapshot_paths: &BTreeMap<&str, &SnapshotFile>,
-    entries: &BTreeMap<String, &ManifestFile>,
-) -> Result<(), String> {
-    for ledger in WORKFLOW_LEDGERS {
-        let archive_path = format!("sources/{}/workflow/raw/{ledger}", source.id);
-        let entry = entries
-            .get(&archive_path)
-            .ok_or_else(|| format!("manifest/archive missing workflow ledger: {archive_path}"))?;
-        if entry.category != "raw_workflow_ledger" {
-            return Err(format!(
-                "wrong category for workflow ledger: {archive_path}"
-            ));
-        }
-        let bytes = fs::read(archive.join(&archive_path))
-            .map_err(|error| format!("read {archive_path}: {error}"))?;
-        match (entry.source_present, snapshot_paths.get(*ledger).copied()) {
-            (Some(true), Some(snapshot))
-                if snapshot.bytes == bytes.len() as u64
-                    && snapshot.sha256 == sha256_hex(&bytes) => {}
-            (Some(false), None) if bytes.is_empty() => {}
-            _ => {
-                return Err(format!(
-                    "raw workflow ledger does not match source snapshot: {}/{}",
-                    source.id, ledger
-                ));
-            }
-        }
-    }
-
-    let snapshot_patches = source
-        .snapshot_files
-        .iter()
-        .filter(|entry| entry.path.starts_with(&format!("{WORKFLOW_PATCH_ROOT}/")))
-        .map(|entry| {
-            let relative = entry
-                .path
-                .trim_start_matches(&format!("{WORKFLOW_PATCH_ROOT}/"));
-            (relative.to_string(), entry)
-        })
-        .collect::<BTreeMap<_, _>>();
-    let archive_prefix = format!("sources/{}/workflow/patches/", source.id);
-    let archived_patches = entries
-        .iter()
-        .filter(|(path, entry)| {
-            path.starts_with(&archive_prefix) && entry.category == "raw_workflow_patch"
-        })
-        .map(|(path, entry)| (path.trim_start_matches(&archive_prefix).to_string(), *entry))
-        .collect::<BTreeMap<_, _>>();
-    if snapshot_patches.keys().collect::<Vec<_>>() != archived_patches.keys().collect::<Vec<_>>() {
-        return Err(format!(
-            "workflow patch inventory does not match source snapshot: {}",
-            source.id
-        ));
-    }
-    for (relative, snapshot) in snapshot_patches {
-        let archive_path = format!("{archive_prefix}{relative}");
-        let bytes = fs::read(archive.join(&archive_path))
-            .map_err(|error| format!("read {archive_path}: {error}"))?;
-        if snapshot.bytes != bytes.len() as u64 || snapshot.sha256 != sha256_hex(&bytes) {
-            return Err(format!(
-                "workflow patch does not match source snapshot: {archive_path}"
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Verify an archive and return its retired Workflow files as opaque bytes.
-/// This is deliberately a read-only restore seam: callers can inspect or copy
-/// the exact historical bytes without reopening any current writer.
-pub fn restore_read_workflow_history(archive: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
-    verify_archive(archive)?;
-    let manifest_path = archive.join("manifest.json");
-    let manifest: Manifest = serde_json::from_slice(
-        &fs::read(&manifest_path)
-            .map_err(|error| format!("read {}: {error}", manifest_path.display()))?,
-    )
-    .map_err(|error| format!("parse {}: {error}", manifest_path.display()))?;
-    validate_workflow_archive_contract(manifest.workflow_archive.as_ref())?;
-    let mut restored = BTreeMap::new();
-    for entry in manifest.files.iter().filter(|entry| {
-        matches!(
-            entry.category.as_str(),
-            "raw_workflow_ledger" | "raw_workflow_patch"
-        )
-    }) {
-        restored.insert(
-            entry.path.clone(),
-            fs::read(archive.join(&entry.path))
-                .map_err(|error| format!("read {}: {error}", entry.path))?,
-        );
-    }
-    Ok(restored)
 }
 
 fn validate_linked_records(bytes: &[u8], ledger: &str, archive_path: &str) -> Result<(), String> {
@@ -1843,33 +1186,6 @@ pub(crate) fn jsonl_records<'a>(
     Ok(records)
 }
 
-/// Return only syntactically parseable rows while retaining their exact source
-/// line and byte slice. This is used solely to derive optional legacy relation
-/// indexes from Workflow history; the authoritative archive is the separate
-/// opaque-byte copy, including every row this function cannot parse.
-fn parseable_jsonl_records(bytes: &[u8]) -> Vec<JsonlRecord<'_>> {
-    let mut records = Vec::new();
-    let mut start = 0_usize;
-    for (index, end) in bytes
-        .iter()
-        .enumerate()
-        .filter_map(|(index, byte)| (*byte == b'\n').then_some(index + 1))
-        .chain((!bytes.is_empty() && bytes.last() != Some(&b'\n')).then_some(bytes.len()))
-        .enumerate()
-    {
-        let line = index as u64 + 1;
-        let raw = &bytes[start..end];
-        let content = raw.strip_suffix(b"\n").unwrap_or(raw);
-        if !content.iter().all(u8::is_ascii_whitespace) {
-            if let Ok(value) = serde_json::from_slice(content) {
-                records.push(JsonlRecord { line, raw, value });
-            }
-        }
-        start = end;
-    }
-    records
-}
-
 fn validate_jsonl(bytes: &[u8], label: &str) -> Result<(), String> {
     jsonl_records(bytes, label).map(|_| ())
 }
@@ -2179,177 +1495,5 @@ fn jsonl_bytes<T: Serialize>(values: &[T]) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-// Small self-contained SHA-256 implementation. Keeping it here avoids making the
-// archive contract depend on an external executable or a new crate dependency.
-pub(crate) fn sha256_hex(input: &[u8]) -> String {
-    const INITIAL: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-        0x5be0cd19,
-    ];
-    const K: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
-        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
-        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
-        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
-        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
-        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
-        0xc67178f2,
-    ];
-
-    let bit_len = (input.len() as u64).wrapping_mul(8);
-    let mut padded = input.to_vec();
-    padded.push(0x80);
-    while padded.len() % 64 != 56 {
-        padded.push(0);
-    }
-    padded.extend_from_slice(&bit_len.to_be_bytes());
-
-    let mut state = INITIAL;
-    for chunk in padded.chunks_exact(64) {
-        let mut words = [0_u32; 64];
-        for (index, word) in words.iter_mut().take(16).enumerate() {
-            let start = index * 4;
-            *word = u32::from_be_bytes([
-                chunk[start],
-                chunk[start + 1],
-                chunk[start + 2],
-                chunk[start + 3],
-            ]);
-        }
-        for index in 16..64 {
-            let s0 = words[index - 15].rotate_right(7)
-                ^ words[index - 15].rotate_right(18)
-                ^ (words[index - 15] >> 3);
-            let s1 = words[index - 2].rotate_right(17)
-                ^ words[index - 2].rotate_right(19)
-                ^ (words[index - 2] >> 10);
-            words[index] = words[index - 16]
-                .wrapping_add(s0)
-                .wrapping_add(words[index - 7])
-                .wrapping_add(s1);
-        }
-        let mut a = state[0];
-        let mut b = state[1];
-        let mut c = state[2];
-        let mut d = state[3];
-        let mut e = state[4];
-        let mut f = state[5];
-        let mut g = state[6];
-        let mut h = state[7];
-        for index in 0..64 {
-            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let choice = (e & f) ^ ((!e) & g);
-            let temp1 = h
-                .wrapping_add(s1)
-                .wrapping_add(choice)
-                .wrapping_add(K[index])
-                .wrapping_add(words[index]);
-            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let majority = (a & b) ^ (a & c) ^ (b & c);
-            let temp2 = s0.wrapping_add(majority);
-            h = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(temp1);
-            d = c;
-            c = b;
-            b = a;
-            a = temp1.wrapping_add(temp2);
-        }
-        state[0] = state[0].wrapping_add(a);
-        state[1] = state[1].wrapping_add(b);
-        state[2] = state[2].wrapping_add(c);
-        state[3] = state[3].wrapping_add(d);
-        state[4] = state[4].wrapping_add(e);
-        state[5] = state[5].wrapping_add(f);
-        state[6] = state[6].wrapping_add(g);
-        state[7] = state[7].wrapping_add(h);
-    }
-    state.iter().map(|word| format!("{word:08x}")).collect()
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sha256_matches_standard_vectors() {
-        assert_eq!(
-            sha256_hex(b""),
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
-        assert_eq!(
-            sha256_hex(b"abc"),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-    }
-
-    #[test]
-    fn latest_projection_retains_last_row_bytes() {
-        let bytes = b"{\"id\":\"a\",\"v\":1}\n{\"id\":\"b\",\"v\":1}\n{\"id\":\"a\",\"v\":2}";
-        assert_eq!(
-            latest_projection(bytes, "test.jsonl").unwrap(),
-            b"{\"id\":\"b\",\"v\":1}\n{\"id\":\"a\",\"v\":2}"
-        );
-    }
-
-    #[test]
-    fn only_contract_paths_become_edges() {
-        let value = serde_json::json!({
-            "id": "x",
-            "goal_id": "g1",
-            "phase_runs": [{"phase_id": "p1"}],
-            "result": {"task_id": "dynamic-must-not-scan"}
-        });
-        let mut links = Vec::new();
-        collect_link_values("goal_orchestration_runs.jsonl", &value, &mut links);
-        assert_eq!(links.len(), 2);
-        assert!(links
-            .iter()
-            .any(|(path, _, id)| path == "/goal_id" && id == "g1"));
-        assert!(links
-            .iter()
-            .any(|(path, _, id)| path == "/phase_runs/0/phase_id" && id == "p1"));
-        assert!(!links.iter().any(|(_, _, id)| id == "dynamic-must-not-scan"));
-    }
-
-    #[test]
-    fn snapshot_detects_file_set_size_and_hash_changes() {
-        let root = std::env::temp_dir().join(format!(
-            "legacy-export-snapshot-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        fs::create_dir(&root).unwrap();
-        fs::write(root.join("ledger.jsonl"), b"one\n").unwrap();
-        let before = snapshot_directory(&root).unwrap();
-
-        fs::write(root.join("ledger.jsonl"), b"two\n").unwrap();
-        let hash_changed = snapshot_directory(&root).unwrap();
-        assert_ne!(before, hash_changed, "same size but new hash must differ");
-
-        fs::write(root.join("new.jsonl"), b"{}\n").unwrap();
-        let set_changed = snapshot_directory(&root).unwrap();
-        assert_ne!(hash_changed, set_changed, "new file set must differ");
-
-        fs::write(root.join("ledger.jsonl"), b"longer\n").unwrap();
-        let size_changed = snapshot_directory(&root).unwrap();
-        assert_ne!(set_changed, size_changed, "new size must differ");
-
-        let source = SourceSpec {
-            id: "test".into(),
-            kind: "test".into(),
-            root: root.clone(),
-            before: set_changed,
-        };
-        let error = ensure_source_unchanged(&source).unwrap_err();
-        assert!(error.contains("refusing mixed snapshot"));
-        fs::remove_dir_all(root).unwrap();
-    }
-}
+mod tests;

@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 
-const rustPath = "crates/firm-core/src/agentfirm_api.rs";
+const rustPath = "crates/firm-core/src/agentfirm_api/work_trust.rs";
 const schemaPath = "schemas/trust-error.schema.json";
 const appendixPath = "docs/current/architecture/member-trust-error-appendix.md";
 

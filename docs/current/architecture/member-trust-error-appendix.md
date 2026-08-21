@@ -1,6 +1,6 @@
 # Member Execution Trust Error Appendix
 
-This file is generated from `TrustErrorCode` in `crates/firm-core/src/agentfirm_api.rs`. Do not edit it by hand. Run `node scripts/generate-member-trust-error-contract.mjs --write` after changing the Rust enum, then commit the schema and this appendix together.
+This file is generated from `TrustErrorCode` in `crates/firm-core/src/agentfirm_api/work_trust.rs`. Do not edit it by hand. Run `node scripts/generate-member-trust-error-contract.mjs --write` after changing the Rust enum, then commit the schema and this appendix together.
 
 Protocol: `agentfirm-member-trust/1`
 

@@ -477,11 +477,19 @@ assertEqual(forbiddenHits, [], "active forbidden Dynamic Workflow signatures");
 // Core decode types and Store readers remain solely for lossless historical
 // export/verification. They are not active capability, but every old Store
 // writer must terminate at the explicit fail-closed boundary.
-const coreText = readFileSync(join(ROOT, "crates/firm-core/src/lib.rs"), "utf8");
+const coreFacadePath = join(ROOT, "crates/firm-core/src/lib.rs");
+const coreWorkflowPath = join(ROOT, "crates/firm-core/src/workflow.rs");
+const coreText = [coreFacadePath, coreWorkflowPath]
+  .filter(existsSync)
+  .map((path) => readFileSync(path, "utf8"))
+  .join("\n");
 if (!coreText.includes("Retired Dynamic Workflow historical decode objects")) {
   fail("firm-core historical Workflow decode types are not marked retired");
 }
-const storeText = readFileSync(join(ROOT, "crates/firm-store/src/lib.rs"), "utf8");
+const storeText = walkFiles(join(ROOT, "crates/firm-store/src"))
+  .filter((path) => path.endsWith(".rs"))
+  .map((path) => readFileSync(path, "utf8"))
+  .join("\n");
 for (const writer of [
   "append_workflow_run",
   "append_workflow_step",

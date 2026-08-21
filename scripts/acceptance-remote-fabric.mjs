@@ -81,10 +81,23 @@ for (const [schemaName, fixturePrefix] of schemas) {
 const router = readFileSync("crates/firm-fabric/src/router.rs", "utf8");
 const protocol = readFileSync("crates/firm-fabric/src/protocol.rs", "utf8");
 const enrollment = readFileSync("crates/firm-fabric/src/enrollment.rs", "utf8");
-const trustStore = readFileSync("crates/firm-store/src/trust_kernel.rs", "utf8");
+const readRustModule = (file, directory) => [
+  readFileSync(file, "utf8"),
+  ...readdirSync(directory)
+    .filter((name) => name.endsWith(".rs") && name !== "tests.rs")
+    .sort()
+    .map((name) => readFileSync(join(directory, name), "utf8")),
+].join("\n");
+const trustStore = readRustModule(
+  "crates/firm-store/src/trust_kernel.rs",
+  "crates/firm-store/src/trust_kernel",
+);
 const remoteIntegration = [
   readFileSync("crates/firm-cli/src/remote_fabric.rs", "utf8"),
-  readFileSync("crates/firm-cli/src/fabric_runtime.rs", "utf8"),
+  readRustModule(
+    "crates/firm-cli/src/fabric_runtime.rs",
+    "crates/firm-cli/src/fabric_runtime",
+  ),
 ].join("\n");
 const requiredKinds = [
   "fabric.probe.v1",

@@ -2,7 +2,7 @@
 // Cross-layer consistency check: skill ↔ code CONTRACT prompt ↔ plugin manifests
 // Exit 0 when consistent, 1 when gaps found.
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,7 +25,14 @@ function ok(msg) {
 
 // ── Rule 1: CONTRACT prompt must match skill invariants ──────────────────
 console.log("Rule 1: CONTRACT prompt ↔ skills/shared-references");
-const mainRs = read(join(ROOT, "crates/firm-cli/src/main.rs"));
+const mainModuleRoot = join(ROOT, "crates/firm-cli/src/main_modules");
+const mainRs = [
+  read(join(ROOT, "crates/firm-cli/src/main.rs")),
+  ...readdirSync(mainModuleRoot)
+    .filter((name) => name.endsWith(".rs"))
+    .sort()
+    .map((name) => read(join(mainModuleRoot, name))),
+].filter(Boolean).join("\n");
 const shared = read(join(ROOT, "skills/shared-references/SKILL.md"));
 
 if (mainRs && shared) {
@@ -45,11 +52,11 @@ if (mainRs && shared) {
     } else if (!inSkill) {
       fail(`"${inv.name}" MISSING from shared-references SKILL.md`);
     } else {
-      fail(`"${inv.name}" MISSING from CONTRACT prompt in main.rs`);
+      fail(`"${inv.name}" MISSING from the CLI CONTRACT prompt`);
     }
   }
 } else {
-  fail("Cannot read main.rs or shared-references SKILL.md");
+  fail("Cannot read the CLI command source or shared-references SKILL.md");
 }
 
 // ── Rule 2: Mission + Wave are Legacy read/export-only (DOC-108) ─────────
