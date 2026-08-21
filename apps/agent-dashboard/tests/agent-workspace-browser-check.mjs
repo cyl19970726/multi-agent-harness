@@ -105,7 +105,6 @@ try{
     else if(url.pathname==="/v1/projects")body={projects:[{id:"fixture-project",is_current:true}]};
     else if(url.pathname==="/v1/spaces")body={spaces:[{id:"fixture-space",is_current:true}]};
     else if(url.pathname==="/v1/companies")body={companies:[]};
-    else if(url.pathname==="/v1/workflows")body={workflows:[]};
     else if(url.pathname==="/v1/snapshot"||url.pathname.includes("/snapshot"))body={generated_at:"2026-08-12T08:10:00Z",execution_space_id:"fixture-space",teams:[],team_runs:[],member_runs:[],execution_nodes:[],company_os:{}};
     else if(url.pathname.includes("team-workspace"))body=teamWorkspace;
     else if(url.pathname.includes("agent-workspace")){

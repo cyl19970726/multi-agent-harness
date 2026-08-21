@@ -15,7 +15,6 @@ import {
   ShieldAlert,
   Sparkles,
   Users,
-  Workflow,
   Wrench,
   X,
 } from "lucide-react";
@@ -42,7 +41,6 @@ import {
   ProvidersSurface,
   SettingsSurface,
 } from "../surfaces/Surfaces";
-import { WorkflowRunDetail, WorkflowsList } from "../surfaces/Workflows";
 import { AgentTeamsHome } from "../surfaces/AgentTeamsHome";
 import { GlobalWorkIndex } from "../surfaces/GlobalWorkIndex";
 import { TeamWorkspace } from "../surfaces/TeamWorkspace";
@@ -58,7 +56,7 @@ interface WorkbenchShellProps {
   /** Known projects for the header picker (goal-multi-project P6); empty for a
    * single-store / pre-multi-project backend, which hides the picker. */
   projects: Project[];
-  /** Independent Mission/Team/Workflow coordination namespaces. */
+  /** Independent coordination namespaces. */
   spaces: ExecutionSpace[];
   /** The currently-selected project id ("" before one is chosen/adopted). */
   selectedProjectId: string;
@@ -99,7 +97,7 @@ interface NavigationItem {
 
 /** Retained navigation (DOC-107): primary Global Work / Agent Teams / Nodes,
  * secondary Providers / Projects / Settings. Team Workspace, Host Console,
- * Agent Workspace, Workflows and Diagnostics remain deep-linkable off-rail. */
+ * Agent Workspace and Diagnostics remain deep-linkable off-rail. */
 const navigationGroups: Array<{ label: "PRIMARY" | "SECONDARY"; items: NavigationItem[] }> = [
   { label: "PRIMARY", items: [
     { id: "work", label: "Global Work", icon: BriefcaseBusiness },
@@ -120,8 +118,6 @@ const mobileMoreGroups = navigationGroups.slice(1);
 /**
  * Surfaces reachable in code but intentionally off the primary rail:
  * - agent detail: the Agents surface with a selected agent (?agent=<id>)
- * - workflows: execution capability retained pending an explicit retirement
- *   decision; reachable through ?surface=workflows / ?workflowRun=<id>
  * - debug: moved behind a TopBar button
  */
 
@@ -298,7 +294,7 @@ function TopBar({
     <header className="flex h-[58px] min-w-0 shrink-0 items-center gap-2 border-b border-border bg-card/80 px-3 backdrop-blur-md lg:gap-3">
       <div className="flex min-w-0 shrink items-center gap-2.5">
         <div className="grid size-8 place-items-center rounded-md bg-primary/15 text-primary ring-1 ring-primary/40 sm:hidden">
-          <Workflow className="size-4" />
+          <Users className="size-4" />
         </div>
         <div className="min-w-0 leading-tight">
           <div className="truncate text-[13px] font-semibold tracking-tight">{currentSurface}</div>
@@ -452,7 +448,7 @@ function ProjectPicker({
       <TooltipContent className="max-w-[36rem] space-y-1">
         <p><span className="text-muted-foreground">Provider cwd boundary:</span> <span className="font-mono">{selected.project_root}</span></p>
         <p><span className="text-muted-foreground">Skill discovery boundary:</span> <span className="font-mono">{selected.skill_discovery_boundary ?? selected.project_root}</span></p>
-        <p>Project Binding does not own Mission, AgentTeam, or Workflow storage.</p>
+        <p>Project Binding does not own coordination storage.</p>
       </TooltipContent>
     </Tooltip>
   );
@@ -493,7 +489,7 @@ function SpacePicker({
         </label>
       </TooltipTrigger>
       <TooltipContent className="max-w-[36rem] space-y-1">
-        <p><span className="text-muted-foreground">Execution coordination:</span> Mission / Mission Log / AgentTeam / Workflow</p>
+        <p><span className="text-muted-foreground">Execution coordination:</span> AgentTeam / Work / Message</p>
         <p><span className="text-muted-foreground">Store:</span> <span className="font-mono">{selected.store_root}</span></p>
         <p><span className="text-muted-foreground">Default binding:</span> <span className="font-mono">{selected.default_project_binding_id ?? "none"}</span></p>
       </TooltipContent>
@@ -599,7 +595,6 @@ function AppRail({
       memberId: undefined,
       memberRunId: undefined,
       teamId: undefined,
-      workflowRunId: undefined,
       teamWorkId: undefined,
       workTeamId: undefined,
       workHostId: undefined,
@@ -859,13 +854,6 @@ function SurfaceSwitch({
     return <GlobalWorkIndex apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} refreshKey={snapshotContentRevision} selection={selection} onSelectionChange={onSelectionChange} teams={model.snapshot.teams ?? []} />;
   }
   switch (selection.surface) {
-    case "workflows":
-      // One surface, self-splitting on the selected run (mirror of agents/memberId).
-      return selection.workflowRunId ? (
-        <WorkflowRunDetail {...shared} />
-      ) : (
-        <WorkflowsList {...shared} />
-      );
     case "team":
       return selection.teamConversation && (selection.teamId||selection.memberRunId) ? (
         <AgentConversationWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} routeIdentity={selection.teamId??selection.memberRunId!} selection={selection} refreshKey={snapshotContentRevision} onAction={onRoleAction} onSelectionChange={onSelectionChange}/>
@@ -906,7 +894,6 @@ function SurfaceSwitch({
 const offRailLabels: Partial<Record<SurfaceId, string>> = {
   team: "Agent Team",
   agents: "Execution agent",
-  workflows: "Workflows",
   debug: "Debug",
 };
 
@@ -935,8 +922,6 @@ function nativeContextLabel(model: WorkbenchModel, selection: SelectionState): s
       return "Platform";
     case "agents":
       return "Execution directory";
-    case "workflows":
-      return "Dynamic workflows";
     case "debug":
       return "Diagnostics";
     default:

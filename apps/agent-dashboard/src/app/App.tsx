@@ -5,7 +5,6 @@ import {
   fetchSpaces,
   fetchSnapshot,
   fetchTeamRunSnapshot,
-  fetchWorkflowDefs,
   postAction,
   ProjectionInvalidationTracker,
   streamSelectionKey,
@@ -17,7 +16,7 @@ import {
   type SnapshotRequestToken,
 } from "../api";
 import { buildWorkbenchModel } from "../model/readModel";
-import type { DashboardSnapshot, ExecutionSpace, Project, WorkflowDef } from "../types";
+import type { DashboardSnapshot, ExecutionSpace, Project } from "../types";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   defaultSelection,
@@ -194,9 +193,6 @@ export function App() {
   const [spaces, setSpaces] = useState<ExecutionSpace[]>([]);
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>(companyFromLocation);
   const [snapshot, setSnapshot] = useState<DashboardSnapshot>(emptySnapshot);
-  // The registered workflow catalog (GET /v1/workflows) is run-independent and
-  // lives outside the snapshot, so it is fetched alongside the snapshot.
-  const [workflowDefs, setWorkflowDefs] = useState<WorkflowDef[]>([]);
   // The snapshot's provenance, NOT its display label: `live` once a live
   // /v1/snapshot has loaded (enabling SSE, polling and write actions), else an
   // empty (not-connected) workspace. The user-facing chip label is derived below.
@@ -572,19 +568,10 @@ export function App() {
 
   // Auto-connect through the shared coalescer so React effect replay, a retry
   // tick, or an SSE/lifecycle signal cannot create an overlapping bootstrap
-  // read. The workflow catalog remains an independent best-effort request.
+  // read.
   useEffect(() => {
-    let cancelled = false;
     setIsLoading(true);
     requestAuthoritativeResync();
-    void fetchWorkflowDefs(apiUrl).then((defs) => {
-      if (!cancelled) setWorkflowDefs(defs);
-    }).catch(() => {
-      if (!cancelled) setWorkflowDefs([]);
-    });
-    return () => {
-      cancelled = true;
-    };
   }, [apiUrl, requestAuthoritativeResync, selectedCompanyId, selectedProjectId, selectedSpaceId]);
 
   // The legacy four-second recovery cadence remains a signal source for
@@ -803,8 +790,8 @@ export function App() {
   );
 
   const model = useMemo(
-    () => buildWorkbenchModel(snapshot, selection, workflowDefs),
-    [snapshot, selection, workflowDefs],
+    () => buildWorkbenchModel(snapshot, selection),
+    [snapshot, selection],
   );
 
   // Actions are only honest against a live snapshot; an empty workspace is read-only.
@@ -828,11 +815,6 @@ export function App() {
         setDomainFreshness(freshnessAfterSnapshot(streamConnectedRef.current));
         setSelectorRefreshGeneration((current) => current + 1);
       }
-      try {
-        setWorkflowDefs(await fetchWorkflowDefs(apiUrl));
-      } catch {
-        setWorkflowDefs([]);
-      }
     } catch (error) {
       setSourceError(error instanceof Error ? error.message : String(error));
       liveSourceRef.current = false;
@@ -844,7 +826,6 @@ export function App() {
       // offline auto-retry cannot overlay old thinking onto a fresh snapshot.
       snapshotFrames.current.clearLiveMemberActivity();
       setSnapshot(emptySnapshot);
-      setWorkflowDefs([]);
     } finally {
       // A rejected begin means another read or mutation still owns loading.
       // Its scheduler/settlement clears the state; doing so here would expose

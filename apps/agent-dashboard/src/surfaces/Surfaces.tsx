@@ -399,7 +399,6 @@ export function DebugSurface({ model, sourceLabel }: { model: WorkbenchModel; so
     ["Missions", String(snapshot.missions?.length ?? 0)],
     ["Legacy Waves", String(snapshot.legacy_waves?.length ?? 0)],
     ["Agent team runs", String(snapshot.team_runs?.length ?? 0)],
-    ["Workflow runs", String(snapshot.workflow_runs?.length ?? 0)],
     ["Bound native sessions", String(snapshot.members?.filter((member) => member.native_session).length ?? 0)],
   ];
   return (
@@ -470,7 +469,7 @@ export function ProjectsSurface({ projects, selectedProjectId }: { projects: { i
     <PlatformPage icon={TerminalSquare} title="Projects / Workspaces">
       <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
         Project Bindings identify where providers execute and discover instructions, Skills and MCP
-        configuration. They never own Mission, Agent Team, or Workflow coordination storage.
+        configuration. They never own coordination storage.
       </p>
       {projects.length ? (
         <ul className="mt-5 divide-y divide-border rounded-md border border-border">

@@ -1,8 +1,8 @@
 /**
  * Retained navigation contract (DOC-107): the primary surfaces are Global Work,
  * durable Agent Teams, and Nodes; Providers, Projects/Workspaces and Settings
- * are secondary; Team Workspace, Host Console, Agent Workspace, Workflows and
- * Diagnostics stay deep-linkable. Company OS pages (Docs/Organization/Approvals/
+ * are secondary; Team Workspace, Host Console, Agent Workspace, and Diagnostics
+ * stay deep-linkable. Company OS pages (Docs/Organization/Approvals/
  * Finance/Home), the Mission console and the duplicate snapshot-derived TeamWorks
  * path are removed — their old URLs resolve to the default Global Work surface.
  */
@@ -13,7 +13,6 @@ export type SurfaceId =
   | "providers"
   | "projects"
   | "settings"
-  | "workflows"
   | "agents"
   | "debug";
 
@@ -42,8 +41,6 @@ export interface SelectionState {
   memberRunId?: string;
   /** Which tab is open on the agent detail page; defaults to "conversation". */
   agentTab?: AgentTab;
-  /** The selected workflow run id (opens WorkflowRunDetail on the workflows surface). */
-  workflowRunId?: string;
   /** Selected Work row inside the Team Workspace. */
   teamWorkId?: string;
   /** Responsibility lens inside one Team: shared workspace or Host console. */
@@ -85,7 +82,6 @@ const surfaceIds: SurfaceId[] = [
   "providers",
   "projects",
   "settings",
-  "workflows",
   "agents",
   "debug",
 ];
@@ -149,7 +145,7 @@ function selectionFromSearch(search: string, pathname = "/"): SelectionState {
   if (agentSessionId) next.agentSessionId = agentSessionId;
   const team = params.get("team");
   // Canonical durable Team address: ?team=<team id>; setting it implies the Team
-  // surface (mirror of the ?agent= / ?workflowRun= rules).
+  // surface (mirror of the ?agent= rule).
   if (team) {
     next.teamId = team;
     if (!surface) next.surface = "team";
@@ -157,13 +153,6 @@ function selectionFromSearch(search: string, pathname = "/"): SelectionState {
   // `?mission=`/`?wave=` were pre-cutover deep links. Both are ignored: Mission
   // judgment stays visible as Team context and Legacy Wave history is
   // read/export-only, never a navigation target.
-  // Canonical run address: ?workflowRun=<id>; setting it implies the workflows
-  // surface (mirror of the ?agent= rule above).
-  const workflowRun = params.get("workflowRun");
-  if (workflowRun) {
-    next.workflowRunId = workflowRun;
-    if (!surface) next.surface = "workflows";
-  }
   const teamWork = params.get("teamWork");
   if (teamWork) next.teamWorkId = teamWork;
   const teamMode = params.get("teamMode");
@@ -236,9 +225,9 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   );
   setOrDelete("memberRun", selection.memberRunId);
   setOrDelete("team", selection.teamId);
-  params.delete("mission"); // retired Mission console link, never written
-  params.delete("wave"); // retired ADR 0051 compatibility link, never written
-  setOrDelete("workflowRun", selection.workflowRunId);
+  for (const retiredParam of ["mission", "wave", ["work", "flowRun"].join("")]) {
+    params.delete(retiredParam);
+  }
   setOrDelete("teamWork", selection.teamWorkId);
   setOrDelete("teamMode", selection.teamMode);
   setOrDelete("conversation", selection.teamConversation);
@@ -282,7 +271,6 @@ const selectionCompareKeys = [
   "memberId",
   "memberRunId",
   "agentTab",
-  "workflowRunId",
   "teamWorkId",
   "teamMode",
   "teamConversation",

@@ -52,8 +52,8 @@ async function main() {
     readFile(join(dashboardRoot, "src/app/App.tsx"), "utf8"),
   ]);
   const navigation = shell.slice(shell.indexOf("const navigationGroups"), shell.indexOf("const navItems"));
-  check(["PRIMARY", "OPERATIONS", "EXECUTION", "PLATFORM"].every((label) => navigation.includes(`label: "${label}"`)), "rail declares the four canonical navigation groups");
-  check(["Home", "Docs", "Organization", "Work", "Approvals", "Finance", "Missions", "Workflows", "Agent Teams", "Providers", "Plugins", "Settings"].every((label) => navigation.includes(`label: "${label}"`)), "all twelve navigation destinations are present");
+  check(["PRIMARY", "SECONDARY"].every((label) => navigation.includes(`label: "${label}"`)), "rail declares the two canonical navigation groups");
+  check(["Global Work", "Agent Teams", "Nodes", "Providers", "Projects", "Settings"].every((label) => navigation.includes(`label: "${label}"`)), "all current navigation destinations are present");
   check(!navigation.includes("Legacy") && !navigation.includes("Tasks") && !navigation.includes("Goals"), "legacy Goal and Task navigation is absent");
   check(shell.includes("CompanyOsRouter") && shell.includes("isCompanyOsSurface"), "Company OS surfaces mount in the real workbench shell");
   check(router.includes('"workboard"') && router.includes('"custom-page"') && !router.includes('"work-item-focus"'), "router owns the unified Work page and no Company WorkItem focus page");
