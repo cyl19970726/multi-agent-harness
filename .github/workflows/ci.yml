@@ -27,6 +27,7 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # check:fast includes the current-HEAD Dynamic Workflow retirement proof.
       - run: pnpm check:fast
   rust:
     runs-on: ubuntu-latest

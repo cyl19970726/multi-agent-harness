@@ -1,208 +1,98 @@
 #!/usr/bin/env bash
-# Acceptance: a fresh user can INSTALL the star-workflow skill, INSTALL the
-# ten-Skill Company OS operator suite, and RUN the harness. Models the external-user
-# journey with checkable outcomes; exits nonzero on any failed check.
-#
-#   scripts/acceptance-skill-install.sh            # local: install + build + serve + run
-#   scripts/acceptance-skill-install.sh --remote   # also: raw URL 200 + anonymous public clone
-#
-# Local checks need no network (install from this repo, dry-run worker). The
-# --remote checks need the repo PUSHED + PUBLIC (they exercise the curl|bash path
-# a stranger uses).
+# Acceptance for the current Star Harness skill installer. It proves the
+# collaboration package installs atomically and the retired star-workflow
+# package fails before either agent target is touched.
 set -uo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RAW_URL="https://raw.githubusercontent.com/cyl19970726/multi-agent-harness/master/scripts/install-skill.sh"
-CLONE_URL="https://github.com/cyl19970726/multi-agent-harness.git"
-REMOTE=0
-[ "${1:-}" = "--remote" ] && REMOTE=1
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+pass=0
+fail=0
+ok()  { echo "  ✓ $1"; pass=$((pass + 1)); }
+bad() { echo "  ✗ $1"; fail=$((fail + 1)); }
 
-PASS=0
-FAIL=0
-ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
-bad() { echo "  ✗ $1"; FAIL=$((FAIL + 1)); }
-
-WORK="$(mktemp -d)"
-SV=""
-cleanup() { [ -n "$SV" ] && { kill "$SV" 2>/dev/null; wait "$SV" 2>/dev/null; }; rm -rf "$WORK"; }
+work="$(mktemp -d)"
+cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 
-echo "== A0: Claude marketplace isolates the Dynamic Workflow skill =="
-if python3 - "$REPO_ROOT" <<'PY'
+echo "== A0: only the current Star Harness plugin is advertised =="
+if python3 - "$repo_root" <<'PY'
 import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
-manifest = json.loads((root / ".claude-plugin/plugin.json").read_text())
 market = json.loads((root / ".claude-plugin/marketplace.json").read_text())
 plugins = market.get("plugins", [])
-assert manifest.get("name") == "star-workflow"
-assert manifest.get("skills") == "./skills/star-workflow"
+assert not (root / ".claude-plugin/plugin.json").exists()
 assert [entry.get("name") for entry in plugins] == ["star-harness"]
+assert all(entry.get("source") != "./skills/star-workflow" for entry in plugins)
 PY
 then
-  ok "Claude marketplace lists star-harness plugin"
+  ok "marketplace advertises only star-harness"
 else
-  bad "Claude plugin marketplace/component isolation is invalid"
+  bad "retired standalone plugin remains active"
 fi
 
-echo "== A1: install the Dynamic Workflow skill into a clean project (from this repo) =="
-PROJ="$WORK/proj"
-mkdir -p "$PROJ"
-if bash "$REPO_ROOT/scripts/install-skill.sh" --agent both --dest "$PROJ" >/dev/null 2>&1; then
-  ok "install-skill.sh --agent both succeeded"
+echo "== A1: default collaboration install is complete =="
+project="$work/project"
+mkdir -p "$project"
+if bash "$repo_root/scripts/install-skill.sh" --agent both --dest "$project" >/dev/null 2>&1; then
+  ok "default install succeeded"
 else
-  bad "install-skill.sh exited nonzero"
-fi
-# The default shipped skill must land as REAL files (never a symlink) under BOTH
-# the Claude (.claude/skills) and Codex (.agents/skills) roots, with its SKILL.md
-# and Codex agents/openai.yaml.
-for name in star-workflow; do
-  for d in .claude/skills .agents/skills; do
-    if [ -f "$PROJ/$d/$name/SKILL.md" ] && [ ! -L "$PROJ/$d/$name" ]; then
-      ok "$d/$name installed as real files"
-    else
-      bad "$d/$name missing or a symlink"
-    fi
-    [ -f "$PROJ/$d/$name/agents/openai.yaml" ] \
-      && ok "$d/$name/agents/openai.yaml copied (Codex config)" \
-      || bad "$d/$name/agents/openai.yaml missing"
-  done
-done
-# star-workflow additionally ships runnable examples/.
-[ "$(ls "$PROJ/.claude/skills/star-workflow/examples" 2>/dev/null | wc -l | tr -d ' ')" -ge 3 ] \
-  && ok "star-workflow examples copied" || bad "star-workflow examples missing"
-
-echo "== A1c: --agent kimi prints the documented divergence =="
-KIMI_OUT="$(bash "$REPO_ROOT/scripts/install-skill.sh" --agent kimi 2>&1)" || true
-if [[ "$KIMI_OUT" == *"Kimi CLI does not currently expose a generic plugin-management command"* ]]; then
-  ok "--agent kimi documents the cwd/--skills-dir model"
-else
-  bad "--agent kimi missing the divergence description"
-fi
-if [[ "$KIMI_OUT" == *"kimi.plugin.json descriptor is prepared for a future native"* ]]; then
-  ok "--agent kimi points at the plugin descriptor"
-else
-  bad "--agent kimi missing the plugin descriptor pointer"
-fi
-if [[ "$KIMI_OUT" == *"plugins/star-harness/README.md"* ]]; then
-  ok "--agent kimi points at the plugin README"
-else
-  bad "--agent kimi missing the plugin README pointer"
-fi
-
-echo "== A1b: install the collaboration suite into a clean project =="
-COMPANY_PROJ="$WORK/collab-proj"
-mkdir -p "$COMPANY_PROJ"
-if bash "$REPO_ROOT/scripts/install-skill.sh" --agent both --dest "$COMPANY_PROJ" --suite collaboration >/dev/null 2>&1; then
-  ok "install-skill.sh --suite collaboration --agent both succeeded"
-else
-  bad "install-skill.sh --suite collaboration exited nonzero"
+  bad "default install failed"
 fi
 for name in collaborate-as-agent-team-member shared-references; do
-  for d in .claude/skills .agents/skills; do
-    if [ -f "$COMPANY_PROJ/$d/$name/SKILL.md" ] && [ ! -L "$COMPANY_PROJ/$d/$name" ]; then
-      ok "$d/$name installed as real files"
+  for root in .claude/skills .agents/skills; do
+    if [ -f "$project/$root/$name/SKILL.md" ] && [ ! -L "$project/$root/$name" ]; then
+      ok "$root/$name installed as real files"
     else
-      bad "$d/$name missing or a symlink"
+      bad "$root/$name missing or a symlink"
     fi
-    [ -f "$COMPANY_PROJ/$d/$name/agents/openai.yaml" ] \
-      && ok "$d/$name/agents/openai.yaml copied (Codex config)" \
-      || bad "$d/$name/agents/openai.yaml missing"
   done
 done
 
-echo "== A1c: reject a suite with a missing delegated Skill =="
-MISSING_REPO="$WORK/missing-suite-repo"
-MISSING_PROJ="$WORK/missing-suite-proj"
-mkdir -p "$MISSING_REPO/scripts" "$MISSING_REPO/skills" "$MISSING_PROJ"
-cp "$REPO_ROOT/scripts/install-skill.sh" "$MISSING_REPO/scripts/install-skill.sh"
-cp -R "$REPO_ROOT/skills/." "$MISSING_REPO/skills"
-mv "$MISSING_REPO/skills/shared-references" "$WORK/withheld-shared-references"
-if bash "$MISSING_REPO/scripts/install-skill.sh" --agent both --dest "$MISSING_PROJ" --suite collaboration >/dev/null 2>&1; then
+echo "== A2: retired explicit Skill fails without partial writes =="
+retired_project="$work/retired-project"
+mkdir -p "$retired_project"
+retired_output="$(bash "$repo_root/scripts/install-skill.sh" \
+  --agent both --dest "$retired_project" --skill star-workflow 2>&1)"
+retired_status=$?
+if [ "$retired_status" -ne 0 ] && [[ "$retired_output" == *"star-workflow is retired"* ]]; then
+  ok "--skill star-workflow fails explicitly"
+else
+  bad "--skill star-workflow was not rejected as retired"
+fi
+if [ ! -e "$retired_project/.claude/skills" ] && [ ! -e "$retired_project/.agents/skills" ]; then
+  ok "retired Skill rejection leaves both targets untouched"
+else
+  bad "retired Skill rejection partially wrote a target"
+fi
+
+echo "== A3: multi-Skill preflight is atomic =="
+missing_repo="$work/missing-repo"
+missing_project="$work/missing-project"
+mkdir -p "$missing_repo/scripts" "$missing_repo/skills" "$missing_project"
+cp "$repo_root/scripts/install-skill.sh" "$missing_repo/scripts/install-skill.sh"
+cp -R "$repo_root/skills/." "$missing_repo/skills"
+mv "$missing_repo/skills/shared-references" "$work/withheld-shared-references"
+if bash "$missing_repo/scripts/install-skill.sh" --agent both \
+  --dest "$missing_project" --suite collaboration >/dev/null 2>&1; then
   bad "collaboration suite accepted a missing delegated Skill"
 else
   ok "collaboration suite rejects a missing delegated Skill"
 fi
-if [ ! -e "$MISSING_PROJ/.claude/skills" ] && [ ! -e "$MISSING_PROJ/.agents/skills" ]; then
-  ok "missing-Skill preflight leaves both agent targets untouched"
+if [ ! -e "$missing_project/.claude/skills" ] && [ ! -e "$missing_project/.agents/skills" ]; then
+  ok "failed suite preflight leaves both targets untouched"
 else
-  bad "missing-Skill preflight partially wrote an agent target"
+  bad "failed suite preflight partially wrote a target"
 fi
 
-echo "== A2: build the harness binary =="
-BIN="$REPO_ROOT/target/debug/firm"
-if [ ! -x "$BIN" ]; then
-  ( cd "$REPO_ROOT" && cargo build -q -p firm-cli ) >/dev/null 2>&1 || true
-fi
-[ -x "$BIN" ] && ok "harness binary present" || bad "harness binary missing (cargo build failed?)"
-if [ -x "$BIN" ] && "$BIN" --build-info \
-    | python3 -c 'import json,sys; r=json.load(sys.stdin)["git_rev"]; sys.exit(0 if r == "unknown" or (len(r) == 40 and all(c in "0123456789abcdefABCDEF" for c in r)) else 1)'; then
-  ok "candidate build-info is store-less and uses full-40/unknown provenance"
+echo "== A4: Kimi guidance remains current =="
+kimi_output="$(bash "$repo_root/scripts/install-skill.sh" --agent kimi 2>&1)" || true
+if [[ "$kimi_output" == *"--skills-dir"* ]] \
+  && [[ "$kimi_output" == *"plugins/star-harness/README.md"* ]]; then
+  ok "Kimi guidance points to current discovery and plugin paths"
 else
-  bad "candidate build-info provenance is invalid"
-fi
-
-ROOT="$WORK/store"
-STAR="$WORK/acc.star"
-cat > "$STAR" <<'STAREOF'
-workflow("acceptance", "scan then a two-way parallel audit, dry-run for acceptance")
-phase("scan")
-s = agent("scope the audit")
-phase("audit")
-parallel([{"prompt": "audit a: " + s}, {"prompt": "audit b: " + s, "provider": "claude"}])
-STAREOF
-
-echo "== A3: run a workflow (dry-run, no spend) is journaled =="
-if [ -x "$BIN" ]; then
-  OUT="$(HARNESS_ROOT="$ROOT" "$BIN" workflow run-script "$STAR" --dry-run 2>/dev/null)"
-  if printf '%s' "$OUT" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d['run']['status']=='completed' and len(d.get('steps',[]))==3 else 1)" 2>/dev/null; then
-    ok "run-script --dry-run completed with 3 steps"
-  else
-    bad "run-script did not complete as expected"
-  fi
-  [ -s "$ROOT/workflow_runs.jsonl" ] && [ -s "$ROOT/workflow_steps.jsonl" ] \
-    && ok "run journaled to the store" || bad "store rows missing"
-else
-  bad "skipped run (no binary)"
-fi
-
-echo "== A4: serve exposes the run via the API =="
-if [ -x "$BIN" ]; then
-  PORT=8791
-  HARNESS_ROOT="$ROOT" "$BIN" serve --addr "127.0.0.1:$PORT" >/dev/null 2>&1 &
-  SV=$!
-  sleep 1.5
-  curl -fsS -m 5 "http://127.0.0.1:$PORT/v1/workflows" >/dev/null 2>&1 \
-    && ok "serve API responds (/v1/workflows)" || bad "serve API down"
-  if curl -fsS -m 5 "http://127.0.0.1:$PORT/v1/snapshot" 2>/dev/null \
-      | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if len(d.get('workflow_runs',[]))>=1 else 1)" 2>/dev/null; then
-    ok "the run is readable from /v1/snapshot"
-  else
-    bad "run not visible in snapshot"
-  fi
-  kill "$SV" 2>/dev/null; wait "$SV" 2>/dev/null; SV=""
-else
-  bad "skipped serve (no binary)"
-fi
-
-if [ "$REMOTE" = "1" ]; then
-  echo "== A5: anonymous download + install (repo must be public) =="
-  code="$(curl -fsSL -o "$WORK/dl.sh" -w "%{http_code}" "$RAW_URL" 2>/dev/null || true)"
-  [ "$code" = "200" ] && ok "raw install-skill.sh reachable (HTTP 200)" \
-    || bad "raw script HTTP ${code:-000} (repo private / not pushed?)"
-  if GIT_TERMINAL_PROMPT=0 git clone -q --depth 1 "$CLONE_URL" "$WORK/anon" 2>/dev/null \
-      && [ -f "$WORK/anon/skills/star-workflow/SKILL.md" ]; then
-    ok "anonymous public clone carries skills/star-workflow"
-  else
-    bad "anonymous public clone failed"
-  fi
-  if [ -s "$WORK/dl.sh" ]; then
-    bash "$WORK/dl.sh" --agent both --dest "$WORK/anonproj" >/dev/null 2>&1 || true
-    [ -f "$WORK/anonproj/.claude/skills/star-workflow/SKILL.md" ] \
-      && [ -f "$WORK/anonproj/.agents/skills/star-workflow/SKILL.md" ] \
-      && ok "anonymous one-liner install works end to end" || bad "anonymous one-liner install failed"
-  fi
+  bad "Kimi guidance is incomplete"
 fi
 
 echo ""
-echo "acceptance: $PASS passed, $FAIL failed"
-[ "$FAIL" = "0" ]
+echo "acceptance: $pass passed, $fail failed"
+[ "$fail" = "0" ]

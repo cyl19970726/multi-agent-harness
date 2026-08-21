@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Install an optional Star Harness authoring skill into a target project
+# Install current Star Harness collaboration skills into a target project
 # (or your user-level library) for Claude Code and/or Codex.
 #
-# The default kit ships star-workflow. Named suites can install related skills
-# together, for example the Company OS governance/operator suite.
+# The default kit is the collaboration suite. Dynamic Workflow and its
+# star-workflow authoring Skill are retired and cannot be installed.
 #
 #   Claude Code reads skills from   <base>/.claude/skills/<name>/
 #   Codex      reads skills from     <base>/.agents/skills/<name>/
@@ -20,8 +20,8 @@
 #                                      plugin README for details.
 #   --scope   project = <cwd>, user = $HOME                  (default: project)
 #   --dest    explicit base dir (overrides --scope)
-#   --skill   install an explicit skill directory (repeatable; default: star-workflow)
-#   --suite   install a named skill suite (repeatable; currently: company-os)
+#   --skill   install an explicit current skill directory (repeatable)
+#   --suite   install a named skill suite (repeatable; currently: collaboration)
 #   --repo    git url to clone when run standalone           (default: this project)
 #   --ref     git ref to clone                               (default: master)
 #
@@ -29,8 +29,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/cyl19970726/multi-agent-harness/master/scripts/install-skill.sh | bash -s -- --agent both
 set -euo pipefail
 
-# Default shipped skill; --skill may select an explicit source directory.
-DEFAULT_SKILLS="star-workflow"
+# Default shipped skills; --skill may select another current source directory.
+DEFAULT_SKILLS="collaborate-as-agent-team-member shared-references"
 SKILLS=""
 SUITES=""
 AGENT="claude"
@@ -71,7 +71,7 @@ for suite in $SUITES; do
   SKILLS="${SKILLS:+$SKILLS }$(expand_suite "$suite")"
 done
 
-# Default to the standalone Dynamic Workflow skill when no --skill/--suite was given.
+# Default to the current collaboration skills when no selection was given.
 [ -n "$SKILLS" ] || SKILLS="$DEFAULT_SKILLS"
 
 # Base dir the skill dirs are created under.
@@ -88,7 +88,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 SKILLS_ROOT=""
 TMP=""
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../skills/star-workflow/SKILL.md" ]; then
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../skills/collaborate-as-agent-team-member/SKILL.md" ]; then
   SKILLS_ROOT="$(cd "$SCRIPT_DIR/../skills" && pwd)"
 else
   TMP="$(mktemp -d)"
@@ -101,6 +101,16 @@ fi
 # Validate the complete selection before writing either target. This keeps a
 # suite with a missing delegated Skill from being installed only partially.
 for name in $SKILLS; do
+  case "$name" in
+    star-workflow)
+      echo "star-workflow is retired and is not installable" >&2
+      exit 1
+      ;;
+    *[!A-Za-z0-9_-]*|"")
+      echo "invalid skill name: $name" >&2
+      exit 2
+      ;;
+  esac
   [ -f "$SKILLS_ROOT/$name/SKILL.md" ] \
     || { echo "could not find the skill source at $SKILLS_ROOT/$name" >&2; exit 1; }
 done
@@ -157,5 +167,5 @@ for name in $SKILLS; do
 done
 
 echo ""
-echo "Next: build + start the harness service, then ask your agent to author a workflow."
+echo "Next: build + start the harness service, then use the installed collaboration skills with an Agent Team."
 echo "  cargo build -p firm-cli && ./target/debug/firm serve --addr 127.0.0.1:8787"
