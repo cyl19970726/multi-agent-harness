@@ -3,6 +3,7 @@ members = [
   "crates/firm-core",
   "crates/firm-application",
   "crates/firm-runtime-contract",
+  "crates/firm-runtime-supervisor",
   "crates/firm-runtime-host",
   "crates/firm-provider-codex",
   "crates/firm-provider-kimi",

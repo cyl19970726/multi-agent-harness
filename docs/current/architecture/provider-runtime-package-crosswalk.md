@@ -32,7 +32,7 @@ acceptance update.
 | Current source | Current responsibility | Classification | Target |
 | --- | --- | --- | --- |
 | `runtime_adapter_contract.rs` | provider-neutral lifecycle intents, fences, receipts, capability admission, conformance tests | current Team contract | `firm-runtime-contract` (extracted in DEV-58) |
-| `runtime_adapter.rs` | Team wake/claim/cycle/settle loop plus runtime control | current Team supervisor mixed with CLI/application state | provider-facing capability, observation, control receipt, cycle outcome, and structured failure types extracted to `firm-runtime-contract`; remaining loop targets `firm-runtime-supervisor` over narrow ports |
+| `runtime_adapter.rs` | Team wake/claim/cycle/settle loop plus runtime control | current Team supervisor mixed with CLI/application state | provider-facing language lives in `firm-runtime-contract`; monotonic shared round progression now lives in `firm-runtime-supervisor` over `SupervisorApplicationPort`, while the CLI composition implements the narrow durable Work/Message/Store/RuntimeCommand round port pending application-module relocation |
 | `runtime_adapter_capabilities.rs` | Team runtime selector, capability report, permission compilation | current catalog plus provider policy mixed together | canonical descriptor extracted to `firm-application`; provider-specific capability reports and permission compilers remain to move |
 | `provider_adapter.rs` | current provider-native control seam and standalone NodeSession control | current control contract mixed with implementations | runtime contract/application control plus provider bindings |
 | `provider_adapters.rs` | old Codex/Claude/Kimi/Pi one-shot registry | current compatibility delivery and formerly the Claude Host path; historical names; unsupported Pi stubs | renamed and narrowed to the explicit `CompatibilityDeliveryBinding` registry for Codex/Claude/Kimi; Pi's unsupported effect stub deleted; Claude Host bypasses this registry through its typed Host binding |
@@ -150,4 +150,10 @@ Landed DEV-58 milestones:
   `CompatibilityDeliveryBinding`, and effect-free `HistoricalProviderMode`
   types. The current `/v1/agents/*` registry is explicitly compatibility-only,
   has no Pi unsupported stub, and is no longer used by Claude headless Host;
-  Kimi Host continues through its separate ACP exact-session path.
+  Kimi Host continues through its separate ACP exact-session path;
+- current supervisor slice: adds the provider-neutral
+  `firm-runtime-supervisor` package. It owns the one monotonic round loop and
+  consumes only `SupervisorApplicationPort`; the executable composition keeps
+  durable Work/Message/Store/RuntimeCommand preparation and settlement inside
+  that application port. Provider packages and the supervisor package have no
+  dependency on CLI or Store implementations.

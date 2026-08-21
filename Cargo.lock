@@ -445,6 +445,7 @@ dependencies = [
  "firm-provider-pi",
  "firm-runtime-contract",
  "firm-runtime-host",
+ "firm-runtime-supervisor",
  "firm-store",
  "hmac",
  "libc",
@@ -567,6 +568,10 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
 ]
+
+[[package]]
+name = "firm-runtime-supervisor"
+version = "0.1.0"
 
 [[package]]
 name = "firm-store"
