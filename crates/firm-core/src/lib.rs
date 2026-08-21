@@ -2016,10 +2016,13 @@ impl Validate for MissionLogEntry {
 }
 
 // ---------------------------------------------------------------------------
-// Dynamic workflow runtime objects (WP1)
+// Retired Dynamic Workflow historical decode objects
 //
-// A `WorkflowRun` is a standalone object with its own id and lifecycle. Each
-// `WorkflowStep` is the workflow-layer wrapper around one `agent()` call and references the
+// These types remain only so existing history can be inspected during the
+// retirement window. They do not authorize current writes. Lossless archive
+// code preserves the source bytes and must not round-trip through these types.
+// A historical `WorkflowRun` has its own id and lifecycle. Each historical
+// `WorkflowStep` wrapped one `agent()` call and references the
 // provider-owned native session rather than re-recording the execution. Both
 // journal to their own append-only JSONL with latest-wins
 // projection, exactly like every other harness object.
@@ -5938,6 +5941,8 @@ pub struct MemberAction {
 pub enum DelegationMode {
     ProviderNative,
     HarnessWorker,
+    /// Historical decode value only. Current schemas and Store writers reject
+    /// new Dynamic Workflow delegation rows.
     DynamicWorkflow,
 }
 

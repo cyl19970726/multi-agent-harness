@@ -689,22 +689,31 @@ impl HarnessStore {
     }
 
     pub fn append_workflow_run(&self, value: &WorkflowRun) -> StoreResult<()> {
-        self.append_jsonl("workflow_runs.jsonl", value)
+        self.reject_dynamic_workflow_write(&format!("append WorkflowRun {}", value.id))
     }
 
     pub fn append_workflow_step(&self, value: &WorkflowStep) -> StoreResult<()> {
-        self.append_jsonl("workflow_steps.jsonl", value)
+        self.reject_dynamic_workflow_write(&format!("append WorkflowStep {}", value.id))
     }
 
     pub fn append_workflow_patch(&self, value: &WorkflowPatch) -> StoreResult<()> {
-        self.append_jsonl("workflow_patches.jsonl", value)
+        self.reject_dynamic_workflow_write(&format!("append WorkflowPatch {}", value.id))
     }
 
     pub fn append_workflow_artifact_manifest(
         &self,
         value: &WorkflowArtifactManifest,
     ) -> StoreResult<()> {
-        self.append_jsonl("workflow_artifact_manifests.jsonl", value)
+        self.reject_dynamic_workflow_write(&format!("append WorkflowArtifactManifest {}", value.id))
+    }
+
+    /// Shared fail-closed seam for every retired Dynamic Workflow writer.
+    /// Runtime/CLI surfaces call this before performing any provider effect;
+    /// the Store remains the final boundary if a stale caller reaches it.
+    pub fn reject_dynamic_workflow_write(&self, operation: &str) -> StoreResult<()> {
+        Err(StoreError::Conflict(format!(
+            "RETIRED_DYNAMIC_WORKFLOW_WRITER: {operation}; historical workflow data is read/export/verify-only"
+        )))
     }
 
     /// Reconstruct one raw historical TeamRun projection during an explicit
@@ -6938,6 +6947,14 @@ impl HarnessStore {
     }
 
     pub fn append_delegation_run(&self, value: &DelegationRun) -> StoreResult<()> {
+        if value.mode == firm_core::DelegationMode::DynamicWorkflow
+            || value.workflow_run_id.is_some()
+        {
+            return self.reject_dynamic_workflow_write(&format!(
+                "append DelegationRun {} with workflow binding",
+                value.id
+            ));
+        }
         self.append_jsonl("delegation_runs.jsonl", value)
     }
 
@@ -7302,18 +7319,23 @@ impl HarnessStore {
         self.read_jsonl("provider_child_threads.jsonl")
     }
 
+    /// Typed historical compatibility reader. Archive/export code must read
+    /// the ledger as opaque bytes so unknown or malformed rows are preserved.
     pub fn workflow_runs(&self) -> StoreResult<Vec<WorkflowRun>> {
         self.read_jsonl("workflow_runs.jsonl")
     }
 
+    /// Typed historical compatibility reader; never use it for archive truth.
     pub fn workflow_steps(&self) -> StoreResult<Vec<WorkflowStep>> {
         self.read_jsonl("workflow_steps.jsonl")
     }
 
+    /// Typed historical compatibility reader; never use it for archive truth.
     pub fn workflow_patches(&self) -> StoreResult<Vec<WorkflowPatch>> {
         self.read_jsonl("workflow_patches.jsonl")
     }
 
+    /// Typed historical compatibility reader; never use it for archive truth.
     pub fn workflow_artifact_manifests(&self) -> StoreResult<Vec<WorkflowArtifactManifest>> {
         self.read_jsonl("workflow_artifact_manifests.jsonl")
     }
@@ -13345,7 +13367,7 @@ mod tests {
             mode: DelegationMode::HarnessWorker,
             provider: "claude".into(),
             provider_child_thread_id: None,
-            workflow_run_id: Some("wfr-1".into()),
+            workflow_run_id: None,
             objective: "Research X".into(),
             status: DelegationStatus::Running,
             evidence_ids: vec!["ev-1".into()],
@@ -13375,6 +13397,97 @@ mod tests {
         assert!(sparse.evidence_ids.is_empty());
 
         std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn retired_dynamic_workflow_writers_fail_without_creating_ledgers() {
+        let root = team_test_root("retired-dynamic-workflow-writers");
+        let store = HarnessStore::new(&root);
+        let run: WorkflowRun = serde_json::from_value(serde_json::json!({
+            "id": "workflow-run-retired",
+            "workflow_name": "retired",
+            "status": "running",
+            "created_at": "unix-ms:1"
+        }))
+        .expect("historical WorkflowRun shape");
+        let error = store
+            .append_workflow_run(&run)
+            .expect_err("retired workflow writer must reject");
+        assert!(error
+            .to_string()
+            .contains("RETIRED_DYNAMIC_WORKFLOW_WRITER"));
+        let step: WorkflowStep = serde_json::from_value(serde_json::json!({
+            "id": "workflow-step-retired",
+            "run_id": "workflow-run-retired",
+            "phase": "retired",
+            "label": "retired",
+            "status": "running",
+            "started_at": "unix-ms:1"
+        }))
+        .expect("historical WorkflowStep shape");
+        let patch: WorkflowPatch = serde_json::from_value(serde_json::json!({
+            "id": "workflow-patch-retired",
+            "run_id": "workflow-run-retired",
+            "step_id": "workflow-step-retired",
+            "label": "retired",
+            "phase": "retired",
+            "provider": "codex",
+            "status": "pending_apply",
+            "patch_ref": "workflow-patches/run/step.patch",
+            "created_at": "unix-ms:1"
+        }))
+        .expect("historical WorkflowPatch shape");
+        let manifest: WorkflowArtifactManifest = serde_json::from_value(serde_json::json!({
+            "id": "workflow-artifacts-retired",
+            "run_id": "workflow-run-retired",
+            "status": "current",
+            "created_at": "unix-ms:1"
+        }))
+        .expect("historical WorkflowArtifactManifest shape");
+        for error in [
+            store.append_workflow_step(&step).unwrap_err(),
+            store.append_workflow_patch(&patch).unwrap_err(),
+            store
+                .append_workflow_artifact_manifest(&manifest)
+                .unwrap_err(),
+        ] {
+            assert!(error
+                .to_string()
+                .contains("RETIRED_DYNAMIC_WORKFLOW_WRITER"));
+        }
+
+        let delegation = DelegationRun {
+            id: "delegation-retired-workflow".into(),
+            team_run_id: "tr-1".into(),
+            parent_member_run_id: "mr-1".into(),
+            parent_task_id: None,
+            mode: DelegationMode::DynamicWorkflow,
+            provider: "claude".into(),
+            provider_child_thread_id: None,
+            workflow_run_id: Some("workflow-run-retired".into()),
+            objective: "must reject".into(),
+            status: DelegationStatus::Planned,
+            evidence_ids: Vec::new(),
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        };
+        assert!(store
+            .append_delegation_run(&delegation)
+            .expect_err("workflow delegation writer must reject")
+            .to_string()
+            .contains("RETIRED_DYNAMIC_WORKFLOW_WRITER"));
+        for ledger in [
+            "workflow_runs.jsonl",
+            "workflow_steps.jsonl",
+            "workflow_patches.jsonl",
+            "workflow_artifact_manifests.jsonl",
+            "delegation_runs.jsonl",
+        ] {
+            assert!(!root.join(ledger).exists(), "unexpected ledger: {ledger}");
+        }
+        if root.exists() {
+            std::fs::remove_dir_all(root).expect("remove temp store");
+        }
     }
 
     #[test]

@@ -11,8 +11,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-const ARCHIVE_FORMAT: &str = "legacy-goal-task-v1";
-const ARCHIVE_VERSION: u32 = 1;
+const ARCHIVE_FORMAT: &str = "legacy-coordination-history-v2";
+const ARCHIVE_VERSION: u32 = 2;
+const PREVIOUS_ARCHIVE_FORMAT: &str = "legacy-goal-task-v1";
+const PREVIOUS_ARCHIVE_VERSION: u32 = 1;
 const EXPORTER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // This is an authorization contract, not a pattern-based repair. The one
@@ -38,6 +40,17 @@ const LEGACY_LEDGERS: &[&str] = &[
     "goal_cases.jsonl",
     "goal_orchestration_runs.jsonl",
 ];
+
+/// Retired Dynamic Workflow journals. These are copied and verified as opaque
+/// bytes: historical or partially-written rows must not be normalized through
+/// the current Rust types merely to preserve them.
+const WORKFLOW_LEDGERS: &[&str] = &[
+    "workflow_runs.jsonl",
+    "workflow_steps.jsonl",
+    "workflow_patches.jsonl",
+    "workflow_artifact_manifests.jsonl",
+];
+const WORKFLOW_PATCH_ROOT: &str = "workflow-patches";
 
 const INTERPRETATION_PATHS: &[&str] = &[
     "schemas/goal.schema.json",
@@ -92,12 +105,22 @@ struct Manifest {
     exporter_version: String,
     exported_at_unix_ms: u128,
     project: ManifestProject,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workflow_archive: Option<WorkflowArchiveContract>,
     sources: Vec<ManifestSource>,
     source_comparisons: Vec<SourceComparison>,
     interpretation_materials: Vec<InterpretationMaterial>,
     files: Vec<ManifestFile>,
     known_anomalies: Vec<KnownAnomaly>,
     closure: ClosureSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct WorkflowArchiveContract {
+    encoding: String,
+    ledgers: Vec<String>,
+    patch_root: String,
+    restore_mode: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -612,6 +635,15 @@ pub fn export_archive(
             id: resolved_project_id.clone(),
             project_root: Some(canonical_string(project_root)),
         },
+        workflow_archive: Some(WorkflowArchiveContract {
+            encoding: "opaque-bytes".into(),
+            ledgers: WORKFLOW_LEDGERS
+                .iter()
+                .map(|value| (*value).into())
+                .collect(),
+            patch_root: WORKFLOW_PATCH_ROOT.into(),
+            restore_mode: "read-only".into(),
+        }),
         source_comparisons: compare_manifest_sources(&manifest_sources),
         interpretation_materials,
         sources: manifest_sources,
@@ -664,11 +696,23 @@ pub fn verify_archive(archive: &Path) -> Result<VerifySummary, String> {
         fs::read(&manifest_path).map_err(|e| format!("read {}: {e}", manifest_path.display()))?;
     let manifest: Manifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|e| format!("parse {}: {e}", manifest_path.display()))?;
-    if manifest.format != ARCHIVE_FORMAT || manifest.version != ARCHIVE_VERSION {
-        return Err(format!(
-            "unsupported archive format/version: {}/{}",
-            manifest.format, manifest.version
-        ));
+    let includes_workflow_history =
+        if manifest.format == ARCHIVE_FORMAT && manifest.version == ARCHIVE_VERSION {
+            true
+        } else if manifest.format == PREVIOUS_ARCHIVE_FORMAT
+            && manifest.version == PREVIOUS_ARCHIVE_VERSION
+        {
+            false
+        } else {
+            return Err(format!(
+                "unsupported archive format/version: {}/{}",
+                manifest.format, manifest.version
+            ));
+        };
+    if includes_workflow_history {
+        validate_workflow_archive_contract(manifest.workflow_archive.as_ref())?;
+    } else if manifest.workflow_archive.is_some() {
+        return Err("v1 archive must not claim the v2 workflow archive contract".into());
     }
     if manifest.sources.is_empty() {
         return Err("archive manifest must contain at least one source".into());
@@ -787,6 +831,9 @@ pub fn verify_archive(archive: &Path) -> Result<VerifySummary, String> {
                 bytes,
             });
         }
+        if includes_workflow_history {
+            verify_workflow_history(archive, source, &snapshot_paths, &entries)?;
+        }
         for ledger in &source.linked_ledgers {
             let archive_path = format!("sources/{}/records/{ledger}", source.id);
             let entry = entries
@@ -892,7 +939,7 @@ pub fn verify_archive(archive: &Path) -> Result<VerifySummary, String> {
     }
 
     Ok(VerifySummary {
-        format: ARCHIVE_FORMAT.into(),
+        format: manifest.format,
         archive: canonical_string(archive),
         files: manifest.files.len(),
         edges: expected_edges.len() as u64,
@@ -1121,6 +1168,8 @@ fn archive_source(
         });
     }
 
+    archive_workflow_history(source, archive_root, file_meta, &prefix)?;
+
     let mut linked_ledgers = Vec::new();
     let mut linked_rows = 0_u64;
     let mut jsonl_paths = fs::read_dir(&source.root)
@@ -1143,7 +1192,11 @@ fn archive_source(
         }
         let source_bytes =
             fs::read(&source_path).map_err(|e| format!("read {}: {e}", source_path.display()))?;
-        let records = jsonl_records(&source_bytes, &format!("{}/{ledger}", source.id))?;
+        let records = if WORKFLOW_LEDGERS.contains(&ledger.as_str()) {
+            parseable_jsonl_records(&source_bytes)
+        } else {
+            jsonl_records(&source_bytes, &format!("{}/{ledger}", source.id))?
+        };
         let linked_ids = records
             .iter()
             .filter(|record| record_has_legacy_link(&ledger, &record.value))
@@ -1197,6 +1250,188 @@ fn archive_source(
         linked_ledgers,
         linked_rows,
     })
+}
+
+fn validate_workflow_archive_contract(
+    contract: Option<&WorkflowArchiveContract>,
+) -> Result<(), String> {
+    let contract = contract.ok_or_else(|| "v2 archive is missing workflow_archive".to_string())?;
+    let expected_ledgers = WORKFLOW_LEDGERS
+        .iter()
+        .map(|value| (*value).to_string())
+        .collect::<Vec<_>>();
+    if contract.encoding != "opaque-bytes"
+        || contract.ledgers != expected_ledgers
+        || contract.patch_root != WORKFLOW_PATCH_ROOT
+        || contract.restore_mode != "read-only"
+    {
+        return Err("workflow archive contract does not match the v2 exporter contract".into());
+    }
+    Ok(())
+}
+
+fn archive_workflow_history(
+    source: &SourceSpec,
+    archive_root: &Path,
+    file_meta: &mut FileMetaMap,
+    prefix: &str,
+) -> Result<(), String> {
+    for ledger in WORKFLOW_LEDGERS {
+        let source_path = source.root.join(ledger);
+        let (bytes, present) = if source_path.is_file() {
+            (
+                fs::read(&source_path)
+                    .map_err(|error| format!("read {}: {error}", source_path.display()))?,
+                true,
+            )
+        } else {
+            (Vec::new(), false)
+        };
+        let archive_path = format!("{prefix}/workflow/raw/{ledger}");
+        write_archive_file(archive_root, &archive_path, &bytes)?;
+        file_meta.insert(
+            archive_path,
+            (
+                "raw_workflow_ledger".into(),
+                Some(source_path.display().to_string()),
+                Some(present),
+                None,
+            ),
+        );
+    }
+
+    let patch_prefix = format!("{WORKFLOW_PATCH_ROOT}/");
+    for snapshot in source
+        .before
+        .iter()
+        .filter(|entry| entry.path.starts_with(&patch_prefix))
+    {
+        let relative = Path::new(&snapshot.path)
+            .strip_prefix(WORKFLOW_PATCH_ROOT)
+            .map_err(|error| format!("invalid workflow patch snapshot path: {error}"))?;
+        let relative_text = relative
+            .to_str()
+            .ok_or_else(|| format!("non-UTF-8 workflow patch path: {}", relative.display()))?;
+        validate_relative_archive_path(relative_text)?;
+        reject_relative_symlink_components(
+            &source.root,
+            Path::new(&snapshot.path),
+            "workflow patch",
+        )?;
+        let source_path = source.root.join(&snapshot.path);
+        let bytes = fs::read(&source_path)
+            .map_err(|error| format!("read {}: {error}", source_path.display()))?;
+        let archive_path = format!("{prefix}/workflow/patches/{relative_text}");
+        write_archive_file(archive_root, &archive_path, &bytes)?;
+        file_meta.insert(
+            archive_path,
+            (
+                "raw_workflow_patch".into(),
+                Some(source_path.display().to_string()),
+                Some(true),
+                None,
+            ),
+        );
+    }
+    Ok(())
+}
+
+fn verify_workflow_history(
+    archive: &Path,
+    source: &ManifestSource,
+    snapshot_paths: &BTreeMap<&str, &SnapshotFile>,
+    entries: &BTreeMap<String, &ManifestFile>,
+) -> Result<(), String> {
+    for ledger in WORKFLOW_LEDGERS {
+        let archive_path = format!("sources/{}/workflow/raw/{ledger}", source.id);
+        let entry = entries
+            .get(&archive_path)
+            .ok_or_else(|| format!("manifest/archive missing workflow ledger: {archive_path}"))?;
+        if entry.category != "raw_workflow_ledger" {
+            return Err(format!(
+                "wrong category for workflow ledger: {archive_path}"
+            ));
+        }
+        let bytes = fs::read(archive.join(&archive_path))
+            .map_err(|error| format!("read {archive_path}: {error}"))?;
+        match (entry.source_present, snapshot_paths.get(*ledger).copied()) {
+            (Some(true), Some(snapshot))
+                if snapshot.bytes == bytes.len() as u64
+                    && snapshot.sha256 == sha256_hex(&bytes) => {}
+            (Some(false), None) if bytes.is_empty() => {}
+            _ => {
+                return Err(format!(
+                    "raw workflow ledger does not match source snapshot: {}/{}",
+                    source.id, ledger
+                ));
+            }
+        }
+    }
+
+    let snapshot_patches = source
+        .snapshot_files
+        .iter()
+        .filter(|entry| entry.path.starts_with(&format!("{WORKFLOW_PATCH_ROOT}/")))
+        .map(|entry| {
+            let relative = entry
+                .path
+                .trim_start_matches(&format!("{WORKFLOW_PATCH_ROOT}/"));
+            (relative.to_string(), entry)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let archive_prefix = format!("sources/{}/workflow/patches/", source.id);
+    let archived_patches = entries
+        .iter()
+        .filter(|(path, entry)| {
+            path.starts_with(&archive_prefix) && entry.category == "raw_workflow_patch"
+        })
+        .map(|(path, entry)| (path.trim_start_matches(&archive_prefix).to_string(), *entry))
+        .collect::<BTreeMap<_, _>>();
+    if snapshot_patches.keys().collect::<Vec<_>>() != archived_patches.keys().collect::<Vec<_>>() {
+        return Err(format!(
+            "workflow patch inventory does not match source snapshot: {}",
+            source.id
+        ));
+    }
+    for (relative, snapshot) in snapshot_patches {
+        let archive_path = format!("{archive_prefix}{relative}");
+        let bytes = fs::read(archive.join(&archive_path))
+            .map_err(|error| format!("read {archive_path}: {error}"))?;
+        if snapshot.bytes != bytes.len() as u64 || snapshot.sha256 != sha256_hex(&bytes) {
+            return Err(format!(
+                "workflow patch does not match source snapshot: {archive_path}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Verify an archive and return its retired Workflow files as opaque bytes.
+/// This is deliberately a read-only restore seam: callers can inspect or copy
+/// the exact historical bytes without reopening any current writer.
+pub fn restore_read_workflow_history(archive: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    verify_archive(archive)?;
+    let manifest_path = archive.join("manifest.json");
+    let manifest: Manifest = serde_json::from_slice(
+        &fs::read(&manifest_path)
+            .map_err(|error| format!("read {}: {error}", manifest_path.display()))?,
+    )
+    .map_err(|error| format!("parse {}: {error}", manifest_path.display()))?;
+    validate_workflow_archive_contract(manifest.workflow_archive.as_ref())?;
+    let mut restored = BTreeMap::new();
+    for entry in manifest.files.iter().filter(|entry| {
+        matches!(
+            entry.category.as_str(),
+            "raw_workflow_ledger" | "raw_workflow_patch"
+        )
+    }) {
+        restored.insert(
+            entry.path.clone(),
+            fs::read(archive.join(&entry.path))
+                .map_err(|error| format!("read {}: {error}", entry.path))?,
+        );
+    }
+    Ok(restored)
 }
 
 fn validate_linked_records(bytes: &[u8], ledger: &str, archive_path: &str) -> Result<(), String> {
@@ -1606,6 +1841,33 @@ pub(crate) fn jsonl_records<'a>(
         start = end;
     }
     Ok(records)
+}
+
+/// Return only syntactically parseable rows while retaining their exact source
+/// line and byte slice. This is used solely to derive optional legacy relation
+/// indexes from Workflow history; the authoritative archive is the separate
+/// opaque-byte copy, including every row this function cannot parse.
+fn parseable_jsonl_records(bytes: &[u8]) -> Vec<JsonlRecord<'_>> {
+    let mut records = Vec::new();
+    let mut start = 0_usize;
+    for (index, end) in bytes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, byte)| (*byte == b'\n').then_some(index + 1))
+        .chain((!bytes.is_empty() && bytes.last() != Some(&b'\n')).then_some(bytes.len()))
+        .enumerate()
+    {
+        let line = index as u64 + 1;
+        let raw = &bytes[start..end];
+        let content = raw.strip_suffix(b"\n").unwrap_or(raw);
+        if !content.iter().all(u8::is_ascii_whitespace) {
+            if let Ok(value) = serde_json::from_slice(content) {
+                records.push(JsonlRecord { line, raw, value });
+            }
+        }
+        start = end;
+    }
+    records
 }
 
 fn validate_jsonl(bytes: &[u8], label: &str) -> Result<(), String> {

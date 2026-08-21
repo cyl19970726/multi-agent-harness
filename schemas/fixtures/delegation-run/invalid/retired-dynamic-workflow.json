@@ -1,0 +1,12 @@
+{
+  "id": "drun-retired-workflow",
+  "team_run_id": "trun-1",
+  "parent_member_run_id": "mrun-1",
+  "mode": "dynamic_workflow",
+  "provider": "claude",
+  "workflow_run_id": "wfrun-1",
+  "objective": "Attempt a retired Dynamic Workflow delegation.",
+  "status": "planned",
+  "created_at": "2026-08-21T00:00:00Z",
+  "updated_at": "2026-08-21T00:00:00Z"
+}
