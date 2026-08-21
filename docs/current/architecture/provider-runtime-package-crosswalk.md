@@ -41,7 +41,7 @@ acceptance update.
 | `process_reaper.rs` | snapshot/read-model helpers and legacy Team tolerance | application/read-model; filename is misleading | application projection package/module |
 | `codex_app_server.rs`, `codex_team_runtime.rs` | Codex native protocol and Team binding | current Team provider | app-server transport/protocol, complete Team binding, and deterministic tests extracted to `firm-provider-codex`; CLI retains a narrow application callback/error adapter |
 | `claude_agent_sdk.rs`, `claude_team_runtime.rs`, `apps/claude-member-runner` | Claude Rust bridge, Team binding, Node runner | current Team provider | runtime process, reviewed runner protocol/version gate, complete Team binding, and tests extracted to `firm-provider-claude`; CLI retains a narrow application error/trait adapter; versioned Node runner asset remains in `apps/claude-member-runner` |
-| `kimi_acp.rs`, `kimi_team_runtime.rs` | Kimi ACP transport and Team binding | current Team provider; ACP transport also serves current Host | ACP process/protocol and its tests extracted to `firm-provider-kimi`; Team/application binding remains to move and Host consumes the same package through its own binding |
+| `kimi_acp.rs`, `kimi_team_runtime.rs` | Kimi ACP transport and Team binding | current Team provider; ACP transport also serves current Host | ACP process/protocol, complete Team binding, and tests extracted to `firm-provider-kimi`; CLI retains a narrow application callback/error adapter and Host consumes the same provider package through its own binding |
 | `pi_rpc/` | Pi RPC client and Team binding | current Team provider | RPC process/session/prompt/steer/abort, native-session validation, permission argv admission, and client tests extracted to `firm-provider-pi`; Team/application binding remains to move |
 | `main_tests/workflow_runtime_tests.rs` and child directory | 114 source files no longer referenced by any test root after retirement | unreachable Dynamic Workflow residue | deleted in DEV-58 |
 | `main_tests/codex_exec.rs` | compiled historical parser/retirement characterization | historical read/retirement evidence | move beside the historical decoder or delete when equivalent archive verification proves coverage |
@@ -133,4 +133,10 @@ Landed DEV-58 milestones:
   native Goal supervision, provider reverse-request boundary, steer/interrupt,
   close/quiesce/release behavior, and deterministic tests to
   `firm-provider-codex`. `firm-cli` retains only a 182-line application adapter
-  for durable provider-interaction callbacks and typed supervisor lease loss.
+  for durable provider-interaction callbacks and typed supervisor lease loss;
+- current Kimi Team slice: extracts the complete ACP Team lifecycle,
+  prompt/cancel/close behavior, reverse-request ordering boundary, live-event
+  projection, and deterministic tests to `firm-provider-kimi`. `firm-cli`
+  retains only a 177-line application adapter; the temporary provider
+  `test-support` feature is removed because test-only process construction is
+  once again package-local.

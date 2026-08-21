@@ -115,6 +115,9 @@ pub enum PromptControl {
     Cancel,
 }
 
+mod team_runtime;
+pub use team_runtime::*;
+
 /// Process-local observation of the owned ACP transport. This is deliberately
 /// narrower than provider session truth: it proves only that the Harness-owned
 /// process/stdout reader are live (or have been reaped). It never claims that
@@ -199,7 +202,7 @@ pub struct KimiAcpClient {
 }
 
 impl KimiAcpClient {
-    #[cfg(all(any(test, feature = "test-support"), unix))]
+    #[cfg(all(test, unix))]
     pub fn scripted_for_close_contract() -> Self {
         // One close request receives a real correlated JSON-RPC response. The
         // fake server then waits for client EOF and exits cleanly, matching
