@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { readdirSync, statSync } from "node:fs";
 
@@ -17,7 +17,7 @@ function walk(dir) {
 }
 
 for (const root of roots) {
-  walk(root);
+  if (existsSync(root)) walk(root);
 }
 
 for (const file of files) {
