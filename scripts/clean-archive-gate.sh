@@ -41,7 +41,11 @@ cd "$archive_root"
 # exact candidate commit without inheriting the caller's working tree.
 git init -q
 git remote add clean-archive-source "$repo_root"
-git fetch -q --depth=1 clean-archive-source "$candidate_sha"
+# Retirement and archive gates intentionally bind historical Git objects and
+# ancestry. Fetch the candidate's reachable history while still checking out
+# only the exact detached candidate; a shallow one-commit repository makes
+# those immutable proofs unverifiable during the final package gate.
+git fetch -q clean-archive-source "$candidate_sha"
 git checkout -q --detach FETCH_HEAD
 git -C "$repo_root" archive "$candidate_sha" | tar -x -C "$archive_root"
 if [ "$(git rev-parse HEAD)" != "$candidate_sha" ] || [ -n "$(git status --porcelain)" ]; then
