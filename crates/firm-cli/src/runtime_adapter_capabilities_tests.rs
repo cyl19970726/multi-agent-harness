@@ -25,6 +25,23 @@ fn binding_registry_is_the_closed_runner_dispatch_registry() {
 }
 
 #[test]
+fn compatibility_registry_cannot_drift_from_the_canonical_provider_catalog() {
+    let catalog = harness_application::PROVIDERS
+        .iter()
+        .filter_map(|descriptor| {
+            descriptor
+                .direct_delivery_compatibility
+                .map(|_| descriptor.provider)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(crate::supported_provider_names(), catalog);
+    assert!(catalog
+        .iter()
+        .all(|provider| crate::compatibility_delivery_binding(provider).is_some()));
+    assert!(crate::compatibility_delivery_binding("unknown").is_none());
+}
+
+#[test]
 fn pi_launch_policy_only_compiles_admissible_ceilings() {
     assert_eq!(
         pi_tools_allowlist_for_ceiling(PermissionCeiling::ReadOnly).unwrap(),

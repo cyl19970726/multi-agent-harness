@@ -183,11 +183,11 @@ new binding records the parent native session id.
 
 | Mode | Native identity today | Native read truth | Restart resume | Operational boundary |
 | --- | --- | --- | --- | --- |
-| Codex `codex_exec` | real thread id captured | Codex rollout/state DB is native truth | `codex exec resume` remains available to bounded Workflow and legacy non-Team paths | workflow-only for new work; historical Team records remain readable but cannot start a new member |
+| Codex `codex_exec` | real thread id captured | Codex rollout/state DB is native truth | `codex exec resume` remains available to explicit legacy non-Team compatibility paths | historical/compatibility only for new work; historical Team records remain readable but cannot start a new member |
 | Codex `codex_app_server` | real thread id captured | app-server thread APIs plus Codex native store | `thread/resume` wired through explicit member resume binding | live provider activity is transient; native history is read on demand |
 | Kimi `kimi_acp` | real ACP session id captured | `~/.kimi-code/sessions/**/session_<id>/agents/main/wire.jsonl` | reviewed through 0.36.1 prefer `session/resume`; both resume and the `session/load` compatibility fallback may replay history, which is drained before the next prompt | K3/max selection, generation-crossing same-session resume, next-round mail, bounded full-access receipts, and cooperative `session/cancel` notification are current; live activity remains transient and native history is read on demand |
 | Claude `claude_agent_sdk` | real `system(init).session_id` captured | `~/.claude/projects/**/<session>.jsonl` | streaming mailbox, SDK interrupt/close, explicit resume binding, and SDK `listSessions` | Only Claude Team mode; `system(init).claude_code_version` owns the version claim; Desktop visibility is opt-in through `claude://resume?session=<id>`, and Desktop stays observation-only while Harness drives |
-| Claude `claude_cli` | historical one-shot session id | `~/.claude/projects/**/<session>.jsonl` | restore-read only; no current Harness resume route | Retired Dynamic Workflow and historical reads only; rejected for new Agent Team members |
+| Claude `claude_cli` | real one-shot session id | `~/.claude/projects/**/<session>.jsonl` | exact-session resume remains in the separately fenced headless Host/direct-delivery compatibility path | rejected for new Agent Team members; historical Team records remain read-only |
 
 Unknown providers and unregistered execution modes have no executable Team
 Member adapter and fail explicitly. A provider brand, installed binary, native
@@ -230,7 +230,8 @@ states. UI must not invent native activity or resume from a Harness replay.
   `--resume-member <member-name>:<native-session-id>`. Resume is never inferred
   from the newest local session.
 - Codex Agent Team app-server uses `thread/resume`; Kimi ACP uses
-  `session/load`. Workflow-side `codex_exec` may use `codex exec resume`, but
+  `session/load`. An explicit legacy non-Team compatibility path may use
+  `codex exec resume`, but
   Harness never falls back to it for a Team member. A provider rejection fails
   the member honestly instead of falling back to a fresh session.
 

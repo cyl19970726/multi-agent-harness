@@ -1,6 +1,14 @@
 [workspace]
 members = [
   "crates/firm-core",
+  "crates/firm-application",
+  "crates/firm-runtime-contract",
+  "crates/firm-runtime-supervisor",
+  "crates/firm-runtime-host",
+  "crates/firm-provider-codex",
+  "crates/firm-provider-kimi",
+  "crates/firm-provider-pi",
+  "crates/firm-provider-claude",
   "crates/firm-provider-events",
   "crates/firm-fabric",
   "crates/firm-store",

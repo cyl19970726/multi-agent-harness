@@ -59,12 +59,12 @@ for (const provider of manifest.providers) {
 const model = readFileSync("crates/firm-provider-events/src/model.rs", "utf8");
 const runtime = [
   "crates/firm-cli/src/main.rs",
-  "crates/firm-cli/src/codex_team_runtime.rs",
-  "crates/firm-cli/src/claude_team_runtime.rs",
-  "crates/firm-cli/src/kimi_team_runtime.rs",
+  "crates/firm-provider-codex/src/team_runtime.rs",
+  "crates/firm-provider-claude/src/lib.rs",
+  "crates/firm-provider-kimi/src/team_runtime.rs",
   "crates/firm-cli/src/main_modules/member_work_coordination.rs",
 ].map((path) => readFileSync(path, "utf8")).join("\n");
-const piRuntime = readFileSync("crates/firm-cli/src/pi_rpc.rs", "utf8");
+const piRuntime = readFileSync("crates/firm-provider-pi/src/team_runtime.rs", "utf8");
 const architecture = readFileSync("docs/current/architecture/provider-event-projection.md", "utf8");
 for (const kind of manifest.semantic_kinds) {
   const rustName = kind.split("_").map((part) => part[0].toUpperCase() + part.slice(1)).join("");

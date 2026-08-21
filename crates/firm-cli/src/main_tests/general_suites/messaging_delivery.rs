@@ -6,8 +6,6 @@ mod canonical_message_fabric_drives_lineage_status_and_member_detail_without_leg
 mod claude_member_delivery_dispatches_to_claude_stub;
 #[path = "../general/dashboard_snapshot_uses_latest_message_per_id.rs"]
 mod dashboard_snapshot_uses_latest_message_per_id;
-#[path = "../general/detects_jsonrpc_error_messages.rs"]
-mod detects_jsonrpc_error_messages;
 #[path = "../general/gateway_tick_delivers_queued_messages_with_same_delivery_path.rs"]
 mod gateway_tick_delivers_queued_messages_with_same_delivery_path;
 #[cfg(any())]
@@ -66,5 +64,3 @@ mod supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery;
 mod taskless_running_delivery_reconciliation_clears_member_without_fabricating_report;
 #[path = "../general/team_inbox_projection_lists_queued_then_all_with_claim_binding.rs"]
 mod team_inbox_projection_lists_queued_then_all_with_claim_binding;
-#[path = "../general/turn_delivery_requires_turn_response_or_notification.rs"]
-mod turn_delivery_requires_turn_response_or_notification;

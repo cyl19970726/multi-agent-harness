@@ -423,14 +423,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
+name = "firm-application"
+version = "0.1.0"
+dependencies = [
+ "firm-runtime-contract",
+ "serde",
+]
+
+[[package]]
 name = "firm-cli"
 version = "0.1.0"
 dependencies = [
  "crossbeam",
+ "firm-application",
  "firm-core",
  "firm-fabric",
  "firm-governance",
+ "firm-provider-claude",
+ "firm-provider-codex",
  "firm-provider-events",
+ "firm-provider-kimi",
+ "firm-provider-pi",
+ "firm-runtime-contract",
+ "firm-runtime-host",
+ "firm-runtime-supervisor",
  "firm-store",
  "hmac",
  "libc",
@@ -482,6 +498,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "firm-provider-claude"
+version = "0.1.0"
+dependencies = [
+ "firm-core",
+ "firm-runtime-contract",
+ "firm-runtime-host",
+ "libc",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "firm-provider-codex"
+version = "0.1.0"
+dependencies = [
+ "firm-core",
+ "firm-runtime-contract",
+ "firm-runtime-host",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "firm-provider-events"
 version = "0.1.0"
 dependencies = [
@@ -490,6 +530,51 @@ dependencies = [
  "sha2",
  "thiserror 1.0.69",
 ]
+
+[[package]]
+name = "firm-provider-kimi"
+version = "0.1.0"
+dependencies = [
+ "firm-core",
+ "firm-runtime-contract",
+ "firm-runtime-host",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "firm-provider-pi"
+version = "0.1.0"
+dependencies = [
+ "firm-core",
+ "firm-runtime-contract",
+ "firm-runtime-host",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "firm-runtime-contract"
+version = "0.1.0"
+dependencies = [
+ "firm-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "firm-runtime-host"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "firm-runtime-supervisor"
+version = "0.1.0"
 
 [[package]]
 name = "firm-store"

@@ -16,7 +16,7 @@ pub(super) fn start_agent_runtime(
     member.status = ProviderLaunchStatus::Creating;
     member.last_seen_at = Some(now_string());
     store.append_member(&member)?;
-    let runtime = match start_provider_runtime(store, &member) {
+    let runtime = match start_compatibility_delivery_runtime(store, &member) {
         Ok(runtime) => runtime,
         Err(error) => {
             member.status = ProviderLaunchStatus::Error;

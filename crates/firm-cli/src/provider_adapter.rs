@@ -36,29 +36,9 @@ pub(crate) struct ProviderPermissionMapping {
     pub native_approval: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ProviderControlAction {
-    CancelProviderTurn,
-    CloseSession,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum NativeControlPrimitive {
-    CodexTurnInterrupt,
-    ClaudeAgentSdkInterrupt,
-    KimiAcpCancel,
-    PiRpcInterrupt,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct ProviderControlPlan {
-    pub provider: String,
-    pub action: ProviderControlAction,
-    pub primitive: NativeControlPrimitive,
-    pub requires_terminal_ack: bool,
-}
+pub(crate) use harness_runtime_contract::{
+    NativeControlPrimitive, ProviderControlAction, ProviderControlPlan, ProviderNativeControl,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct PendingProviderControl {
@@ -78,50 +58,6 @@ impl PendingProviderControl {
 pub(crate) enum ProviderControlDispatch {
     Pending(Box<PendingProviderControl>),
     Replayed,
-}
-
-/// The one executable boundary between AgentFirm's durable RuntimeCommand and
-/// provider-native control. Implementations must perform the real native
-/// operation; capability declarations and injected success closures do not
-/// satisfy this contract.
-pub(crate) trait ProviderNativeControl {
-    fn provider(&self) -> &'static str;
-    fn dispatch(&mut self, plan: &ProviderControlPlan) -> CliResult<()>;
-}
-
-/// Forwarding so boxed proxies from `TeamRuntimeAdapter::native_control`
-/// satisfy `execute_team_control`'s `impl ProviderNativeControl` parameter.
-impl ProviderNativeControl for Box<dyn ProviderNativeControl + '_> {
-    fn provider(&self) -> &'static str {
-        (**self).provider()
-    }
-
-    fn dispatch(&mut self, plan: &ProviderControlPlan) -> CliResult<()> {
-        (**self).dispatch(plan)
-    }
-}
-
-pub(crate) struct PiNativeControl<'a> {
-    pub close: &'a mut bool,
-    pub interrupt: &'a mut bool,
-}
-
-impl ProviderNativeControl for PiNativeControl<'_> {
-    fn provider(&self) -> &'static str {
-        "pi"
-    }
-
-    fn dispatch(&mut self, plan: &ProviderControlPlan) -> CliResult<()> {
-        if plan.primitive != NativeControlPrimitive::PiRpcInterrupt {
-            return Err(CliError::Usage(format!(
-                "PROVIDER_CONTROL_UNPROVEN: Pi adapter received {:?}",
-                plan.primitive
-            )));
-        }
-        *self.interrupt = true;
-        *self.close = plan.action == ProviderControlAction::CloseSession;
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -455,7 +391,7 @@ pub(crate) fn settle_team_control(
 /// recovery inventory and make a later retry unsafe.
 pub(crate) fn settle_team_controls_without_terminal_ack(
     ledger: &TeamRunLedger,
-    pending: impl IntoIterator<Item = Box<PendingProviderControl>>,
+    pending: impl IntoIterator<Item = PendingProviderControl>,
 ) -> CliResult<()> {
     let mut first_error = None;
     for control in pending {
@@ -504,47 +440,20 @@ pub(crate) fn map_permission(
     if !matches!(provider, "codex" | "claude" | "kimi" | "pi") {
         return Err(format!("PROVIDER_CAPABILITY_UNPROVABLE: {provider}"));
     }
-    let (native_sandbox, native_approval) = match (provider, requested) {
-        // The AgentSession freezes its effective ceiling before provider start.
-        // Codex therefore receives a native sandbox plus `never`: operations
-        // inside the sandbox proceed directly and operations outside it fail
-        // closed instead of opening a second permission lifecycle.
-        ("codex", PermissionCeiling::ReadOnly) => ("read-only", "never"),
-        ("codex", PermissionCeiling::WorkspaceWrite) => ("workspace-write", "never"),
-        ("codex", PermissionCeiling::FullAccess) => ("danger-full-access", "never"),
-        ("claude", PermissionCeiling::ReadOnly) => ("plan", "default"),
-        ("claude", PermissionCeiling::WorkspaceWrite) => ("acceptEdits", "default"),
-        // FullAccess is the explicit trusted-development policy: it promises
-        // no filesystem containment. Claude Agent SDK represents that exact
-        // absence of a native permission gate with bypassPermissions. This is
-        // not a sandbox capability claim and grants no protected external
-        // authority beyond the frozen AgentSession ceiling.
-        ("claude", PermissionCeiling::FullAccess) => ("unrestricted", "bypassPermissions"),
-        // Kimi ACP exposes permission callbacks but no provider-native
-        // read-only/workspace sandbox that Harness can prove. It is therefore
-        // admissible only when the frozen Session itself is full access; exact
-        // allow intents cannot widen that ceiling.
-        ("kimi", PermissionCeiling::FullAccess) => ("provider-native-full-access", "exact_allow"),
-        ("kimi", PermissionCeiling::ReadOnly | PermissionCeiling::WorkspaceWrite) => {
-            return Err(format!(
-                "PROVIDER_PERMISSION_MISMATCH: {provider} cannot prove {requested:?}"
-            ))
-        }
-        // Pi has no permission prompt or filesystem sandbox. A read-only tool
-        // allowlist can withhold every mutating built-in; FullAccess is an
-        // explicit unrestricted trusted-development policy. `write,edit`
-        // cannot implement WorkspaceWrite because Pi accepts absolute paths,
-        // `..`, and symlink escapes, so that ceiling fails closed.
-        ("pi", PermissionCeiling::ReadOnly) => ("tool-allowlist-read-only", "none"),
-        ("pi", PermissionCeiling::WorkspaceWrite) => {
-            return Err(
-                "PROVIDER_PERMISSION_MISMATCH: pi cannot contain workspace_write without an OS sandbox or controlled tool bridge"
-                    .to_string(),
-            )
-        }
-        ("pi", PermissionCeiling::FullAccess) => ("unrestricted", "none"),
-        _ => return Err(format!("PROVIDER_CAPABILITY_UNPROVABLE: {provider}")),
+    let compiled = match provider {
+        "codex" => Ok(harness_provider_codex::compile_node_permission(requested)),
+        "claude" => Ok(harness_provider_claude::compile_agent_sdk_permission(
+            requested,
+        )),
+        "kimi" => harness_provider_kimi::compile_acp_permission(requested)
+            .map_err(|error| error.to_string()),
+        "pi" => harness_provider_pi::compile_rpc_permission(requested)
+            .map_err(|error| error.to_string()),
+        _ => Err(format!("PROVIDER_CAPABILITY_UNPROVABLE: {provider}")),
     };
+    let (native_sandbox, native_approval) = compiled.map_err(|detail| {
+        format!("PROVIDER_PERMISSION_MISMATCH: {provider} cannot prove {requested:?}: {detail}")
+    })?;
     Ok(ProviderPermissionMapping {
         provider: provider.to_string(),
         requested,

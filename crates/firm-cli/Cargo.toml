@@ -14,6 +14,14 @@ path = "src/main.rs"
 
 [dependencies]
 harness_core = { package = "firm-core", path = "../firm-core" }
+harness_application = { package = "firm-application", path = "../firm-application" }
+harness_runtime_contract = { package = "firm-runtime-contract", path = "../firm-runtime-contract" }
+harness_runtime_supervisor = { package = "firm-runtime-supervisor", path = "../firm-runtime-supervisor" }
+harness_runtime_host = { package = "firm-runtime-host", path = "../firm-runtime-host" }
+harness_provider_codex = { package = "firm-provider-codex", path = "../firm-provider-codex" }
+harness_provider_kimi = { package = "firm-provider-kimi", path = "../firm-provider-kimi" }
+harness_provider_pi = { package = "firm-provider-pi", path = "../firm-provider-pi" }
+harness_provider_claude = { package = "firm-provider-claude", path = "../firm-provider-claude" }
 harness_store = { package = "firm-store", path = "../firm-store" }
 harness_fabric = { package = "firm-fabric", path = "../firm-fabric" }
 harness_governance = { package = "firm-governance", path = "../firm-governance" }

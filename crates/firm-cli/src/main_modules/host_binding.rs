@@ -359,25 +359,26 @@ pub(super) fn dispatch_headless_host_once(
         ))
     })?;
     let provider = canonical_surface(&run.host_surface).to_string();
-    if !matches!(provider.as_str(), "codex" | "claude" | "kimi") {
-        return Err(CliError::Usage(format!(
-            "Host surface {:?} has no headless resume adapter",
+    let descriptor = harness_application::provider_descriptor(&provider).ok_or_else(|| {
+        CliError::Usage(format!(
+            "Host surface {:?} is not a production coding-agent provider",
             run.host_surface
-        )));
-    }
-    if provider == "codex" {
-        return Err(CliError::Usage(
-            "HEADLESS_HOST_READ_ONLY_UNAVAILABLE: Codex exact-session resume inherits the existing session sandbox and cannot currently prove a read-only Host turn; use the interactive Host or a provider transport that enforces read-only resume"
-                .to_string(),
-        ));
-    }
+        ))
+    })?;
+    let host_binding = descriptor.headless_host.ok_or_else(|| {
+        if provider == "codex" {
+            CliError::Usage(
+                "HEADLESS_HOST_READ_ONLY_UNAVAILABLE: Codex exact-session resume inherits the existing session sandbox and cannot currently prove a read-only Host turn; use the interactive Host or a provider transport that enforces read-only resume"
+                    .to_string(),
+            )
+        } else {
+            CliError::Usage(format!(
+                "HEADLESS_HOST_UNSUPPORTED: provider {provider} has no reviewed exact-session read-only Host binding"
+            ))
+        }
+    })?;
     let project_context = headless_host_project_context(resolved, &run)?;
-    let execution_mode = match provider.as_str() {
-        "codex" => "codex_exec",
-        "claude" => "claude_cli",
-        "kimi" => "kimi_acp",
-        _ => unreachable!("unsupported Host provider was rejected above"),
-    };
+    let execution_mode = host_binding.execution_mode;
     let mut profile = team_member_provider_profile_for_mode(&provider, Some(execution_mode));
     let detected = team_member_provider_version_output(&provider);
     let probe_error = detected.as_ref().err().cloned();
@@ -460,83 +461,24 @@ pub(super) fn dispatch_headless_host_once(
                     delivery: None,
                     sender_kind: SenderKind::System,
                 };
-                if provider == "kimi" {
-                    let response = Arc::new(Mutex::new(String::new()));
-                    let response_sink = Arc::clone(&response);
-                    let receipt = Arc::new(Mutex::new(None::<String>));
-                    let receipt_sink = Arc::clone(&receipt);
-                    let mut client = kimi_acp::KimiAcpClient::spawn(
-                        &project_context.project_root,
-                        None,
-                        None,
-                        Some(thread_id),
-                        &[],
-                    )
-                    .map_err(|error| StoreError::Conflict(error.to_string()))?;
-                    let outcome = client
-                        .prompt(
+                match host_binding.binding {
+                    harness_application::HostRuntimeKind::KimiAcp => {
+                        let turn = harness_provider_kimi::run_kimi_host_turn(
+                            &project_context.project_root,
+                            thread_id,
                             &message.content,
                             Duration::from_millis(timeout_ms),
-                            move |provider_receipt_id| {
-                                *receipt_sink.lock().map_err(|error| {
-                                    CliError::Usage(format!("Host receipt lock poisoned: {error}"))
-                                })? = Some(provider_receipt_id.to_string());
-                                Ok(())
-                            },
-                            move |update| {
-                                if update.get("sessionUpdate").and_then(|kind| kind.as_str())
-                                    == Some("agent_message_chunk")
-                                {
-                                    if let Some(text) = update
-                                        .get("content")
-                                        .and_then(|content| content.get("text"))
-                                        .and_then(|text| text.as_str())
-                                    {
-                                        if let Ok(mut collected) = response_sink.lock() {
-                                            collected.push_str(text);
-                                        }
-                                    }
-                                }
-                            },
-                            |_| {
-                                Err(CliError::Usage(
-                                    "headless Host triage refuses provider permission requests"
-                                        .to_string(),
-                                ))
-                            },
-                            |_| Ok(()),
-                            || Ok(kimi_acp::PromptControl::Continue),
                         )
                         .map_err(|error| StoreError::Conflict(error.to_string()))?;
-                    if let Some(error) = outcome.provider_error {
-                        return Err(StoreError::Conflict(format!(
-                            "headless Kimi Host turn failed: {error}"
-                        )));
+                        return host_dispatcher::DispatcherConsumerSuccess::new(
+                            (turn.response_text, delivered_attention_ids),
+                            turn.provider_receipt_id,
+                        );
                     }
-                    let receipt = receipt
-                        .lock()
-                        .map_err(|error| {
-                            StoreError::Conflict(format!("Host receipt lock poisoned: {error}"))
-                        })?
-                        .clone()
-                        .ok_or_else(|| {
-                            StoreError::Conflict(
-                                "headless Kimi Host turn returned no prompt receipt".to_string(),
-                            )
-                        })?;
-                    let summary = response
-                        .lock()
-                        .map_err(|error| {
-                            StoreError::Conflict(format!("Host response lock poisoned: {error}"))
-                        })?
-                        .clone();
-                    return host_dispatcher::DispatcherConsumerSuccess::new(
-                        (summary, delivered_attention_ids),
-                        receipt,
-                    );
+                    harness_application::HostRuntimeKind::ClaudeCli => {}
                 }
 
-                let outcome = run_provider_delivery(
+                let outcome = run_claude_host_delivery(
                     store,
                     &member,
                     &runtime,

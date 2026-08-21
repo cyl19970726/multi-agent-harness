@@ -6,42 +6,6 @@ use super::*;
 // Capability honesty
 // ---------------------------------------------------------------------------
 
-/// Per-capability execution status (DOC-89 §8.1). Order matters only for
-/// reporting; every entry must carry `evidence` naming the proof.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum CapabilityStatus {
-    Supported,
-    Unsupported,
-    Degraded,
-    // No binding reports Experimental today; the status exists so a future
-    // binding (e.g. a DeepSeek native bridge canary) can ship honestly
-    // between Unsupported and Supported.
-    #[allow(dead_code)]
-    Experimental,
-}
-
-impl CapabilityStatus {
-    #[cfg(test)]
-    pub(crate) fn is_supported(self) -> bool {
-        matches!(self, CapabilityStatus::Supported)
-    }
-}
-
-/// One semantic intent → execution status + evidence. `evidence` names the
-/// proof (RPC contract, test, or transport fact); a binding without proof
-/// reports `Unsupported`/`Experimental`, never `Supported`.
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct CapabilityBinding {
-    pub capability: &'static str,
-    pub status: CapabilityStatus,
-    pub evidence: String,
-    /// Security-relevant capabilities name the real enforcement mechanism;
-    /// absence means none was verified.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub security_enforcement_locus: Option<String>,
-}
-
 pub(super) fn canonical_runtime_binding(
     session: &harness_core::agentfirm_api::AgentSession,
 ) -> harness_core::agentfirm_api::RuntimeCommandBinding {
@@ -62,7 +26,7 @@ pub(super) fn canonical_runtime_binding(
     }
 }
 
-pub(super) fn preflight_start_cycle<A: TeamRuntimeAdapter>(
+pub(super) fn preflight_start_cycle<A: TeamRuntimeAdapter<Error = CliError>>(
     adapter: &A,
     session: &harness_core::agentfirm_api::AgentSession,
 ) -> CliResult<()> {
@@ -144,14 +108,7 @@ pub(crate) fn preflight_profile_effect(
 pub(crate) fn pi_tools_allowlist_for_ceiling(
     ceiling: PermissionCeiling,
 ) -> CliResult<Option<&'static str>> {
-    match ceiling {
-        PermissionCeiling::ReadOnly => Ok(Some("read,grep,find,ls")),
-        PermissionCeiling::WorkspaceWrite => Err(CliError::Usage(
-            "PI_PERMISSION_ADMISSION_FAILED: workspace_write requires verified filesystem containment; Pi --tools only limits tool kinds"
-                .to_string(),
-        )),
-        PermissionCeiling::FullAccess => Ok(None),
-    }
+    Ok(harness_provider_pi::tools_allowlist_for_ceiling(ceiling)?)
 }
 
 /// The enforcement-locus claim matching `pi_tools_allowlist_for_ceiling`.
@@ -188,16 +145,12 @@ pub(crate) fn pi_security_enforcement_locus(
 /// `write`/`edit` can target paths outside the workspace. Consequently only
 /// read-only and explicitly trusted full-access launches are admissible until
 /// an OS sandbox or reviewed native bridge is part of the composition.
+#[cfg(test)]
 pub(crate) fn admit_pi_permission_ceiling(
     ceiling: PermissionCeiling,
     compiled_tools: Option<&str>,
 ) -> CliResult<harness_core::SecurityEnforcementLocus> {
-    let expected = pi_tools_allowlist_for_ceiling(ceiling)?;
-    if compiled_tools != expected {
-        return Err(CliError::Usage(format!(
-            "PI_PERMISSION_ADMISSION_FAILED: {ceiling:?} expected tools {expected:?}, got {compiled_tools:?}"
-        )));
-    }
+    harness_provider_pi::admit_permission_ceiling(ceiling, compiled_tools)?;
     Ok(pi_security_enforcement_locus(ceiling))
 }
 
@@ -209,25 +162,13 @@ pub(crate) fn admit_pi_permission_ceiling(
 /// selector is shared by admission, capability reporting, and runner dispatch
 /// so a provider cannot advertise an executable binding without a runnable
 /// path (or acquire a runnable path without a capability contract).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SharedTeamRuntimeKind {
-    Pi,
-    Kimi,
-    Codex,
-    Claude,
-}
+pub(crate) use harness_application::TeamRuntimeKind as SharedTeamRuntimeKind;
 
 pub(crate) fn shared_team_runtime_kind(
     provider: &str,
     execution_mode: Option<&str>,
 ) -> Option<SharedTeamRuntimeKind> {
-    match (provider, execution_mode) {
-        ("pi", Some("pi_rpc") | None) => Some(SharedTeamRuntimeKind::Pi),
-        ("kimi", Some("kimi_acp") | None) => Some(SharedTeamRuntimeKind::Kimi),
-        ("codex", Some("codex_app_server") | None) => Some(SharedTeamRuntimeKind::Codex),
-        ("claude", Some("claude_agent_sdk") | None) => Some(SharedTeamRuntimeKind::Claude),
-        _ => None,
-    }
+    harness_application::team_runtime_kind(provider, execution_mode)
 }
 
 /// Executable capability report for a provider's Team runtime binding, when

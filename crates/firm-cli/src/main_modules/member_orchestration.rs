@@ -9,26 +9,6 @@ pub(super) struct MemberOutcome {
     pub(super) summary: String,
 }
 
-/// Describe a provider turn as a Harness-owned execution fact without copying
-/// the provider-authored response into MemberAction or supervisor output. The
-/// provider-native Session remains the sole transcript/history authority;
-/// explicit TeamMessage, WorkReport, Delivery, Review, and Evidence operations
-/// are persisted independently through their canonical writers.
-pub(super) fn provider_turn_coordination_summary(
-    provider: &str,
-    round: u32,
-    has_authored_output: bool,
-) -> String {
-    let output = if has_authored_output {
-        "with authored output"
-    } else {
-        "without authored output"
-    };
-    format!(
-        "{provider} provider round {round} completed {output}; transcript remains provider-native"
-    )
-}
-
 pub(super) fn provider_turn_failure_summary(provider: &str, round: u32) -> String {
     format!(
         "{provider} provider round {round} failed; inspect the provider-native session for details"
@@ -53,78 +33,6 @@ pub(super) fn generated_member_role_action_token() -> CliResult<String> {
     let mut bytes = [0u8; 32];
     fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
-}
-
-/// `std::process::Child` does not terminate a still-running process on drop.
-/// Provider transports must not outlive a stale Supervisor generation. The
-/// guard is disarmed after a normal wait and only signals a child/group that
-/// remains active.
-pub(super) struct ProviderChildGuard {
-    pub(super) child: std::process::Child,
-    pub(super) armed: bool,
-}
-
-pub(super) fn isolate_provider_child_process_group(command: &mut Command) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-}
-
-impl ProviderChildGuard {
-    pub(super) fn new(child: std::process::Child) -> Self {
-        Self { child, armed: true }
-    }
-
-    #[cfg(test)]
-    pub(super) fn wait_and_disarm(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        let status = self.child.wait()?;
-        self.armed = false;
-        Ok(status)
-    }
-
-    /// Mark an already-reaped child so `Drop` does not signal a pid that no
-    /// longer belongs to it.
-    pub(super) fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl std::ops::Deref for ProviderChildGuard {
-    type Target = std::process::Child;
-
-    fn deref(&self) -> &Self::Target {
-        &self.child
-    }
-}
-
-impl std::ops::DerefMut for ProviderChildGuard {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.child
-    }
-}
-
-impl Drop for ProviderChildGuard {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        match self.child.try_wait() {
-            Ok(Some(_)) => {
-                self.armed = false;
-            }
-            Ok(None) => {
-                kill_worker_tree(&mut self.child);
-                self.armed = false;
-            }
-            Err(_) => {
-                // An error does not prove the pid still belongs to this child;
-                // never risk signalling a recycled process group.
-                self.armed = false;
-            }
-        }
-    }
 }
 
 impl MemberOutcome {

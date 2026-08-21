@@ -43,6 +43,8 @@ npx pnpm@9.15.4 check
 Current checks:
 
 - JSON parsing for schemas, docs, and examples;
+- provider-runtime package boundaries, the closed four-provider catalog, and
+  forbidden provider-to-CLI/Store/application dependency edges;
 - schema fixture validation;
 - Markdown local link validation;
 - document size warning and a blocking 1500-line maintained-source ceiling;
@@ -68,14 +70,17 @@ npx pnpm@9.15.4 acceptance:legacy-retirement
 It covers the Agent Team create/start,
 shared Works/WorkDelivery, Work-linked conversation, Host-facing MCP transport, the
 Dashboard read model and operator controls, plus deterministic persistent
-Codex app-server, Claude Agent SDK, and Kimi ACP Team Member adapters, and the
+Codex app-server, Claude Agent SDK, Kimi ACP, and Pi RPC Team Member adapters, and the
 retired Mission/Wave legacy reads and retired-write errors. It also
 gates durable Supervisor generations, authenticated identity-first Message
 authoring, atomic per-recipient delivery
 claim/provider receipt/per-recipient acknowledgement, cross-process control
 routing, reconnect, and
-explicit Close. Bounded Codex/Claude/Kimi exec paths belong to Dynamic
-Workflow and are never Agent Team fallbacks.
+explicit Close. Historical Codex/Claude/Kimi exec modes are never Agent Team
+fallbacks. Current direct-delivery compatibility routes and Claude/Kimi
+headless Host entry points use distinct typed bindings implemented by provider
+packages; historical mode decoding cannot authorize either surface. Dynamic
+Workflow remains retired and has no runtime fallback.
 
 Real self-hosting follows the canonical
 [Agent Team Dogfood Loop](../product/agent-team-dogfood-loop.md). A failed live
@@ -235,8 +240,8 @@ firm space switch <execution-space-id>
 firm project switch <project-binding-id>
 ```
 
-`--space` / `HARNESS_SPACE` selects Agent Team, Workflow, and
-coordination storage. `--project` / `HARNESS_PROJECT` independently selects
+`--space` / `HARNESS_SPACE` selects current Agent Team coordination and the
+historical archive store. `--project` / `HARNESS_PROJECT` independently selects
 provider cwd, project instructions, Skills, Git/worktree, and permission
 boundaries. `--store` / `HARNESS_ROOT` remains a deprecation-warned
 compatibility override. Provider transcripts, tool streams, command output,

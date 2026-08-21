@@ -35,7 +35,7 @@ This boundary matches Codex:
 
 ```text
 Agent Team     Codex app-server       Claude Agent SDK streaming
-Workflow       codex exec             claude -p
+Historical     codex exec             claude -p
 ```
 
 ### Model and reasoning controls
@@ -50,6 +50,10 @@ session history remains the execution truth.
 
 The runner lives in `apps/claude-member-runner/`. Rust starts one Node process
 per MemberRun and exchanges NDJSON control frames over stdio.
+`apps/claude-member-runner/contract/runner-v1.json` is the single versioned
+Rust/Node command, event, protocol-version, and fingerprint authority. Rust
+validates it before spawning the runner; Node validates the start frame before
+loading the Agent SDK.
 
 ```text
 Harness Host process

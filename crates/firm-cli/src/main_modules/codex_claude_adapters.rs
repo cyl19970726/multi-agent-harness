@@ -1,410 +1,26 @@
 use super::*;
 
-// ============================================================================
-// WP-3: Claude stream-json event parser and delivery (replaces stub)
-// ============================================================================
-
-/// Represents a single event from `claude -p --output-format stream-json --verbose` NDJSON stream.
-/// Stream-json format emits: system (init), stream_event (message lifecycle), result (terminal).
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct ClaudeStreamEvent {
-    /// Event type: "system", "stream_event", "result"
-    pub(super) event_type: String,
-    /// Raw JSON payload for extraction
-    pub(super) payload: serde_json::Value,
-}
-
-impl ClaudeStreamEvent {
-    /// Parse one NDJSON line into a ClaudeStreamEvent if valid, else None (skip).
-    pub(super) fn parse_line(line: &str) -> Option<ClaudeStreamEvent> {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        match serde_json::from_str::<serde_json::Value>(trimmed) {
-            Ok(payload) => {
-                let event_type = payload
-                    .get("type")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                Some(ClaudeStreamEvent {
-                    event_type,
-                    payload,
-                })
-            }
-            Err(_) => None,
-        }
-    }
-
-    /// Extract session_id from system init event.
-    pub(super) fn session_id(&self) -> Option<String> {
-        if self.event_type == "system" {
-            self.payload
-                .get("session_id")
-                .and_then(|s| s.as_str())
-                .map(|s| s.to_string())
-        } else {
-            None
-        }
-    }
-}
-
-/// Infer provider execution status from Claude stream-json events.
-pub(super) fn infer_claude_session_status(
-    events: &[ClaudeStreamEvent],
-    process_success: bool,
-) -> ProviderExecutionStatus {
-    if !process_success {
-        return ProviderExecutionStatus::Failed;
-    }
-    let has_result = events.iter().any(|e| e.event_type == "result");
-    if has_result {
-        if let Some(result_event) = events.iter().find(|e| e.event_type == "result") {
-            if result_event.payload.get("error").is_some()
-                || result_event
-                    .payload
-                    .get("is_error")
-                    .and_then(|value| value.as_bool())
-                    == Some(true)
-                || result_event.payload.get("api_error_status").is_some()
-            {
-                return ProviderExecutionStatus::Failed;
-            }
-        }
-        ProviderExecutionStatus::Succeeded
-    } else if events.is_empty() {
-        ProviderExecutionStatus::Failed
-    } else {
-        ProviderExecutionStatus::Stale
-    }
-}
-
-/// Extract session_id from Claude stream events.
-pub(super) fn extract_session_id_from_claude_events(
-    events: &[ClaudeStreamEvent],
-) -> Option<String> {
-    events.iter().find_map(|e| e.session_id())
-}
-
-/// Extract the assistant's ACTUAL reply text from a `claude -p
-/// --output-format stream-json` stream, so the delivery report surfaces what
-/// the agent said rather than a meta event count. Prefers the terminal
-/// `result` event's `result` field; falls back to concatenating the text
-/// blocks of `assistant` messages. Returns None when the turn produced no
-/// assistant text (e.g. tool-only), letting the caller keep a status summary.
-pub(super) fn extract_claude_reply_text(events: &[ClaudeStreamEvent]) -> Option<String> {
-    // The terminal result event carries the final assistant text.
-    for event in events.iter().rev() {
-        if event.event_type != "result" {
-            continue;
-        }
-        if let Some(text) = event.payload.get("result").and_then(|v| v.as_str()) {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
-        }
-    }
-    // Fallback: concatenate text blocks from assistant messages in order.
-    let mut parts = Vec::new();
-    for event in events {
-        if event.event_type != "assistant" {
-            continue;
-        }
-        let Some(content) = event
-            .payload
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_array())
-        else {
-            continue;
-        };
-        for block in content {
-            if block.get("type").and_then(|t| t.as_str()) != Some("text") {
-                continue;
-            }
-            if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                if !text.trim().is_empty() {
-                    parts.push(text.trim().to_string());
-                }
-            }
-        }
-    }
-    (!parts.is_empty()).then(|| parts.join("\n"))
-}
-
-/// Map ProviderExecutionStatus to terminal source.
-pub(super) fn status_to_terminal_source(
-    status: &ProviderExecutionStatus,
-) -> Option<MessageTerminalSource> {
-    match status {
-        ProviderExecutionStatus::Succeeded => Some(MessageTerminalSource::TurnCompleted),
-        ProviderExecutionStatus::Failed => Some(MessageTerminalSource::Failed),
-        _ => None,
-    }
-}
-
-// --- Codex exec --json delivery (WP-2) ---
-// Parse the short-lived transport stream in memory. Harness records only the
-// delivery outcome and NativeSessionRef; Codex owns the durable item history.
-
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct CodexExecEvent {
-    /// Event discriminant extracted from NDJSON payload.
-    pub(super) event_type: String,
-    /// Raw JSON payload for extraction.
-    pub(super) payload: serde_json::Value,
-}
-
-impl CodexExecEvent {
-    /// Parse one NDJSON line into a CodexExecEvent if valid, else None (skip).
-    pub(super) fn parse_line(line: &str) -> Option<CodexExecEvent> {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        match serde_json::from_str::<serde_json::Value>(trimmed) {
-            Ok(payload) => {
-                let event_type = payload
-                    .get("type")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                Some(CodexExecEvent {
-                    event_type,
-                    payload,
-                })
-            }
-            Err(_) => None,
-        }
-    }
-
-    /// Extract the terminal source from this event if it is a completion event.
-    pub(super) fn terminal_source(&self) -> Option<MessageTerminalSource> {
-        if codex_event_is_terminal(&self.event_type) {
-            Some(MessageTerminalSource::TurnCompleted)
-        } else {
-            None
-        }
-    }
-}
-
-/// True when a codex exec event type marks the end of a turn/thread.
-///
-/// Codex 0.13x `exec --json` emits dot-separated discriminants
-/// (`turn.completed`, `thread.idle`). Older notes used underscore names
-/// (`turn_completed`, `thread_idle`); both are accepted so the parser is
-/// robust across codex versions.
-pub(super) fn codex_event_is_terminal(event_type: &str) -> bool {
-    matches!(
-        event_type,
-        "turn.completed" | "thread.idle" | "turn_completed" | "thread_idle"
-    )
-}
-
-/// Parse NDJSON from codex exec stdout into CodexExecEvent stream.
-/// Resilient: silently skip invalid lines, partial final lines, unknown events.
-// Thin no-tee wrapper; only the unit tests use it now (the delivery path uses
-// the callback form), so it is dead in the binary target.
-#[allow(dead_code)]
-pub(super) fn parse_codex_ndjson(reader: impl BufRead) -> Vec<CodexExecEvent> {
-    parse_codex_ndjson_to(reader, None::<fn(&serde_json::Value)>)
-}
-
-/// Like `parse_codex_ndjson`, but invokes `on_event` with each parsed event's
-/// payload AS IT IS READ — used to tee codex events MID-TURN to the session
-/// NDJSON (poll) and the shared turn-events file (live SSE), mirroring the
-/// claude path. The returned Vec is identical to the no-callback path.
-pub(super) fn parse_codex_ndjson_to<F: FnMut(&serde_json::Value)>(
-    reader: impl BufRead,
-    mut on_event: Option<F>,
-) -> Vec<CodexExecEvent> {
-    let mut events = Vec::new();
-    for line in reader.lines() {
-        let Ok(line_str) = line else { continue };
-        if let Some(event) = CodexExecEvent::parse_line(&line_str) {
-            if let Some(callback) = on_event.as_mut() {
-                callback(&event.payload);
-            }
-            events.push(event);
-        }
-    }
-    events
-}
-
-/// Infer the lifecycle status from a stream of CodexExecEvent.
-/// Follows the same logic as the app-server path: queued → running → (succeeded|failed).
-pub(super) fn infer_provider_execution_status(
-    events: &[CodexExecEvent],
-    process_success: bool,
-) -> ProviderExecutionStatus {
-    if !process_success {
-        return ProviderExecutionStatus::Failed;
-    }
-    // If we saw a terminal event, we succeeded.
-    let has_terminal = events
-        .iter()
-        .any(|e| codex_event_is_terminal(&e.event_type));
-    if has_terminal {
-        ProviderExecutionStatus::Succeeded
-    } else if events.is_empty() {
-        ProviderExecutionStatus::Failed
-    } else {
-        // We have events but no terminal: stale (timed out waiting for completion).
-        ProviderExecutionStatus::Stale
-    }
-}
-
-/// Extract provider_thread_id from the exec output events if present.
-///
-/// Codex `exec --json` emits a `thread.started` event carrying the real
-/// `thread_id` (e.g. `{"thread_id":"019e...","type":"thread.started"}`). We
-/// scan every event payload for a top-level `thread_id` string and return the
-/// first match so the provider execution attempt records the provider's real thread id.
-pub(super) fn extract_thread_id_from_exec_events(events: &[CodexExecEvent]) -> Option<String> {
-    events.iter().find_map(|event| {
-        event
-            .payload
-            .get("thread_id")
-            .and_then(|value| value.as_str())
-            .map(|value| value.to_string())
-    })
-}
-
-/// Extract provider_turn_id from the exec output events if present.
-///
-/// Newer codex builds may attach a `turn_id` to turn lifecycle events. When
-/// present we surface it; otherwise None (the harness session id scopes the
-/// turn). We accept either a top-level `turn_id` or one nested under `turn`.
-pub(super) fn extract_turn_id_from_exec_events(events: &[CodexExecEvent]) -> Option<String> {
-    events.iter().find_map(|event| {
-        event
-            .payload
-            .get("turn_id")
-            .and_then(|value| value.as_str())
-            .or_else(|| {
-                event
-                    .payload
-                    .get("turn")
-                    .and_then(|turn| turn.get("id"))
-                    .and_then(|value| value.as_str())
-            })
-            .map(|value| value.to_string())
-    })
-}
-
-/// Extract the agent's ACTUAL reply text from a `codex exec --json` stream, so
-/// the delivery report surfaces what the agent said rather than a meta status
-/// line. Codex emits `item.completed` events whose `item.type` is
-/// `agent_message` and whose `item.text` is the assistant's prose; concatenate
-/// them in order. Returns None when the turn produced no agent message (e.g.
-/// command-only), letting the caller keep a status summary.
-pub(super) fn extract_codex_reply_text(events: &[CodexExecEvent]) -> Option<String> {
-    let mut parts = Vec::new();
-    for event in events {
-        let Some(item) = event.payload.get("item") else {
-            continue;
-        };
-        if item.get("type").and_then(|t| t.as_str()) != Some("agent_message") {
-            continue;
-        }
-        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-            if !text.trim().is_empty() {
-                parts.push(text.trim().to_string());
-            }
-        }
-    }
-    (!parts.is_empty()).then(|| parts.join("\n"))
-}
-
-/// The codex turn's FINAL assistant message — the LAST non-empty `agent_message`
-/// item. Where [`extract_codex_reply_text`] concatenates every message for the
-/// human-facing reply, this returns only the terminal one, so structured-output
-/// parsing reads the schema-constrained answer rather than an earlier streamed
-/// preamble (issue #139 item 2).
-#[allow(dead_code)]
-pub(super) fn extract_codex_final_message(events: &[CodexExecEvent]) -> Option<String> {
-    let mut last = None;
-    for event in events {
-        let Some(item) = event.payload.get("item") else {
-            continue;
-        };
-        if item.get("type").and_then(|t| t.as_str()) != Some("agent_message") {
-            continue;
-        }
-        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-            if !text.trim().is_empty() {
-                last = Some(text.trim().to_string());
-            }
-        }
-    }
-    last
-}
+pub(super) use harness_provider_claude::{
+    extract_claude_reply_text, infer_claude_session_status, status_to_terminal_source,
+    ClaudeStreamEvent,
+};
+pub(super) use harness_provider_codex::{
+    extract_codex_reply_text, extract_thread_id_from_exec_events, extract_turn_id_from_exec_events,
+    infer_provider_execution_status, CodexExecEvent,
+};
 
 /// Write a temporary MCP config JSON file for Claude.
 /// Returns the path to the temporary file, or None if mcp is empty/None.
 pub(super) fn write_temp_mcp_config(mcp: Option<&LaunchMcp>) -> CliResult<Option<String>> {
-    if let Some(mcp_config) = mcp {
-        if mcp_config.servers.is_empty() {
-            return Ok(None);
-        }
-
-        // Build MCP servers config as expected by Claude
-        let mut servers = serde_json::Map::new();
-        for server in &mcp_config.servers {
-            let mut server_obj = serde_json::Map::new();
-            server_obj.insert("id".to_string(), serde_json::json!(server.id));
-
-            if let Some(transport) = &server.transport {
-                server_obj.insert("transport".to_string(), serde_json::json!(transport));
-            }
-
-            if !server.command.is_empty() {
-                server_obj.insert("command".to_string(), serde_json::json!(server.command));
-            }
-
-            if let Some(url) = &server.url {
-                server_obj.insert("url".to_string(), serde_json::json!(url));
-            }
-
-            if !server.allowed_tools.is_empty() {
-                server_obj.insert(
-                    "allowed_tools".to_string(),
-                    serde_json::json!(server.allowed_tools),
-                );
-            }
-
-            servers.insert(server.id.clone(), serde_json::Value::Object(server_obj));
-        }
-
-        let config = serde_json::json!({
-            "mcp_servers": servers
-        });
-
-        // Write to temp file
-        let config_str = serde_json::to_string(&config)
-            .map_err(|e| CliError::Usage(format!("failed to serialize MCP config: {e}")))?;
-
-        let temp_path =
-            std::env::temp_dir().join(format!("mcp_config_{}.json", std::process::id()));
-        let temp_path_str = temp_path.to_string_lossy().to_string();
-
-        std::fs::write(&temp_path, config_str).map_err(|e| {
-            CliError::Usage(format!("failed to write MCP config to temp file: {e}"))
-        })?;
-
-        Ok(Some(temp_path_str))
-    } else {
-        Ok(None)
-    }
+    harness_provider_claude::write_claude_mcp_config(mcp)
+        .map(|path| path.map(|path| path.to_string_lossy().into_owned()))
+        .map_err(CliError::Usage)
 }
 
 pub(super) fn run_codex_exec_process(
     session_dir: &Path,
     member: &ProviderLaunchProfile,
     message: &RegistryMessage,
-    delivery_id: &str,
     timeout_ms: u64,
     project: &ProjectContext,
 ) -> CliResult<CodexExecDeliveryRun> {
@@ -428,139 +44,16 @@ pub(super) fn run_codex_exec_process(
     // Build LaunchSpec from member and message
     let spec = build_launch_spec(member, message);
 
-    let mut cmd = Command::new("codex");
-    cmd.arg("exec");
-
-    // Resume an existing session when the member already carries a provider
-    // thread id (from a prior delivery). `codex exec resume <id>` continues the
-    // same conversation so memory carries across deliveries. The resume
-    // subcommand inherits the original session's sandbox / working roots and
-    // does not accept `--sandbox` / `-C` / `--add-dir`, so those are only mapped
-    // on the fresh-session path below.
-    let resuming = spec.resume.is_some();
-    if let Some(resume_id) = &spec.resume {
-        cmd.arg("resume")
-            .arg("--json")
-            .arg(resume_id)
-            .arg(&message_content);
-    } else {
-        cmd.arg("--json").arg(&message_content);
-    }
-    cmd.env("CODEX_DEVELOPER_INSTRUCTIONS", developer_instructions);
-
-    // Map LaunchSpec to codex flags
-    apply_codex_model_and_effort_args(&mut cmd, &spec);
-    apply_codex_output_schema_arg(&mut cmd, &spec, session_dir)?;
-    apply_codex_mcp_args(&mut cmd, &spec)?;
-
-    if !resuming {
-        // Map permission to sandbox (fresh sessions only).
-        let sandbox = CodexAdapter.map_permission(spec.permission);
-        cmd.arg("--sandbox").arg(sandbox);
-
-        // Map workspace and writable roots (fresh sessions only).
-        if let Some(workspace) = &spec.workspace {
-            cmd.arg("-C").arg(workspace);
-        }
-        for root in &spec.writable_roots {
-            cmd.arg("--add-dir").arg(root);
-        }
-    }
-
-    cmd.current_dir(&cwd);
-
-    let run = run_ndjson_child(
-        cmd,
+    let run = harness_provider_codex::run_codex_compatibility(
+        &spec,
+        &message_content,
+        &developer_instructions,
+        Path::new(&cwd),
         session_dir,
-        delivery_id,
-        "codex.stream-json.ndjson",
-        timeout_ms,
-        None,
-        None,
-        "codex exec",
-    )?;
-    let events = run
-        .events
-        .iter()
-        .filter_map(|payload| serde_json::to_string(payload).ok())
-        .filter_map(|line| CodexExecEvent::parse_line(&line))
-        .collect();
-
-    Ok((run.process_success, events, run.events, run.stderr))
-}
-
-pub(super) fn apply_codex_model_and_effort_args(cmd: &mut Command, spec: &LaunchSpec) {
-    if let Some(model) = &spec.model {
-        cmd.arg("-m").arg(model);
-    }
-    // Reasoning effort: codex takes it as a config override (no dedicated flag).
-    if let Some(effort) = &spec.effort {
-        cmd.arg("-c")
-            .arg(format!("model_reasoning_effort={effort}"));
-    }
-}
-
-pub(super) fn apply_codex_output_schema_arg(
-    cmd: &mut Command,
-    spec: &LaunchSpec,
-    session_dir: &Path,
-) -> CliResult<()> {
-    if let Some(schema) = &spec.output_schema {
-        let schema_path = session_dir.join("output-schema.json");
-        let schema_json = schema_to_json_schema(schema);
-        fs::write(&schema_path, schema_json.to_string()).map_err(|e| {
-            CliError::Usage(format!(
-                "failed to write codex output schema to {}: {e}",
-                schema_path.display()
-            ))
-        })?;
-        cmd.arg("--output-schema").arg(&schema_path);
-    }
-    Ok(())
-}
-
-pub(super) fn apply_codex_mcp_args(cmd: &mut Command, spec: &LaunchSpec) -> CliResult<()> {
-    let Some(mcp) = &spec.mcp else {
-        return Ok(());
-    };
-
-    for server in &mcp.servers {
-        let id_key = codex_mcp_id_key(&server.id);
-        if !server.command.is_empty() {
-            // Codex stdio MCP config stores the binary separately from argv rest.
-            let bin = serde_json::to_string(&server.command[0])
-                .map_err(|e| CliError::Usage(format!("mcp command serialize: {e}")))?;
-            cmd.arg("-c")
-                .arg(format!("mcp_servers.{id_key}.command={bin}"));
-            if server.command.len() > 1 {
-                let args = serde_json::to_string(&server.command[1..])
-                    .map_err(|e| CliError::Usage(format!("mcp args serialize: {e}")))?;
-                cmd.arg("-c")
-                    .arg(format!("mcp_servers.{id_key}.args={args}"));
-            }
-        } else if let Some(url) = &server.url {
-            let u = serde_json::to_string(url)
-                .map_err(|e| CliError::Usage(format!("mcp url serialize: {e}")))?;
-            cmd.arg("-c").arg(format!("mcp_servers.{id_key}.url={u}"));
-        }
-        // Codex's mcp_servers schema has no allowed_tools field, so the neutral
-        // allowlist is intentionally not mapped; transport is implied by
-        // command-vs-url.
-    }
-
-    Ok(())
-}
-
-pub(super) fn codex_mcp_id_key(id: &str) -> String {
-    if !id.is_empty()
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        id.to_string()
-    } else {
-        serde_json::to_string(id).expect("serializing string key should not fail")
-    }
+        Duration::from_millis(timeout_ms),
+    )
+    .map_err(CliError::Usage)?;
+    Ok((run.process_success, run.events, run.raw_events, run.stderr))
 }
 
 /// This is the exec-stream variant of run_codex_app_server_exchange.
@@ -582,14 +75,8 @@ pub(super) fn run_codex_exec_delivery(
     fs::create_dir_all(&session_dir)?;
     let spec = build_launch_spec(member, message);
 
-    let (process_success, events, raw_events, _stderr_log) = run_codex_exec_process(
-        &session_dir,
-        member,
-        message,
-        delivery_id,
-        timeout_ms,
-        project,
-    )?;
+    let (process_success, events, raw_events, _stderr_log) =
+        run_codex_exec_process(&session_dir, member, message, timeout_ms, project)?;
     let (tokens, cost_usd, model) = codex_delivery_telemetry(&raw_events, &spec);
 
     // Infer the delivery status from events and process exit.
@@ -644,9 +131,13 @@ pub(super) fn run_codex_exec_delivery(
     })
 }
 
-/// Run a single message delivery against the member's runtime, routed by provider.
+/// Execute the reviewed Claude exact-session headless Host binding.
+///
+/// This deliberately bypasses the direct-delivery compatibility registry:
+/// sharing the Claude CLI transport does not make Host execution a
+/// compatibility route or an Agent Team fallback.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn run_provider_delivery(
+pub(super) fn run_claude_host_delivery(
     store: &HarnessStore,
     member: &ProviderLaunchProfile,
     runtime: &ProviderProcess,
@@ -655,7 +146,46 @@ pub(super) fn run_provider_delivery(
     timeout_ms: u64,
     project: &ProjectContext,
 ) -> CliResult<DeliveryOutcome> {
-    match provider_adapter(&member.provider) {
+    let binding = harness_application::provider_descriptor("claude")
+        .and_then(|descriptor| descriptor.headless_host)
+        .ok_or_else(|| {
+            CliError::Usage(
+                "HEADLESS_HOST_UNSUPPORTED: Claude has no declared Host binding".to_string(),
+            )
+        })?;
+    if member.provider != "claude"
+        || binding.binding != harness_application::HostRuntimeKind::ClaudeCli
+    {
+        return Err(CliError::Usage(format!(
+            "HEADLESS_HOST_BINDING_MISMATCH: expected claude/claude_cli, got {}/{}",
+            member.provider, binding.execution_mode
+        )));
+    }
+    run_claude_delivery_surface(
+        store,
+        member,
+        runtime,
+        message,
+        delivery_id,
+        timeout_ms,
+        project,
+        true,
+    )
+}
+
+/// Run one `/v1/agents/*` compatibility delivery, routed only through the
+/// explicit compatibility registry.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_compatibility_delivery(
+    store: &HarnessStore,
+    member: &ProviderLaunchProfile,
+    runtime: &ProviderProcess,
+    message: &RegistryMessage,
+    delivery_id: &str,
+    timeout_ms: u64,
+    project: &ProjectContext,
+) -> CliResult<DeliveryOutcome> {
+    match compatibility_delivery_binding(&member.provider) {
         Some(adapter) => adapter.run_delivery(
             store,
             member,
@@ -791,6 +321,29 @@ pub(super) fn run_claude_delivery(
     timeout_ms: u64,
     project: &ProjectContext,
 ) -> CliResult<DeliveryOutcome> {
+    run_claude_delivery_surface(
+        store,
+        member,
+        _runtime,
+        message,
+        delivery_id,
+        timeout_ms,
+        project,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_claude_delivery_surface(
+    store: &HarnessStore,
+    member: &ProviderLaunchProfile,
+    _runtime: &ProviderProcess,
+    message: &RegistryMessage,
+    delivery_id: &str,
+    timeout_ms: u64,
+    project: &ProjectContext,
+    host_surface: bool,
+) -> CliResult<DeliveryOutcome> {
     let session_dir = store
         .root()
         .join("runtimes")
@@ -798,18 +351,18 @@ pub(super) fn run_claude_delivery(
         .join(delivery_id);
     fs::create_dir_all(&session_dir)?;
 
-    // WP-3: Spawn real `claude -p --output-format stream-json --verbose`.
+    // The provider package executes and reduces the native Claude transport.
     //
     // Opt-in resident path (HARNESS_CLAUDE_RESIDENT=1): instead of spawning a
     // fresh `claude -p <prompt>` that exits per turn, hold a `claude
     // --input-format stream-json` process open and feed the turn as a stdin
     // frame (see `resident.rs`). The returned tuple shape is identical to the
     // default path, so status inference and telemetry stay provider-neutral.
-    let resident = env::var("HARNESS_CLAUDE_RESIDENT").as_deref() == Ok("1");
+    let resident = !host_surface && env::var("HARNESS_CLAUDE_RESIDENT").as_deref() == Ok("1");
     let (process_success, events, raw_events, session_id, _stderr_log) = if resident {
         run_claude_resident_delivery_real(&session_dir, member, message, timeout_ms, project)?
     } else {
-        run_claude_exec_delivery_real(&session_dir, member, message, timeout_ms, project)?
+        run_claude_exec_delivery_real(member, message, timeout_ms, project, host_surface)?
     };
     let (tokens, cost_usd, model, raw_structured) = claude_delivery_telemetry(&raw_events);
 
@@ -850,14 +403,14 @@ pub(super) fn run_claude_delivery(
     })
 }
 
-/// Spawn `claude -p --output-format stream-json --verbose` and parse NDJSON output.
-/// WP-3: Real implementation replacing the stub; parses session_id and events.
+/// Compose one Claude request and delegate the selected Host/compatibility
+/// transport to the provider package.
 pub(super) fn run_claude_exec_delivery_real(
-    session_dir: &Path,
     member: &ProviderLaunchProfile,
     message: &RegistryMessage,
     timeout_ms: u64,
     project: &ProjectContext,
+    host_surface: bool,
 ) -> CliResult<ClaudeDeliveryRun> {
     // Build the message content envelope (harness context).
     let message_content = format!(
@@ -881,115 +434,41 @@ pub(super) fn run_claude_exec_delivery_real(
     // Build LaunchSpec from member and message
     let spec = build_launch_spec(member, message);
 
-    // Build command: claude -p "<message_content>" --output-format stream-json --verbose
-    // plus mapped flags from launch spec.
-    let mut cmd = Command::new("claude");
-    cmd.arg("-p")
-        .arg(&message_content)
-        .arg("--output-format")
-        .arg("stream-json")
-        .arg("--verbose");
-
-    // Resume an existing session when the member already carries a provider
-    // session id (from a prior delivery). `claude -p --resume <session_id>`
-    // continues the same conversation so memory carries across deliveries.
-    if let Some(resume_id) = &spec.resume {
-        cmd.arg("--resume").arg(resume_id);
+    let run = if host_surface {
+        harness_provider_claude::run_claude_host_turn(
+            &spec,
+            &message_content,
+            &system_prompt,
+            Path::new(&cwd),
+            Duration::from_millis(timeout_ms),
+        )
+    } else {
+        harness_provider_claude::run_claude_compatibility(
+            &spec,
+            &message_content,
+            &system_prompt,
+            Path::new(&cwd),
+            Duration::from_millis(timeout_ms),
+        )
     }
-
-    // Append system prompt if present.
-    if !system_prompt.is_empty() {
-        cmd.arg("--append-system-prompt").arg(&system_prompt);
-    }
-
-    // Map LaunchSpec to claude flags
-    // Model selection
-    apply_claude_model_and_effort_args(&mut cmd, &spec);
-    apply_claude_output_schema_arg(&mut cmd, &spec);
-
-    // Permission mapping
-    let permission_mode = ClaudeAdapter.map_permission(spec.permission);
-    cmd.arg("--permission-mode").arg(permission_mode);
-
-    // Tools (allowed-tools if spec.tools is non-empty)
-    if !spec.tools.is_empty() {
-        let tools_arg = spec.tools.join(",");
-        cmd.arg("--allowedTools").arg(tools_arg);
-    }
-
-    // MCP config (write temp JSON if present)
-    if let Some(mcp_path) = write_temp_mcp_config(spec.mcp.as_ref())? {
-        cmd.arg("--mcp-config").arg(&mcp_path);
-    }
-
-    // Workspace roots (from spec.workspace and spec.writable_roots)
-    if let Some(workspace) = &spec.workspace {
-        cmd.arg("--add-dir").arg(workspace);
-    }
-    for root in &spec.writable_roots {
-        cmd.arg("--add-dir").arg(root);
-    }
-
-    // Add working directory.
-    cmd.current_dir(&cwd);
-
-    let delivery_id = session_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default()
-        .to_string();
-    let run = run_ndjson_child(
-        cmd,
-        session_dir,
-        &delivery_id,
-        "claude.stream-json.ndjson",
-        timeout_ms,
-        None,
-        None,
-        "claude -p process",
-    )?;
-    let events = run
-        .events
-        .iter()
-        .filter_map(|payload| serde_json::to_string(payload).ok())
-        .filter_map(|line| ClaudeStreamEvent::parse_line(&line))
-        .collect::<Vec<_>>();
-
-    let session_id = extract_session_id_from_claude_events(&events);
+    .map_err(CliError::Usage)?;
     Ok((
         run.process_success,
-        events,
         run.events,
-        session_id,
+        run.raw_events,
+        run.session_id,
         run.stderr,
     ))
 }
 
-pub(super) fn apply_claude_model_and_effort_args(cmd: &mut Command, spec: &LaunchSpec) {
-    if let Some(model) = &spec.model {
-        cmd.arg("--model").arg(model);
-    }
-    // Reasoning effort: claude has a native session flag.
-    if let Some(effort) = &spec.effort {
-        cmd.arg("--effort").arg(effort);
-    }
-}
-
-pub(super) fn apply_claude_output_schema_arg(cmd: &mut Command, spec: &LaunchSpec) {
-    if let Some(schema) = &spec.output_schema {
-        cmd.arg("--json-schema")
-            .arg(schema_to_json_schema(schema).to_string());
-    }
-}
-
-/// Build a [`resident::ResidentConfig`] from the same launch inputs the default
+/// Build a provider-owned [`harness_provider_claude::ResidentConfig`] from the same launch inputs the default
 /// path uses, so the resident invocation surface matches `claude -p` flag for
 /// flag (only `-p <prompt>` becomes `--input-format stream-json`).
 pub(super) fn build_resident_config(
     member: &ProviderLaunchProfile,
     message: &RegistryMessage,
     project: &ProjectContext,
-) -> resident::ResidentConfig {
+) -> harness_provider_claude::ResidentConfig {
     let spec = build_launch_spec(member, message);
     let system_prompt = provider_developer_instructions(member);
     // Same cwd precedence as the default Claude path (P3, Stage 3):
@@ -1006,7 +485,7 @@ pub(super) fn build_resident_config(
         add_dirs.push(root.clone());
     }
 
-    resident::ResidentConfig {
+    harness_provider_claude::ResidentConfig {
         binary: "claude".into(),
         model: spec.model.clone(),
         effort: spec.effort.clone(),
@@ -1014,7 +493,8 @@ pub(super) fn build_resident_config(
             .output_schema
             .as_ref()
             .map(|schema| schema_to_json_schema(schema).to_string()),
-        permission_mode: ClaudeAdapter.map_permission(spec.permission).to_string(),
+        permission_mode: harness_provider_claude::claude_compatibility_permission(spec.permission)
+            .to_string(),
         tools: spec.tools.clone(),
         system_prompt,
         mcp_config_path,
@@ -1053,9 +533,10 @@ pub(super) fn run_claude_resident_delivery_real(
     let stderr_path = session_dir.join("claude.stderr");
     let timeout = Duration::from_millis(timeout_ms.max(1));
 
-    let mut resident = resident::ResidentClaude::spawn(config, &stderr_path).map_err(|error| {
-        CliError::Usage(format!("failed to spawn resident claude process: {error}"))
-    })?;
+    let mut resident = harness_provider_claude::ResidentClaude::spawn(config, &stderr_path)
+        .map_err(|error| {
+            CliError::Usage(format!("failed to spawn resident claude process: {error}"))
+        })?;
 
     // Drive exactly one turn. On error (timeout / dead child) the resident is
     // dropped (stdin closed, child reaped) and we surface a failed tuple,

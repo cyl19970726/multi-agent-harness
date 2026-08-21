@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) use harness_provider_kimi::{extract_kimi_reply_text, infer_kimi_status};
+
 // Provider dispatch seam (BE-WP6)
 //
 // The harness core stays provider-neutral (ADR 0011); all provider-specific
@@ -9,11 +11,8 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 /// Provider-specific behaviour boundary. Every current provider dispatch site
-/// routes through this trait and the `provider_adapter` registry.
-pub(super) trait ProviderAdapter: Sync {
-    /// Canonical provider id as used in `member.provider` and `agent(provider=...)`.
-    fn name(&self) -> &'static str;
-
+/// routes through this trait and the `compatibility_delivery_binding` registry.
+pub(super) trait CompatibilityDeliveryBinding: Sync {
     /// What this provider's platform can technically support — streaming, resume,
     /// mid-turn approval, subagents, MCP, hooks, native schema, billed cost
     /// (goal-provider-neutral). Drives declarative capability degradation: a
@@ -39,14 +38,6 @@ pub(super) trait ProviderAdapter: Sync {
             enforces_read_only: false,
         }
     }
-
-    /// Filename used only inside the short-lived process transport directory.
-    /// It is reduced in memory and removed; it is never a Harness history record.
-    fn live_ndjson_file_name(&self) -> &'static str;
-
-    /// Map a LaunchPermission to this provider's CLI permission flag value
-    /// (codex `--sandbox`, claude `--permission-mode`).
-    fn map_permission(&self, perm: LaunchPermission) -> &'static str;
 
     /// Spawn (or attach) the persistent runtime for a member of this provider.
     fn start_runtime(
@@ -75,30 +66,13 @@ pub(super) trait ProviderAdapter: Sync {
     ) -> CliResult<DeliveryOutcome>;
 }
 
-pub(super) struct CodexAdapter;
-pub(super) struct ClaudeAdapter;
-pub(super) struct KimiAdapter;
-pub(super) struct PiAdapter;
+pub(super) struct CodexCompatibilityDelivery;
+pub(super) struct ClaudeCompatibilityDelivery;
+pub(super) struct KimiCompatibilityDelivery;
 
-impl ProviderAdapter for CodexAdapter {
-    fn name(&self) -> &'static str {
-        "codex"
-    }
-
+impl CompatibilityDeliveryBinding for CodexCompatibilityDelivery {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::codex_exec()
-    }
-
-    fn live_ndjson_file_name(&self) -> &'static str {
-        "codex.stream-json.ndjson"
-    }
-
-    fn map_permission(&self, perm: LaunchPermission) -> &'static str {
-        match perm {
-            LaunchPermission::ReadOnly => "read-only",
-            LaunchPermission::WorkspaceWrite => "workspace-write",
-            LaunchPermission::FullAccess => "danger-full-access",
-        }
     }
 
     fn start_runtime(
@@ -131,25 +105,9 @@ impl ProviderAdapter for CodexAdapter {
         )
     }
 }
-impl ProviderAdapter for ClaudeAdapter {
-    fn name(&self) -> &'static str {
-        "claude"
-    }
-
+impl CompatibilityDeliveryBinding for ClaudeCompatibilityDelivery {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::claude_exec()
-    }
-
-    fn live_ndjson_file_name(&self) -> &'static str {
-        "claude.stream-json.ndjson"
-    }
-
-    fn map_permission(&self, perm: LaunchPermission) -> &'static str {
-        match perm {
-            LaunchPermission::ReadOnly => "plan",
-            LaunchPermission::WorkspaceWrite => "acceptEdits",
-            LaunchPermission::FullAccess => "bypassPermissions",
-        }
     }
 
     fn start_runtime(
@@ -187,25 +145,9 @@ impl ProviderAdapter for ClaudeAdapter {
 // Kimi adapter (goal-provider-neutral S4): a NATIVE third provider, registered
 // with ZERO new match arms.
 //
-// Kimi Code is non-interactive via `-p <prompt> --output-format stream-json`,
-// emitting claude-shaped line-delimited JSON (NDJSON): a `system` init frame
-// carrying `session_id`/`model`, `assistant` message frames, and a terminal
-// `result` frame. The CLI FLAG surface is verified against `kimi --help` v0.18 —
-// Kimi has NONE of claude's `--verbose` / `--permission-mode` / `--allowedTools` /
-// `--json-schema` / `--mcp-config` / `--add-dir` / `--append-system-prompt`; it
-// uses STANDALONE permission flags (`--plan` / `--auto` / `-y`), resumes with
-// `-S/--session`, and has no native schema/budget/effort, which degrade to the
-// harness fallbacks (see `ProviderCapabilities::kimi_exec`). The wire shape is
-// still proven deterministically against a fake `kimi` shim on PATH; the LIVE
-// authenticated run (post `kimi login`) is the operator's step.
-//
-// The binary is resolved by [`resolve_kimi_bin`] (KIMI_CODE_BIN override, else the
-// bare name `kimi` on PATH so a test shim / the installer's PATH entry wins, else
-// the default install path). Because Kimi is claude-shaped on the wire, the stream
-// interpreters (status/reply/usage/model/structured/session-id), the durable-trace
-// ingest, and the live NDJSON tee all reuse the existing claude-stream helpers —
-// they key on the wire SHAPE, not on the claude binary. Only the binary, the
-// live-file basename, and the CLI flags differ.
+// Kimi's native argv, resume flag, NDJSON transport, and flat-stream decoder
+// are provider-package responsibilities. This module only composes the
+// compatibility request and settles its coordination outcome.
 // ============================================================================
 
 /// Resolve the `kimi` (Kimi Code) executable. Order: the `KIMI_CODE_BIN` env
@@ -216,106 +158,13 @@ impl ProviderAdapter for ClaudeAdapter {
 /// ahead of the home-dir fallback is what lets the deterministic fake-kimi test
 /// intercept the spawn.
 pub(super) fn resolve_kimi_bin() -> String {
-    if let Ok(explicit) = std::env::var("KIMI_CODE_BIN") {
-        if !explicit.trim().is_empty() {
-            return explicit;
-        }
-    }
-    let on_path = Command::new("which")
-        .arg("kimi")
-        .output()
-        .ok()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if on_path {
-        return "kimi".into();
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let candidate = Path::new(&home).join(".kimi-code/bin/kimi");
-        if candidate.is_file() {
-            return candidate.display().to_string();
-        }
-    }
-    "kimi".into()
+    harness_provider_kimi::resolve_kimi_bin()
 }
 
 // ============================================================================
-// Kimi-native stream parsing. Verified LIVE against `kimi -p --output-format
-// stream-json` (v0.18): the stream is FLAT NDJSON, NOT claude-shaped —
-//   {"role":"assistant","content":"<text>"}                       (the reply)
-//   {"role":"meta","type":"session.resume_hint",
-//    "session_id":"session_<uuid>","command":"kimi -r <id>", ...} (resume token)
-// There is no claude `system.init`/`result`/`usage` frame and no model frame in
-// `-p` mode, so success is the child exit code and tokens/model/cost degrade per
-// `ProviderCapabilities::kimi_exec`. `content` is normally a string but may be an
-// array of blocks (tool/structured turns) — both are handled.
+// Kimi-native stream reduction is re-exported from `firm-provider-kimi` for
+// application-level outcome construction below.
 // ============================================================================
-
-/// The assistant reply: concatenate the `content` of every `role=="assistant"`
-/// frame in order. `content` is a string, or an array of blocks (each block's own
-/// string, or its `text`/`content` field). None when the turn produced no text.
-pub(super) fn extract_kimi_reply_text(frames: &[serde_json::Value]) -> Option<String> {
-    let mut parts: Vec<String> = Vec::new();
-    for frame in frames {
-        if frame.get("role").and_then(|r| r.as_str()) != Some("assistant") {
-            continue;
-        }
-        match frame.get("content") {
-            Some(serde_json::Value::String(s)) => {
-                if !s.trim().is_empty() {
-                    parts.push(s.trim().to_string());
-                }
-            }
-            Some(serde_json::Value::Array(blocks)) => {
-                for block in blocks {
-                    let text = block.as_str().or_else(|| {
-                        block
-                            .get("text")
-                            .or_else(|| block.get("content"))
-                            .and_then(|v| v.as_str())
-                    });
-                    if let Some(s) = text {
-                        if !s.trim().is_empty() {
-                            parts.push(s.trim().to_string());
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    (!parts.is_empty()).then(|| parts.join("\n"))
-}
-
-/// The resumable session id from the `session.resume_hint` meta frame, if present.
-pub(super) fn extract_kimi_session_id(frames: &[serde_json::Value]) -> Option<String> {
-    frames.iter().find_map(|frame| {
-        if frame.get("type").and_then(|t| t.as_str()) == Some("session.resume_hint") {
-            frame
-                .get("session_id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-        } else {
-            None
-        }
-    })
-}
-
-/// Session status for a `kimi -p` turn. There is no terminal success frame, so a
-/// clean child exit IS success; a non-zero exit (e.g. an arg error on stderr) is a
-/// failure; a clean exit with zero frames is stale (no reply produced).
-pub(super) fn infer_kimi_status(
-    frames: &[serde_json::Value],
-    process_success: bool,
-) -> ProviderExecutionStatus {
-    if !process_success {
-        ProviderExecutionStatus::Failed
-    } else if frames.is_empty() {
-        ProviderExecutionStatus::Stale
-    } else {
-        ProviderExecutionStatus::Succeeded
-    }
-}
 
 pub(super) fn start_kimi_runtime(
     store: &HarnessStore,
@@ -359,14 +208,9 @@ pub(super) fn start_kimi_runtime(
     })
 }
 
-/// Spawn `kimi -p --output-format stream-json` (real kimi flags) for one member
-/// delivery and parse the claude-shaped NDJSON. Mirrors
-/// [`run_claude_exec_delivery_real`] but on Kimi's CLI surface: the developer
-/// instructions are folded into the prompt (no `--append-system-prompt`), resume
-/// uses `-S/--session`, and claude-only flags (`--verbose` / `--permission-mode` /
-/// `--allowedTools` / `--json-schema` / `--mcp-config` / `--add-dir`) are dropped.
+/// Compose one Kimi compatibility request; the provider package owns argv,
+/// process transport, native resume semantics, and event decoding.
 pub(super) fn run_kimi_exec_delivery_real(
-    session_dir: &Path,
     member: &ProviderLaunchProfile,
     message: &RegistryMessage,
     timeout_ms: u64,
@@ -392,50 +236,22 @@ pub(super) fn run_kimi_exec_delivery_real(
         format!("{system_prompt}\n\n{message_content}")
     };
 
-    let mut cmd = Command::new(resolve_kimi_bin());
-    cmd.arg("-p")
-        .arg(&prompt_text)
-        .arg("--output-format")
-        .arg("stream-json");
-    // Resume uses `-S/--session <id>` in real kimi (not claude's `--resume`).
-    if let Some(resume_id) = &spec.resume {
-        cmd.arg("--session").arg(resume_id);
-    }
-    if let Some(model) = &spec.model {
-        cmd.arg("--model").arg(model);
-    }
-    // Headless `kimi -p` REJECTS permission flags (--plan/--auto/--yolo all error
-    // "Cannot combine --prompt with ..."), so none is passed. `--effort` /
-    // `--json-schema` / `--allowedTools` / `--mcp-config` / `--add-dir` are likewise
-    // not real kimi flags; schema/mcp/cost degrade to the harness fallbacks
-    // (capabilities().{schema,mcp,cost} = false) and writable roots are bounded by
-    // the harness-owned worktree, not a CLI flag.
-    cmd.current_dir(&cwd);
-
-    let delivery_id = session_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default()
-        .to_string();
-    let run = run_ndjson_child(
-        cmd,
-        session_dir,
-        &delivery_id,
-        KimiAdapter.live_ndjson_file_name(),
-        timeout_ms,
-        None,
-        None,
-        "kimi -p process",
-    )?;
+    let run = harness_provider_kimi::run_kimi_compatibility(
+        &resolve_kimi_bin(),
+        &spec,
+        &prompt_text,
+        Path::new(&cwd),
+        Duration::from_millis(timeout_ms),
+    )
+    .map_err(CliError::Usage)?;
     // Kimi -p stream-json is not claude-shaped — derive the session id from the raw
     // frames (the caller parses reply/status the same way). The `events` slot of the
     // shared tuple is unused for kimi (left empty); the raw frames carry the data.
-    let session_id = extract_kimi_session_id(&run.events);
     Ok((
         run.process_success,
         Vec::new(),
-        run.events,
-        session_id,
+        run.raw_events,
+        run.session_id,
         run.stderr,
     ))
 }
@@ -459,7 +275,7 @@ pub(super) fn run_kimi_delivery(
         .join(delivery_id);
     fs::create_dir_all(&session_dir)?;
     let (process_success, _events, raw_events, session_id, _stderr_log) =
-        run_kimi_exec_delivery_real(&session_dir, member, message, timeout_ms, project)?;
+        run_kimi_exec_delivery_real(member, message, timeout_ms, project)?;
     // Kimi -p stream-json carries no usage/model/cost/structured frame; degrade per
     // kimi_exec(). Reply/status/session come from the kimi-native parsers on the raw
     // frames.
@@ -500,31 +316,9 @@ pub(super) fn run_kimi_delivery(
     })
 }
 
-impl ProviderAdapter for KimiAdapter {
-    fn name(&self) -> &'static str {
-        "kimi"
-    }
-
+impl CompatibilityDeliveryBinding for KimiCompatibilityDelivery {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::kimi_exec()
-    }
-
-    fn live_ndjson_file_name(&self) -> &'static str {
-        "kimi.stream-json.ndjson"
-    }
-
-    fn map_permission(&self, perm: LaunchPermission) -> &'static str {
-        // Real Kimi Code exposes STANDALONE permission flags (`kimi --help` v0.18):
-        // `--plan` / `--auto` / `-y/--yolo`. NOTE: the headless `-p` path does NOT
-        // use this — `kimi -p` REJECTS every permission flag ("Cannot combine
-        // --prompt with ..."), so the spawn/delivery paths pass none. Retained for
-        // trait conformance and a potential future interactive/acp invocation; it
-        // returns the standalone flag itself (not a `--permission-mode` value).
-        match perm {
-            LaunchPermission::ReadOnly => "--plan",
-            LaunchPermission::WorkspaceWrite => "--auto",
-            LaunchPermission::FullAccess => "--yolo",
-        }
     }
 
     fn start_runtime(
@@ -558,83 +352,22 @@ impl ProviderAdapter for KimiAdapter {
     }
 }
 
-impl ProviderAdapter for PiAdapter {
-    fn name(&self) -> &'static str {
-        "pi"
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            streaming: true,
-            resume: true,
-            mid_turn_approval: false,
-            subagents: false,
-            mcp: false,
-            hooks: false,
-            schema: false,
-            cost: false,
-            enforces_read_only: false,
-        }
-    }
-
-    fn live_ndjson_file_name(&self) -> &'static str {
-        "pi.stream-json.ndjson"
-    }
-
-    fn map_permission(&self, perm: LaunchPermission) -> &'static str {
-        match perm {
-            // pi print mode: limit tools to read-only operations.
-            LaunchPermission::ReadOnly => "--tools read,grep,find,ls",
-            LaunchPermission::WorkspaceWrite => "",
-            LaunchPermission::FullAccess => "",
-        }
-    }
-
-    fn start_runtime(
-        &self,
-        _store: &HarnessStore,
-        _member: &ProviderLaunchProfile,
-    ) -> CliResult<ProviderProcess> {
-        Err(CliError::Usage(
-            "pi persistent Team Member is orchestrated by run_pi_team_member, not start_provider_runtime"
-                .to_string(),
-        ))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn run_delivery(
-        &self,
-        _store: &HarnessStore,
-        _member: &ProviderLaunchProfile,
-        _runtime: &ProviderProcess,
-        _message: &RegistryMessage,
-        _delivery_id: &str,
-        _timeout_ms: u64,
-        _project: &ProjectContext,
-    ) -> CliResult<DeliveryOutcome> {
-        Err(CliError::Usage(
-            "pi one-shot delivery is not yet implemented; use the persistent Team Member path"
-                .to_string(),
-        ))
+/// Compose the concrete transport selected by the application-owned canonical
+/// catalog. This is intentionally not a second string registry in the CLI.
+pub(super) fn compatibility_delivery_binding(
+    name: &str,
+) -> Option<&'static dyn CompatibilityDeliveryBinding> {
+    use harness_application::CompatibilityDeliveryKind;
+    match harness_application::compatibility_delivery_kind(name)? {
+        CompatibilityDeliveryKind::CodexExec => Some(&CodexCompatibilityDelivery),
+        CompatibilityDeliveryKind::ClaudeCli => Some(&ClaudeCompatibilityDelivery),
+        CompatibilityDeliveryKind::KimiExec => Some(&KimiCompatibilityDelivery),
     }
 }
 
-/// All providers the harness recognises, in canonical display order.
-pub(super) fn provider_registry() -> &'static [&'static dyn ProviderAdapter] {
-    &[&CodexAdapter, &ClaudeAdapter, &KimiAdapter, &PiAdapter]
-}
-
-/// The adapter for a provider id, or `None` if unrecognised.
-pub(super) fn provider_adapter(name: &str) -> Option<&'static dyn ProviderAdapter> {
-    provider_registry()
-        .iter()
-        .copied()
-        .find(|adapter| adapter.name() == name)
-}
-
-/// The supported provider ids, derived from the registry (single source of truth).
+/// Provider ids with a current direct-delivery compatibility binding.
 pub(super) fn supported_provider_names() -> Vec<&'static str> {
-    provider_registry().iter().map(|a| a.name()).collect()
+    harness_application::compatibility_provider_names().collect()
 }
 
 /// Build the standard error for a provider the harness does not recognise.
@@ -646,11 +379,11 @@ pub(super) fn unknown_provider_error(provider: &str, concern: &str) -> CliError 
 }
 
 /// Spawn (or attach) the runtime for a member, routed by `member.provider`.
-pub(super) fn start_provider_runtime(
+pub(super) fn start_compatibility_delivery_runtime(
     store: &HarnessStore,
     member: &ProviderLaunchProfile,
 ) -> CliResult<ProviderProcess> {
-    match provider_adapter(&member.provider) {
+    match compatibility_delivery_binding(&member.provider) {
         Some(adapter) => adapter.start_runtime(store, member),
         None => Err(unknown_provider_error(&member.provider, "runtime start")),
     }

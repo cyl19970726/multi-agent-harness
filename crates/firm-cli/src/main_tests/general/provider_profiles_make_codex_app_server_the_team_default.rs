@@ -28,7 +28,7 @@ fn provider_profiles_make_codex_app_server_the_team_default() {
     );
 
     // Historical records remain projectable even though new TeamRuns reject
-    // codex_exec; Workflow continues to own that one-shot substrate.
+    // codex_exec; no retired Workflow owner or Team fallback is implied.
     let codex_exec = team_member_provider_profile_for_mode("codex", Some("codex_exec"));
     assert_eq!(codex_exec.plan_mode, ProviderFeatureMode::Unsupported);
     assert_eq!(codex_exec.goal_mode, ProviderFeatureMode::Unsupported);

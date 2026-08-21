@@ -401,7 +401,7 @@ pub(super) fn run_codex_member_shared(
         Ok(client) => client,
         Err(error) => {
             settle_provider_effect_not_applied(ledger, &process_effect, error.to_string())?;
-            return Err(error);
+            return Err(error.into());
         }
     };
     let actual_model = app_server.model().to_string();
@@ -537,9 +537,13 @@ pub(super) fn run_codex_member_shared(
     }
     member_row.status = MemberRunStatus::Idle;
     member_row.last_event_at = Some(now_string());
-    ledger.save_member_run(&expected, &member_row)?;
     let (live_control, registration) =
         register_live_member_control(&member_row, &context.role_action_token, 16);
+    // Publish the process-local control handle before making the native
+    // binding observable. A Host that sees the durable binding must never
+    // race the small window where Close would incorrectly report that the
+    // owning Supervisor has no live provider handle.
+    ledger.save_member_run(&expected, &member_row)?;
     crate::runtime_adapter::run_team_member_with_adapter(
         ledger,
         objective,
@@ -748,9 +752,9 @@ pub(super) fn run_claude_agent_sdk_team_member_shared(
     }
     member_row.status = MemberRunStatus::Idle;
     member_row.last_event_at = Some(now_string());
-    ledger.save_member_run(&expected, &member_row)?;
     let (live_control, registration) =
         register_live_member_control(&member_row, &context.role_action_token, 16);
+    ledger.save_member_run(&expected, &member_row)?;
     crate::runtime_adapter::run_team_member_with_adapter(
         ledger,
         objective,
@@ -825,7 +829,7 @@ pub(super) fn run_kimi_member_shared(
         Ok(client) => client,
         Err(error) => {
             settle_provider_effect_not_applied(ledger, &process_effect, error.to_string())?;
-            return Err(error);
+            return Err(error.into());
         }
     };
     if client.provider_version() != profile.provider_version.as_deref() {
@@ -1015,9 +1019,9 @@ pub(super) fn run_kimi_member_shared(
     }
     member_row.status = MemberRunStatus::Idle;
     member_row.last_event_at = Some(now_string());
-    ledger.save_member_run(&expected, &member_row)?;
     let (live_control, registration) =
         register_live_member_control(&member_row, &context.role_action_token, 16);
+    ledger.save_member_run(&expected, &member_row)?;
     crate::runtime_adapter::run_team_member_with_adapter(
         ledger,
         objective,

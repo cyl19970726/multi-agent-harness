@@ -182,7 +182,7 @@ pub(super) fn run_pi_team_member(
         Ok(client) => client,
         Err(error) => {
             settle_provider_effect_not_applied(ledger, &process_effect, error.to_string())?;
-            return Err(error);
+            return Err(error.into());
         }
     };
     let mut adapter = pi_rpc::PiTeamRuntime::new(pi_client);

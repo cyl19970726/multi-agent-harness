@@ -18,30 +18,29 @@ use harness_core::{
     AgentTeamRun, AgentTeamStatus, ControlTopology, DelegationRun, Evidence, ExecutionNode,
     ExecutionNodeStatus, ExecutionSpace, GitHubLink, GitHubLinkKind, HostAttention,
     HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind, HostControlMode,
-    HostDispatchConfig, LaunchMcp, LaunchPermission, LaunchSpec, LegacyWave, MemberAction,
-    MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver, MemberRunStatus,
-    MemberWorkspaceSnapshot, MessageTerminalSource, MissionLogEntry, NativeSessionAvailability,
-    NativeSessionRef, NodeDaemonLeaseStatus, NodeProjectRegistration,
-    NodeProjectRegistrationStatus, OrdinaryMessageBoundary, ProjectContext, ProjectKind,
-    ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
-    ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityAdmission,
-    ProviderCompatibilityAdmissionLifecycle, ProviderCompatibilityAdmissionPolicy,
-    ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
-    ProviderCompatibilityBlockSource, ProviderCompatibilityStatus, ProviderDispatchAttempt,
-    ProviderDispatchIntent, ProviderEventFidelity, ProviderExecutionControls,
-    ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
-    ProviderInteractionMessageOption, ProviderInteractionMode, ProviderInteractionRequestBody,
-    ProviderInteractionResponseBody, ProviderInteractionType, ProviderLaunchConfig,
-    ProviderLaunchProfile, ProviderLaunchStatus, ProviderProcess, ProviderProcessHealth,
-    ProviderProcessStatus, ProviderResponseIntent, ProviderRuntimeContextFact,
-    ProviderRuntimeProjection, ProviderWorkDispatch, ProviderWorkDispatchStatus,
-    RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage, RegistryMessageIntent,
-    Review, SecurityEnforcementLocus, SecurityEnforcementLocusKind, SenderKind, TeamActorKind,
-    TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
-    TeamMemberCloseStatus, TeamMessageProjection, TeamRecipientKind, TeamRecipientRef,
-    TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Validate, Work,
-    WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition, WorkDelegation,
-    WorkDelegationState, WorkPhase, WorkPriority, WorkRef, WorkResolution,
+    HostDispatchConfig, LaunchMcp, LaunchSpec, LegacyWave, MemberAction, MemberActionStatus,
+    MemberCoordinationStatus, MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot,
+    MessageTerminalSource, MissionLogEntry, NativeSessionAvailability, NativeSessionRef,
+    NodeDaemonLeaseStatus, NodeProjectRegistration, NodeProjectRegistrationStatus,
+    OrdinaryMessageBoundary, ProjectContext, ProjectKind, ProviderAccountRef, ProviderCapabilities,
+    ProviderCapacityConfidence, ProviderCapacityEvidence, ProviderCapacitySnapshot,
+    ProviderCapacityState, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
+    ProviderCompatibilityAdmissionPolicy, ProviderCompatibilityBlockBoundary,
+    ProviderCompatibilityBlockCause, ProviderCompatibilityBlockSource, ProviderCompatibilityStatus,
+    ProviderDispatchAttempt, ProviderDispatchIntent, ProviderEventFidelity,
+    ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
+    ProviderIntegrationProfile, ProviderInteractionMessageOption, ProviderInteractionMode,
+    ProviderInteractionRequestBody, ProviderInteractionResponseBody, ProviderInteractionType,
+    ProviderLaunchConfig, ProviderLaunchProfile, ProviderLaunchStatus, ProviderProcess,
+    ProviderProcessHealth, ProviderProcessStatus, ProviderResponseIntent,
+    ProviderRuntimeContextFact, ProviderRuntimeProjection, ProviderWorkDispatch,
+    ProviderWorkDispatchStatus, RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage,
+    RegistryMessageIntent, Review, SecurityEnforcementLocus, SecurityEnforcementLocusKind,
+    SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus,
+    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection, TeamRecipientKind,
+    TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease,
+    Validate, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition,
+    WorkDelegation, WorkDelegationState, WorkPhase, WorkPriority, WorkRef, WorkResolution,
     EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
@@ -76,7 +75,6 @@ mod provider_adapter;
 mod provider_event_api;
 #[cfg(unix)]
 mod remote_fabric;
-mod resident;
 mod role_actions_api;
 mod role_views_api;
 mod runtime_adapter;
@@ -175,9 +173,6 @@ use http_io::*;
 #[path = "main_modules/runtime_delivery_setup.rs"]
 mod runtime_delivery_setup;
 use runtime_delivery_setup::*;
-#[path = "main_modules/provider_ephemeral.rs"]
-mod provider_ephemeral;
-use provider_ephemeral::*;
 #[path = "main_modules/provider_schema.rs"]
 mod provider_schema;
 use provider_schema::*;
@@ -647,9 +642,3 @@ mod sse_tests;
 #[cfg(test)]
 #[path = "main_tests/team_run_recover.rs"]
 mod tests_team_run_recover;
-
-// --- Tests for WP-2: codex exec --json delivery (Stage 1-3) ---
-
-#[cfg(test)]
-#[path = "main_tests/codex_exec.rs"]
-mod tests_wp2_codex_exec;
