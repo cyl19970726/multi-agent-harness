@@ -18,9 +18,9 @@ fn unknown_provider_runtime_start_fails_fast() {
     // (which a substring check would silently miss). Pi is the fourth
     // registered provider.
     assert_eq!(
-            message,
-            "unknown provider \"gemini\" for runtime start; supported providers: codex, claude, kimi, pi"
-        );
+        message,
+        "unknown provider \"gemini\" for runtime start; supported providers: codex, claude, kimi"
+    );
 
     let _ = std::fs::remove_dir_all(root);
 }
