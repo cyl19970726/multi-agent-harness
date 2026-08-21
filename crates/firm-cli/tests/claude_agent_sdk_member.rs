@@ -321,23 +321,36 @@ for await (const line of rl) {{
     if (cfg.resumeSessionId) {{
       appendFileSync(`${{RUNNER_ROOT}}/resume.log`, `${{cfg.resumeSessionId}}\n`);
     }}
-    emit("member_started", {{ memberRunId: cfg.memberRunId }});
+    emit("member_started", {{
+      memberRunId: cfg.memberRunId,
+      cwd: cfg.cwd,
+      permissionMode: cfg.permissionMode,
+      ownedPathCount: cfg.ownedPaths.length,
+      resumed: Boolean(cfg.resumeSessionId),
+    }});
     emit("session_bound", {{
       sessionId: "fake-native-session-0001",
+      tag: `${{cfg.teamRunId}}:${{cfg.memberRunId}}`,
+      title: `${{cfg.memberName}} · member`,
       providerVersion: "{provider_version}",
+      model: null,
+      effort: null,
     }});
   }} else if (command === "deliver") {{
     turns += 1;
     emit("delivered", {{ id: payload.id, kind: payload.kind }});
     emit("consumed", {{
       id: payload.id,
+      kind: payload.kind,
       sessionId: "fake-native-session-0001",
     }});
     if (API_ERROR) {{
       emit("assistant_message", {{
+        sessionId: "fake-native-session-0001",
         content: [{{ type: "text", text: "Failed to authenticate. API Error: 403 Request not allowed" }}],
       }});
       emit("turn_complete", {{
+        sessionId: "fake-native-session-0001",
         subtype: "success",
         isError: true,
         terminalReason: "api_error",
@@ -351,6 +364,7 @@ for await (const line of rl) {{
       // No assistant_message at all: the provider ended the turn without an
       // agent message and the runner has nothing to classify.
       emit("turn_complete", {{
+        sessionId: "fake-native-session-0001",
         subtype: "success",
         isError: false,
         terminalReason: null,
@@ -361,6 +375,7 @@ for await (const line of rl) {{
       continue;
     }}
     emit("assistant_message", {{
+      sessionId: "fake-native-session-0001",
       content: [{{ type: "text", text: `## RESULT\ndone\n\n## SUMMARY\nturn-${{turns}}` }}],
     }});
     if (payload.kind === "work") {{
@@ -382,6 +397,7 @@ for await (const line of rl) {{
       ]);
     }}
     emit("turn_complete", {{
+      sessionId: "fake-native-session-0001",
       subtype: "success",
       isError: false,
       terminalReason: null,
@@ -402,6 +418,7 @@ for await (const line of rl) {{
       reason: payload?.reason ?? "closed",
       sessionId: "fake-native-session-0001",
       undelivered: [],
+      evidenceRefs: [],
     }});
     rl.close();
   }}

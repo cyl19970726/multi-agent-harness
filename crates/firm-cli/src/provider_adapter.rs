@@ -391,7 +391,7 @@ pub(crate) fn settle_team_control(
 /// recovery inventory and make a later retry unsafe.
 pub(crate) fn settle_team_controls_without_terminal_ack(
     ledger: &TeamRunLedger,
-    pending: impl IntoIterator<Item = Box<PendingProviderControl>>,
+    pending: impl IntoIterator<Item = PendingProviderControl>,
 ) -> CliResult<()> {
     let mut first_error = None;
     for control in pending {

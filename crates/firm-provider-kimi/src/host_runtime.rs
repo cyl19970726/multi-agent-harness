@@ -31,6 +31,16 @@ pub fn run_kimi_host_turn(
     let receipt = Arc::new(Mutex::new(None::<String>));
     let receipt_sink = Arc::clone(&receipt);
     let mut client = KimiAcpClient::spawn(cwd, None, None, Some(native_session_id), &[])?;
+    let verified_native_session_id = client
+        .session_id()
+        .filter(|observed| *observed == native_session_id)
+        .ok_or_else(|| {
+            KimiError::Usage(format!(
+                "KIMI_HOST_RESUME_MISMATCH: requested native session {native_session_id}, observed {}",
+                client.session_id().unwrap_or("missing")
+            ))
+        })?
+        .to_string();
     let outcome = client.prompt(
         prompt,
         timeout,
@@ -82,7 +92,7 @@ pub fn run_kimi_host_turn(
         .map_err(|error| KimiError::Usage(format!("Host response lock poisoned: {error}")))?
         .clone();
     Ok(KimiHostTurn {
-        native_session_id: native_session_id.to_string(),
+        native_session_id: verified_native_session_id,
         provider_receipt_id,
         response_text,
     })

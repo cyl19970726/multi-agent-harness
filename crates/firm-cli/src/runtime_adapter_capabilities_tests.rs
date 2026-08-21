@@ -35,13 +35,10 @@ fn compatibility_registry_cannot_drift_from_the_canonical_provider_catalog() {
         })
         .collect::<Vec<_>>();
     assert_eq!(crate::supported_provider_names(), catalog);
-    assert_eq!(
-        crate::compatibility_delivery_registry()
-            .iter()
-            .map(|adapter| adapter.name())
-            .collect::<Vec<_>>(),
-        catalog
-    );
+    assert!(catalog
+        .iter()
+        .all(|provider| crate::compatibility_delivery_binding(provider).is_some()));
+    assert!(crate::compatibility_delivery_binding("unknown").is_none());
 }
 
 #[test]

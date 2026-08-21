@@ -13,9 +13,6 @@ pub(super) use harness_provider_kimi::{extract_kimi_reply_text, infer_kimi_statu
 /// Provider-specific behaviour boundary. Every current provider dispatch site
 /// routes through this trait and the `compatibility_delivery_binding` registry.
 pub(super) trait CompatibilityDeliveryBinding: Sync {
-    /// Canonical provider id as used in `member.provider` and `agent(provider=...)`.
-    fn name(&self) -> &'static str;
-
     /// What this provider's platform can technically support — streaming, resume,
     /// mid-turn approval, subagents, MCP, hooks, native schema, billed cost
     /// (goal-provider-neutral). Drives declarative capability degradation: a
@@ -74,10 +71,6 @@ pub(super) struct ClaudeCompatibilityDelivery;
 pub(super) struct KimiCompatibilityDelivery;
 
 impl CompatibilityDeliveryBinding for CodexCompatibilityDelivery {
-    fn name(&self) -> &'static str {
-        "codex"
-    }
-
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::codex_exec()
     }
@@ -113,10 +106,6 @@ impl CompatibilityDeliveryBinding for CodexCompatibilityDelivery {
     }
 }
 impl CompatibilityDeliveryBinding for ClaudeCompatibilityDelivery {
-    fn name(&self) -> &'static str {
-        "claude"
-    }
-
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::claude_exec()
     }
@@ -328,10 +317,6 @@ pub(super) fn run_kimi_delivery(
 }
 
 impl CompatibilityDeliveryBinding for KimiCompatibilityDelivery {
-    fn name(&self) -> &'static str {
-        "kimi"
-    }
-
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::kimi_exec()
     }
@@ -367,33 +352,22 @@ impl CompatibilityDeliveryBinding for KimiCompatibilityDelivery {
     }
 }
 
-/// Current direct-delivery compatibility bindings. Missing providers are
-/// intentionally absent rather than represented by unsupported effect stubs.
-pub(super) fn compatibility_delivery_registry(
-) -> &'static [&'static dyn CompatibilityDeliveryBinding] {
-    &[
-        &CodexCompatibilityDelivery,
-        &ClaudeCompatibilityDelivery,
-        &KimiCompatibilityDelivery,
-    ]
-}
-
-/// The adapter for a provider id, or `None` if unrecognised.
+/// Compose the concrete transport selected by the application-owned canonical
+/// catalog. This is intentionally not a second string registry in the CLI.
 pub(super) fn compatibility_delivery_binding(
     name: &str,
 ) -> Option<&'static dyn CompatibilityDeliveryBinding> {
-    compatibility_delivery_registry()
-        .iter()
-        .copied()
-        .find(|adapter| adapter.name() == name)
+    use harness_application::CompatibilityDeliveryKind;
+    match harness_application::compatibility_delivery_kind(name)? {
+        CompatibilityDeliveryKind::CodexExec => Some(&CodexCompatibilityDelivery),
+        CompatibilityDeliveryKind::ClaudeCli => Some(&ClaudeCompatibilityDelivery),
+        CompatibilityDeliveryKind::KimiExec => Some(&KimiCompatibilityDelivery),
+    }
 }
 
 /// Provider ids with a current direct-delivery compatibility binding.
 pub(super) fn supported_provider_names() -> Vec<&'static str> {
-    compatibility_delivery_registry()
-        .iter()
-        .map(|binding| binding.name())
-        .collect()
+    harness_application::compatibility_provider_names().collect()
 }
 
 /// Build the standard error for a provider the harness does not recognise.

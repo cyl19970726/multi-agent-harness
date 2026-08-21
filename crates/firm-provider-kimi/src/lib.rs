@@ -530,12 +530,8 @@ impl KimiAcpClient {
             .and_then(|value| value.as_array())
             .cloned()
             .unwrap_or_default();
-        let session_id = frame
-            .get("result")
-            .and_then(|result| result.get("sessionId"))
-            .and_then(|id| id.as_str())
-            .map(str::to_string)
-            .or_else(|| resume_session_id.map(str::to_string));
+        let session_id = verified_attached_session_id(&frame, resume_session_id, method)
+            .inspect_err(|_| self.kill_quiet())?;
         // `session/resume` and `session/load` may replay historical
         // session/update records before their response. They are
         // provider-native history, not activity from the next Harness round.
@@ -543,18 +539,8 @@ impl KimiAcpClient {
         // proves every preceding replay frame is already in this queue and
         // can be discarded deterministically.
         self.drain_attach_updates();
-        match session_id {
-            Some(session_id) => {
-                self.session_id = Some(session_id);
-                self.apply_requested_controls()
-            }
-            None => {
-                self.kill_quiet();
-                Err(CliError::Usage(format!(
-                    "kimi acp {method} returned no sessionId: {frame}"
-                )))
-            }
-        }
+        self.session_id = Some(session_id);
+        self.apply_requested_controls()
     }
 
     fn drain_attach_updates(&mut self) {
@@ -1294,6 +1280,31 @@ fn acp_method_not_found(frame: &serde_json::Value) -> bool {
         .pointer("/error/code")
         .and_then(|value| value.as_i64())
         == Some(-32601)
+}
+
+fn verified_attached_session_id(
+    frame: &serde_json::Value,
+    requested_resume_session_id: Option<&str>,
+    method: &str,
+) -> CliResult<String> {
+    let observed = frame
+        .pointer("/result/sessionId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    match (requested_resume_session_id, observed) {
+        (Some(expected), Some(observed)) if observed != expected => Err(CliError::Usage(format!(
+            "KIMI_ACP_RESUME_MISMATCH: requested native session {expected}, observed {observed}"
+        ))),
+        // ACP 0.36.1 accepts the exact session id in session/resume or
+        // session/load but does not necessarily echo it in the result. A
+        // successful correlated response proves that exact requested attach;
+        // any explicit, different id above still fails closed.
+        (Some(expected), _) => Ok(expected.to_string()),
+        (None, Some(observed)) => Ok(observed.to_string()),
+        (None, None) => Err(CliError::Usage(format!(
+            "kimi acp {method} returned no sessionId: {frame}"
+        ))),
+    }
 }
 
 /// Write one frame as a single line + flush (the agent reads line-delimited).

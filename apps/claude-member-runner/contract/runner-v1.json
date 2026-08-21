@@ -1,28 +1,53 @@
 {
   "protocolVersion": "claude-agent-sdk-runner/v1",
-  "fingerprint": "claude-agent-sdk-runner/v1@2026-08-22",
-  "commands": [
-    "start",
-    "deliver",
-    "interrupt",
-    "set_permission_mode",
-    "close"
-  ],
+  "fingerprint": "claude-agent-sdk-runner/v1@payload-schema-2026-08-22",
+  "commands": ["start", "deliver", "interrupt", "set_permission_mode", "close"],
   "events": [
-    "member_started",
-    "session_bound",
-    "assistant_message",
-    "consumed",
-    "turn_complete",
-    "turn_idle",
-    "delivered",
-    "interrupted",
-    "query_ended_by_interrupt",
-    "member_resumed_after_interrupt",
-    "permission_mode_changed",
-    "cross_lane_write",
-    "registry_write_failed",
-    "member_closed",
-    "runner_error"
-  ]
+    "member_started", "session_bound", "assistant_message", "consumed",
+    "turn_complete", "turn_idle", "delivered", "interrupted",
+    "query_ended_by_interrupt", "query_ended_with_provider_error",
+    "member_resumed_after_interrupt", "permission_mode_changed",
+    "cross_lane_write", "registry_write_failed", "member_closed", "runner_error"
+  ],
+  "commandPayloadSchemas": {
+    "start": {
+      "type": "object",
+      "required": ["protocolVersion", "protocolFingerprint", "teamRunId", "memberRunId", "memberName", "cwd", "ownedPaths", "permissionMode", "settingSources"],
+      "properties": {
+        "protocolVersion": {"type": "string"}, "protocolFingerprint": {"type": "string"},
+        "teamRunId": {"type": "string"}, "memberRunId": {"type": "string"}, "memberName": {"type": "string"},
+        "roleLabel": {"type": ["string", "null"]}, "cwd": {"type": "string"},
+        "ownedPaths": {"type": "array", "items": {"type": "string"}},
+        "model": {"type": ["string", "null"]}, "effort": {"type": ["string", "null"]},
+        "permissionMode": {"type": "string"},
+        "allowedTools": {"type": ["array", "null"], "items": {"type": "string"}},
+        "disallowedTools": {"type": ["array", "null"], "items": {"type": "string"}},
+        "settingSources": {"type": "array", "items": {"type": "string"}},
+        "resumeSessionId": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "deliver": {"type": "object", "required": ["id", "kind", "sender_runtime_id", "correlation_id", "body"], "properties": {"id": {"type": "string"}, "kind": {"type": "string"}, "sender_runtime_id": {"type": "string"}, "correlation_id": {"type": "string"}, "body": {"type": "string"}}, "additionalProperties": false},
+    "interrupt": {"type": "object", "required": [], "properties": {}, "additionalProperties": false},
+    "set_permission_mode": {"type": "object", "required": ["mode"], "properties": {"mode": {"type": "string"}}, "additionalProperties": false},
+    "close": {"type": "object", "required": [], "properties": {"reason": {"type": "string"}}, "additionalProperties": false}
+  },
+  "eventPayloadSchemas": {
+    "member_started": {"type": "object", "required": ["memberRunId", "cwd", "permissionMode", "ownedPathCount", "resumed"], "properties": {"memberRunId": {"type": "string"}, "cwd": {"type": "string"}, "permissionMode": {"type": "string"}, "ownedPathCount": {"type": "number"}, "resumed": {"type": "boolean"}}, "additionalProperties": false},
+    "session_bound": {"type": "object", "required": ["sessionId", "tag", "title", "providerVersion", "model", "effort"], "properties": {"sessionId": {"type": "string"}, "tag": {"type": "string"}, "title": {"type": "string"}, "providerVersion": {"type": ["string", "null"]}, "model": {"type": ["string", "null"]}, "effort": {"type": ["string", "null"]}}, "additionalProperties": false},
+    "assistant_message": {"type": "object", "required": ["sessionId", "content"], "properties": {"sessionId": {"type": ["string", "null"]}, "content": {}}, "additionalProperties": false},
+    "consumed": {"type": "object", "required": ["id", "kind", "sessionId"], "properties": {"id": {"type": "string"}, "kind": {"type": "string"}, "sessionId": {"type": ["string", "null"]}}, "additionalProperties": false},
+    "turn_complete": {"type": "object", "required": ["sessionId", "subtype", "triggerMessageId", "evidenceRefs", "isError", "terminalReason", "apiErrorStatus"], "properties": {"sessionId": {"type": ["string", "null"]}, "subtype": {"type": ["string", "null"]}, "triggerMessageId": {"type": ["string", "null"]}, "evidenceRefs": {"type": "array", "items": {"type": "string"}}, "isError": {"type": "boolean"}, "terminalReason": {"type": ["string", "null"]}, "apiErrorStatus": {"type": ["number", "string", "null"]}}, "additionalProperties": false},
+    "turn_idle": {"type": "object", "required": ["pending"], "properties": {"pending": {"type": "number"}}, "additionalProperties": false},
+    "delivered": {"type": "object", "required": ["id", "kind"], "properties": {"id": {"type": "string"}, "kind": {"type": "string"}}, "additionalProperties": false},
+    "interrupted": {"type": "object", "required": ["stillQueued", "abandonedTriggerMessageIds"], "properties": {"stillQueued": {"type": ["array", "null"], "items": {}}, "abandonedTriggerMessageIds": {"type": "array", "items": {"type": "string"}}}, "additionalProperties": false},
+    "query_ended_by_interrupt": {"type": "object", "required": ["sessionId", "error"], "properties": {"sessionId": {"type": ["string", "null"]}, "error": {"type": "string"}}, "additionalProperties": false},
+    "query_ended_with_provider_error": {"type": "object", "required": ["sessionId", "error"], "properties": {"sessionId": {"type": ["string", "null"]}, "error": {"type": "string"}}, "additionalProperties": false},
+    "member_resumed_after_interrupt": {"type": "object", "required": ["sessionId"], "properties": {"sessionId": {"type": ["string", "null"]}}, "additionalProperties": false},
+    "permission_mode_changed": {"type": "object", "required": ["mode"], "properties": {"mode": {"type": "string"}}, "additionalProperties": false},
+    "cross_lane_write": {"type": "object", "required": ["path"], "properties": {"path": {"type": "string"}}, "additionalProperties": true},
+    "registry_write_failed": {"type": "object", "required": ["sessionId", "error"], "properties": {"sessionId": {"type": "string"}, "error": {"type": "string"}}, "additionalProperties": false},
+    "member_closed": {"type": "object", "required": ["sessionId", "reason", "undelivered", "evidenceRefs"], "properties": {"sessionId": {"type": ["string", "null"]}, "reason": {"type": ["string", "null"]}, "undelivered": {"type": "array", "items": {"type": "string"}}, "evidenceRefs": {"type": "array", "items": {"type": "string"}}}, "additionalProperties": false},
+    "runner_error": {"type": "object", "required": ["stage", "error"], "properties": {"stage": {"type": "string"}, "error": {"type": "string"}}, "additionalProperties": false}
+  }
 }

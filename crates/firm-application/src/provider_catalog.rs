@@ -170,6 +170,22 @@ pub fn team_runtime_kind(provider: &str, execution_mode: Option<&str>) -> Option
     Some(descriptor.team.binding)
 }
 
+/// Resolve the only current direct-delivery compatibility effect for a
+/// provider. Historical aliases never participate in this selection.
+pub fn compatibility_delivery_kind(provider: &str) -> Option<CompatibilityDeliveryKind> {
+    provider_descriptor(provider)?
+        .direct_delivery_compatibility
+        .map(|binding| binding.binding)
+}
+
+pub fn compatibility_provider_names() -> impl Iterator<Item = &'static str> {
+    PROVIDERS.iter().filter_map(|descriptor| {
+        descriptor
+            .direct_delivery_compatibility
+            .map(|_| descriptor.provider)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +255,16 @@ mod tests {
             kimi.direct_delivery_compatibility.unwrap().execution_mode,
             "kimi_exec"
         );
+
+        assert_eq!(
+            compatibility_provider_names().collect::<Vec<_>>(),
+            vec!["codex", "claude", "kimi"]
+        );
+        assert_eq!(
+            compatibility_delivery_kind("codex"),
+            Some(CompatibilityDeliveryKind::CodexExec)
+        );
+        assert_eq!(compatibility_delivery_kind("pi"), None);
 
         let pi = provider_descriptor("pi").unwrap();
         assert!(pi.headless_host.is_none());

@@ -1,44 +1,60 @@
-//! Provider-neutral Agent Team supervisor loop.
+//! Provider-neutral Agent Team supervisor state machine.
 //!
-//! This package owns only loop progression. The application port owns Work,
-//! Message, Store, RuntimeCommand, Host acceptance, and every durable write;
-//! provider packages own native protocol effects. Keeping the port generic
-//! makes those forbidden dependency edges compile-time visible.
+//! The supervisor owns the only top-level wake/claim → provider cycle →
+//! durable-settlement progression. Application ports provide concrete Work,
+//! Message, Store, RuntimeCommand, and provider effects without taking
+//! ownership of loop order.
 
-/// Result of one fully driven and durably settled supervisor round.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SupervisorDirective<T> {
-    /// The application settled the round and wants the next wake/cycle.
-    Continue,
-    /// The application reached an honest terminal member outcome.
+pub enum SupervisorWake<C, T> {
+    Cycle(C),
     Complete(T),
 }
 
-/// Narrow application boundary consumed by the shared supervisor.
-///
-/// One call must cover prepare → provider cycle → terminal fencing → durable
-/// settlement. Returning `Continue` before that boundary is an application
-/// contract violation, tested where the concrete port is implemented.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SupervisorDirective<T> {
+    Continue,
+    Complete(T),
+}
+
+/// Narrow application boundary consumed by the shared supervisor. The three
+/// methods expose no provider or store vocabulary, but fix the phase order so
+/// no executable can bypass wake/claim or start a cycle before settlement.
 pub trait SupervisorApplicationPort {
+    type Cycle;
+    type DrivenCycle;
     type Outcome;
     type Error;
 
-    fn drive_and_settle_round(
+    fn wake_and_claim(
         &mut self,
         round: u32,
+    ) -> Result<SupervisorWake<Self::Cycle, Self::Outcome>, Self::Error>;
+    fn drive_cycle(
+        &mut self,
+        round: u32,
+        cycle: Self::Cycle,
+    ) -> Result<Self::DrivenCycle, Self::Error>;
+    fn settle_cycle(
+        &mut self,
+        round: u32,
+        driven: Self::DrivenCycle,
     ) -> Result<SupervisorDirective<Self::Outcome>, Self::Error>;
 }
 
-/// Own the single monotonically increasing Agent Team supervisor loop.
-///
-/// Provider-native goals/plans/subagents stay behind the application/provider
-/// ports and cannot create a second top-level driver through this API.
+/// Run the single monotonically increasing Agent Team state machine. A round
+/// advances only after durable settlement returns `Continue`.
 pub fn run_team_supervisor<P: SupervisorApplicationPort>(
     port: &mut P,
 ) -> Result<P::Outcome, P::Error> {
     let mut round = 1u32;
     loop {
-        match port.drive_and_settle_round(round)? {
+        let cycle = match port.wake_and_claim(round)? {
+            SupervisorWake::Cycle(cycle) => cycle,
+            SupervisorWake::Complete(outcome) => return Ok(outcome),
+        };
+        let driven = port.drive_cycle(round, cycle)?;
+        match port.settle_cycle(round, driven)? {
             SupervisorDirective::Continue => {
                 round = round
                     .checked_add(1)
@@ -49,28 +65,47 @@ pub fn run_team_supervisor<P: SupervisorApplicationPort>(
     }
 }
 
-/// Closure adapter used by executable composition without exposing its Store
-/// or coordination types to this package.
-pub struct SupervisorPortFn<F>(F);
+/// Composition adapter. All phases operate on one explicit application state,
+/// preventing independently captured state from becoming parallel drivers.
+pub struct SupervisorPortFn<S, W, D, T> {
+    pub state: S,
+    wake: W,
+    drive: D,
+    settle: T,
+}
 
-impl<F> SupervisorPortFn<F> {
-    pub fn new(port: F) -> Self {
-        Self(port)
+impl<S, W, D, T> SupervisorPortFn<S, W, D, T> {
+    pub fn new(state: S, wake: W, drive: D, settle: T) -> Self {
+        Self {
+            state,
+            wake,
+            drive,
+            settle,
+        }
     }
 }
 
-impl<F, T, E> SupervisorApplicationPort for SupervisorPortFn<F>
+impl<S, W, D, T, C, R, O, E> SupervisorApplicationPort for SupervisorPortFn<S, W, D, T>
 where
-    F: FnMut(u32) -> Result<SupervisorDirective<T>, E>,
+    W: FnMut(&mut S, u32) -> Result<SupervisorWake<C, O>, E>,
+    D: FnMut(&mut S, u32, C) -> Result<R, E>,
+    T: FnMut(&mut S, u32, R) -> Result<SupervisorDirective<O>, E>,
 {
-    type Outcome = T;
+    type Cycle = C;
+    type DrivenCycle = R;
+    type Outcome = O;
     type Error = E;
 
-    fn drive_and_settle_round(
-        &mut self,
-        round: u32,
-    ) -> Result<SupervisorDirective<Self::Outcome>, Self::Error> {
-        (self.0)(round)
+    fn wake_and_claim(&mut self, round: u32) -> Result<SupervisorWake<C, O>, E> {
+        (self.wake)(&mut self.state, round)
+    }
+
+    fn drive_cycle(&mut self, round: u32, cycle: C) -> Result<R, E> {
+        (self.drive)(&mut self.state, round, cycle)
+    }
+
+    fn settle_cycle(&mut self, round: u32, driven: R) -> Result<SupervisorDirective<O>, E> {
+        (self.settle)(&mut self.state, round, driven)
     }
 }
 
@@ -79,38 +114,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn one_shared_loop_numbers_rounds_monotonically_until_terminal() {
-        let mut observed = Vec::new();
-        let result = {
-            let mut port = SupervisorPortFn::new(|round| -> Result<_, ()> {
-                observed.push(round);
-                Ok(if round == 3 {
-                    SupervisorDirective::Complete("done")
+    fn supervisor_owns_phase_order_and_round_progression() {
+        let mut port = SupervisorPortFn::new(
+            Vec::new(),
+            |events: &mut Vec<String>, round| -> Result<_, ()> {
+                events.push(format!("wake:{round}"));
+                Ok(SupervisorWake::Cycle(round))
+            },
+            |events: &mut Vec<String>, round, cycle| -> Result<_, ()> {
+                events.push(format!("drive:{round}"));
+                Ok(cycle)
+            },
+            |events: &mut Vec<String>, round, _| -> Result<_, ()> {
+                events.push(format!("settle:{round}"));
+                Ok(if round == 2 {
+                    SupervisorDirective::Complete(events.clone())
                 } else {
                     SupervisorDirective::Continue
                 })
-            });
-            run_team_supervisor(&mut port)
-        };
-        assert_eq!(result, Ok("done"));
-        assert_eq!(observed, vec![1, 2, 3]);
+            },
+        );
+        let events = run_team_supervisor(&mut port).unwrap();
+        assert_eq!(
+            events,
+            ["wake:1", "drive:1", "settle:1", "wake:2", "drive:2", "settle:2"]
+        );
     }
 
     #[test]
-    fn application_failure_stops_without_driving_another_round() {
-        let mut observed = Vec::new();
-        let result = {
-            let mut port = SupervisorPortFn::new(|round| {
-                observed.push(round);
-                if round == 2 {
-                    Err("fenced")
-                } else {
-                    Ok(SupervisorDirective::<()>::Continue)
-                }
-            });
-            run_team_supervisor(&mut port)
-        };
-        assert_eq!(result, Err("fenced"));
-        assert_eq!(observed, vec![1, 2]);
+    fn failed_settlement_fences_the_next_wake() {
+        let mut port = SupervisorPortFn::new(
+            Vec::new(),
+            |events: &mut Vec<&str>, _| -> Result<_, &str> {
+                events.push("wake");
+                Ok(SupervisorWake::Cycle(()))
+            },
+            |events: &mut Vec<&str>, _, _| -> Result<_, &str> {
+                events.push("drive");
+                Ok(())
+            },
+            |events: &mut Vec<&str>, _, _| -> Result<SupervisorDirective<()>, &str> {
+                events.push("settle");
+                Err("fenced")
+            },
+        );
+        assert_eq!(run_team_supervisor(&mut port), Err("fenced"));
+        assert_eq!(port.state, ["wake", "drive", "settle"]);
     }
 }

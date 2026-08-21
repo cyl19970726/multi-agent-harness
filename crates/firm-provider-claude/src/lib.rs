@@ -120,6 +120,7 @@ impl RunnerEvent {
             })?
             .to_string();
         let data = raw.get("data").cloned().unwrap_or(Value::Null);
+        runner_contract::validate_runner_frame("eventPayloadSchemas", "event", "data", &raw)?;
         Ok(Self { name, data, raw })
     }
 }
@@ -282,6 +283,12 @@ impl ClaudeRunnerTransport {
     }
 
     fn write_frame(&mut self, frame: &Value) -> CliResult<()> {
+        runner_contract::validate_runner_frame(
+            "commandPayloadSchemas",
+            "command",
+            "payload",
+            frame,
+        )?;
         let stdin = self.stdin.as_mut().ok_or_else(|| {
             CliError::Usage("CLAUDE_AGENT_SDK_TRANSPORT_CLOSED: runner stdin is closed".into())
         })?;

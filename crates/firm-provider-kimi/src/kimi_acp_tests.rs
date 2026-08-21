@@ -51,6 +51,35 @@ fn session_update(kind: &str) -> serde_json::Value {
     })
 }
 
+#[test]
+fn resume_handshake_fails_closed_when_provider_returns_a_different_session() {
+    let mismatch = verified_attached_session_id(
+        &serde_json::json!({"result": {"sessionId": "provider-selected-other"}}),
+        Some("requested-exact-session"),
+        "session/resume",
+    )
+    .expect_err("mismatched resume must fail before a prompt");
+    assert!(mismatch.to_string().contains("KIMI_ACP_RESUME_MISMATCH"));
+    assert_eq!(
+        verified_attached_session_id(
+            &serde_json::json!({"result": {"sessionId": "requested-exact-session"}}),
+            Some("requested-exact-session"),
+            "session/resume",
+        )
+        .unwrap(),
+        "requested-exact-session"
+    );
+    assert_eq!(
+        verified_attached_session_id(
+            &serde_json::json!({"result": {"configOptions": []}}),
+            Some("requested-exact-session"),
+            "session/resume",
+        )
+        .unwrap(),
+        "requested-exact-session"
+    );
+}
+
 fn provider_error_response() -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",

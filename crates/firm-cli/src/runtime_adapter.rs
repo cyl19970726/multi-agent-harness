@@ -440,6 +440,34 @@ fn await_next_cycle<A: TeamRuntimeAdapter<Error = CliError>>(
     idle_wake_into_cycle(wake, ledger, objective, context, member_row, adapter)
 }
 
+struct RuntimeSupervisorState<'a, A> {
+    ledger: &'a TeamRunLedger,
+    objective: &'a str,
+    member_row: &'a mut ProviderRuntimeProjection,
+    context: &'a MemberRuntimeContext,
+    adapter: &'a mut A,
+    live_control: &'a ControlReceiver<MemberControlCommand>,
+    live_control_registration: Option<LiveMemberControlRegistration>,
+    supports_inject: bool,
+    provider: &'static str,
+    display: &'static str,
+    wake_policy: WakePolicy,
+    wake_backoff: WakeBackoff,
+    zero_output_streak: u32,
+    last_consumed_work_version: Option<u64>,
+}
+
+struct DrivenRuntimeCycle {
+    cycle: CycleInput,
+    effect: crate::ProviderEffectAdmission,
+    accepted_provider_receipt: Option<String>,
+    pending_control_effects: Vec<PendingProviderControl>,
+    pending_control_replies: Vec<PendingControlReply>,
+    control_prepare_error: Option<String>,
+    round_start: ProviderRuntimeProjection,
+    turn_result: CliResult<harness_runtime_contract::ExecutionCycleOutcome>,
+}
+
 /// The provider-neutral persistent member loop: wake → claim → drive one
 /// ExecutionCycle → settle receipts → repeat. One implementation for every
 /// binding; provider differences live behind `TeamRuntimeAdapter`, not in a
@@ -455,43 +483,77 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
     context: &MemberRuntimeContext,
     adapter: &mut A,
     live_control: &ControlReceiver<MemberControlCommand>,
-    mut live_control_registration: Option<LiveMemberControlRegistration>,
+    live_control_registration: Option<LiveMemberControlRegistration>,
 ) -> CliResult<MemberOutcome> {
     let supports_inject = adapter.supports_inject_current_cycle();
     let provider = adapter.provider();
     let display = adapter.display_name();
 
-    let wake_policy = WakePolicy::default();
-    let mut wake_backoff = WakeBackoff::new();
-    let mut zero_output_streak = member_row.zero_output_streak;
-    let mut last_consumed_work_version = member_row.last_consumed_work_version;
-
-    let mut cycle = match await_next_cycle(
+    let zero_output_streak = member_row.zero_output_streak;
+    let last_consumed_work_version = member_row.last_consumed_work_version;
+    let state = RuntimeSupervisorState {
         ledger,
         objective,
-        context,
         member_row,
+        context,
         adapter,
         live_control,
+        live_control_registration,
+        supports_inject,
+        provider,
+        display,
+        wake_policy: WakePolicy::default(),
+        wake_backoff: WakeBackoff::new(),
         zero_output_streak,
         last_consumed_work_version,
-        &wake_policy,
-        &mut wake_backoff,
-    )? {
-        Ok(cycle) => cycle,
-        Err(outcome) => return Ok(outcome),
     };
-    // The first wake is a real delivery/continuation just like every later
-    // wake. Persist its consumed Work revision when this first cycle settles;
-    // otherwise a restart can rediscover and redrive the already-consumed
-    // revision even though later cycles update the tracker correctly.
-    if let Some(version) = cycle.consumed_work_version {
-        last_consumed_work_version = Some(version);
-    }
 
-    use harness_runtime_supervisor::{run_team_supervisor, SupervisorDirective, SupervisorPortFn};
+    use harness_runtime_supervisor::{
+        run_team_supervisor, SupervisorDirective, SupervisorPortFn, SupervisorWake,
+    };
     let mut supervisor_port = SupervisorPortFn::new(
-        |round| -> CliResult<SupervisorDirective<MemberOutcome>> {
+        state,
+        |state: &mut RuntimeSupervisorState<'_, A>, _round| match await_next_cycle(
+            state.ledger,
+            state.objective,
+            state.context,
+            state.member_row,
+            state.adapter,
+            state.live_control,
+            state.zero_output_streak,
+            state.last_consumed_work_version,
+            &state.wake_policy,
+            &mut state.wake_backoff,
+        )? {
+            Ok(cycle) => {
+                if let Some(version) = cycle.consumed_work_version {
+                    state.last_consumed_work_version = Some(version);
+                }
+                if cycle.active_work.is_some() {
+                    state.wake_backoff.reset();
+                }
+                Ok(SupervisorWake::Cycle(cycle))
+            }
+            Err(outcome) => Ok(SupervisorWake::Complete(outcome)),
+        },
+        |state: &mut RuntimeSupervisorState<'_, A>, round, cycle: CycleInput| {
+            let RuntimeSupervisorState {
+                ledger,
+                member_row,
+                context,
+                adapter,
+                live_control,
+                supports_inject,
+                provider,
+                ..
+            } = state;
+            let ledger = *ledger;
+            let member_row = &mut **member_row;
+            let context = *context;
+            let adapter = &mut **adapter;
+            let live_control = *live_control;
+            let supports_inject = *supports_inject;
+            let provider = *provider;
             let prompt = cycle.prompt.clone();
             let source_record_id = cycle
                 .active_work
@@ -529,7 +591,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 return Err(error);
             }
             let mut accepted_provider_receipt: Option<String> = None;
-            let mut pending_control_effects: Vec<Box<PendingProviderControl>> = Vec::new();
+            let mut pending_control_effects: Vec<PendingProviderControl> = Vec::new();
             let mut pending_control_replies: Vec<PendingControlReply> = Vec::new();
             let mut control_prepare_error: Option<String> = None;
             // Close/Interrupt may arrive before the provider's first
@@ -740,7 +802,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                                 match dispatch {
                                     Ok(ProviderControlDispatch::Pending(pending)) => {
                                         terminal_control_dispatched.set(true);
-                                        pending_control_effects.push(pending);
+                                        pending_control_effects.push(*pending);
                                         pending_control_replies.push(PendingControlReply {
                                             action: provider_adapter::ProviderControlAction::CloseSession,
                                             reply: Some(reply),
@@ -789,7 +851,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                                 match dispatch {
                                     Ok(ProviderControlDispatch::Pending(pending)) => {
                                         terminal_control_dispatched.set(true);
-                                        pending_control_effects.push(pending);
+                                        pending_control_effects.push(*pending);
                                         pending_control_replies.push(PendingControlReply {
                                             action: provider_adapter::ProviderControlAction::CancelProviderTurn,
                                             reply: Some(reply),
@@ -864,6 +926,44 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 },
             )
             };
+            Ok(DrivenRuntimeCycle {
+                cycle,
+                effect,
+                accepted_provider_receipt,
+                pending_control_effects,
+                pending_control_replies,
+                control_prepare_error,
+                round_start,
+                turn_result,
+            })
+        },
+        |state: &mut RuntimeSupervisorState<'_, A>, round, driven: DrivenRuntimeCycle| {
+            let RuntimeSupervisorState {
+                ledger,
+                member_row,
+                adapter,
+                live_control_registration,
+                provider,
+                display,
+                zero_output_streak,
+                last_consumed_work_version,
+                ..
+            } = state;
+            let ledger = *ledger;
+            let member_row = &mut **member_row;
+            let adapter = &mut **adapter;
+            let provider = *provider;
+            let display = *display;
+            let DrivenRuntimeCycle {
+                mut cycle,
+                effect,
+                accepted_provider_receipt,
+                mut pending_control_effects,
+                mut pending_control_replies,
+                control_prepare_error,
+                round_start,
+                turn_result,
+            } = driven;
             supervisor_test_terminal_receive_barrier(provider)?;
             // A terminal callback can arrive after supervisor replacement. Fence
             // before every terminal settlement, delivery mutation, action, or
@@ -1140,9 +1240,9 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                     turn.tool_call_count,
                     provider_terminal_failure.as_ref(),
                     semantic_done,
-                    zero_output_streak,
+                    *zero_output_streak,
                 );
-                zero_output_streak = decision.zero_output_streak;
+                *zero_output_streak = decision.zero_output_streak;
                 let action_status = match decision.action_status {
                     RoundActionStatus::Succeeded => MemberActionStatus::Succeeded,
                     RoundActionStatus::Failed => MemberActionStatus::Failed,
@@ -1166,8 +1266,8 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 )?;
 
                 let expected = member_row.clone();
-                member_row.zero_output_streak = zero_output_streak;
-                member_row.last_consumed_work_version = last_consumed_work_version;
+                member_row.zero_output_streak = *zero_output_streak;
+                member_row.last_consumed_work_version = *last_consumed_work_version;
                 member_row.status = MemberRunStatus::Idle;
                 member_row.finished_at = None;
                 member_row.last_event_at = Some(now_string());
@@ -1222,30 +1322,7 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 }
             }
 
-            match await_next_cycle(
-                ledger,
-                objective,
-                context,
-                member_row,
-                adapter,
-                live_control,
-                zero_output_streak,
-                last_consumed_work_version,
-                &wake_policy,
-                &mut wake_backoff,
-            )? {
-                Ok(next) => {
-                    if let Some(version) = next.consumed_work_version {
-                        last_consumed_work_version = Some(version);
-                    }
-                    if next.active_work.is_some() {
-                        wake_backoff.reset();
-                    }
-                    cycle = next;
-                    Ok(SupervisorDirective::Continue)
-                }
-                Err(outcome) => Ok(SupervisorDirective::Complete(outcome)),
-            }
+            Ok(SupervisorDirective::Continue)
         },
     );
     run_team_supervisor(&mut supervisor_port)

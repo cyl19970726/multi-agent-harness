@@ -79,8 +79,10 @@ fn assistant_projection_discards_thinking_and_counts_tool_use() {
 
 #[test]
 fn runner_events_are_deny_unknown_at_the_envelope_boundary() {
-    let event =
-        RunnerEvent::parse(r#"{"event":"session_bound","data":{"sessionId":"native-1"}}"#).unwrap();
+    let event = RunnerEvent::parse(
+        r#"{"event":"session_bound","data":{"sessionId":"native-1","tag":"team:member","title":"Claude member","providerVersion":"2.1.220","model":null,"effort":null}}"#,
+    )
+    .unwrap();
     assert_eq!(event.name, "session_bound");
     assert_eq!(event.data["sessionId"], "native-1");
     assert!(RunnerEvent::parse(r#"{"data":{}}"#).is_err());
@@ -151,7 +153,13 @@ for await (const line of input) {
   const frame = JSON.parse(line);
   if (frame.command === "start") {
     sessionId = frame.payload.resumeSessionId ?? "native-session-1";
-    emit("member_started", {resumed: Boolean(frame.payload.resumeSessionId)});
+    emit("member_started", {
+      memberRunId: frame.payload.memberRunId,
+      cwd: frame.payload.cwd,
+      permissionMode: frame.payload.permissionMode,
+      ownedPathCount: frame.payload.ownedPaths.length,
+      resumed: Boolean(frame.payload.resumeSessionId),
+    });
   } else if (frame.command === "deliver") {
     const id = frame.payload.id;
     emit("delivered", {id, kind: frame.payload.kind});
@@ -160,19 +168,23 @@ for await (const line of input) {
       bound = true;
       emit("session_bound", {
         sessionId,
+        tag: "team-run-test:member-run-test",
+        title: "Claude test · developer",
         providerVersion: "2.1.220",
         model: "claude-test",
+        effort: null,
       });
     }
   } else if (frame.command === "interrupt") {
     emit("interrupted", {stillQueued: [], abandonedTriggerMessageIds: []});
-    emit("query_ended_by_interrupt", {sessionId});
+    emit("query_ended_by_interrupt", {sessionId, error: "test interrupt"});
     emit("member_resumed_after_interrupt", {sessionId});
   } else if (frame.command === "close") {
     emit("member_closed", {
       sessionId,
       reason: frame.payload.reason,
       undelivered: [],
+      evidenceRefs: [],
     });
     break;
   }
@@ -354,6 +366,7 @@ for await (const line of input) {
       sessionId: null,
       reason: frame.payload.reason,
       undelivered: [],
+      evidenceRefs: [],
     });
     break;
   }
