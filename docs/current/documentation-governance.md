@@ -11,6 +11,11 @@ documents are not automatically more knowledge. A document is justified only
 when its authority, reader, lifecycle, and relationship to executable truth are
 clear.
 
+Dynamic Workflow is retired. Current documents may describe only its
+retirement and lossless legacy archive export/verify/restore-read boundary;
+the original design belongs in superseded ADRs and Git history, never in
+current capability, command, route, or status guidance.
+
 ## Authority boundary: Notion vs repository
 
 Accepted Notion Docs own product intent, Specs, and product decisions. One

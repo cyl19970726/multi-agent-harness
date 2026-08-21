@@ -12,7 +12,7 @@ Agent executes:
 Execution Space                    Project Binding
 Agent Team / TeamRun / MemberRun   provider cwd
 Message / correlated reply         AGENTS.md / CLAUDE.md / config
-WorkflowRun / WorkflowStep         project-local Skills
+legacy Workflow records (archive)  historical Project Binding metadata
 legacy Mission/Wave (read-only)    Git / worktree / permission boundary
 ```
 
@@ -25,8 +25,8 @@ its stores remain only as export/verify sources for
 
 1. `--space` selects coordination storage.
 2. `--project` selects provider execution context.
-3. Selecting a Project Binding never moves or switches Agent
-   Team, Message, or Workflow rows.
+3. Selecting a Project Binding never moves or switches Agent Team or Message
+   rows, and never reactivates historical Workflow archive records.
 4. Selecting an Execution Space never changes legacy Company truth.
 5. Provider cwd is never a legacy Company Store or Execution Space directory.
 6. Provider-native sessions remain the sole transcript/tool/turn truth and are
@@ -55,8 +55,7 @@ its stores remain only as export/verify sources for
 │       ├── agentfirm_trust_operations.jsonl  # current Message fabric projections
 │       ├── team_messages.jsonl                # Legacy read/export only
 │       ├── team_supervisor_leases.jsonl
-│       ├── workflow_runs.jsonl
-│       └── workflow_steps.jsonl
+│       └── legacy-archive/        # lossless export/verify/restore-read only
 ├── projects/
 │   ├── registry.json
 │   └── <binding-id>/
@@ -132,9 +131,9 @@ An override must be the Project Binding root or a Git worktree with the same
 canonical Git common directory. External Codex worktrees are therefore valid;
 an unrelated directory is rejected.
 
-`AgentTeamRun.project_binding_id` and `WorkflowRun.project_binding_id` pin the
-binding used at creation. Later UI or CLI selection changes do not retarget a
-running or resumed execution. If the pinned binding is unavailable, Harness
+`AgentTeamRun.project_binding_id` pins the binding used at creation. Historical
+Workflow binding fields remain archive evidence and cannot resume execution.
+Later UI or CLI selection changes do not retarget a running Agent Team. If the pinned binding is unavailable, Harness
 fails explicitly rather than falling back to the coordination store or current
 cwd.
 

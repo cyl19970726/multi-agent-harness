@@ -1,6 +1,7 @@
 # Member Runtime Observability
-This is the canonical contract for observing an `AgentMember`, Agent Team
-`MemberRun`, or Workflow step without creating a second provider history.
+This is the canonical contract for observing an `AgentMember` or Agent Team
+`MemberRun` without creating a second provider history. Historical Workflow
+steps are legacy archive evidence only.
 ADR 0032 is implemented: provider-native sessions own chat, turns, tools,
 commands, file activity, native children, and resume state.
 
@@ -106,8 +107,8 @@ inspect_version_compatibility(ref)
 ```
 
 Codex app-server, Kimi ACP, and Claude Agent SDK streaming are the executable
-Agent Team modes. Codex exec, Kimi CLI, and Claude CLI are distinct bounded
-Workflow or historical modes and cannot be selected as Team fallbacks. A
+Agent Team modes. Codex exec, Kimi CLI, and Claude CLI describe retired
+one-shot or historical records and cannot be selected as Team fallbacks. A
 provider release triggers compatibility review when the observed version no
 longer matches the adapter profile. Unsupported controls remain visibly
 unsupported; adapters must not simulate acknowledgements.

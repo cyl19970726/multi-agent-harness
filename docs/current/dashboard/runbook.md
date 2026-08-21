@@ -123,12 +123,14 @@ The current execution surfaces show:
   complete reconnect controls remain explicit unshipped RoleView gaps; there is
   no PendingInteraction object or Legacy ACK fallback;
 - MemberRuns: run-scoped member detail;
-- Workflows: WorkflowRun/WorkflowStep, result, artifacts, and diagnostics;
+- Legacy archive: historical Dynamic Workflow export/verify/restore-read
+  evidence only, with no live projection or mutation actions;
 - the raw snapshot, read-only, behind the Debug boundary.
 
 The retired Company OS surfaces are removed from the shell (DEV-38/DOC-108);
-navigation exposes Nodes, Agent Teams, Team Workspace, Agent Conversation,
-Global Work, and Workflows from authoritative store projections.
+navigation exposes Nodes, Agent Teams, Team Workspace, Agent Conversation, and
+Global Work from authoritative current-store projections. Historical Dynamic
+Workflow data is never a live navigation surface.
 
 If the current service does not own a live Team's process handles, the
 Workbench still shows durable state. Only controls returned by the current

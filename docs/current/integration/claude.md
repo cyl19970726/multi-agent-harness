@@ -16,7 +16,7 @@ Claude has one Agent Team execution mode:
 | Product surface | Mode | Lifecycle |
 | --- | --- | --- |
 | Agent Team Member | `claude_agent_sdk` | persistent streaming mailbox and native session |
-| Dynamic Workflow / bounded execution | `claude_cli` | one-shot `claude -p` process |
+| Retired Dynamic Workflow record | `claude_cli` | historical one-shot metadata; not startable |
 | Historical Team records | `claude_cli` | readable, never startable |
 
 `claude_agent_sdk` is both the default and the only accepted mode for a new

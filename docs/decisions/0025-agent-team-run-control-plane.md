@@ -106,7 +106,7 @@ Two implementation classes remain distinct:
 - `provider_native`: a Member invokes its Provider's native subagent. Harness
   may project honest attribution when the Provider exposes it, but does not
   claim child lifecycle control.
-- Harness-created Member/child Team or Dynamic Workflow: Harness owns the
+- Harness-created Member/child Team or then-current Dynamic Workflow: Harness owned the
   created runtime or step and therefore enforces identity, Workspace/path,
   permission, budget, delivery, and lifecycle boundaries.
 
@@ -150,7 +150,9 @@ reviewed Provider integration profile.
 - Conversation remains durable and correlated without becoming a scheduler.
 - Member runtime/session lifetime remains independent from Wave advance,
   TeamRun completion, Mission closeout, or a single Provider turn.
-- Dynamic Workflow and Host-native subagents remain separate executor models.
+- At decision time Dynamic Workflow and Host-native subagents were separate
+  executor models. Dynamic Workflow is now retired; native subagents remain
+  provider/Host-local implementation details, not another ledger.
 
 ## Non-goals
 

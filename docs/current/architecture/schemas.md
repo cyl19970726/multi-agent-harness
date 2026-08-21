@@ -24,8 +24,9 @@ outputs, adapters, and the Agent Dashboard.
 | `DelegationRun` | Honest attribution for observed or harness-controlled delegation |
 | `TeamRunEvent` | Ordered sanitized event projection for one TeamRun |
 
-Dynamic Workflow and Host execution retain their distinct execution-specific
-objects. Existing Goal/Task schemas and retired TeamMessage projections are
+Host execution retains its execution-specific objects. Dynamic Workflow
+schemas and records are retired historical evidence, readable only through the
+legacy archive path. Existing Goal/Task schemas and retired TeamMessage projections are
 historical compatibility contracts; Evidence/Proposal/Decision remain optional
 governance contracts. They are not the
 active Agent Team coordination model (the retired Mission/Mission Log model is not either), and new Agent Team work

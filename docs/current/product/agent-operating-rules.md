@@ -46,8 +46,9 @@ exact question and repair the other projection. Neither file universally wins.
   `HARNESS_SPACE` / `firm space switch`; `--project <id|path>` /
   `HARNESS_PROJECT` / `firm project switch`; `--store` / `HARNESS_ROOT` are
   deprecation-warned back-compat overrides. `AgentTeamRun.project_binding_id`
-  and `WorkflowRun.project_binding_id` pin the execution resource once set
-  and later selector changes must not retarget them. The reserved GLOBAL
+  pins the execution resource once set and later selector changes must not
+  retarget it. Historical Workflow binding fields remain archive evidence only.
+  The reserved GLOBAL
   `_global` (`~/`) project is non-git and rejects
   `writable`/`isolation="worktree"` nodes with an actionable message.
 
@@ -123,8 +124,8 @@ must report the actual worktree, branch, commit, checks, and conflicts.
 
 New Agent Team members use only their persistent bidirectional mode:
 `codex_app_server`, `kimi_acp`, or `claude_agent_sdk`. Bounded
-`codex_exec`/`claude_cli` paths belong to Dynamic Workflow and historical
-reads; they are not Team fallbacks. The one declared exception is
+`codex_exec`/`claude_cli` paths describe retired Dynamic Workflow and historical
+records only; they are not current routes or Team fallbacks. The one declared exception is
 `external_interactive`: a user's own already-open interactive provider CLI
 session may join a run as a non-driven member that Harness never spawns or
 drives — it polls its inbox and replies over the trusted loopback CLI/MCP,

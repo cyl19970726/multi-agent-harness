@@ -7,8 +7,8 @@ storage claims are superseded by ADR 0032, and it is not the Agent Team
 lifecycle model. New Claude Team members use the Agent SDK streaming runner;
 new Codex Team members use app-server. Their live Provider handles remain
 process-local, while durable single-owner authority is now provided by the
-`TeamSupervisorLease` defined in ADR 0044. This historical daemon remains
-Workflow infrastructure and is not that Supervisor.
+`TeamSupervisorLease` defined in ADR 0044. The former Workflow infrastructure
+is also retired; this daemon is historical evidence and is not that Supervisor.
 
 (0020 is the latest prior ADR; 0021 is the next free number.)
 

@@ -69,8 +69,10 @@ writers are closed on every surface and its rows are export/verify-only through
 `harness legacy-company-os export|verify`. See
 [docs/current/product/prd.md](docs/current/product/prd.md).
 
-Agent Team, Dynamic Workflow, Host execution, providers, plugins, and MCP are
-the shared execution foundation. Their native relations are:
+Agent Team and Host execution, providers, plugins, and MCP are the shared
+execution foundation. Dynamic Workflow is retired; its historical records are
+available only through lossless legacy archive export, verification, and
+restore-read. Their current native relations are:
 
 ```text
 AgentTeam -> immutable node_id -> one machine-scoped NodeDaemon
@@ -134,10 +136,11 @@ doc carries the contract behind each rule.
    `RuntimeCommand` are independent planes and cannot authorize or mutate one
    another. `TeamMessage`, `TeamMessageProjection`, `team_messages.jsonl`, and
    their ACK/manual-ACK writers are Legacy read/export evidence only. There is
-   no Assignment Message compatibility path. For `dynamic_workflow`,
-   WorkflowRun/WorkflowStep and its
-   result/artifacts are the execution truth; for `host`, record the observable
-   outcome and artifacts without inventing controlled child objects.
+   no Assignment Message compatibility path. Dynamic Workflow is retired: its
+   historical records are legacy archive evidence only and no current surface
+   may write or project them as live state. For `host`, record the observable
+   outcome and artifacts without inventing controlled child objects or another
+   task ledger.
 3. **Mission/Wave/Mission Log are legacy, export-only history.** DOC-108
    retired them from the current model: no Mission, Mission Log, or Wave row
    may be created, updated, advanced, gated, or closed on any surface (CLI,

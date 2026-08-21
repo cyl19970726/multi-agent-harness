@@ -75,7 +75,7 @@ flowchart TD
 | Messages | identity-first authorship, subscriptions, per-recipient delivery | Work lifecycle or RuntimeCommand authority | Messages never mutate Work |
 | Execution Space / Project Binding | coordination storage vs provider cwd/instructions/Skills selection | repo path as coordination owner or store directory as provider cwd | `--project` never switches the coordination store |
 | Runtime | sessions, processes, events, workspace and capability observation | Work or TeamMembership truth | the provider-native session is the sole execution transcript truth |
-| Dynamic Workflow | WorkflowRun, steps, outputs and artifacts | universal coordination | workflow truth stays inside its executor contract |
+| Dynamic Workflow (retired) | historical WorkflowRun, steps, outputs and artifacts | current execution or universal coordination | legacy archive export/verify/restore-read only; no writers or live projections |
 | Skills/adapters | repeatable usage guidance and domain capability access | product authority or domain truth in generic core | capabilities reduce variance but never grant permission |
 
 There is no active `Goal`, `GoalPhase`, Project-like task container or Task

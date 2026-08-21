@@ -2,9 +2,10 @@
 
 ## Status
 
-Superseded for Agent Team mode selection by ADR 0031 and for storage/projection
-claims by ADR 0032. Headless exec-stream remains a bounded Dynamic Workflow
-substrate, but it is not a fallback for new Team members. New Codex and Claude
+Superseded for Agent Team mode selection by ADR 0031, for storage/projection
+claims by ADR 0032, and for its remaining Dynamic Workflow role by the
+Dynamic Workflow retirement cutover. Headless exec-stream is historical
+provider evidence, not a current Harness execution route or fallback. New Codex and Claude
 Team members use app-server and Agent SDK streaming respectively.
 
 Amended by [0021 (resident-daemon warm-child host)](0021-resident-daemon.md):

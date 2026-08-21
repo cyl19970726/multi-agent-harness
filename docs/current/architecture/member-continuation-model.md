@@ -55,7 +55,7 @@ must never become a second product Goal or silently replace Host acceptance.
 | `host_driven` | Harness claims eligible mail and starts the next provider cycle. | Default when native continuation is absent, unsafe or not observable. |
 | `provider_driven` | One provider-native continuation mechanism starts later cycles until its condition stops it. | Allowed only when the Adapter can inspect and control it honestly. |
 | `user_driven` | The human drives their own already-open interactive provider session out-of-band; Harness never starts a cycle and no native session record exists. | Declared `external_interactive` members only. |
-| `bounded` | One invocation owns a finite result and then exits. | Dynamic Workflow only; not a persistent Team Member mode. |
+| `bounded` | One invocation owns a finite result and then exits. | Historical/unsupported Team mode; Dynamic Workflow is retired and this is not a new-member fallback. |
 
 One MemberRun must have exactly one active execution driver. Setting a native
 Goal and also issuing an independent Harness `turn/start` violates this

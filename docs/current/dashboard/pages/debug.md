@@ -15,6 +15,10 @@ turning the Workbench into a raw dashboard?
 Why it exists: debug state is still necessary for local development, offline
 snapshot review, and low-level investigation. It must remain secondary.
 
+The Debug page must not reactivate Dynamic Workflow. Historical Workflow data
+may appear only as clearly labelled legacy archive evidence for
+export/verify/restore-read, with no current controls or live status claim.
+
 Non-goals:
 
 - do not show raw JSON in the primary viewport;

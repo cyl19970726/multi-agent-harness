@@ -29,7 +29,7 @@ RuntimeCommand -> exact provider effect (separate plane)
 ```
 
 New Codex Team members always use `codex_app_server`. `codex_exec` delivery is
-bounded Dynamic Workflow or historical behavior and is not a Team fallback.
+retired historical behavior and is not a current route or Team fallback.
 
 ## Current Durable Shapes
 

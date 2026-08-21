@@ -10,6 +10,11 @@ repository) for the current Notion location. Source-of-truth rules and
 gate invariants stay in [data-model.md](data-model.md). This repository file
 survives only as the implementation-bound remainder below.
 
+The active coordination vocabulary excludes Dynamic Workflow. Its historical
+objects are archive evidence only; `AgentTeam`, `Work`, identity-first
+`Message`, provider-native sessions, and fenced `RuntimeCommand` effects form
+the current model.
+
 ## Implementation-bound invariants
 
 Open-enum vocabularies: harness defines a canonical starter set in Rust,

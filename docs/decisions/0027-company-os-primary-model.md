@@ -21,7 +21,7 @@ provider activity into the source of business truth.
 
 The earlier product framing placed Standing Agents and Docs after the execution
 control plane. Product discovery established that they are the primary user
-experience, while Mission/Wave, Agent Team, Dynamic Workflow, Host execution,
+experience, while Mission/Wave, Agent Team, the then-current Dynamic Workflow, Host execution,
 providers, plugins, and MCP are reusable tools beneath it.
 
 ## Decision

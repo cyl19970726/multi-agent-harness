@@ -177,7 +177,7 @@ context, material re-plan judgment, or final closeout.
 
 ### Add a general dependency graph
 
-Rejected. Minimal blockers determine readiness; Dynamic Workflow owns complex
+Rejected. Minimal blockers determine readiness; the then-current Dynamic Workflow owned complex
 deterministic flow.
 
 ## Implementation Boundary

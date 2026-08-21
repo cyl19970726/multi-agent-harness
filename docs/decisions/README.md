@@ -21,8 +21,8 @@ consequences, affected modules, and validation path.
 | [0018](0018-exec-stream-primary-substrate.md) | superseded for Agent Team | Historical exec-stream decision; retained for bounded Workflow context |
 | [0020](0020-codex-persistent-service-exploration.md) | active evidence | Codex persistent-service exploration; retain respawn model |
 | [0021](0021-resident-daemon.md) | historical | Former resident CLI warm-child host; not the Agent Team lifecycle |
-| [0022](0022-dynamic-workflow-runtime-json-ir.md) | partially superseded | Dynamic Workflow runtime; authoring details refined by 0023 |
-| [0023](0023-starlark-workflow-frontend.md) | partially superseded | Hermetic Starlark authoring and later convergence notes |
+| [0022](0022-dynamic-workflow-runtime-json-ir.md) | superseded | Historical Dynamic Workflow runtime decision; retired from current execution |
+| [0023](0023-starlark-workflow-frontend.md) | superseded | Historical Starlark authoring decision; retired from current execution |
 | [0025](0025-agent-team-run-control-plane.md) | partially superseded | Agent Team runtime substrate remains; Wave attempt ownership is superseded by 0034 |
 | [0026](0026-mission-wave-architecture.md) | superseded by DOC-108 | Historical Mission/Wave foundation; the whole Mission/Wave model is retired legacy history |
 | [0027](0027-company-os-primary-model.md) | superseded by DOC-108 | The Company OS primary model is retired; the repository is the execution foundation |

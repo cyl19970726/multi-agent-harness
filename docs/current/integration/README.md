@@ -11,8 +11,8 @@ provider-neutral launch spec, and the step-by-step integration checklist that
 produces a doc from the template below. Execution mode is selected by executor
 contract. New Agent Team members use the provider's persistent, bidirectional
 Team mode: Codex app-server, Kimi ACP, or Claude Agent SDK streaming. Bounded
-exec/CLI modes remain Dynamic Workflow and historical-read substrates; they
-are not Team fallbacks. See
+exec/CLI modes describe historical records only; Dynamic Workflow is retired
+and they are not Team fallbacks. See
 [ADR 0031](../../decisions/0031-interactive-provider-modes-and-version-drift.md).
 The selected mode's continuous-execution contract is defined by the
 Member Continuation Model.

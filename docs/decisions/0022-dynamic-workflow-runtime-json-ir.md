@@ -2,14 +2,20 @@
 
 ## Status
 
-> **Superseded in part by
+> **Superseded by the Dynamic Workflow retirement cutover.** The runtime,
+> commands, writers/readers, projections, plugins, and authoring surfaces
+> described below are historical only. Historical records remain available
+> through lossless legacy archive export, verification, and restore-read; the
+> text below is retained as decision-time evidence, not current authority.
+>
+> This decision was previously superseded in part by
 > [0023 (Starlark program front-end)](0023-starlark-workflow-frontend.md):** the
 > JSON-IR authoring path decided here — the `WorkflowSpec` / `WorkflowNode` /
 > `dispatch_spec()` interpreter, the `harness workflow run-spec` CLI arm, and
 > `schemas/workflow-spec.schema.json` (+ fixtures + the
 > `acceptance-dynamic-workflow` proof) — was **deleted** once Starlark proved a
-> strict superset. Starlark (run via `harness workflow run-script`) is now the
-> sole dynamic authoring surface alongside the compiled Rust registry. The
+> strict superset. Starlark then became the sole dynamic authoring surface
+> alongside the compiled Rust registry. The
 > `crates/harness-workflow` crate, the additive `WorkflowRun`/`WorkflowStep`
 > fields, the scheduler primitives (`parallel()`/`pipeline()`), and the
 > one-journal/one-dashboard contract decided here are **kept**.

@@ -16,6 +16,10 @@ decisions stay in [frontend-architecture.md](frontend-architecture.md) and ADR
 [0016](../../decisions/0016-tailwind-shadcn-adoption.md) (stack). Acceptance gates stay in
 acceptance.md.
 
+Dynamic Workflow is retired and has no current Workbench route. If historical
+records are exposed at all, they are a read-only legacy archive journey for
+export/verify/restore-read, never a live execution or mutation surface.
+
 Durable AgentTeams + Work direction is canonical in ../architecture-map.md.
 The retired Mission + Mission Log direction (ADR 0051) and its predecessor
 Mission/Wave design (ADR 0026) are history. The archived Vision/Goal/Task

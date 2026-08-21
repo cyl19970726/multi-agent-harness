@@ -14,7 +14,7 @@ implements them.
 | Executor | Mode | Status |
 | --- | --- | --- |
 | Agent Team Member | `codex_app_server` | only executable mode for new Codex MemberRuns |
-| Dynamic Workflow / bounded execution | `codex_exec` | supported one-shot mode |
+| Retired Dynamic Workflow record | `codex_exec` | historical one-shot metadata; not startable |
 | Historical Team record | `codex_exec` | readable, never startable |
 
 Harness never silently falls back from app-server to exec. Provider brand,

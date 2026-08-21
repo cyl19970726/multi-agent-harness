@@ -54,7 +54,7 @@ or an explicit recovery attestation.
   same-turn steer, approvals, and interrupt. Its provider thread id is the
   native-session binding. Restart-time `thread/resume` is implemented through
   an explicit resume binding; capability state remains mode/version specific.
-- `codex_exec` remains a bounded one-shot substrate for Dynamic Workflow and
+- `codex_exec` was a bounded one-shot substrate for the now-retired Dynamic Workflow and
   legacy non-Team paths. Historical Team records that name it remain readable,
   but Harness rejects new Team creation or start attempts for that mode.
 - The two modes retain separate ProviderIntegrationProfiles and acceptance
@@ -69,7 +69,7 @@ or an explicit recovery attestation.
   Members. Streaming input owns one mailbox and native session; the Host can
   deliver later messages, call the SDK's real interrupt, close the runtime, or
   explicitly resume the provider-owned session.
-- `claude_cli` (`claude -p`) remains a bounded Dynamic Workflow substrate and a
+- `claude_cli` (`claude -p`) was a bounded substrate for the now-retired Dynamic Workflow and a
   readable historical execution mode. Harness rejects it for new Team members
   because an empty queue ends the process and there is no live lifecycle
   control channel.

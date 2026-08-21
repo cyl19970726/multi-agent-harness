@@ -108,8 +108,8 @@ the coordination store. Provider cwd resolves the attached
 2. CLI, HTTP, and MCP surfaces share one TeamMembership and Work authority.
 3. Cross-machine Teams collaborate through the remote fabric with explicit,
    fenced delivery.
-4. Dynamic Workflows run provider-neutral scripted processes for bounded
-   outcomes.
+4. Host/provider-local plans and native subagents may implement bounded work,
+   but do not create a second durable workflow or task ledger.
 5. Every acceptance claim reconstructs from the store and the provider-native
    session.
 
