@@ -479,7 +479,9 @@ pub(super) fn dispatch_headless_host_once(
                             Duration::from_millis(timeout_ms),
                             move |provider_receipt_id| {
                                 *receipt_sink.lock().map_err(|error| {
-                                    CliError::Usage(format!("Host receipt lock poisoned: {error}"))
+                                    kimi_acp::callback_error(CliError::Usage(format!(
+                                        "Host receipt lock poisoned: {error}"
+                                    )))
                                 })? = Some(provider_receipt_id.to_string());
                                 Ok(())
                             },
@@ -499,10 +501,10 @@ pub(super) fn dispatch_headless_host_once(
                                 }
                             },
                             |_| {
-                                Err(CliError::Usage(
+                                Err(kimi_acp::callback_error(CliError::Usage(
                                     "headless Host triage refuses provider permission requests"
                                         .to_string(),
-                                ))
+                                )))
                             },
                             |_| Ok(()),
                             || Ok(kimi_acp::PromptControl::Continue),

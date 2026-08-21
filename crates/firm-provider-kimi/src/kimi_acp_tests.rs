@@ -675,6 +675,10 @@ fn reverse_request_write_failure_never_publishes_written_callback() {
     let (mut client, update_tx) = scripted_client();
     client.child.kill().expect("kill scripted ACP sink");
     client.child.wait().expect("reap scripted ACP sink");
+    // Closing the owned writer is the deterministic failed-write boundary.
+    // Relying only on EPIPE after child reap races kernel pipe propagation
+    // when the suite runs in parallel and can accept one buffered write.
+    client.stdin = None;
     let (_response_tx, response) = channel();
     update_tx
         .send(serde_json::json!({

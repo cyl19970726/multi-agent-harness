@@ -234,7 +234,7 @@ impl crate::runtime_adapter::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
     }
 
     fn ensure_alive(&mut self) -> CliResult<()> {
-        self.client.ensure_transport_alive()
+        Ok(self.client.ensure_transport_alive()?)
     }
 
     fn native_session_locator(&self) -> &str {
@@ -348,7 +348,7 @@ impl crate::runtime_adapter::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
                     response_id: Some(receipt_id.to_string()),
                     success: true,
                 };
-                on_input_accepted(&receipt)?;
+                on_input_accepted(&receipt).map_err(crate::kimi_acp::callback_error)?;
                 accepted_receipt = Some(receipt);
                 Ok(())
             },
@@ -368,16 +368,18 @@ impl crate::runtime_adapter::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
             },
             |request| {
                 (on_event.borrow_mut())(request);
-                request_handler(request)
+                request_handler(request).map_err(crate::kimi_acp::callback_error)
             },
-            |request| request_written_handler(request),
+            |request| {
+                request_written_handler(request).map_err(crate::kimi_acp::callback_error)
+            },
             || {
                 let control = poll_control();
                 if let Some(error) = control.fatal_error {
                     control_error = Some(error);
-                    return Err(CliError::Usage(
+                    return Err(crate::kimi_acp::callback_error(CliError::Usage(
                         control_error.clone().expect("just assigned"),
-                    ));
+                    )));
                 }
                 for pending in &control.injects {
                     on_steer_result(
@@ -386,7 +388,8 @@ impl crate::runtime_adapter::TeamRuntimeAdapter for KimiTeamRuntime<'_> {
                             "PROVIDER_CAPABILITY_UNSUPPORTED: kimi_acp has no current-cycle injection"
                                 .to_string(),
                         ),
-                    )?;
+                    )
+                    .map_err(crate::kimi_acp::callback_error)?;
                 }
                 if control.close || control.interrupt {
                     interrupted = true;

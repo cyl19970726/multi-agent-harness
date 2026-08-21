@@ -825,7 +825,7 @@ pub(super) fn run_kimi_member_shared(
         Ok(client) => client,
         Err(error) => {
             settle_provider_effect_not_applied(ledger, &process_effect, error.to_string())?;
-            return Err(error);
+            return Err(error.into());
         }
     };
     if client.provider_version() != profile.provider_version.as_deref() {

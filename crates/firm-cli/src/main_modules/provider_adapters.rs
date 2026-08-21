@@ -204,27 +204,7 @@ impl ProviderAdapter for ClaudeAdapter {
 /// ahead of the home-dir fallback is what lets the deterministic fake-kimi test
 /// intercept the spawn.
 pub(super) fn resolve_kimi_bin() -> String {
-    if let Ok(explicit) = std::env::var("KIMI_CODE_BIN") {
-        if !explicit.trim().is_empty() {
-            return explicit;
-        }
-    }
-    let on_path = Command::new("which")
-        .arg("kimi")
-        .output()
-        .ok()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if on_path {
-        return "kimi".into();
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let candidate = Path::new(&home).join(".kimi-code/bin/kimi");
-        if candidate.is_file() {
-            return candidate.display().to_string();
-        }
-    }
-    "kimi".into()
+    harness_provider_kimi::resolve_kimi_bin()
 }
 
 // ============================================================================

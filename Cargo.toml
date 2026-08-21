@@ -5,6 +5,7 @@ members = [
   "crates/firm-runtime-contract",
   "crates/firm-runtime-host",
   "crates/firm-provider-codex",
+  "crates/firm-provider-kimi",
   "crates/firm-provider-events",
   "crates/firm-fabric",
   "crates/firm-store",
