@@ -35,7 +35,7 @@ acceptance update.
 | `runtime_adapter.rs` | Team wake/claim/cycle/settle loop plus runtime control | current Team supervisor mixed with CLI/application state | provider-facing capability, observation, control receipt, cycle outcome, and structured failure types extracted to `firm-runtime-contract`; remaining loop targets `firm-runtime-supervisor` over narrow ports |
 | `runtime_adapter_capabilities.rs` | Team runtime selector, capability report, permission compilation | current catalog plus provider policy mixed together | canonical descriptor extracted to `firm-application`; provider-specific capability reports and permission compilers remain to move |
 | `provider_adapter.rs` | current provider-native control seam and standalone NodeSession control | current control contract mixed with implementations | runtime contract/application control plus provider bindings |
-| `provider_adapters.rs` | old Codex/Claude/Kimi/Pi one-shot registry | current compatibility delivery and Claude Host path; historical names; unsupported Pi stubs | split Host binding, compatibility delivery binding, and historical decoder; delete inapplicable stubs |
+| `provider_adapters.rs` | old Codex/Claude/Kimi/Pi one-shot registry | current compatibility delivery and formerly the Claude Host path; historical names; unsupported Pi stubs | renamed and narrowed to the explicit `CompatibilityDeliveryBinding` registry for Codex/Claude/Kimi; Pi's unsupported effect stub deleted; Claude Host bypasses this registry through its typed Host binding |
 | `codex_claude_adapters.rs` | Codex/Claude one-shot parsing, process launch, delivery, runtime-control facts | current Claude Host/direct delivery plus historical Codex paths; mixed coordination writes | provider transport/bindings; application owns durable facts |
 | `provider_ephemeral.rs` | generic child-tree teardown and NDJSON runner plus unused orphan-pidfile parameters | current Host/compatibility transport; orphan registration had no caller | `firm-runtime-host` (extracted in DEV-58); CLI retains only error translation |
 | `process_reaper.rs` | snapshot/read-model helpers and legacy Team tolerance | application/read-model; filename is misleading | application projection package/module |
@@ -144,4 +144,10 @@ Landed DEV-58 milestones:
   prompt/steer/abort, queue observation, close/quiesce/release, provider-native
   control primitive, and flush proof to `firm-provider-pi`. `firm-cli` retains
   only a narrow application callback/error adapter; its duplicate Pi native
-  control implementation is removed.
+  control implementation is removed;
+- current execution-surface slice: replaces the catalog's shared mode shape
+  with distinct `TeamRuntimeBinding`, `HostRuntimeBinding`,
+  `CompatibilityDeliveryBinding`, and effect-free `HistoricalProviderMode`
+  types. The current `/v1/agents/*` registry is explicitly compatibility-only,
+  has no Pi unsupported stub, and is no longer used by Claude headless Host;
+  Kimi Host continues through its separate ACP exact-session path.

@@ -538,7 +538,7 @@ pub(super) fn dispatch_headless_host_once(
                     );
                 }
 
-                let outcome = run_provider_delivery(
+                let outcome = run_claude_host_delivery(
                     store,
                     &member,
                     &runtime,

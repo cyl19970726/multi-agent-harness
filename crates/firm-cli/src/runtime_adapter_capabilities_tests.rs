@@ -28,11 +28,15 @@ fn binding_registry_is_the_closed_runner_dispatch_registry() {
 fn compatibility_registry_cannot_drift_from_the_canonical_provider_catalog() {
     let catalog = harness_application::PROVIDERS
         .iter()
-        .map(|descriptor| descriptor.provider)
+        .filter_map(|descriptor| {
+            descriptor
+                .direct_delivery_compatibility
+                .map(|_| descriptor.provider)
+        })
         .collect::<Vec<_>>();
     assert_eq!(crate::supported_provider_names(), catalog);
     assert_eq!(
-        crate::provider_registry()
+        crate::compatibility_delivery_registry()
             .iter()
             .map(|adapter| adapter.name())
             .collect::<Vec<_>>(),

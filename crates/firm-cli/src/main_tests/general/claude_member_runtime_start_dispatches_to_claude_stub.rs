@@ -8,7 +8,7 @@ fn claude_member_runtime_start_dispatches_to_claude_stub() {
     let mut member = make_member("claude-agent");
     member.provider = "claude".into();
 
-    let runtime = start_provider_runtime(&store, &member)
+    let runtime = start_compatibility_delivery_runtime(&store, &member)
         .expect("claude runtime start dispatches to claude implementation");
     assert_eq!(
         runtime.provider, "claude",

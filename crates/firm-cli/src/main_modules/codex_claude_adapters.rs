@@ -454,7 +454,7 @@ pub(super) fn run_codex_exec_process(
 
     if !resuming {
         // Map permission to sandbox (fresh sessions only).
-        let sandbox = CodexAdapter.map_permission(spec.permission);
+        let sandbox = CodexCompatibilityDelivery.map_permission(spec.permission);
         cmd.arg("--sandbox").arg(sandbox);
 
         // Map workspace and writable roots (fresh sessions only).
@@ -628,9 +628,13 @@ pub(super) fn run_codex_exec_delivery(
     })
 }
 
-/// Run a single message delivery against the member's runtime, routed by provider.
+/// Execute the reviewed Claude exact-session headless Host binding.
+///
+/// This deliberately bypasses the direct-delivery compatibility registry:
+/// sharing the Claude CLI transport does not make Host execution a
+/// compatibility route or an Agent Team fallback.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn run_provider_delivery(
+pub(super) fn run_claude_host_delivery(
     store: &HarnessStore,
     member: &ProviderLaunchProfile,
     runtime: &ProviderProcess,
@@ -639,7 +643,45 @@ pub(super) fn run_provider_delivery(
     timeout_ms: u64,
     project: &ProjectContext,
 ) -> CliResult<DeliveryOutcome> {
-    match provider_adapter(&member.provider) {
+    let binding = harness_application::provider_descriptor("claude")
+        .and_then(|descriptor| descriptor.headless_host)
+        .ok_or_else(|| {
+            CliError::Usage(
+                "HEADLESS_HOST_UNSUPPORTED: Claude has no declared Host binding".to_string(),
+            )
+        })?;
+    if member.provider != "claude"
+        || binding.binding != harness_application::HostRuntimeKind::ClaudeCli
+    {
+        return Err(CliError::Usage(format!(
+            "HEADLESS_HOST_BINDING_MISMATCH: expected claude/claude_cli, got {}/{}",
+            member.provider, binding.execution_mode
+        )));
+    }
+    run_claude_delivery(
+        store,
+        member,
+        runtime,
+        message,
+        delivery_id,
+        timeout_ms,
+        project,
+    )
+}
+
+/// Run one `/v1/agents/*` compatibility delivery, routed only through the
+/// explicit compatibility registry.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_compatibility_delivery(
+    store: &HarnessStore,
+    member: &ProviderLaunchProfile,
+    runtime: &ProviderProcess,
+    message: &RegistryMessage,
+    delivery_id: &str,
+    timeout_ms: u64,
+    project: &ProjectContext,
+) -> CliResult<DeliveryOutcome> {
+    match compatibility_delivery_binding(&member.provider) {
         Some(adapter) => adapter.run_delivery(
             store,
             member,
@@ -891,7 +933,7 @@ pub(super) fn run_claude_exec_delivery_real(
     apply_claude_output_schema_arg(&mut cmd, &spec);
 
     // Permission mapping
-    let permission_mode = ClaudeAdapter.map_permission(spec.permission);
+    let permission_mode = ClaudeCompatibilityDelivery.map_permission(spec.permission);
     cmd.arg("--permission-mode").arg(permission_mode);
 
     // Tools (allowed-tools if spec.tools is non-empty)
@@ -983,7 +1025,9 @@ pub(super) fn build_resident_config(
             .output_schema
             .as_ref()
             .map(|schema| schema_to_json_schema(schema).to_string()),
-        permission_mode: ClaudeAdapter.map_permission(spec.permission).to_string(),
+        permission_mode: ClaudeCompatibilityDelivery
+            .map_permission(spec.permission)
+            .to_string(),
         tools: spec.tools.clone(),
         system_prompt,
         mcp_config_path,

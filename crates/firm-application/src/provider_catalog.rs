@@ -10,11 +10,48 @@ pub enum TeamRuntimeKind {
     Pi,
 }
 
-/// One current execution-mode binding.
+/// One current persistent Agent Team binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct RuntimeModeDescriptor {
+pub struct TeamRuntimeBinding {
     pub execution_mode: &'static str,
-    pub team_runtime: Option<TeamRuntimeKind>,
+    pub binding: TeamRuntimeKind,
+}
+
+/// Closed implementation selector for the optional headless Host surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostRuntimeKind {
+    ClaudeCli,
+    KimiAcp,
+}
+
+/// A Host binding is not a Team fallback and owns no coordination lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct HostRuntimeBinding {
+    pub execution_mode: &'static str,
+    pub binding: HostRuntimeKind,
+}
+
+/// Closed selector for the still-current `/v1/agents/*` compatibility route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompatibilityDeliveryKind {
+    CodexExec,
+    ClaudeCli,
+    KimiExec,
+}
+
+/// Compatibility delivery is neither a Team nor Host execution contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct CompatibilityDeliveryBinding {
+    pub execution_mode: &'static str,
+    pub binding: CompatibilityDeliveryKind,
+}
+
+/// Decode-only historical spelling. It intentionally has no effect selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct HistoricalProviderMode {
+    pub execution_mode: &'static str,
 }
 
 /// Compile-time catalog row for one production coding-agent provider.
@@ -25,83 +62,89 @@ pub struct RuntimeModeDescriptor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ProviderDescriptor {
     pub provider: &'static str,
-    pub team: RuntimeModeDescriptor,
-    pub headless_host: Option<RuntimeModeDescriptor>,
-    pub direct_delivery_compatibility: Option<RuntimeModeDescriptor>,
+    pub team: TeamRuntimeBinding,
+    pub headless_host: Option<HostRuntimeBinding>,
+    pub direct_delivery_compatibility: Option<CompatibilityDeliveryBinding>,
     pub event_decoder: bool,
     pub version_probe: bool,
     pub capacity_probe: bool,
     pub native_session_locator: bool,
     pub standalone_node_session: bool,
-    pub historical_aliases: &'static [&'static str],
+    pub historical_modes: &'static [HistoricalProviderMode],
 }
 
 pub const PROVIDERS: [ProviderDescriptor; 4] = [
     ProviderDescriptor {
         provider: "codex",
-        team: RuntimeModeDescriptor {
+        team: TeamRuntimeBinding {
             execution_mode: "codex_app_server",
-            team_runtime: Some(TeamRuntimeKind::Codex),
+            binding: TeamRuntimeKind::Codex,
         },
         headless_host: None,
-        direct_delivery_compatibility: Some(RuntimeModeDescriptor {
+        direct_delivery_compatibility: Some(CompatibilityDeliveryBinding {
             execution_mode: "codex_exec",
-            team_runtime: None,
+            binding: CompatibilityDeliveryKind::CodexExec,
         }),
         event_decoder: true,
         version_probe: true,
         capacity_probe: true,
         native_session_locator: true,
         standalone_node_session: true,
-        historical_aliases: &["codex_exec"],
+        historical_modes: &[HistoricalProviderMode {
+            execution_mode: "codex_exec",
+        }],
     },
     ProviderDescriptor {
         provider: "claude",
-        team: RuntimeModeDescriptor {
+        team: TeamRuntimeBinding {
             execution_mode: "claude_agent_sdk",
-            team_runtime: Some(TeamRuntimeKind::Claude),
+            binding: TeamRuntimeKind::Claude,
         },
-        headless_host: Some(RuntimeModeDescriptor {
+        headless_host: Some(HostRuntimeBinding {
             execution_mode: "claude_cli",
-            team_runtime: None,
+            binding: HostRuntimeKind::ClaudeCli,
         }),
-        direct_delivery_compatibility: Some(RuntimeModeDescriptor {
+        direct_delivery_compatibility: Some(CompatibilityDeliveryBinding {
             execution_mode: "claude_cli",
-            team_runtime: None,
+            binding: CompatibilityDeliveryKind::ClaudeCli,
         }),
         event_decoder: true,
         version_probe: true,
         capacity_probe: true,
         native_session_locator: true,
         standalone_node_session: false,
-        historical_aliases: &["claude_cli"],
+        historical_modes: &[HistoricalProviderMode {
+            execution_mode: "claude_cli",
+        }],
     },
     ProviderDescriptor {
         provider: "kimi",
-        team: RuntimeModeDescriptor {
+        team: TeamRuntimeBinding {
             execution_mode: "kimi_acp",
-            team_runtime: Some(TeamRuntimeKind::Kimi),
+            binding: TeamRuntimeKind::Kimi,
         },
-        headless_host: Some(RuntimeModeDescriptor {
+        headless_host: Some(HostRuntimeBinding {
             execution_mode: "kimi_acp",
-            team_runtime: None,
+            binding: HostRuntimeKind::KimiAcp,
         }),
-        direct_delivery_compatibility: Some(RuntimeModeDescriptor {
+        direct_delivery_compatibility: Some(CompatibilityDeliveryBinding {
             execution_mode: "kimi_exec",
-            team_runtime: None,
+            binding: CompatibilityDeliveryKind::KimiExec,
         }),
         event_decoder: true,
         version_probe: true,
         capacity_probe: true,
         native_session_locator: true,
         standalone_node_session: false,
-        historical_aliases: &["kimi_exec"],
+        historical_modes: &[HistoricalProviderMode {
+            execution_mode: "kimi_exec",
+        }],
     },
     ProviderDescriptor {
         provider: "pi",
-        team: RuntimeModeDescriptor {
+        team: TeamRuntimeBinding {
             execution_mode: "pi_rpc",
-            team_runtime: Some(TeamRuntimeKind::Pi),
+            binding: TeamRuntimeKind::Pi,
         },
         headless_host: None,
         direct_delivery_compatibility: None,
@@ -110,7 +153,7 @@ pub const PROVIDERS: [ProviderDescriptor; 4] = [
         capacity_probe: true,
         native_session_locator: true,
         standalone_node_session: false,
-        historical_aliases: &[],
+        historical_modes: &[],
     },
 ];
 
@@ -124,7 +167,7 @@ pub fn team_runtime_kind(provider: &str, execution_mode: Option<&str>) -> Option
     if requested != descriptor.team.execution_mode {
         return None;
     }
-    descriptor.team.team_runtime
+    Some(descriptor.team.binding)
 }
 
 #[cfg(test)]
@@ -147,7 +190,6 @@ mod tests {
             assert!(descriptor.version_probe);
             assert!(descriptor.capacity_probe);
             assert!(descriptor.native_session_locator);
-            assert!(descriptor.team.team_runtime.is_some());
         }
         assert!(provider_descriptor("deepseek").is_none());
     }
@@ -157,15 +199,15 @@ mod tests {
         for descriptor in PROVIDERS {
             assert_eq!(
                 team_runtime_kind(descriptor.provider, None),
-                descriptor.team.team_runtime
+                Some(descriptor.team.binding)
             );
             assert_eq!(
                 team_runtime_kind(descriptor.provider, Some(descriptor.team.execution_mode)),
-                descriptor.team.team_runtime
+                Some(descriptor.team.binding)
             );
-            for historical in descriptor.historical_aliases {
+            for historical in descriptor.historical_modes {
                 assert_eq!(
-                    team_runtime_kind(descriptor.provider, Some(historical)),
+                    team_runtime_kind(descriptor.provider, Some(historical.execution_mode)),
                     None
                 );
             }
@@ -181,7 +223,7 @@ mod tests {
             codex.direct_delivery_compatibility.unwrap().execution_mode,
             "codex_exec"
         );
-        assert!(codex.historical_aliases.contains(&"codex_exec"));
+        assert_eq!(codex.historical_modes[0].execution_mode, "codex_exec");
 
         let claude = provider_descriptor("claude").unwrap();
         assert_eq!(claude.headless_host.unwrap().execution_mode, "claude_cli");
@@ -189,7 +231,7 @@ mod tests {
             claude.direct_delivery_compatibility.unwrap().execution_mode,
             "claude_cli"
         );
-        assert!(claude.historical_aliases.contains(&"claude_cli"));
+        assert_eq!(claude.historical_modes[0].execution_mode, "claude_cli");
 
         let kimi = provider_descriptor("kimi").unwrap();
         assert_eq!(kimi.headless_host.unwrap().execution_mode, "kimi_acp");

@@ -10,7 +10,7 @@ fn unknown_provider_runtime_start_fails_fast() {
     let mut member = make_member("gemini-agent");
     member.provider = "gemini".into();
 
-    let error = start_provider_runtime(&store, &member)
+    let error = start_compatibility_delivery_runtime(&store, &member)
         .expect_err("unknown provider must fail fast rather than assume codex");
     let message = error.to_string();
     // Assert the EXACT message: the supported list is now derived from the

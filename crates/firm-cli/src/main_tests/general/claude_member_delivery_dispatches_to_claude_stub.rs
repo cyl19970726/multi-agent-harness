@@ -59,7 +59,7 @@ fn claude_member_delivery_dispatches_to_claude_stub() {
         kind: ProjectKind::Repo,
         is_git_repo: false,
     };
-    let result = run_provider_delivery(
+    let result = run_compatibility_delivery(
         &store,
         &member,
         &runtime,

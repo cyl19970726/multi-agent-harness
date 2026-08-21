@@ -661,12 +661,7 @@ pub(super) fn member_command(store: &HarnessStore, args: &[String]) -> CliResult
             let providers = harness_application::PROVIDERS
                 .iter()
                 .map(|descriptor| {
-                    let adapter = provider_adapter(descriptor.provider).ok_or_else(|| {
-                        CliError::Usage(format!(
-                            "provider catalog row {} has no compatibility adapter",
-                            descriptor.provider
-                        ))
-                    })?;
+                    let compatibility = compatibility_delivery_binding(descriptor.provider);
                     let detected = team_member_provider_version_output(descriptor.provider);
                     let mut profile = team_member_provider_profile(descriptor.provider);
                     apply_provider_version(&mut profile, detected.as_ref().ok().cloned());
@@ -686,16 +681,16 @@ pub(super) fn member_command(store: &HarnessStore, args: &[String]) -> CliResult
                         .map_or(true, |value| !value.allowed || value.needs_review);
                     needs_review |= !core_runtime_capabilities_active;
                     Ok(serde_json::json!({
-                        "provider": adapter.name(),
+                        "provider": descriptor.provider,
                         "catalog": descriptor,
-                        "capabilities": adapter.capabilities(),
+                        "direct_delivery_compatibility_capabilities": compatibility.map(|binding| binding.capabilities()),
                         "team_member_profile": profile,
                         "operational_compatibility": resolution.ok(),
                         "version_probe_error": detected.err(),
                         // Executable per-intent capability report (DOC-89):
                         // null until the provider's binding migrates to the
                         // provider-neutral adapter.
-                        "runtime_capability_bindings": crate::runtime_adapter::capability_bindings_for(adapter.name()),
+                        "runtime_capability_bindings": crate::runtime_adapter::capability_bindings_for(descriptor.provider),
                         "core_runtime_capability_admission": if core_runtime_capabilities_active {"active"} else {"review_required"},
                     }))
                 })

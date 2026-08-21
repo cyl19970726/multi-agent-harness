@@ -216,7 +216,7 @@ pub(super) fn deliver_agent_messages_value(
                 }
             } else {
                 let runtime = runtime.clone().expect("runtime checked");
-                run_provider_delivery(
+                run_compatibility_delivery(
                     store,
                     &member,
                     &runtime,

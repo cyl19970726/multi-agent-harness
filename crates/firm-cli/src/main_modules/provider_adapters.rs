@@ -9,8 +9,8 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 /// Provider-specific behaviour boundary. Every current provider dispatch site
-/// routes through this trait and the `provider_adapter` registry.
-pub(super) trait ProviderAdapter: Sync {
+/// routes through this trait and the `compatibility_delivery_binding` registry.
+pub(super) trait CompatibilityDeliveryBinding: Sync {
     /// Canonical provider id as used in `member.provider` and `agent(provider=...)`.
     fn name(&self) -> &'static str;
 
@@ -71,12 +71,11 @@ pub(super) trait ProviderAdapter: Sync {
     ) -> CliResult<DeliveryOutcome>;
 }
 
-pub(super) struct CodexAdapter;
-pub(super) struct ClaudeAdapter;
-pub(super) struct KimiAdapter;
-pub(super) struct PiAdapter;
+pub(super) struct CodexCompatibilityDelivery;
+pub(super) struct ClaudeCompatibilityDelivery;
+pub(super) struct KimiCompatibilityDelivery;
 
-impl ProviderAdapter for CodexAdapter {
+impl CompatibilityDeliveryBinding for CodexCompatibilityDelivery {
     fn name(&self) -> &'static str {
         "codex"
     }
@@ -123,7 +122,7 @@ impl ProviderAdapter for CodexAdapter {
         )
     }
 }
-impl ProviderAdapter for ClaudeAdapter {
+impl CompatibilityDeliveryBinding for ClaudeCompatibilityDelivery {
     fn name(&self) -> &'static str {
         "claude"
     }
@@ -453,7 +452,7 @@ pub(super) fn run_kimi_delivery(
     })
 }
 
-impl ProviderAdapter for KimiAdapter {
+impl CompatibilityDeliveryBinding for KimiCompatibilityDelivery {
     fn name(&self) -> &'static str {
         "kimi"
     }
@@ -507,81 +506,32 @@ impl ProviderAdapter for KimiAdapter {
     }
 }
 
-impl ProviderAdapter for PiAdapter {
-    fn name(&self) -> &'static str {
-        "pi"
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            streaming: true,
-            resume: true,
-            mid_turn_approval: false,
-            subagents: false,
-            mcp: false,
-            hooks: false,
-            schema: false,
-            cost: false,
-            enforces_read_only: false,
-        }
-    }
-
-    fn map_permission(&self, perm: LaunchPermission) -> &'static str {
-        match perm {
-            // pi print mode: limit tools to read-only operations.
-            LaunchPermission::ReadOnly => "--tools read,grep,find,ls",
-            LaunchPermission::WorkspaceWrite => "",
-            LaunchPermission::FullAccess => "",
-        }
-    }
-
-    fn start_runtime(
-        &self,
-        _store: &HarnessStore,
-        _member: &ProviderLaunchProfile,
-    ) -> CliResult<ProviderProcess> {
-        Err(CliError::Usage(
-            "pi persistent Team Member is orchestrated by run_pi_team_member, not start_provider_runtime"
-                .to_string(),
-        ))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn run_delivery(
-        &self,
-        _store: &HarnessStore,
-        _member: &ProviderLaunchProfile,
-        _runtime: &ProviderProcess,
-        _message: &RegistryMessage,
-        _delivery_id: &str,
-        _timeout_ms: u64,
-        _project: &ProjectContext,
-    ) -> CliResult<DeliveryOutcome> {
-        Err(CliError::Usage(
-            "pi one-shot delivery is not yet implemented; use the persistent Team Member path"
-                .to_string(),
-        ))
-    }
-}
-
-/// All providers the harness recognises, in canonical display order.
-pub(super) fn provider_registry() -> &'static [&'static dyn ProviderAdapter] {
-    &[&CodexAdapter, &ClaudeAdapter, &KimiAdapter, &PiAdapter]
+/// Current direct-delivery compatibility bindings. Missing providers are
+/// intentionally absent rather than represented by unsupported effect stubs.
+pub(super) fn compatibility_delivery_registry(
+) -> &'static [&'static dyn CompatibilityDeliveryBinding] {
+    &[
+        &CodexCompatibilityDelivery,
+        &ClaudeCompatibilityDelivery,
+        &KimiCompatibilityDelivery,
+    ]
 }
 
 /// The adapter for a provider id, or `None` if unrecognised.
-pub(super) fn provider_adapter(name: &str) -> Option<&'static dyn ProviderAdapter> {
-    provider_registry()
+pub(super) fn compatibility_delivery_binding(
+    name: &str,
+) -> Option<&'static dyn CompatibilityDeliveryBinding> {
+    compatibility_delivery_registry()
         .iter()
         .copied()
         .find(|adapter| adapter.name() == name)
 }
 
-/// The supported provider ids, derived from the canonical application catalog.
+/// Provider ids with a current direct-delivery compatibility binding.
 pub(super) fn supported_provider_names() -> Vec<&'static str> {
-    harness_application::PROVIDERS
+    compatibility_delivery_registry()
         .iter()
-        .map(|descriptor| descriptor.provider)
+        .map(|binding| binding.name())
         .collect()
 }
 
@@ -594,11 +544,11 @@ pub(super) fn unknown_provider_error(provider: &str, concern: &str) -> CliError 
 }
 
 /// Spawn (or attach) the runtime for a member, routed by `member.provider`.
-pub(super) fn start_provider_runtime(
+pub(super) fn start_compatibility_delivery_runtime(
     store: &HarnessStore,
     member: &ProviderLaunchProfile,
 ) -> CliResult<ProviderProcess> {
-    match provider_adapter(&member.provider) {
+    match compatibility_delivery_binding(&member.provider) {
         Some(adapter) => adapter.start_runtime(store, member),
         None => Err(unknown_provider_error(&member.provider, "runtime start")),
     }
