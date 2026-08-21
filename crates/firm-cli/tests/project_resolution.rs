@@ -56,7 +56,7 @@ fn init(home: &TempHome, cwd: &Path) {
 /// Execution Space. cwd only affects provider workspace discovery when no
 /// explicit Project Binding is selected.
 #[test]
-fn serve_and_run_script_converge_via_registry() {
+fn commands_from_different_cwds_converge_via_registry() {
     let home = TempHome::new("res-converge");
     let proj = home.base().join("repo");
     let sub = proj.join("a").join("b");
@@ -80,6 +80,27 @@ fn serve_and_run_script_converge_via_registry() {
     assert!(
         root1.contains("/execution-spaces/"),
         "not an Execution Space store: {root1}"
+    );
+}
+
+#[test]
+fn dynamic_workflow_cli_is_explicitly_retired() {
+    let home = TempHome::new("dynamic-workflow-retired");
+    let project = home.base().join("repo");
+    std::fs::create_dir_all(&project).unwrap();
+    init(&home, &project);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_firm"))
+        .args(["workflow", "list"])
+        .current_dir(&project)
+        .envs(home.envs())
+        .output()
+        .expect("run retired workflow command");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("`harness workflow` is retired"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

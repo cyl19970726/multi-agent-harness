@@ -11,7 +11,7 @@ use std::time::Duration;
 use crossbeam::channel::{bounded, Receiver, Sender};
 use harness_core::{
     AgentTeamRun, MemberAction, Mission, ProviderRuntimeProjection, RegistryMessage,
-    TeamMemberCloseRequest, TeamRunEvent, TeamSupervisorLease, WorkflowRun, WorkflowStep,
+    TeamMemberCloseRequest, TeamRunEvent, TeamSupervisorLease,
 };
 
 /// An event frame sent to SSE clients. Durable frames are reconstructed by tailing
@@ -27,10 +27,6 @@ pub enum SseEventFrame {
     },
     /// A message was created or delivery status changed
     RegistryMessage(RegistryMessage),
-    /// A workflow run status changed (WP2)
-    WorkflowRun(WorkflowRun),
-    /// A workflow step started or completed (WP2)
-    WorkflowStep(WorkflowStep),
     /// A folded team-run event was recorded (Agent Team v0).
     TeamRunEvent(TeamRunEvent),
     /// A native Mission was created or updated.
@@ -420,8 +416,6 @@ fn seed_offsets_at_eof(
 /// coordination store.
 const WATCHED_FILES: &[&str] = &[
     "messages.jsonl",
-    "workflow_runs.jsonl",
-    "workflow_steps.jsonl",
     "team_run_events.jsonl",
     "missions.jsonl",
     "waves.jsonl",
@@ -441,8 +435,6 @@ const EXECUTION_INVALIDATION_FILES: &[&str] = &[
     "provider_processes.jsonl",
     "evidence.jsonl",
     "provider_child_threads.jsonl",
-    "workflow_patches.jsonl",
-    "workflow_artifact_manifests.jsonl",
     "delegation_runs.jsonl",
     "work_operations.jsonl",
     "work_delivery_updates.jsonl",
@@ -815,36 +807,6 @@ fn poll_project(
         manager,
     );
 
-    check_and_broadcast_appends(
-        project_id,
-        store_root,
-        "workflow_runs.jsonl",
-        consumed_offsets,
-        |line| {
-            if let Ok(run) = serde_json::from_str::<WorkflowRun>(line) {
-                vec![SseEventFrame::WorkflowRun(run)]
-            } else {
-                Vec::new()
-            }
-        },
-        manager,
-    );
-
-    check_and_broadcast_appends(
-        project_id,
-        store_root,
-        "workflow_steps.jsonl",
-        consumed_offsets,
-        |line| {
-            if let Ok(step) = serde_json::from_str::<WorkflowStep>(line) {
-                vec![SseEventFrame::WorkflowStep(step)]
-            } else {
-                Vec::new()
-            }
-        },
-        manager,
-    );
-
     // team_run_events.jsonl (Agent Team v0): the folded per-run event log; the
     // team console merges these incrementally over SSE.
     check_and_broadcast_appends(
@@ -992,7 +954,7 @@ mod tests {
 
     use harness_core::{
         MemberActionStatus, RegistryDeliveryStatus, RegistryMessage, RegistryMessageIntent,
-        SenderKind, WorkflowRunStatus, WorkflowStepStatus,
+        SenderKind,
     };
 
     use super::*;
@@ -1028,66 +990,10 @@ mod tests {
         }
     }
 
-    fn test_workflow_run(id: &str) -> WorkflowRun {
-        WorkflowRun {
-            id: id.into(),
-            workflow_name: "test".into(),
-            project_binding_id: None,
-            status: WorkflowRunStatus::Running,
-            step_ids: Vec::new(),
-            created_at: "unix-ms:1".into(),
-            ended_at: None,
-            summary: None,
-            args: None,
-            agents_spawned: 0,
-            final_output: None,
-            initiated_by: None,
-            design_intent: None,
-            spec: None,
-            host_pid: None,
-            dry_run: false,
-            terminal_reason: None,
-            partial_output_available: false,
-        }
-    }
-
-    fn test_workflow_step(id: &str, run_id: &str) -> WorkflowStep {
-        WorkflowStep {
-            id: id.into(),
-            run_id: run_id.into(),
-            phase: "test".into(),
-            label: "test-step".into(),
-            native_session: None,
-            status: WorkflowStepStatus::Running,
-            output_summary: None,
-            result: None,
-            started_at: "unix-ms:1".into(),
-            ended_at: None,
-            terminal_reason: None,
-            partial: false,
-        }
-    }
-
     fn message_frame(line: &str) -> Vec<SseEventFrame> {
         serde_json::from_str::<RegistryMessage>(line)
             .ok()
             .map(SseEventFrame::RegistryMessage)
-            .into_iter()
-            .collect()
-    }
-
-    fn workflow_run_frame(line: &str) -> Vec<SseEventFrame> {
-        serde_json::from_str::<WorkflowRun>(line)
-            .ok()
-            .map(SseEventFrame::WorkflowRun)
-            .into_iter()
-            .collect()
-    }
-
-    fn workflow_step_frame(line: &str) -> Vec<SseEventFrame> {
-        serde_json::from_str::<WorkflowStep>(line)
-            .ok()
-            .map(SseEventFrame::WorkflowStep)
             .into_iter()
             .collect()
     }
@@ -1376,77 +1282,6 @@ mod tests {
         std::fs::remove_dir_all(&root).expect("cleanup");
     }
 
-    /// Workflow runs and steps should be streamed via SSE like other events (WP2).
-    #[test]
-    fn workflow_run_and_step_broadcast_exactly_once() {
-        let root = unique_dir("workflow");
-        std::fs::create_dir_all(&root).expect("create root");
-        let run_path = root.join("workflow_runs.jsonl");
-        let step_path = root.join("workflow_steps.jsonl");
-
-        let manager = SseManager::new();
-        let rx = manager.subscribe(TEST_PID);
-        let mut offsets: HashMap<(String, String), u64> = HashMap::new();
-
-        // Write a workflow run and a step
-        let run = test_workflow_run("run-1");
-        let step = test_workflow_step("step-1", "run-1");
-        let run_row = serde_json::to_string(&run).expect("ser run");
-        let step_row = serde_json::to_string(&step).expect("ser step");
-
-        let mut run_file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&run_path)
-            .expect("open run");
-        run_file
-            .write_all(format!("{run_row}\n").as_bytes())
-            .expect("write run");
-        run_file.flush().expect("flush run");
-
-        let mut step_file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&step_path)
-            .expect("open step");
-        step_file
-            .write_all(format!("{step_row}\n").as_bytes())
-            .expect("write step");
-        step_file.flush().expect("flush step");
-
-        // Poll both files
-        check_and_broadcast_appends(
-            TEST_PID,
-            &root,
-            "workflow_runs.jsonl",
-            &mut offsets,
-            workflow_run_frame,
-            &manager,
-        );
-        check_and_broadcast_appends(
-            TEST_PID,
-            &root,
-            "workflow_steps.jsonl",
-            &mut offsets,
-            workflow_step_frame,
-            &manager,
-        );
-
-        let mut ledgers = Vec::new();
-        while let Ok(frame) = rx.try_recv() {
-            match frame {
-                SseEventFrame::ProjectionInvalidated(invalidation) => {
-                    ledgers.push(invalidation.ledger)
-                }
-                other => panic!("unexpected frame {other:?}"),
-            }
-        }
-
-        assert_eq!(ledgers, ["workflow_runs.jsonl", "workflow_steps.jsonl"]);
-
-        std::fs::remove_dir_all(&root).expect("cleanup");
-    }
-
     /// Member actions are durable Agent Team execution records. They must take
     /// the same project-scoped tail path as the attempt/member/message rows so
     /// a background HTTP start updates an already-open console without polling.
@@ -1699,8 +1534,6 @@ mod tests {
             "provider_processes.jsonl",
             "evidence.jsonl",
             "provider_child_threads.jsonl",
-            "workflow_patches.jsonl",
-            "workflow_artifact_manifests.jsonl",
             "delegation_runs.jsonl",
             "work_operations.jsonl",
             "work_delivery_updates.jsonl",

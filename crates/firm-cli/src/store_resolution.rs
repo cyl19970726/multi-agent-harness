@@ -3,10 +3,7 @@ use std::path::{Path, PathBuf};
 
 use harness_core::ExecutionSpace;
 
-use super::{
-    execution_space, execution_space_err, project, project_err, CliError, CliResult,
-    HARNESS_WORKFLOW_CHILD_STORE_ROOT_ENV,
-};
+use super::{execution_space, execution_space_err, project, project_err, CliError, CliResult};
 
 /// How the active store root was chosen — surfaced via the `--store-source` debug
 /// flag and used to keep back-compat behavior auditable (goal-multi-project P1/P7).
@@ -14,10 +11,6 @@ use super::{
 pub(super) enum StoreSource {
     /// `--store <path>` override (deprecated, kept for tests/back-compat).
     StoreFlag,
-    /// Internal guard for workflow child processes. A workflow leaf may run with
-    /// full provider permissions, so nested `harness ...` commands default to a
-    /// session-local store unless the operator explicitly opts out.
-    WorkflowChildEnv,
     /// `FIRM_ROOT` env override, or deprecated `HARNESS_ROOT` alias.
     FirmRootEnv,
     /// Deprecated `HARNESS_ROOT` compatibility alias.
@@ -42,7 +35,7 @@ pub(super) enum StoreSource {
 
 /// The resolved coordination store plus its independent execution bindings.
 ///
-/// `execution_space_context` owns Mission/Mission Log/Agent Team/Workflow rows.
+/// `execution_space_context` owns current coordination rows.
 /// `context` is the selected Project Binding compatibility adapter and owns
 /// provider cwd, repository instructions, Skills, Git/worktree and permission
 /// boundaries. Neither identity implies the other.
@@ -87,7 +80,7 @@ impl ResolvedStore {
 /// Resolve the Harness coordination store and Project Binding.
 ///
 /// Store precedence:
-/// 1. `--store` / workflow-child store / `FIRM_ROOT` (`HARNESS_ROOT` alias).
+/// 1. `--store` / `FIRM_ROOT` (`HARNESS_ROOT` alias).
 /// 2. Company Store selector for `harness company ...`.
 /// 3. `--space` / `FIRM_SPACE` (`HARNESS_SPACE` alias) / active Execution Space.
 /// 4. project-derived compatibility store only when no Execution Space exists.
@@ -103,8 +96,8 @@ impl ResolvedStore {
 ///
 /// IMPORTANT back-compat: when NONE of the project signals (3/4/5) and NO
 /// override (1/2) apply, the result is the SAME directory today's code would have
-/// used (walk-up → otherwise the GLOBAL store), so existing serve + run-script
-/// flows keep converging on one store.
+/// used (walk-up → otherwise the GLOBAL store), so existing commands keep
+/// converging on one store.
 pub(super) fn resolve_store(
     args: &mut Vec<String>,
     command: Option<&str>,
@@ -119,17 +112,6 @@ pub(super) fn resolve_store(
             context: None,
             execution_space_context: None,
         });
-    }
-    if let Ok(root) = env::var(HARNESS_WORKFLOW_CHILD_STORE_ROOT_ENV) {
-        if !root.is_empty() {
-            return Ok(ResolvedStore {
-                root: PathBuf::from(root),
-                source: StoreSource::WorkflowChildEnv,
-                project_selection_explicit: false,
-                context: None,
-                execution_space_context: None,
-            });
-        }
     }
     if let Some((root, used_legacy_alias)) = canonical_or_legacy_env("FIRM_ROOT", "HARNESS_ROOT") {
         return Ok(ResolvedStore {
@@ -212,7 +194,7 @@ pub(super) fn resolve_store(
         });
     }
 
-    // Execution Space owns Mission/Mission Log/Agent Team/Workflow coordination.
+    // Execution Space owns current coordination state.
     // Selecting a Project Binding never changes this store.
     let (space_selector, space_source) = match take_flag_value(args, "--space") {
         Some(value) => (Some(value), StoreSource::SpaceFlag),

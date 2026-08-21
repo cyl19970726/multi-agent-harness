@@ -1542,8 +1542,8 @@ fn mcp_stdio_agent_team_tools() {
         );
     }
     assert!(
-        start_descriptor.contains("codex_exec and claude_cli are workflow-only"),
-        "descriptor must make the Team/Workflow boundary explicit: {start_descriptor}"
+        start_descriptor.contains("codex_exec and claude_cli are rejected"),
+        "descriptor must make the retired execution-mode boundary explicit: {start_descriptor}"
     );
     assert!(start_descriptor.contains("never store_root"));
     assert!(start_descriptor.contains("provider-native sessions"));
