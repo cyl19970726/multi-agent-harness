@@ -33,7 +33,7 @@ acceptance update.
 | --- | --- | --- | --- |
 | `runtime_adapter_contract.rs` | provider-neutral lifecycle intents, fences, receipts, capability admission, conformance tests | current Team contract | `firm-runtime-contract` (extracted in DEV-58) |
 | `runtime_adapter.rs` | Team wake/claim/cycle/settle loop plus runtime control | current Team supervisor mixed with CLI/application state | `firm-runtime-supervisor` over narrow application/store ports |
-| `runtime_adapter_capabilities.rs` | Team runtime selector, capability report, permission compilation | current catalog plus provider policy mixed together | canonical catalog in application/runtime packages; provider-specific permission compilers in provider packages |
+| `runtime_adapter_capabilities.rs` | Team runtime selector, capability report, permission compilation | current catalog plus provider policy mixed together | canonical descriptor extracted to `firm-application`; provider-specific capability reports and permission compilers remain to move |
 | `provider_adapter.rs` | current provider-native control seam and standalone NodeSession control | current control contract mixed with implementations | runtime contract/application control plus provider bindings |
 | `provider_adapters.rs` | old Codex/Claude/Kimi/Pi one-shot registry | current compatibility delivery and Claude Host path; historical names; unsupported Pi stubs | split Host binding, compatibility delivery binding, and historical decoder; delete inapplicable stubs |
 | `codex_claude_adapters.rs` | Codex/Claude one-shot parsing, process launch, delivery, runtime-control facts | current Claude Host/direct delivery plus historical Codex paths; mixed coordination writes | provider transport/bindings; application owns durable facts |
@@ -90,3 +90,10 @@ This document describes a migration, not a shipped claim. Completion requires:
 - no current provider protocol implementation in `firm-cli`;
 - canonical repository checks at the submitted SHA and an independent Review
   of that same SHA.
+
+Landed DEV-58 milestones:
+
+- `e78b533c`: extracted `firm-runtime-contract`, moved its conformance tests,
+  and deleted 114 unreachable post-retirement Workflow test sources;
+- current catalog slice: establishes `firm-application` as the canonical four-provider
+  descriptor and makes Team selection/provider reporting derive from it.

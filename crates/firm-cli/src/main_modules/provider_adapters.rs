@@ -632,9 +632,12 @@ pub(super) fn provider_adapter(name: &str) -> Option<&'static dyn ProviderAdapte
         .find(|adapter| adapter.name() == name)
 }
 
-/// The supported provider ids, derived from the registry (single source of truth).
+/// The supported provider ids, derived from the canonical application catalog.
 pub(super) fn supported_provider_names() -> Vec<&'static str> {
-    provider_registry().iter().map(|a| a.name()).collect()
+    harness_application::PROVIDERS
+        .iter()
+        .map(|descriptor| descriptor.provider)
+        .collect()
 }
 
 /// Build the standard error for a provider the harness does not recognise.

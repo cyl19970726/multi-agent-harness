@@ -209,25 +209,13 @@ pub(crate) fn admit_pi_permission_ceiling(
 /// selector is shared by admission, capability reporting, and runner dispatch
 /// so a provider cannot advertise an executable binding without a runnable
 /// path (or acquire a runnable path without a capability contract).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SharedTeamRuntimeKind {
-    Pi,
-    Kimi,
-    Codex,
-    Claude,
-}
+pub(crate) use harness_application::TeamRuntimeKind as SharedTeamRuntimeKind;
 
 pub(crate) fn shared_team_runtime_kind(
     provider: &str,
     execution_mode: Option<&str>,
 ) -> Option<SharedTeamRuntimeKind> {
-    match (provider, execution_mode) {
-        ("pi", Some("pi_rpc") | None) => Some(SharedTeamRuntimeKind::Pi),
-        ("kimi", Some("kimi_acp") | None) => Some(SharedTeamRuntimeKind::Kimi),
-        ("codex", Some("codex_app_server") | None) => Some(SharedTeamRuntimeKind::Codex),
-        ("claude", Some("claude_agent_sdk") | None) => Some(SharedTeamRuntimeKind::Claude),
-        _ => None,
-    }
+    harness_application::team_runtime_kind(provider, execution_mode)
 }
 
 /// Executable capability report for a provider's Team runtime binding, when

@@ -653,15 +653,22 @@ pub(super) fn member_command(store: &HarnessStore, args: &[String]) -> CliResult
         // The provider-neutral capability matrix (goal-provider-neutral acceptance
         // #4): every REGISTERED provider with the capabilities its adapter
         // declares (streaming / resume / schema / cost / …). Derived from the
-        // registry — adding a provider surfaces here for free.
+        // canonical application catalog — adding a provider cannot silently
+        // omit its Team/Host/compatibility/historical classification.
         "providers" => {
             let fail_on_review = args.iter().any(|arg| arg == "--fail-on-review");
             let mut needs_review = false;
-            let providers: Vec<serde_json::Value> = provider_registry()
+            let providers = harness_application::PROVIDERS
                 .iter()
-                .map(|adapter| {
-                    let detected = team_member_provider_version_output(adapter.name());
-                    let mut profile = team_member_provider_profile(adapter.name());
+                .map(|descriptor| {
+                    let adapter = provider_adapter(descriptor.provider).ok_or_else(|| {
+                        CliError::Usage(format!(
+                            "provider catalog row {} has no compatibility adapter",
+                            descriptor.provider
+                        ))
+                    })?;
+                    let detected = team_member_provider_version_output(descriptor.provider);
+                    let mut profile = team_member_provider_profile(descriptor.provider);
                     apply_provider_version(&mut profile, detected.as_ref().ok().cloned());
                     let resolution = resolve_provider_compatibility(
                         store,
@@ -678,8 +685,9 @@ pub(super) fn member_command(store: &HarnessStore, args: &[String]) -> CliResult
                         .as_ref()
                         .map_or(true, |value| !value.allowed || value.needs_review);
                     needs_review |= !core_runtime_capabilities_active;
-                    serde_json::json!({
+                    Ok(serde_json::json!({
                         "provider": adapter.name(),
+                        "catalog": descriptor,
                         "capabilities": adapter.capabilities(),
                         "team_member_profile": profile,
                         "operational_compatibility": resolution.ok(),
@@ -689,9 +697,9 @@ pub(super) fn member_command(store: &HarnessStore, args: &[String]) -> CliResult
                         // provider-neutral adapter.
                         "runtime_capability_bindings": crate::runtime_adapter::capability_bindings_for(adapter.name()),
                         "core_runtime_capability_admission": if core_runtime_capabilities_active {"active"} else {"review_required"},
-                    })
+                    }))
                 })
-                .collect();
+                .collect::<CliResult<Vec<_>>>()?;
             print_json(&providers)?;
             if fail_on_review && needs_review {
                 return Err(CliError::Usage(

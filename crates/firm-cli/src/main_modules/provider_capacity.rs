@@ -783,9 +783,9 @@ pub(super) fn member_preflight_command(store: &HarnessStore, args: &[String]) ->
     let providers = {
         let requested = many(args, "--provider");
         if requested.is_empty() {
-            provider_registry()
+            harness_application::PROVIDERS
                 .iter()
-                .map(|adapter| adapter.name().to_string())
+                .map(|descriptor| descriptor.provider.to_string())
                 .collect::<Vec<_>>()
         } else {
             requested
