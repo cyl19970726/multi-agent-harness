@@ -561,15 +561,20 @@ impl HarnessStore {
     pub(super) fn latest_host_attentions_unlocked(
         &self,
     ) -> StoreResult<std::collections::BTreeMap<String, HostAttention>> {
-        let mut latest = latest_by_id(
-            self.read_jsonl::<HostAttention>("host_attentions.jsonl")?,
-            |attention| attention.id.clone(),
-        );
+        // Canonical operations own the immutable source fact, while
+        // host_attentions.jsonl owns the later delivery lifecycle projection.
+        // Fold source records first so Claimed/Delivered/Acknowledged rows are
+        // not reset to their initial Actionable state on every read.
+        let mut latest = std::collections::BTreeMap::new();
         for execution_space_id in self.canonical_execution_space_ids()? {
             for attention in self.trust_side_records::<HostAttention>(&execution_space_id)? {
                 latest.insert(attention.id.clone(), attention);
             }
         }
+        latest.extend(latest_by_id(
+            self.read_jsonl::<HostAttention>("host_attentions.jsonl")?,
+            |attention| attention.id.clone(),
+        ));
         Ok(latest)
     }
 

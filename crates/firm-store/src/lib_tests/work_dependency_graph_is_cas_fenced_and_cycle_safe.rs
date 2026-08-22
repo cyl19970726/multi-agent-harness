@@ -356,3 +356,90 @@ fn cancelled_prerequisite_uses_only_canonical_work_authority_and_replays_outbox(
     assert_eq!(count(&first.attentions), 1);
     assert_eq!(count(&second.attentions), 1);
 }
+
+#[test]
+fn canonical_outbox_attention_preserves_claim_and_receipt_projection() {
+    let (root, store, mut run, _, _) = work_test_fixture("canonical-attention-receipt");
+    run.host_control_mode = firm_core::HostControlMode::ExternalInteractive;
+    run.host_surface = "codex-app".into();
+    run.host_thread_id = Some("host-thread".into());
+    run.updated_at = "unix-ms:2".into();
+    store
+        .append_jsonl("team_runs.jsonl", &run)
+        .expect("bind exact external Host fixture");
+
+    let prerequisite = create_work(&store, &run.id, "work-prerequisite", 3);
+    let dependent = create_work(&store, &run.id, "work-dependent", 4);
+    let dependent = store
+        .replace_work_dependencies(
+            &dependent.id,
+            dependent.version,
+            vec![prerequisite.id.clone()],
+            host_work_context("event-dependent-edge", "key-dependent-edge", "unix-ms:5"),
+        )
+        .expect("dependent edge");
+    store
+        .cancel_work(
+            &prerequisite.id,
+            prerequisite.version,
+            "exercise canonical reconciliation outbox",
+            host_work_context("event-cancel", "key-cancel", "unix-ms:6"),
+        )
+        .expect("canonical cancellation");
+
+    let attention = store
+        .host_attention_inbox_for_team_run(&run.id, true)
+        .expect("canonical outbox inbox")
+        .attentions
+        .into_iter()
+        .find(|attention| attention.work_id == dependent.id)
+        .expect("dependent reconciliation attention");
+    assert_eq!(attention.status, HostAttentionStatus::Actionable);
+
+    let claimed = store
+        .claim_host_attention(
+            &attention.id,
+            "codex-app",
+            "host-thread",
+            "claim-canonical-attention",
+            "unix-ms:7",
+        )
+        .expect("claim canonical outbox attention");
+    assert!(matches!(claimed, HostAttentionClaimResult::Claimed(_)));
+
+    let delivered = store
+        .complete_host_attention_claim(
+            &attention.id,
+            "claim-canonical-attention",
+            "provider-receipt-1",
+            "unix-ms:8",
+        )
+        .expect("settle the same projected claim");
+    assert_eq!(delivered.status, HostAttentionStatus::Delivered);
+    assert_eq!(
+        delivered.provider_receipt_id.as_deref(),
+        Some("provider-receipt-1")
+    );
+
+    let replay = store
+        .complete_host_attention_claim(
+            &attention.id,
+            "claim-canonical-attention",
+            "provider-receipt-1",
+            "unix-ms:9",
+        )
+        .expect("receipt settlement is idempotent");
+    assert_eq!(replay, delivered);
+    let reopened = HarnessStore::new(root);
+    assert_eq!(
+        reopened
+            .host_attention_inbox_for_team_run(&run.id, true)
+            .expect("restart-safe lifecycle projection")
+            .attentions
+            .into_iter()
+            .find(|row| row.id == attention.id)
+            .expect("projected attention")
+            .status,
+        HostAttentionStatus::Delivered
+    );
+}
