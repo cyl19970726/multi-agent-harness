@@ -2179,7 +2179,8 @@
       "canonicalFor": [
         "flat Work hard-dependency DAG and readiness invariants",
         "Work kernel and application-port dependency-inversion boundary across Store, transports and Dashboard",
-        "constrained Member Work/dependency proposals and closed Work Module scope"
+        "constrained Member Work/dependency proposals and closed Work Module scope",
+        "first-class Graph and Kanban views with presentation-only layout and no drag-authority"
       ],
       "dependsOn": [
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"

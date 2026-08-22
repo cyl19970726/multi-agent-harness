@@ -85,8 +85,10 @@ Work creation answers WHAT and WHO; placement and verification are modular recor
 **Views**: All Execution visible on one page. Filters by Agent Team, status, date range. Tags on Work entries. Per-team views unchanged.
 
 **Kernel boundary**: `firm-core` decides legal lifecycle and dependency
-operations plus readiness. `firm-application` depends only on core, defines the
-`WorkPersistence` port, and implements generic `WorkApplication<P>` use cases.
+operations plus readiness. The Work service in `firm-application` defines the
+core-facing `WorkPersistence` port and generic `WorkApplication<P>` use cases
+without importing Store, CLI, UI, or Provider packages. The wider application
+crate may retain its reviewed `firm-runtime-contract` policy dependency.
 `firm-store` depends on application + core and implements that port with atomic
 persistence and rebuildable projections. CLI composes both for HTTP, MCP, and
 Role Actions. RoleViews explain graph/readiness and Dashboard renders them.

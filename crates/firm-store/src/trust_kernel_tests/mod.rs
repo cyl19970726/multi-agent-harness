@@ -414,7 +414,7 @@ fn insert_runtime_work(
                 team_run_id: team_run_id.into(),
                 accountable_team_id: Some(team_id.into()),
                 assignee_membership_id: None,
-                parent_work_id: None,
+                legacy_containment_ref: None,
                 title: format!("runtime binding {id}"),
                 context_markdown: "runtime authority test".into(),
                 completion_criteria_markdown: "binding is exact".into(),
@@ -665,3 +665,4 @@ mod team_host_cannot_stop_shared_session_and_active_bindings_require_explicit_re
 mod team_membership_is_single_active_generation_and_rejoin_is_exact_successor;
 mod team_trash_restore_preserves_work_message_membership_and_native_session_records;
 mod terminal_session_rejects_every_provider_runtime_effect_with_zero_delta;
+mod work_execution_binding_rechecks_authoritative_dependency_readiness;

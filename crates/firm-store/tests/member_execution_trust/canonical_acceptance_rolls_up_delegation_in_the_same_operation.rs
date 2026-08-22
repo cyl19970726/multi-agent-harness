@@ -86,7 +86,7 @@ fn canonical_acceptance_rolls_up_delegation_in_the_same_operation() {
                 accountable_team_id: None,
                 assignee_membership_id: None,
                 created_by_member_id: None,
-                parent_work_id: None,
+                legacy_containment_ref: None,
                 title: "Delegated target".into(),
                 context_markdown: "execute delegated target".into(),
                 completion_criteria_markdown: "exact candidate accepted".into(),

@@ -121,6 +121,10 @@ the coordination store. Provider cwd resolves the attached
    session.
 6. Operators can inspect Work predecessors, derived successors, and the exact
    reason a Work is or is not ready without reading conversation history.
+7. Team Work offers Graph and Kanban as equal views of the same server truth:
+   an `@xyflow/react` infinite canvas with deterministic presentation-only DAG
+   layout, and Open/Active/Review/Closed columns without drag-authority. Both
+   share one Inspector, readiness explanation, filters, selection and actions.
 
 ## Non-goals
 

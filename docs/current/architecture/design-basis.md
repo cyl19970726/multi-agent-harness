@@ -126,6 +126,6 @@ Before adding an object, module, page or document:
 6. Which schema, store, API, UI and acceptance evidence make the claim real?
 7. Which older direction becomes superseded and how is it removed from default
    context?
-8. Does Work policy remain in core, does application depend only on core and
-   define the persistence port, does Store implement that port, and does CLI
-   alone compose the concrete adapters and presentation surfaces?
+8. Does Work policy remain in core, does the Work application service define a
+   core-facing persistence port without concrete Store/CLI/Provider imports,
+   does Store implement that port, and does CLI compose the adapters?

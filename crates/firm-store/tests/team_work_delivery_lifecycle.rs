@@ -174,7 +174,7 @@ fn base_work(run_id: &str, id: &str) -> Work {
         accountable_team_id: None,
         assignee_membership_id: None,
         created_by_member_id: None,
-        parent_work_id: None,
+        legacy_containment_ref: None,
         title: format!("Work {id}"),
         context_markdown: "context".into(),
         completion_criteria_markdown: "criteria".into(),

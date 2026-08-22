@@ -42,14 +42,24 @@ firm-core Work kernel
 ```
 
 Only the kernel owns lifecycle legality, hard-dependency DAG validation,
-readiness, and terminal immutability. Application depends only on core and
-defines the persistence port; Store depends on application + core and
+readiness, and terminal immutability. The Work application service defines a
+core-facing persistence port without importing Store/CLI/Provider; the wider
+application crate may retain its reviewed runtime-contract policy dependency.
+Store depends on application + core and
 implements that port. CLI composes them. Store owns CAS and atomic append, not
 policy, and transports do not reproduce use cases. RoleViews expose
 predecessors, derived successors, readiness, and reasons; Dashboard renders
 those facts and submits authorized commands. NodeDaemon, provider packages,
 and Modules do not own Work state. See
 [ADR 0058](../../decisions/0058-work-dependency-dag-and-kernel-boundary.md).
+
+Graph and Kanban consume the same RoleView. The Graph renderer uses
+`@xyflow/react`; deterministic layout coordinates, viewport, and selection are
+ephemeral presentation state and have no schema or Store representation.
+Kanban derives exactly Open/Active/Review/Closed from server phase. Both reuse
+one Inspector and allowed-action path. Dragging cannot authorize a dependency
+or lifecycle mutation in V1, and no browser component may become a semantic
+graph writer.
 
 `TeamMessage`, `TeamMessageProjection`, `team_messages.jsonl`, and their
 embedded/manual ACK paths are legacy read/export only; current clients

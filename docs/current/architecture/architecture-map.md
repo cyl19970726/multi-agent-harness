@@ -52,9 +52,10 @@ flowchart TB
 | Agent Team Runs | TeamRun/MemberRun projections, attempts, lineage | a provider process, a provider effect authorization |
 | Team Supervision | one current Supervisor generation per run: delivery claims, live controls, reconnect | Work authority, Message authorship |
 | Work kernel | durable responsibility, three-axis lifecycle, cycle-safe hard dependencies, derived readiness, ordered WorkOperations, submission and Host acceptance | persistence mechanics, authored conversation, runtime control, provider transcripts |
-| Work application | core-only `WorkPersistence` port and generic `WorkApplication<P>` use cases | concrete Store/runtime imports or transport-specific policy |
+| Work application | core-facing `WorkPersistence` port and generic `WorkApplication<P>` use cases; separate application runtime policy may use `firm-runtime-contract` | concrete Store/CLI/Provider imports or transport-specific Work policy |
 | Work store | application-port implementation, atomic append/CAS/projections/outbox | lifecycle/readiness policy or CLI dependency |
 | CLI composition | concrete Store wiring plus HTTP/MCP/Role Action adapters | a second Work use-case implementation |
+| Work views | one RoleView feeds first-class Graph (`@xyflow/react`, deterministic presentation layout) and Kanban (Open/Active/Review/Closed), sharing Inspector/readiness/actions | persisted node positions, browser-derived readiness, hand-built semantic graph writes, or drag-authority |
 | Messages | identity-first authorship, MessageSubscription authorization, per-recipient CanonicalMessageDelivery | Work lifecycle mutation, RuntimeCommand authority |
 | Execution Spaces and Project Bindings | coordination storage vs provider cwd/instructions/Skills/plugins/MCP selection | each other's scope; `--project` never switches the coordination store |
 | Runtime | provider processes, native sessions, native activity readers/resume, plugins, MCP, and ephemeral projections | a second provider history or assignment inference |

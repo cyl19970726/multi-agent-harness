@@ -263,7 +263,6 @@ fn work_delegation_request_fingerprint(
             "id": target_work.id,
             "team_run_id": target_work.team_run_id,
             "team_id": target_work.accountable_team_id,
-            "parent_work_id": target_work.parent_work_id,
             "title": target_work.title,
             "context_markdown": target_work.context_markdown,
             "completion_criteria_markdown": target_work.completion_criteria_markdown,
@@ -332,7 +331,9 @@ mod store_read_models;
 mod store_store_base;
 mod store_team_admission;
 mod store_team_journal;
+mod store_work_application;
 mod store_work_delivery;
+mod store_work_graph;
 mod store_work_mutations;
 mod store_work_projection;
 mod store_work_state;
@@ -524,17 +525,6 @@ fn node_project_registration_key(
     project_binding_id: &str,
 ) -> String {
     format!("{node_id}\u{1f}{execution_space_id}\u{1f}{project_binding_id}")
-}
-
-fn works_share_scope(left: &Work, right: &Work) -> bool {
-    match (
-        left.accountable_team_id.as_deref(),
-        right.accountable_team_id.as_deref(),
-    ) {
-        (Some(left), Some(right)) => left == right,
-        (None, None) => left.team_run_id == right.team_run_id,
-        _ => false,
-    }
 }
 
 fn compare_store_timestamps(left: &str, right: &str) -> std::cmp::Ordering {

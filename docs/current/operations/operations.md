@@ -60,10 +60,13 @@ The focused Work architecture gate is available independently:
 npx pnpm@9.15.4 check:work-kernel-boundaries
 ```
 
-It checks dependency inversion: application depends only on core and declares
-the persistence port; Store depends on application + core and implements that
-port; CLI consumes and composes both. It also scans the tracked repository
-rather than trusting a hand-maintained active-file list. Historical evidence
+It checks dependency inversion: the Work application service declares a
+core-facing persistence port without importing Store, CLI, or Provider
+packages; Store depends on application + core and implements that port; CLI
+consumes and composes both. The application crate's reviewed
+`firm-runtime-contract` policy dependency remains allowed. The gate also scans
+the tracked repository rather than trusting a hand-maintained active-file
+list. Historical evidence
 is admitted only by exact path plus reason. The old wire key is admitted only
 at the exact non-serializing core decode declaration and its compatibility
 test; its neutral in-memory field cannot become a current public contract.

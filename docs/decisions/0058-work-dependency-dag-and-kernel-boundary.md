@@ -93,7 +93,7 @@ firm-core / Work kernel
   model · lifecycle · operation · dependency · responsibility · module/gate invariants
                          ^
                          |
-firm-application         |  depends only on firm-core
+firm-application         |  Work service depends on firm-core contracts
   WorkPersistence port · generic WorkApplication<P> · Work use cases
           ^
           | implements port
@@ -110,11 +110,14 @@ MCP, Dashboard, NodeDaemon, provider adapters, GitHub, or Notion. It owns the
 three lifecycle axes, legal operations, graph validation, readiness, terminal
 immutability, responsibility invariants, and Module/Gate constraints.
 
-`firm-application` depends only on `firm-core`. It defines the
-`WorkPersistence` port and generic `WorkApplication<P>` use cases; it never
-imports the concrete Store or a runtime package. `firm-store` depends on
-`firm-core` plus `firm-application` and implements that port with concurrency
-control, atomic append, rebuildable projections, notifications, and recovery.
+Within `firm-application`, the Work service defines the `WorkPersistence` port
+and generic `WorkApplication<P>` use cases over `firm-core`; it never imports
+the concrete Store, CLI, UI, or a Provider package. The application crate may
+retain its separately owned provider/runtime policy dependency on the reviewed
+`firm-runtime-contract`; that is not a Work-persistence dependency.
+`firm-store` depends on `firm-core` plus `firm-application` and implements that
+port with concurrency control, atomic append, rebuildable projections,
+notifications, and recovery.
 It does not invent state transitions. The CLI is the composition root: it
 wires the concrete Store into the generic application and exposes the same use
 cases through every mutation transport. NodeDaemon and providers execute
@@ -141,6 +144,27 @@ cannot add lifecycle states, directly mutate Work, authorize provider effects,
 or treat its own completion as Host acceptance. Multiple-module action names
 and configuration must be namespaced and conflict-checked before any open
 registry is claimed.
+
+### Dashboard: two first-class views, one authority
+
+The Team Work surface has two equal views over the same server projection:
+
+- **Graph** shows dependency topology on an infinite pan/zoom canvas using
+  `@xyflow/react`. A deterministic DAG layout gives the same graph the same
+  initial arrangement. Node coordinates, viewport, selection, and collapsed UI
+  state are presentation-only and never enter Work, WorkOperation, dependency,
+  schema, Store, or RoleView authority.
+- **Kanban** shows the four lifecycle columns `Open`, `Active`, `Review`, and
+  `Closed`. Condition and resolution remain separate facts displayed on cards;
+  they do not create extra columns or a second lifecycle.
+
+Graph and Kanban share filters, selection, the same Work inspector, server
+readiness/reasons, predecessors/successors, and server-returned allowed actions.
+Switching views cannot change Work. In V1, dragging a graph node changes only
+its local presentation and dragging a Kanban card has no mutation authority.
+Lifecycle and dependency changes use explicit authenticated actions from the
+shared inspector. The Dashboard must not implement its own semantic graph
+writer, edge authorization, readiness calculation, or status transition.
 
 ## Supersession
 
@@ -184,10 +208,14 @@ The cutover is accepted only when:
    cancelled prerequisite tests pass;
 3. CLI, HTTP, MCP, Role Actions, RoleViews, and Dashboard use the same
    application/kernel semantics;
-4. package-boundary checks require application-to-core-only dependency,
-   Store implementation of the application port, CLI composition, no
-   core-to-outer-layer dependency, and no maintained file over 1,500 lines;
+4. package-boundary checks require the Work application port to face core,
+   forbid application-to-concrete-Store/CLI/Provider dependencies, require
+   Store implementation of the port and CLI composition, and keep every
+   maintained file at most 1,500 lines;
 5. Dashboard graph facts come from server projections and explain readiness;
+   Graph uses `@xyflow/react` with deterministic presentation-only layout;
+   Graph and Kanban are first-class views with one inspector/action path and no
+   drag-authority;
 6. canonical Skills and generated plugin mirrors teach peer Work plus explicit
    dependencies and contain no child-Work procedure; and
 7. Notion's Work & Message mental model and this repository crosswalk describe

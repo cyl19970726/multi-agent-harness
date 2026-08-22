@@ -122,7 +122,7 @@ fn work_fixture(run_id: &str, host_member_id: &str, id: &str) -> Work {
         team_run_id: run_id.into(),
         accountable_team_id: None,
         assignee_membership_id: None,
-        parent_work_id: None,
+        legacy_containment_ref: None,
         title: format!("Cutover fixture {id}"),
         context_markdown: "responsibility test".into(),
         completion_criteria_markdown: "exact and honest".into(),

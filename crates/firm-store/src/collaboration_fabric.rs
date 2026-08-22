@@ -973,7 +973,7 @@ pub fn apply_collaboration_target_operation(
                 team_run_id: run.id.clone(),
                 accountable_team_id: Some(team.id.clone()),
                 assignee_membership_id: None,
-                parent_work_id: None,
+                legacy_containment_ref: None,
                 title: payload.requested_outcome,
                 context_markdown: format!(
                     "Cross-Team delegation {} from source Work {}",

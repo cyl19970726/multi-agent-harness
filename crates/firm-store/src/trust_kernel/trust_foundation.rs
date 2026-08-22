@@ -1,6 +1,111 @@
 use super::*;
 
 impl HarnessStore {
+    pub(crate) fn replay_current_work_mutation_unlocked(
+        &self,
+        context: &MutationContext,
+        work_id: &str,
+        request_fingerprint: &str,
+    ) -> StoreResult<Option<CanonicalMutationResult<Work>>> {
+        self.replay_trust_projection_unlocked(context, "work", work_id, request_fingerprint)
+    }
+
+    /// Commit a mutation to the current canonical Work aggregate while
+    /// preserving the single Work revision sequence recovered across legacy
+    /// history and current trust operations. New current mutations must use
+    /// this seam rather than appending another legacy WorkOperation writer.
+    pub(crate) fn commit_current_work_mutation_unlocked(
+        &self,
+        context: &MutationContext,
+        transition: &str,
+        request_payload: Value,
+        work: &Work,
+        immutable_side_records: Vec<Value>,
+        mut initial_outbox_records: Vec<Value>,
+    ) -> StoreResult<CanonicalMutationResult<Work>> {
+        work.validate()
+            .map_err(|error| StoreError::Conflict(format!("INVALID_WORK_PROJECTION: {error}")))?;
+        if work.version != context.expected_version.saturating_add(1) {
+            return Err(trust_error(
+                TrustErrorCode::VersionConflict,
+                "canonical Work mutation must advance the exact expected revision once",
+                "work",
+                &work.id,
+                Some(work.version),
+            ));
+        }
+        let existing = self.trust_operation_envelopes_unlocked()?;
+        let fingerprint = context
+            .request_fingerprint
+            .clone()
+            .unwrap_or_else(|| canonical_json_fingerprint(&request_payload));
+        if let Some(replay) =
+            self.replay_current_work_mutation_unlocked(context, &work.id, &fingerprint)?
+        {
+            return Ok(replay);
+        }
+        let previous = existing
+            .iter()
+            .filter(|envelope| {
+                envelope.execution_space_id == context.execution_space_id
+                    && envelope.operation.event.aggregate_kind == "work"
+                    && envelope.operation.event.aggregate_id == work.id
+            })
+            .max_by_key(|envelope| envelope.operation.event.sequence);
+        let store_sequence = existing
+            .iter()
+            .map(|envelope| envelope.operation.event.store_sequence)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let event = CanonicalMutationEvent {
+            id: format!("trust-event-{store_sequence}"),
+            aggregate_kind: "work".into(),
+            aggregate_id: work.id.clone(),
+            sequence: previous
+                .map(|envelope| envelope.operation.event.sequence)
+                .unwrap_or(0)
+                + 1,
+            store_sequence,
+            transition: transition.into(),
+            expected_version: context.expected_version,
+            resulting_version: work.version,
+            performed_by_actor: context.authenticated_actor.clone(),
+            authority_actor: context.authority_actor.clone(),
+            causation_ref: None,
+            idempotency_key: context.idempotency_key.clone(),
+            canonical_request_fingerprint: fingerprint,
+            payload: request_payload,
+            created_at: now_string(),
+        };
+        initial_outbox_records.extend(
+            self.canonical_terminal_work_outbox_unlocked(work, &event)?
+                .into_iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        let operation = CanonicalOperation {
+            event: event.clone(),
+            resulting_projection: serde_json::to_value(work)?,
+            immutable_side_records,
+            initial_outbox_records,
+        };
+        let mut committed = existing;
+        committed.push(TrustOperationEnvelope {
+            execution_space_id: context.execution_space_id.clone(),
+            authenticated_actor_kind: context.authenticated_actor.kind,
+            authenticated_actor_id: context.authenticated_actor.id.clone(),
+            command_name: context.command_name.clone(),
+            operation,
+        });
+        self.write_trust_operation_envelopes_atomic_unlocked(&committed)?;
+        Ok(CanonicalMutationResult {
+            projection: work.clone(),
+            event,
+            replayed: false,
+        })
+    }
+
     pub(super) fn require_current_trust_supervisor_unlocked(
         &self,
         context: &MutationContext,
@@ -466,89 +571,13 @@ impl HarnessStore {
         work: &Work,
         immutable_side_records: Vec<Value>,
     ) -> StoreResult<CanonicalMutationResult<Work>> {
-        let existing = self.trust_operation_envelopes_unlocked()?;
-        let fingerprint = context
-            .request_fingerprint
-            .clone()
-            .unwrap_or_else(|| canonical_json_fingerprint(&request_payload));
-        if let Some(replay) = existing.iter().find(|envelope| {
-            envelope.execution_space_id == context.execution_space_id
-                && envelope.authenticated_actor_kind == context.authenticated_actor.kind
-                && envelope.authenticated_actor_id == context.authenticated_actor.id
-                && envelope.command_name == context.command_name
-                && envelope.operation.event.idempotency_key == context.idempotency_key
-        }) {
-            if replay.operation.event.canonical_request_fingerprint != fingerprint
-                || replay.operation.event.aggregate_kind != "work"
-                || replay.operation.event.aggregate_id != work.id
-            {
-                return Err(trust_error(
-                    TrustErrorCode::IdempotencyKeyReused,
-                    "idempotency key was already used for a different Work acceptance",
-                    "work",
-                    &work.id,
-                    Some(replay.operation.event.resulting_version),
-                ));
-            }
-            return Ok(CanonicalMutationResult {
-                projection: event_projection(replay)?,
-                event: replay.operation.event.clone(),
-                replayed: true,
-            });
-        }
-        let previous = existing
-            .iter()
-            .filter(|envelope| {
-                envelope.execution_space_id == context.execution_space_id
-                    && envelope.operation.event.aggregate_kind == "work"
-                    && envelope.operation.event.aggregate_id == work.id
-            })
-            .max_by_key(|envelope| envelope.operation.event.sequence);
-        let store_sequence = existing
-            .iter()
-            .map(|envelope| envelope.operation.event.store_sequence)
-            .max()
-            .unwrap_or(0)
-            + 1;
-        let event = CanonicalMutationEvent {
-            id: format!("trust-event-{store_sequence}"),
-            aggregate_kind: "work".into(),
-            aggregate_id: work.id.clone(),
-            sequence: previous
-                .map(|envelope| envelope.operation.event.sequence)
-                .unwrap_or(0)
-                + 1,
-            store_sequence,
-            transition: "accepted".into(),
-            expected_version: context.expected_version,
-            resulting_version: work.version,
-            performed_by_actor: context.authenticated_actor.clone(),
-            authority_actor: context.authority_actor.clone(),
-            causation_ref: None,
-            idempotency_key: context.idempotency_key.clone(),
-            canonical_request_fingerprint: fingerprint,
-            payload: request_payload,
-            created_at: now_string(),
-        };
-        let operation = CanonicalOperation {
-            event: event.clone(),
-            resulting_projection: serde_json::to_value(work)?,
+        self.commit_current_work_mutation_unlocked(
+            context,
+            "accepted",
+            request_payload,
+            work,
             immutable_side_records,
-            initial_outbox_records: Vec::new(),
-        };
-        let mut committed = existing;
-        committed.push(TrustOperationEnvelope {
-            execution_space_id: context.execution_space_id.clone(),
-            authenticated_actor_kind: context.authenticated_actor.kind,
-            authenticated_actor_id: context.authenticated_actor.id.clone(),
-            command_name: context.command_name.clone(),
-            operation,
-        });
-        self.write_trust_operation_envelopes_atomic_unlocked(&committed)?;
-        Ok(CanonicalMutationResult {
-            projection: work.clone(),
-            event,
-            replayed: false,
-        })
+            Vec::new(),
+        )
     }
 }

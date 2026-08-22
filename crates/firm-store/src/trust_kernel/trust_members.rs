@@ -1177,7 +1177,7 @@ impl HarnessStore {
         )
     }
 
-    pub(super) fn trust_side_records<T: for<'de> Deserialize<'de>>(
+    pub(crate) fn trust_side_records<T: for<'de> Deserialize<'de>>(
         &self,
         execution_space_id: &str,
     ) -> StoreResult<Vec<T>> {

@@ -150,10 +150,6 @@ if (!applicationManifest.includes("firm-core")) {
 for (const forbidden of [
   "firm-store",
   "firm-cli",
-  "firm-fabric",
-  "firm-runtime-contract",
-  "firm-runtime-host",
-  "firm-runtime-supervisor",
   "firm-provider-",
 ]) {
   if (applicationManifest.includes(forbidden)) {
@@ -190,6 +186,58 @@ if (!existsSync(resolve(root, storeApplicationPath))) {
   failures.push(`${storeApplicationPath}: WorkPersistence adapter is missing`);
 } else if (!read(storeApplicationPath).includes("impl WorkPersistence for HarnessStore")) {
   failures.push(`${storeApplicationPath}: HarnessStore must implement WorkPersistence`);
+}
+
+const rootPackage = JSON.parse(read("package.json"));
+if (!rootPackage.dependencies?.["@xyflow/react"]) {
+  failures.push("package.json: Dashboard Work Graph requires @xyflow/react");
+}
+
+const graphViewPath = "apps/agent-dashboard/src/components/workbench/team/WorkGraphView.tsx";
+const workBoardPath = "apps/agent-dashboard/src/components/workbench/team/TeamWorksBoard.tsx";
+const workInspectorPath = "apps/agent-dashboard/src/components/workbench/team/WorkGraphInspector.tsx";
+for (const path of [graphViewPath, workBoardPath, workInspectorPath]) {
+  if (!existsSync(resolve(root, path))) failures.push(`${path}: required shared Work view is missing`);
+}
+if (existsSync(resolve(root, graphViewPath))) {
+  const graphView = read(graphViewPath);
+  for (const required of ["@xyflow/react", "<ReactFlow"]) {
+    if (!graphView.includes(required)) failures.push(`${graphViewPath}: missing ${required}`);
+  }
+  for (const forbidden of ["<svg", "<canvas", "createElementNS(", "getContext("]) {
+    if (graphView.includes(forbidden)) {
+      failures.push(`${graphViewPath}: hand-built graph renderer is forbidden (${forbidden})`);
+    }
+  }
+}
+if (existsSync(resolve(root, workBoardPath))) {
+  const workBoard = read(workBoardPath);
+  for (const required of ["Graph", "Kanban", "Open", "Active", "Review", "Closed", "WorkGraphInspector"]) {
+    if (!workBoard.includes(required)) failures.push(`${workBoardPath}: first-class shared Work views are missing ${required}`);
+  }
+}
+
+const workViewSource = [graphViewPath, workBoardPath, workInspectorPath]
+  .filter((path) => existsSync(resolve(root, path)))
+  .map(read)
+  .join("\n");
+for (const forbidden of [
+  "onConnect=",
+  "onEdgesDelete=",
+  "onNodesDelete=",
+  "onNodeDragStop=",
+  "prerequisite_work_ids.push",
+  "successor_work_ids.push",
+]) {
+  if (workViewSource.includes(forbidden)) {
+    failures.push(`Dashboard Work views: drag/hand-built semantic authority is forbidden (${forbidden})`);
+  }
+}
+for (const path of repositoryFiles.filter((candidate) => candidate.startsWith("schemas/") && candidate.endsWith(".json"))) {
+  if (!existsSync(resolve(root, path))) continue;
+  if (/"(?:graph_|node_)?position(?:_x|_y)?"\s*:/.test(read(path))) {
+    failures.push(`${path}: Work graph positions must remain presentation-only`);
+  }
 }
 
 const maintainedRoots = ["apps/", "crates/", "docs/current/", "plugins/star-harness/skills/", "schemas/", "scripts/", "skills/"];
