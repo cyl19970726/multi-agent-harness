@@ -105,6 +105,9 @@ pub fn execute(
         })?;
         let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;
         let before = store.work_operations()?.len();
+        let canonical_before = store
+            .canonical_operations_for_space(&auth.execution_space_id)?
+            .len();
         let mut context = host_context(&auth, host_id, false);
         context.causation_ref = Some(WorkCausationRef {
             kind: "work_dependency_reason".into(),
@@ -118,6 +121,11 @@ pub fn execute(
                 prerequisite_work_ids,
                 context,
             })?;
+        if let Some(result) =
+            committed_canonical_work_result(store, &auth, &work, canonical_before)?
+        {
+            return Ok(result);
+        }
         let operations = store.work_operations()?;
         let operation = operations
             .iter()
@@ -449,6 +457,9 @@ pub fn execute(
         });
     }
     let before = store.work_operations()?.len();
+    let canonical_before = store
+        .canonical_operations_for_space(&auth.execution_space_id)?
+        .len();
     let work = match (route.operation, route.work_id, intent) {
         (
             "create",
@@ -695,6 +706,9 @@ pub fn execute(
             ))
         }
     };
+    if let Some(result) = committed_canonical_work_result(store, &auth, &work, canonical_before)? {
+        return Ok(result);
+    }
     let operations = store.work_operations()?;
     let operation = operations
         .iter()

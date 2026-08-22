@@ -456,10 +456,10 @@ fn canonical_actor(actor: &firm_core::TeamActorRef) -> firm_core::agentfirm_api:
     ActorRef {
         kind: match actor.kind {
             TeamActorKind::Service => ActorKind::Service,
-            TeamActorKind::AgentMember | TeamActorKind::ProviderRuntimeProjection => {
-                ActorKind::AgentMember
-            }
-            TeamActorKind::Host | TeamActorKind::Operator => ActorKind::Human,
+            TeamActorKind::Host
+            | TeamActorKind::AgentMember
+            | TeamActorKind::ProviderRuntimeProjection => ActorKind::AgentMember,
+            TeamActorKind::Operator => ActorKind::Human,
         },
         id: actor.id.clone(),
     }
