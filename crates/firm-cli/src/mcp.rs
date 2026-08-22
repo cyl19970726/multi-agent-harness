@@ -19,26 +19,30 @@ use std::collections::BTreeSet;
 use std::io::{BufRead, Write};
 
 use harness_core::{
-    AgentTeamRun, TeamActorRef, TeamRunEvent, TeamRunStatus, TeamSupervisorLeaseStatus, Work,
-    WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition, WorkPhase, WorkPriority,
+    AgentTeamRun, TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus,
+    TeamSupervisorLeaseStatus, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkPriority,
 };
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
 mod tool_definitions;
+mod work_tools;
 use tool_definitions::tool_definitions;
+use work_tools::*;
+
+use harness_application::{CreateWorkCommand, ReplaceWorkDependenciesCommand, WorkApplication};
 
 use crate::{
     add_team_run_member, agentfirm_api, answer_provider_message_value, close_team_member_value,
     configure_host_runtime_mode, create_team_run, current_unix_ms_u64, deactivate_team_run_member,
     delegate_team_run_to_node_daemon, format_work_brief_line, generated_id,
     host_inbox_for_native_thread, host_runtime_projection, interrupt_team_member_value,
-    latest_member_runs_in_append_order, latest_team_run, latest_team_runs_in_append_order,
-    mutate_team_work_value, now_string, reconcile_team_work_delivery_value, rename_team_run_member,
-    reopen_team_member_value, reopened_member_requires_supervisor_start, serde_snake_label,
-    steer_team_member_value, team_member_specs_from_definition, team_run_board_summary_text,
-    team_run_inbox, team_run_mission_id, transition_team_run,
-    visible_member_actions_in_append_order, work_operation_cursors, ResolvedStore, TeamMemberSpec,
+    latest_member_runs_in_append_order, latest_team_run, latest_team_runs_in_append_order, now_string,
+    reconcile_team_work_delivery_value, rename_team_run_member, reopen_team_member_value,
+    reopened_member_requires_supervisor_start, serde_snake_label, steer_team_member_value,
+    team_member_specs_from_definition, team_run_board_summary_text, team_run_inbox,
+    team_run_mission_id, transition_team_run, visible_member_actions_in_append_order,
+    work_operation_cursors, ResolvedStore, TeamMemberSpec,
 };
 
 /// MCP protocol revision this server speaks, echoed verbatim in `initialize`
@@ -193,6 +197,7 @@ pub(crate) fn call_tool(
         "team_run_work_list" => tool_team_run_work_list(store, &arguments),
         "team_run_work_show" => tool_team_run_work_show(store, &arguments),
         "team_run_work_create" => tool_team_run_work_create(store, &arguments),
+        "team_work_replace_dependencies" => tool_team_work_replace_dependencies(store, &arguments),
         "team_run_work_assign" => tool_team_run_work_mutate(store, &arguments, "assign"),
         "team_run_work_rebind" => tool_team_run_work_mutate(store, &arguments, "rebind"),
         "team_run_work_block" => tool_team_run_work_mutate(store, &arguments, "block"),
@@ -437,283 +442,6 @@ fn tool_remote_fabric_operation_show(
 /// passes it gets back `next_since` so a Host loop can chain delta reads
 /// without re-deriving the cursor itself. `brief` returns pre-formatted
 /// `works_brief` lines (`format_work_brief_line`) instead of full Work JSON.
-fn tool_team_run_work_list(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    let team_run_id = required_str(arguments, "team_run_id")?;
-    let brief = arguments
-        .get("brief")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let since = match arguments.get("since") {
-        None | Some(Value::Null) => None,
-        Some(value) => Some(value.as_u64().ok_or_else(|| {
-            "argument `since` must be a non-negative integer WorkOperation cursor".to_string()
-        })?),
-    };
-    let cursors = match since {
-        Some(_) => {
-            Some(work_operation_cursors(store, team_run_id).map_err(|error| error.to_string())?)
-        }
-        None => None,
-    };
-    let mut works = store
-        .latest_works()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .filter(|work| work.team_run_id == team_run_id)
-        .filter(|work| {
-            since.is_none_or(|cursor| {
-                cursors
-                    .as_ref()
-                    .and_then(|cursors| cursors.get(&work.id))
-                    .is_some_and(|sequence| *sequence > cursor)
-            })
-        })
-        .collect::<Vec<_>>();
-    works.sort_by(|left, right| {
-        left.created_at
-            .cmp(&right.created_at)
-            .then(left.id.cmp(&right.id))
-    });
-    if brief {
-        let works_brief: Vec<String> = works.iter().map(format_work_brief_line).collect();
-        return Ok(json!({"works_brief": works_brief}));
-    }
-    if let Some(since) = since {
-        let next_since = cursors
-            .as_ref()
-            .and_then(|cursors| cursors.values().copied().max())
-            .unwrap_or(0)
-            .max(since);
-        return Ok(json!({"since": since, "next_since": next_since, "works": works}));
-    }
-    Ok(json!({"works": works}))
-}
-
-/// `team_run_board_summary` -- mirrors `harness team-run board-summary`: a
-/// single bounded plain-text digest (issue #305), returned under `summary`
-/// rather than as the raw MCP text payload so the shape matches every other
-/// tool result here.
-fn tool_team_run_board_summary(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    let team_run_id = required_str(arguments, "team_run_id")?;
-    require_current_team_run(store, team_run_id)?;
-    let summary =
-        team_run_board_summary_text(store, team_run_id).map_err(|error| error.to_string())?;
-    Ok(json!({"summary": summary}))
-}
-
-fn tool_team_run_work_show(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    let team_run_id = required_str(arguments, "team_run_id")?;
-    let work_id = required_str(arguments, "work_id")?;
-    let work = store
-        .latest_works()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .find(|work| work.team_run_id == team_run_id && work.id == work_id)
-        .ok_or_else(|| format!("Work not found: {work_id}"))?;
-    let events = store
-        .work_events()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .filter(|event| event.team_run_id == team_run_id && event.work_id == work_id)
-        .collect::<Vec<_>>();
-    let deliveries = store
-        .latest_work_deliveries()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .filter(|delivery| delivery.team_run_id == team_run_id && delivery.work_id == work_id)
-        .collect::<Vec<_>>();
-    Ok(json!({"work": work, "events": events, "deliveries": deliveries}))
-}
-
-fn tool_team_run_work_create(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    const ALLOWED: &[&str] = &[
-        "team_run_id",
-        "id",
-        "title",
-        "context_markdown",
-        "completion_criteria_markdown",
-        "owner_member_run_id",
-        "claim_mode",
-        "eligible_member_ids",
-        "parent_work_id",
-        "prerequisite_work_ids",
-        "priority",
-        "caused_by_message_id",
-        "idempotency_key",
-    ];
-    reject_unknown_arguments(arguments, "team_run_work_create", ALLOWED)?;
-    let team_run_id = required_non_empty_str(arguments, "team_run_id")?;
-    let owner_member_run_id = optional_non_empty_str(arguments, "owner_member_run_id")?;
-    let claim_mode = match optional_non_empty_str(arguments, "claim_mode")?.as_deref() {
-        None if owner_member_run_id.is_some() => WorkClaimMode::HostAssign,
-        None => WorkClaimMode::TeamClaim,
-        Some("host_assign") => WorkClaimMode::HostAssign,
-        Some("team_claim") => WorkClaimMode::TeamClaim,
-        Some(value) => return Err(format!("invalid claim_mode `{value}`")),
-    };
-    let priority = match optional_non_empty_str(arguments, "priority")?.as_deref() {
-        None | Some("normal") => WorkPriority::Normal,
-        Some("low") => WorkPriority::Low,
-        Some("high") => WorkPriority::High,
-        Some("urgent") => WorkPriority::Urgent,
-        Some(value) => return Err(format!("invalid priority `{value}`")),
-    };
-    optional_non_empty_str(arguments, "caused_by_message_id")?;
-    optional_non_empty_str(arguments, "idempotency_key")?;
-    let context = local_mcp_host_work_context(store, team_run_id, arguments)?;
-    let work = Work {
-        id: optional_non_empty_str(arguments, "id")?.unwrap_or_else(|| generated_id("work")),
-        team_run_id: team_run_id.to_string(),
-        accountable_team_id: None,
-        assignee_membership_id: None,
-        created_by_member_id: None,
-        parent_work_id: optional_non_empty_str(arguments, "parent_work_id")?,
-        title: required_non_empty_str(arguments, "title")?.to_string(),
-        context_markdown: optional_str(arguments, "context_markdown")?.unwrap_or_default(),
-        completion_criteria_markdown: required_non_empty_str(
-            arguments,
-            "completion_criteria_markdown",
-        )?
-        .to_string(),
-        phase: WorkPhase::Open,
-        condition: WorkCondition::Normal,
-        resolution: None,
-        owner_member_id: None,
-        active_member_run_id: owner_member_run_id,
-        claim_mode,
-        eligible_member_ids: optional_string_array(arguments, "eligible_member_ids")?,
-        prerequisite_work_ids: optional_string_array(arguments, "prerequisite_work_ids")?,
-        priority,
-        created_by_actor: context.performed_by_actor.clone(),
-        result_summary: None,
-        blocker_reason: None,
-        artifact_refs: Vec::new(),
-        check_refs: Vec::new(),
-        github_links: Vec::new(),
-        version: 0,
-        created_at: String::new(),
-        updated_at: String::new(),
-    };
-    store
-        .insert_work(work, context)
-        .map(|work| json!(work))
-        .map_err(|error| error.to_string())
-}
-
-/// Record a Work-bound Review through the local MCP Host boundary. Unlike the
-/// retired HTTP route, this is a typed tool: caller-controlled identity and
-/// authority fields are not part of its schema and unknown arguments fail.
-fn reject_unknown_arguments(arguments: &Value, tool: &str, allowed: &[&str]) -> Result<(), String> {
-    let object = arguments
-        .as_object()
-        .ok_or_else(|| format!("{tool} arguments must be an object"))?;
-    if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
-        return Err(format!(
-            "unknown argument `{key}` for {tool}; actor identity is fixed by the local MCP boundary"
-        ));
-    }
-    Ok(())
-}
-
-fn optional_non_empty_str(arguments: &Value, key: &str) -> Result<Option<String>, String> {
-    let value = optional_str(arguments, key)?;
-    if value
-        .as_deref()
-        .is_some_and(|value| value.trim().is_empty())
-    {
-        Err(format!("argument `{key}` must not be empty"))
-    } else {
-        Ok(value)
-    }
-}
-
-fn local_mcp_host_work_context(
-    store: &HarnessStore,
-    team_run_id: &str,
-    arguments: &Value,
-) -> Result<WorkCommandContext, String> {
-    let host_actor = store
-        .exact_team_run_host_actor(team_run_id)
-        .map_err(|error| error.to_string())?;
-    Ok(WorkCommandContext {
-        event_id: generated_id("work-event"),
-        performed_by_actor: TeamActorRef {
-            display_name: Some("Harness MCP".to_string()),
-            authn_source: Some("local_mcp_exact_team_host".to_string()),
-            ..host_actor.clone()
-        },
-        authority_actor: Some(host_actor),
-        causation_ref: arguments
-            .get("caused_by_message_id")
-            .and_then(Value::as_str)
-            .map(|id| WorkCausationRef {
-                kind: "team_message".to_string(),
-                id: id.to_string(),
-            }),
-        idempotency_key: arguments
-            .get("idempotency_key")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| generated_id("work-command")),
-        created_at: now_string(),
-        duplicate_ok: false,
-    })
-}
-
-fn required_non_empty_str<'a>(arguments: &'a Value, key: &str) -> Result<&'a str, String> {
-    let value = required_str(arguments, key)?;
-    if value.trim().is_empty() {
-        Err(format!("argument `{key}` must not be empty"))
-    } else {
-        Ok(value)
-    }
-}
-
-fn optional_string_array(arguments: &Value, key: &str) -> Result<Vec<String>, String> {
-    let Some(value) = arguments.get(key) else {
-        return Ok(Vec::new());
-    };
-    let values = value
-        .as_array()
-        .ok_or_else(|| format!("argument `{key}` must be an array of non-empty strings"))?;
-    values
-        .iter()
-        .map(|value| {
-            let text = value
-                .as_str()
-                .ok_or_else(|| format!("argument `{key}` must contain only strings"))?;
-            if text.trim().is_empty() {
-                Err(format!("argument `{key}` must not contain empty strings"))
-            } else {
-                Ok(text.to_string())
-            }
-        })
-        .collect()
-}
-
-fn tool_team_run_work_mutate(
-    store: &HarnessStore,
-    arguments: &Value,
-    operation: &str,
-) -> Result<Value, String> {
-    mutate_team_work_value(
-        store,
-        required_str(arguments, "team_run_id")?,
-        required_str(arguments, "work_id")?,
-        operation,
-        arguments,
-    )
-    .map_err(|error| error.to_string())
-}
-
-fn tool_team_run_work_reconcile_delivery(
-    store: &HarnessStore,
-    arguments: &Value,
-) -> Result<Value, String> {
-    reconcile_team_work_delivery_value(store, required_str(arguments, "team_run_id")?, arguments)
-        .map_err(|error| error.to_string())
-}
-
 fn collaboration_store(company_id: &str) -> Result<HarnessStore, String> {
     let firm_home = crate::execution_space::firm_home().map_err(|error| error.to_string())?;
     let layout = harness_store::remote_fabric_store::RemoteFabricStoreLayout::open(&firm_home)

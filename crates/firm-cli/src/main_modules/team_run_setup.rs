@@ -1045,43 +1045,27 @@ pub(super) fn create_team_run(
 
         if let Some(brief) = member.initial_work.as_deref() {
             let now = now_string();
+            let actor = team_run.host_actor.clone().ok_or_else(|| {
+                CliError::Usage("TeamRun has no exact Host AgentMember actor".to_string())
+            })?;
+            let mut draft = CurrentWorkDraft::new(
+                generated_id("work"),
+                run_id.clone(),
+                team_run.agent_team_id.clone(),
+                format!("{}: {}", member_run.name, member_run.role),
+                format!("Team objective:\n\n{objective}"),
+                brief.to_string(),
+                WorkClaimMode::HostAssign,
+                WorkPriority::Normal,
+                actor.clone(),
+                now.clone(),
+            );
+            draft.active_member_run_id = Some(member_run.id.clone());
             let work = store.insert_work(
-                Work {
-                    id: generated_id("work"),
-                    team_run_id: run_id.clone(),
-                    accountable_team_id: None,
-                    assignee_membership_id: None,
-                    created_by_member_id: None,
-                    parent_work_id: None,
-                    title: format!("{}: {}", member_run.name, member_run.role),
-                    context_markdown: format!("Team objective:\n\n{objective}"),
-                    completion_criteria_markdown: brief.to_string(),
-                    phase: WorkPhase::Open,
-                    condition: WorkCondition::Normal,
-                    resolution: None,
-                    owner_member_id: None,
-                    active_member_run_id: Some(member_run.id.clone()),
-                    claim_mode: WorkClaimMode::HostAssign,
-                    eligible_member_ids: Vec::new(),
-                    prerequisite_work_ids: Vec::new(),
-                    priority: WorkPriority::Normal,
-                    created_by_actor: team_run.host_actor.clone().ok_or_else(|| {
-                        CliError::Usage("TeamRun has no exact Host AgentMember actor".to_string())
-                    })?,
-                    result_summary: None,
-                    blocker_reason: None,
-                    artifact_refs: Vec::new(),
-                    check_refs: Vec::new(),
-                    github_links: Vec::new(),
-                    version: 0,
-                    created_at: String::new(),
-                    updated_at: String::new(),
-                },
+                draft.into_work(),
                 WorkCommandContext {
                     event_id: generated_id("work-event"),
-                    performed_by_actor: team_run.host_actor.clone().ok_or_else(|| {
-                        CliError::Usage("TeamRun has no exact Host AgentMember actor".to_string())
-                    })?,
+                    performed_by_actor: actor,
                     authority_actor: None,
                     causation_ref: None,
                     idempotency_key: generated_id("work-command"),
@@ -1174,47 +1158,32 @@ pub(super) fn add_team_run_member(
     )?;
     let work = initial_work
         .map(|brief| {
+            let now = now_string();
+            let actor = next.host_actor.clone().ok_or_else(|| {
+                CliError::Usage("TeamRun has no exact Host AgentMember actor".to_string())
+            })?;
+            let mut draft = CurrentWorkDraft::new(
+                generated_id("work"),
+                team_run_id.to_string(),
+                current.agent_team_id.clone(),
+                format!("{}: {}", member_run.name, member_run.role),
+                String::new(),
+                brief.trim().to_string(),
+                WorkClaimMode::HostAssign,
+                WorkPriority::Normal,
+                actor.clone(),
+                now.clone(),
+            );
+            draft.active_member_run_id = Some(member_run.id.clone());
             store_conflict_as_usage(store.insert_work(
-                Work {
-                    id: generated_id("work"),
-                    team_run_id: team_run_id.to_string(),
-                    accountable_team_id: None,
-                    assignee_membership_id: None,
-                    created_by_member_id: None,
-                    parent_work_id: None,
-                    title: format!("{}: {}", member_run.name, member_run.role),
-                    context_markdown: String::new(),
-                    completion_criteria_markdown: brief.trim().to_string(),
-                    phase: WorkPhase::Open,
-                    condition: WorkCondition::Normal,
-                    resolution: None,
-                    owner_member_id: None,
-                    active_member_run_id: Some(member_run.id.clone()),
-                    claim_mode: WorkClaimMode::HostAssign,
-                    eligible_member_ids: Vec::new(),
-                    prerequisite_work_ids: Vec::new(),
-                    priority: WorkPriority::Normal,
-                    created_by_actor: next.host_actor.clone().ok_or_else(|| {
-                        CliError::Usage("TeamRun has no exact Host AgentMember actor".to_string())
-                    })?,
-                    result_summary: None,
-                    blocker_reason: None,
-                    artifact_refs: Vec::new(),
-                    check_refs: Vec::new(),
-                    github_links: Vec::new(),
-                    version: 0,
-                    created_at: String::new(),
-                    updated_at: String::new(),
-                },
+                draft.into_work(),
                 WorkCommandContext {
                     event_id: generated_id("work-event"),
-                    performed_by_actor: next.host_actor.clone().ok_or_else(|| {
-                        CliError::Usage("TeamRun has no exact Host AgentMember actor".to_string())
-                    })?,
+                    performed_by_actor: actor,
                     authority_actor: None,
                     causation_ref: None,
                     idempotency_key: generated_id("work-command"),
-                    created_at: now_string(),
+                    created_at: now,
                     duplicate_ok: false,
                 },
             ))

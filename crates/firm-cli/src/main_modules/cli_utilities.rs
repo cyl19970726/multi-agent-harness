@@ -179,6 +179,8 @@ pub(super) const CHEATSHEET_WORK: &str = r#"work create --team-run-id <id> --tit
   [--priority low|normal|high|urgent] [--context <md>]
   [--prerequisite-work-id <id>] [--idempotency-key <key>]
   [--github-issue owner/repo#N]
+work replace-dependencies --team-id <id> --work-id <id> --expected-version <n>
+  [--prerequisite-work-id <id>] [--idempotency-key <key>]
 work list --team-run-id <id> [--brief] [--since <cursor>]
   [--status <status>] [--member-run-id <id>]
 work show --work-id <id>
@@ -210,6 +212,8 @@ work create --team-run-id <id> --title <text> --completion-criteria <text>
   [--owner-member-run-id <id> --claim-mode host_assign]
   [--claim-mode team_claim --eligible-member-id <id>]
   [--github-issue owner/repo#N]
+work replace-dependencies --team-id <id> --work-id <id> --expected-version <n>
+  [--prerequisite-work-id <id>] [--idempotency-key <key>]
 work list --team-run-id <id> [--brief] [--since <cursor>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --membership-id <id>

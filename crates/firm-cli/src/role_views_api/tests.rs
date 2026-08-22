@@ -336,3 +336,36 @@ fn ready_capability_admission_requires_active_core_bindings() {
     );
     assert_eq!(provider_core_capability_admission(None).0, "unknown");
 }
+
+#[test]
+fn work_graph_derives_hard_edges_and_canonical_ready_attention_sets() {
+    let works = vec![
+        json!({
+            "work_id":"work-a",
+            "prerequisite_work_ids":[],
+            "readiness":{"state":"ready"}
+        }),
+        json!({
+            "work_id":"work-b",
+            "prerequisite_work_ids":["work-a"],
+            "readiness":{"state":"waiting_prerequisites"}
+        }),
+        json!({
+            "work_id":"work-c",
+            "prerequisite_work_ids":["work-a","work-b"],
+            "readiness":{"state":"requires_host_attention"}
+        }),
+    ];
+    let graph = work_graph(&works);
+    assert_eq!(graph["nodes"].as_array(), Some(&works));
+    assert_eq!(graph["ready_work_ids"], json!(["work-a"]));
+    assert_eq!(graph["attention_work_ids"], json!(["work-c"]));
+    assert_eq!(
+        graph["edges"],
+        json!([
+            {"prerequisite_work_id":"work-a","dependent_work_id":"work-b","kind":"hard"},
+            {"prerequisite_work_id":"work-a","dependent_work_id":"work-c","kind":"hard"},
+            {"prerequisite_work_id":"work-b","dependent_work_id":"work-c","kind":"hard"}
+        ])
+    );
+}

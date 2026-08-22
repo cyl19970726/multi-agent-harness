@@ -159,7 +159,6 @@ fn continuation_test_work(
     serde_json::from_value(serde_json::json!({
         "id": format!("work-{phase:?}-{condition:?}"),
         "team_run_id": "team-run-test",
-        "parent_work_id": null,
         "title": "continuation gate",
         "context_markdown": "",
         "completion_criteria_markdown": "prove the gate",

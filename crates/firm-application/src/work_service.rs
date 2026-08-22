@@ -6,7 +6,7 @@
 //! second state machine.
 
 use firm_core::{
-    GitHubLink, TeamActorRef, Work, WorkClaimMode, WorkCommandContext, WorkCondition, WorkPhase,
+    CurrentWorkDraft, GitHubLink, TeamActorRef, Work, WorkClaimMode, WorkCommandContext,
     WorkPriority,
 };
 
@@ -166,36 +166,25 @@ impl<'a, P: WorkPersistence + ?Sized> WorkApplication<'a, P> {
                 "WORK_VERSION_CONFLICT: Work creation requires expected version 0".into(),
             ));
         }
-        let work = Work {
-            id: command.work_id,
-            team_run_id: command.team_run_id,
-            accountable_team_id: Some(command.accountable_team_id),
-            assignee_membership_id: None,
-            legacy_containment_ref: None,
-            title: command.title,
-            context_markdown: command.context_markdown,
-            completion_criteria_markdown: command.completion_criteria_markdown,
-            phase: WorkPhase::Open,
-            condition: WorkCondition::Normal,
-            resolution: None,
-            owner_member_id: None,
-            active_member_run_id: command.initial_member_run_id,
-            claim_mode: command.claim_mode,
-            eligible_member_ids: command.eligible_member_ids,
-            prerequisite_work_ids: command.prerequisite_work_ids,
-            priority: command.priority,
-            created_by_actor: command.context.performed_by_actor.clone(),
-            created_by_member_id: None,
-            result_summary: None,
-            blocker_reason: None,
-            artifact_refs: command.artifact_refs,
-            check_refs: command.check_refs,
-            github_links: command.github_links,
-            version: 0,
-            created_at: command.context.created_at.clone(),
-            updated_at: command.context.created_at.clone(),
-        };
-        self.port.insert_work(work, command.context)
+        let mut draft = CurrentWorkDraft::new(
+            command.work_id,
+            command.team_run_id,
+            command.accountable_team_id,
+            command.title,
+            command.context_markdown,
+            command.completion_criteria_markdown,
+            command.claim_mode,
+            command.priority,
+            command.context.performed_by_actor.clone(),
+            command.context.created_at.clone(),
+        );
+        draft.active_member_run_id = command.initial_member_run_id;
+        draft.eligible_member_ids = command.eligible_member_ids;
+        draft.prerequisite_work_ids = command.prerequisite_work_ids;
+        draft.artifact_refs = command.artifact_refs;
+        draft.check_refs = command.check_refs;
+        draft.github_links = command.github_links;
+        self.port.insert_work(draft.into_work(), command.context)
     }
 
     pub fn replace_dependencies(

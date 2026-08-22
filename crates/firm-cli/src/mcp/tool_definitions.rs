@@ -133,13 +133,29 @@ pub(super) fn tool_definitions() -> Value {
                     "owner_member_run_id": {"type": "string", "minLength": 1, "description": "Optional concrete ProviderRuntimeProjection to receive the first ProviderWorkDispatch; stable AgentMember ownership is derived by the store."},
                     "claim_mode": {"type": "string", "enum": ["host_assign", "team_claim"]},
                     "eligible_member_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
-                    "parent_work_id": {"type": "string", "minLength": 1},
                     "prerequisite_work_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
                     "priority": {"type": "string", "enum": ["low", "normal", "high", "urgent"]},
                     "caused_by_message_id": {"type": "string", "minLength": 1},
                     "idempotency_key": {"type": "string", "minLength": 1}
                 },
                 "required": ["team_run_id", "title", "completion_criteria_markdown"]
+            }
+        },
+        {
+            "name": "team_work_replace_dependencies",
+            "description": "Replace the complete hard dependency set of one open Team-scoped Work. The local MCP Host boundary binds authority; expected_version provides CAS and reason is retained as causation evidence.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "team_id": {"type": "string", "minLength": 1},
+                    "work_id": {"type": "string", "minLength": 1},
+                    "expected_version": {"type": "integer", "minimum": 1},
+                    "prerequisite_work_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                    "reason": {"type": "string", "minLength": 1},
+                    "idempotency_key": {"type": "string", "minLength": 1}
+                },
+                "required": ["team_id", "work_id", "expected_version", "prerequisite_work_ids", "reason"]
             }
         },
         {

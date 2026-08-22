@@ -86,18 +86,40 @@ fn member_role_action_capability_binds_sender_to_live_supervisor_identity() {
         serde_json::from_value::<Vec<TeamMessageProjection>>(own_inbox).expect("Inbox rows");
     assert_eq!(own_inbox.len(), 1);
     assert_eq!(own_inbox[0].body, "Private exact-self inbox message");
-    let work_value = create_team_work_value(
-        &store,
-        &created.team_run.id,
-        &serde_json::json!({
-            "id": "member-capability-work",
-            "title": "Prove bound member Role Action authority",
-            "completion_criteria_markdown": "Only the exact live member can start it",
-            "owner_member_run_id": first.id,
-        }),
-    )
-    .expect("create assigned Work");
-    let work: Work = serde_json::from_value(work_value).expect("decode assigned Work");
+    let context = WorkCommandContext {
+        event_id: "member-capability-work-created".into(),
+        performed_by_actor: TeamActorRef {
+            kind: TeamActorKind::Host,
+            id: "host-test".into(),
+            display_name: None,
+            authn_source: Some("test".into()),
+        },
+        authority_actor: None,
+        causation_ref: None,
+        idempotency_key: "member-capability-work-created".into(),
+        created_at: now_string(),
+        duplicate_ok: false,
+    };
+    let work = harness_application::WorkApplication::new(&store)
+        .create(harness_application::CreateWorkCommand {
+            work_id: "member-capability-work".into(),
+            team_run_id: created.team_run.id.clone(),
+            accountable_team_id: created.team_run.agent_team_id.clone(),
+            title: "Prove bound member Role Action authority".into(),
+            context_markdown: String::new(),
+            completion_criteria_markdown: "Only the exact live member can start it".into(),
+            claim_mode: WorkClaimMode::HostAssign,
+            eligible_member_ids: Vec::new(),
+            prerequisite_work_ids: Vec::new(),
+            priority: WorkPriority::Normal,
+            initial_member_run_id: Some(first.id.clone()),
+            artifact_refs: Vec::new(),
+            check_refs: Vec::new(),
+            github_links: Vec::new(),
+            expected_version: 0,
+            context,
+        })
+        .expect("create assigned Work");
     let route = format!(
         "/v1/agentfirm/team-runs/{}/works/{}/start",
         created.team_run.id, work.id

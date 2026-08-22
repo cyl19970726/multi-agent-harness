@@ -109,8 +109,10 @@ pub(crate) fn member_view(
         .iter()
         .filter(|w| {
             in_team_scope(w)
-                && w.phase == WorkPhase::Open
-                && w.condition == WorkCondition::Normal
+                && w.claim_mode == WorkClaimMode::TeamClaim
+                && w.assignee_membership_id.is_none()
+                && w.owner_member_id.is_none()
+                && work_readiness(w, &facts.works).ready
                 && (w.eligible_member_ids.is_empty()
                     || w.eligible_member_ids.iter().any(|id| id == member_id))
         })
@@ -171,7 +173,7 @@ pub(crate) fn member_view(
         };
         let phase = w["phase"].as_str().unwrap_or("unknown");
         let condition = w["condition"].as_str().unwrap_or("unknown");
-        if phase == "open" && condition == "normal" {
+        if phase == "open" && condition == "normal" && w["readiness"]["state"] == "ready" {
             actions.push(action("start_work", "work", id, version, None));
         } else if phase == "active" && condition == "normal" {
             actions.push(action("block_work", "work", id, version, None));

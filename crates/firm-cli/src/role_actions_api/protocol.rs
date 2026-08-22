@@ -12,8 +12,6 @@ pub(super) enum RoleActionIntent {
         context_markdown: String,
         completion_criteria_markdown: String,
         #[serde(default)]
-        parent_work_id: Option<String>,
-        #[serde(default)]
         eligible_member_ids: Vec<String>,
         #[serde(default)]
         prerequisite_work_ids: Vec<String>,
@@ -21,6 +19,10 @@ pub(super) enum RoleActionIntent {
         claim_mode: WorkClaimMode,
         #[serde(default = "default_priority")]
         priority: WorkPriority,
+    },
+    ReplaceWorkDependencies {
+        prerequisite_work_ids: Vec<String>,
+        reason: String,
     },
     AssignWork {
         /// Canonical DOC-106 assignee: one TeamMembership of the Work's
@@ -439,6 +441,16 @@ pub(super) fn parse_accept_route(path: &str) -> Option<(&str, &str)> {
     }
 }
 
+pub(super) fn parse_dependencies_route(path: &str) -> Option<(&str, &str)> {
+    let parts = path.trim_matches('/').split('/').collect::<Vec<_>>();
+    match parts.as_slice() {
+        ["v1", "agentfirm", "teams", team_id, "works", work_id, "dependencies"] => {
+            Some((team_id, work_id))
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn parse_operator_route(path: &str) -> Option<(&str, &str)> {
     let parts = path.trim_matches('/').split('/').collect::<Vec<_>>();
     match parts.as_slice() {
@@ -750,6 +762,7 @@ pub(crate) fn authorize_member_interrupt(
 pub fn is_http_mutation_path(path: &str) -> bool {
     parse_route(path).is_some()
         || parse_accept_route(path).is_some()
+        || parse_dependencies_route(path).is_some()
         || parse_operator_route(path).is_some()
         || parse_canonical_route(path).is_some()
 }
