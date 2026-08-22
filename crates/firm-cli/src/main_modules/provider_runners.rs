@@ -171,16 +171,18 @@ pub(super) fn run_member_orchestration(
             execution_mode,
         ) {
             Some(crate::runtime_adapter::SharedTeamRuntimeKind::Kimi) => {
-                run_kimi_member_shared(ledger, objective, &current, &context)
+                run_kimi_member_shared(ledger, objective, &current, &context, generation)
             }
             Some(crate::runtime_adapter::SharedTeamRuntimeKind::Codex) => {
-                run_codex_member_shared(ledger, objective, &current, &context)
+                run_codex_member_shared(ledger, objective, &current, &context, generation)
             }
             Some(crate::runtime_adapter::SharedTeamRuntimeKind::Claude) => {
-                run_claude_agent_sdk_team_member_shared(ledger, objective, &current, &context)
+                run_claude_agent_sdk_team_member_shared(
+                    ledger, objective, &current, &context, generation,
+                )
             }
             Some(crate::runtime_adapter::SharedTeamRuntimeKind::Pi) => {
-                run_pi_team_member(ledger, objective, &current, &context)
+                run_pi_team_member(ledger, objective, &current, &context, generation)
             }
             None => Err(CliError::Usage(format!(
                 "team member adapter not implemented for provider {}",
@@ -324,6 +326,39 @@ pub(super) fn run_member_orchestration(
                     );
                 }
                 journal_member_disconnected(ledger, &latest, generation, &reason);
+                if automatic_provider_transport_retry_exhausted(generation) {
+                    let mut exhausted = ledger
+                        .latest_member_run(&latest.id)
+                        .ok()
+                        .flatten()
+                        .unwrap_or(latest);
+                    let expected = exhausted.clone();
+                    exhausted.status = MemberRunStatus::Blocked;
+                    exhausted.finished_at = None;
+                    exhausted.last_event_at = Some(now_string());
+                    let summary = format!(
+                        "PROVIDER_TRANSPORT_RETRY_EXHAUSTED: {} automatic attempts failed; explicit Host reconciliation is required; last error: {reason}",
+                        MAX_AUTOMATIC_PROVIDER_TRANSPORT_ATTEMPTS
+                    );
+                    if ledger.save_member_run(&expected, &exhausted).is_ok() {
+                        let _ = ledger.append_action(
+                            &exhausted.id,
+                            "runtime_recovery_required",
+                            MemberActionStatus::Failed,
+                            "provider transport retries exhausted",
+                            &summary,
+                        );
+                        let _ = ledger.fold_event(
+                            TeamRunEventSourceKind::Member,
+                            Some(exhausted.id.clone()),
+                            "member_run",
+                            &exhausted.id,
+                            "recovery_required",
+                            &summary,
+                        );
+                    }
+                    return MemberOutcome::new(&exhausted, MemberRunStatus::Blocked, summary);
+                }
                 accepted = ledger
                     .latest_member_run(&latest.id)
                     .ok()
@@ -342,6 +377,7 @@ pub(super) fn run_codex_member_shared(
     objective: &str,
     member: &ProviderRuntimeProjection,
     context: &MemberRuntimeContext,
+    transport_attempt: u64,
 ) -> CliResult<MemberOutcome> {
     use crate::runtime_adapter::TeamRuntimeAdapter as _;
 
@@ -368,7 +404,7 @@ pub(super) fn run_codex_member_shared(
         provider_session.effective_permission_ceiling,
     )
     .map_err(CliError::Usage)?;
-    let process_effect = prepare_provider_process_effect(ledger, &member_row)?;
+    let process_effect = prepare_provider_process_effect(ledger, &member_row, transport_attempt)?;
     if let Err(error) = crate::runtime_adapter::preflight_profile_effect(
         &profile,
         &process_effect.target_session,
@@ -620,6 +656,7 @@ pub(super) fn run_claude_agent_sdk_team_member_shared(
     objective: &str,
     member: &ProviderRuntimeProjection,
     context: &MemberRuntimeContext,
+    transport_attempt: u64,
 ) -> CliResult<MemberOutcome> {
     use crate::runtime_adapter::TeamRuntimeAdapter as _;
 
@@ -640,7 +677,7 @@ pub(super) fn run_claude_agent_sdk_team_member_shared(
         &member_row,
         None,
     )?;
-    let process_effect = prepare_provider_process_effect(ledger, &member_row)?;
+    let process_effect = prepare_provider_process_effect(ledger, &member_row, transport_attempt)?;
     if let Err(error) = crate::runtime_adapter::preflight_profile_effect(
         &profile,
         &process_effect.target_session,
@@ -775,6 +812,7 @@ pub(super) fn run_kimi_member_shared(
     objective: &str,
     member: &ProviderRuntimeProjection,
     context: &MemberRuntimeContext,
+    transport_attempt: u64,
 ) -> CliResult<MemberOutcome> {
     use crate::runtime_adapter::TeamRuntimeAdapter as _;
     use std::cell::RefCell;
@@ -803,7 +841,7 @@ pub(super) fn run_kimi_member_shared(
         provider_session.effective_permission_ceiling,
     )
     .map_err(CliError::Usage)?;
-    let process_effect = prepare_provider_process_effect(ledger, &member_row)?;
+    let process_effect = prepare_provider_process_effect(ledger, &member_row, transport_attempt)?;
     if let Err(error) = crate::runtime_adapter::preflight_profile_effect(
         &profile,
         &process_effect.target_session,

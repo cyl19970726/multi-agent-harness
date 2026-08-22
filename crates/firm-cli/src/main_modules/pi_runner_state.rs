@@ -37,6 +37,7 @@ pub(super) fn run_pi_team_member(
     objective: &str,
     member: &ProviderRuntimeProjection,
     context: &MemberRuntimeContext,
+    transport_attempt: u64,
 ) -> CliResult<MemberOutcome> {
     use crate::runtime_adapter::TeamRuntimeAdapter as _;
 
@@ -152,7 +153,7 @@ pub(super) fn run_pi_team_member(
     };
 
     // Fence immediately before pi process start/resume.
-    let process_effect = prepare_provider_process_effect(ledger, &member_row)?;
+    let process_effect = prepare_provider_process_effect(ledger, &member_row, transport_attempt)?;
     let profile = member_row.provider_profile.as_ref().ok_or_else(|| {
         CliError::Usage(format!(
             "RUNTIME_ADAPTER_PROFILE_MISSING: {} has no persisted provider profile",

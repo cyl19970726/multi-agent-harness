@@ -39,7 +39,7 @@ fn provider_authority_never_borrows_a_sole_foreign_space_session() {
             .expect_err("authority cannot borrow the foreign session"),
         transition_provider_session_for_member(&ledger, member, AgentSessionStatus::Active)
             .expect_err("transition cannot mutate the foreign session"),
-        prepare_provider_process_effect(&ledger, member)
+        prepare_provider_process_effect(&ledger, member, 1)
             .expect_err("process effect cannot target the foreign session"),
         prepare_provider_effect_kind(
             &ledger,
