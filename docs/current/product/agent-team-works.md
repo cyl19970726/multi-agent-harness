@@ -3,6 +3,10 @@
 Status: current
 Contract: AFM-2026.08.2
 
+Repository decision: [ADR 0058](../../decisions/0058-work-dependency-dag-and-kernel-boundary.md).
+Notion crosswalk: AgentFirm Docs System / `02 Work & Message` owns the
+human-facing mental model; this file records the implementation-bound contract.
+
 ## Authority
 
 Product doctrine for this topic — Work identity, ownership, the
@@ -23,6 +27,58 @@ resolution: accepted | cancelled | failed   # closed only
 `team_id` is a deprecated pre-cutover alias of `accountable_team_id`,
 readable through the Rust serde alias and never written by current
 binaries.
+
+## Flat Work graph
+
+Every Work is an independent responsibility node. Works do not contain other
+Works and have no parent/child identity. Ordering is represented only by hard
+dependency edges:
+
+```text
+Research ─┐
+          ├─> Integration ─> Release review
+Runtime  ─┘
+```
+
+`Integration` is ready only after both prerequisites are accepted. The same
+accepted prerequisite may unlock several successors. The stored prerequisite
+set is the forward authority; successors are derived. Dependency writes are
+versioned Work operations and reject missing nodes, duplicates, self-edges,
+stale revisions, and direct or transitive cycles.
+
+Failed or cancelled prerequisites do not propagate a terminal resolution.
+They leave successors not ready and create Host attention for explicit replan.
+Changing dependencies on active/review Work is Host-only and reconciles the
+execution binding. Terminal Work is immutable.
+
+## Kernel and package boundary
+
+The `firm-core` Work kernel owns lifecycle legality, DAG validation, readiness,
+terminal immutability, responsibility, and Module/Gate invariants. `firm-store`
+owns locks, CAS, atomic append, projections, notifications, and recovery. One
+application service owns Work use cases; CLI, HTTP, MCP, and Role Actions are
+adapters to it. RoleViews return derived graph facts and the Dashboard renders
+them without recomputing authority. NodeDaemon and providers execute effects
+but never own Work state.
+
+## Creation and dependency authority
+
+The Host governs Team-level Work and dependency mutation. A Member may create a
+self-owned or eligible unassigned peer Work inside its current Work's scope and
+acceptance boundary; it cannot create a Team-level goal, assign a peer, cross a
+Team boundary, expand permission, or change another Work's acceptance
+criteria. A Member dependency proposal has no effect until the kernel accepts
+the versioned operation. A Message can explain or request the change but never
+mutates the graph.
+
+## Module scope
+
+Work Module support is currently a closed built-in mechanism:
+`integration-plan@1` plus versioned `WorkModuleBinding` and derived Gate
+requirements. There is no installable or dynamically discovered Work Module
+registry. Modules may configure namespaced presentation and verification; they
+cannot add lifecycle states, bypass graph validation, authorize execution, or
+accept Work.
 
 Mutation surface (all executable Work mutations):
 

@@ -1,5 +1,9 @@
 # ADR 0033: Agent Team Workspace Contract
 
+> Work-graph amendment (ADR 0058): Harness still does not schedule Git or
+> worktree steps. That boundary does not prohibit kernel-owned Work dependency
+> edges; Work ordering and workspace mechanics are independent planes.
+
 Status: active, implemented
 
 ## Context

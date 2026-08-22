@@ -12,7 +12,8 @@ outputs, adapters, and the Agent Dashboard.
 | `AgentTeam` | One Mission's flat Team with required Host Agent and immutable Node placement |
 | `AgentTeamRun` | One Team execution with required Team, Node, and Project Binding identity |
 | `MemberRun` | One role/provider execution instance inside a TeamRun |
-| `Work` / `WorkOperation` / `WorkEvent` / `WorkDelivery` | TeamRun-scoped responsibility projection, crash-atomic replay row, append-only semantic transition, and versioned runtime delivery |
+| `Work` / `WorkOperation` / `WorkEvent` / `WorkDelivery` | Team-accountable flat DAG node, crash-atomic replay row, append-only semantic/dependency transition, and versioned runtime delivery |
+| `WorkModuleDefinition` / `WorkModuleBinding` / Gate records | Closed built-in Module definition, exact version/config binding, and candidate verification contract; not an open registry |
 | `WorkDelegation` / `WorkDelegationEvent` | Cross-Team responsibility handoff with CAS, idempotency, cycle prevention, and source rollup |
 | `Message` | Immutable identity-first conversation envelope with typed author, correlation/causation, optional Work relation, and closed semantic kind. Provider requests and responses are Message kinds. |
 | `MessageSubscription` / `SubscriptionCursor` | Authorized recipient policy and recipient progress without copying or mutating Message content. |
@@ -29,9 +30,10 @@ schemas and records are retired historical evidence, readable only through the
 legacy archive path. Existing Goal/Task schemas and retired TeamMessage projections are
 historical compatibility contracts; Evidence/Proposal/Decision remain optional
 governance contracts. They are not the
-active Agent Team coordination model (the retired Mission/Mission Log model is not either), and new Agent Team work
-must not depend on Goal, Task Graph, Plan Gate, or a TeamMessage compatibility
-path.
+active Agent Team coordination model (the retired Mission/Mission Log model is
+not either), and new Agent Team work must not depend on Goal, the retired Task
+Graph, Plan Gate, or a TeamMessage compatibility path. Current Work's own hard
+dependency DAG is defined by ADR 0058 and does not revive those objects.
 
 `Skill`, `ToolAdapter`, and `Dashboard` can start as configuration or views.
 
@@ -43,7 +45,8 @@ path.
 | `MissionLogEntry` | Rust + append-only `mission_log.jsonl` store + CLI/API/MCP/read model | yes |
 | `Wave` | Rust + JSON schema + historical JSONL reads/export only; create/update/advance/gate retired by ADR 0051 | legacy only |
 | `AgentTeamRun` family | Rust + JSON schemas + store + CLI/API/MCP/read model | yes |
-| `Work` / `WorkEvent` / `WorkDelivery` | Rust + JSON schemas + WorkOperation JSONL store + CLI/API/MCP/read model | yes |
+| `Work` / dependency operations / `WorkEvent` / `WorkDelivery` | Rust + JSON schemas + WorkOperation store + kernel DAG validation + CLI/API/MCP/read model | yes after DEV-60 exact-revision gate |
+| Work Module definition/binding | schema + Rust + Store for closed built-in `integration-plan@1` only | yes for that exact built-in; no open registry |
 | `TeamSupervisorLease` | Rust + JSON schema + JSONL latest-wins store + cross-process routing | yes |
 | `Goal` | historical compatibility schema; retired for new coordination | no for new work |
 | `AgentTeam` | Rust + JSON schema | yes |
@@ -81,6 +84,8 @@ schema contracts are checked with valid and invalid fixtures.
 | Work | [work.schema.json](../../../schemas/work.schema.json) |
 | Work event | [work-event.schema.json](../../../schemas/work-event.schema.json) |
 | Work delivery | [work-delivery.schema.json](../../../schemas/work-delivery.schema.json) |
+| Work Module definition | [work-module-definition.schema.json](../../../schemas/work-module-definition.schema.json) |
+| Work Module binding | [work-module-binding.schema.json](../../../schemas/work-module-binding.schema.json) |
 | Provider-native session locator | [native-session-ref.schema.json](../../../schemas/native-session-ref.schema.json) |
 | Message | [message.schema.json](../../../schemas/message.schema.json) |
 | Message subscription | [message-subscription.schema.json](../../../schemas/message-subscription.schema.json) |
@@ -121,6 +126,12 @@ a newer target Work with a stale cross-Team roll-up after a crash. It is not a
 separately authored public lifecycle object and therefore has no standalone
 public JSON Schema in V1; the public schemas above define the projections and
 semantic event/delivery records exposed by CLI/API/Dashboard.
+
+The Work schema carries only forward prerequisite identity; any successor list,
+readiness value, or readiness reason is a derived server projection. The
+current schema has no Work containment field. Dependency changes are canonical
+Work operations, not direct JSON projection edits. See
+[ADR 0058](../../decisions/0058-work-dependency-dag-and-kernel-boundary.md).
 
 ## Schema Evolution
 

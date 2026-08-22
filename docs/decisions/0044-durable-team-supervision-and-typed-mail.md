@@ -1,5 +1,10 @@
 # ADR 0044: Durable Team Supervision And Typed Mail
 
+> Work-graph amendment (ADR 0058): “no Task Graph” below still rejects a second
+> task ledger or workflow executor. It does not reject the current Work
+> dependency DAG, whose readiness belongs to the Work kernel and never to the
+> Supervisor or delivery plane.
+
 > Successor note (DOC-16 Keep row, DEV-40 flip 2026-08-18): this ADR is kept; the governing successor context is [DOC-106](https://app.notion.com/p/3be49a4fa3798126a598e634ed5d0807).
 
 ```text

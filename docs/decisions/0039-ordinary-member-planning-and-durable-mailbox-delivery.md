@@ -1,5 +1,10 @@
 # ADR 0039: Ordinary Member Planning And Durable Mailbox Delivery
 
+> Work-graph amendment (ADR 0058): planning remains ordinary conversation, but
+> accepted execution ordering is no longer encoded by correlation or natural
+> language. Current Works use durable `depends_on` edges and kernel-derived
+> readiness; Messages never mutate those edges.
+
 > Successor note (DOC-16 Keep row, DEV-40 flip 2026-08-18): this ADR is kept; the governing successor context is [DOC-106](https://app.notion.com/p/3be49a4fa3798126a598e634ed5d0807).
 
 ```text

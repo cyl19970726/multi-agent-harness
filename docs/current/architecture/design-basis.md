@@ -71,15 +71,17 @@ flowchart TD
 | Module | Owns | Refuses | Invariant |
 | --- | --- | --- | --- |
 | Agent Team | durable flat Team identity, immutable Node placement, roster | nested Team topology or copied provider history | responsibility is proven by Work/WorkEvent; live control by the NodeDaemon-fenced Supervisor |
-| Work | responsibility, lifecycle axes, evidence, delivery and acceptance | authored conversation or runtime control | one Work authority; the Global Work RoleView is read-only |
+| Work kernel | responsibility, lifecycle axes, hard dependency DAG, readiness, evidence and acceptance | persistence mechanics, authored conversation or runtime control | one Work authority; peer nodes only; Global Work is read-only |
 | Messages | identity-first authorship, subscriptions, per-recipient delivery | Work lifecycle or RuntimeCommand authority | Messages never mutate Work |
 | Execution Space / Project Binding | coordination storage vs provider cwd/instructions/Skills selection | repo path as coordination owner or store directory as provider cwd | `--project` never switches the coordination store |
 | Runtime | sessions, processes, events, workspace and capability observation | Work or TeamMembership truth | the provider-native session is the sole execution transcript truth |
 | Dynamic Workflow (retired) | historical WorkflowRun, steps, outputs and artifacts | current execution or universal coordination | legacy archive export/verify/restore-read only; no writers or live projections |
 | Skills/adapters | repeatable usage guidance and domain capability access | product authority or domain truth in generic core | capabilities reduce variance but never grant permission |
 
-There is no active `Goal`, `GoalPhase`, Project-like task container or Task
-Graph for new work. The retired Mission, Mission Log, Wave, and Company OS
+There is no active `Goal`, `GoalPhase`, Project-like task container, universal
+task ledger, or workflow-executor graph for new work. Current peer Works do
+form the bounded hard-dependency DAG defined by ADR 0058. The retired Mission,
+Mission Log, Wave, and Company OS
 object set exist only as read-only legacy history under DOC-108. Historical
 occurrences of the older stack exist only in migration, compatibility,
 research or archive contexts governed by ADR 0028.
@@ -124,3 +126,5 @@ Before adding an object, module, page or document:
 6. Which schema, store, API, UI and acceptance evidence make the claim real?
 7. Which older direction becomes superseded and how is it removed from default
    context?
+8. Does Work policy remain in the kernel, persistence in Store, orchestration
+   in one application service, and presentation in RoleViews/Dashboard?

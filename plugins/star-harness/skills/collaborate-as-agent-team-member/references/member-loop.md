@@ -199,10 +199,12 @@ Host, or peer input is useful. Do not repeatedly resend or create duplicate
 Work. When the Host resolves the blocker or requests changes, refresh the Work
 and continue in the same MemberRun, Workspace, and native session.
 
-## Create Follow-Up Work Without Assigning Peers
+## Create Peer Follow-Up Work Without Assigning Peers
 
-You may create self-owned or unassigned Work, and child Work beneath Work you
-own. Do not force assignment to a same-level peer.
+You may create self-owned or eligible unassigned peer Work inside your current
+Work's scope and acceptance boundary. Do not create a Team-level goal, assign a
+same-level peer, cross a Team boundary, expand permission, or alter another
+Work's acceptance criteria.
 
 ```bash
 "$HARNESS_BIN" team-run work create \
@@ -214,6 +216,13 @@ own. Do not force assignment to a same-level peer.
   --claim-mode team_claim \
   --idempotency-key <stable-command-key>
 ```
+
+If ordering is required, submit the supported dependency proposal/action with
+the exact current Work revision. Until that action is available on the bound
+surface, send the Host one Work-linked proposal naming the peer nodes and
+directed edges. A Message does not change the graph. Do not act on the proposed
+Work until the server returns it as ready; failed or cancelled prerequisites
+require Host replan.
 
 If another Team should own a substantial result, report that finding to your
 Host with the proposed boundary and evidence. The Host may create an explicit
@@ -350,4 +359,3 @@ Verify that:
 - Provider-native records remain the only transcript/tool/turn truth (shared hard invariants §3); and
 - your MemberRun stays available until the Host requests changes, accepts,
   reassigns, closes, or retires it.
-

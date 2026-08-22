@@ -72,6 +72,13 @@ gate results, and explicit submission/acceptance. The Global Work RoleView is
 a read-only aggregate over authoritative TeamWork and owns no second task
 ledger or mutation path.
 
+Works are flat nodes in one hard-dependency DAG. A Work may depend on several
+peer Works and an accepted Work may unlock several successors. The Work kernel
+rejects self-edges, missing prerequisites, duplicates, stale mutations, and
+direct or transitive cycles; it alone derives readiness and explanations.
+There is no Work-containment hierarchy. Failed or cancelled prerequisites
+require explicit Host replan and never silently resolve downstream Work.
+
 ### Messages
 
 Identity-first `Message` is authored conversation. `MessageSubscription`
@@ -112,6 +119,8 @@ the coordination store. Provider cwd resolves the attached
    but do not create a second durable workflow or task ledger.
 5. Every acceptance claim reconstructs from the store and the provider-native
    session.
+6. Operators can inspect Work predecessors, derived successors, and the exact
+   reason a Work is or is not ready without reading conversation history.
 
 ## Non-goals
 

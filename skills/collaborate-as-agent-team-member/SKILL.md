@@ -69,6 +69,10 @@ resolution: Accepted | Cancelled | Failed       (exists only at Closed)
 - **Assignment never travels by message.** Work assignment is a Work-module
   operation; a Message may explain, ask, or announce — it never changes Work
   owner or status.
+- **Work is a flat dependency DAG.** A Work is a peer responsibility node, not
+  a container. Claim/start only when server-derived readiness says every hard
+  prerequisite is accepted. Messages may propose nodes or edges but never
+  mutate them; failed/cancelled prerequisites require Host replan.
 
 ### 4. Messages: one authority, honest delivery states
 
@@ -101,7 +105,7 @@ Queued → Routed → Claimed → ProviderReceived → Acknowledged
 
 | Truth | Owner |
 | --- | --- |
-| Responsibility, status, evidence refs | Work module (ordered WorkEvents) |
+| Responsibility, status, dependency DAG, readiness, evidence refs | Work kernel (ordered WorkOperations/WorkEvents) |
 | Conversation, decisions-as-text | Message → Subscription → Delivery |
 | Transcript, tool calls, thinking | provider-native session (never copied) |
 | Session/runtime state, recovery | NodeDaemon + Supervisor generations |
