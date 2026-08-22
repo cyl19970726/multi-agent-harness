@@ -572,6 +572,7 @@ pub(super) fn settle_provider_effect_not_applied(
 pub(super) fn prepare_provider_process_effect(
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,
+    transport_attempt: u64,
 ) -> CliResult<ProviderEffectAdmission> {
     use harness_core::agentfirm_api::{
         ActorKind, ActorRef, ControlCommandEnvelope, RuntimeCommandKind,
@@ -605,12 +606,11 @@ pub(super) fn prepare_provider_process_effect(
         "native_resume_ref": member.native_session.as_ref().map(|value| &value.native_session_id),
     });
     let fingerprint = harness_store::canonical_json_fingerprint(&payload);
-    let idempotency_key = format!(
-        "provider-process:{}:{}:{}:{}:{kind:?}",
-        session.id,
-        session.runtime_generation,
-        session.node_daemon_generation,
-        session.control_state.driver_generation
+    let idempotency_key = provider_process_idempotency_key(
+        &session,
+        ledger.supervisor_generation,
+        transport_attempt,
+        kind,
     );
     let command_id = format!("runtime-command:{idempotency_key}");
     let daemon_actor = ActorRef {
