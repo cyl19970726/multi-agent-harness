@@ -14,7 +14,7 @@ fn work_prerequisite_satisfaction_is_distinct_from_claim_readiness() {
             accountable_team_id: None,
             assignee_membership_id: None,
             created_by_member_id: None,
-            parent_work_id: None,
+            legacy_parent_work_id: None,
             title: id.into(),
             context_markdown: String::new(),
             completion_criteria_markdown: "done".into(),
@@ -77,6 +77,35 @@ fn legacy_work_delivery_update_defaults_to_unsequenced() {
     }))
     .expect("legacy delivery update remains readable");
     assert_eq!(update.update_sequence, 0);
+}
+
+#[test]
+fn legacy_parent_work_is_decode_only_evidence() {
+    let mut value = serde_json::json!({
+        "id": "work-legacy",
+        "team_run_id": "run-1",
+        "accountable_team_id": "team-1",
+        "parent_work_id": "historical-parent",
+        "title": "Legacy row",
+        "context_markdown": "",
+        "completion_criteria_markdown": "done",
+        "phase": "open",
+        "condition": "normal",
+        "claim_mode": "team_claim",
+        "priority": "normal",
+        "created_by_actor": {"kind": "host", "id": "host-1"},
+        "version": 1,
+        "created_at": "unix-ms:1",
+        "updated_at": "unix-ms:1"
+    });
+    let work: Work = serde_json::from_value(value.clone()).expect("legacy parent decodes");
+    assert_eq!(
+        work.legacy_parent_work_id.as_deref(),
+        Some("historical-parent")
+    );
+    value = serde_json::to_value(work).expect("current Work serializes");
+    assert!(value.get("parent_work_id").is_none());
+    assert!(value.get("legacy_parent_work_id").is_none());
 }
 
 #[test]

@@ -11,7 +11,6 @@
     "accountable_team_id": { "type": ["string", "null"], "minLength": 1 },
     "assignee_membership_id": { "type": ["string", "null"], "minLength": 1 },
     "team_id": { "type": ["string", "null"], "minLength": 1, "deprecated": true, "description": "Legacy pre-cutover alias of accountable_team_id; readable only through the Rust serde alias, never written by current binaries." },
-    "parent_work_id": { "type": ["string", "null"], "minLength": 1 },
     "title": { "type": "string", "minLength": 1 },
     "context_markdown": { "type": "string" },
     "completion_criteria_markdown": { "type": "string", "minLength": 1 },

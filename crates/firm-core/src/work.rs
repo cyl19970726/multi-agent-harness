@@ -1,10 +1,16 @@
 use super::*;
 
+mod dependency;
+mod lifecycle;
+
+pub use dependency::*;
+pub use lifecycle::*;
+
 /// Agent Team Work is durable responsibility inside one AgentTeam. A
 /// `team_run_id` is the current execution attempt, not the Work's lifetime.
 /// WorkEvent is the append-only authority; this row is the latest rebuildable
 /// projection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkPhase {
     Open,
@@ -13,7 +19,7 @@ pub enum WorkPhase {
     Closed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkCondition {
     Normal,
@@ -428,10 +434,13 @@ pub struct Work {
     /// responsibility while receiving no new automatic execution authority.
     #[serde(default)]
     pub assignee_membership_id: Option<String>,
-    /// Same-TeamRun hierarchy only. Cross-Team delegation uses
-    /// [`WorkDelegation`].
-    #[serde(default)]
-    pub parent_work_id: Option<String>,
+    /// Historical Parent/Child Work evidence. Current Work is a flat DAG and
+    /// never serializes or mutates this value; new code must use
+    /// `prerequisite_work_ids` instead. The renamed field deliberately keeps
+    /// old JSONL rows readable without keeping `parent_work_id` in the current
+    /// model or schema authority.
+    #[serde(default, rename = "parent_work_id", skip_serializing)]
+    pub legacy_parent_work_id: Option<String>,
     pub title: String,
     pub context_markdown: String,
     pub completion_criteria_markdown: String,
@@ -530,6 +539,12 @@ impl Work {
         self.is_claim_ready(works)
     }
 
+    /// Structured, deterministic claim-readiness result. Prefer this over the
+    /// compatibility boolean helpers for APIs and operator-facing surfaces.
+    pub fn readiness(&self, works: &[Work]) -> WorkReadiness {
+        work_readiness(self, works)
+    }
+
     /// Whether this Work carries a durable accountable AgentTeam (DOC-106)
     /// rather than only a compatibility TeamRun scope.
     pub fn is_team_scoped(&self) -> bool {
@@ -571,7 +586,10 @@ impl Validate for Work {
         require_non_empty(&self.updated_at, "Work.updated_at")?;
 
         for (value, field) in [
-            (self.parent_work_id.as_deref(), "Work.parent_work_id"),
+            (
+                self.legacy_parent_work_id.as_deref(),
+                "Work.legacy_parent_work_id",
+            ),
             (
                 self.assignee_membership_id.as_deref(),
                 "Work.assignee_membership_id",
@@ -682,7 +700,11 @@ pub enum WorkEventKind {
     ChangesRequested,
     Accepted,
     Cancelled,
+    Failed,
     Updated,
+    /// Canonical replacement of the Work's hard `depends_on` edge set. The
+    /// event payload is [`WorkDependenciesChangedPayload`].
+    DependenciesChanged,
     Rebound,
     /// The execution attempt (`team_run_id`) of a Team-scoped Work moved to a
     /// successor TeamRun of the same AgentTeam. Durable scope (`team_id`),
@@ -850,6 +872,7 @@ pub enum HostAttentionKind {
     WorkChangesRequested,
     WorkCancelled,
     WorkPrerequisiteCompleted,
+    WorkPrerequisiteNeedsReconciliation,
     WorkDeliveryFailed,
     MemberStoppedWithOwnedReadyWork,
     MemberFailedWithOwnedReadyWork,
