@@ -337,6 +337,7 @@ impl HarnessStore {
             .get(work_id)
             .cloned()
             .ok_or_else(|| StoreError::Conflict(format!("work not found: {work_id}")))?;
+        self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
         let (mutation_context, request_fingerprint) = self
             .canonical_work_command_context_unlocked(
                 &current,

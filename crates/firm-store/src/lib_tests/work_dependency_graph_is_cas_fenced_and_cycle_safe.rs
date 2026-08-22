@@ -85,6 +85,75 @@ fn work_dependency_graph_is_cas_fenced_idempotent_and_cycle_safe() {
 }
 
 #[test]
+fn dependency_writer_requires_exact_team_run_host_before_replay_or_append() {
+    let (_root, store, run, _, _) = work_test_fixture("dependency-exact-host");
+    let prerequisite = create_work(&store, &run.id, "work-prerequisite", 2);
+    let dependent = create_work(&store, &run.id, "work-dependent", 3);
+
+    let committed = store
+        .replace_work_dependencies(
+            &dependent.id,
+            dependent.version,
+            vec![prerequisite.id.clone()],
+            run_host_work_context(&run, "event-exact-host", "key-exact-host", "unix-ms:4"),
+        )
+        .expect("exact TeamRun Host may replace dependencies");
+    let canonical_before = store
+        .canonical_operations()
+        .expect("canonical operations before hostile attempts")
+        .len();
+
+    let hostile_actors = [
+        (TeamActorKind::Host, "forged-host"),
+        (TeamActorKind::Host, "host"),
+        (TeamActorKind::Operator, "operator"),
+        (TeamActorKind::Service, "service"),
+    ];
+    for (index, (kind, id)) in hostile_actors.into_iter().enumerate() {
+        let idempotency_key = if index == 0 {
+            // Prove exact replay cannot bypass Host authorization.
+            "key-exact-host".to_string()
+        } else {
+            format!("key-hostile-{index}")
+        };
+        let mut context = host_work_context(
+            &format!("event-hostile-{index}"),
+            &idempotency_key,
+            &format!("unix-ms:{}", 5 + index),
+        );
+        context.performed_by_actor.kind = kind;
+        context.performed_by_actor.id = id.into();
+        let error = store
+            .replace_work_dependencies(&dependent.id, committed.version, Vec::new(), context)
+            .expect_err("non-exact Host authority must fail closed");
+        assert!(
+            error.to_string().contains("Host authority")
+                || error
+                    .to_string()
+                    .contains("TEAM_RUN_HOST_AUTHORITY_MISMATCH")
+        );
+        assert_eq!(
+            store
+                .canonical_operations()
+                .expect("canonical operations after hostile attempt")
+                .len(),
+            canonical_before,
+            "hostile actor {kind:?}:{id} must append no canonical operation"
+        );
+        assert_eq!(
+            store
+                .latest_works()
+                .expect("latest Works after hostile attempt")
+                .into_iter()
+                .find(|work| work.id == dependent.id)
+                .expect("dependent Work remains present"),
+            committed,
+            "hostile actor {kind:?}:{id} must not change the Work projection"
+        );
+    }
+}
+
+#[test]
 fn concurrent_opposite_edges_linearize_without_creating_a_cycle() {
     let (_root, store, run, _, _) = work_test_fixture("dependency-concurrent-cycle");
     let a = create_work(&store, &run.id, "work-a", 2);
