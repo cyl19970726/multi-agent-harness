@@ -400,4 +400,32 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn many_prerequisites_are_canonical_and_require_every_acceptance() {
+        let mut prerequisites = Vec::new();
+        let mut ids = Vec::new();
+        for index in (0..128).rev() {
+            let id = format!("prerequisite-{index:03}");
+            ids.push(id.clone());
+            let mut prerequisite = work(&id, &[]);
+            prerequisite.phase = WorkPhase::Closed;
+            prerequisite.resolution = Some(WorkResolution::Accepted);
+            prerequisites.push(prerequisite);
+        }
+        let target = work("target", &[]);
+        let payload = prepare_dependency_change(&target, ids, &prerequisites)
+            .expect("many valid prerequisites");
+        assert_eq!(payload.prerequisite_work_ids.len(), 128);
+        assert!(payload.prerequisite_work_ids.is_sorted());
+
+        let mut projected_target = target;
+        projected_target.prerequisite_work_ids = payload.prerequisite_work_ids;
+        assert!(work_readiness(&projected_target, &prerequisites).ready);
+        prerequisites[64].phase = WorkPhase::Review;
+        prerequisites[64].resolution = None;
+        let readiness = work_readiness(&projected_target, &prerequisites);
+        assert!(!readiness.ready);
+        assert_eq!(readiness.reasons.len(), 1);
+    }
 }

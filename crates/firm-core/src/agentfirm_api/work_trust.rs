@@ -317,11 +317,60 @@ impl std::fmt::Display for WorkModuleId {
     }
 }
 
+/// Closed, reviewed Work-module implementation version. Adding a new version
+/// is a code/schema change, never an unreviewed numeric registry extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WorkModuleVersion(u64);
+
+impl WorkModuleVersion {
+    pub const V1: Self = Self(1);
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl Serialize for WorkModuleVersion {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u64(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for WorkModuleVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let version = u64::deserialize(deserializer)?;
+        match version {
+            1 => Ok(Self::V1),
+            _ => Err(serde::de::Error::custom(format!(
+                "unsupported Work module version {version}"
+            ))),
+        }
+    }
+}
+
+impl std::fmt::Display for WorkModuleVersion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl PartialEq<u64> for WorkModuleVersion {
+    fn eq(&self, other: &u64) -> bool {
+        self.0 == *other
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkModuleDefinition {
     pub module_id: WorkModuleId,
-    pub module_version: u64,
+    pub module_version: WorkModuleVersion,
     pub schema_version: u64,
     pub display_name: String,
     pub config_schema: serde_json::Value,
@@ -332,7 +381,7 @@ pub struct WorkModuleDefinition {
 pub fn integration_plan_module_v1() -> WorkModuleDefinition {
     WorkModuleDefinition {
         module_id: WorkModuleId::IntegrationPlan,
-        module_version: 1,
+        module_version: WorkModuleVersion::V1,
         schema_version: 1,
         display_name: "Integration Plan".into(),
         config_schema: serde_json::json!({
@@ -361,7 +410,7 @@ pub struct WorkModuleBinding {
     pub work_id: String,
     pub work_revision: u64,
     pub module_id: WorkModuleId,
-    pub module_version: u64,
+    pub module_version: WorkModuleVersion,
     pub resolved_config: serde_json::Value,
     pub config_fingerprint: String,
     pub attached_by: ActorRef,
@@ -587,5 +636,22 @@ mod work_module_contract_tests {
             "version": 1
         }));
         assert!(unknown.is_err(), "unknown module ids fail closed");
+
+        let unknown_version = serde_json::from_value::<WorkModuleBinding>(serde_json::json!({
+            "id": "binding-1",
+            "work_id": "work-1",
+            "work_revision": 1,
+            "module_id": "integration-plan",
+            "module_version": 2,
+            "resolved_config": {},
+            "config_fingerprint": "sha256:config",
+            "attached_by": {"kind": "agent_member", "id": "member-1"},
+            "attached_at": "unix-ms:1",
+            "version": 1
+        }));
+        assert!(
+            unknown_version.is_err(),
+            "unknown module versions fail closed"
+        );
     }
 }

@@ -3,7 +3,7 @@
   "type":"object","additionalProperties":false,
   "required":["module_id","module_version","schema_version","display_name","config_schema","default_gate_templates","implementation_ref"],
   "properties":{
-    "module_id":{"type":"string","enum":["integration-plan"]},"module_version":{"type":"integer","minimum":1},"schema_version":{"type":"integer","minimum":1},"display_name":{"type":"string","minLength":1},
+    "module_id":{"type":"string","enum":["integration-plan"]},"module_version":{"type":"integer","const":1},"schema_version":{"type":"integer","minimum":1},"display_name":{"type":"string","minLength":1},
     "config_schema":{},"default_gate_templates":{"type":"array","items":{}},"implementation_ref":{"type":"string","minLength":1}
   }
 }
