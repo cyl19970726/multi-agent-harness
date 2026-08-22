@@ -287,21 +287,20 @@ pub(super) fn persist_new_team(
 }
 
 /// Persist a freshly-built Agent Member. Mirrors the `agent create` CLI arm.
-pub(super) fn http_host_work_context(body: &serde_json::Value) -> CliResult<WorkCommandContext> {
+pub(super) fn http_host_work_context(
+    store: &HarnessStore,
+    team_run_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<WorkCommandContext> {
+    let host_actor = store.exact_team_run_host_actor(team_run_id)?;
     Ok(WorkCommandContext {
         event_id: json_string(body, "event_id").unwrap_or_else(|| generated_id("work-event")),
         performed_by_actor: TeamActorRef {
-            kind: TeamActorKind::Operator,
-            id: json_string(body, "actor_id").unwrap_or_else(|| "operator:dashboard".to_string()),
-            display_name: json_string(body, "actor_name"),
-            authn_source: Some("http_operator".to_string()),
+            display_name: json_string(body, "actor_name").or(host_actor.display_name.clone()),
+            authn_source: Some("http_exact_team_host".to_string()),
+            ..host_actor.clone()
         },
-        authority_actor: Some(TeamActorRef {
-            kind: TeamActorKind::Host,
-            id: "host".to_string(),
-            display_name: None,
-            authn_source: Some("http_host_authority".to_string()),
-        }),
+        authority_actor: Some(host_actor),
         causation_ref: json_string(body, "caused_by_message_id").map(|id| WorkCausationRef {
             kind: "team_message".to_string(),
             id,
@@ -367,7 +366,7 @@ pub(super) fn create_team_work_value(
         } else {
             WorkClaimMode::TeamClaim
         });
-    let context = http_host_work_context(body)?;
+    let context = http_host_work_context(store, team_run_id, body)?;
     let work = Work {
         id: json_string(body, "id").unwrap_or_else(|| generated_id("work")),
         team_run_id: team_run_id.to_string(),
@@ -447,7 +446,7 @@ pub(crate) fn create_work_delegation_value(
         )));
     }
     let target_run = &target_runs[0];
-    let context = http_host_work_context(body)?;
+    let context = http_host_work_context(store, &source_run_id, body)?;
     let request_hash = content_hash_hex16(&context.idempotency_key);
     let target_work_id = json_string(body, "target_work_id")
         .unwrap_or_else(|| format!("delegated-work-{request_hash}"));
@@ -523,11 +522,17 @@ pub(crate) fn cancel_work_delegation_value(
     delegation_id: &str,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
+    let source_team_run_id = store
+        .latest_work_delegations()?
+        .into_iter()
+        .find(|delegation| delegation.id == delegation_id)
+        .map(|delegation| delegation.source_work_ref.team_run_id)
+        .ok_or_else(|| CliError::Usage(format!("WorkDelegation not found: {delegation_id}")))?;
     let delegation = store.cancel_work_delegation(
         delegation_id,
         required_json_work_version(body)?,
         &required_json_string(body, "reason")?,
-        http_host_work_context(body)?,
+        http_host_work_context(store, &source_team_run_id, body)?,
     )?;
     Ok(serde_json::to_value(delegation)?)
 }
@@ -564,7 +569,7 @@ pub(super) fn mutate_team_work_value(
     } else {
         None
     };
-    let context = http_host_work_context(body)?;
+    let context = http_host_work_context(store, team_run_id, body)?;
     let (work, event_op, event_summary) = match operation {
         "assign" => {
             let member_run_id = required_json_string(body, "member_run_id")?;

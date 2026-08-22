@@ -126,7 +126,8 @@ path as an execution root is a routing defect.
    run. `host_runtime_mode` defaults to `managed`; the exact Host AgentMember
    must be present in the roster and receives the same persistent provider
    binding as a Member. Select `external_interactive` only for an intentionally
-   pull-only, user-driven Host. Supply supported provider identities/roles, disjoint owned paths,
+   pull-only, user-driven Host; creation returns the weaker delivery guarantee
+   explicitly and never starts or admits that provider. Supply supported provider identities/roles, disjoint owned paths,
    and workspace overrides only when needed. Keep the returned execution/member roots. Create bounded Works
    with explicit completion criteria, directly assign them or expose eligible
    unassigned Works for atomic claim, and keep the returned Work ids/versions.
@@ -209,8 +210,9 @@ No `host_surface + host_thread_id` compatibility binding participates in this
 managed path.
 
 An `external_interactive` Host remains scoped by its explicit external surface
-and native thread. It must read/wait/poll its durable inbox; hook success and UI
-visibility are notification hints, never a provider receipt. Mail can remain
+and optional native-thread locator. It must read/wait/poll its durable inbox;
+Harness creates no AgentSession or RuntimeCommand and never drives that
+provider. Hook success and UI visibility are notification hints, never a provider receipt. Mail can remain
 actionable until that exact external Host reads it. See
 [ADR 0057](../../decisions/0057-host-is-an-agent-member.md); ADR 0040 is the
 historical external-task delivery predecessor.

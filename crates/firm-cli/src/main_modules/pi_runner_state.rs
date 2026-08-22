@@ -125,6 +125,8 @@ pub(super) fn run_pi_team_member(
         .find(|candidate| candidate.id == member_row.agent_member_id)
         .map(|record| record.permission_ceiling)
         .unwrap_or(harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite);
+    let run = latest_team_run(&ledger.store, &ledger.run_id)?;
+    let ceiling = effective_member_permission_ceiling(ceiling, &run, &member_row);
     let tools = crate::runtime_adapter::pi_tools_allowlist_for_ceiling(ceiling)?;
     if let Some(profile) = member_row.provider_profile.as_mut() {
         // Reuse the exact permission-aware resolution that was persisted

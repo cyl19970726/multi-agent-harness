@@ -19,9 +19,8 @@ use std::collections::BTreeSet;
 use std::io::{BufRead, Write};
 
 use harness_core::{
-    AgentTeamRun, TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus,
-    TeamSupervisorLeaseStatus, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext,
-    WorkCondition, WorkPhase, WorkPriority,
+    AgentTeamRun, TeamActorRef, TeamRunEvent, TeamRunStatus, TeamSupervisorLeaseStatus, Work,
+    WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition, WorkPhase, WorkPriority,
 };
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
@@ -33,13 +32,13 @@ use crate::{
     add_team_run_member, agentfirm_api, answer_provider_message_value, close_team_member_value,
     configure_host_runtime_mode, create_team_run, current_unix_ms_u64, deactivate_team_run_member,
     delegate_team_run_to_node_daemon, format_work_brief_line, generated_id,
-    host_inbox_for_native_thread, interrupt_team_member_value, latest_member_runs_in_append_order,
-    latest_team_run, latest_team_runs_in_append_order, mutate_team_work_value, now_string,
-    reconcile_team_work_delivery_value, rename_team_run_member, reopen_team_member_value,
-    reopened_member_requires_supervisor_start, serde_snake_label, steer_team_member_value,
-    team_member_specs_from_definition, team_run_board_summary_text, team_run_inbox,
-    team_run_mission_id, transition_team_run, visible_member_actions_in_append_order,
-    work_operation_cursors, ResolvedStore, TeamMemberSpec,
+    host_inbox_for_native_thread, host_runtime_projection, interrupt_team_member_value,
+    latest_member_runs_in_append_order, latest_team_run, latest_team_runs_in_append_order,
+    mutate_team_work_value, now_string, reconcile_team_work_delivery_value, rename_team_run_member,
+    reopen_team_member_value, reopened_member_requires_supervisor_start, serde_snake_label,
+    steer_team_member_value, team_member_specs_from_definition, team_run_board_summary_text,
+    team_run_inbox, team_run_mission_id, transition_team_run,
+    visible_member_actions_in_append_order, work_operation_cursors, ResolvedStore, TeamMemberSpec,
 };
 
 /// MCP protocol revision this server speaks, echoed verbatim in `initialize`
@@ -561,7 +560,7 @@ fn tool_team_run_work_create(store: &HarnessStore, arguments: &Value) -> Result<
     };
     optional_non_empty_str(arguments, "caused_by_message_id")?;
     optional_non_empty_str(arguments, "idempotency_key")?;
-    let context = local_mcp_host_work_context(arguments);
+    let context = local_mcp_host_work_context(store, team_run_id, arguments)?;
     let work = Work {
         id: optional_non_empty_str(arguments, "id")?.unwrap_or_else(|| generated_id("work")),
         team_run_id: team_run_id.to_string(),
@@ -628,21 +627,22 @@ fn optional_non_empty_str(arguments: &Value, key: &str) -> Result<Option<String>
     }
 }
 
-fn local_mcp_host_work_context(arguments: &Value) -> WorkCommandContext {
-    WorkCommandContext {
+fn local_mcp_host_work_context(
+    store: &HarnessStore,
+    team_run_id: &str,
+    arguments: &Value,
+) -> Result<WorkCommandContext, String> {
+    let host_actor = store
+        .exact_team_run_host_actor(team_run_id)
+        .map_err(|error| error.to_string())?;
+    Ok(WorkCommandContext {
         event_id: generated_id("work-event"),
         performed_by_actor: TeamActorRef {
-            kind: TeamActorKind::Service,
-            id: "service:mcp".to_string(),
             display_name: Some("Harness MCP".to_string()),
-            authn_source: Some("local_mcp_stdio".to_string()),
+            authn_source: Some("local_mcp_exact_team_host".to_string()),
+            ..host_actor.clone()
         },
-        authority_actor: Some(TeamActorRef {
-            kind: TeamActorKind::Host,
-            id: "host".to_string(),
-            display_name: None,
-            authn_source: Some("local_mcp_host_authority".to_string()),
-        }),
+        authority_actor: Some(host_actor),
         causation_ref: arguments
             .get("caused_by_message_id")
             .and_then(Value::as_str)
@@ -657,7 +657,7 @@ fn local_mcp_host_work_context(arguments: &Value) -> WorkCommandContext {
             .unwrap_or_else(|| generated_id("work-command")),
         created_at: now_string(),
         duplicate_ok: false,
-    }
+    })
 }
 
 fn required_non_empty_str<'a>(arguments: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -1137,6 +1137,7 @@ fn tool_team_run_create(
         "member_runs": created.member_runs,
         "works": created.works,
         "dashboard_url": team_dashboard_url(store, resolved, &created.team_run.id),
+        "host_runtime": host_runtime_projection(created.team_run.host_control_mode),
     }))
 }
 

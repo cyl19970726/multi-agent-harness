@@ -576,6 +576,36 @@ pub(super) fn apply_permission_enforcement_to_profile(
     Ok(())
 }
 
+/// A managed Host is a coordination runtime, not a second writable coding
+/// driver in the Team workspace. The AgentMember ceiling remains the durable
+/// organization maximum; the exact Host MemberRun narrows its session ceiling
+/// to read-only for this TeamRun generation.
+pub(super) fn effective_member_permission_ceiling(
+    durable_ceiling: harness_core::agentfirm_api::PermissionCeiling,
+    run: &AgentTeamRun,
+    member: &ProviderRuntimeProjection,
+) -> harness_core::agentfirm_api::PermissionCeiling {
+    if run
+        .host_actor
+        .as_ref()
+        .is_some_and(|host| host.kind == TeamActorKind::Host && host.id == member.agent_member_id)
+    {
+        harness_core::agentfirm_api::PermissionCeiling::ReadOnly
+    } else {
+        durable_ceiling
+    }
+}
+
+pub(super) fn host_runtime_projection(mode: HostControlMode) -> serde_json::Value {
+    let managed = mode == HostControlMode::Managed;
+    serde_json::json!({
+        "mode": if managed { "managed" } else { "external_interactive" },
+        "delivery_guarantee": if managed { "daemon_managed" } else { "pull_only" },
+        "runtime_residency": if managed { "managed_member_run" } else { "detached_user_driven" },
+        "warning": (!managed).then_some("External Host delivery is weaker: Harness cannot drive or prove provider receipt; the Host must explicitly read and acknowledge its own inbox."),
+    })
+}
+
 pub(super) fn agent_session_control_state_for_profile(
     profile: Option<&ProviderIntegrationProfile>,
     daemon_id: &str,

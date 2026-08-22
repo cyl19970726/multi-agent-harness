@@ -134,7 +134,10 @@ impl HarnessStore {
                 }
             }
             _ => {
-                require_host_actor(&context.performed_by_actor)?;
+                self.require_exact_team_run_host_actor(
+                    &context.performed_by_actor,
+                    &work.team_run_id,
+                )?;
                 if work.created_by_member_id.is_some() {
                     return Err(StoreError::Conflict(
                         "only a ProviderRuntimeProjection actor may set created_by_member_id"
@@ -471,6 +474,7 @@ impl HarnessStore {
         }
         require_host_actor(&context.performed_by_actor)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
+        self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
         if current.is_terminal()
             || current.phase != WorkPhase::Open
             || current.condition != WorkCondition::Normal
@@ -526,6 +530,7 @@ impl HarnessStore {
         }
         require_host_actor(&context.performed_by_actor)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
+        self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
         if current.is_terminal() {
             return Err(StoreError::Conflict(format!(
                 "work {work_id} is terminal and cannot be reassigned"
@@ -627,6 +632,7 @@ impl HarnessStore {
         }
         require_host_actor(&context.performed_by_actor)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
+        self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
         if current.is_terminal() {
             return Err(StoreError::Conflict(format!(
                 "work {work_id} is terminal and cannot be rebound"
@@ -752,6 +758,10 @@ impl HarnessStore {
         })
         .remove(work_id)
         .ok_or_else(|| StoreError::Conflict(format!("work not found: {work_id}")))?;
+        self.require_exact_team_run_host_actor(
+            &context.performed_by_actor,
+            &raw_current.work.team_run_id,
+        )?;
         if raw_current.work.version != expected_version {
             return Err(StoreError::Conflict(format!(
                 "VERSION_CONFLICT: work {work_id} is at version {}, expected {expected_version}",
@@ -811,6 +821,7 @@ impl HarnessStore {
         }
         require_host_actor(&context.performed_by_actor)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
+        self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
         if current.is_terminal() {
             return Err(StoreError::Conflict(format!(
                 "work {work_id} is terminal and cannot be retargeted"

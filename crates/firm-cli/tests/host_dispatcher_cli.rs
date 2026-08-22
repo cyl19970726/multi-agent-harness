@@ -27,6 +27,7 @@ fn append_legacy_jsonl<T: serde::Serialize>(path: &std::path::Path, value: &T) {
 }
 
 #[test]
+#[ignore = "historical provider-driving dispatcher is retired; replacement coverage below proves the current CLI fails closed"]
 fn dispatch_host_resumes_exact_kimi_session_and_releases_lease() {
     let home = TempHome::new("host-dispatch-exact-kimi");
     let project_root = home.base().join("project");
@@ -212,4 +213,25 @@ fn dispatch_host_resumes_exact_kimi_session_and_releases_lease() {
         .is_some_and(|receipt| receipt.starts_with("kimi-acp-prompt:")));
     let lease = store.latest_host_binding_lease(&run.id).unwrap().unwrap();
     assert_eq!(lease.status, HostBindingLeaseStatus::Released);
+}
+
+#[test]
+fn dispatch_host_is_retired_for_pull_only_external_hosts() {
+    let home = TempHome::new("host-dispatch-retired");
+    let project_root = home.base().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let init = run_firm(&home, &project_root, &["init"]);
+    assert!(init.status.success(), "init failed: {init:?}");
+
+    let output = run_firm(
+        &home,
+        &project_root,
+        &["team-run", "dispatch-host", "--id", "external-run"],
+    );
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("EXTERNAL_HOST_IS_PULL_ONLY"),
+        "unexpected error: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

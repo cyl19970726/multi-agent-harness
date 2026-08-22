@@ -253,23 +253,44 @@ fn persisted_native_test_member(
         None,
         None,
         None,
-        &[TeamMemberSpec {
-            agent_member_id: "host".into(),
-            name: "ProviderCallback".into(),
-            role: "reviewer".into(),
-            provider: provider.into(),
-            execution_mode: Some(mode.into()),
-            model: None,
-            effort: None,
-            service_tier: None,
-            provider_cwd_hint: None,
-            owned_paths: Vec::new(),
-            resume_native_session_id: None,
-            initial_work: None,
-        }],
+        &[
+            TeamMemberSpec {
+                agent_member_id: "host".into(),
+                name: "Host".into(),
+                role: "host".into(),
+                provider: "codex".into(),
+                execution_mode: Some("codex_app_server".into()),
+                model: None,
+                effort: None,
+                service_tier: None,
+                provider_cwd_hint: None,
+                owned_paths: Vec::new(),
+                resume_native_session_id: None,
+                initial_work: None,
+            },
+            TeamMemberSpec {
+                agent_member_id: "agent-native-open".into(),
+                name: "ProviderCallback".into(),
+                role: "reviewer".into(),
+                provider: provider.into(),
+                execution_mode: Some(mode.into()),
+                model: None,
+                effort: None,
+                service_tier: None,
+                provider_cwd_hint: None,
+                owned_paths: Vec::new(),
+                resume_native_session_id: None,
+                initial_work: None,
+            },
+        ],
     )
     .expect("create persisted provider callback member");
-    let initial = created.member_runs[0].clone();
+    let initial = created
+        .member_runs
+        .iter()
+        .find(|member| member.agent_member_id == "agent-native-open")
+        .expect("provider callback MemberRun")
+        .clone();
     let mut running = initial.clone();
     running.status = MemberRunStatus::Running;
     running.native_session = Some(NativeSessionRef {
@@ -424,7 +445,7 @@ fn make_member(id: &str) -> ProviderLaunchProfile {
         provider: "codex".into(),
         model: None,
         profile: None,
-        provider_config: ProviderLaunchConfig::default(),
+        provider_config: harness_core::ProviderLaunchConfig::default(),
         capabilities: Vec::new(),
         team_ids: Vec::new(),
         prompt_ref: None,

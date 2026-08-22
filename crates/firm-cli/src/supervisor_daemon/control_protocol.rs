@@ -327,15 +327,37 @@ impl MultiTeamDaemon {
                                                     != harness_core::agentfirm_api::AgentSessionStatus::Closed
                                         })
                                         .collect::<Vec<_>>();
-                                    if current.len() != 1 {
-                                        return Err(CliError::Usage(
-                                            "AGENT_SESSION_AMBIGUOUS: message author requires one exact current local session".into(),
-                                        ));
+                                    match current.as_slice() {
+                                        [session] => (
+                                            Some(envelope.authenticated_actor.id.clone()),
+                                            Some(session.id.clone()),
+                                        ),
+                                        [] => {
+                                            let team_run_id = draft.team_run_id.as_deref().ok_or_else(|| {
+                                                CliError::Usage("AGENT_SESSION_AMBIGUOUS: sessionless AgentMember author requires an exact external Host TeamRun".into())
+                                            })?;
+                                            let run = crate::latest_team_run(&store, team_run_id)?;
+                                            let exact_host = store.exact_team_run_host_actor(team_run_id)?;
+                                            if run.host_control_mode
+                                                != harness_core::HostControlMode::ExternalInteractive
+                                                || exact_host.id != envelope.authenticated_actor.id
+                                            {
+                                                return Err(CliError::Usage(
+                                                    "AGENT_SESSION_AMBIGUOUS: message author requires one exact current local session or the exact sessionless external Host identity".into(),
+                                                ));
+                                            }
+                                            // External Host authoring is an authenticated
+                                            // coordination-plane effect. It preserves the
+                                            // AgentMember actor but never fabricates a sender
+                                            // AgentSession or provider receipt.
+                                            (None, None)
+                                        }
+                                        _ => {
+                                            return Err(CliError::Usage(
+                                                "AGENT_SESSION_AMBIGUOUS: message author has multiple current local sessions".into(),
+                                            ));
+                                        }
                                     }
-                                    (
-                                        Some(envelope.authenticated_actor.id.clone()),
-                                        Some(current[0].id.clone()),
-                                    )
                                 } else {
                                     (None, None)
                                 };

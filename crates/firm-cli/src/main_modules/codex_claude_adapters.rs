@@ -137,6 +137,7 @@ pub(super) fn run_codex_exec_delivery(
 /// sharing the Claude CLI transport does not make Host execution a
 /// compatibility route or an Agent Team fallback.
 #[allow(clippy::too_many_arguments)]
+#[cfg(any())]
 pub(super) fn run_claude_host_delivery(
     store: &HarnessStore,
     member: &ProviderLaunchProfile,

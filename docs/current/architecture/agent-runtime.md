@@ -78,14 +78,17 @@ In the default `managed` mode, that MemberRun uses the same AgentSession,
 NodeDaemon, RuntimeCommand, provider admission, TeamRuntimeAdapter, Message
 claim/receipt/ACK, and Close/Reopen lifecycle as every other managed
 participant. Host authority is role policy, not a provider feature and not a
-second runtime species. Managed Host status delivery additionally carries the
+second runtime species. Its coordination AgentSession is `ReadOnly`; a Host
+that owns coding Work needs a separate, independently leased workspace.
+Managed Host status delivery additionally carries the
 exact recipient MemberRun, AgentSession/runtime generation, and NodeDaemon
 generation fence before a provider receipt can settle it.
 
 `external_interactive` is an explicit user-driven exception. It keeps the same
 Host AgentMember and business authority but has only a detached MemberRun and
-durable pull-based inbox. Harness does not claim an unverifiable native session,
-timely wake, provider receipt, or ACK. Historical `external` values decode to
+durable pull-based inbox. Harness performs no provider admission or turn and
+creates no AgentSession, RuntimeCommand, or native-session record for it; it
+cannot claim timely wake, provider receipt, or ACK. Historical `external` values decode to
 this mode without fabricating managed evidence, and there is no silent fallback
 between modes.
 

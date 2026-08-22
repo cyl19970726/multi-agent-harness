@@ -321,7 +321,7 @@ fn append_runtime_team(store: &HarnessStore, team_id: &str, run_id: &str) {
                 vec![TeamMembership {
                     id: format!("membership:{team_id}:{preferred_host}"),
                     team_id: team_id.into(),
-                    agent_member_id: preferred_host,
+                    agent_member_id: preferred_host.clone(),
                     node_id: "11111111-1111-4111-8111-111111111111".into(),
                     role: TeamMembershipRole::Host,
                     state: TeamMembershipStatus::Active,
@@ -335,6 +335,13 @@ fn append_runtime_team(store: &HarnessStore, team_id: &str, run_id: &str) {
             )
             .unwrap();
     }
+    let exact_host = store
+        .latest_teams()
+        .unwrap()
+        .get(team_id)
+        .expect("runtime fixture Team exists")
+        .host_agent_id
+        .clone();
     store
         .legacy_import_append_team_run_projection(&firm_core::AgentTeamRun {
             id: run_id.into(),
@@ -344,7 +351,12 @@ fn append_runtime_team(store: &HarnessStore, team_id: &str, run_id: &str) {
             previous_run_id: None,
             host_surface: "test".into(),
             host_thread_id: None,
-            host_actor: None,
+            host_actor: Some(firm_core::TeamActorRef {
+                kind: firm_core::TeamActorKind::Host,
+                id: exact_host,
+                display_name: Some("Fixture Host".into()),
+                authn_source: Some("test_team_membership:host".into()),
+            }),
             host_control_mode: firm_core::HostControlMode::ExternalInteractive,
             objective: format!("runtime authority for {team_id}"),
             execution_root: None,
@@ -394,6 +406,7 @@ fn insert_runtime_work(
     team_id: &str,
     team_run_id: &str,
 ) -> firm_core::Work {
+    let exact_host = store.exact_team_run_host_actor(team_run_id).unwrap();
     store
         .insert_work(
             firm_core::Work {
@@ -414,12 +427,7 @@ fn insert_runtime_work(
                 eligible_member_ids: Vec::new(),
                 prerequisite_work_ids: Vec::new(),
                 priority: firm_core::WorkPriority::Normal,
-                created_by_actor: firm_core::TeamActorRef {
-                    kind: firm_core::TeamActorKind::Host,
-                    id: "fixture-host".into(),
-                    display_name: None,
-                    authn_source: Some("test".into()),
-                },
+                created_by_actor: exact_host.clone(),
                 created_by_member_id: None,
                 result_summary: None,
                 blocker_reason: None,
@@ -432,13 +440,8 @@ fn insert_runtime_work(
             },
             firm_core::WorkCommandContext {
                 event_id: format!("event-{id}"),
-                performed_by_actor: firm_core::TeamActorRef {
-                    kind: firm_core::TeamActorKind::Host,
-                    id: "fixture-host".into(),
-                    display_name: None,
-                    authn_source: Some("test".into()),
-                },
-                authority_actor: None,
+                performed_by_actor: exact_host.clone(),
+                authority_actor: Some(exact_host),
                 causation_ref: None,
                 idempotency_key: format!("work-{id}"),
                 created_at: "t-work".into(),

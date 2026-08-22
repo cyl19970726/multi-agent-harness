@@ -242,6 +242,8 @@ pub(super) fn team_run_recover(
                 ))
             })?
             .permission_ceiling;
+        let permission_ceiling =
+            effective_member_permission_ceiling(permission_ceiling, &run, member);
         apply_permission_enforcement_to_profile(&mut profile, permission_ceiling)?;
         let resolution = resolve_provider_compatibility(store, &profile, probe_error.as_deref())?;
         let refusal = provider_compatibility_block_reason(
@@ -485,15 +487,15 @@ pub(super) fn team_run_recover(
                 )?;
                 // Rebind each Work.
                 for work in &member_works {
+                    let host_actor = store.exact_team_run_host_actor(&work.team_run_id)?;
                     let ctx = WorkCommandContext {
                         event_id: generated_id("work-event"),
                         performed_by_actor: TeamActorRef {
-                            kind: TeamActorKind::Host,
-                            id: "host".to_string(),
                             display_name: Some("Host recovery".to_string()),
                             authn_source: Some("team_run_recover".to_string()),
+                            ..host_actor.clone()
                         },
-                        authority_actor: None,
+                        authority_actor: Some(host_actor),
                         causation_ref: None,
                         idempotency_key: generated_id("work-command"),
                         created_at: now_str.clone(),
@@ -770,21 +772,51 @@ pub(super) fn work_causation(args: &[String]) -> Option<WorkCausationRef> {
     })
 }
 
-pub(super) fn host_work_context(args: &[String]) -> WorkCommandContext {
+pub(super) fn host_work_context(
+    store: &HarnessStore,
+    team_run_id: &str,
+    args: &[String],
+) -> CliResult<WorkCommandContext> {
+    let host_actor = store.exact_team_run_host_actor(team_run_id)?;
+    Ok(WorkCommandContext {
+        event_id: value(args, "--event-id").unwrap_or_else(|| generated_id("work-event")),
+        performed_by_actor: TeamActorRef {
+            display_name: None,
+            authn_source: Some("local_cli_exact_team_host".to_string()),
+            ..host_actor.clone()
+        },
+        authority_actor: Some(host_actor),
+        causation_ref: work_causation(args),
+        idempotency_key: value(args, "--idempotency-key")
+            .unwrap_or_else(|| generated_id("work-command")),
+        created_at: now_string(),
+        duplicate_ok: has_flag(args, "--duplicate-ok"),
+    })
+}
+
+pub(super) fn host_work_context_for_work(
+    store: &HarnessStore,
+    work_id: &str,
+    args: &[String],
+) -> CliResult<WorkCommandContext> {
+    let work = store
+        .latest_works()?
+        .into_iter()
+        .find(|work| work.id == work_id)
+        .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
+    host_work_context(store, &work.team_run_id, args)
+}
+
+pub(super) fn migration_host_work_context(args: &[String]) -> WorkCommandContext {
     WorkCommandContext {
         event_id: value(args, "--event-id").unwrap_or_else(|| generated_id("work-event")),
         performed_by_actor: TeamActorRef {
-            kind: TeamActorKind::Operator,
-            id: value(args, "--actor").unwrap_or_else(|| "operator:cli".to_string()),
-            display_name: None,
-            authn_source: Some("local_cli".to_string()),
-        },
-        authority_actor: Some(TeamActorRef {
             kind: TeamActorKind::Host,
-            id: "host".to_string(),
+            id: value(args, "--actor").unwrap_or_else(|| "migration-host".to_string()),
             display_name: None,
-            authn_source: Some("local_cli_host_authority".to_string()),
-        }),
+            authn_source: Some("local_cli_migration".to_string()),
+        },
+        authority_actor: None,
         causation_ref: work_causation(args),
         idempotency_key: value(args, "--idempotency-key")
             .unwrap_or_else(|| generated_id("work-command")),
@@ -842,7 +874,7 @@ pub(super) fn roll_up_target_work_delegations(
     work: &Work,
     args: &[String],
 ) -> CliResult<Vec<WorkDelegation>> {
-    let mut context = host_work_context(args);
+    let mut context = host_work_context(store, &work.team_run_id, args)?;
     context.event_id = generated_id("delegation-rollup");
     context.idempotency_key = format!("delegation-rollup:{}:{}", work.id, work.version);
     Ok(store.transition_work_and_roll_up_delegation(&work.id, context)?)
@@ -1333,7 +1365,7 @@ pub(crate) fn poll_team_run_github_linkages(
             let merged_and_green = fresh.status.as_deref() == Some("MERGED")
                 && fresh.ci_status.as_deref() != Some("failure");
             if merged_and_green && work.phase == WorkPhase::Active {
-                let context = github_poll_host_context(run_id, &work.id);
+                let context = github_poll_host_context(store, run_id, &work.id)?;
                 let result = format!(
                     "auto-submitted by GitHub merge observation: PR {}/{}#{} merged; CI: {}",
                     fresh.owner,
@@ -1365,7 +1397,7 @@ pub(crate) fn poll_team_run_github_linkages(
             }
         }
         if changed {
-            let context = github_poll_host_context(run_id, &work.id);
+            let context = github_poll_host_context(store, run_id, &work.id)?;
             store
                 .update_work_github_links(&work.id, work.version, refreshed_links, context)
                 .map_err(|error| {
@@ -1385,27 +1417,25 @@ pub(super) fn gh_available() -> bool {
         .unwrap_or(false)
 }
 
-/// Host-authority context for daemon/poll store mutations (issue #369
-/// Phase 2). The supervisor is a Service actor under Host authority; each
-/// operation gets its own generated idempotency key.
-pub(super) fn github_poll_host_context(run_id: &str, work_id: &str) -> WorkCommandContext {
-    WorkCommandContext {
+/// Exact Host-authority context for daemon/poll store mutations (issue #369
+/// Phase 2). Each operation gets its own generated idempotency key.
+pub(super) fn github_poll_host_context(
+    store: &HarnessStore,
+    run_id: &str,
+    work_id: &str,
+) -> CliResult<WorkCommandContext> {
+    let host_actor = store.exact_team_run_host_actor(run_id)?;
+    Ok(WorkCommandContext {
         event_id: generated_id("github-poll-event"),
         performed_by_actor: TeamActorRef {
-            kind: TeamActorKind::Service,
-            id: format!("github-ci-poll:{run_id}"),
-            display_name: None,
+            display_name: Some(format!("GitHub CI poll for {run_id}")),
             authn_source: Some("supervisor_daemon".to_string()),
+            ..host_actor.clone()
         },
-        authority_actor: Some(TeamActorRef {
-            kind: TeamActorKind::Host,
-            id: "host".to_string(),
-            display_name: None,
-            authn_source: Some("host_authority_supervisor".to_string()),
-        }),
+        authority_actor: Some(host_actor),
         causation_ref: None,
         idempotency_key: generated_id(&format!("github-poll-{work_id}")),
         created_at: now_string(),
         duplicate_ok: false,
-    }
+    })
 }

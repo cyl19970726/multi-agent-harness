@@ -18,13 +18,14 @@ use firm_core::{
     ProviderCompatibilityStatus, ProviderExecutionStatus, ProviderIntegrationProfile,
     ProviderLaunchProfile, ProviderProcess, ProviderRuntimeProjection, ProviderWorkDispatch,
     ProviderWorkDispatchStatus, ProviderWorkDispatchUpdate, RegistryDeliveryAttempt,
-    RegistryDeliveryStatus, RegistryMessage, Review, TeamActorKind, TeamMemberCloseRequest,
-    TeamMemberCloseStatus, TeamMessageProjection, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
-    TeamSupervisorLeaseStatus, Validate, Vision, Work, WorkClaimMode, WorkCommandContext,
-    WorkCondition, WorkConditionRecord, WorkDelegation, WorkDelegationEvent,
-    WorkDelegationRevision, WorkDelegationState, WorkDelegationTransition, WorkEvent,
-    WorkEventKind, WorkEvidence, WorkOperation, WorkOperationalDecision, WorkPhase, WorkRef,
-    WorkReport, WorkResolution, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
+    RegistryDeliveryStatus, RegistryMessage, Review, TeamActorKind, TeamActorRef,
+    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection, TeamRunEvent,
+    TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision, Work,
+    WorkClaimMode, WorkCommandContext, WorkCondition, WorkConditionRecord, WorkDelegation,
+    WorkDelegationEvent, WorkDelegationRevision, WorkDelegationState, WorkDelegationTransition,
+    WorkEvent, WorkEventKind, WorkEvidence, WorkOperation, WorkOperationalDecision, WorkPhase,
+    WorkRef, WorkReport, WorkResolution, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun,
+    WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
@@ -589,17 +590,112 @@ fn require_non_empty_store(value: &str, label: &str) -> StoreResult<()> {
 }
 
 fn require_host_actor(actor: &firm_core::TeamActorRef) -> StoreResult<()> {
-    if matches!(
-        actor.kind,
-        firm_core::TeamActorKind::Host
-            | firm_core::TeamActorKind::Operator
-            | firm_core::TeamActorKind::Service
-    ) {
+    if actor.kind == firm_core::TeamActorKind::Host && !actor.id.trim().is_empty() {
         Ok(())
     } else {
         Err(StoreError::Conflict(
             "Host authority is required for this Work command".to_string(),
         ))
+    }
+}
+
+impl HarnessStore {
+    /// Resolve and verify the one current Host authority for a TeamRun. A
+    /// compatibility Operator/Service actor or the historical literal `host`
+    /// cannot authorize current Work writes unless that is the exact durable
+    /// AgentMember id on both the TeamRun and active Host membership.
+    pub fn exact_team_run_host_actor(&self, team_run_id: &str) -> StoreResult<TeamActorRef> {
+        let run = self
+            .team_runs()?
+            .into_iter()
+            .rev()
+            .find(|run| run.id == team_run_id)
+            .ok_or_else(|| StoreError::Conflict(format!("TeamRun not found: {team_run_id}")))?;
+        let actor = run.host_actor.clone().ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "TEAM_RUN_HOST_AUTHORITY_REQUIRED: TeamRun {team_run_id} has no exact Host actor"
+            ))
+        })?;
+        require_host_actor(&actor)?;
+        let team = self
+            .latest_teams()?
+            .remove(&run.agent_team_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "TEAM_RUN_REQUIRES_TEAM: AgentTeam {} not found",
+                    run.agent_team_id
+                ))
+            })?;
+        let execution_space_id = self.current_team_run_execution_space(&run)?;
+        let membership = self.team_host_membership(&execution_space_id, &team.id, true)?;
+        if actor.id != team.host_agent_id || membership.agent_member_id != actor.id {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_RUN_HOST_AUTHORITY_MISMATCH: TeamRun {team_run_id} Host actor {}, AgentTeam Host {}, and active Host membership {} must identify the same AgentMember",
+                actor.id, team.host_agent_id, membership.agent_member_id
+            )));
+        }
+        Ok(actor)
+    }
+
+    pub(crate) fn require_exact_team_run_host_actor(
+        &self,
+        actor: &TeamActorRef,
+        team_run_id: &str,
+    ) -> StoreResult<()> {
+        let run = self.require_team_run_unlocked(team_run_id)?;
+        let expected = run.host_actor.clone().ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "TEAM_RUN_HOST_AUTHORITY_REQUIRED: TeamRun {team_run_id} has no exact Host actor"
+            ))
+        })?;
+        require_host_actor(&expected)?;
+        let team = self
+            .latest_teams()?
+            .remove(&run.agent_team_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "TEAM_RUN_REQUIRES_TEAM: AgentTeam {} not found",
+                    run.agent_team_id
+                ))
+            })?;
+        let execution_space_id = match self.current_team_run_execution_space_unlocked(&run) {
+            Ok(scope) => scope,
+            Err(StoreError::Conflict(message))
+                if message.starts_with("MEMBER_RUN_MATERIALIZATION_INCOMPLETE:") =>
+            {
+                let registrations = latest_by_id(
+                    self.read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?,
+                    node_project_registration_identity,
+                )
+                .into_values()
+                .filter(|registration| {
+                    registration.node_id == run.execution_node_id
+                        && registration.project_binding_id == run.project_binding_id
+                        && registration.status == NodeProjectRegistrationStatus::Active
+                })
+                .map(|registration| registration.execution_space_id)
+                .collect::<std::collections::BTreeSet<_>>();
+                if registrations.len() != 1 {
+                    return Err(StoreError::Conflict(message));
+                }
+                registrations.into_iter().next().expect("one registration")
+            }
+            Err(error) => return Err(error),
+        };
+        let membership = self.team_host_membership(&execution_space_id, &team.id, true)?;
+        if expected.id != team.host_agent_id || membership.agent_member_id != expected.id {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_RUN_HOST_AUTHORITY_MISMATCH: TeamRun {team_run_id} does not bind one exact active Host AgentMember"
+            )));
+        }
+        if actor.kind == expected.kind && actor.id == expected.id {
+            Ok(())
+        } else {
+            Err(StoreError::Conflict(format!(
+                "TEAM_RUN_HOST_AUTHORITY_MISMATCH: Work command actor {:?}:{} is not exact Host {:?}:{} for TeamRun {team_run_id}",
+                actor.kind, actor.id, expected.kind, expected.id
+            )))
+        }
     }
 }
 

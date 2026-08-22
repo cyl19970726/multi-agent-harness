@@ -7,14 +7,16 @@ pub(super) fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|board-summary|work|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|answer-message|events|wait|complete|cancel",
+        "team-run create|list|status|board-summary|work|recover|host-inbox|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|answer-message|events|wait|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
         "work" => team_run_work_command(store, resolved, &args[1..])?,
         "dispatch-host" => {
-            let result = dispatch_headless_host_once(store, resolved, &args[1..])?;
-            print_json(&result)?;
+            return Err(CliError::Usage(
+                "EXTERNAL_HOST_IS_PULL_ONLY: dispatch-host is retired; an external_interactive Host must authenticate, read its own inbox, and acknowledge deliveries explicitly"
+                    .to_string(),
+            ));
         }
         "create" => {
             let agent_team_id = value(args, "--agent-team-id");

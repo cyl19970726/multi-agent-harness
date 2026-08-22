@@ -701,6 +701,28 @@ pub(super) fn authenticated_host_answer_sender(
             placements.len(), execution_space_id
         )));
     }
+    if run.host_control_mode == HostControlMode::ExternalInteractive {
+        let current_sessions = store
+            .fabric_agent_sessions(&execution_space_id)?
+            .into_iter()
+            .filter(|session| {
+                session.agent_member_id == actor.id
+                    && !matches!(session.lifecycle, AgentSessionStatus::Closed)
+            })
+            .count();
+        if current_sessions != 0 {
+            return Err(CliError::Usage(
+                "EXTERNAL_HOST_SESSION_FORBIDDEN: external_interactive Host must not have a current AgentSession"
+                    .into(),
+            ));
+        }
+        return Ok(TeamActorRef {
+            kind: TeamActorKind::Host,
+            id: actor.id.clone(),
+            display_name: None,
+            authn_source: Some(authn_source.to_string()),
+        });
+    }
     let sessions = store
         .fabric_agent_sessions(&execution_space_id)?
         .into_iter()

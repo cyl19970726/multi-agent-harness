@@ -12,6 +12,8 @@ mod create_auto_binds_from_star_harness_env;
 mod create_refuses_partial_star_harness_env;
 #[path = "../general/create_warns_when_host_thread_id_is_none.rs"]
 mod create_warns_when_host_thread_id_is_none;
+#[path = "../general/external_host_runtime_fabric_has_zero_provider_effect.rs"]
+mod external_host_runtime_fabric_has_zero_provider_effect;
 #[path = "../general/host_lease_renew_and_release_reject_stale_exact_fence.rs"]
 mod host_lease_renew_and_release_reject_stale_exact_fence;
 #[path = "../general/host_session_validator_valid_receipt_creates_exact_interactive_lease.rs"]

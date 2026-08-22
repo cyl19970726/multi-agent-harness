@@ -30,8 +30,9 @@ receipt.
    Provider receipt settles transport; it does not accept Work.
 4. `host_runtime_mode=external_interactive` keeps the same AgentMember and Host
    authority but uses a detached, user-driven MemberRun. Its delivery contract
-   is `pull_only`: UI visibility or hook success never becomes a provider
-   receipt or recipient ACK.
+   is `pull_only`: Harness creates no AgentSession or RuntimeCommand, performs
+   no provider admission or turn, and cannot settle a provider receipt. UI
+   visibility or hook success never becomes a recipient ACK.
 5. Work, Message, status attention, and RuntimeCommand remain separate source
    planes. The runtime may present them as one cycle input batch but cannot use
    one plane to authorize or mutate another.
@@ -49,15 +50,16 @@ receipt.
 
 ## Consequences
 
-- `HostRuntimeBinding` is no longer a standard Team execution surface. The
-  retained typed catalog entry is `ExternalHostTransportBinding` and is used
-  only by the explicit compatibility transport.
+- `HostRuntimeBinding` is no longer a standard Team execution surface. Any
+  retained external transport descriptor is historical capability metadata;
+  no current CLI, HTTP, MCP, daemon, or hook path may execute it.
 - CLI, HTTP, MCP, and Dashboard create Teams in managed mode unless the caller
   explicitly selects external interactive ownership.
 - Operator views expose the exact Host AgentMember/MemberRun, ownership mode,
   delivery guarantee, queued actionable count, and the external pull warning.
-- A managed Host may coordinate without a writable repository workspace. Host
-  coding still requires explicit Host-owned Work and an isolated workspace.
+- A managed Host's coordination AgentSession is frozen to `ReadOnly`, so it
+  cannot become a second writer in a Member workspace. Host coding still
+  requires explicit Host-owned Work and an independently leased workspace.
 
 ## Acceptance
 

@@ -95,7 +95,11 @@ pub(crate) fn ensure_team_runtime_fabric(
         .remove(&body.run.agent_team_id)
         .ok_or_else(|| CliError::Usage("TeamRun references a missing AgentTeam".into()))?;
     let memberships = store.fabric_team_memberships(execution_space_id)?;
-    for member in &body.members {
+    for member in body
+        .members
+        .iter()
+        .filter(|member| !member.is_external_interactive())
+    {
         let durable = canonical_members
             .iter()
             .find(|candidate| candidate.id == member.agent_member_id)
@@ -120,7 +124,9 @@ pub(crate) fn ensure_team_runtime_fabric(
                 member.id, exact_memberships
             )));
         }
-        crate::provider_adapter::map_permission(&member.provider, durable.permission_ceiling)
+        let permission_ceiling =
+            effective_member_permission_ceiling(durable.permission_ceiling, &body.run, member);
+        crate::provider_adapter::map_permission(&member.provider, permission_ceiling)
             .map_err(CliError::Usage)?;
         let current_sessions = store
             .fabric_agent_sessions(execution_space_id)?
@@ -223,7 +229,7 @@ pub(crate) fn ensure_team_runtime_fabric(
                         .and_then(|profile| profile.adapter_contract_version.clone())
                         .unwrap_or_else(|| format!("{}:default", member.provider)),
                     permission_envelope_ref: format!("agent-member:{}:permission", durable.id),
-                    effective_permission_ceiling: durable.permission_ceiling,
+                    effective_permission_ceiling: permission_ceiling,
                     lifecycle: AgentSessionStatus::Cold,
                     runtime_generation: member.runtime_generation,
                     control_state: agent_session_control_state_for_profile(
@@ -242,141 +248,6 @@ pub(crate) fn ensure_team_runtime_fabric(
                 },
             )?;
         }
-    }
-    let host_membership = store.team_host_membership(execution_space_id, &team.id, true)?;
-    let host = canonical_members
-        .iter()
-        .find(|candidate| candidate.id == host_membership.agent_member_id)
-        .ok_or_else(|| {
-            CliError::Usage(format!(
-                "AGENT_IDENTITY_NOT_FOUND: TeamRun {} references missing canonical Host {}",
-                body.run.id, host_membership.agent_member_id
-            ))
-        })?;
-    let host_provider = host
-        .provider_profile_ref
-        .as_deref()
-        .filter(|provider| !provider.trim().is_empty())
-        .ok_or_else(|| {
-            CliError::Usage(format!(
-                "AGENT_SESSION_RECOVERY_REQUIRED: Host {} has no provable provider profile",
-                host.id
-            ))
-        })?;
-    crate::provider_adapter::map_permission(host_provider, host.permission_ceiling)
-        .map_err(CliError::Usage)?;
-    let host_sessions = store
-        .fabric_agent_sessions(execution_space_id)?
-        .into_iter()
-        .filter(|session| {
-            session.agent_member_id == host.id && session.lifecycle != AgentSessionStatus::Closed
-        })
-        .collect::<Vec<_>>();
-    if host_sessions.len() > 1 {
-        return Err(CliError::Usage(format!(
-            "AGENT_SESSION_AMBIGUOUS: Host {} has multiple current sessions",
-            host.id
-        )));
-    }
-    if let Some(session) = host_sessions.first() {
-        if session.node_id != body.run.execution_node_id || session.provider_kind != host_provider {
-            return Err(CliError::Usage(format!(
-                "AGENT_SESSION_RECOVERY_REQUIRED: Host session {} is bound to another node or provider",
-                session.id
-            )));
-        }
-        if session.node_daemon_id != daemon_id
-            || session.node_daemon_generation != daemon_generation
-        {
-            store.reattach_agent_session_to_node_daemon(
-                &MutationContext {
-                    execution_space_id: execution_space_id.to_string(),
-                    authenticated_actor: daemon_actor.clone(),
-                    authority_actor: None,
-                    command_name: "runtime_fabric.host_session.reattach_node_daemon".into(),
-                    idempotency_key: format!(
-                        "host-session-daemon-reattach:{}:{}:{}",
-                        session.id, session.node_daemon_generation, daemon_generation
-                    ),
-                    expected_version: session.version,
-                    request_fingerprint: None,
-                },
-                &session.id,
-                session.runtime_generation,
-                session.node_daemon_generation,
-                daemon_id,
-                daemon_generation,
-                &timestamp,
-            )?;
-        }
-    } else {
-        let host_native_session_ref = body
-            .run
-            .host_thread_id
-            .as_deref()
-            .filter(|id| !id.trim().is_empty())
-            .map(|id| harness_core::agentfirm_api::NativeSessionRef {
-                provider: host_provider.to_string(),
-                execution_mode: "host_native".to_string(),
-                native_session_id: id.to_string(),
-                native_locator_kind: match host_provider {
-                    "codex" => "codex_rollout",
-                    "kimi" => "kimi_code_session",
-                    "claude" => "claude_project_session",
-                    _ => "provider_native_session",
-                }
-                .to_string(),
-                provider_version: None,
-                adapter_contract_version: "host-native-read-v1".to_string(),
-                availability: harness_core::agentfirm_api::NativeSessionAvailability::Unknown,
-                supports_resume: true,
-                last_verified_at: None,
-                parent_native_session_id: None,
-            });
-        store.create_agent_session(
-            &MutationContext {
-                execution_space_id: execution_space_id.to_string(),
-                authenticated_actor: daemon_actor.clone(),
-                authority_actor: None,
-                command_name: "runtime_fabric.host_session.materialize".into(),
-                idempotency_key: format!(
-                    "session:{}:{}:{}",
-                    host.id, body.run.execution_node_id, daemon_generation
-                ),
-                expected_version: 0,
-                request_fingerprint: None,
-            },
-            AgentSession {
-                id: format!(
-                    "agent-session:{}:{}:{}",
-                    host.id, body.run.execution_node_id, daemon_generation
-                ),
-                agent_member_id: host.id.clone(),
-                node_id: body.run.execution_node_id.clone(),
-                execution_space_id: execution_space_id.to_string(),
-                node_daemon_id: daemon_id.to_string(),
-                node_daemon_generation: daemon_generation,
-                provider_kind: host_provider.to_string(),
-                provider_profile_ref: host_provider.to_string(),
-                permission_envelope_ref: format!("agent-member:{}:permission", host.id),
-                effective_permission_ceiling: host.permission_ceiling,
-                lifecycle: AgentSessionStatus::Cold,
-                runtime_generation: 1,
-                control_state: agent_session_control_state_for_profile(
-                    Some(&team_member_provider_profile(host_provider)),
-                    daemon_id,
-                    daemon_generation,
-                    1,
-                ),
-                native_session_ref: host_native_session_ref,
-                current_turn_id: None,
-                queued_input_count: 0,
-                version: 1,
-                opened_at: timestamp.clone(),
-                last_active_at: timestamp.clone(),
-                closed_at: None,
-            },
-        )?;
     }
     Ok(())
 }
@@ -559,6 +430,8 @@ pub(crate) fn prepare_team_run_start_body(
                 ))
             })?
             .permission_ceiling;
+        let permission_ceiling =
+            effective_member_permission_ceiling(permission_ceiling, &run, member);
         // Freeze the permission mapping into the persisted profile before
         // AgentSession materialization. Recomputing it only after the runtime
         // has spawned would make the profile and exact session composition

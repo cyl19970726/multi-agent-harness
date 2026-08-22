@@ -126,6 +126,7 @@ pub(super) struct DeliveryOutcome {
     /// Provider-authored response retained only for the current in-process
     /// consumer. It is never copied into RegistryMessage, Evidence, runtime
     /// health, or another Harness history store.
+    #[allow(dead_code)] // Historical external-Host provider response projection.
     pub(super) response_text: Option<String>,
     /// Harness-owned delivery/control fact safe for durable coordination rows.
     pub(super) summary: String,

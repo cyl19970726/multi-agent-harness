@@ -99,6 +99,15 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
         .as_str()
         .expect("team run id")
         .to_string();
+    assert_eq!(created["host_runtime"]["mode"], "external_interactive");
+    assert_eq!(created["host_runtime"]["delivery_guarantee"], "pull_only");
+    assert_eq!(
+        created["host_runtime"]["runtime_residency"],
+        "detached_user_driven"
+    );
+    assert!(created["host_runtime"]["warning"]
+        .as_str()
+        .is_some_and(|warning| warning.contains("cannot drive or prove provider receipt")));
     let started = call_payload(&mcp.request(
         "tools/call",
         serde_json::json!({
@@ -270,7 +279,11 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
             }
         }),
     );
-    assert!(call_error_text(&invalid).contains("does not expose option_id"));
+    let invalid_error = call_error_text(&invalid);
+    assert!(
+        invalid_error.contains("does not expose option_id"),
+        "unexpected invalid-option error: {invalid_error}"
+    );
     assert!(store
         .fabric_messages(execution_space_id)
         .expect("messages after rejected answers")

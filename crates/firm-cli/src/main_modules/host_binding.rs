@@ -253,6 +253,7 @@ pub(super) fn exact_host_binding_lease_from_args(
     Ok(latest)
 }
 
+#[cfg(any())]
 pub(super) fn headless_host_project_context(
     resolved: &ResolvedStore,
     run: &AgentTeamRun,
@@ -274,6 +275,7 @@ pub(super) fn headless_host_project_context(
         })
 }
 
+#[cfg(any())]
 pub(super) fn synthetic_headless_host_member(
     run: &AgentTeamRun,
     provider: &str,
@@ -315,6 +317,9 @@ pub(super) fn synthetic_headless_host_member(
     }
 }
 
+// Historical implementation retained as source evidence only. It is excluded
+// from every build so an external Host can never trigger a provider effect.
+#[cfg(any())]
 pub(super) fn dispatch_headless_host_once(
     store: &HarnessStore,
     resolved: &ResolvedStore,
@@ -567,4 +572,16 @@ pub(super) fn dispatch_headless_host_once(
         "attention_ids": delivered_attention_ids,
         "provider_summary": summary,
     }))
+}
+
+#[allow(dead_code)]
+pub(super) fn dispatch_headless_host_once(
+    _store: &HarnessStore,
+    _resolved: &ResolvedStore,
+    _args: &[String],
+) -> CliResult<serde_json::Value> {
+    Err(CliError::Usage(
+        "EXTERNAL_HOST_IS_PULL_ONLY: Harness cannot drive an external Host provider turn or prove provider receipt; read and acknowledge the Host inbox explicitly"
+            .to_string(),
+    ))
 }
