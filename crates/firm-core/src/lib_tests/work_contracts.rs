@@ -109,6 +109,34 @@ fn legacy_parent_work_is_decode_only_evidence() {
 }
 
 #[test]
+fn current_work_draft_hides_legacy_decode_state() {
+    let draft = CurrentWorkDraft::new(
+        "work-current".into(),
+        "run-1".into(),
+        "team-1".into(),
+        "Current Work".into(),
+        "context".into(),
+        "done".into(),
+        WorkClaimMode::TeamClaim,
+        WorkPriority::Normal,
+        TeamActorRef {
+            kind: TeamActorKind::Host,
+            id: "host-1".into(),
+            display_name: None,
+            authn_source: None,
+        },
+        "unix-ms:1".into(),
+    );
+    let work = Work::from_current_draft(draft);
+    assert_eq!(work.phase, WorkPhase::Open);
+    assert_eq!(work.condition, WorkCondition::Normal);
+    assert_eq!(work.version, 0);
+    assert!(work.legacy_containment_ref.is_none());
+    let wire = serde_json::to_value(work).expect("serialize current Work");
+    assert!(wire.get("parent_work_id").is_none());
+}
+
+#[test]
 fn host_attention_keeps_transport_intake_distinct_from_work_semantics() {
     let mut attention = HostAttention {
         id: "host-attention-work-event-1".into(),
