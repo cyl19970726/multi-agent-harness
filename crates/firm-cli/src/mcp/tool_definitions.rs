@@ -476,7 +476,23 @@ mod tests {
             .expect("dependency replacement tool");
         let schema = &tool["inputSchema"];
         assert_eq!(schema["additionalProperties"], false);
-        assert!(schema["properties"].get("prerequisite_work_ids").is_some());
-        assert!(schema["properties"].get("parent_work_id").is_none());
+        let mut property_names = schema["properties"]
+            .as_object()
+            .expect("property map")
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        property_names.sort_unstable();
+        assert_eq!(
+            property_names,
+            [
+                "expected_version",
+                "idempotency_key",
+                "prerequisite_work_ids",
+                "reason",
+                "team_id",
+                "work_id",
+            ]
+        );
     }
 }
