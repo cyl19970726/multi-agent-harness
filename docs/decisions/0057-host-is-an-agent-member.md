@@ -62,10 +62,11 @@ receipt.
   with an explicit Host `provider_cwd_hint` distinct from the Team execution
   root. Host coding still requires explicit Host-owned Work and an
   independently reserved workspace. The active Host MemberRun is the durable
-  Store authority for that canonical cwd: same-lock admission rejects another
-  active MemberRun at the same root, and session materialization revalidates
-  the reservation. This preserves one driver per writable workspace without
-  inventing a Kimi sandbox.
+  Store authority for that canonical cwd: the Store canonicalizes roots,
+  freezes `provider_cwd_hint` as immutable MemberRun provenance, rejects
+  conflicting initial/raw/dynamic admission under the same lock, and
+  revalidates the reservation before session materialization. This preserves
+  one driver per writable workspace without inventing a Kimi sandbox.
 
 ## Acceptance
 

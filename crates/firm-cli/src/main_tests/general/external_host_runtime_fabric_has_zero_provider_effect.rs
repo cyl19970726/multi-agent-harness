@@ -250,7 +250,7 @@ fn managed_kimi_host_rejects_another_member_run_in_the_same_writable_workspace()
             model: None,
             effort: None,
             service_tier: None,
-            provider_cwd_hint: Some(workspace),
+            provider_cwd_hint: Some(format!("{workspace}/.")),
             owned_paths: Vec::new(),
             resume_native_session_id: None,
             initial_work: None,
@@ -278,6 +278,85 @@ fn managed_kimi_host_rejects_another_member_run_in_the_same_writable_workspace()
     assert!(error
         .to_string()
         .contains("MANAGED_HOST_WORKSPACE_ALREADY_CLAIMED"));
+    assert!(store
+        .fabric_agent_sessions("unit-test-space")
+        .expect("read AgentSessions")
+        .is_empty());
+    std::fs::remove_dir_all(root).expect("remove test store");
+}
+
+#[test]
+fn active_member_cas_cannot_alias_a_managed_kimi_host_workspace() {
+    let (store, root) = temp_store("managed-host-kimi-cas-alias");
+    let workspace = isolated_host_worktree(root.as_path());
+    let members = [
+        TeamMemberSpec {
+            agent_member_id: "host".into(),
+            name: "Host".into(),
+            role: "host".into(),
+            provider: "kimi".into(),
+            execution_mode: Some("kimi_acp".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: Some(workspace.clone()),
+            owned_paths: Vec::new(),
+            resume_native_session_id: None,
+            initial_work: None,
+        },
+        TeamMemberSpec {
+            agent_member_id: "worker".into(),
+            name: "Worker".into(),
+            role: "implementer".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: Vec::new(),
+            resume_native_session_id: None,
+            initial_work: None,
+        },
+    ];
+    let created = create_team_run(
+        &store,
+        None,
+        None,
+        None,
+        "Freeze MemberRun workspace provenance",
+        None,
+        "test",
+        None,
+        HostControlMode::Managed,
+        None,
+        None,
+        None,
+        None,
+        &members,
+    )
+    .expect("create isolated managed Host TeamRun");
+    let worker = latest_member_runs_in_append_order(&store)
+        .expect("read MemberRuns")
+        .into_iter()
+        .find(|member| {
+            member.team_run_id == created.team_run.id && member.agent_member_id == "worker"
+        })
+        .expect("worker MemberRun");
+    let mut forged = worker.clone();
+    forged.provider_cwd_hint = Some(format!("{workspace}/."));
+    let error = store
+        .compare_and_append_member_run(&worker, &forged)
+        .expect_err("MemberRun CAS must not change immutable workspace provenance");
+    assert!(error.to_string().contains("MEMBER_PROVENANCE_IMMUTABLE"));
+    assert_eq!(
+        latest_member_runs_in_append_order(&store)
+            .expect("read unchanged MemberRuns")
+            .into_iter()
+            .find(|member| member.id == worker.id)
+            .expect("unchanged worker MemberRun"),
+        worker
+    );
     assert!(store
         .fabric_agent_sessions("unit-test-space")
         .expect("read AgentSessions")

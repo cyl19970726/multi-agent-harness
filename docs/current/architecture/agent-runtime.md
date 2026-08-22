@@ -83,10 +83,11 @@ the provider can prove that ceiling. Kimi ACP cannot, so a managed Kimi Host
 retains an honestly declared `FullAccess` ceiling only when
 `provider_cwd_hint` selects an explicit workspace distinct from the Team
 execution root. The active Host MemberRun is the Store-owned reservation for
-that canonical cwd: same-lock admission rejects another active MemberRun at
-the same root, and AgentSession materialization revalidates it. Admission fails
-before AgentSession creation when that isolation cannot be proved. A Host that
-owns coding Work always needs a separately reserved workspace.
+that canonical cwd. The Store canonicalizes roots, freezes
+`provider_cwd_hint` as immutable MemberRun provenance, rejects conflicting
+initial/raw/dynamic admission under the same lock, and revalidates the
+reservation before AgentSession creation. A Host that owns coding Work always
+needs a separately reserved workspace.
 Managed Host status delivery additionally carries the
 exact recipient MemberRun, AgentSession/runtime generation, and NodeDaemon
 generation fence before a provider receipt can settle it.

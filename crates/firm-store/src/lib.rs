@@ -381,9 +381,10 @@ fn ensure_member_provenance_unchanged(
         || next.agent_member_id != current.agent_member_id
         || next.role != current.role
         || next.provider != current.provider
+        || next.provider_cwd_hint != current.provider_cwd_hint
     {
         return Err(StoreError::Conflict(format!(
-            "MEMBER_PROVENANCE_IMMUTABLE: ProviderRuntimeProjection {} cannot change its team, stable identity, role, or provider",
+            "MEMBER_PROVENANCE_IMMUTABLE: ProviderRuntimeProjection {} cannot change its team, stable identity, role, provider, or workspace root",
             current.id
         )));
     }

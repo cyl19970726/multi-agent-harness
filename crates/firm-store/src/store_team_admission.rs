@@ -1,5 +1,23 @@
 use super::*;
 
+fn canonical_member_workspace(
+    member: &ProviderRuntimeProjection,
+) -> StoreResult<Option<std::path::PathBuf>> {
+    let Some(root) = member
+        .provider_cwd_hint
+        .as_deref()
+        .filter(|root| !root.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    std::fs::canonicalize(root).map(Some).map_err(|error| {
+        StoreError::Conflict(format!(
+            "MANAGED_HOST_WORKSPACE_NOT_CANONICAL: MemberRun {} workspace {} cannot be canonicalized: {}",
+            member.id, root, error
+        ))
+    })
+}
+
 impl HarnessStore {
     fn validate_unique_managed_host_workspaces_unlocked(
         &self,
@@ -38,40 +56,47 @@ impl HarnessStore {
             .iter()
             .filter(|member| is_managed_kimi_host(team_run, member))
         {
-            let Some(root) = host.provider_cwd_hint.as_deref() else {
+            let Some(root) = canonical_member_workspace(host)? else {
                 continue;
             };
-            if existing.iter().any(|member| {
-                member.id != host.id && member.provider_cwd_hint.as_deref() == Some(root)
-            }) || incoming.iter().any(|member| {
-                member.id != host.id
+            for member in existing.iter().copied().chain(incoming.iter()) {
+                if member.id != host.id
                     && member.coordination_is_active()
                     && member.finished_at.is_none()
-                    && member.provider_cwd_hint.as_deref() == Some(root)
-            }) {
-                return Err(StoreError::Conflict(format!(
-                    "MANAGED_HOST_WORKSPACE_ALREADY_CLAIMED: Kimi Host MemberRun {} requires unique writable workspace {}",
-                    host.id, root
-                )));
+                    && canonical_member_workspace(member)?.as_ref() == Some(&root)
+                {
+                    return Err(StoreError::Conflict(format!(
+                        "MANAGED_HOST_WORKSPACE_ALREADY_CLAIMED: Kimi Host MemberRun {} requires unique writable workspace {}",
+                        host.id,
+                        root.display()
+                    )));
+                }
             }
         }
 
+        let existing_managed_kimi_hosts = existing
+            .iter()
+            .copied()
+            .filter(|host| {
+                current_runs
+                    .get(&host.team_run_id)
+                    .is_some_and(|run| is_managed_kimi_host(run, host))
+            })
+            .collect::<Vec<_>>();
         for member in incoming.iter().filter(active_with_root) {
-            let root = member
-                .provider_cwd_hint
-                .as_deref()
-                .expect("active_with_root proved a workspace");
-            if existing.iter().any(|host| {
-                host.id != member.id
-                    && host.provider_cwd_hint.as_deref() == Some(root)
-                    && current_runs
-                        .get(&host.team_run_id)
-                        .is_some_and(|run| is_managed_kimi_host(run, host))
-            }) {
-                return Err(StoreError::Conflict(format!(
-                    "MANAGED_HOST_WORKSPACE_ALREADY_CLAIMED: workspace {} is reserved by an active managed Kimi Host",
-                    root
-                )));
+            if existing_managed_kimi_hosts.is_empty() {
+                continue;
+            }
+            let root = canonical_member_workspace(member)?
+                .expect("active_with_root proved a canonical workspace");
+            for host in &existing_managed_kimi_hosts {
+                if host.id != member.id && canonical_member_workspace(host)?.as_ref() == Some(&root)
+                {
+                    return Err(StoreError::Conflict(format!(
+                        "MANAGED_HOST_WORKSPACE_ALREADY_CLAIMED: workspace {} is reserved by an active managed Kimi Host",
+                        root.display()
+                    )));
+                }
             }
         }
         Ok(())
@@ -254,6 +279,10 @@ impl HarnessStore {
             }
             let latest_run = self.require_team_run_unlocked(&value.team_run_id)?;
             self.ensure_unique_member_identity_unlocked(&latest_run, value)?;
+            self.validate_unique_managed_host_workspaces_unlocked(
+                &latest_run,
+                std::slice::from_ref(value),
+            )?;
         }
         self.append_jsonl_unlocked("member_runs.jsonl", value)
     }
