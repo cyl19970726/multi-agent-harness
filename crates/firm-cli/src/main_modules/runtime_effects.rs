@@ -605,14 +605,31 @@ pub(super) fn prepare_provider_process_effect(
         "native_resume_ref": member.native_session.as_ref().map(|value| &value.native_session_id),
     });
     let fingerprint = harness_store::canonical_json_fingerprint(&payload);
+    // A provider process attachment is authorized against one exact
+    // AgentSession projection. A later detach/reattach attempt is a new
+    // external effect even when the runtime, daemon, driver, and native
+    // session generations are unchanged, so its durable identity must include
+    // the session version already carried by the command precondition.
     let idempotency_key = format!(
-        "provider-process:{}:{}:{}:{}:{kind:?}",
+        "provider-process:{}:{}:{}:{}:{}:{kind:?}",
         session.id,
         session.runtime_generation,
         session.node_daemon_generation,
-        session.control_state.driver_generation
+        session.control_state.driver_generation,
+        session.version
     );
     let command_id = format!("runtime-command:{idempotency_key}");
+    if let Some(existing) = ledger
+        .store
+        .runtime_commands(&execution_space_id)?
+        .into_iter()
+        .find(|command| command.id == command_id)
+    {
+        return Err(CliError::Usage(format!(
+            "RUNTIME_COMMAND_RECOVERY_REQUIRED: provider process command {} already exists as {:?}/{:?}; reconcile before spawn",
+            existing.id, existing.status, existing.effect_certainty
+        )));
+    }
     let daemon_actor = ActorRef {
         kind: ActorKind::Service,
         id: lease.daemon_id.clone(),

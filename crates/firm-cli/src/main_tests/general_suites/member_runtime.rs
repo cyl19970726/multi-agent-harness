@@ -66,6 +66,8 @@ mod provider_error_after_start_claim_applies_close_before_prebind_failure;
 mod provider_error_does_not_turn_pending_close_into_provider_receipt;
 #[path = "../general/provider_interaction_cas_rebases_retries_and_fences_lifecycle.rs"]
 mod provider_interaction_cas_rebases_retries_and_fences_lifecycle;
+#[path = "../general/provider_process_resume_is_scoped_to_exact_session_version.rs"]
+mod provider_process_resume_is_scoped_to_exact_session_version;
 #[path = "../general/provider_start_claim_accepts_reopened_queued_generation.rs"]
 mod provider_start_claim_accepts_reopened_queued_generation;
 #[path = "../general/provider_start_claim_reconciles_close_latched_between_read_and_cas.rs"]
