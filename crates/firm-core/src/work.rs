@@ -1,10 +1,16 @@
 use super::*;
 
+mod dependency;
+mod lifecycle;
+
+pub use dependency::*;
+pub use lifecycle::*;
+
 /// Agent Team Work is durable responsibility inside one AgentTeam. A
 /// `team_run_id` is the current execution attempt, not the Work's lifetime.
 /// WorkEvent is the append-only authority; this row is the latest rebuildable
 /// projection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkPhase {
     Open,
@@ -13,7 +19,7 @@ pub enum WorkPhase {
     Closed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkCondition {
     Normal,
@@ -406,6 +412,102 @@ pub struct GitHubLink {
     pub ci_url: Option<String>,
 }
 
+/// Current-write input for a new Work. Historical decode-only fields and
+/// derived lifecycle fields are intentionally absent, so current application
+/// adapters cannot depend on compatibility storage details.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentWorkDraft {
+    pub id: String,
+    pub team_run_id: String,
+    pub accountable_team_id: String,
+    pub title: String,
+    pub context_markdown: String,
+    pub completion_criteria_markdown: String,
+    pub claim_mode: WorkClaimMode,
+    pub priority: WorkPriority,
+    pub created_by_actor: TeamActorRef,
+    pub created_at: String,
+    pub assignee_membership_id: Option<String>,
+    pub owner_member_id: Option<String>,
+    pub active_member_run_id: Option<String>,
+    pub eligible_member_ids: Vec<String>,
+    pub prerequisite_work_ids: Vec<String>,
+    pub created_by_member_id: Option<String>,
+    pub artifact_refs: Vec<String>,
+    pub check_refs: Vec<String>,
+    pub github_links: Vec<GitHubLink>,
+}
+
+impl CurrentWorkDraft {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: String,
+        team_run_id: String,
+        accountable_team_id: String,
+        title: String,
+        context_markdown: String,
+        completion_criteria_markdown: String,
+        claim_mode: WorkClaimMode,
+        priority: WorkPriority,
+        created_by_actor: TeamActorRef,
+        created_at: String,
+    ) -> Self {
+        Self {
+            id,
+            team_run_id,
+            accountable_team_id,
+            title,
+            context_markdown,
+            completion_criteria_markdown,
+            claim_mode,
+            priority,
+            created_by_actor,
+            created_at,
+            assignee_membership_id: None,
+            owner_member_id: None,
+            active_member_run_id: None,
+            eligible_member_ids: Vec::new(),
+            prerequisite_work_ids: Vec::new(),
+            created_by_member_id: None,
+            artifact_refs: Vec::new(),
+            check_refs: Vec::new(),
+            github_links: Vec::new(),
+        }
+    }
+
+    pub fn into_work(self) -> Work {
+        Work {
+            id: self.id,
+            team_run_id: self.team_run_id,
+            accountable_team_id: Some(self.accountable_team_id),
+            assignee_membership_id: self.assignee_membership_id,
+            legacy_containment_ref: None,
+            title: self.title,
+            context_markdown: self.context_markdown,
+            completion_criteria_markdown: self.completion_criteria_markdown,
+            phase: WorkPhase::Open,
+            condition: WorkCondition::Normal,
+            resolution: None,
+            owner_member_id: self.owner_member_id,
+            active_member_run_id: self.active_member_run_id,
+            claim_mode: self.claim_mode,
+            eligible_member_ids: self.eligible_member_ids,
+            prerequisite_work_ids: self.prerequisite_work_ids,
+            priority: self.priority,
+            created_by_actor: self.created_by_actor,
+            created_by_member_id: self.created_by_member_id,
+            result_summary: None,
+            blocker_reason: None,
+            artifact_refs: self.artifact_refs,
+            check_refs: self.check_refs,
+            github_links: self.github_links,
+            version: 0,
+            created_at: self.created_at.clone(),
+            updated_at: self.created_at,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Work {
@@ -428,10 +530,13 @@ pub struct Work {
     /// responsibility while receiving no new automatic execution authority.
     #[serde(default)]
     pub assignee_membership_id: Option<String>,
-    /// Same-TeamRun hierarchy only. Cross-Team delegation uses
-    /// [`WorkDelegation`].
-    #[serde(default)]
-    pub parent_work_id: Option<String>,
+    /// Historical Work-containment evidence. Current Work is a flat DAG and
+    /// never serializes or mutates this value; new code must use
+    /// `prerequisite_work_ids` instead. The renamed field deliberately keeps
+    /// old JSONL rows readable without keeping `parent_work_id` in the current
+    /// model or schema authority.
+    #[serde(default, rename = "parent_work_id", skip_serializing)]
+    pub legacy_containment_ref: Option<String>,
     pub title: String,
     pub context_markdown: String,
     pub completion_criteria_markdown: String,
@@ -477,6 +582,10 @@ pub struct Work {
 }
 
 impl Work {
+    pub fn from_current_draft(draft: CurrentWorkDraft) -> Self {
+        draft.into_work()
+    }
+
     pub fn is_terminal(&self) -> bool {
         self.phase == WorkPhase::Closed
     }
@@ -530,6 +639,12 @@ impl Work {
         self.is_claim_ready(works)
     }
 
+    /// Structured, deterministic claim-readiness result. Prefer this over the
+    /// compatibility boolean helpers for APIs and operator-facing surfaces.
+    pub fn readiness(&self, works: &[Work]) -> WorkReadiness {
+        work_readiness(self, works)
+    }
+
     /// Whether this Work carries a durable accountable AgentTeam (DOC-106)
     /// rather than only a compatibility TeamRun scope.
     pub fn is_team_scoped(&self) -> bool {
@@ -571,7 +686,10 @@ impl Validate for Work {
         require_non_empty(&self.updated_at, "Work.updated_at")?;
 
         for (value, field) in [
-            (self.parent_work_id.as_deref(), "Work.parent_work_id"),
+            (
+                self.legacy_containment_ref.as_deref(),
+                "Work.legacy_containment_ref",
+            ),
             (
                 self.assignee_membership_id.as_deref(),
                 "Work.assignee_membership_id",
@@ -682,7 +800,11 @@ pub enum WorkEventKind {
     ChangesRequested,
     Accepted,
     Cancelled,
+    Failed,
     Updated,
+    /// Canonical replacement of the Work's hard `depends_on` edge set. The
+    /// event payload is [`WorkDependenciesChangedPayload`].
+    DependenciesChanged,
     Rebound,
     /// The execution attempt (`team_run_id`) of a Team-scoped Work moved to a
     /// successor TeamRun of the same AgentTeam. Durable scope (`team_id`),
@@ -850,6 +972,7 @@ pub enum HostAttentionKind {
     WorkChangesRequested,
     WorkCancelled,
     WorkPrerequisiteCompleted,
+    WorkPrerequisiteNeedsReconciliation,
     WorkDeliveryFailed,
     MemberStoppedWithOwnedReadyWork,
     MemberFailedWithOwnedReadyWork,

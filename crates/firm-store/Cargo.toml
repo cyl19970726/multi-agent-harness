@@ -9,6 +9,7 @@ repository.workspace = true
 test-support = []
 
 [dependencies]
+firm-application = { path = "../firm-application" }
 firm-core = { path = "../firm-core" }
 firm-fabric = { path = "../firm-fabric" }
 serde.workspace = true

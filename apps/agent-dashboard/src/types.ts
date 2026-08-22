@@ -841,7 +841,6 @@ export interface Work {
   team_run_id: string;
   /** Durable AgentTeam scope (ADR 0052, §4.1). Absent on legacy rows. */
   team_id?: string | null;
-  parent_work_id?: string | null;
   title: string;
   context_markdown: string;
   completion_criteria_markdown: string;
@@ -853,6 +852,13 @@ export interface Work {
   claim_mode: "host_assign" | "team_claim" | string;
   eligible_member_ids?: string[];
   prerequisite_work_ids?: string[];
+  successor_work_ids?: string[];
+  readiness?: {
+    state: "ready" | "waiting_prerequisites" | "requires_host_attention" | "not_claimable";
+    reason_codes: string[];
+    unsatisfied_prerequisite_work_ids: string[];
+    failed_or_cancelled_prerequisite_work_ids: string[];
+  };
   priority: "low" | "normal" | "high" | "urgent" | string;
   created_by_actor: TeamActorRef;
   result_summary?: string | null;

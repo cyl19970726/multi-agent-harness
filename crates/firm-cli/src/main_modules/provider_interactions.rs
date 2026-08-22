@@ -1035,7 +1035,7 @@ pub(super) fn work_contract_prompt(
          - Ask the Host for a decision with: \"$HARNESS_BIN\" member message request-decision --work-id {work_id} --body '<decision needed, options, recommendation>'. Conversation never transfers Work.\n\
          - If blocked, inspect the latest version, then run: \"$HARNESS_BIN\" member work block --work-id {work_id} --expected-version <latest-version> --reason '<reason>'; follow it with a concise Work-linked Message. Resume with member work resume and the next exact version.\n\
          - When complete, inspect the latest version, then run: \"$HARNESS_BIN\" member work submit --work-id {work_id} --expected-version <latest-version> --result-summary '<result>' --candidate-revision '<exact-revision>' --artifact-ref '<artifact>' --check-ref '<check>'. Host acceptance, not provider completion, moves Work to done.\n\
-         - You may create self-owned or unassigned child Work, and may use provider-native subagents as implementation details.\n\
+         - You may propose scoped follow-up Work, and may use provider-native subagents as implementation details.\n\
          - Do not deploy, push, merge, or perform sensitive external actions unless the Host explicitly gave that authority.\n\
          \n\
          Your final provider message is a concise conversational update; durable completion belongs in Work, not an automatic Handoff message.",

@@ -23,6 +23,26 @@ the ordinary MemberRun/AgentSession/NodeDaemon/runtime-adapter relation;
 user-driven runtime and an explicit pull-only delivery guarantee. See
 [ADR 0057](../../decisions/0057-host-is-an-agent-member.md).
 
+## Work graph mental model
+
+Work is a flat responsibility node, never a container. Hard directed edges
+connect prerequisite Work to successor Work and must remain acyclic. Fan-out
+expresses parallel follow-up; fan-in expresses convergence after several
+accepted prerequisites. The kernel derives readiness and explanations from
+the graph plus Work lifecycle. Messages may discuss or propose graph changes
+but never create edges. Provider plans and subagents remain inside one Work and
+never become hidden graph authority.
+
+```text
+             ┌─> Work B ─┐
+Work A ──────┤            ├─> Work D
+             └─> Work C ─┘
+```
+
+The product mental model is maintained in Notion `02 Work & Message`; the
+repository implementation crosswalk is
+[ADR 0058](../../decisions/0058-work-dependency-dag-and-kernel-boundary.md).
+
 ## Implementation-bound invariants
 
 Open-enum vocabularies: harness defines a canonical starter set in Rust,

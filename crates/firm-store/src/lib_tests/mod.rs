@@ -432,7 +432,7 @@ fn seed_host_attention_fixture(
                 team_run_id: run_id.into(),
                 accountable_team_id: None,
                 assignee_membership_id: None,
-                parent_work_id: None,
+                legacy_containment_ref: None,
                 title: "deliver exact Host attention".into(),
                 context_markdown: String::new(),
                 completion_criteria_markdown: "Host receives exact durable attention".into(),
@@ -1002,7 +1002,7 @@ fn unassigned_test_work(run_id: &str, id: &str) -> Work {
         accountable_team_id: None,
         assignee_membership_id: None,
         created_by_member_id: None,
-        parent_work_id: None,
+        legacy_containment_ref: None,
         title: format!("Implement Work core — {id}"),
         context_markdown: "Build the smallest correct slice.".into(),
         completion_criteria_markdown: "Tests pass and state is reconstructable.".into(),
@@ -1485,6 +1485,7 @@ mod work_delegation_rolls_up_target_condition_and_resolution_without_mutating_so
 #[cfg(any())]
 mod work_delivery_failure_emits_host_attention;
 mod work_delivery_waits_for_prerequisites_and_current_lease_can_fail_its_claim;
+mod work_dependency_graph_is_cas_fenced_and_cycle_safe;
 mod work_event_id_reuse_is_rejected_before_delivery_identity_can_collide;
 mod work_submit_emits_host_attention_for_bound_run;
 mod work_transitions_dont_fail_for_unbound_run;

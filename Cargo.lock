@@ -426,6 +426,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 name = "firm-application"
 version = "0.1.0"
 dependencies = [
+ "firm-core",
  "firm-runtime-contract",
  "serde",
 ]
@@ -580,6 +581,7 @@ version = "0.1.0"
 name = "firm-store"
 version = "0.1.0"
 dependencies = [
+ "firm-application",
  "firm-core",
  "firm-fabric",
  "serde",

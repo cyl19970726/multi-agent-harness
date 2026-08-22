@@ -198,27 +198,6 @@ pub(super) fn handle_http_action(
     if path == "/v1/team-runs" {
         return create_team_run_value(store, project_context, execution_space_id, body);
     }
-    if path == "/v1/work-delegations" {
-        return create_work_delegation_value(store, body);
-    }
-    if let Some(delegation_id) = path
-        .strip_prefix("/v1/work-delegations/")
-        .and_then(|rest| rest.strip_suffix("/cancel"))
-    {
-        return cancel_work_delegation_value(store, delegation_id, body);
-    }
-    if let Some(team_run_id) = path
-        .strip_prefix("/v1/team-runs/")
-        .and_then(|rest| rest.strip_suffix("/works"))
-    {
-        return create_team_work_value(store, team_run_id, body);
-    }
-    if let Some(rest) = path.strip_prefix("/v1/team-runs/") {
-        let parts = rest.split('/').collect::<Vec<_>>();
-        if let [team_run_id, "works", work_id, operation] = parts.as_slice() {
-            return mutate_team_work_value(store, team_run_id, work_id, operation, body);
-        }
-    }
     if let Some(team_run_id) = path
         .strip_prefix("/v1/team-runs/")
         .and_then(|rest| rest.strip_suffix("/members"))

@@ -25,6 +25,7 @@
             "runtime_recovery",
             "pressure_summary",
             "all_works",
+            "work_graph",
             "work_queues",
             "member_capacity",
             "convergence_plans",
@@ -135,6 +136,9 @@
               "items": {
                 "$ref": "common.schema.json#/$defs/workSummary"
               }
+            },
+            "work_graph": {
+              "$ref": "common.schema.json#/$defs/workGraph"
             },
             "work_queues": {
               "type": "object",

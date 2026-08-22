@@ -6,6 +6,8 @@
 
 mod provider_catalog;
 mod team_runtime_policy;
+mod work_service;
 
 pub use provider_catalog::*;
 pub use team_runtime_policy::*;
+pub use work_service::*;

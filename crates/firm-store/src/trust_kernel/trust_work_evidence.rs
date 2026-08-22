@@ -134,7 +134,7 @@ impl HarnessStore {
             for binding in bindings.into_iter().filter(|binding| {
                 binding.work_id == report.work_id
                     && binding.work_revision == source_work_revision
-                    && binding.module_id == "integration-plan"
+                    && binding.module_id == WorkModuleId::IntegrationPlan
                     && binding.module_version == 1
             }) {
                 let definition = integration_plan_module_v1();
@@ -342,24 +342,31 @@ impl HarnessStore {
                 None,
             ));
         }
-        if binding.module_id == "integration-plan"
-            && binding.module_version == 1
-            && (!binding.resolved_config.is_object()
-                || ![
-                    "base_revision",
-                    "target_revision",
-                    "work_boundaries",
-                    "candidate_boundaries",
-                    "interfaces",
-                    "convergence_points",
-                    "merge_order",
-                    "conflict_owner",
-                    "per_merge_checks",
-                    "combined_verification",
-                    "rollback_plan",
-                ]
-                .into_iter()
-                .all(|key| binding.resolved_config.get(key).is_some()))
+        if binding.module_id != WorkModuleId::IntegrationPlan || binding.module_version != 1 {
+            return Err(trust_error(
+                TrustErrorCode::ModuleConfigInvalid,
+                "unknown Work module id or version",
+                "work_module_binding",
+                &binding.id,
+                None,
+            ));
+        }
+        if !binding.resolved_config.is_object()
+            || ![
+                "base_revision",
+                "target_revision",
+                "work_boundaries",
+                "candidate_boundaries",
+                "interfaces",
+                "convergence_points",
+                "merge_order",
+                "conflict_owner",
+                "per_merge_checks",
+                "combined_verification",
+                "rollback_plan",
+            ]
+            .into_iter()
+            .all(|key| binding.resolved_config.get(key).is_some())
         {
             return Err(trust_error(
                 TrustErrorCode::ModuleConfigInvalid,

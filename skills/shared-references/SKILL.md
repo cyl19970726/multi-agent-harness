@@ -23,9 +23,11 @@ wins.
 ## 1. No Assignment Message Compatibility Path
 
 Agent Team responsibility is only through the shared Works board. There is no
-Assignment Message compatibility path and no Harness Goal, Plan Gate, or Task
-Graph. TeamMessage is conversation only; never treat a Message as
-responsibility, ownership, or status.
+Assignment Message compatibility path and no Harness Goal, Plan Gate, retired
+Task Graph, or second task ledger. Current peer Works may form one hard
+dependency DAG; only a versioned Work operation changes its edges and only the
+kernel derives readiness. A Message is conversation only; never treat one as
+responsibility, ownership, status, or a dependency mutation.
 
 ## 2. One Execution Driver Per MemberRun
 
@@ -69,12 +71,15 @@ inherit the parent's Workspace and permission ceiling, return evidence to the
 parent, and never become Harness Members, own Work, or serve as independent
 reviewers.
 
-## 7. Delegated Completion Never Auto-Completes Source
+## 7. Dependencies And Delegation Never Auto-Complete Responsibility
 
-When Work is delegated to another flat Team or split into child Work inside the
-same TeamRun, target completion does not auto-submit or auto-complete the
-source Work. The source owner remains accountable for integrating results and
-submitting the source Work.
+Works are flat peer nodes, never containment nodes. A Work may have many
+hard prerequisites and many derived successors. Claim or start only when the
+server says every prerequisite is accepted. A failed or cancelled prerequisite
+requires Host replan; do not infer downstream failure, cancellation, rewiring,
+or acceptance. Cross-Team responsibility uses explicit WorkDelegation. An
+accepted prerequisite or delegated target never auto-submits or auto-accepts
+another Work; its owner remains accountable for integration and submission.
 
 ## 8. No Plan Mode / No Plan Gate
 

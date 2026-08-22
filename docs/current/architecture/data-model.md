@@ -6,7 +6,8 @@ shape and validation.
 ## Canonical graph
 
 ```text
-AgentTeam 1 ── * Work / Evidence                # durable responsibility
+AgentTeam 1 ── * Work / Evidence                # durable responsibility nodes
+                   └── depends_on ──> Work      # hard, directed, acyclic
      ├── * TeamMembership ──> AgentMember       # participation, not identity
      ├── 1 ExecutionNode
      └── * AgentTeamRun ── * MemberRun          # internal diagnostics/history
@@ -34,6 +35,14 @@ project binding.
 `AgentTeamRun` and `MemberRun` are internal diagnostics and history
 projections: `Work.team_run_id` only correlates the run that surfaced a Work,
 and ending or discarding a run never moves or re-scopes responsibility.
+
+Work topology is flat. A versioned dependency edge points from a successor to
+one prerequisite; a Work may have many prerequisites and many derived
+successors. The forward prerequisite set is authoritative and the reverse
+successor set is computed. The Work kernel rejects self-edges, missing nodes,
+duplicates, stale revisions, and cycles, then derives readiness and its
+reasons. There is no Work-containment relation. Failed or cancelled
+prerequisites preserve downstream Work for explicit Host replan.
 
 Cross-Team cooperation is explicit `WorkDelegation`, not parent/child topology.
 The collaboration fabric owns the relationship and decisions; source
@@ -64,6 +73,8 @@ Space; a registration from one Store cannot name another Space.
 | Where may it execute? | `AgentTeam.node_id` |
 | Which runtime attempt is active? | `AgentTeamRun` |
 | Who executes a lane? | `MemberRun` plus current `Work` ownership |
+| What orders peer Works? | versioned hard dependency edges validated by the Work kernel |
+| Why is a Work ready? | kernel-derived readiness over lifecycle, assignment policy and accepted prerequisites |
 | How does work cross Teams? | `WorkDelegation` and events |
 | Who may drive a Run? | current parent-fenced `TeamSupervisorLease` |
 | Who authored conversation? | identity-first `Message`, attested by the source NodeDaemon generation |

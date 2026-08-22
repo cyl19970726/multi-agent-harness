@@ -45,12 +45,31 @@ Current checks:
 - JSON parsing for schemas, docs, and examples;
 - provider-runtime package boundaries, the closed four-provider catalog, and
   forbidden provider-to-CLI/Store/application dependency edges;
+- Work kernel/package direction, the 1,500-line maintained-file limit, and zero
+  active Work-containment vocabulary outside an exact historical allowlist;
 - schema fixture validation;
 - Markdown local link validation;
 - document size warning and a blocking 1500-line maintained-source ceiling;
 - skill frontmatter and UI metadata validation;
 - docs governance registry validation;
 - Agent Dashboard TypeScript typecheck and Vite production build.
+
+The focused Work architecture gate is available independently:
+
+```bash
+npx pnpm@9.15.4 check:work-kernel-boundaries
+```
+
+It checks dependency inversion: the Work application service declares a
+core-facing persistence port without importing Store, CLI, or Provider
+packages; Store depends on application + core and implements that port; CLI
+consumes and composes both. The application crate's reviewed
+`firm-runtime-contract` policy dependency remains allowed. The gate also scans
+the tracked repository rather than trusting a hand-maintained active-file
+list. Historical evidence
+is admitted only by exact path plus reason. The old wire key is admitted only
+at the exact non-serializing core decode declaration and its compatibility
+test; its neutral in-memory field cannot become a current public contract.
 
 Rust checks are also active in CI:
 

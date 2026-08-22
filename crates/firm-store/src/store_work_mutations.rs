@@ -348,7 +348,7 @@ impl HarnessStore {
         }
 
         target_work.accountable_team_id = Some(target_team.id.clone());
-        target_work.parent_work_id = None;
+        target_work.legacy_containment_ref = None;
         target_work.phase = WorkPhase::Open;
         target_work.condition = WorkCondition::Normal;
         target_work.resolution = None;

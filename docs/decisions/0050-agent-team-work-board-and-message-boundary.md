@@ -1,5 +1,11 @@
 # ADR 0050: Agent Team Works And Message Boundary
 
+> Work-graph amendment (ADR 0058): the historical rejection of a general
+> dependency graph, “minimal blockers” limitation, child-Work creation rule,
+> and child-state acceptance item below are superseded. Current Work is flat;
+> multiple hard `depends_on` edges form one cycle-safe DAG. The remaining
+> Work/Message, responsibility, delivery, and Host-acceptance boundaries stand.
+
 > Successor (DOC-16 row, DEV-40 flip 2026-08-18): [DOC-106](https://app.notion.com/p/3be49a4fa3798126a598e634ed5d0807).
 
 ```text

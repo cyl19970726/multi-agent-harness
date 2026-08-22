@@ -449,11 +449,13 @@ impl HarnessStore {
     }
 
     pub fn work_events(&self) -> StoreResult<Vec<WorkEvent>> {
-        Ok(self
+        let mut events = self
             .work_operations_unlocked()?
             .into_iter()
             .map(|operation| operation.event)
-            .collect())
+            .collect::<Vec<_>>();
+        events.extend(self.trust_work_events_unlocked()?);
+        Ok(events)
     }
 
     pub fn latest_work_deliveries(&self) -> StoreResult<Vec<ProviderWorkDispatch>> {

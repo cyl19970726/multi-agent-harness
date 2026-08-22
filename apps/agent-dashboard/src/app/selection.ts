@@ -53,6 +53,8 @@ export interface SelectionState {
   agentSessionId?: string;
   /** URL-owned Team Workspace tab and bounded Work filters. */
   teamTab?: "works" | "activity" | "members";
+  /** URL-owned representation of the shared Work projection. */
+  teamWorkView?: "graph" | "kanban";
   teamOwner?: string;
   teamAttention?: "all" | "blocked" | "review";
   teamQuery?: string;
@@ -161,6 +163,8 @@ function selectionFromSearch(search: string, pathname = "/"): SelectionState {
   if (teamConversation) next.teamConversation = teamConversation;
   const teamTab = params.get("teamTab");
   if (teamTab === "works" || teamTab === "activity" || teamTab === "members") next.teamTab = teamTab;
+  const teamWorkView = params.get("teamWorkView");
+  if (teamWorkView === "graph" || teamWorkView === "kanban") next.teamWorkView = teamWorkView;
   const teamOwner = params.get("teamOwner");
   if (teamOwner) next.teamOwner = teamOwner;
   const teamAttention = params.get("teamAttention");
@@ -234,6 +238,7 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   setOrDelete("agentMode", selection.agentWorkspaceMode && selection.agentWorkspaceMode !== "session" ? selection.agentWorkspaceMode : undefined);
   setOrDelete("agentSession", selection.agentSessionId);
   setOrDelete("teamTab", selection.teamTab && selection.teamTab !== "works" ? selection.teamTab : undefined);
+  setOrDelete("teamWorkView", selection.teamWorkView && selection.teamWorkView !== "graph" ? selection.teamWorkView : undefined);
   setOrDelete("teamOwner", selection.teamOwner && selection.teamOwner !== "all" ? selection.teamOwner : undefined);
   setOrDelete("teamAttention", selection.teamAttention && selection.teamAttention !== "all" ? selection.teamAttention : undefined);
   setOrDelete("teamQuery", selection.teamQuery);
@@ -277,6 +282,7 @@ const selectionCompareKeys = [
   "agentWorkspaceMode",
   "agentSessionId",
   "teamTab",
+  "teamWorkView",
   "teamOwner",
   "teamAttention",
   "teamQuery",

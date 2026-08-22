@@ -5,6 +5,9 @@
 //! identity, or runtime identity. Those are bound from the authenticated
 //! transport and the addressed Team/Work at this boundary.
 
+use harness_application::{
+    CreateWorkCommand, ReplaceWorkDependenciesCommand, SubmitWorkCommand, WorkApplication,
+};
 use harness_core::agentfirm_api::{
     ActorKind, ActorRef, CandidateKind, CandidateRef, Confidence, DeliveryReconcileOutcome,
     FailureAnalysis, GateEvaluation, GateRequirement, GateRequirementSource, GateVerdict,
@@ -15,7 +18,7 @@ use harness_core::agentfirm_api::{
 };
 use harness_core::{
     NodeDaemonLeaseStatus, TeamActorKind, TeamActorRef, Work, WorkCausationRef, WorkClaimMode,
-    WorkCommandContext, WorkCondition, WorkPhase, WorkPriority,
+    WorkCommandContext, WorkPriority,
 };
 use harness_store::{canonical_json_fingerprint, HarnessStore, StoreError};
 use serde::{Deserialize, Serialize};
@@ -59,6 +62,95 @@ pub fn execute(
     })));
     if let Some(route) = parse_canonical_route(path) {
         return execute_canonical_role_action(store, auth, route, body, confirmed_action);
+    }
+    if let Some((team_id, work_id)) = parse_dependencies_route(path) {
+        let RoleActionIntent::ReplaceWorkDependencies {
+            prerequisite_work_ids,
+            reason,
+        } = serde_json::from_slice::<RoleActionIntent>(body).map_err(|error| {
+            encoded_error(
+                "INVALID_STATE_TRANSITION",
+                format!("invalid dependency replacement intent: {error}"),
+                "work",
+                work_id,
+                None,
+            )
+        })?
+        else {
+            return Err(encoded_error(
+                "INVALID_STATE_TRANSITION",
+                "semantic action does not match the dependency route",
+                "work",
+                work_id,
+                None,
+            ));
+        };
+        if reason.trim().is_empty() {
+            return Err(encoded_error(
+                "INVALID_STATE_TRANSITION",
+                "dependency replacement requires a non-empty reason",
+                "work",
+                work_id,
+                None,
+            ));
+        }
+        let team = store.latest_teams()?.remove(team_id).ok_or_else(|| {
+            encoded_error(
+                "INVALID_STATE_TRANSITION",
+                "AgentTeam does not exist",
+                "team",
+                team_id,
+                None,
+            )
+        })?;
+        let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;
+        let before = store.work_operations()?.len();
+        let canonical_before = store
+            .canonical_operations_for_space(&auth.execution_space_id)?
+            .len();
+        let mut context = host_context(&auth, host_id, false);
+        context.causation_ref = Some(WorkCausationRef {
+            kind: "work_dependency_reason".into(),
+            id: reason,
+        });
+        let work =
+            WorkApplication::new(store).replace_dependencies(ReplaceWorkDependenciesCommand {
+                accountable_team_id: team_id.to_string(),
+                work_id: work_id.to_string(),
+                expected_version: auth.expected_version,
+                prerequisite_work_ids,
+                context,
+            })?;
+        if let Some(result) =
+            committed_canonical_work_result(store, &auth, &work, canonical_before)?
+        {
+            return Ok(result);
+        }
+        let operations = store.work_operations()?;
+        let operation = operations
+            .iter()
+            .rev()
+            .find(|operation| {
+                operation.work.id == work.id && operation.work.version == work.version
+            })
+            .ok_or_else(|| {
+                encoded_error(
+                    "INVALID_STATE_TRANSITION",
+                    "dependency replacement committed without a matching operation",
+                    "work",
+                    work_id,
+                    Some(work.version),
+                )
+            })?;
+        return Ok(RoleActionResult {
+            ok: true,
+            action_protocol_version: "agentfirm.role_actions.v1",
+            projection: serde_json::to_value(&work)?,
+            event_id: operation.event.id.clone(),
+            resulting_version: work.version,
+            store_sequence: operations.len() as u64,
+            replayed: operations.len() == before,
+        });
     }
     if let Some((node_id, delivery_id)) = parse_operator_route(path) {
         let intent = serde_json::from_slice::<OperatorActionIntent>(body).map_err(|error| {
@@ -365,6 +457,9 @@ pub fn execute(
         });
     }
     let before = store.work_operations()?.len();
+    let canonical_before = store
+        .canonical_operations_for_space(&auth.execution_space_id)?
+        .len();
     let work = match (route.operation, route.work_id, intent) {
         (
             "create",
@@ -374,7 +469,6 @@ pub fn execute(
                 title,
                 context_markdown,
                 completion_criteria_markdown,
-                parent_work_id,
                 eligible_member_ids,
                 prerequisite_work_ids,
                 claim_mode,
@@ -397,38 +491,24 @@ pub fn execute(
                 ));
             }
             let context = host_context(&auth, host_id, false);
-            store.insert_work(
-                Work {
-                    id: work_id,
-                    team_run_id: route.team_run_id.to_string(),
-                    accountable_team_id: Some(team.id.clone()),
-                    assignee_membership_id: None,
-                    parent_work_id,
-                    title,
-                    context_markdown,
-                    completion_criteria_markdown,
-                    phase: WorkPhase::Open,
-                    condition: WorkCondition::Normal,
-                    resolution: None,
-                    owner_member_id: None,
-                    active_member_run_id: None,
-                    claim_mode,
-                    eligible_member_ids,
-                    prerequisite_work_ids,
-                    priority,
-                    created_by_actor: context.performed_by_actor.clone(),
-                    created_by_member_id: None,
-                    result_summary: None,
-                    blocker_reason: None,
-                    artifact_refs: Vec::new(),
-                    check_refs: Vec::new(),
-                    github_links: Vec::new(),
-                    version: 0,
-                    created_at: context.created_at.clone(),
-                    updated_at: context.created_at.clone(),
-                },
+            WorkApplication::new(store).create(CreateWorkCommand {
+                work_id,
+                team_run_id: route.team_run_id.to_string(),
+                accountable_team_id: team.id.clone(),
+                title,
+                context_markdown,
+                completion_criteria_markdown,
+                claim_mode,
+                eligible_member_ids,
+                prerequisite_work_ids,
+                priority,
+                initial_member_run_id: None,
+                artifact_refs: Vec::new(),
+                check_refs: Vec::new(),
+                github_links: Vec::new(),
+                expected_version: auth.expected_version,
                 context,
-            )?
+            })?
         }
         (operation, Some(work_id), intent) => {
             require_confirmed(operation, confirmed_action, work_id)?;
@@ -483,14 +563,14 @@ pub fn execute(
                 ) => {
                     let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;
                     match (membership_id, member_run_id) {
-                        (Some(membership_id), _) => store.assign_work_to_membership(
+                        (Some(membership_id), _) => WorkApplication::new(store).assign_membership(
                             work_id,
                             auth.expected_version,
                             &membership_id,
                             &auth.execution_space_id,
                             host_context(&auth, host_id, false),
                         )?,
-                        (None, Some(member_run_id)) => store.assign_work(
+                        (None, Some(member_run_id)) => WorkApplication::new(store).assign_runtime(
                             work_id,
                             auth.expected_version,
                             &member_run_id,
@@ -509,7 +589,7 @@ pub fn execute(
                 }
                 ("rebind", RoleActionIntent::RebindWork { member_run_id }) => {
                     let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;
-                    store.rebind_work(
+                    WorkApplication::new(store).rebind(
                         work_id,
                         auth.expected_version,
                         &member_run_id,
@@ -519,7 +599,7 @@ pub fn execute(
                 ("release", RoleActionIntent::ReleaseWork)
                     if is_host(&auth, &team.host_agent_id) =>
                 {
-                    store.release_work_as_host(
+                    WorkApplication::new(store).release_as_host(
                         work_id,
                         auth.expected_version,
                         host_context(&auth, &team.host_agent_id, false),
@@ -527,7 +607,7 @@ pub fn execute(
                 }
                 ("release", RoleActionIntent::ReleaseWork) => {
                     let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
-                    store.release_work(
+                    WorkApplication::new(store).release_as_member(
                         work_id,
                         auth.expected_version,
                         &member_run_id,
@@ -536,7 +616,7 @@ pub fn execute(
                 }
                 ("cancel", RoleActionIntent::CancelWork { reason }) => {
                     let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;
-                    store.cancel_work(
+                    WorkApplication::new(store).cancel(
                         work_id,
                         auth.expected_version,
                         &reason,
@@ -545,7 +625,7 @@ pub fn execute(
                 }
                 ("claim", RoleActionIntent::ClaimWork) => {
                     let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
-                    store.claim_work(
+                    WorkApplication::new(store).claim(
                         work_id,
                         auth.expected_version,
                         &member_run_id,
@@ -554,7 +634,7 @@ pub fn execute(
                 }
                 ("start", RoleActionIntent::StartWork) => {
                     let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
-                    store.start_work(
+                    WorkApplication::new(store).start(
                         work_id,
                         auth.expected_version,
                         &member_run_id,
@@ -563,7 +643,7 @@ pub fn execute(
                 }
                 ("block", RoleActionIntent::BlockWork { reason }) => {
                     let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
-                    store.block_work(
+                    WorkApplication::new(store).block_as_member(
                         work_id,
                         auth.expected_version,
                         &member_run_id,
@@ -573,7 +653,7 @@ pub fn execute(
                 }
                 ("resume", RoleActionIntent::UnblockWork { resolution }) => {
                     let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
-                    store.resume_work(
+                    WorkApplication::new(store).resume_as_member(
                         work_id,
                         auth.expected_version,
                         &member_run_id,
@@ -592,18 +672,18 @@ pub fn execute(
                     },
                 ) => {
                     let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
-                    store.submit_work_with_revision_and_links(
-                        work_id,
-                        auth.expected_version,
-                        &member_run_id,
-                        &result_summary,
+                    WorkApplication::new(store).submit(SubmitWorkCommand {
+                        work_id: work_id.to_string(),
+                        expected_version: auth.expected_version,
+                        member_run_id: member_run_id.clone(),
+                        result_summary,
                         artifact_refs,
                         check_refs,
-                        Vec::new(),
+                        github_links: Vec::new(),
                         base_revision,
                         candidate_revision,
-                        member_context(&auth, &member_run_id),
-                    )?
+                        context: member_context(&auth, &member_run_id),
+                    })?
                 }
                 _ => {
                     return Err(encoded_error(
@@ -626,13 +706,14 @@ pub fn execute(
             ))
         }
     };
+    if let Some(result) = committed_canonical_work_result(store, &auth, &work, canonical_before)? {
+        return Ok(result);
+    }
     let operations = store.work_operations()?;
     let operation = operations
         .iter()
         .rev()
-        .find(|operation| {
-            operation.work.id == work.id && operation.event.idempotency_key == auth.idempotency_key
-        })
+        .find(|operation| operation.work.id == work.id && operation.work.version == work.version)
         .ok_or_else(|| {
             encoded_error(
                 "INVALID_STATE_TRANSITION",
@@ -761,6 +842,9 @@ mod tests {
         ));
         assert!(is_http_mutation_path(
             "/v1/agentfirm/teams/team-1/works/work-1/accept"
+        ));
+        assert!(is_http_mutation_path(
+            "/v1/agentfirm/teams/team-1/works/work-1/dependencies"
         ));
         assert!(is_http_mutation_path(
             "/v1/agentfirm/nodes/node-1/work-deliveries/delivery-1/reconcile"

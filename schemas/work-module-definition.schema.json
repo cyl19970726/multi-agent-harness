@@ -1,10 +1,9 @@
 {
   "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://agent-harness.local/schemas/work-module-definition.schema.json","title":"WorkModuleDefinition",
   "type":"object","additionalProperties":false,
-  "required":["module_id","module_version","schema_version","display_name","config_schema","allowed_actions","relation_types","default_gate_templates","implementation_ref"],
+  "required":["module_id","module_version","schema_version","display_name","config_schema","default_gate_templates","implementation_ref"],
   "properties":{
-    "module_id":{"type":"string","minLength":1},"module_version":{"type":"integer","minimum":1},"schema_version":{"type":"integer","minimum":1},"display_name":{"type":"string","minLength":1},
-    "config_schema":{},"allowed_actions":{"$ref":"#/$defs/refs"},"relation_types":{"$ref":"#/$defs/refs"},"default_gate_templates":{"type":"array","items":{}},"implementation_ref":{"type":"string","minLength":1}
-  },
-  "$defs":{"refs":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true}}
+    "module_id":{"type":"string","enum":["integration-plan"]},"module_version":{"type":"integer","const":1},"schema_version":{"type":"integer","minimum":1},"display_name":{"type":"string","minLength":1},
+    "config_schema":{},"default_gate_templates":{"type":"array","items":{}},"implementation_ref":{"type":"string","minLength":1}
+  }
 }

@@ -21,7 +21,7 @@ use firm_core::agentfirm_api::{
     RuntimeSafePointRequirement, SubscriptionCursor, TeamMembership, TeamMembershipRole,
     TeamMembershipStatus, TeamMessageDeliveryClaim, TrustError, TrustErrorCode, WorkDelivery,
     WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus, WorkFinding,
-    WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
+    WorkModuleBinding, WorkModuleId, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
     WorkspaceOwnership, WorkspaceSafetyProof,
 };
 use firm_core::collaboration::{

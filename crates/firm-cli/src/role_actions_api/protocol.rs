@@ -12,8 +12,6 @@ pub(super) enum RoleActionIntent {
         context_markdown: String,
         completion_criteria_markdown: String,
         #[serde(default)]
-        parent_work_id: Option<String>,
-        #[serde(default)]
         eligible_member_ids: Vec<String>,
         #[serde(default)]
         prerequisite_work_ids: Vec<String>,
@@ -21,6 +19,10 @@ pub(super) enum RoleActionIntent {
         claim_mode: WorkClaimMode,
         #[serde(default = "default_priority")]
         priority: WorkPriority,
+    },
+    ReplaceWorkDependencies {
+        prerequisite_work_ids: Vec<String>,
+        reason: String,
     },
     AssignWork {
         /// Canonical DOC-106 assignee: one TeamMembership of the Work's
@@ -439,6 +441,16 @@ pub(super) fn parse_accept_route(path: &str) -> Option<(&str, &str)> {
     }
 }
 
+pub(super) fn parse_dependencies_route(path: &str) -> Option<(&str, &str)> {
+    let parts = path.trim_matches('/').split('/').collect::<Vec<_>>();
+    match parts.as_slice() {
+        ["v1", "agentfirm", "teams", team_id, "works", work_id, "dependencies"] => {
+            Some((team_id, work_id))
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn parse_operator_route(path: &str) -> Option<(&str, &str)> {
     let parts = path.trim_matches('/').split('/').collect::<Vec<_>>();
     match parts.as_slice() {
@@ -750,6 +762,7 @@ pub(crate) fn authorize_member_interrupt(
 pub fn is_http_mutation_path(path: &str) -> bool {
     parse_route(path).is_some()
         || parse_accept_route(path).is_some()
+        || parse_dependencies_route(path).is_some()
         || parse_operator_route(path).is_some()
         || parse_canonical_route(path).is_some()
 }
@@ -1119,29 +1132,67 @@ pub(super) fn canonical_replay(
     }))
 }
 
-pub(super) fn work_replay(
+pub(super) fn committed_canonical_work_result(
     store: &HarnessStore,
     auth: &AuthenticatedMutation,
-    work_id: &str,
-    kind: harness_core::WorkEventKind,
+    work: &harness_core::Work,
+    operation_count_before: usize,
 ) -> Result<Option<RoleActionResult>, StoreError> {
-    let operations = store.work_operations()?;
+    let operations = store.canonical_operations_for_space(&auth.execution_space_id)?;
     let Some(operation) = operations
         .iter()
         .find(|operation| operation.event.idempotency_key == auth.idempotency_key)
     else {
         return Ok(None);
     };
+    let projection = serde_json::to_value(work)?;
+    if operation.event.aggregate_kind != "work"
+        || operation.event.aggregate_id != work.id
+        || operation.event.performed_by_actor != auth.actor
+        || operation.event.resulting_version != work.version
+        || operation.resulting_projection != projection
+    {
+        return Err(encoded_error(
+            "IDEMPOTENCY_KEY_REUSED",
+            "idempotency key is already bound to a different authenticated Work action",
+            "work",
+            &work.id,
+            Some(work.version),
+        ));
+    }
+    Ok(Some(RoleActionResult {
+        ok: true,
+        action_protocol_version: "agentfirm.role_actions.v1",
+        projection,
+        event_id: operation.event.id.clone(),
+        resulting_version: operation.event.resulting_version,
+        store_sequence: operation.event.store_sequence,
+        replayed: operations.len() == operation_count_before,
+    }))
+}
+
+pub(super) fn work_replay(
+    store: &HarnessStore,
+    auth: &AuthenticatedMutation,
+    work_id: &str,
+    kind: harness_core::WorkEventKind,
+) -> Result<Option<RoleActionResult>, StoreError> {
+    let events = store.work_events()?;
+    let Some(event) = events
+        .iter()
+        .find(|event| event.idempotency_key == auth.idempotency_key)
+    else {
+        return Ok(None);
+    };
     let fingerprint_matches = auth.request_fingerprint.as_deref()
-        == operation
-            .event
+        == event
             .causation_ref
             .as_ref()
             .filter(|reference| reference.kind == "agentfirm.role_action.v1")
             .map(|reference| reference.id.as_str());
-    if operation.event.work_id != work_id
-        || operation.event.kind != kind
-        || operation.event.expected_version != auth.expected_version
+    if event.work_id != work_id
+        || event.kind != kind
+        || event.expected_version != auth.expected_version
         || !fingerprint_matches
     {
         return Err(encoded_error(
@@ -1149,16 +1200,59 @@ pub(super) fn work_replay(
             "idempotency key is already bound to a different authenticated Work action",
             "work",
             work_id,
-            Some(operation.event.resulting_version),
+            Some(event.resulting_version),
         ));
+    }
+    let projection = store
+        .latest_works()?
+        .into_iter()
+        .find(|work| work.id == work_id && work.version == event.resulting_version)
+        .ok_or_else(|| {
+            encoded_error(
+                "INVALID_STATE_TRANSITION",
+                "Work replay event has no matching current projection",
+                "work",
+                work_id,
+                Some(event.resulting_version),
+            )
+        })?;
+    let projection_value = serde_json::to_value(&projection)?;
+    if let Some(operation) = store
+        .canonical_operations_for_space(&auth.execution_space_id)?
+        .into_iter()
+        .find(|operation| operation.event.idempotency_key == auth.idempotency_key)
+    {
+        if operation.event.aggregate_kind != "work"
+            || operation.event.aggregate_id != work_id
+            || operation.event.performed_by_actor != auth.actor
+            || operation.event.resulting_version != event.resulting_version
+            || operation.resulting_projection != projection_value
+        {
+            return Err(encoded_error(
+                "IDEMPOTENCY_KEY_REUSED",
+                "canonical Work replay does not match its compatibility event",
+                "work",
+                work_id,
+                Some(event.resulting_version),
+            ));
+        }
+        return Ok(Some(RoleActionResult {
+            ok: true,
+            action_protocol_version: "agentfirm.role_actions.v1",
+            projection: projection_value,
+            event_id: operation.event.id,
+            resulting_version: operation.event.resulting_version,
+            store_sequence: operation.event.store_sequence,
+            replayed: true,
+        }));
     }
     Ok(Some(RoleActionResult {
         ok: true,
         action_protocol_version: "agentfirm.role_actions.v1",
-        projection: serde_json::to_value(&operation.work)?,
-        event_id: operation.event.id.clone(),
-        resulting_version: operation.event.resulting_version,
-        store_sequence: operations.len() as u64,
+        projection: projection_value,
+        event_id: event.id.clone(),
+        resulting_version: event.resulting_version,
+        store_sequence: events.len() as u64,
         replayed: true,
     }))
 }

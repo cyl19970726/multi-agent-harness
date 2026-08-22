@@ -433,16 +433,35 @@ impl HarnessStore {
         }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        if let Some(existing) = self.idempotent_work_operation_unlocked(
-            &context.idempotency_key,
-            work_id,
-            WorkEventKind::Cancelled,
-        )? {
-            return Ok(existing.work);
-        }
         require_host_actor(&context.performed_by_actor)?;
-        let current = self.current_work_unlocked(work_id, expected_version)?;
+        let current = self
+            .latest_works_unlocked()?
+            .remove(work_id)
+            .ok_or_else(|| StoreError::Conflict(format!("work not found: {work_id}")))?;
         self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
+        let request_payload = serde_json::json!({
+            "work_id": work_id,
+            "expected_version": expected_version,
+            "reason": reason,
+        });
+        let (mutation_context, fingerprint) = self.canonical_work_command_context_unlocked(
+            &current,
+            expected_version,
+            "work.cancel",
+            &context,
+            &request_payload,
+        )?;
+        if let Some(replay) =
+            self.replay_current_work_mutation_unlocked(&mutation_context, work_id, &fingerprint)?
+        {
+            return Ok(replay.projection);
+        }
+        if current.version != expected_version {
+            return Err(StoreError::Conflict(format!(
+                "WORK_VERSION_CONFLICT: Work {work_id} is version {}, expected {expected_version}",
+                current.version
+            )));
+        }
         if current.is_terminal() {
             return Err(StoreError::Conflict(format!(
                 "work {work_id} is already terminal"
@@ -456,7 +475,118 @@ impl HarnessStore {
         next.blocker_reason = Some(reason.to_string());
         next.version += 1;
         next.updated_at = context.created_at.clone();
-        self.append_work_transition_unlocked(current, next, WorkEventKind::Cancelled, context)
+        // Preserve the historical WorkEvent read contract as an immutable
+        // record inside the one canonical operation. It is not a second Work
+        // writer: the resulting Work projection and its successor outbox are
+        // committed by commit_current_work_mutation_unlocked.
+        let compatibility_event = WorkEvent {
+            id: context.event_id.clone(),
+            team_run_id: next.team_run_id.clone(),
+            work_id: next.id.clone(),
+            sequence: next.version,
+            kind: WorkEventKind::Cancelled,
+            expected_version,
+            resulting_version: next.version,
+            performed_by_actor: context.performed_by_actor.clone(),
+            authority_actor: context.authority_actor.clone(),
+            causation_ref: context.causation_ref.clone(),
+            idempotency_key: context.idempotency_key.clone(),
+            payload: request_payload.clone(),
+            created_at: context.created_at.clone(),
+        };
+        let result = self.commit_current_work_mutation_unlocked(
+            &mutation_context,
+            "cancelled",
+            request_payload,
+            &next,
+            vec![serde_json::to_value(compatibility_event)?],
+            Vec::new(),
+        )?;
+        Ok(result.projection)
+    }
+
+    /// Close a non-terminal Work as failed by an explicit Host decision.
+    /// Provider failure never calls this implicitly; it is a responsibility-
+    /// plane judgment recorded with the exact Work revision.
+    pub fn fail_work(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        reason: &str,
+        failure_analysis_ref: &str,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
+        if reason.trim().is_empty() || failure_analysis_ref.trim().is_empty() {
+            return Err(StoreError::Conflict(
+                "failure reason and FailureAnalysis reference are required".to_string(),
+            ));
+        }
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        require_host_actor(&context.performed_by_actor)?;
+        let current = self
+            .latest_works_unlocked()?
+            .remove(work_id)
+            .ok_or_else(|| StoreError::Conflict(format!("work not found: {work_id}")))?;
+        let request_payload = serde_json::json!({
+            "work_id": work_id,
+            "expected_version": expected_version,
+            "reason": reason,
+            "failure_analysis_ref": failure_analysis_ref,
+        });
+        let (mutation_context, fingerprint) = self.canonical_work_command_context_unlocked(
+            &current,
+            expected_version,
+            "work.fail",
+            &context,
+            &request_payload,
+        )?;
+        if let Some(replay) =
+            self.replay_current_work_mutation_unlocked(&mutation_context, work_id, &fingerprint)?
+        {
+            return Ok(replay.projection);
+        }
+        if current.version != expected_version {
+            return Err(StoreError::Conflict(format!(
+                "WORK_VERSION_CONFLICT: Work {work_id} is version {}, expected {expected_version}",
+                current.version
+            )));
+        }
+        if current.is_terminal() {
+            return Err(StoreError::Conflict(format!(
+                "work {work_id} is already terminal"
+            )));
+        }
+        self.ensure_deliveries_reassignable_unlocked(&current)?;
+        let mut next = current.clone();
+        next.phase = WorkPhase::Closed;
+        next.condition = WorkCondition::Normal;
+        next.resolution = Some(WorkResolution::Failed);
+        next.blocker_reason = Some(reason.to_string());
+        next.version += 1;
+        next.updated_at = context.created_at.clone();
+        let decision = WorkOperationalDecision {
+            id: format!("work-decision-{}", context.event_id),
+            work_id: work_id.to_string(),
+            expected_work_version: expected_version,
+            kind: firm_core::WorkDecisionKind::Fail,
+            decided_by_actor: context.performed_by_actor.clone(),
+            rationale: reason.to_string(),
+            work_report_id: None,
+            gate_requirement_ref: None,
+            failure_analysis_ref: Some(failure_analysis_ref.to_string()),
+            evidence_refs: Vec::new(),
+            created_at: context.created_at.clone(),
+        };
+        let result = self.commit_current_work_mutation_unlocked(
+            &mutation_context,
+            "failed",
+            request_payload,
+            &next,
+            vec![serde_json::to_value(decision)?],
+            Vec::new(),
+        )?;
+        Ok(result.projection)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -686,8 +816,7 @@ impl HarnessStore {
             .filter(|operation| operation.work.id == current.id)
             .count() as u64
             + 1;
-        let prereq_event_id = context.event_id.clone();
-        let prereq_created_at = context.created_at.clone();
+        let payload = self.work_graph_outbox_payload_unlocked(&next, kind, payload)?;
         let deliveries = if matches!(
             kind,
             WorkEventKind::Assigned
@@ -782,88 +911,9 @@ impl HarnessStore {
             delegation_revisions,
         };
         self.append_work_operation_unlocked(&operation)?;
-        // When a work is accepted (Done), notify works that depend on it
-        // as a prerequisite: create deliveries for their owner members.
-        if kind == WorkEventKind::Accepted {
-            let team_run_id = &next.team_run_id;
-            let prerequisite_id = &next.id;
-            let all_works = self.latest_works_unlocked()?;
-            for dependent_work in all_works.values() {
-                if dependent_work.team_run_id == *team_run_id
-                    && dependent_work
-                        .prerequisite_work_ids
-                        .iter()
-                        .any(|pid| pid == prerequisite_id)
-                    && !dependent_work.is_terminal()
-                {
-                    if let Some(owner_member_id) = dependent_work.active_member_run_id.as_deref() {
-                        if let Ok(member) =
-                            self.require_member_run_unlocked(owner_member_id, team_run_id)
-                        {
-                            if self
-                                .ensure_member_can_receive_work_unlocked(&member)
-                                .is_ok()
-                            {
-                                let dep_delivery = ProviderWorkDispatch {
-                                    id: format!(
-                                        "work-delivery-prereq-{}-{}",
-                                        prereq_event_id, dependent_work.id
-                                    ),
-                                    work_event_id: prereq_event_id.clone(),
-                                    team_run_id: team_run_id.clone(),
-                                    work_id: dependent_work.id.clone(),
-                                    work_version: dependent_work.version,
-                                    recipient_member_run_id: owner_member_id.to_string(),
-                                    status: ProviderWorkDispatchStatus::Queued,
-                                    attempt: 0,
-                                    claim_id: None,
-                                    claimed_by_supervisor_id: None,
-                                    claimed_generation: None,
-                                    provider_receipt_id: None,
-                                    failure_reason: None,
-                                    updated_at: prereq_created_at.clone(),
-                                };
-                                self.append_jsonl_unlocked("work_deliveries.jsonl", &dep_delivery)?;
-                                // Also ensure HostAttention for prerequisite completion
-                                let prereq_attention = HostAttention {
-                                    id: format!("host-attention-prereq-{}", dep_delivery.id),
-                                    team_run_id: team_run_id.clone(),
-                                    kind: HostAttentionKind::WorkPrerequisiteCompleted,
-                                    work_id: dependent_work.id.clone(),
-                                    work_version: dependent_work.version,
-                                    source_event_ref: prereq_event_id.clone(),
-                                    member_run_id: Some(owner_member_id.to_string()),
-                                    status: HostAttentionStatus::Actionable,
-                                    attempt: 0,
-                                    claim_id: None,
-                                    claimed_host_surface: None,
-                                    claimed_host_thread_id: None,
-                                    claimed_host_lease_id: None,
-                                    claimed_host_lease_generation: None,
-                                    claimed_host_lease_owner_id: None,
-                                    claimed_recipient_member_run_id: None,
-                                    claimed_recipient_session_id: None,
-                                    claimed_recipient_session_generation: None,
-                                    claimed_node_daemon_id: None,
-                                    claimed_node_daemon_generation: None,
-                                    provider_receipt_id: None,
-                                    last_failure_reason: None,
-                                    created_at: prereq_created_at.clone(),
-                                    updated_at: prereq_created_at.clone(),
-                                };
-                                prereq_attention
-                                    .validate()
-                                    .map_err(|error| StoreError::Conflict(error.to_string()))?;
-                                self.append_jsonl_unlocked(
-                                    "host_attentions.jsonl",
-                                    &prereq_attention,
-                                )?;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // The outbox itself is in the crash-atomic WorkOperation. Materialized
+        // HostAttention rows are deterministic and replay-repairable.
+        self.ensure_downstream_host_attentions_for_work_operation_unlocked(&operation)?;
         self.ensure_host_attention_for_work_operation_unlocked(&operation)?;
         Ok(next)
     }

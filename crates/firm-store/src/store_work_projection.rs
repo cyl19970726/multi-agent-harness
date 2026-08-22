@@ -331,6 +331,7 @@ impl HarnessStore {
         // If the original process crashed after fsyncing the WorkOperation but
         // before its derived HostAttention row, the ordinary idempotent retry
         // repairs that gap before returning the already-applied Work result.
+        self.ensure_downstream_host_attentions_for_work_operation_unlocked(&existing)?;
         self.ensure_host_attention_for_work_operation_unlocked(&existing)?;
         Ok(Some(existing))
     }

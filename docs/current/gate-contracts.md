@@ -12,7 +12,7 @@ WorkModuleBinding
           -> accept_work
 ```
 
-`WorkModuleBinding` freezes a reusable Module version and configuration.
+`WorkModuleBinding` freezes a supported Module version and configuration.
 `GateRequirement` freezes a typed evaluator `ActorRef`, evaluator version and
 their canonical fingerprint together with the evidence contract and dependency
 set. `GateEvaluation.performed_by` must be the transport-authenticated actor and
@@ -41,6 +41,20 @@ Direct requirements are allowed for small one-off verification. Reusable
 verification belongs in a versioned Module. Binding an integration-plan Module
 creates the frozen requirement set for that Work revision; later Module edits
 cannot change the Candidate's contract.
+
+The implemented definition scope is closed: `integration-plan@1` is built into
+the kernel/store path. Schemas for `WorkModuleDefinition` and
+`WorkModuleBinding` do not constitute an installable, discoverable, or dynamic
+Module registry. No other Module id/version may be claimed as supported until
+registration, namespaced action/config conflict checks, API discovery, and
+acceptance evidence exist.
+
+Module requirement dependencies are separate from Work dependencies. A Module
+may contribute namespaced configuration, presentation metadata, and frozen Gate
+requirements. It may not mutate the Work DAG, bypass kernel cycle/readiness
+checks, add lifecycle states, authorize provider effects, or accept Work. Any
+future Module-produced Work or edge is a proposal evaluated through the same
+Work application service and Host/Member authority rules as a direct request.
 
 Requirements form an acyclic dependency graph. A dependent requirement may pass
 only after every dependency has an exact passing evaluation or an active

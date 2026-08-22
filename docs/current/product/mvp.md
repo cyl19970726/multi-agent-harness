@@ -5,8 +5,8 @@
 The active MVP proves a simple Firm workflow:
 
 ```text
-AgentTeam (durable, flat) → TeamRuns → MemberRuns → Work → Result
-              └──────────── WorkDelegation ────────→ peer Team
+AgentTeam (durable, flat) → TeamRuns → MemberRuns → Work DAG → Result
+              └──────────── WorkDelegation ──────────→ peer Team
 ```
 
 "workflow" here means the product journey shown above, not the retired Dynamic
@@ -23,6 +23,8 @@ implementation details and do not create another durable ledger.
 3. AgentTeamRun requires Team, execution Node, and project binding.
 4. Work is the responsibility kernel. Member planning and Sub-Agent checklists
    stay internal unless promoted to a Finding, Result, Failure, or new Work.
+   New Works are peer nodes; hard dependency edges form a cycle-safe DAG and
+   readiness requires every prerequisite to be accepted.
 5. WorkDelegation is the only cross-Team responsibility transfer. It is
    explicit, versioned, cycle-safe, and observable from source and target.
 6. One machine NodeDaemon drives every admitted local TeamRun. Public surfaces
@@ -51,6 +53,7 @@ implementation details and do not create another durable ledger.
 
 - nested Teams or cross-machine Members;
 - a second Global Work state machine;
+- Work containment, soft/optional edge types, or Module-defined lifecycle;
 - Mission/Wave-owned scheduling or Run lifecycle;
 - hidden automatic Team selection in production;
 - permission complexity beyond what is needed to run the workflow safely;

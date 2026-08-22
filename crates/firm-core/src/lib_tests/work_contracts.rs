@@ -14,7 +14,7 @@ fn work_prerequisite_satisfaction_is_distinct_from_claim_readiness() {
             accountable_team_id: None,
             assignee_membership_id: None,
             created_by_member_id: None,
-            parent_work_id: None,
+            legacy_containment_ref: None,
             title: id.into(),
             context_markdown: String::new(),
             completion_criteria_markdown: "done".into(),
@@ -77,6 +77,63 @@ fn legacy_work_delivery_update_defaults_to_unsequenced() {
     }))
     .expect("legacy delivery update remains readable");
     assert_eq!(update.update_sequence, 0);
+}
+
+#[test]
+fn legacy_parent_work_is_decode_only_evidence() {
+    let mut value = serde_json::json!({
+        "id": "work-legacy",
+        "team_run_id": "run-1",
+        "accountable_team_id": "team-1",
+        "parent_work_id": "historical-parent",
+        "title": "Legacy row",
+        "context_markdown": "",
+        "completion_criteria_markdown": "done",
+        "phase": "open",
+        "condition": "normal",
+        "claim_mode": "team_claim",
+        "priority": "normal",
+        "created_by_actor": {"kind": "host", "id": "host-1"},
+        "version": 1,
+        "created_at": "unix-ms:1",
+        "updated_at": "unix-ms:1"
+    });
+    let work: Work = serde_json::from_value(value.clone()).expect("legacy parent decodes");
+    assert_eq!(
+        work.legacy_containment_ref.as_deref(),
+        Some("historical-parent")
+    );
+    value = serde_json::to_value(work).expect("current Work serializes");
+    assert!(value.get("parent_work_id").is_none());
+    assert!(value.get("legacy_containment_ref").is_none());
+}
+
+#[test]
+fn current_work_draft_hides_legacy_decode_state() {
+    let draft = CurrentWorkDraft::new(
+        "work-current".into(),
+        "run-1".into(),
+        "team-1".into(),
+        "Current Work".into(),
+        "context".into(),
+        "done".into(),
+        WorkClaimMode::TeamClaim,
+        WorkPriority::Normal,
+        TeamActorRef {
+            kind: TeamActorKind::Host,
+            id: "host-1".into(),
+            display_name: None,
+            authn_source: None,
+        },
+        "unix-ms:1".into(),
+    );
+    let work = Work::from_current_draft(draft);
+    assert_eq!(work.phase, WorkPhase::Open);
+    assert_eq!(work.condition, WorkCondition::Normal);
+    assert_eq!(work.version, 0);
+    assert!(work.legacy_containment_ref.is_none());
+    let wire = serde_json::to_value(work).expect("serialize current Work");
+    assert!(wire.get("parent_work_id").is_none());
 }
 
 #[test]

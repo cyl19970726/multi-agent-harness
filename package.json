@@ -5,7 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
-    "check": "pnpm check:dynamic-workflow-retirement && pnpm check:provider-runtime-packages && pnpm validate:json && pnpm check:schema-fixtures && pnpm check:provider-events && pnpm check:collaboration-foundation && pnpm check:member-execution-trust && pnpm check:runtime-message-fabric && pnpm check:remote-fabric && pnpm check:tool-descriptors && pnpm check:native-session-boundary && pnpm check:star-harness-plugin && node scripts/check-cross-layer-consistency.mjs && pnpm check:role-views && pnpm check:dashboard",
+    "check": "pnpm check:dynamic-workflow-retirement && pnpm check:provider-runtime-packages && pnpm check:work-kernel-boundaries && pnpm validate:json && pnpm check:schema-fixtures && pnpm check:provider-events && pnpm check:collaboration-foundation && pnpm check:member-execution-trust && pnpm check:runtime-message-fabric && pnpm check:remote-fabric && pnpm check:tool-descriptors && pnpm check:native-session-boundary && pnpm check:star-harness-plugin && node scripts/check-cross-layer-consistency.mjs && pnpm check:role-views && pnpm check:dashboard",
     "check:provider-events": "node scripts/check-provider-events.mjs && cargo test -p firm-provider-events",
     "check:collaboration-foundation": "node scripts/check-collaboration-foundation.mjs && cargo test -p firm-core --test schema_fixture_parity collaboration_v1_schema_fixtures_match_closed_rust_wire_contracts && cargo test -p firm-store --test cross_machine_collaboration",
     "check:remote-fabric": "node scripts/acceptance-remote-fabric.mjs",
@@ -23,6 +23,7 @@
     "check:native-session-boundary": "node scripts/check-native-session-boundary.mjs",
     "check:dynamic-workflow-retirement": "node scripts/check-dynamic-workflow-retirement-manifest.mjs",
     "check:provider-runtime-packages": "node scripts/check-provider-runtime-package-boundaries.mjs",
+    "check:work-kernel-boundaries": "node scripts/check-work-kernel-boundaries.mjs",
     "check:dynamic-workflow-retirement-manifest": "pnpm check:dynamic-workflow-retirement",
     "check:star-harness-plugin": "node scripts/sync-star-harness-plugin-skills.mjs --check && node scripts/check-star-harness-plugin.mjs && node scripts/check-star-harness-hook.mjs",
     "star-harness:install:check": "bash scripts/manage-star-harness-install.sh --check",
@@ -43,7 +44,7 @@
     "test:multi-project": "cargo test -p firm-core project -- --nocapture && cargo test -p firm-cli --test execution_space_cli --test project_registry --test project_resolution --test init_project --test delivery_project_context --test codex_delivery_cwd --test claude_delivery_cwd --test serve_projects_api --test serve_sse_projects --test project_convergence --test project_cli --test project_migrate --test store_source",
     "acceptance:multi-project": "bash scripts/verify-fixes.sh",
     "acceptance:legacy-retirement": "cargo test -p firm-cli --test mission_wave_api --test team_run_api --test team_run_daemon --test mcp_stdio -- --test-threads=1 && pnpm check:dashboard",
-    "check:fast": "pnpm check:dynamic-workflow-retirement && pnpm check:provider-runtime-packages && pnpm validate:json && pnpm check:schema-fixtures && pnpm check:provider-events && pnpm check:collaboration-foundation && pnpm check:member-execution-trust && pnpm check:runtime-message-fabric && pnpm check:tool-descriptors && pnpm check:native-session-boundary && pnpm check:star-harness-plugin && node scripts/check-cross-layer-consistency.mjs && pnpm check:frontend-fast",
+    "check:fast": "pnpm check:dynamic-workflow-retirement && pnpm check:provider-runtime-packages && pnpm check:work-kernel-boundaries && pnpm validate:json && pnpm check:schema-fixtures && pnpm check:provider-events && pnpm check:collaboration-foundation && pnpm check:member-execution-trust && pnpm check:runtime-message-fabric && pnpm check:tool-descriptors && pnpm check:native-session-boundary && pnpm check:star-harness-plugin && node scripts/check-cross-layer-consistency.mjs && pnpm check:frontend-fast",
     "check:frontend-fast": "tsc -p apps/agent-dashboard/tsconfig.json --noEmit && node apps/agent-dashboard/tests/dashboard-build-provenance-check.mjs && node apps/agent-dashboard/tests/mission-wave-live-merge-check.mjs && node apps/agent-dashboard/tests/domain-freshness-check.mjs && node apps/agent-dashboard/tests/role-view-contract-check.mjs && node apps/agent-dashboard/tests/local-agentfirm-product-loop.mjs && node apps/agent-dashboard/tests/desktop-handoff-check.mjs && vite build --config apps/agent-dashboard/vite.config.ts"
   },
   "devDependencies": {
@@ -59,12 +60,14 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.220",
+    "@dagrejs/dagre": "^3.1.1",
     "@fontsource-variable/newsreader": "^5.2.8",
     "@radix-ui/react-scroll-area": "^1.2.10",
     "@radix-ui/react-separator": "^1.1.8",
     "@radix-ui/react-slot": "^1.2.4",
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-tooltip": "^1.2.8",
+    "@xyflow/react": "^12.11.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.468.0",

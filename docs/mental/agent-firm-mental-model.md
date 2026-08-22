@@ -45,7 +45,9 @@ read-only legacy provenance and export/verify history. No new row of any of
 these retired kinds — Mission, Mission Log, or Wave — may be written on any
 surface.
 
-**Agent Team Runs**: One execution instance with MemberRuns (runtime bindings), shared Work board, message inbox. Existing execution model — Work state machine, Message delivery, Daemon supervision — unchanged.
+**Agent Team Runs**: One execution instance with MemberRuns (runtime bindings),
+shared Work board, and message inbox. A Run correlates execution history; it
+does not contain or own durable Work responsibility.
 
 **Work**: The responsibility kernel. Title, context, criteria, owner
 (AgentMember), Team/TeamRun scope and three independent lifecycle axes:
@@ -55,13 +57,43 @@ surface.
 Work RoleView is a read-only aggregate over this same identity, not a second
 task record.
 
+**Work Graph**: Works are flat peer nodes. A hard directed edge means the
+successor cannot be claimed or started until the prerequisite is accepted. A
+Work may have several prerequisites (fan-in) and several derived successors
+(fan-out), and the kernel rejects every direct or transitive cycle. Work never
+contains another Work. Failed or cancelled prerequisites create Host replan
+attention rather than silently resolving downstream Work. Messages may discuss
+or propose edges, but only a versioned Work operation changes the graph.
+
+```text
+             ┌─> Work B ─┐
+Work A ──────┤            ├─> Work D
+             └─> Work C ─┘
+```
+
 Work creation answers WHAT and WHO; placement and verification are modular records.
 
 - **WHERE** — `MemberWorkspaceBinding`: exact Execution Space, project, AgentMember, MemberRun, TeamRun, Work, absolute path, repository/base identity, generation and safety lifecycle.
-- **HOW** — `WorkModuleBinding + GateRequirement + GateEvaluation/GateWaiver`: a frozen candidate-scoped requirement set. Result submission and Host acceptance use exact Work/report/Candidate fingerprints; stale state rejects with zero side effects under one Store writer lock.
+- **HOW** — `WorkModuleBinding + GateRequirement + GateEvaluation/GateWaiver`:
+  a frozen candidate-scoped requirement set. The enforced definition scope is
+  closed: only built-in `integration-plan@1` is supported. Schemas do not imply
+  an installable or dynamic Module registry. Result submission and Host
+  acceptance use exact Work/report/Candidate fingerprints; stale state rejects
+  with zero side effects under one Store writer lock.
 - **WHO** — `owner_member_id`, `assignee`.
 
 **Views**: All Execution visible on one page. Filters by Agent Team, status, date range. Tags on Work entries. Per-team views unchanged.
+
+**Kernel boundary**: `firm-core` decides legal lifecycle and dependency
+operations plus readiness. The Work service in `firm-application` defines the
+core-facing `WorkPersistence` port and generic `WorkApplication<P>` use cases
+without importing Store, CLI, UI, or Provider packages. The wider application
+crate may retain its reviewed `firm-runtime-contract` policy dependency.
+`firm-store` depends on application + core and implements that port with atomic
+persistence and rebuildable projections. CLI composes both for HTTP, MCP, and
+Role Actions. RoleViews explain graph/readiness and Dashboard renders them.
+NodeDaemon, providers, transports, Dashboard, and Modules never own or recreate
+Work policy.
 
 ---
 
@@ -86,7 +118,8 @@ One logical Firm may place different AgentTeams on different ExecutionNodes. Eac
 | Component | Status | Notes |
 |---|---|---|
 | Agent Team execution | ✅ Live | Full lifecycle |
-| Work — gates | ✅ Live | Open persistence/closed default registry, four built-ins, authority-bound Review, Store acceptance invariant |
+| Work — dependency DAG | ✅ Live at DEV-60 cutover | Flat hard dependencies, cycle rejection, server-derived readiness and graph views |
+| Work — gates | ✅ Live | Closed `integration-plan@1` built-in, frozen binding, authority-bound Review, Store acceptance invariant; no open Module registry |
 | Work — workspace | ✅ Live | PR #406 — WorkWorkspace, ensure/cleanup, --worktree CLI |
 | Teams and Members — Agent Teams | ✅ Live | flat Teams; optional legacy Mission provenance; immutable node_id placement; labels |
 | Teams and Members — Agent Members | ✅ Live | durable AgentMember identity + TeamMembership participation generations (DEV-35) |

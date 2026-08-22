@@ -337,10 +337,39 @@ impl HarnessStore {
             .into_iter()
             .find(|operation| operation.event.id == attention.source_event_ref);
         if let Some(operation) = source_operation {
-            if operation.event.team_run_id != attention.team_run_id
-                || operation.event.work_id != attention.work_id
-                || operation.event.resulting_version != attention.work_version
-            {
+            let graph_reconciliation = matches!(
+                attention.kind,
+                HostAttentionKind::WorkPrerequisiteCompleted
+                    | HostAttentionKind::WorkPrerequisiteNeedsReconciliation
+            );
+            let source_matches = if graph_reconciliation {
+                operation
+                    .event
+                    .payload
+                    .get("work_graph_outbox")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|records| {
+                        records.iter().any(|record| {
+                            record
+                                .get("dependent_work_id")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(attention.work_id.as_str())
+                                && record
+                                    .get("dependent_work_version")
+                                    .and_then(serde_json::Value::as_u64)
+                                    == Some(attention.work_version)
+                                && record
+                                    .get("dependent_team_run_id")
+                                    .and_then(serde_json::Value::as_str)
+                                    == Some(attention.team_run_id.as_str())
+                        })
+                    })
+            } else {
+                operation.event.team_run_id == attention.team_run_id
+                    && operation.event.work_id == attention.work_id
+                    && operation.event.resulting_version == attention.work_version
+            };
+            if !source_matches {
                 return Err(StoreError::Conflict(format!(
                     "HostAttention {} does not match source WorkEvent {}",
                     attention.id, attention.source_event_ref
@@ -407,6 +436,8 @@ impl HarnessStore {
             | WorkEventKind::Resumed
             | WorkEventKind::Updated
             | WorkEventKind::Rebound
+            | WorkEventKind::Failed
+            | WorkEventKind::DependenciesChanged
             | WorkEventKind::ExecutionRetargeted => HostAttentionKind::WorkChanged,
         };
         Some(HostAttention {
@@ -453,6 +484,21 @@ impl HarnessStore {
         let mut projected = self.latest_host_attentions_unlocked()?;
         let mut reconciled = Vec::new();
         for operation in &operations {
+            for attention in Self::downstream_host_attentions_for_work_operation(operation)? {
+                if let Some(existing) = projected.get(&attention.id) {
+                    if !Self::same_host_attention_fact(existing, &attention) {
+                        return Err(StoreError::Conflict(format!(
+                            "HostAttention id {} already names a different causal fact",
+                            attention.id
+                        )));
+                    }
+                    reconciled.push(existing.clone());
+                    continue;
+                }
+                self.ensure_host_attention_unlocked(&attention)?;
+                projected.insert(attention.id.clone(), attention.clone());
+                reconciled.push(attention);
+            }
             let Some(attention) = Self::host_attention_for_work_operation(operation) else {
                 continue;
             };
@@ -515,10 +561,16 @@ impl HarnessStore {
     pub(super) fn latest_host_attentions_unlocked(
         &self,
     ) -> StoreResult<std::collections::BTreeMap<String, HostAttention>> {
-        Ok(latest_by_id(
+        let mut latest = latest_by_id(
             self.read_jsonl::<HostAttention>("host_attentions.jsonl")?,
             |attention| attention.id.clone(),
-        ))
+        );
+        for execution_space_id in self.canonical_execution_space_ids()? {
+            for attention in self.trust_side_records::<HostAttention>(&execution_space_id)? {
+                latest.insert(attention.id.clone(), attention);
+            }
+        }
+        Ok(latest)
     }
 
     pub(super) fn require_host_attention_unlocked(
@@ -643,29 +695,17 @@ impl HarnessStore {
     /// identities instead of choosing whichever ProviderRuntimeProjection happened to be
     /// loaded first.
     pub(super) fn validate_work_relations_unlocked(&self, work: &Work) -> StoreResult<()> {
-        let works = self.latest_works_unlocked()?;
-        for prerequisite_id in &work.prerequisite_work_ids {
-            let prerequisite = works.get(prerequisite_id).ok_or_else(|| {
-                StoreError::Conflict(format!("prerequisite work not found: {prerequisite_id}"))
-            })?;
-            if !works_share_scope(prerequisite, work) || prerequisite.id == work.id {
-                return Err(StoreError::Conflict(
-                    "prerequisites must be distinct Works in the same durable Team scope"
-                        .to_string(),
-                ));
-            }
-        }
-        if let Some(parent_id) = work.parent_work_id.as_deref() {
-            let parent = works.get(parent_id).ok_or_else(|| {
-                StoreError::Conflict(format!("parent work not found: {parent_id}"))
-            })?;
-            if !works_share_scope(parent, work) || parent.id == work.id {
-                return Err(StoreError::Conflict(
-                    "parent_work_id must reference a distinct Work in the same durable Team scope"
-                        .to_string(),
-                ));
-            }
-        }
+        let mut works = self
+            .latest_works_unlocked()?
+            .into_values()
+            .filter(|candidate| candidate.id != work.id)
+            .collect::<Vec<_>>();
+        works.push(work.clone());
+        // All current writers use the same pure Kernel DAG validator. This
+        // also closes cycles at creation/import boundaries instead of relying
+        // only on the dedicated dependency replacement command.
+        firm_core::prepare_dependency_change(work, work.prerequisite_work_ids.clone(), &works)
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
         if let Some(member_run_id) = work.active_member_run_id.as_deref() {
             let member = self.require_member_run_unlocked(member_run_id, &work.team_run_id)?;
             self.ensure_member_can_receive_work_unlocked(&member)?;

@@ -172,6 +172,9 @@ impl HarnessStore {
                     Some(delivery.version),
                 )
             })?;
+        // Provider admission is decided from the locked authoritative Work
+        // graph, never from a stale RoleView or client-side readiness hint.
+        self.require_work_ready_for_execution_unlocked(&work)?;
         if delivery.status != WorkDeliveryStatus::Queued
             || delivery.target_node_id != node_id
             || binding.status != WorkExecutionBindingStatus::Active
@@ -383,6 +386,9 @@ impl HarnessStore {
                 None,
             ));
         }
+        // Bind only a Work that is ready at this exact Store revision. The
+        // provider claim repeats this check immediately before the effect.
+        self.require_work_ready_for_execution_unlocked(&work)?;
         if self
             .fabric_work_execution_bindings(&context.execution_space_id)?
             .iter()

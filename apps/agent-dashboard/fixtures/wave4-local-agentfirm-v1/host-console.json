@@ -33,6 +33,12 @@
       "blocked_work": 0
     },
     "all_works": [],
+    "work_graph": {
+      "nodes": [],
+      "edges": [],
+      "ready_work_ids": [],
+      "attention_work_ids": []
+    },
     "work_queues": {
       "ready": [],
       "unassigned": [],

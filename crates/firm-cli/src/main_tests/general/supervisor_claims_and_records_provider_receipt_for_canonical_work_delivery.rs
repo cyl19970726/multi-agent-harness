@@ -1,4 +1,5 @@
 use super::*;
+use harness_core::CurrentWorkDraft;
 
 #[test]
 fn supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery() {
@@ -7,34 +8,23 @@ fn supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery() 
     let member = created.member_runs[0].clone();
     let work = store
         .insert_work(
-            Work {
-                id: "canonical-supervisor-work".into(),
-                team_run_id: created.team_run.id.clone(),
-                accountable_team_id: Some(created.team_run.agent_team_id.clone()),
-                assignee_membership_id: None,
-                created_by_member_id: None,
-                parent_work_id: None,
-                title: "Deliver canonical Work".into(),
-                context_markdown: "Exercise NodeDaemon ProviderWorkDispatch wiring".into(),
-                completion_criteria_markdown: "Provider receipt is canonical".into(),
-                phase: WorkPhase::Open,
-                condition: WorkCondition::Normal,
-                resolution: None,
-                owner_member_id: Some(member.agent_member_id.clone()),
-                active_member_run_id: Some(member.id.clone()),
-                claim_mode: WorkClaimMode::HostAssign,
-                eligible_member_ids: vec![member.agent_member_id.clone()],
-                prerequisite_work_ids: Vec::new(),
-                priority: WorkPriority::Normal,
-                created_by_actor: compatibility_team_actor("host", "test"),
-                result_summary: None,
-                blocker_reason: None,
-                artifact_refs: Vec::new(),
-                check_refs: Vec::new(),
-                github_links: Vec::new(),
-                version: 0,
-                created_at: String::new(),
-                updated_at: String::new(),
+            {
+                let mut draft = CurrentWorkDraft::new(
+                    "canonical-supervisor-work".into(),
+                    created.team_run.id.clone(),
+                    created.team_run.agent_team_id.clone(),
+                    "Deliver canonical Work".into(),
+                    "Exercise NodeDaemon ProviderWorkDispatch wiring".into(),
+                    "Provider receipt is canonical".into(),
+                    WorkClaimMode::HostAssign,
+                    WorkPriority::Normal,
+                    compatibility_team_actor("host", "test"),
+                    "unix-ms:3".into(),
+                );
+                draft.owner_member_id = Some(member.agent_member_id.clone());
+                draft.active_member_run_id = Some(member.id.clone());
+                draft.eligible_member_ids = vec![member.agent_member_id.clone()];
+                draft.into_work()
             },
             WorkCommandContext {
                 event_id: "canonical-supervisor-work-created".into(),

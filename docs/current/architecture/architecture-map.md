@@ -14,7 +14,7 @@ flowchart TB
   Membership["TeamMembership generations"]
   Runs["AgentTeamRun / MemberRun\ncoordination + history projections"]
   Supervisor["Durable Team Supervisor\nlease · canonical delivery claims · controls"]
-  Work["Work\nWorkOperation · WorkEvent · WorkDelivery"]
+  Work["Work DAG\nWorkOperation · dependency edges · WorkEvent · WorkDelivery"]
   GlobalWork["Global Work RoleView\nread-only aggregate"]
   Msg["identity-first Message"]
   Sub["MessageSubscription"]
@@ -51,7 +51,11 @@ flowchart TB
 | Agent Teams and Membership | durable Team identity, immutable `node_id` placement, roster generations, Host membership | provider execution lifecycle, a second agent identity |
 | Agent Team Runs | TeamRun/MemberRun projections, attempts, lineage | a provider process, a provider effect authorization |
 | Team Supervision | one current Supervisor generation per run: delivery claims, live controls, reconnect | Work authority, Message authorship |
-| Work | durable responsibility rebuilt from ordered WorkOperations, WorkEvents, WorkDeliveries, submission and Host acceptance | authored conversation, runtime control, provider transcripts |
+| Work kernel | durable responsibility, three-axis lifecycle, cycle-safe hard dependencies, derived readiness, ordered WorkOperations, submission and Host acceptance | persistence mechanics, authored conversation, runtime control, provider transcripts |
+| Work application | core-facing `WorkPersistence` port and generic `WorkApplication<P>` use cases; separate application runtime policy may use `firm-runtime-contract` | concrete Store/CLI/Provider imports or transport-specific Work policy |
+| Work store | application-port implementation, atomic append/CAS/projections/outbox | lifecycle/readiness policy or CLI dependency |
+| CLI composition | concrete Store wiring plus HTTP/MCP/Role Action adapters | a second Work use-case implementation |
+| Work views | one RoleView feeds first-class Graph (`@xyflow/react`, deterministic presentation layout) and Kanban (Open/Active/Review/Closed), sharing Inspector/readiness/actions | persisted node positions, browser-derived readiness, hand-built semantic graph writes, or drag-authority |
 | Messages | identity-first authorship, MessageSubscription authorization, per-recipient CanonicalMessageDelivery | Work lifecycle mutation, RuntimeCommand authority |
 | Execution Spaces and Project Bindings | coordination storage vs provider cwd/instructions/Skills/plugins/MCP selection | each other's scope; `--project` never switches the coordination store |
 | Runtime | provider processes, native sessions, native activity readers/resume, plugins, MCP, and ephemeral projections | a second provider history or assignment inference |
@@ -71,7 +75,9 @@ never implies Host acceptance. See
 [ADR 0044](../../decisions/0044-durable-team-supervision-and-typed-mail.md) for
 cross-process ownership and typed-mail guarantees, and
 [ADR 0050](../../decisions/0050-agent-team-work-board-and-message-boundary.md) for the
-Work/Message boundary.
+Work/Message boundary, and
+[ADR 0058](../../decisions/0058-work-dependency-dag-and-kernel-boundary.md) for
+the flat dependency DAG and package boundary.
 
 ## Source-of-truth rule
 

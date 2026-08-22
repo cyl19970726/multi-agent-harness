@@ -1,4 +1,5 @@
 use super::*;
+use harness_core::CurrentWorkDraft;
 
 #[test]
 fn host_inbox_shows_work_attention_after_submit() {
@@ -26,34 +27,21 @@ fn host_inbox_shows_work_attention_after_submit() {
     };
     let work = store
         .insert_work(
-            Work {
-                id: generated_id("work-attn"),
-                team_run_id: bound.id.clone(),
-                accountable_team_id: None,
-                assignee_membership_id: None,
-                created_by_member_id: None,
-                parent_work_id: None,
-                title: "Test attention flow".into(),
-                context_markdown: "Context for attention test".into(),
-                completion_criteria_markdown: "Attention appears in host-inbox".into(),
-                phase: WorkPhase::Open,
-                condition: WorkCondition::Normal,
-                resolution: None,
-                owner_member_id: None,
-                active_member_run_id: Some(member.id.clone()),
-                claim_mode: WorkClaimMode::HostAssign,
-                eligible_member_ids: Vec::new(),
-                prerequisite_work_ids: Vec::new(),
-                priority: WorkPriority::Normal,
-                created_by_actor: compatibility_team_actor("host", "test"),
-                result_summary: None,
-                blocker_reason: None,
-                artifact_refs: Vec::new(),
-                check_refs: Vec::new(),
-                github_links: Vec::new(),
-                version: 0,
-                created_at: String::new(),
-                updated_at: String::new(),
+            {
+                let mut draft = CurrentWorkDraft::new(
+                    generated_id("work-attn"),
+                    bound.id.clone(),
+                    bound.agent_team_id.clone(),
+                    "Test attention flow".into(),
+                    "Context for attention test".into(),
+                    "Attention appears in host-inbox".into(),
+                    WorkClaimMode::HostAssign,
+                    WorkPriority::Normal,
+                    compatibility_team_actor("host", "test"),
+                    work_ctx.created_at.clone(),
+                );
+                draft.active_member_run_id = Some(member.id.clone());
+                draft.into_work()
             },
             work_ctx,
         )

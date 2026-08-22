@@ -121,7 +121,7 @@ fn supervisor_claims_and_acknowledges_canonical_message_delivery_in_one_ledger()
                 accountable_team_id: Some(created.team_run.agent_team_id.clone()),
                 assignee_membership_id: None,
                 created_by_member_id: None,
-                parent_work_id: None,
+                legacy_containment_ref: None,
                 title: "Prove managed Host status delivery".into(),
                 context_markdown: String::new(),
                 completion_criteria_markdown: "Host receives exact fenced status".into(),

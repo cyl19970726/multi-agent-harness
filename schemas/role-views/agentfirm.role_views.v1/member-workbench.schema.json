@@ -1,1 +1,112 @@
-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"agentfirm.role_views.v1/member-workbench.schema.json","allOf":[{"$ref":"role-view.schema.json"},{"type":"object","properties":{"view_kind":{"const":"member_workbench"},"data":{"type":"object","additionalProperties":false,"required":["agent_member","member_run","my_works","eligible_ready_pool","unread_messages","queued_deliveries","workspace_binding","native_session_health","report_history","finding_history","failure_history","gate_requirements","collaboration","runtime_fabric"],"properties":{"agent_member":{"$ref":"common.schema.json#/$defs/agentMemberSummary"},"member_run":{"$ref":"common.schema.json#/$defs/memberRunSummary"},"my_works":{"type":"array","items":{"$ref":"common.schema.json#/$defs/workSummary"}},"eligible_ready_pool":{"type":"array","items":{"$ref":"common.schema.json#/$defs/workSummary"}},"unread_messages":{"type":"array","items":{"$ref":"common.schema.json#/$defs/messageSummary"}},"queued_deliveries":{"type":"array","items":{"$ref":"common.schema.json#/$defs/recordSummary"}},"workspace_binding":{"anyOf":[{"$ref":"common.schema.json#/$defs/recordSummary"},{"type":"null"}]},"native_session_health":{"type":"string"},"report_history":{"type":"array","items":{"$ref":"common.schema.json#/$defs/recordSummary"}},"finding_history":{"type":"array","items":{"$ref":"common.schema.json#/$defs/recordSummary"}},"failure_history":{"type":"array","items":{"$ref":"common.schema.json#/$defs/recordSummary"}},"gate_requirements":{"type":"array","items":{"$ref":"common.schema.json#/$defs/recordSummary"}},"collaboration":{"$ref":"common.schema.json#/$defs/collaborationProjection"},"runtime_fabric":{"$ref":"common.schema.json#/$defs/runtimeFabric"}}}}}]}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agentfirm.role_views.v1/member-workbench.schema.json",
+  "allOf": [
+    {
+      "$ref": "role-view.schema.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "view_kind": {
+          "const": "member_workbench"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "agent_member",
+            "member_run",
+            "my_works",
+            "eligible_ready_pool",
+            "unread_messages",
+            "queued_deliveries",
+            "workspace_binding",
+            "native_session_health",
+            "report_history",
+            "finding_history",
+            "failure_history",
+            "gate_requirements",
+            "collaboration",
+            "runtime_fabric"
+          ],
+          "properties": {
+            "agent_member": {
+              "$ref": "common.schema.json#/$defs/agentMemberSummary"
+            },
+            "member_run": {
+              "$ref": "common.schema.json#/$defs/memberRunSummary"
+            },
+            "my_works": {
+              "type": "array",
+              "items": {
+                "$ref": "common.schema.json#/$defs/workSummary"
+              }
+            },
+            "eligible_ready_pool": {
+              "type": "array",
+              "items": {
+                "$ref": "common.schema.json#/$defs/workSummary"
+              }
+            },
+            "unread_messages": {
+              "type": "array",
+              "items": {
+                "$ref": "common.schema.json#/$defs/messageSummary"
+              }
+            },
+            "queued_deliveries": {
+              "type": "array",
+              "items": {
+                "$ref": "common.schema.json#/$defs/recordSummary"
+              }
+            },
+            "workspace_binding": {
+              "anyOf": [
+                {
+                  "$ref": "common.schema.json#/$defs/recordSummary"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "native_session_health": {
+              "type": "string"
+            },
+            "report_history": {
+              "type": "array",
+              "items": {
+                "$ref": "common.schema.json#/$defs/recordSummary"
+              }
+            },
+            "finding_history": {
+              "type": "array",
+              "items": {
+                "$ref": "common.schema.json#/$defs/recordSummary"
+              }
+            },
+            "failure_history": {
+              "type": "array",
+              "items": {
+                "$ref": "common.schema.json#/$defs/recordSummary"
+              }
+            },
+            "gate_requirements": {
+              "type": "array",
+              "items": {
+                "$ref": "common.schema.json#/$defs/recordSummary"
+              }
+            },
+            "collaboration": {
+              "$ref": "common.schema.json#/$defs/collaborationProjection"
+            },
+            "runtime_fabric": {
+              "$ref": "common.schema.json#/$defs/runtimeFabric"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

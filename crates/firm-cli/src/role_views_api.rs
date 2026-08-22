@@ -9,7 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use harness_core::agentfirm_api::{ActorKind, ActorRef};
 use harness_core::{
-    AgentTeam, AgentTeamRun, HostControlMode, NativeSessionRef, Work, WorkCondition, WorkPhase,
+    derive_work_successor_ids, work_readiness, AgentTeam, AgentTeamRun, HostControlMode,
+    NativeSessionRef, Work, WorkClaimMode, WorkReadinessReason,
 };
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
@@ -915,6 +916,58 @@ fn assignee_projection(facts: &Facts, team: &AgentTeam, work: &Work) -> (String,
 }
 
 fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
+    let readiness = work_readiness(work, &facts.works);
+    let failed_or_cancelled_prerequisite_work_ids = readiness
+        .reasons
+        .iter()
+        .filter_map(|reason| match reason {
+            WorkReadinessReason::PrerequisiteFailed { work_id }
+            | WorkReadinessReason::PrerequisiteCancelled { work_id } => Some(work_id.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let unsatisfied_prerequisite_work_ids = readiness
+        .reasons
+        .iter()
+        .filter_map(|reason| match reason {
+            WorkReadinessReason::PrerequisiteMissing { work_id }
+            | WorkReadinessReason::PrerequisitePending { work_id, .. } => Some(work_id.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let readiness_state = if readiness.ready {
+        "ready"
+    } else if !failed_or_cancelled_prerequisite_work_ids.is_empty()
+        || readiness
+            .reasons
+            .iter()
+            .any(|reason| matches!(reason, WorkReadinessReason::PrerequisiteMissing { .. }))
+    {
+        "requires_host_attention"
+    } else if readiness.reasons.iter().any(|reason| {
+        matches!(
+            reason,
+            WorkReadinessReason::WorkNotOpen { .. }
+                | WorkReadinessReason::WorkConditionNotNormal { .. }
+        )
+    }) {
+        "not_claimable"
+    } else {
+        "waiting_prerequisites"
+    };
+    let reason_codes = readiness
+        .reasons
+        .iter()
+        .map(|reason| match reason {
+            WorkReadinessReason::WorkNotOpen { .. } => "work_not_open",
+            WorkReadinessReason::WorkConditionNotNormal { .. } => "work_condition_not_normal",
+            WorkReadinessReason::PrerequisiteMissing { .. } => "prerequisite_missing",
+            WorkReadinessReason::PrerequisitePending { .. } => "prerequisite_pending",
+            WorkReadinessReason::PrerequisiteFailed { .. } => "prerequisite_failed",
+            WorkReadinessReason::PrerequisiteCancelled { .. } => "prerequisite_cancelled",
+        })
+        .collect::<Vec<_>>();
+    let successor_work_ids = derive_work_successor_ids(&work.id, &facts.works);
     let latest_event = facts
         .work_events
         .iter()
@@ -1042,7 +1095,13 @@ fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
         "claim_mode":enum_string(&work.claim_mode),
         "eligible_member_ids":work.eligible_member_ids,
         "prerequisite_work_ids":work.prerequisite_work_ids,
-        "parent_work_id":work.parent_work_id,
+        "successor_work_ids":successor_work_ids,
+        "readiness": {
+            "state": readiness_state,
+            "reason_codes": reason_codes,
+            "unsatisfied_prerequisite_work_ids": unsatisfied_prerequisite_work_ids,
+            "failed_or_cancelled_prerequisite_work_ids": failed_or_cancelled_prerequisite_work_ids,
+        },
         "blocker_reason":work.blocker_reason,
         "result_summary":work.result_summary,
         "artifact_refs":work.artifact_refs,
@@ -1062,6 +1121,50 @@ fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
         "workspace_summary": {"binding_id":workspace.and_then(|v|v["id"].as_str()),"lifecycle":workspace.and_then(|v|v["lifecycle"].as_str()).unwrap_or("unavailable"),"safety":workspace.map(|v| if v["lifecycle"]=="ready"{"safe"}else{"attention"}).unwrap_or("unknown")},
         "delegation_summary":{"incoming":incoming,"outgoing":outgoing,"attention":false},
         "updated_at":work.updated_at,
+    })
+}
+
+fn work_graph(works: &[Value]) -> Value {
+    let mut edges = works
+        .iter()
+        .flat_map(|work| {
+            let dependent_work_id = work["work_id"].as_str().unwrap_or_default().to_string();
+            work["prerequisite_work_ids"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(move |prerequisite_work_id| {
+                    json!({
+                        "prerequisite_work_id": prerequisite_work_id,
+                        "dependent_work_id": dependent_work_id,
+                        "kind": "hard",
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    edges.sort_by(|left, right| {
+        left["prerequisite_work_id"]
+            .as_str()
+            .cmp(&right["prerequisite_work_id"].as_str())
+            .then(
+                left["dependent_work_id"]
+                    .as_str()
+                    .cmp(&right["dependent_work_id"].as_str()),
+            )
+    });
+    let ids_for_state = |state: &str| {
+        works
+            .iter()
+            .filter(|work| work["readiness"]["state"] == state)
+            .filter_map(|work| work["work_id"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+    json!({
+        "nodes": works,
+        "edges": edges,
+        "ready_work_ids": ids_for_state("ready"),
+        "attention_work_ids": ids_for_state("requires_host_attention"),
     })
 }
 

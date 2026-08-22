@@ -43,6 +43,13 @@ eligible member may atomically claim. Prefer several bounded Works over one
 epic — TeamRun completion atomically rejects non-terminal Works, so unbounded
 Works block teardown.
 
+Works are flat peer nodes. Add a hard dependency only when the successor truly
+cannot execute before the prerequisite is accepted. Fan-out independent lanes;
+fan-in integration/review after all required inputs. Never encode decomposition
+as Work containment. The kernel must reject self-edges, duplicates, missing
+prerequisites, stale revisions, and cycles. Treat failed or cancelled
+prerequisites as Host replan attention, not automatic downstream resolution.
+
 ## 3. Start, then watch without polling
 
 `team-run start` reserves the run and returns immediately; members run in the
@@ -77,7 +84,8 @@ does not interrupt your current reasoning.
   acknowledges it; a queued Message affects the **next** safe boundary.
   Interrupt stops one turn without closing the member.
 - Never order work in chat. If conversation produces durable follow-up,
-  create a Work.
+  create a peer Work and, when ordering is real, mutate the dependency graph
+  through the authenticated Work action.
 
 ## 5. Review evidence, then decide
 

@@ -242,6 +242,7 @@
         "docs/decisions/0026-mission-wave-architecture.md",
         "docs/decisions/0051-single-intent-spine.md",
         "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
+        "docs/decisions/0058-work-dependency-dag-and-kernel-boundary.md",
         "docs/current/product/mvp.md",
         "docs/current/architecture/design-basis.md",
         "docs/current/architecture/concept-model.md",
@@ -299,6 +300,7 @@
         "docs/decisions/0026-mission-wave-architecture.md",
         "docs/decisions/0051-single-intent-spine.md",
         "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
+        "docs/decisions/0058-work-dependency-dag-and-kernel-boundary.md",
         "docs/current/architecture/design-basis.md",
         "docs/current/architecture/concept-model.md",
         "docs/current/architecture/architecture.md",
@@ -352,7 +354,8 @@
         "docs/current/product/prd.md",
         "docs/current/architecture/architecture.md",
         "docs/current/operations/operations.md",
-        "docs/current/architecture/schemas.md"
+        "docs/current/architecture/schemas.md",
+        "docs/decisions/0058-work-dependency-dag-and-kernel-boundary.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -385,7 +388,8 @@
         "docs/decisions/0051-single-intent-spine.md",
         "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
+        "docs/decisions/0058-work-dependency-dag-and-kernel-boundary.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -435,7 +439,8 @@
         "docs/decisions/0051-single-intent-spine.md",
         "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
         "docs/current/product/agent-team-works.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
+        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+        "docs/decisions/0058-work-dependency-dag-and-kernel-boundary.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -479,7 +484,8 @@
         "docs/decisions/0025-agent-team-run-control-plane.md",
         "docs/decisions/0026-mission-wave-architecture.md",
         "docs/decisions/0051-single-intent-spine.md",
-        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
+        "docs/decisions/0058-work-dependency-dag-and-kernel-boundary.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -534,7 +540,8 @@
         "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/current/product/agent-team-works.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
+        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+        "docs/decisions/0058-work-dependency-dag-and-kernel-boundary.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1054,7 +1061,8 @@
         "schemas/README.md",
         "crates/firm-core/src/lib.rs",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
-        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
+        "docs/decisions/0056-correlated-message-and-session-permission-cutover.md",
+        "docs/decisions/0058-work-dependency-dag-and-kernel-boundary.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2164,6 +2172,44 @@
       ]
     },
     {
+      "path": "docs/decisions/0058-work-dependency-dag-and-kernel-boundary.md",
+      "ownerRole": "architecture",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "flat Work hard-dependency DAG and readiness invariants",
+        "Work kernel and application-port dependency-inversion boundary across Store, transports and Dashboard",
+        "constrained Member Work/dependency proposals and closed Work Module scope",
+        "first-class Graph and Kanban views with presentation-only layout and no drag-authority"
+      ],
+      "dependsOn": [
+        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance",
+        "scripts/check-work-kernel-boundaries.mjs"
+      ],
+      "reviewAfter": "2026-11-20",
+      "lastVerifiedWith": [
+        "pnpm check:work-kernel-boundaries",
+        "pnpm check:docs-governance"
+      ],
+      "reorgTrigger": "Work dependency semantics, Work package ownership, Member proposal authority, or Work Module extensibility changes.",
+      "authorityClass": "canonical_contract",
+      "implementationState": "partial",
+      "truthRefs": [
+        {
+          "kind": "decision",
+          "ref": "https://github.com/cyl19970726/multi-agent-harness/issues/502"
+        },
+        {
+          "kind": "test",
+          "ref": "scripts/check-work-kernel-boundaries.mjs"
+        }
+      ]
+    },
+    {
       "path": "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
       "ownerRole": "provider-integration",
       "status": "stable",
@@ -2715,6 +2761,7 @@
       ],
       "dependsOn": [
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+        "docs/decisions/0058-work-dependency-dag-and-kernel-boundary.md",
         "docs/decisions/0044-durable-team-supervision-and-typed-mail.md",
         "docs/decisions/0049-member-coordination-and-runtime-lifecycle.md",
         "docs/decisions/0056-correlated-message-and-session-permission-cutover.md"
@@ -3396,7 +3443,8 @@
       ],
       "dependsOn": [
         "docs/current/architecture/concept-model.md",
-        "docs/current/architecture/multi-team-supervisor-daemon.md"
+        "docs/current/architecture/multi-team-supervisor-daemon.md",
+        "docs/decisions/0058-work-dependency-dag-and-kernel-boundary.md"
       ],
       "machineConsumers": [
         "firm-cli",
@@ -3435,7 +3483,8 @@
         "docs/mental/agent-firm-mental-model.md",
         "docs/current/architecture/concept-model.md",
         "docs/current/architecture/architecture.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
+        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+        "docs/decisions/0058-work-dependency-dag-and-kernel-boundary.md"
       ],
       "machineConsumers": [
         "check-doc-links",
