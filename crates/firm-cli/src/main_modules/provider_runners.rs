@@ -189,6 +189,37 @@ pub(super) fn run_member_orchestration(
                 current.provider
             ))),
         };
+        // Every provider-specific runner owns its process-local adapter and
+        // drops that handle before returning here. Publish that exact boundary
+        // before interpreting the outcome: a terminal MemberRun must not leave
+        // the durable AgentSession looking Attached merely because its final
+        // provider round ended through a circuit breaker or transport error.
+        //
+        // This remains fail closed. The Store refuses the projection while a
+        // RuntimeCommand is ambiguous, and Reopen therefore cannot use this as
+        // a fabricated drain receipt or bypass the existing handoff fence.
+        let release_result = settle_provider_attempt_release(ledger, &current);
+        let result = match (result, release_result) {
+            (result, Ok(())) => result,
+            (Ok(outcome), Err(release_error)) if release_error.is_supervisor_lease_lost() => {
+                return outcome;
+            }
+            (Err(provider_error), Err(release_error))
+                if release_error.is_supervisor_lease_lost() =>
+            {
+                return MemberOutcome::new(
+                    &current,
+                    current.status,
+                    format!(
+                        "provider attempt ended with {provider_error}; stale Supervisor cannot publish its local release observation"
+                    ),
+                );
+            }
+            (Ok(_), Err(release_error)) => Err(release_error),
+            (Err(provider_error), Err(release_error)) => Err(CliError::Usage(format!(
+                "RUNTIME_COMMAND_RECOVERY_REQUIRED: provider attempt ended with {provider_error}; durable AgentSession release also failed: {release_error}"
+            ))),
+        };
         match result {
             Ok(outcome) => {
                 if outcome.status == MemberRunStatus::Stopped {
@@ -368,6 +399,32 @@ pub(super) fn run_member_orchestration(
             }
         }
     }
+}
+
+/// Record the provider-process boundary after its owning adapter has dropped.
+///
+/// The native session identity remains open and resumable; only the disposable
+/// process handle is detached. This is the durable precondition that lets a
+/// later explicit Close and Reopen resume the same verified provider session
+/// under a new MemberRun runtime generation.
+pub(super) fn settle_provider_attempt_release(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+) -> CliResult<()> {
+    // A stale Supervisor terminal frame has no authority to publish even a
+    // truthful local handle-drop observation. Its successor owns recovery.
+    ledger.require_supervisor_lease()?;
+    transition_provider_session_runtime_control(
+        ledger,
+        member,
+        harness_core::agentfirm_api::RuntimeResidency::Detached,
+        harness_core::agentfirm_api::RuntimeActivity::Idle,
+    )?;
+    transition_provider_session_for_member(
+        ledger,
+        member,
+        harness_core::agentfirm_api::AgentSessionStatus::Idle,
+    )
 }
 
 /// Drive one interactive Codex Team Member through one app-server process and
