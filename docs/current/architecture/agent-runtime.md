@@ -78,8 +78,13 @@ In the default `managed` mode, that MemberRun uses the same AgentSession,
 NodeDaemon, RuntimeCommand, provider admission, TeamRuntimeAdapter, Message
 claim/receipt/ACK, and Close/Reopen lifecycle as every other managed
 participant. Host authority is role policy, not a provider feature and not a
-second runtime species. Its coordination AgentSession is `ReadOnly`; a Host
-that owns coding Work needs a separate, independently leased workspace.
+second runtime species. Its coordination AgentSession is `ReadOnly` whenever
+the provider can prove that ceiling. Kimi ACP cannot, so a managed Kimi Host
+retains an honestly declared `FullAccess` ceiling only when
+`provider_cwd_hint` selects an explicit workspace distinct from the Team
+execution root; otherwise admission fails before AgentSession materialization.
+A Host that owns coding Work always needs a separate, independently leased
+workspace.
 Managed Host status delivery additionally carries the
 exact recipient MemberRun, AgentSession/runtime generation, and NodeDaemon
 generation fence before a provider receipt can settle it.

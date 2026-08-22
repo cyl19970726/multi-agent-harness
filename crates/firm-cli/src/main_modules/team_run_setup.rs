@@ -381,6 +381,9 @@ pub(super) fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Val
             "host_member_run_id": host_member_run.map(|member| member.id.as_str()),
             "delivery_guarantee": if managed { "daemon_managed" } else { "pull_only" },
             "runtime_residency": if managed { "managed_member_run" } else { "detached_user_driven" },
+            "workspace_policy": if managed { "provider_read_only_or_distinct_host_workspace" } else { "user_managed" },
+            "workspace_requirement": (managed && host_member_run.is_some_and(|member| member.provider == "kimi"))
+                .then_some("explicit_distinct_provider_cwd_hint"),
             "warning": (!managed).then_some("External Host must read or wait for inbox updates"),
         },
     })

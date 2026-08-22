@@ -243,7 +243,7 @@ pub(super) fn team_run_recover(
             })?
             .permission_ceiling;
         let permission_ceiling =
-            effective_member_permission_ceiling(permission_ceiling, &run, member);
+            effective_member_permission_ceiling(permission_ceiling, &run, member)?;
         apply_permission_enforcement_to_profile(&mut profile, permission_ceiling)?;
         let resolution = resolve_provider_compatibility(store, &profile, probe_error.as_deref())?;
         let refusal = provider_compatibility_block_reason(

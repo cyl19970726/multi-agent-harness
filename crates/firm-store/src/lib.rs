@@ -697,6 +697,38 @@ impl HarnessStore {
             )))
         }
     }
+
+    pub(crate) fn require_work_delegation_actor_unlocked(
+        &self,
+        actor: &TeamActorRef,
+        source_team_run_id: &str,
+        source_owner_member_id: &str,
+        action: &str,
+    ) -> StoreResult<Option<String>> {
+        match actor.kind {
+            TeamActorKind::Host => {
+                self.require_exact_team_run_host_actor(actor, source_team_run_id)?;
+                Ok(None)
+            }
+            TeamActorKind::Operator | TeamActorKind::Service => Err(StoreError::Conflict(
+                "DELEGATION_NOT_AUTHORIZED: Operator/Service cannot impersonate the exact TeamRun Host"
+                    .to_string(),
+            )),
+            TeamActorKind::ProviderRuntimeProjection => {
+                let member = self.require_member_run_unlocked(&actor.id, source_team_run_id)?;
+                if member_identity(&member) != source_owner_member_id {
+                    return Err(StoreError::Conflict(format!(
+                        "DELEGATION_NOT_AUTHORIZED: only source owner or Host may {action}"
+                    )));
+                }
+                Ok(Some(member.id))
+            }
+            TeamActorKind::AgentMember if actor.id == source_owner_member_id => Ok(None),
+            TeamActorKind::AgentMember => Err(StoreError::Conflict(format!(
+                "DELEGATION_NOT_AUTHORIZED: only source owner or Host may {action}"
+            ))),
+        }
+    }
 }
 
 fn require_member_actor(actor: &firm_core::TeamActorRef, member_run_id: &str) -> StoreResult<()> {

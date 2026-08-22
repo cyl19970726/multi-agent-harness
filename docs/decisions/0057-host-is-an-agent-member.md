@@ -57,9 +57,12 @@ receipt.
   explicitly selects external interactive ownership.
 - Operator views expose the exact Host AgentMember/MemberRun, ownership mode,
   delivery guarantee, queued actionable count, and the external pull warning.
-- A managed Host's coordination AgentSession is frozen to `ReadOnly`, so it
-  cannot become a second writer in a Member workspace. Host coding still
-  requires explicit Host-owned Work and an independently leased workspace.
+- A managed Host uses `ReadOnly` when the selected provider can prove it.
+  Kimi ACP cannot; it may retain an honestly frozen `FullAccess` ceiling only
+  with an explicit Host `provider_cwd_hint` distinct from the Team execution
+  root. Host coding still requires explicit Host-owned Work and an
+  independently leased workspace. This preserves one driver per writable
+  workspace without inventing a Kimi sandbox.
 
 ## Acceptance
 
@@ -68,4 +71,6 @@ receipt.
 - External delivery never claims managed receipt semantics.
 - Host/Member runtime unification introduces no parent/child Work authority or nested Team topology.
 - All four providers select the ordinary Team runtime binding for managed Hosts.
+- Managed Kimi Host admission fails before AgentSession materialization when
+  the independent Host workspace is absent or aliases the Team execution root.
 - Dynamic Workflow retirement, package boundaries, source-size ceiling, deterministic tests, and exact-SHA independent Review remain green.

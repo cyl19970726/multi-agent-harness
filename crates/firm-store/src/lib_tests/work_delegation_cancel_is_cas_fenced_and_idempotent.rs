@@ -27,6 +27,60 @@ fn work_delegation_cancel_is_cas_fenced_and_idempotent() {
             ),
         )
         .expect("create Delegation");
+    let operations_before_refusals = store
+        .read_jsonl::<WorkDelegationOperation>("work_delegation_operations.jsonl")
+        .unwrap()
+        .len();
+    for (kind, id, suffix) in [
+        (TeamActorKind::Host, "forged-host", "host"),
+        (TeamActorKind::Operator, "operator", "operator"),
+        (TeamActorKind::Service, "service", "service"),
+    ] {
+        let mut forged = run_host_work_context(
+            &run_a,
+            &format!("delegation-cancel-refused-{suffix}"),
+            &format!("cancel-refused-{suffix}"),
+            "unix-ms:4",
+        );
+        forged.performed_by_actor = TeamActorRef {
+            kind,
+            id: id.into(),
+            display_name: None,
+            authn_source: Some("hostile-test".into()),
+        };
+        let error = store
+            .cancel_work_delegation(
+                &delegation.id,
+                delegation.version,
+                "hostile cancellation",
+                forged,
+            )
+            .expect_err("only the exact Host may use Host cancellation authority");
+        assert!(
+            error.to_string().contains("DELEGATION_NOT_AUTHORIZED")
+                || error
+                    .to_string()
+                    .contains("TEAM_RUN_HOST_AUTHORITY_MISMATCH")
+        );
+    }
+    assert_eq!(
+        store
+            .read_jsonl::<WorkDelegationOperation>("work_delegation_operations.jsonl")
+            .unwrap()
+            .len(),
+        operations_before_refusals,
+        "forged Host, Operator, and Service attempts have zero cancellation side effects"
+    );
+    assert_eq!(
+        store
+            .latest_work_delegations()
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == delegation.id)
+            .unwrap()
+            .state,
+        WorkDelegationState::Active
+    );
     let stale = store
         .cancel_work_delegation(
             &delegation.id,

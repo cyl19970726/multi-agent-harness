@@ -198,6 +198,12 @@ impl HarnessStore {
             .into_iter()
             .find(|revision| revision.event.idempotency_key == context.idempotency_key)
         {
+            self.require_work_delegation_actor_unlocked(
+                &context.performed_by_actor,
+                &existing.delegation.source_work_ref.team_run_id,
+                &existing.delegation.source_owner_member_id,
+                "delegate",
+            )?;
             if existing.event.payload.get("request_fingerprint") == Some(&request_fingerprint) {
                 let target = self
                     .latest_works_unlocked()?
@@ -235,29 +241,13 @@ impl HarnessStore {
                 "DELEGATION_STALE_SOURCE: source owner changed".to_string(),
             ));
         }
-        match context.performed_by_actor.kind {
-            TeamActorKind::Host | TeamActorKind::Operator | TeamActorKind::Service => {}
-            TeamActorKind::ProviderRuntimeProjection => {
-                let member = self.require_member_run_unlocked(
-                    &context.performed_by_actor.id,
-                    &source.team_run_id,
-                )?;
-                if member_identity(&member) != source_owner {
-                    return Err(StoreError::Conflict(
-                        "DELEGATION_NOT_AUTHORIZED: only source owner or Host may delegate"
-                            .to_string(),
-                    ));
-                }
-                delegation.created_by_member_run_id = Some(member.id);
-            }
-            TeamActorKind::AgentMember => {
-                if context.performed_by_actor.id != source_owner {
-                    return Err(StoreError::Conflict(
-                        "DELEGATION_NOT_AUTHORIZED: only source owner or Host may delegate"
-                            .to_string(),
-                    ));
-                }
-            }
+        if let Some(member_run_id) = self.require_work_delegation_actor_unlocked(
+            &context.performed_by_actor,
+            &source.team_run_id,
+            &source_owner,
+            "delegate",
+        )? {
+            delegation.created_by_member_run_id = Some(member_run_id);
         }
 
         let target_team = latest_by_id(self.all_agent_teams()?, |team| team.id.clone())

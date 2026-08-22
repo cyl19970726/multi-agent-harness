@@ -52,6 +52,10 @@ fn mcp_team_run_create_without_legacy_mission_omits_mission_context() {
         payload["host_runtime"]["runtime_residency"],
         "managed_member_run"
     );
+    assert_eq!(
+        payload["host_runtime"]["workspace_policy"],
+        "provider_read_only_or_distinct_host_workspace"
+    );
     assert!(payload["host_runtime"]["warning"].is_null());
     assert!(
         payload["mission_id"].is_null(),

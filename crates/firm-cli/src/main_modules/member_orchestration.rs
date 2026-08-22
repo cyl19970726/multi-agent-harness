@@ -125,7 +125,7 @@ pub(crate) fn ensure_team_runtime_fabric(
             )));
         }
         let permission_ceiling =
-            effective_member_permission_ceiling(durable.permission_ceiling, &body.run, member);
+            effective_member_permission_ceiling(durable.permission_ceiling, &body.run, member)?;
         crate::provider_adapter::map_permission(&member.provider, permission_ceiling)
             .map_err(CliError::Usage)?;
         let current_sessions = store
@@ -431,7 +431,7 @@ pub(crate) fn prepare_team_run_start_body(
             })?
             .permission_ceiling;
         let permission_ceiling =
-            effective_member_permission_ceiling(permission_ceiling, &run, member);
+            effective_member_permission_ceiling(permission_ceiling, &run, member)?;
         // Freeze the permission mapping into the persisted profile before
         // AgentSession materialization. Recomputing it only after the runtime
         // has spawned would make the profile and exact session composition

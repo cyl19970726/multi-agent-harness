@@ -105,6 +105,7 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
         created["host_runtime"]["runtime_residency"],
         "detached_user_driven"
     );
+    assert_eq!(created["host_runtime"]["workspace_policy"], "user_managed");
     assert!(created["host_runtime"]["warning"]
         .as_str()
         .is_some_and(|warning| warning.contains("cannot drive or prove provider receipt")));

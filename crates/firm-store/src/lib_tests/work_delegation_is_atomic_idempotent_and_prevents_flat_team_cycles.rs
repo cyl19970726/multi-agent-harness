@@ -18,6 +18,48 @@ fn work_delegation_is_atomic_idempotent_and_prevents_flat_team_cycles() {
         "delegate-source-a-to-b",
         "unix-ms:3",
     );
+    let works_before_refusals = store.latest_works().unwrap().len();
+    let operations_before_refusals = store
+        .read_jsonl::<WorkDelegationOperation>("work_delegation_operations.jsonl")
+        .unwrap()
+        .len();
+    for (kind, id, suffix) in [
+        (TeamActorKind::Host, "forged-host", "host"),
+        (TeamActorKind::Operator, "operator", "operator"),
+        (TeamActorKind::Service, "service", "service"),
+    ] {
+        let mut forged = create_context.clone();
+        forged.event_id = format!("delegation-refused-{suffix}");
+        forged.idempotency_key = format!("delegation-refused-{suffix}");
+        forged.performed_by_actor = TeamActorRef {
+            kind,
+            id: id.into(),
+            display_name: None,
+            authn_source: Some("hostile-test".into()),
+        };
+        let error = store
+            .create_work_delegation_with_target_work(
+                request.clone(),
+                target_request.clone(),
+                forged,
+            )
+            .expect_err("only the exact Host may use Host delegation authority");
+        assert!(
+            error.to_string().contains("DELEGATION_NOT_AUTHORIZED")
+                || error
+                    .to_string()
+                    .contains("TEAM_RUN_HOST_AUTHORITY_MISMATCH")
+        );
+    }
+    assert_eq!(store.latest_works().unwrap().len(), works_before_refusals);
+    assert_eq!(
+        store
+            .read_jsonl::<WorkDelegationOperation>("work_delegation_operations.jsonl")
+            .unwrap()
+            .len(),
+        operations_before_refusals,
+        "forged Host, Operator, and Service attempts have zero delegation side effects"
+    );
     let (created, target) = store
         .create_work_delegation_with_target_work(
             request.clone(),
