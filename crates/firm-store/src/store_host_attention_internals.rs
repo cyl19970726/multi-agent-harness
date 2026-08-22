@@ -571,10 +571,22 @@ impl HarnessStore {
                 latest.insert(attention.id.clone(), attention);
             }
         }
-        latest.extend(latest_by_id(
+        for attention in latest_by_id(
             self.read_jsonl::<HostAttention>("host_attentions.jsonl")?,
             |attention| attention.id.clone(),
-        ));
+        )
+        .into_values()
+        {
+            if let Some(source) = latest.get(&attention.id) {
+                if !Self::same_host_attention_fact(source, &attention) {
+                    return Err(StoreError::Conflict(format!(
+                        "HOST_ATTENTION_SOURCE_FACT_CONFLICT: lifecycle projection {} disagrees with its canonical source fact",
+                        attention.id
+                    )));
+                }
+            }
+            latest.insert(attention.id.clone(), attention);
+        }
         Ok(latest)
     }
 

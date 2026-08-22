@@ -442,4 +442,17 @@ fn canonical_outbox_attention_preserves_claim_and_receipt_projection() {
             .status,
         HostAttentionStatus::Delivered
     );
+
+    let mut corrupted = delivered;
+    corrupted.work_id = "forged-work".into();
+    corrupted.updated_at = "unix-ms:10".into();
+    reopened
+        .append_jsonl("host_attentions.jsonl", &corrupted)
+        .expect("append hostile lifecycle row fixture");
+    let conflict = reopened
+        .host_attention_inbox_for_team_run(&run.id, true)
+        .expect_err("mutable lifecycle row cannot change canonical source identity");
+    assert!(conflict
+        .to_string()
+        .contains("HOST_ATTENTION_SOURCE_FACT_CONFLICT"));
 }
