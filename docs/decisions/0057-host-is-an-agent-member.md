@@ -73,7 +73,7 @@ receipt.
 - Store admission rejects a missing, duplicate, wrong-identity, or mode-mismatched Host MemberRun.
 - Managed Message and status delivery cannot settle across an AgentSession or NodeDaemon generation change.
 - External delivery never claims managed receipt semantics.
-- Host/Member runtime unification introduces no parent/child Work authority or nested Team topology.
+- Host/Member runtime unification introduces no Work-containment authority or nested Team topology.
 - All four providers select the ordinary Team runtime binding for managed Hosts.
 - Managed Kimi Host admission fails before AgentSession materialization when
   the Host workspace is absent, aliases the Team execution root, or is already

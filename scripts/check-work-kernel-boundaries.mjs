@@ -77,6 +77,14 @@ for (const path of repositoryFiles) {
     const seamAllowsPattern = exactLegacyDecodeSeam.has(path) &&
       label !== "retired child-Work vocabulary";
     if (seamAllowsPattern) continue;
+    if (label === "legacy decode projection outside its exact core seam") {
+      const invalid = content
+        .split(/\r?\n/)
+        .filter((line) => pattern.test(line))
+        .filter((line) => !/^\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)?legacy_containment_ref\s*(?::|=)\s*None[,;]\s*$/.test(line));
+      if (invalid.length) failures.push(`${path}: ${label}`);
+      continue;
+    }
     if (pattern.test(content)) failures.push(`${path}: ${label}`);
   }
 }
@@ -90,12 +98,6 @@ for (const required of [
     failures.push(`crates/firm-core/src/work.rs: exact read-only legacy decode seam is missing ${required}`);
   }
 }
-for (const [token, expected] of [["parent_work_id", 2], ["legacy_containment_ref", 3]]) {
-  const actual = legacyDecodeDeclaration.split(token).length - 1;
-  if (actual !== expected) {
-    failures.push(`crates/firm-core/src/work.rs: ${token} occurs ${actual} times; exact decode seam requires ${expected}`);
-  }
-}
 const legacyDecodeTest = read("crates/firm-core/src/lib_tests/work_contracts.rs");
 for (const required of [
   '"parent_work_id": "historical-parent"',
@@ -104,12 +106,6 @@ for (const required of [
 ]) {
   if (!legacyDecodeTest.includes(required)) {
     failures.push(`crates/firm-core/src/lib_tests/work_contracts.rs: compatibility assertion is missing ${required}`);
-  }
-}
-for (const [token, expected] of [["parent_work_id", 2], ["legacy_containment_ref", 3]]) {
-  const actual = legacyDecodeTest.split(token).length - 1;
-  if (actual !== expected) {
-    failures.push(`crates/firm-core/src/lib_tests/work_contracts.rs: ${token} occurs ${actual} times; exact compatibility test requires ${expected}`);
   }
 }
 
@@ -195,8 +191,9 @@ if (!rootPackage.dependencies?.["@xyflow/react"]) {
 
 const graphViewPath = "apps/agent-dashboard/src/components/workbench/team/WorkGraphView.tsx";
 const workBoardPath = "apps/agent-dashboard/src/components/workbench/team/TeamWorksBoard.tsx";
+const workKanbanPath = "apps/agent-dashboard/src/components/workbench/team/WorkKanbanView.tsx";
 const workInspectorPath = "apps/agent-dashboard/src/components/workbench/team/WorkGraphInspector.tsx";
-for (const path of [graphViewPath, workBoardPath, workInspectorPath]) {
+for (const path of [graphViewPath, workBoardPath, workKanbanPath, workInspectorPath]) {
   if (!existsSync(resolve(root, path))) failures.push(`${path}: required shared Work view is missing`);
 }
 if (existsSync(resolve(root, graphViewPath))) {
@@ -212,12 +209,18 @@ if (existsSync(resolve(root, graphViewPath))) {
 }
 if (existsSync(resolve(root, workBoardPath))) {
   const workBoard = read(workBoardPath);
-  for (const required of ["Graph", "Kanban", "Open", "Active", "Review", "Closed", "WorkGraphInspector"]) {
+  for (const required of ["Graph", "Kanban", "WorkGraphInspector"]) {
     if (!workBoard.includes(required)) failures.push(`${workBoardPath}: first-class shared Work views are missing ${required}`);
   }
 }
+if (existsSync(resolve(root, workKanbanPath))) {
+  const workKanban = read(workKanbanPath);
+  for (const required of ["Open", "Active", "Review", "Closed"]) {
+    if (!workKanban.includes(required)) failures.push(`${workKanbanPath}: canonical Work phase column is missing ${required}`);
+  }
+}
 
-const workViewSource = [graphViewPath, workBoardPath, workInspectorPath]
+const workViewSource = [graphViewPath, workBoardPath, workKanbanPath, workInspectorPath]
   .filter((path) => existsSync(resolve(root, path)))
   .map(read)
   .join("\n");

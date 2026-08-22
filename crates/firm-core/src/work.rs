@@ -530,7 +530,7 @@ pub struct Work {
     /// responsibility while receiving no new automatic execution authority.
     #[serde(default)]
     pub assignee_membership_id: Option<String>,
-    /// Historical Parent/Child Work evidence. Current Work is a flat DAG and
+    /// Historical Work-containment evidence. Current Work is a flat DAG and
     /// never serializes or mutates this value; new code must use
     /// `prerequisite_work_ids` instead. The renamed field deliberately keeps
     /// old JSONL rows readable without keeping `parent_work_id` in the current

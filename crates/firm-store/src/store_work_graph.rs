@@ -73,10 +73,25 @@ impl HarnessStore {
             .map(|candidate| (candidate.id.as_str(), candidate))
             .collect::<std::collections::BTreeMap<_, _>>();
         let mut attentions = Vec::new();
-        let primary_kind = match work.resolution {
-            Some(WorkResolution::Accepted) => Some(HostAttentionKind::WorkAccepted),
-            Some(WorkResolution::Cancelled) => Some(HostAttentionKind::WorkCancelled),
-            _ => None,
+        let authored_by_exact_host = self
+            .require_exact_team_run_host_actor(
+                &TeamActorRef {
+                    kind: TeamActorKind::Host,
+                    id: event.performed_by_actor.id.clone(),
+                    display_name: None,
+                    authn_source: Some("canonical_work_mutation".into()),
+                },
+                &work.team_run_id,
+            )
+            .is_ok();
+        let primary_kind = if authored_by_exact_host {
+            None
+        } else {
+            match work.resolution {
+                Some(WorkResolution::Accepted) => Some(HostAttentionKind::WorkAccepted),
+                Some(WorkResolution::Cancelled) => Some(HostAttentionKind::WorkCancelled),
+                _ => None,
+            }
         };
         if let Some(kind) = primary_kind {
             attentions.push(HostAttention {
@@ -95,6 +110,11 @@ impl HarnessStore {
                 claimed_host_lease_id: None,
                 claimed_host_lease_generation: None,
                 claimed_host_lease_owner_id: None,
+                claimed_recipient_member_run_id: None,
+                claimed_recipient_session_id: None,
+                claimed_recipient_session_generation: None,
+                claimed_node_daemon_id: None,
+                claimed_node_daemon_generation: None,
                 provider_receipt_id: None,
                 last_failure_reason: None,
                 created_at: event.created_at.clone(),
@@ -123,6 +143,11 @@ impl HarnessStore {
                         claimed_host_lease_id: None,
                         claimed_host_lease_generation: None,
                         claimed_host_lease_owner_id: None,
+                        claimed_recipient_member_run_id: None,
+                        claimed_recipient_session_id: None,
+                        claimed_recipient_session_generation: None,
+                        claimed_node_daemon_id: None,
+                        claimed_node_daemon_generation: None,
                         provider_receipt_id: None,
                         last_failure_reason: None,
                         created_at: event.created_at.clone(),
@@ -259,6 +284,11 @@ impl HarnessStore {
                     claimed_host_lease_id: None,
                     claimed_host_lease_generation: None,
                     claimed_host_lease_owner_id: None,
+                    claimed_recipient_member_run_id: None,
+                    claimed_recipient_session_id: None,
+                    claimed_recipient_session_generation: None,
+                    claimed_node_daemon_id: None,
+                    claimed_node_daemon_generation: None,
                     provider_receipt_id: None,
                     last_failure_reason: None,
                     created_at: operation.event.created_at.clone(),

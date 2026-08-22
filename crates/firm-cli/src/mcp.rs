@@ -37,12 +37,12 @@ use crate::{
     configure_host_runtime_mode, create_team_run, current_unix_ms_u64, deactivate_team_run_member,
     delegate_team_run_to_node_daemon, format_work_brief_line, generated_id,
     host_inbox_for_native_thread, host_runtime_projection, interrupt_team_member_value,
-    latest_member_runs_in_append_order, latest_team_run, latest_team_runs_in_append_order, now_string,
-    reconcile_team_work_delivery_value, rename_team_run_member, reopen_team_member_value,
-    reopened_member_requires_supervisor_start, serde_snake_label, steer_team_member_value,
-    team_member_specs_from_definition, team_run_board_summary_text, team_run_inbox,
-    team_run_mission_id, transition_team_run, visible_member_actions_in_append_order,
-    work_operation_cursors, ResolvedStore, TeamMemberSpec,
+    latest_member_runs_in_append_order, latest_team_run, latest_team_runs_in_append_order,
+    now_string, reconcile_team_work_delivery_value, rename_team_run_member,
+    reopen_team_member_value, reopened_member_requires_supervisor_start, serde_snake_label,
+    steer_team_member_value, team_member_specs_from_definition, team_run_board_summary_text,
+    team_run_inbox, team_run_mission_id, transition_team_run,
+    visible_member_actions_in_append_order, work_operation_cursors, ResolvedStore, TeamMemberSpec,
 };
 
 /// MCP protocol revision this server speaks, echoed verbatim in `initialize`

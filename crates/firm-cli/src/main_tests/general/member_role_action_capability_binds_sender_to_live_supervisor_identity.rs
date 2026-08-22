@@ -88,12 +88,11 @@ fn member_role_action_capability_binds_sender_to_live_supervisor_identity() {
     assert_eq!(own_inbox[0].body, "Private exact-self inbox message");
     let context = WorkCommandContext {
         event_id: "member-capability-work-created".into(),
-        performed_by_actor: TeamActorRef {
-            kind: TeamActorKind::Host,
-            id: "host-test".into(),
-            display_name: None,
-            authn_source: Some("test".into()),
-        },
+        performed_by_actor: created
+            .team_run
+            .host_actor
+            .clone()
+            .expect("exact TeamRun Host"),
         authority_actor: None,
         causation_ref: None,
         idempotency_key: "member-capability-work-created".into(),

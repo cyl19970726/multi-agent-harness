@@ -391,13 +391,14 @@ pub(super) fn team_run_work_command(
             print_json(&work)
         }
         "replace-dependencies" => {
+            let work_id = required(args, "--work-id")?;
             let work = harness_application::WorkApplication::new(store).replace_dependencies(
                 harness_application::ReplaceWorkDependenciesCommand {
                     accountable_team_id: required(args, "--team-id")?,
-                    work_id: required(args, "--work-id")?,
+                    work_id: work_id.clone(),
                     expected_version: required_work_version(args)?,
                     prerequisite_work_ids: many(args, "--prerequisite-work-id"),
-                    context: host_work_context(args),
+                    context: host_work_context_for_work(store, &work_id, args)?,
                 },
             )?;
             print_json(&work)
