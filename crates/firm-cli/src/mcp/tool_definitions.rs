@@ -460,3 +460,23 @@ pub(super) fn tool_definitions() -> Value {
         }
     ])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dependency_replacement_is_advertised_without_legacy_containment_input() {
+        let tools = tool_definitions();
+        let tool = tools
+            .as_array()
+            .expect("tool list")
+            .iter()
+            .find(|tool| tool["name"] == "team_work_replace_dependencies")
+            .expect("dependency replacement tool");
+        let schema = &tool["inputSchema"];
+        assert_eq!(schema["additionalProperties"], false);
+        assert!(schema["properties"].get("prerequisite_work_ids").is_some());
+        assert!(schema["properties"].get("parent_work_id").is_none());
+    }
+}
