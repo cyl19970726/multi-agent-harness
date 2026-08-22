@@ -45,6 +45,33 @@ fn supervisor_claims_and_acknowledges_canonical_message_delivery_in_one_ledger()
         Arc::new(AtomicBool::new(true)),
     );
     ensure_test_runtime_fabric(&store, &created, &lease);
+    let run = latest_team_run(&store, &created.team_run.id).expect("read TeamRun");
+    let members = latest_member_runs_in_append_order(&store)
+        .expect("read members")
+        .into_iter()
+        .filter(|member| member.team_run_id == run.id)
+        .collect();
+    bind_team_runtime_supervisor(
+        &store,
+        &PreparedTeamRunBody {
+            run_id: run.id.clone(),
+            objective: run.objective.clone(),
+            run,
+            members,
+        },
+        &lease.execution_space_id,
+        &lease.node_daemon_id,
+        &lease.supervisor_id,
+        lease.generation,
+    )
+    .expect("bind exact managed Host Supervisor driver");
+    transition_provider_session_runtime_control(
+        &ledger,
+        &host,
+        harness_core::agentfirm_api::RuntimeResidency::Attached,
+        harness_core::agentfirm_api::RuntimeActivity::Idle,
+    )
+    .expect("attach managed Host provider handle");
     author_test_canonical_message(
         &store,
         &created,

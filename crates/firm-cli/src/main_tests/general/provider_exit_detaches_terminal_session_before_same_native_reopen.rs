@@ -7,7 +7,12 @@ fn provider_exit_detaches_terminal_session_before_same_native_reopen() {
 
     let (store, root) = temp_store("provider-exit-detaches-before-reopen");
     let created = create_two_member_team_run(&store);
-    let initial = created.member_runs[0].clone();
+    let initial = created
+        .member_runs
+        .iter()
+        .find(|member| member.agent_member_id == "host")
+        .expect("exact managed Host MemberRun")
+        .clone();
     let mut bound = initial.clone();
     bound.native_session = Some(capacity_test_session());
     bound.last_event_at = Some("unix-ms:provider-exit-bound".into());
@@ -152,6 +157,12 @@ fn provider_exit_detaches_terminal_session_before_same_native_reopen() {
         resumed.control_state.runtime_residency,
         RuntimeResidency::Attached
     );
+    let (_, selected) = managed_host_agent_session_for_member(&ledger, &reopened)
+        .expect("resolve managed Host session")
+        .expect("same-session Reopen remains addressable");
+    assert_eq!(selected.id, released.id);
+    assert_eq!(selected.runtime_generation, 1);
+    assert_eq!(reopened.runtime_generation, 2);
 
     std::fs::remove_dir_all(root).expect("cleanup");
 }
