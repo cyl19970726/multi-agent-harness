@@ -74,12 +74,12 @@ fn trust_context(
     }
 }
 
-fn host_work_context(key: &str, at: &str) -> WorkCommandContext {
+fn host_work_context(host_member_id: &str, key: &str, at: &str) -> WorkCommandContext {
     WorkCommandContext {
         event_id: format!("event-{key}"),
         performed_by_actor: TeamActorRef {
             kind: TeamActorKind::Host,
-            id: "host".into(),
+            id: host_member_id.into(),
             display_name: None,
             authn_source: Some("test".into()),
         },
@@ -116,7 +116,7 @@ fn member(id: &str) -> AgentMember {
     }
 }
 
-fn work_fixture(run_id: &str, id: &str) -> Work {
+fn work_fixture(run_id: &str, host_member_id: &str, id: &str) -> Work {
     Work {
         id: id.into(),
         team_run_id: run_id.into(),
@@ -137,7 +137,7 @@ fn work_fixture(run_id: &str, id: &str) -> Work {
         priority: WorkPriority::Normal,
         created_by_actor: TeamActorRef {
             kind: TeamActorKind::Host,
-            id: "host".into(),
+            id: host_member_id.into(),
             display_name: None,
             authn_source: Some("test".into()),
         },
@@ -292,7 +292,12 @@ fn seed_team(store: &HarnessStore, label: &str, member_ids: &[&str]) -> AgentTea
         previous_run_id: None,
         host_surface: "test".into(),
         host_thread_id: None,
-        host_actor: None,
+        host_actor: Some(TeamActorRef {
+            kind: TeamActorKind::Host,
+            id: member_ids[0].into(),
+            display_name: None,
+            authn_source: Some("test".into()),
+        }),
         host_control_mode: Default::default(),
         objective: "cutover test".into(),
         execution_root: None,
@@ -324,11 +329,12 @@ fn append_raw_row<T: serde::Serialize>(store: &HarnessStore, ledger: &str, value
 fn append_legacy_work_row(
     store: &HarnessStore,
     run_id: &str,
+    host_member_id: &str,
     work_id: &str,
     owner_member_id: Option<&str>,
     legacy_team_key: Option<&str>,
 ) {
-    let mut work = work_fixture(run_id, work_id);
+    let mut work = work_fixture(run_id, host_member_id, work_id);
     work.version = 1;
     work.created_at = "t0".into();
     work.updated_at = "t0".into();
@@ -387,8 +393,8 @@ fn membership_assignment_is_cas_fenced_and_needs_no_runtime() {
     );
     let work = store
         .insert_work(
-            work_fixture(&run.id, "work-assign-1"),
-            host_work_context("create-assign-1", "t2"),
+            work_fixture(&run.id, "host-assign", "work-assign-1"),
+            host_work_context("host-assign", "create-assign-1", "t2"),
         )
         .expect("create Work");
     assert_eq!(work.version, 1);
@@ -404,7 +410,7 @@ fn membership_assignment_is_cas_fenced_and_needs_no_runtime() {
             99,
             "membership-team-assign-worker-assign",
             SPACE,
-            host_work_context("assign-stale", "t3"),
+            host_work_context("host-assign", "assign-stale", "t3"),
         )
         .expect_err("stale expected version must be fenced");
     assert!(stale.to_string().contains("VERSION_CONFLICT"));
@@ -417,7 +423,7 @@ fn membership_assignment_is_cas_fenced_and_needs_no_runtime() {
             1,
             "membership-team-assign-worker-assign",
             SPACE,
-            host_work_context("assign-worker", "t3"),
+            host_work_context("host-assign", "assign-worker", "t3"),
         )
         .expect("assign Work to TeamMembership without any runtime");
     assert_eq!(assigned.version, 2);
@@ -443,7 +449,7 @@ fn membership_assignment_is_cas_fenced_and_needs_no_runtime() {
             1,
             "membership-team-assign-host-assign",
             SPACE,
-            host_work_context("reassign-stale", "t4"),
+            host_work_context("host-assign", "reassign-stale", "t4"),
         )
         .expect_err("reassignment with a stale version must be fenced");
     assert!(stale_reassign.to_string().contains("VERSION_CONFLICT"));
@@ -453,7 +459,7 @@ fn membership_assignment_is_cas_fenced_and_needs_no_runtime() {
             2,
             "membership-team-assign-host-assign",
             SPACE,
-            host_work_context("reassign-host", "t4"),
+            host_work_context("host-assign", "reassign-host", "t4"),
         )
         .expect("reassign to the Host membership");
     assert_eq!(
@@ -476,7 +482,7 @@ fn membership_assignment_is_cas_fenced_and_needs_no_runtime() {
             3,
             "membership-team-assign-host-assign",
             SPACE,
-            host_work_context("reassign-same", "t5"),
+            host_work_context("host-assign", "reassign-same", "t5"),
         )
         .expect_err("reassigning the current assignee is a conflict, not a no-op");
     assert!(same.to_string().contains("WORK_ALREADY_ASSIGNED"));
@@ -487,7 +493,7 @@ fn membership_assignment_is_cas_fenced_and_needs_no_runtime() {
             3,
             "membership-team-assign-ghost",
             SPACE,
-            host_work_context("assign-ghost", "t5"),
+            host_work_context("host-assign", "assign-ghost", "t5"),
         )
         .expect_err("unknown membership fails closed");
     assert!(missing.to_string().contains("TEAM_MEMBERSHIP_NOT_FOUND"));
@@ -501,8 +507,8 @@ fn membership_assignment_refuses_observer_and_cross_team_targets() {
     let other_run = seed_team(store, "targets-other", &["host-other", "worker-other"]);
     let _work = store
         .insert_work(
-            work_fixture(&run.id, "work-targets-1"),
-            host_work_context("create-targets-1", "t2"),
+            work_fixture(&run.id, "host-targets", "work-targets-1"),
+            host_work_context("host-targets", "create-targets-1", "t2"),
         )
         .expect("create Work");
 
@@ -547,7 +553,7 @@ fn membership_assignment_refuses_observer_and_cross_team_targets() {
             1,
             &observer.projection.id,
             SPACE,
-            host_work_context("assign-observer", "t3"),
+            host_work_context("host-targets", "assign-observer", "t3"),
         )
         .expect_err("Observer membership cannot hold Work responsibility");
     assert!(refused.to_string().contains("ASSIGNEE_ROLE_INVALID"));
@@ -558,7 +564,7 @@ fn membership_assignment_refuses_observer_and_cross_team_targets() {
             1,
             &format!("membership-{}-worker-other", other_run.agent_team_id),
             SPACE,
-            host_work_context("assign-cross-team", "t3"),
+            host_work_context("host-targets", "assign-cross-team", "t3"),
         )
         .expect_err("cross-Team membership cannot take this Team's Work");
     assert!(cross_team.to_string().contains("TEAM_SCOPE_MISMATCH"));
@@ -571,8 +577,8 @@ fn dormant_assignee_retains_responsibility_without_active_membership_or_runtime(
     let run = seed_team(store, "dormant", &["host-dormant", "worker-dormant"]);
     let work = store
         .insert_work(
-            work_fixture(&run.id, "work-dormant-1"),
-            host_work_context("create-dormant-1", "t2"),
+            work_fixture(&run.id, "host-dormant", "work-dormant-1"),
+            host_work_context("host-dormant", "create-dormant-1", "t2"),
         )
         .expect("create Work");
     let assigned = store
@@ -581,7 +587,7 @@ fn dormant_assignee_retains_responsibility_without_active_membership_or_runtime(
             1,
             "membership-team-dormant-worker-dormant",
             SPACE,
-            host_work_context("assign-dormant", "t3"),
+            host_work_context("host-dormant", "assign-dormant", "t3"),
         )
         .expect("assign to an Active membership");
     assert_eq!(assigned.version, 2);
@@ -621,7 +627,7 @@ fn dormant_assignee_retains_responsibility_without_active_membership_or_runtime(
             2,
             "membership-team-dormant-host-dormant",
             SPACE,
-            host_work_context("assign-dormant-host", "t5"),
+            host_work_context("host-dormant", "assign-dormant-host", "t5"),
         )
         .expect("reassign while the previous assignee is dormant");
     assert_eq!(reassigned.version, 3);
@@ -645,8 +651,8 @@ fn execution_binding_fences_runtime_without_owning_responsibility() {
     let run = seed_team(store, "binding", &["host-binding", "worker-binding"]);
     let work = store
         .insert_work(
-            work_fixture(&run.id, "work-binding-1"),
-            host_work_context("create-binding-1", "t2"),
+            work_fixture(&run.id, "host-binding", "work-binding-1"),
+            host_work_context("host-binding", "create-binding-1", "t2"),
         )
         .expect("create Work");
     let assigned = store
@@ -655,7 +661,7 @@ fn execution_binding_fences_runtime_without_owning_responsibility() {
             1,
             "membership-team-binding-worker-binding",
             SPACE,
-            host_work_context("assign-binding", "t3"),
+            host_work_context("host-binding", "assign-binding", "t3"),
         )
         .expect("assign to membership");
     assert_eq!(assigned.version, 2);
@@ -815,8 +821,8 @@ fn responsibility_migration_is_append_only_reported_and_never_guesses() {
     // Canonical row created by the current binary: nothing to do.
     let _canonical = store
         .insert_work(
-            work_fixture(&run.id, "work-canonical"),
-            host_work_context("create-canonical", "t2"),
+            work_fixture(&run.id, "host-migrate", "work-canonical"),
+            host_work_context("host-migrate", "create-canonical", "t2"),
         )
         .expect("create canonical Work");
 
@@ -824,15 +830,31 @@ fn responsibility_migration_is_append_only_reported_and_never_guesses() {
     append_legacy_work_row(
         store,
         &run.id,
+        "host-migrate",
         "work-legacy-owned",
         Some("worker-migrate"),
         None,
     );
-    append_legacy_work_row(store, &run.id, "work-legacy-orphan", Some("ghost"), None);
-    append_legacy_work_row(store, "team-run-missing", "work-legacy-lost", None, None);
     append_legacy_work_row(
         store,
         &run.id,
+        "host-migrate",
+        "work-legacy-orphan",
+        Some("ghost"),
+        None,
+    );
+    append_legacy_work_row(
+        store,
+        "team-run-missing",
+        "host-migrate",
+        "work-legacy-lost",
+        None,
+        None,
+    );
+    append_legacy_work_row(
+        store,
+        &run.id,
+        "host-migrate",
         "work-legacy-alias",
         None,
         Some(&run.agent_team_id),
@@ -840,7 +862,7 @@ fn responsibility_migration_is_append_only_reported_and_never_guesses() {
 
     let before_rows = work_operations_raw(store);
     let report = store
-        .migrate_work_responsibility(SPACE, host_work_context("migrate", "t3"))
+        .migrate_work_responsibility(SPACE, host_work_context("host-migrate", "migrate", "t3"))
         .expect("migration runs");
     assert_eq!(report.execution_space_id, SPACE);
     let mut migrated = report.migrated_work_ids.clone();
@@ -935,7 +957,7 @@ fn responsibility_migration_is_append_only_reported_and_never_guesses() {
             2,
             &format!("membership-{}-host-migrate", run.agent_team_id),
             SPACE,
-            host_work_context("assign-after-migration", "t4"),
+            host_work_context("host-migrate", "assign-after-migration", "t4"),
         )
         .expect("migrated Work accepts CAS assignment at the migrated version");
     let refused = store.assign_work_to_membership(
@@ -943,16 +965,20 @@ fn responsibility_migration_is_append_only_reported_and_never_guesses() {
         1,
         &format!("membership-{}-host-migrate", run.agent_team_id),
         SPACE,
-        host_work_context("assign-unmigrated", "t4"),
+        host_work_context("host-migrate", "assign-unmigrated", "t4"),
     );
-    assert!(refused
-        .expect_err("unmigrated Work fails closed")
-        .to_string()
-        .contains("WORK_NOT_TEAM_SCOPED"));
+    let refused = refused.expect_err("unmigrated Work without a current TeamRun fails closed");
+    assert!(
+        refused.to_string().contains("team run not found"),
+        "unexpected error: {refused}"
+    );
 
     // Re-running the migration is a reported no-op, not a silent rewrite.
     let second = store
-        .migrate_work_responsibility(SPACE, host_work_context("migrate-again", "t5"))
+        .migrate_work_responsibility(
+            SPACE,
+            host_work_context("host-migrate", "migrate-again", "t5"),
+        )
         .expect("second migration run");
     assert!(second.migrated_work_ids.is_empty());
     let third_rows = work_operations_raw(store);
