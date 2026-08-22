@@ -7,6 +7,7 @@ import { prepareRoleAction, roleActionRoute } from "../model/roleViews";
 const CRITICAL = new Set(["accept_work", "cancel_work", "reconcile_delivery", "reconcile_message_delivery", "resolve_runtime_recovery", "close_member_run", "retire_member_run", "cleanup_workspace", "waive_gate", "revoke_waiver", "start_daemon", "stop_daemon"]);
 const EXECUTABLE = new Set([
   "create_work", "assign_work", "rebind_work", "release_work", "accept_work",
+  "change_work_dependencies",
   "cancel_work", "claim_work", "start_work", "block_work", "unblock_work", "submit_work",
   "reconcile_delivery",
   "request_changes", "revise_work", "send_message", "reply_message", "request_decision",
@@ -23,6 +24,7 @@ const FIELD_SPECS: Record<string, Array<{ name: string; label: string; multiline
     { name: "context_markdown", label: "Context", multiline: true },
     { name: "completion_criteria_markdown", label: "Completion criteria", multiline: true },
   ],
+  change_work_dependencies: [{name:"prerequisite_work_ids",label:"Prerequisite Work IDs (comma-separated)"},{name:"reason",label:"Change reason",multiline:true}],
   assign_work: [{ name: "member_run_id", label: "MemberRun ID" }],
   rebind_work: [{ name: "member_run_id", label: "Replacement MemberRun ID" }],
   cancel_work: [{ name: "reason", label: "Cancellation reason", multiline: true }],

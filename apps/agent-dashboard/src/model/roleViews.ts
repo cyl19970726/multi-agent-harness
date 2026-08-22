@@ -41,6 +41,7 @@ const TEAM_WORK_ACTIONS = {
 } as const;
 
 export type ExecutableRoleActionKind = "create_work" | "accept_work" | "reconcile_delivery" | keyof typeof TEAM_WORK_ACTIONS
+  | "change_work_dependencies"
   | "request_changes" | "revise_work" | "send_message" | "reply_message" | "request_decision"
   | "interrupt_member_run" | "close_member_run" | "reopen_member_run" | "retire_member_run" | "resume_native_session"
   | "provision_workspace" | "attach_workspace" | "archive_workspace" | "cleanup_workspace"
@@ -85,6 +86,8 @@ export function prepareRoleAction(
     ?`/v1/agentfirm/teams/${team}/works/${id}/accept`
     :action.kind==="create_work"&&run
     ?`/v1/agentfirm/team-runs/${run}/works`
+    :action.kind==="change_work_dependencies"&&team
+    ?`/v1/agentfirm/teams/${team}/works/${id}/dependencies`
     :operation&&run?`/v1/agentfirm/team-runs/${run}/works/${id}/${operation}`
     :workRecordActions[action.kind]&&team?`/v1/agentfirm/teams/${team}/works/${id}/${workRecordActions[action.kind]}`
     :messageActions[action.kind]&&run?`/v1/agentfirm/team-runs/${run}/messages/${messageActions[action.kind]}`
@@ -99,6 +102,7 @@ export function prepareRoleAction(
   try{
     switch(action.kind as ExecutableRoleActionKind){
       case "create_work": body={action:"create_work",work_id:required("work_id"),title:required("title"),context_markdown:fields.context_markdown??"",completion_criteria_markdown:required("completion_criteria_markdown"),claim_mode:fields.claim_mode||"host_assign",priority:fields.priority||"normal"};break;
+      case "change_work_dependencies": body={action:"replace_work_dependencies",prerequisite_work_ids:(fields.prerequisite_work_ids??"").split(",").map(value=>value.trim()).filter(Boolean),reason:required("reason")};break;
       case "accept_work": body={action:"accept_work"};break;
       case "reconcile_delivery": body={action:"reconcile_delivery",evidence_ref:required("evidence_ref")};break;
       case "reconcile_message_delivery": body={action:"reconcile_message_delivery",outcome:fields.outcome||"retry_safe_failure",evidence_ref:required("evidence_ref")};break;
@@ -148,6 +152,7 @@ export function roleActionRoute(action:AllowedAction,context:{teamId?:string;tea
   const node=context.nodeId&&encodeURIComponent(context.nodeId);
   if(action.kind in TEAM_WORK_ACTIONS&&run)return `/v1/agentfirm/team-runs/${run}/works/${id}/${TEAM_WORK_ACTIONS[action.kind as keyof typeof TEAM_WORK_ACTIONS]}`;
   if(action.kind==="create_work"&&run)return `/v1/agentfirm/team-runs/${run}/works`;
+  if(action.kind==="change_work_dependencies"&&team)return `/v1/agentfirm/teams/${team}/works/${id}/dependencies`;
   if(action.kind==="accept_work"&&team)return `/v1/agentfirm/teams/${team}/works/${id}/accept`;
   if(action.kind==="reconcile_delivery"&&node)return `/v1/agentfirm/nodes/${node}/work-deliveries/${id}/reconcile`;
   if(action.kind==="reconcile_message_delivery"&&node)return `/v1/agentfirm/nodes/${node}/message-deliveries/${id}/reconcile`;
@@ -181,8 +186,9 @@ export interface WorkSummary {
   assignee_ref: { kind: string; membership_id: string | null; membership_state: string | null; agent_member_id: string | null; display_name: string | null };
   migration_state: "canonical" | "legacy_team_run_scoped";
   title: string; context_markdown: string; completion_criteria_markdown: string;
-  claim_mode: string; eligible_member_ids: string[]; prerequisite_work_ids: string[];
-  parent_work_id: string | null; blocker_reason: string | null; result_summary: string | null;
+  claim_mode: string; eligible_member_ids: string[]; prerequisite_work_ids: string[]; successor_work_ids: string[];
+  readiness: WorkReadiness;
+  blocker_reason: string | null; result_summary: string | null;
   artifact_refs: string[]; check_refs: string[];
   latest_event: {id:string; kind:string; actor_ref:ActorRef|null; created_at:string} | null;
   owner_actor_ref: ActorRef | null; current_member_run_ref: string | null;
@@ -192,6 +198,23 @@ export interface WorkSummary {
   latest_report_ref: string | null; latest_finding_refs: string[]; latest_failure_ref: string | null;
   delivery_summary: Record<string, number | string>; runtime_summary: Record<string, unknown>;
   workspace_summary: Record<string, unknown>; delegation_summary: Record<string, unknown>; updated_at: string;
+}
+export interface WorkReadiness {
+  state:"ready"|"waiting_prerequisites"|"requires_host_attention"|"not_claimable";
+  reason_codes:string[];
+  unsatisfied_prerequisite_work_ids:string[];
+  failed_or_cancelled_prerequisite_work_ids:string[];
+}
+export interface WorkGraphEdge {
+  prerequisite_work_id:string;
+  dependent_work_id:string;
+  kind:"hard";
+}
+export interface WorkGraph {
+  nodes:WorkSummary[];
+  edges:WorkGraphEdge[];
+  ready_work_ids:string[];
+  attention_work_ids:string[];
 }
 export interface RoleRecordSummary {
   kind:string; id:string; work_id:string|null; member_run_id:string|null; requirement_id:string|null;
@@ -280,7 +303,7 @@ export interface GlobalWorkIndexData {
 }
 export interface TeamWorkspaceData {
   team: {team_id:string; display_name:string; team_revision:number; mission_id:string; host_agent_id:string; viewer_role:string; node_id:string; placement_generation:number|null; status:string; latest_run:LatestTeamRunSummary|null};
-  works: WorkSummary[]; members: MemberCapacitySummary[]; messages: MessageSummary[]; activity:TeamActivitySummary[]; activity_truncated:boolean; pressure_summary:TeamPressureSummary;
+  works: WorkSummary[]; work_graph:WorkGraph; members: MemberCapacitySummary[]; messages: MessageSummary[]; activity:TeamActivitySummary[]; activity_truncated:boolean; pressure_summary:TeamPressureSummary;
   reports: RoleRecordSummary[]; findings: RoleRecordSummary[]; failures: RoleRecordSummary[]; gate_requirements: RoleRecordSummary[];
   gate_evaluations: RoleRecordSummary[]; gate_waivers: RoleRecordSummary[]; workspace_attention: RoleRecordSummary[];
   delegation_provenance: RoleRecordSummary[]; collaboration:CollaborationProjectionSummary; page: {as_of_event_sequence:number;item_count:number;next_cursor:string|null}; runtime_fabric:RuntimeFabricSummary;
@@ -310,7 +333,7 @@ export interface MissionContextSummary {id:string; title:string; objective:strin
 export interface TeamSupervisorSummary {team_run_id:string; supervisor_id:string; generation:number; current:boolean; heartbeat_unix_ms:number; expires_unix_ms:number; owner_locator:string; node_daemon_generation:number; status:string}
 export interface HostRuntimeSummary {agent_member_id:string;member_run_id:string|null;mode:"managed"|"external_interactive";delivery_guarantee:"daemon_managed"|"pull_only";runtime_residency:"managed_member_run"|"detached_user_driven";queued_actionable_items:number;last_inbox_read_at:string|null;warning:string|null}
 export interface HostConsoleData {
-  team_ref:string; mission_ref:string; all_works:WorkSummary[]; work_queues:Record<string,WorkSummary[]>;
+  team_ref:string; mission_ref:string; all_works:WorkSummary[]; work_graph:WorkGraph; work_queues:Record<string,WorkSummary[]>;
   member_capacity:MemberCapacitySummary[]; convergence_plans:RoleRecordSummary[]; reusable_findings:RoleRecordSummary[];
   workspace_conflicts:RoleRecordSummary[]; provider_capacity_attention:Array<{state:"not_modeled";reason:string}>; deliveries_requiring_reconcile:RoleRecordSummary[];
   gate_attention:RoleRecordSummary[]; daemon_summary:{node_id:string;lease_status:string|null;generation:number|null};
