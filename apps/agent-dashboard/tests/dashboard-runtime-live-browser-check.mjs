@@ -270,12 +270,15 @@ const liveTeamRunPayload = JSON.parse(runHarness([
   "team-run", "create",
   "--objective", "Exercise Runtime convergence against native TeamWork",
   "--agent-team-id", liveTeam.id,
+  "--host-runtime-mode", "external_interactive",
+  "--member", "host:host:codex/external_interactive",
   "--member", "worker:worker:codex/app-server",
   "--json",
 ], env, projectRoot));
 const liveTeamRunId = liveTeamRunPayload.team_run?.id ?? liveTeamRunPayload.id ?? liveTeamRunPayload.result?.id;
 if (!liveTeamRunId) throw new Error(`team-run create did not return an id: ${JSON.stringify(liveTeamRunPayload)}`);
-const liveMemberRunId = liveTeamRunPayload.member_runs?.[0]?.id ?? liveTeamRunPayload.result?.member_runs?.[0]?.id;
+const liveMemberRuns = liveTeamRunPayload.member_runs ?? liveTeamRunPayload.result?.member_runs ?? [];
+const liveMemberRunId = liveMemberRuns.find((run) => run.agent_member_id === "worker")?.id;
 if (!liveMemberRunId) throw new Error(`team-run create did not return a MemberRun: ${JSON.stringify(liveTeamRunPayload)}`);
 
 // A second Execution Space and sibling Team prove that Global Work is a
@@ -328,6 +331,8 @@ const secondaryTeam = JSON.parse(runHarness([
 const secondaryRunPayload = JSON.parse(runHarness([
   "team-run", "create", "--objective", "Sibling Team isolation",
   "--agent-team-id", secondaryTeam.id,
+  "--host-runtime-mode", "external_interactive",
+  "--member", "host-secondary:host:codex/external_interactive",
   "--member", "worker-secondary:worker:codex/app-server", "--json",
 ], secondaryEnv, projectRoot));
 const secondaryTeamRunId = secondaryRunPayload.team_run?.id ?? secondaryRunPayload.id ?? secondaryRunPayload.result?.id;

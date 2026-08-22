@@ -112,7 +112,11 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
             "objective":"Delivery projection acceptance",
             "host_surface":"codex",
             "host_thread_id":host_thread_id,
-            "members":[{"agent_member_id":member_id,"name":"member","role":"builder","provider":"codex"}]
+            "host_runtime_mode":"external_interactive",
+            "members":[
+                {"agent_member_id":host_id,"name":"host","role":"host","provider":"codex"},
+                {"agent_member_id":member_id,"name":"member","role":"builder","provider":"codex"}
+            ]
         }),
     );
     assert_eq!(status, 200, "TeamRun: {created_run}");
@@ -120,7 +124,7 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
         .as_str()
         .expect("TeamRun id")
         .to_string();
-    let member_run_id = created_run["result"]["member_runs"][0]["id"]
+    let member_run_id = created_run["result"]["member_runs"][1]["id"]
         .as_str()
         .expect("MemberRun id")
         .to_string();
@@ -365,18 +369,12 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
         .expect("Host roster entry");
     assert_eq!(host_roster["host_session_mode"], "external_interactive");
     let host_projection = &host_workspace["data"]["session_event_projection"];
-    assert_eq!(host_projection["disabled_reason"], serde_json::Value::Null);
-    assert!(host_projection["agent_session_id"]
-        .as_str()
-        .is_some_and(|id| id.starts_with("agent-session:")));
     assert_eq!(
-        host_projection["episodes"][0]["provider_turn_id"],
-        "turn-host-1"
+        host_projection["disabled_reason"],
+        "No provider-native Session is bound to this selected Agent run."
     );
-    let serialized_host_projection =
-        serde_json::to_string(host_projection).expect("projection JSON");
-    assert!(serialized_host_projection.contains("display-safe host observation"));
-    assert!(!serialized_host_projection.contains("raw-chain-of-thought-must-not-appear"));
+    assert_eq!(host_projection["agent_session_id"], serde_json::Value::Null);
+    assert_eq!(host_projection["episodes"], serde_json::json!([]));
     assert!(
         host_workspace["data"]
             .get("live_provider_activity")
@@ -415,6 +413,6 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
     );
     assert_eq!(
         unbound_workspace["data"]["session_event_projection"]["disabled_reason"],
-        "No provider-native Session is bound to the selected Host run."
+        "No provider-native Session is bound to this selected Agent run."
     );
 }

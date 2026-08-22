@@ -123,7 +123,11 @@ path as an execution root is a routing defect.
    is a read-only legacy read).
 2. Call `team_run_create` with the required `agent_team_id`; Node is derived
    from the Team and the selected Project Binding is frozen on the
-   run. Supply supported provider member identities/roles, disjoint owned paths,
+   run. `host_runtime_mode` defaults to `managed`; the exact Host AgentMember
+   must be present in the roster and receives the same persistent provider
+   binding as a Member. Select `external_interactive` only for an intentionally
+   pull-only, user-driven Host; creation returns the weaker delivery guarantee
+   explicitly and never starts or admits that provider. Supply supported provider identities/roles, disjoint owned paths,
    and workspace overrides only when needed. Keep the returned execution/member roots. Create bounded Works
    with explicit completion criteria, directly assign them or expose eligible
    unassigned Works for atomic claim, and keep the returned Work ids/versions.
@@ -198,24 +202,30 @@ Close is latched durably and freezes start/delivery across lease rollover. Only
 explicit Reopen increments the runtime generation and resumes the recorded
 native session; ordinary mail never revives a closed member.
 
-Host-bound mail is scoped by the TeamRun's exact `host_surface +
-host_thread_id`. The Codex Plugin reads only that native task's aggregate
-Inbox. At `Stop`, it may use Codex's real one-shot continuation protocol to
-handle mail that arrived while the Host was busy. Mail arriving after an
-unowned Codex Desktop task is already idle remains actionable until the next
-`UserPromptSubmit` or `SessionStart`; Harness does not spawn a second app-server
-and pretend it owns the open Desktop task. See
-[ADR 0040](../../decisions/0040-native-host-inbox-delivery.md).
+Managed Host mail is scoped to the exact Host AgentMember subscription and is
+claimed only by that Host's current MemberRun, AgentSession/runtime generation,
+and NodeDaemon generation. The shared Team runtime injects it into the next
+Host provider cycle and records the provider receipt plus recipient ACK/cursor.
+No `host_surface + host_thread_id` compatibility binding participates in this
+managed path.
+
+An `external_interactive` Host remains scoped by its explicit external surface
+and optional native-thread locator. It must read/wait/poll its durable inbox;
+Harness creates no AgentSession or RuntimeCommand and never drives that
+provider. Hook success and UI visibility are notification hints, never a provider receipt. Mail can remain
+actionable until that exact external Host reads it. See
+[ADR 0057](../../decisions/0057-host-is-an-agent-member.md); ADR 0040 is the
+historical external-task delivery predecessor.
 
 This boundary is intentionally provider-neutral:
 
 ```text
 Member native session
   -> explicit Message(to=<host-agent-identity>)
-  -> Harness Host Inbox (one CanonicalMessageDelivery)
-  -> exact native Host binding
-  -> bounded Plugin context or one-shot Codex Stop continuation
-  -> Host reads Inbox; the authenticated consumer records exact-recipient acknowledgement
+  -> one CanonicalMessageDelivery for the Host subscription
+  -> exact Host MemberRun + AgentSession + NodeDaemon generation
+  -> ordinary TeamRuntimeAdapter provider cycle
+  -> provider receipt + exact-recipient acknowledgement/cursor
   -> Host sends a causation-linked answer/review/acceptance
 ```
 

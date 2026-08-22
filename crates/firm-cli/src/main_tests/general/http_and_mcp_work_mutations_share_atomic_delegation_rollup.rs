@@ -4,7 +4,7 @@ fn http_and_mcp_work_mutations_share_atomic_delegation_rollup() {
     let (store, root) = temp_store("delegation-surface-rollup");
     let source_run = create_two_member_team_run(&store);
     let (project_context, _) =
-        ensure_legacy_unit_test_team_binding(&store).expect("unit-test project binding");
+        ensure_legacy_unit_test_team_binding(&store, None).expect("unit-test project binding");
     store
         .insert_mission(&Mission {
             id: "surface-target-mission".into(),
@@ -65,6 +65,7 @@ fn http_and_mcp_work_mutations_share_atomic_delegation_rollup() {
         None,
         "test",
         None,
+        HostControlMode::Managed,
         None,
         Some("surface-target-team".into()),
         None,

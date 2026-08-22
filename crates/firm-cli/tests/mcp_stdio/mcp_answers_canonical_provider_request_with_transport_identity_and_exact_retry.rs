@@ -74,14 +74,24 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
             "arguments": {
                 "objective": "Exercise canonical MCP provider response bridge",
                 "agent_team_id": team_id,
-                "members": [{
-                    "name": "mcp-question-worker",
-                    "role": "implementer",
-                    "provider": "codex",
-                    "execution_mode": "codex_app_server",
-                    "agent_member_id": worker_id,
-                    "initial_work": "Ask one deterministic provider question"
-                }]
+                "host_runtime_mode": "external_interactive",
+                "members": [
+                    {
+                        "name": "mcp-host",
+                        "role": "host",
+                        "provider": "codex",
+                        "execution_mode": "external_interactive",
+                        "agent_member_id": host_id
+                    },
+                    {
+                        "name": "mcp-question-worker",
+                        "role": "implementer",
+                        "provider": "codex",
+                        "execution_mode": "codex_app_server",
+                        "agent_member_id": worker_id,
+                        "initial_work": "Ask one deterministic provider question"
+                    }
+                ]
             }
         }),
     ));
@@ -89,6 +99,16 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
         .as_str()
         .expect("team run id")
         .to_string();
+    assert_eq!(created["host_runtime"]["mode"], "external_interactive");
+    assert_eq!(created["host_runtime"]["delivery_guarantee"], "pull_only");
+    assert_eq!(
+        created["host_runtime"]["runtime_residency"],
+        "detached_user_driven"
+    );
+    assert_eq!(created["host_runtime"]["workspace_policy"], "user_managed");
+    assert!(created["host_runtime"]["warning"]
+        .as_str()
+        .is_some_and(|warning| warning.contains("cannot drive or prove provider receipt")));
     let started = call_payload(&mcp.request(
         "tools/call",
         serde_json::json!({
@@ -260,7 +280,11 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
             }
         }),
     );
-    assert!(call_error_text(&invalid).contains("does not expose option_id"));
+    let invalid_error = call_error_text(&invalid);
+    assert!(
+        invalid_error.contains("does not expose option_id"),
+        "unexpected invalid-option error: {invalid_error}"
+    );
     assert!(store
         .fabric_messages(execution_space_id)
         .expect("messages after rejected answers")

@@ -69,8 +69,10 @@ writers are closed on every surface and its rows are export/verify-only through
 `harness legacy-company-os export|verify`. See
 [docs/current/product/prd.md](docs/current/product/prd.md).
 
-Agent Team and Host execution, providers, plugins, and MCP are the shared
-execution foundation. Dynamic Workflow is retired; its historical records are
+Agent Team execution, providers, plugins, and MCP are the shared execution
+foundation. A Team Host is an AgentMember using the ordinary managed Team
+runtime or the explicit pull-only `external_interactive` exception, not a
+second executor model. Dynamic Workflow is retired; its historical records are
 available only through lossless legacy archive export, verification, and
 restore-read. Their current native relations are:
 

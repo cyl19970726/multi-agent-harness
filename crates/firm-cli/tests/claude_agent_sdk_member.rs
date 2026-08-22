@@ -476,12 +476,26 @@ fn create_run(home: &TempHome, root: &Path) -> String {
             "claude-sdk-team",
             "--objective",
             "deterministic agent-sdk coverage",
+            "--host-runtime-mode",
+            "external_interactive",
+            "--member",
+            "SdkHost:host:codex/external_interactive",
             "--member",
             "SdkMember:Runtime owner:claude/agent-sdk#Complete deterministic Agent SDK Work",
         ],
     );
     assert!(out.status.success(), "create failed: {out:?}");
     String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn sdk_member_run_id(status_json: &serde_json::Value) -> &str {
+    status_json["members"]
+        .as_array()
+        .expect("members")
+        .iter()
+        .find(|member| member["member_run"]["agent_member_id"] == "SdkMember")
+        .and_then(|member| member["member_run"]["id"].as_str())
+        .expect("SDK member id")
 }
 
 fn wait_for_member_detail(
@@ -500,9 +514,7 @@ fn wait_for_member_detail(
         assert!(status.status.success(), "status failed: {status:?}");
         let status_json: serde_json::Value =
             serde_json::from_slice(&status.stdout).expect("status JSON");
-        let member_id = status_json["members"][0]["member_run"]["id"]
-            .as_str()
-            .expect("member id");
+        let member_id = sdk_member_run_id(&status_json);
         let detail = run_firm(
             home,
             root,
@@ -554,9 +566,7 @@ fn current_company_does_not_capture_claude_member_session_or_desktop_target() {
     assert!(status.status.success(), "status failed: {status:?}");
     let status_json: serde_json::Value =
         serde_json::from_slice(&status.stdout).expect("status JSON");
-    let member_id = status_json["members"][0]["member_run"]["id"]
-        .as_str()
-        .expect("member id");
+    let member_id = sdk_member_run_id(&status_json);
 
     let target = run_firm(
         &home,
@@ -618,9 +628,7 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
     );
     let status_json: serde_json::Value =
         serde_json::from_slice(&status.stdout).expect("status JSON");
-    let member_id = status_json["members"][0]["member_run"]["id"]
-        .as_str()
-        .expect("member id");
+    let member_id = sdk_member_run_id(&status_json);
     let inbox = run_firm(
         &home,
         &root,
@@ -1102,8 +1110,14 @@ fn unknown_claude_execution_mode_is_rejected() {
         &[
             "team-run",
             "create",
+            "--agent-team-id",
+            "claude-sdk-team",
             "--objective",
             "reject unknown modes",
+            "--host-runtime-mode",
+            "external_interactive",
+            "--member",
+            "SdkHost:host:codex/external_interactive",
             "--member",
             "Ghost:Role:claude/not-a-mode",
         ],
@@ -1126,8 +1140,14 @@ fn claude_cli_is_rejected_for_agent_team_members() {
         &[
             "team-run",
             "create",
+            "--agent-team-id",
+            "claude-sdk-team",
             "--objective",
             "reject one-shot Team mode",
+            "--host-runtime-mode",
+            "external_interactive",
+            "--member",
+            "SdkHost:host:codex/external_interactive",
             "--member",
             "Legacy:Role:claude/cli",
         ],

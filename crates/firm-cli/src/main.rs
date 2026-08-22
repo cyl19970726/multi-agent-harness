@@ -5,7 +5,6 @@ use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -31,16 +30,16 @@ use harness_core::{
     ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
     ProviderIntegrationProfile, ProviderInteractionMessageOption, ProviderInteractionMode,
     ProviderInteractionRequestBody, ProviderInteractionResponseBody, ProviderInteractionType,
-    ProviderLaunchConfig, ProviderLaunchProfile, ProviderLaunchStatus, ProviderProcess,
-    ProviderProcessHealth, ProviderProcessStatus, ProviderResponseIntent,
-    ProviderRuntimeContextFact, ProviderRuntimeProjection, ProviderWorkDispatch,
-    ProviderWorkDispatchStatus, RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage,
-    RegistryMessageIntent, Review, SecurityEnforcementLocus, SecurityEnforcementLocusKind,
-    SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus,
-    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection, TeamRecipientKind,
-    TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease,
-    Validate, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition,
-    WorkDelegation, WorkDelegationState, WorkPhase, WorkPriority, WorkRef, WorkResolution,
+    ProviderLaunchProfile, ProviderLaunchStatus, ProviderProcess, ProviderProcessHealth,
+    ProviderProcessStatus, ProviderResponseIntent, ProviderRuntimeContextFact,
+    ProviderRuntimeProjection, ProviderWorkDispatch, ProviderWorkDispatchStatus,
+    RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage, RegistryMessageIntent,
+    Review, SecurityEnforcementLocus, SecurityEnforcementLocusKind, SenderKind, TeamActorKind,
+    TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
+    TeamMemberCloseStatus, TeamMessageProjection, TeamRecipientKind, TeamRecipientRef,
+    TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Validate, Work,
+    WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition, WorkDelegation,
+    WorkDelegationState, WorkPhase, WorkPriority, WorkRef, WorkResolution,
     EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
@@ -107,6 +106,9 @@ use node_team_commands::*;
 #[path = "main_modules/team_provider_profiles.rs"]
 mod team_provider_profiles;
 use team_provider_profiles::*;
+#[path = "main_modules/managed_host_profile.rs"]
+mod managed_host_profile;
+use managed_host_profile::*;
 #[path = "main_modules/provider_native_identity.rs"]
 mod provider_native_identity;
 use provider_native_identity::*;
@@ -140,6 +142,9 @@ use supervisor_control::*;
 #[path = "main_modules/member_work_coordination.rs"]
 mod member_work_coordination;
 use member_work_coordination::*;
+#[path = "main_modules/managed_host_delivery.rs"]
+mod managed_host_delivery;
+use managed_host_delivery::*;
 #[path = "main_modules/member_lifecycle.rs"]
 mod member_lifecycle;
 use member_lifecycle::*;

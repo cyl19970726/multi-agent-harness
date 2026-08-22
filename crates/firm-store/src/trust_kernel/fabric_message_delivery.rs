@@ -571,6 +571,97 @@ impl HarnessStore {
         )
     }
 
+    /// Record an explicit pull/read acknowledgement by a user-driven external
+    /// recipient. This path deliberately skips provider claim and receipt: an
+    /// external interactive runtime has no daemon-owned provider effect to
+    /// prove. The application layer must first verify that the exact recipient
+    /// MemberRun is currently in `external_interactive` mode.
+    pub fn acknowledge_external_message_delivery(
+        &self,
+        context: &MutationContext,
+        delivery_id: &str,
+        updated_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<CanonicalMessageDelivery>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut delivery = self
+            .latest_fabric_side_records_unlocked(
+                &context.execution_space_id,
+                |row: &CanonicalMessageDelivery| row.id.clone(),
+            )?
+            .remove(delivery_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "MessageDelivery not found",
+                    "message_delivery",
+                    delivery_id,
+                    None,
+                )
+            })?;
+        if context.authenticated_actor.kind != ActorKind::AgentMember
+            || delivery.recipient_agent_member_id.as_deref()
+                != Some(context.authenticated_actor.id.as_str())
+            || !matches!(
+                delivery.status,
+                CanonicalMessageDeliveryStatus::Queued | CanonicalMessageDeliveryStatus::Routed
+            )
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "external acknowledge requires the exact queued recipient identity",
+                "message_delivery",
+                delivery_id,
+                Some(delivery.version),
+            ));
+        }
+        delivery.status = CanonicalMessageDeliveryStatus::Acknowledged;
+        delivery.version += 1;
+        delivery.updated_at = updated_at.to_string();
+        let current_cursor = self
+            .latest_trust_envelopes_unlocked(&context.execution_space_id, "subscription_cursor")?
+            .remove(&delivery.subscription_id)
+            .map(|envelope| event_projection::<SubscriptionCursor>(&envelope))
+            .transpose()?;
+        let cursor = SubscriptionCursor {
+            subscription_id: delivery.subscription_id.clone(),
+            recipient_agent_member_id: delivery
+                .recipient_agent_member_id
+                .clone()
+                .expect("recipient checked above"),
+            last_visible_store_sequence: current_cursor
+                .as_ref()
+                .map(|cursor| cursor.last_visible_store_sequence.saturating_add(1))
+                .unwrap_or(1),
+            last_delivered_store_sequence: current_cursor
+                .as_ref()
+                .map(|cursor| cursor.last_delivered_store_sequence.saturating_add(1))
+                .unwrap_or(1),
+            last_read_store_sequence: current_cursor
+                .as_ref()
+                .map(|cursor| cursor.last_read_store_sequence.saturating_add(1))
+                .unwrap_or(1),
+            cursor_revision: current_cursor
+                .as_ref()
+                .map(|cursor| cursor.cursor_revision + 1)
+                .unwrap_or(1),
+            updated_at: updated_at.to_string(),
+        };
+        self.commit_trust_projection_unlocked(
+            context,
+            "external_message_delivery_ack",
+            delivery_id,
+            "externally_acknowledged",
+            serde_json::json!({"delivery_id": delivery_id, "updated_at": updated_at}),
+            &delivery,
+            vec![
+                serde_json::to_value(&delivery)?,
+                serde_json::to_value(cursor)?,
+            ],
+            Vec::new(),
+        )
+    }
+
     /// Operator-requested recovery is executed by the exact current target
     /// NodeDaemon. Replay is resolved before mutable delivery state, and an
     /// acknowledged provider receipt can never be converted into a retry.

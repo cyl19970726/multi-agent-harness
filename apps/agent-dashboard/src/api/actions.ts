@@ -308,13 +308,14 @@ export function closeMember(agentId: string): ActionDescriptor {
 
 /** One member slot of a {@link createTeamRun} request. */
 export interface TeamRunMemberSpec {
+  agentMemberId: string;
   name: string;
   role: string;
   provider: string;
   model?: string;
   effort?: string;
   serviceTier?: string;
-  executionMode?: "codex_app_server" | "kimi_acp" | "claude_agent_sdk" | "pi_rpc";
+  executionMode?: "codex_app_server" | "kimi_acp" | "claude_agent_sdk" | "pi_rpc" | "external_interactive";
   /** Optional member-specific workspace override validated against project_root. */
   worktreeRef?: string;
   /** Paths the member may modify; empty/omitted means read-only. */
@@ -337,12 +338,14 @@ export function createTeamRun(params: {
   agentTeamId: string;
   /** Optional TeamRun workspace; defaults to the selected registered project_root. */
   executionRoot?: string;
+  hostRuntimeMode?: "managed" | "external_interactive";
   members: TeamRunMemberSpec[];
 }): ActionDescriptor {
   const body: Record<string, unknown> = {
     objective: params.objective,
     members: params.members.map((member) => {
       const spec: Record<string, unknown> = {
+        agent_member_id: member.agentMemberId,
         name: member.name,
         role: member.role,
         provider: member.provider,
@@ -378,6 +381,7 @@ export function createTeamRun(params: {
     body.previous_run_id = params.previousRunId;
   }
   body.agent_team_id = params.agentTeamId;
+  body.host_runtime_mode = params.hostRuntimeMode ?? "managed";
   if (params.executionRoot) {
     body.execution_root = params.executionRoot;
   }

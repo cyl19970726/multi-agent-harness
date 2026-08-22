@@ -67,10 +67,17 @@ fn submitted_and_blocked_work_reconcile_exactly_one_host_attention_each() {
         .expect("block Work");
 
     let attentions = store.host_attentions().expect("derived Host attentions");
-    assert_eq!(attentions.len(), 2);
+    assert_eq!(
+        attentions.len(),
+        4,
+        "each ordinary progress transition plus each urgent transition is durable"
+    );
     let review_attention = attentions
         .iter()
-        .find(|attention| attention.work_id == submitted.id)
+        .find(|attention| {
+            attention.work_id == submitted.id
+                && attention.kind == HostAttentionKind::WorkReviewRequested
+        })
         .expect("review attention");
     assert_eq!(
         review_attention.id,
@@ -83,7 +90,9 @@ fn submitted_and_blocked_work_reconcile_exactly_one_host_attention_each() {
     assert_eq!(review_attention.work_version, submitted.version);
     let blocked_attention = attentions
         .iter()
-        .find(|attention| attention.work_id == blocked.id)
+        .find(|attention| {
+            attention.work_id == blocked.id && attention.kind == HostAttentionKind::WorkBlocked
+        })
         .expect("blocked attention");
     assert_eq!(blocked_attention.id, "host-attention-work-event-blocked");
     assert_eq!(blocked_attention.kind, HostAttentionKind::WorkBlocked);
@@ -103,7 +112,7 @@ fn submitted_and_blocked_work_reconcile_exactly_one_host_attention_each() {
     let reconciled = store
         .reconcile_work_host_attentions()
         .expect("repair crash gap from WorkEvent truth");
-    assert_eq!(reconciled.len(), 2);
+    assert_eq!(reconciled.len(), 4);
     let repaired_bytes =
         std::fs::read(root.join("host_attentions.jsonl")).expect("repaired Host-attention ledger");
     assert_eq!(
@@ -111,7 +120,7 @@ fn submitted_and_blocked_work_reconcile_exactly_one_host_attention_each() {
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())
             .count(),
-        2
+        4
     );
     store
         .reconcile_work_host_attentions()

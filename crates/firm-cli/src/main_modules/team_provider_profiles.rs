@@ -7,6 +7,7 @@ use super::*;
 /// `pi_rpc`, and
 /// `external_interactive` declares the user's own already-open interactive
 /// session that Harness never spawns or drives (it polls its own inbox).
+#[derive(Clone)]
 pub(super) struct TeamMemberSpec {
     pub(super) agent_member_id: String,
     pub(super) name: String,
@@ -27,6 +28,70 @@ pub(super) struct TeamMemberSpec {
     /// both members received the full objective including the other's
     /// questions. None keeps the historical behaviour.
     pub(super) initial_work: Option<String>,
+}
+
+pub(super) fn parse_host_runtime_mode(value: Option<&str>) -> CliResult<HostControlMode> {
+    match value.unwrap_or("managed") {
+        "managed" => Ok(HostControlMode::Managed),
+        "external_interactive" | "external" => Ok(HostControlMode::ExternalInteractive),
+        other => Err(CliError::Usage(format!(
+            "unknown host_runtime_mode `{other}` (managed|external_interactive)"
+        ))),
+    }
+}
+
+/// Apply the Team-level Host ownership mode to the one Host AgentMember spec.
+/// Ordinary members keep their independently selected runtime modes.
+pub(super) fn apply_host_runtime_mode(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    team_id: &str,
+    members: &mut [TeamMemberSpec],
+    mode: HostControlMode,
+) -> CliResult<()> {
+    let team = store
+        .agent_teams(execution_space_id)?
+        .into_iter()
+        .find(|team| team.id == team_id)
+        .ok_or_else(|| CliError::Usage(format!("team not found: {team_id}")))?;
+    let matching = members
+        .iter()
+        .enumerate()
+        .filter_map(|(index, member)| {
+            (member.agent_member_id == team.host_agent_id).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let [host_index] = matching.as_slice() else {
+        return Err(CliError::Usage(format!(
+            "AgentTeam {team_id} requires exactly one Host AgentMember runtime spec; found {}",
+            matching.len()
+        )));
+    };
+    let host = &mut members[*host_index];
+    match mode {
+        HostControlMode::Managed => {
+            if host.execution_mode.as_deref() == Some(EXECUTION_MODE_EXTERNAL_INTERACTIVE) {
+                host.execution_mode = None;
+            }
+        }
+        HostControlMode::ExternalInteractive => {
+            host.execution_mode = Some(EXECUTION_MODE_EXTERNAL_INTERACTIVE.to_string());
+            host.resume_native_session_id = None;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn configure_host_runtime_mode(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    team_id: &str,
+    members: &mut [TeamMemberSpec],
+    requested_mode: Option<&str>,
+) -> CliResult<HostControlMode> {
+    let mode = parse_host_runtime_mode(requested_mode)?;
+    apply_host_runtime_mode(store, execution_space_id, team_id, members, mode)?;
+    Ok(mode)
 }
 
 pub(super) fn team_member_specs_from_definition(
@@ -511,6 +576,7 @@ pub(super) fn apply_permission_enforcement_to_profile(
     Ok(())
 }
 
+/// Resolve the exact permission ceiling for one TeamRun participant.
 pub(super) fn agent_session_control_state_for_profile(
     profile: Option<&ProviderIntegrationProfile>,
     daemon_id: &str,

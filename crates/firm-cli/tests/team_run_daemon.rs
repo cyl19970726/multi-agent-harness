@@ -25,6 +25,7 @@ struct RuntimeFixture {
     execution_space_id: String,
     node_id: String,
     team_id: String,
+    host_id: String,
 }
 
 fn success(output: &std::process::Output, context: &str) {
@@ -136,6 +137,7 @@ fn bootstrap_runtime(home: &TempHome, name: &str) -> RuntimeFixture {
         execution_space_id,
         node_id,
         team_id,
+        host_id,
     }
 }
 
@@ -301,6 +303,10 @@ fn create_run(
             &fixture.team_id,
             "--objective",
             &format!("NodeDaemon run {name}"),
+            "--host-runtime-mode",
+            "external_interactive",
+            "--member",
+            &format!("{}:host:codex/external_interactive", fixture.host_id),
             "--member",
             &format!("{name}:implementer:kimi@crates/a#Wait for daemon inspection"),
         ],

@@ -364,10 +364,28 @@ pub(super) fn canonical_member_run_admission(
 }
 
 pub(super) fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Value {
+    let host_member_run = created.member_runs.iter().find(|member| {
+        created
+            .team_run
+            .host_actor
+            .as_ref()
+            .is_some_and(|host| member.agent_member_id == host.id)
+    });
+    let managed = created.team_run.host_control_mode == HostControlMode::Managed;
     serde_json::json!({
         "team_run": created.team_run,
         "member_runs": created.member_runs,
         "works": created.works,
+        "host_runtime": {
+            "mode": if managed { "managed" } else { "external_interactive" },
+            "host_member_run_id": host_member_run.map(|member| member.id.as_str()),
+            "delivery_guarantee": if managed { "daemon_managed" } else { "pull_only" },
+            "runtime_residency": if managed { "managed_member_run" } else { "detached_user_driven" },
+            "workspace_policy": if managed { "provider_read_only_or_distinct_host_workspace" } else { "user_managed" },
+            "workspace_requirement": (managed && host_member_run.is_some_and(|member| member.provider == "kimi"))
+                .then_some("explicit_distinct_provider_cwd_hint"),
+            "warning": (!managed).then_some("External Host must read or wait for inbox updates"),
+        },
     })
 }
 
@@ -382,6 +400,7 @@ pub(super) fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Val
 #[cfg(test)]
 pub(super) fn ensure_legacy_unit_test_team_binding(
     store: &HarnessStore,
+    host_spec: Option<&TeamMemberSpec>,
 ) -> CliResult<(ProjectContext, String)> {
     // This compatibility fixture is compiled only into the `firm` unit-test
     // binary. Production and integration-test command paths must always supply
@@ -459,6 +478,9 @@ pub(super) fn ensure_legacy_unit_test_team_binding(
         .iter()
         .any(|member| member.id == "host")
     {
+        let host_provider = host_spec
+            .map(|member| member.provider.as_str())
+            .unwrap_or("codex");
         store.create_trust_agent_member(
             &harness_core::agentfirm_api::MutationContext {
                 execution_space_id: SPACE_ID.into(),
@@ -476,10 +498,14 @@ pub(super) fn ensure_legacy_unit_test_team_binding(
                 role: "host".into(),
                 capabilities: Vec::new(),
                 skill_refs: Vec::new(),
-                provider_profile_ref: Some("codex".into()),
+                provider_profile_ref: Some(host_provider.into()),
                 model_preference: None,
                 workspace_policy: "managed-worktree".into(),
-                permission_ceiling: harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite,
+                permission_ceiling: if matches!(host_provider, "kimi" | "pi") {
+                    harness_core::agentfirm_api::PermissionCeiling::FullAccess
+                } else {
+                    harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite
+                },
                 organization_status:
                     harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active,
                 version: 1,
@@ -585,7 +611,10 @@ pub(super) fn ensure_unit_test_canonical_members(
                     authenticated_actor: creator.clone(),
                     authority_actor: None,
                     command_name: "unit_test.agent_member.create".into(),
-                    idempotency_key: format!("unit-test-member:{}", member.agent_member_id),
+                    idempotency_key: format!(
+                        "unit-test-member:{execution_space_id}:{}",
+                        member.agent_member_id
+                    ),
                     expected_version: 0,
                     request_fingerprint: None,
                 },
@@ -628,7 +657,7 @@ pub(super) fn ensure_unit_test_canonical_members(
                     authority_actor: None,
                     command_name: "unit_test.team_membership.join".into(),
                     idempotency_key: format!(
-                        "unit-test-membership:{team_id}:{}",
+                        "unit-test-membership:{execution_space_id}:{team_id}:{}",
                         member.agent_member_id
                     ),
                     expected_version: 0,
@@ -743,6 +772,7 @@ pub(super) fn create_team_run(
     budget_limit_usd: Option<f64>,
     host_surface: &str,
     host_thread_id: Option<String>,
+    host_control_mode: HostControlMode,
     previous_run_id: Option<String>,
     agent_team_id: Option<String>,
     mission_id: Option<String>,
@@ -786,7 +816,12 @@ pub(super) fn create_team_run(
         && mission_id.is_none()
         && wave_id.is_none()
     {
-        Some(ensure_legacy_unit_test_team_binding(store)?)
+        Some(ensure_legacy_unit_test_team_binding(
+            store,
+            members
+                .iter()
+                .find(|member| member.agent_member_id == "host"),
+        )?)
     } else {
         None
     };
@@ -907,6 +942,35 @@ pub(super) fn create_team_run(
         member_run_ids.push(member_run.id.clone());
         member_runs.push(member_run);
     }
+    let host_members = member_runs
+        .iter()
+        .filter(|runtime| runtime.agent_member_id == team.host_agent_id)
+        .collect::<Vec<_>>();
+    let [host_member] = host_members.as_slice() else {
+        return Err(CliError::Usage(format!(
+            "AgentTeam {} requires exactly one Host MemberRun; found {}",
+            team.id,
+            host_members.len()
+        )));
+    };
+    match host_control_mode {
+        HostControlMode::Managed if host_member.is_external_interactive() => {
+            return Err(CliError::Usage(
+                "managed Host must use the canonical Team provider runtime".to_string(),
+            ));
+        }
+        HostControlMode::ExternalInteractive if !host_member.is_external_interactive() => {
+            return Err(CliError::Usage(
+                "external_interactive Host must use an external_interactive MemberRun".to_string(),
+            ));
+        }
+        _ => {}
+    }
+    if host_control_mode == HostControlMode::Managed && host_thread_id.is_some() {
+        return Err(CliError::Usage(
+            "managed Host uses its exact AgentSession; host_thread_id is external-only".to_string(),
+        ));
+    }
     let team_run = AgentTeamRun {
         id: run_id.clone(),
         agent_team_id,
@@ -915,8 +979,13 @@ pub(super) fn create_team_run(
         previous_run_id,
         host_surface: host_surface.to_string(),
         host_thread_id,
-        host_actor: Some(compatibility_team_actor("host", "team_run_create")),
-        host_control_mode: HostControlMode::External,
+        host_actor: Some(TeamActorRef {
+            kind: TeamActorKind::Host,
+            id: team.host_agent_id.clone(),
+            display_name: Some(host_member.name.clone()),
+            authn_source: Some("team_membership:host".to_string()),
+        }),
+        host_control_mode,
         objective: objective.to_string(),
         execution_root: Some(execution_root),
         status: TeamRunStatus::Planning,
@@ -996,7 +1065,9 @@ pub(super) fn create_team_run(
                     eligible_member_ids: Vec::new(),
                     prerequisite_work_ids: Vec::new(),
                     priority: WorkPriority::Normal,
-                    created_by_actor: compatibility_team_actor("host", "team_run_create"),
+                    created_by_actor: team_run.host_actor.clone().ok_or_else(|| {
+                        CliError::Usage("TeamRun has no exact Host AgentMember actor".to_string())
+                    })?,
                     result_summary: None,
                     blocker_reason: None,
                     artifact_refs: Vec::new(),
@@ -1008,7 +1079,9 @@ pub(super) fn create_team_run(
                 },
                 WorkCommandContext {
                     event_id: generated_id("work-event"),
-                    performed_by_actor: compatibility_team_actor("host", "team_run_create"),
+                    performed_by_actor: team_run.host_actor.clone().ok_or_else(|| {
+                        CliError::Usage("TeamRun has no exact Host AgentMember actor".to_string())
+                    })?,
                     authority_actor: None,
                     causation_ref: None,
                     idempotency_key: generated_id("work-command"),
@@ -1121,7 +1194,9 @@ pub(super) fn add_team_run_member(
                     eligible_member_ids: Vec::new(),
                     prerequisite_work_ids: Vec::new(),
                     priority: WorkPriority::Normal,
-                    created_by_actor: compatibility_team_actor("host", "add_team_run_member"),
+                    created_by_actor: next.host_actor.clone().ok_or_else(|| {
+                        CliError::Usage("TeamRun has no exact Host AgentMember actor".to_string())
+                    })?,
                     result_summary: None,
                     blocker_reason: None,
                     artifact_refs: Vec::new(),
@@ -1133,7 +1208,9 @@ pub(super) fn add_team_run_member(
                 },
                 WorkCommandContext {
                     event_id: generated_id("work-event"),
-                    performed_by_actor: compatibility_team_actor("host", "add_team_run_member"),
+                    performed_by_actor: next.host_actor.clone().ok_or_else(|| {
+                        CliError::Usage("TeamRun has no exact Host AgentMember actor".to_string())
+                    })?,
                     authority_actor: None,
                     causation_ref: None,
                     idempotency_key: generated_id("work-command"),

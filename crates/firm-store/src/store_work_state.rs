@@ -223,6 +223,7 @@ impl HarnessStore {
         }
         require_host_actor(&context.performed_by_actor)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
+        self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
         if current.github_links == github_links {
             return Ok(current);
         }
@@ -397,6 +398,7 @@ impl HarnessStore {
         }
         require_host_actor(&context.performed_by_actor)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
+        self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
         if current.phase != WorkPhase::Review || current.condition != WorkCondition::Normal {
             return Err(StoreError::Conflict(format!(
                 "work {work_id} must await Host acceptance"
@@ -440,6 +442,7 @@ impl HarnessStore {
         }
         require_host_actor(&context.performed_by_actor)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
+        self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
         if current.is_terminal() {
             return Err(StoreError::Conflict(format!(
                 "work {work_id} is already terminal"
@@ -541,6 +544,7 @@ impl HarnessStore {
         }
         require_host_actor(&context.performed_by_actor)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
+        self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
         if (current.phase, current.condition) != required_lifecycle {
             return Err(StoreError::Conflict(format!(
                 "work {work_id} is not in required state"
@@ -609,7 +613,13 @@ impl HarnessStore {
                     )));
                 }
             }
-            None => require_host_actor(&context.performed_by_actor)?,
+            None => {
+                require_host_actor(&context.performed_by_actor)?;
+                self.require_exact_team_run_host_actor(
+                    &context.performed_by_actor,
+                    &current.team_run_id,
+                )?;
+            }
         }
         self.ensure_deliveries_reassignable_unlocked(&current)?;
         let mut next = current.clone();
@@ -831,6 +841,11 @@ impl HarnessStore {
                                     claimed_host_lease_id: None,
                                     claimed_host_lease_generation: None,
                                     claimed_host_lease_owner_id: None,
+                                    claimed_recipient_member_run_id: None,
+                                    claimed_recipient_session_id: None,
+                                    claimed_recipient_session_generation: None,
+                                    claimed_node_daemon_id: None,
+                                    claimed_node_daemon_generation: None,
                                     provider_receipt_id: None,
                                     last_failure_reason: None,
                                     created_at: prereq_created_at.clone(),

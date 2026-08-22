@@ -92,14 +92,18 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
             "objective":"Canonical Team Message journey",
             "host_surface":"codex-app",
             "host_thread_id":"canonical-message-host-thread",
-            "members":[{"agent_member_id":member_id,"name":"member","role":"builder","provider":"codex"}]
+            "host_runtime_mode":"external_interactive",
+            "members":[
+                {"agent_member_id":host_id,"name":"host","role":"host","provider":"codex"},
+                {"agent_member_id":member_id,"name":"member","role":"builder","provider":"codex"}
+            ]
         }),
     );
     assert_eq!(status, 200, "TeamRun: {created_run}");
     let run_id = created_run["result"]["team_run"]["id"]
         .as_str()
         .expect("TeamRun id");
-    let member_run_id = created_run["result"]["member_runs"][0]["id"]
+    let member_run_id = created_run["result"]["member_runs"][1]["id"]
         .as_str()
         .expect("MemberRun id");
 
@@ -122,27 +126,25 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
     let sessions = store
         .fabric_agent_sessions(&space_id)
         .expect("AgentSessions");
-    for identity in [host_id, member_id] {
-        let current = sessions
+    assert!(
+        sessions
             .iter()
-            .filter(|session| {
-                session.agent_member_id == identity
-                    && session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(current.len(), 1, "one current session for {identity}");
-        assert_eq!(current[0].node_daemon_id, lease.daemon_id);
-        assert_eq!(current[0].node_daemon_generation, lease.generation);
-    }
-
-    let host_session = sessions
+            .all(|session| session.agent_member_id != host_id),
+        "external Host must not materialize an AgentSession"
+    );
+    let member_session = sessions
         .iter()
-        .find(|session| session.agent_member_id == host_id)
-        .expect("Host AgentSession");
+        .find(|session| {
+            session.agent_member_id == member_id
+                && session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
+        })
+        .expect("Member AgentSession");
+    assert_eq!(member_session.node_daemon_id, lease.daemon_id);
+    assert_eq!(member_session.node_daemon_generation, lease.generation);
     let space_store_root = home.spaces_dir().join(&space_id);
     let before_hostile_runtime = ledger_digest(&space_store_root);
     let hostile_headers = [
-        ("X-AgentFirm-Token", MEMBER_TOKEN),
+        ("X-AgentFirm-Token", TOKEN),
         ("Idempotency-Key", "hostile-sibling-runtime-control"),
         ("If-Match", "0"),
     ];
@@ -152,8 +154,8 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
             "command":"stop_session",
             "expires_unix_ms":unix_ms()+30_000,
             "payload":{
-                "session_id":host_session.id,
-                "session_generation":host_session.runtime_generation
+                "session_id":member_session.id,
+                "session_generation":member_session.runtime_generation
             }
         }),
         &hostile_headers,
@@ -194,10 +196,6 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         "caller-selected capability or AgentSession payload must have byte-zero side effects"
     );
 
-    let member_session = sessions
-        .iter()
-        .find(|session| session.agent_member_id == member_id)
-        .expect("Member AgentSession");
     let recovery_payload = serde_json::json!({
         "session_id":member_session.id,
         "session_generation":member_session.runtime_generation,
@@ -478,10 +476,19 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         assert_eq!(message.source_node_daemon_id, lease.daemon_id);
         assert_eq!(message.source_authority_generation, lease.generation);
         assert_eq!(message.sender_actor_ref.id, sender);
-        assert!(
-            message.sender_session_id.is_some(),
-            "agent-authored Message must freeze the exact sender session: {message:?}"
-        );
+        if sender == host_id {
+            assert!(message.sender_agent_member_id.is_none());
+            assert!(
+                message.sender_session_id.is_none(),
+                "external Host authoring must not fabricate a sender session: {message:?}"
+            );
+        } else {
+            assert_eq!(message.sender_agent_member_id.as_deref(), Some(member_id));
+            assert!(
+                message.sender_session_id.is_some(),
+                "managed Member authoring must freeze the exact sender session: {message:?}"
+            );
+        }
     }
 
     let host_delivery = store

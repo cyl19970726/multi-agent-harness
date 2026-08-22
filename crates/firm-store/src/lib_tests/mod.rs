@@ -14,6 +14,9 @@ use firm_core::{
 
 use super::*;
 
+mod fixtures;
+use fixtures::*;
+
 fn lock_policy_test_store(label: &str) -> HarnessStore {
     let root = std::env::temp_dir().join(format!(
         "firm-store-lock-policy-{label}-{}-{}",
@@ -38,78 +41,6 @@ fn hold_store_lock(store: &HarnessStore) -> File {
         .expect("open store lock");
     lock_file_exclusive(&file).expect("hold store lock");
     file
-}
-
-fn provider_compatibility_admission(
-    id: &str,
-    execution_mode: &str,
-    adapter_contract_version: &str,
-) -> ProviderCompatibilityAdmission {
-    ProviderCompatibilityAdmission {
-        id: id.to_string(),
-        project_id: "project-1".to_string(),
-        store_id: "store-1".to_string(),
-        provider: "claude".to_string(),
-        execution_mode: execution_mode.to_string(),
-        provider_version: "2.1.220".to_string(),
-        adapter_contract_version: adapter_contract_version.to_string(),
-        policy: firm_core::ProviderCompatibilityAdmissionPolicy::Strict,
-        actor: "operator-1".to_string(),
-        evidence_refs: vec!["evidence-1".to_string()],
-        admitted_at: "unix-ms:1".to_string(),
-        lifecycle: ProviderCompatibilityAdmissionLifecycle::Active,
-        predecessor_admission_id: None,
-        reason: None,
-    }
-}
-
-fn provider_compatibility_test_profile() -> ProviderIntegrationProfile {
-    ProviderIntegrationProfile {
-        agent_runtime_provider: Some(firm_core::AgentRuntimeProvider("kimi".into())),
-        model_route: None,
-        provider: "kimi".into(),
-        execution_mode: "kimi_acp".into(),
-        execution_driver: MemberExecutionDriver::HostDriven,
-        provider_version: Some("2.1.220".into()),
-        adapter_contract_version: Some("kimi-acp-v1".into()),
-        reviewed_provider_versions: Vec::new(),
-        compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
-        adapter_reviewed_at: None,
-        compatibility_note: None,
-        interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
-        ordinary_message_boundary: OrdinaryMessageBoundary::InTurn,
-        plan_mode: ProviderFeatureMode::Emulated,
-        goal_mode: ProviderFeatureMode::Emulated,
-        tool_event_fidelity: ProviderEventFidelity::Structured,
-        artifact_event_fidelity: ProviderEventFidelity::Structured,
-        supports_cancel: true,
-        supports_resume: true,
-        observes_native_subagents: false,
-        observes_background_tasks: false,
-        thinking_transient_only: true,
-        control_topology: firm_core::ControlTopology::default(),
-        composition_fingerprint: None,
-        capability_fingerprint: None,
-        capability_bindings: Vec::new(),
-        binding_admission: firm_core::ProviderBindingAdmission::Failed,
-        adapter_bridge_revision: None,
-        security_enforcement_locus: firm_core::SecurityEnforcementLocus::default(),
-    }
-}
-
-fn provider_admission_test_root(label: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "firm-store-provider-admission-{label}-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ))
-}
-
-fn provider_admission_test_store(label: &str) -> HarnessStore {
-    HarnessStore::new(provider_admission_test_root(label))
-        .with_provider_compatibility_scope("project-1", "store-1")
 }
 
 fn team_test_root(name: &str) -> PathBuf {
@@ -209,6 +140,30 @@ fn seed_current_team_run_fixture(
     };
 
     const SPACE: &str = "unit-test-space";
+    let mut run = run.clone();
+    let mut members = members.to_vec();
+    let host = members
+        .first_mut()
+        .expect("current TeamRun fixtures must declare an exact Host MemberRun");
+    if run
+        .host_actor
+        .as_ref()
+        .is_none_or(|actor| actor.kind != TeamActorKind::Host || actor.id != host.agent_member_id)
+    {
+        run.host_actor = Some(TeamActorRef {
+            kind: TeamActorKind::Host,
+            id: host.agent_member_id.clone(),
+            display_name: Some(host.name.clone()),
+            authn_source: Some("test_team_membership:host".into()),
+        });
+    }
+    if run.host_control_mode == firm_core::HostControlMode::ExternalInteractive {
+        host.provider_profile = Some(external_interactive_test_profile(&host.provider));
+        host.native_session = None;
+    } else if host.is_external_interactive() {
+        host.provider_profile = None;
+    }
+    run.member_run_ids = members.iter().map(|member| member.id.clone()).collect();
     store.init().expect("initialize current TeamRun fixture");
     if !store
         .latest_execution_nodes()
@@ -260,7 +215,7 @@ fn seed_current_team_run_fixture(
         .iter()
         .map(|member| member.agent_member_id.clone())
         .collect::<Vec<_>>();
-    for member in members {
+    for member in &members {
         if !store
             .trust_agent_members(SPACE)
             .expect("read AgentMembers")
@@ -407,7 +362,7 @@ fn seed_current_team_run_fixture(
         .map(|member| canonical_member_admission_for_test(SPACE, member))
         .collect::<Vec<_>>();
     store
-        .create_team_run_with_member_runs_from_agent_team(run, SPACE, members, &canonical)
+        .create_team_run_with_member_runs_from_agent_team(&run, SPACE, &members, &canonical)
         .expect("create coherent current TeamRun fixture");
 }
 
@@ -416,7 +371,8 @@ fn seed_host_attention_fixture(
     run_id: &str,
     host_thread_id: Option<&str>,
 ) -> (AgentTeamRun, ProviderRuntimeProjection, Work) {
-    let run = AgentTeamRun {
+    let host_agent_member_id = format!("agent-{run_id}");
+    let mut run = AgentTeamRun {
         id: run_id.into(),
         agent_team_id: format!("team-{run_id}"),
         execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
@@ -424,8 +380,13 @@ fn seed_host_attention_fixture(
         previous_run_id: None,
         host_surface: "codex-app".into(),
         host_thread_id: host_thread_id.map(str::to_string),
-        host_actor: None,
-        host_control_mode: Default::default(),
+        host_actor: Some(TeamActorRef {
+            kind: TeamActorKind::Host,
+            id: host_agent_member_id.clone(),
+            display_name: Some("Fixture Host".into()),
+            authn_source: Some("test_team_membership:host".into()),
+        }),
+        host_control_mode: firm_core::HostControlMode::ExternalInteractive,
         objective: "prove exact Host attention".into(),
         execution_root: None,
         status: TeamRunStatus::Running,
@@ -435,11 +396,11 @@ fn seed_host_attention_fixture(
         updated_at: "unix-ms:1".into(),
         completed_at: None,
     };
-    let member = ProviderRuntimeProjection {
+    let mut member = ProviderRuntimeProjection {
         id: format!("member-{run_id}"),
         team_run_id: run_id.into(),
         slot_id: None,
-        agent_member_id: format!("agent-{run_id}"),
+        agent_member_id: host_agent_member_id.clone(),
         name: "builder".into(),
         role: "builder".into(),
         provider: "kimi".into(),
@@ -461,6 +422,8 @@ fn seed_host_attention_fixture(
         zero_output_streak: 0,
         last_consumed_work_version: None,
     };
+    member.provider_profile = Some(external_interactive_test_profile(&member.provider));
+    run.member_run_ids = vec![member.id.clone()];
     seed_current_team_run_fixture(store, &run, std::slice::from_ref(&member));
     let work = store
         .insert_work(
@@ -485,7 +448,7 @@ fn seed_host_attention_fixture(
                 created_by_member_id: None,
                 created_by_actor: TeamActorRef {
                     kind: TeamActorKind::Host,
-                    id: "host".into(),
+                    id: host_agent_member_id.clone(),
                     display_name: None,
                     authn_source: None,
                 },
@@ -502,7 +465,7 @@ fn seed_host_attention_fixture(
                 event_id: format!("work-event-{run_id}"),
                 performed_by_actor: TeamActorRef {
                     kind: TeamActorKind::Host,
-                    id: "host".into(),
+                    id: host_agent_member_id,
                     display_name: None,
                     authn_source: None,
                 },
@@ -541,6 +504,11 @@ fn seed_test_host_attention(
         claimed_host_lease_id: None,
         claimed_host_lease_generation: None,
         claimed_host_lease_owner_id: None,
+        claimed_recipient_member_run_id: None,
+        claimed_recipient_session_id: None,
+        claimed_recipient_session_generation: None,
+        claimed_node_daemon_id: None,
+        claimed_node_daemon_generation: None,
         provider_receipt_id: None,
         last_failure_reason: None,
         created_at: created_at.into(),
@@ -907,14 +875,23 @@ fn work_test_fixture(
         execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
         project_binding_id: "project-test".into(),
         previous_run_id: None,
-        host_surface: "codex-app".into(),
-        host_thread_id: Some(format!("host-{name}")),
-        host_actor: None,
-        host_control_mode: Default::default(),
+        host_surface: "managed".into(),
+        host_thread_id: None,
+        host_actor: Some(firm_core::TeamActorRef {
+            kind: firm_core::TeamActorKind::Host,
+            id: "agent-host".into(),
+            display_name: Some("Host".into()),
+            authn_source: Some("team_membership:host".into()),
+        }),
+        host_control_mode: firm_core::HostControlMode::Managed,
         objective: "prove Works".into(),
         execution_root: None,
         status: TeamRunStatus::Running,
-        member_run_ids: vec![format!("mr-{name}-a"), format!("mr-{name}-b")],
+        member_run_ids: vec![
+            format!("mr-{name}-host"),
+            format!("mr-{name}-a"),
+            format!("mr-{name}-b"),
+        ],
         budget_limit_usd: None,
         created_at: "unix-ms:1".into(),
         updated_at: "unix-ms:1".into(),
@@ -946,9 +923,13 @@ fn work_test_fixture(
         zero_output_streak: 0,
         last_consumed_work_version: None,
     };
+    let mut host = member("host");
+    host.agent_member_id = "agent-host".into();
+    host.name = "Host".into();
+    host.role = "host".into();
     let member_a = member("a");
     let member_b = member("b");
-    seed_current_team_run_fixture(&store, &run, &[member_a.clone(), member_b.clone()]);
+    seed_current_team_run_fixture(&store, &run, &[host, member_a.clone(), member_b.clone()]);
     (root, store, run, member_a, member_b)
 }
 
@@ -957,7 +938,7 @@ fn host_work_context(id: &str, key: &str, at: &str) -> WorkCommandContext {
         event_id: id.into(),
         performed_by_actor: firm_core::TeamActorRef {
             kind: firm_core::TeamActorKind::Host,
-            id: "host".into(),
+            id: "agent-host".into(),
             display_name: Some("Host".into()),
             authn_source: Some("test".into()),
         },
@@ -967,6 +948,15 @@ fn host_work_context(id: &str, key: &str, at: &str) -> WorkCommandContext {
         created_at: at.into(),
         duplicate_ok: false,
     }
+}
+
+fn run_host_work_context(run: &AgentTeamRun, id: &str, key: &str, at: &str) -> WorkCommandContext {
+    let mut context = host_work_context(id, key, at);
+    context.performed_by_actor = run
+        .host_actor
+        .clone()
+        .expect("current TeamRun fixture has exact Host actor");
+    context
 }
 
 fn member_work_context(member_run_id: &str, id: &str, key: &str, at: &str) -> WorkCommandContext {
@@ -1178,7 +1168,10 @@ fn delegation_test_fixture(
             updated_at: "unix-ms:1".into(),
         };
         let memberships = [
-            (host_id, firm_core::agentfirm_api::TeamMembershipRole::Host),
+            (
+                host_id.clone(),
+                firm_core::agentfirm_api::TeamMembershipRole::Host,
+            ),
             (
                 agent_id,
                 firm_core::agentfirm_api::TeamMembershipRole::Member,
@@ -1217,6 +1210,11 @@ fn delegation_test_fixture(
                 memberships,
             )
             .expect("create Team and durable Memberships");
+        let mut host_runtime = member.clone();
+        host_runtime.id = format!("member-{name}-{suffix}-host");
+        host_runtime.agent_member_id = host_id.clone();
+        host_runtime.name = format!("Host {suffix}");
+        host_runtime.role = "host".into();
         let run = AgentTeamRun {
             id: run_id,
             agent_team_id: team_id,
@@ -1225,23 +1223,35 @@ fn delegation_test_fixture(
             previous_run_id: None,
             host_surface: "test".into(),
             host_thread_id: None,
-            host_actor: None,
-            host_control_mode: Default::default(),
+            host_actor: Some(TeamActorRef {
+                kind: TeamActorKind::Host,
+                id: host_id,
+                display_name: Some(format!("Host {suffix}")),
+                authn_source: Some("test_team_membership:host".into()),
+            }),
+            host_control_mode: firm_core::HostControlMode::Managed,
             objective: format!("Run Team {suffix}"),
             execution_root: None,
             status: TeamRunStatus::Running,
-            member_run_ids: vec![member.id.clone()],
+            member_run_ids: vec![host_runtime.id.clone(), member.id.clone()],
             budget_limit_usd: None,
             created_at: "unix-ms:1".into(),
             updated_at: "unix-ms:1".into(),
             completed_at: None,
         };
+        let runtimes = [host_runtime, member.clone()];
+        let canonical = runtimes
+            .iter()
+            .map(|runtime| canonical_member_admission_for_test("delegation-test-space", runtime))
+            .collect::<Vec<_>>();
         store
-            .legacy_create_team_run_projection_for_test(&run, "delegation-test-space")
-            .expect("create TeamRun");
-        store
-            .legacy_import_append_member_run_projection(&member)
-            .expect("append ProviderRuntimeProjection");
+            .create_team_run_with_member_runs_from_agent_team(
+                &run,
+                "delegation-test-space",
+                &runtimes,
+                &canonical,
+            )
+            .expect("create current TeamRun and exact Host MemberRun");
         rows.push((run, member));
     }
     let (run_a, member_a) = rows.remove(0);
@@ -1405,6 +1415,7 @@ mod host_attention_is_durable_exact_bound_and_semantically_separate;
 mod host_binding_interactive_suppresses_dispatch_and_atomic_batch_has_one_winner;
 mod host_binding_lease_acquire_renew_release_takeover_and_stale_fence;
 mod host_binding_stale_attention_is_derived_and_idempotent;
+mod host_mode_transition_is_closed_generation_fenced_and_atomic;
 #[cfg(any())]
 mod host_rebind_fences_old_runtime_and_preserves_provider_receipt_evidence;
 mod informational_mail_neither_fences_handoff_nor_requires_response;

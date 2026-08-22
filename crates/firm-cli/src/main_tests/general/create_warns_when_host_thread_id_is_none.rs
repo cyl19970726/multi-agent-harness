@@ -14,12 +14,13 @@ fn create_warns_when_host_thread_id_is_none() {
         None,
         "test-surface",
         None, // no host_thread_id → L0 warning
+        HostControlMode::Managed,
         None,
         None,
         None,
         None,
         &[TeamMemberSpec {
-            agent_member_id: "agent-only-member-a".into(),
+            agent_member_id: "host".into(),
             name: "OnlyMember".into(),
             role: "sole".into(),
             provider: "codex".into(),

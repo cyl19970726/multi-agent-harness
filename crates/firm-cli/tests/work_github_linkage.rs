@@ -209,6 +209,10 @@ fn github_fixture(tag: &str) -> (TempHome, String, String, String) {
             "team-github-fixture",
             "--objective",
             "GitHub linkage fixture",
+            "--host-runtime-mode",
+            "external_interactive",
+            "--member",
+            "agent-github-host:host:codex/external_interactive",
             "--member",
             "github-member:implementer:kimi",
         ],
@@ -224,8 +228,12 @@ fn github_fixture(tag: &str) -> (TempHome, String, String, String) {
         &project_id,
         &["team-run", "status", "--id", &run_id, "--json"],
     );
-    let member_id = status["members"][0]["member_run"]["id"]
-        .as_str()
+    let member_id = status["members"]
+        .as_array()
+        .expect("members")
+        .iter()
+        .find(|member| member["member_run"]["agent_member_id"] == "github-member")
+        .and_then(|member| member["member_run"]["id"].as_str())
         .expect("member run id")
         .to_string();
     (home, project_id, run_id, member_id)

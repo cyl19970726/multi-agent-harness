@@ -11,6 +11,7 @@ fn canonical_team_message_routes_member_to_host_identity_without_special_inbox_a
             "objective": "Exercise native Host inbox",
             "host_surface": "codex-app",
             "host_thread_id": "codex-thread-http-a",
+            "host_runtime_mode": "external_interactive",
             "members": [
                 {"name": "member-a", "role": "builder", "provider": "codex"}
             ]

@@ -1,8 +1,9 @@
 # Provider Runtime Package Crosswalk
 
 ```text
-status: DEV-58 implementation crosswalk; target entries are non-operative until landed
-issue: https://github.com/cyl19970726/multi-agent-harness/issues/499
+status: DEV-58 landed; DEV-59 Host convergence amendment
+issues: https://github.com/cyl19970726/multi-agent-harness/issues/499,
+  https://github.com/cyl19970726/multi-agent-harness/issues/501
 starting_revision: 68fd9d33178f48d107a3a28d8580079263ff3e55
 ```
 
@@ -15,8 +16,8 @@ Workflow records remain export, verify, and restore-read evidence only.
 | Surface | Current implementation truth at the starting revision | Target owner |
 | --- | --- | --- |
 | Agent Team runtime | Persistent `codex_app_server`, `claude_agent_sdk`, `kimi_acp`, and `pi_rpc` bindings in `firm-cli` | provider packages implementing `firm-runtime-contract`, driven by a provider-neutral supervisor |
-| Interactive Host | Provider-native Host session outside a Harness transcript ledger | Host/application composition; no Team fallback |
-| Headless Host | Kimi ACP exact-session resume and Claude CLI exact-session resume in `host_binding`; Codex is rejected because read-only resume is not proven; Pi is unsupported | optional `HostRuntimeBinding` per provider, owned separately from Team lifecycle |
+| Managed Team Host | Same persistent `codex_app_server`, `claude_agent_sdk`, `kimi_acp`, or `pi_rpc` binding as any managed participant | ordinary Team runtime binding, driven through the exact Host MemberRun/AgentSession by NodeDaemon |
+| External interactive Host | User-owned provider session; detached AgentMember runtime with durable pull-only inbox | explicit `ExternalHostTransportBinding` compatibility transport; never a managed receipt source |
 | Direct `/v1/agents/*` delivery | Still-active compatibility routes use the old one-shot provider registry and message-delivery ledger | explicit compatibility application port until a separate accepted retirement decision; never represented as Dynamic Workflow or a Team binding |
 | Historical provider modes | `codex_exec`, `claude_cli`, `kimi_exec`, and old Pi records remain readable in profiles/native-session metadata | historical decoder only, except the exact current Host/direct-delivery call sites named above |
 | Dynamic Workflow | Runtime, crate, writers, commands, API, Dashboard, plugin, Skill, and examples are retired | no target runtime owner |
@@ -35,14 +36,14 @@ acceptance update.
 | `runtime_adapter.rs` | Team wake/claim/cycle/settle loop plus runtime control | current Team durable port composition | provider-facing language lives in `firm-runtime-contract`; monotonic round progression lives in `firm-runtime-supervisor`; provider-neutral round classification, control acknowledgement, and circuit-breaker policy live in `firm-application`; CLI code is the durable Work/Message/Store/RuntimeCommand port and executable wiring |
 | `runtime_adapter_capabilities.rs` | Team runtime selector, capability report, permission compilation | current catalog plus provider policy mixed together | canonical descriptor extracted to `firm-application`; provider-specific capability reports and permission compilers remain to move |
 | `provider_adapter.rs` | current provider-native control seam and standalone NodeSession control | current control contract mixed with implementations | runtime contract/application control plus provider bindings |
-| `provider_adapters.rs` | old Codex/Claude/Kimi/Pi one-shot registry | current compatibility delivery and formerly the Claude Host path; historical names; unsupported Pi stubs | renamed and narrowed to the explicit `CompatibilityDeliveryBinding` registry for Codex/Claude/Kimi; Pi's unsupported effect stub deleted; Claude Host bypasses this registry through its typed Host binding |
+| `provider_adapters.rs` | old Codex/Claude/Kimi/Pi one-shot registry | current compatibility delivery and formerly the Claude Host path; historical names; unsupported Pi stubs | renamed and narrowed to the explicit `CompatibilityDeliveryBinding` registry for Codex/Claude/Kimi; Pi's unsupported effect stub deleted; external Claude Host bypasses this registry through its typed external transport |
 | `codex_claude_adapters.rs` | Codex/Claude one-shot parsing, process launch, delivery, runtime-control facts | current Claude Host/direct delivery plus historical Codex paths; mixed coordination writes | native command compilation, transport, and event reduction extracted to provider packages; CLI retains message-envelope composition and durable coordination settlement |
 | `provider_ephemeral.rs` | generic child-tree teardown and NDJSON runner plus unused orphan-pidfile parameters | current Host/compatibility transport; orphan registration had no caller | process transport and process-tree tests extracted to `firm-runtime-host`; the CLI module and its now-redundant provider child guard are deleted |
 | `resident.rs` | optional persistent Claude stream-json child, pool, protocol frames, and tests | Claude compatibility transport living in CLI | moved intact to `firm-provider-claude`; CLI constructs its provider-owned config and consumes the typed result |
 | `process_reaper.rs` | snapshot/read-model helpers and legacy Team tolerance | application/read-model; filename is misleading | application projection package/module |
 | `codex_app_server.rs`, `codex_team_runtime.rs` | Codex native protocol and Team binding | current Team provider | app-server transport/protocol, complete Team binding, and deterministic tests extracted to `firm-provider-codex`; CLI retains a narrow application callback/error adapter |
 | `claude_agent_sdk.rs`, `claude_team_runtime.rs`, `apps/claude-member-runner` | Claude Rust bridge, Team binding, Node runner | current Team provider | runtime process, reviewed runner protocol/version gate, complete Team binding, and tests extracted to `firm-provider-claude`; CLI retains a narrow application error/trait adapter; versioned Node runner asset remains in `apps/claude-member-runner` |
-| `kimi_acp.rs`, `kimi_team_runtime.rs` | Kimi ACP transport and Team binding | current Team provider; ACP transport also serves current Host | ACP process/protocol, complete Team binding, and tests extracted to `firm-provider-kimi`; CLI retains a narrow application callback/error adapter and Host consumes the same provider package through its own binding |
+| `kimi_acp.rs`, `kimi_team_runtime.rs` | Kimi ACP transport and Team binding | current Team provider; explicit external transport also reuses ACP | ACP process/protocol and complete Team binding live in `firm-provider-kimi`; a managed Host consumes the Team binding, while only external compatibility dispatch consumes the separate transport |
 | `pi_rpc/` | Pi RPC client and Team binding | current Team provider | RPC process/session/prompt/steer/abort, native-session validation, permission argv admission, complete Team binding, and client tests extracted to `firm-provider-pi`; CLI retains a narrow application callback/error adapter |
 | `main_tests/workflow_runtime_tests.rs` and child directory | 114 source files no longer referenced by any test root after retirement | unreachable Dynamic Workflow residue | deleted in DEV-58 |
 | `main_tests/codex_exec.rs` | compiled historical parser/retirement characterization, including a vacuous selector test | provider protocol tests mixed into CLI | meaningful parser/status/native-id cases moved beside the Codex compatibility decoder; redundant/vacuous CLI cases deleted |
@@ -62,7 +63,7 @@ Forbidden edges:
 - `firm-core` to provider, Store implementation, CLI, or Node runner;
 - runtime contract to provider wire vocabulary;
 - provider package to authoritative Store writes or Host acceptance;
-- Host binding to Team lifecycle fallback;
+- external Host transport to managed Team lifecycle fallback or managed receipt settlement;
 - historical mode to provider effects;
 - any package to a restored Dynamic Workflow writer or runtime registry.
 
@@ -147,10 +148,10 @@ Landed DEV-58 milestones:
   only a narrow application callback/error adapter; its duplicate Pi native
   control implementation is removed;
 - current execution-surface slice: replaces the catalog's shared mode shape
-  with distinct `TeamRuntimeBinding`, `HostRuntimeBinding`,
+  with distinct `TeamRuntimeBinding`, `ExternalHostTransportBinding`,
   `CompatibilityDeliveryBinding`, and effect-free `HistoricalProviderMode`
   types. The current `/v1/agents/*` registry is explicitly compatibility-only,
-  has no Pi unsupported stub, and is no longer used by Claude headless Host;
+  has no Pi unsupported stub, and is no longer used by the external Claude Host transport;
   Kimi Host continues through its separate ACP exact-session path;
 - current supervisor slice: adds the provider-neutral
   `firm-runtime-supervisor` package. It owns the one monotonic round loop and
@@ -185,6 +186,6 @@ Landed DEV-58 milestones:
   vocabulary plus protocol-version/fingerprint authority consumed by both
   Rust and Node. Rust embeds and validates it before spawning the runner; Node
   validates the start handshake before loading the provider SDK. Deterministic
-  tests on both sides reject drift. Headless Host dispatch now resolves only
+  tests on both sides reject drift. External Host compatibility dispatch resolves only
   through the canonical typed Host catalog, so Codex and Pi remain declared
   unsupported rather than falling through a parallel string registry.

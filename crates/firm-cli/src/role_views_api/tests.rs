@@ -193,7 +193,7 @@ fn host_session_mode_distinguishes_managed_external_and_unbound() {
     assert_eq!(
         host_session_mode(Some(&host_run_fixture(
             Some("thread-1"),
-            HostControlMode::External
+            HostControlMode::ExternalInteractive
         ))),
         "external_interactive"
     );
@@ -205,7 +205,10 @@ fn host_session_mode_distinguishes_managed_external_and_unbound() {
         "harness_managed"
     );
     assert_eq!(
-        host_session_mode(Some(&host_run_fixture(None, HostControlMode::External))),
+        host_session_mode(Some(&host_run_fixture(
+            None,
+            HostControlMode::ExternalInteractive
+        ))),
         "unbound"
     );
     assert_eq!(
@@ -213,8 +216,8 @@ fn host_session_mode_distinguishes_managed_external_and_unbound() {
             Some("  "),
             HostControlMode::Managed
         ))),
-        "unbound",
-        "a blank thread id is not a binding"
+        "harness_managed",
+        "managed Host addressability comes from its MemberRun/AgentSession, not host_thread_id"
     );
     assert_eq!(host_session_mode(None), "unbound");
 }

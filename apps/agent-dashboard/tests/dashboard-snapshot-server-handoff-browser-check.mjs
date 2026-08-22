@@ -157,6 +157,8 @@ const dev33TeamRunPayload = JSON.parse(runHarness([
   "team-run", "create",
   "--objective", "Exercise the snapshot handoff Store build under scope pressure",
   "--agent-team-id", dev33Team.id,
+  "--host-runtime-mode", "external_interactive",
+  "--member", "dev33-host:host:codex/external_interactive",
   "--member", "dev33-worker:worker:codex/app-server",
   "--json",
 ], env, projectRootA));

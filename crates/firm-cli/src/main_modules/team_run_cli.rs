@@ -7,14 +7,16 @@ pub(super) fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|board-summary|work|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|answer-message|events|wait|complete|cancel",
+        "team-run create|list|status|board-summary|work|recover|host-inbox|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|answer-message|events|wait|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
         "work" => team_run_work_command(store, resolved, &args[1..])?,
         "dispatch-host" => {
-            let result = dispatch_headless_host_once(store, resolved, &args[1..])?;
-            print_json(&result)?;
+            return Err(CliError::Usage(
+                "EXTERNAL_HOST_IS_PULL_ONLY: dispatch-host is retired; an external_interactive Host must authenticate, read its own inbox, and acknowledge deliveries explicitly"
+                    .to_string(),
+            ));
         }
         "create" => {
             let agent_team_id = value(args, "--agent-team-id");
@@ -149,6 +151,26 @@ pub(super) fn team_run_command(
             .to_string();
             let host_thread_id =
                 value(args, "--host-thread-id").or_else(|| env_host_thread_id.clone());
+            let requested_host_mode = value(args, "--host-runtime-mode");
+            let execution_space_id = resolved
+                .execution_space_context
+                .as_ref()
+                .map(|space| space.id.as_str())
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "team-run create requires an explicitly selected --space".into(),
+                    )
+                })?;
+            let team_id = agent_team_id.as_deref().ok_or_else(|| {
+                CliError::Usage("--agent-team-id is required for team-run create".into())
+            })?;
+            let host_control_mode = configure_host_runtime_mode(
+                store,
+                execution_space_id,
+                team_id,
+                &mut members,
+                requested_host_mode.as_deref(),
+            )?;
             let created = create_team_run(
                 store,
                 resolved.context.as_ref(),
@@ -161,6 +183,7 @@ pub(super) fn team_run_command(
                 budget_limit_usd,
                 &host_surface,
                 host_thread_id.clone(),
+                host_control_mode,
                 value(args, "--previous"),
                 agent_team_id,
                 value(args, "--mission-id"),
@@ -665,6 +688,9 @@ pub(super) fn team_run_command(
             &serde_json::json!({
                 "reason": value(args, "--reason").unwrap_or_else(|| "Host reopened member".to_string()),
                 "reopened_by": value(args, "--reopened-by").unwrap_or_else(|| "host".to_string()),
+                "host_runtime_mode": value(args, "--host-runtime-mode"),
+                "execution_mode": value(args, "--execution-mode"),
+                "host_thread_id": value(args, "--host-thread-id"),
             }),
         )?)?,
         "start" => {

@@ -201,7 +201,11 @@ pub(super) enum MemberControlCommand {
 pub(super) enum IdleMemberWake {
     Work(Box<ClaimedWork>),
     ActiveWorkContinuation(Box<Work>),
-    Messages(Vec<TeamMessageProjection>),
+    Messages {
+        messages: Vec<TeamMessageProjection>,
+        host_attentions: Vec<HostAttention>,
+    },
+    HostAttentions(Vec<HostAttention>),
     /// A durable Close latch has been observed while the provider adapter is
     /// idle. The wait loop deliberately does not mutate the MemberRun or drop
     /// the process: the owning adapter must first obtain the narrow reversible

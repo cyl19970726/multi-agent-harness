@@ -163,7 +163,6 @@ team-run add-member --id <id> --member <spec> [--initial-work <text>]
 team-run status     --id <id> [--json]
 team-run wait       --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
-team-run dispatch-host --id <id> [--min-age-s <n>] [--timeout-ms <n>]
 team-run events     --id <id> [--after-seq <n>] [--json]
 team-run board-summary --id <id>
 team-run recover    --id <id> [--json]
@@ -203,7 +202,6 @@ team-run add-member --id <id> --member <spec>
 team-run status --id <id> [--json]
 team-run wait --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
-team-run dispatch-host --id <id> [--min-age-s <n>] [--timeout-ms <n>]
 team-run events --id <id> [--json]
 team-run board-summary --id <id>
 team-run recover --id <id> [--json]
@@ -248,7 +246,7 @@ pub(super) fn print_help() {
   mission list|show (read-only legacy rows; Mission writers retired by DOC-108)
   mission log show --mission-id <id> [--tail <n>] (read-only legacy)
   legacy wave list|show|history (historical reads only)
-  team-run create|list|status|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|answer-message|events|complete|cancel
+  team-run create|list|status|recover|host-inbox|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|answer-message|events|complete|cancel
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.

@@ -1,6 +1,7 @@
 use firm_core::agentfirm_api::{
     ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus, CanonicalMessageDelivery,
-    CanonicalMessageDeliveryStatus, Message, MessageAddressKind, MessageKind, MessageRecipientKind,
+    CanonicalMessageDeliveryStatus, MemberCoordinationStatus as CanonicalMemberCoordinationStatus,
+    MemberRun, MemberRuntimeStatus, Message, MessageAddressKind, MessageKind, MessageRecipientKind,
     MessageRecipientRef, MutationContext, PermissionCeiling, ResponseIntent, TeamMembership,
     TeamMembershipRole, TeamMembershipStatus,
 };
@@ -15,9 +16,9 @@ use firm_core::collaboration::{
     TargetPlacementRef, WorkOperationalDecisionRef,
 };
 use firm_core::{
-    AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, Mission,
-    MissionStatus, NodeProjectRegistration, NodeProjectRegistrationStatus, TeamActorKind,
-    TeamActorRef, TeamRunStatus, WorkCommandContext,
+    AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, MemberRunStatus,
+    Mission, MissionStatus, NodeProjectRegistration, NodeProjectRegistrationStatus,
+    ProviderRuntimeProjection, TeamActorKind, TeamActorRef, TeamRunStatus, WorkCommandContext,
 };
 use firm_fabric::{
     json_digest, ActorKind as FabricActorKind, ArtifactCapability, ArtifactCapabilityPurpose,
@@ -30,9 +31,9 @@ use firm_store::{
     collaboration_receipt_from_fabric, persist_verified_remote_message_replica,
     project_cross_node_deliveries, queue_remote_message_transfer,
     route_collaboration_business_operation, validate_message_collaboration_scope,
-    CollaborationApplicationService, CollaborationDelegationFilter, CollaborationFabricPort,
-    CollaborationFabricRouteContext, CollaborationFabricSource, CollaborationMutationContext,
-    CollaborationRouteClient, HarnessStore, ProposeDelegationRequest,
+    CanonicalMemberRunAdmission, CollaborationApplicationService, CollaborationDelegationFilter,
+    CollaborationFabricPort, CollaborationFabricRouteContext, CollaborationFabricSource,
+    CollaborationMutationContext, CollaborationRouteClient, HarnessStore, ProposeDelegationRequest,
     RemoteFabricCollaborationPort, RemoteMessageReplicaExpectation, RemoteMessageReplicaPort,
     ResolvedCollaborationAuthority,
 };
@@ -298,6 +299,62 @@ fn seed_team(
             }],
         )
         .unwrap();
+    let host_member_run_id = format!("member-run-{run_id}-host");
+    let host_runtime = ProviderRuntimeProjection {
+        id: host_member_run_id.clone(),
+        team_run_id: run_id.into(),
+        slot_id: Some("host".into()),
+        agent_member_id: host_id.into(),
+        name: host_id.into(),
+        role: "host".into(),
+        provider: "codex".into(),
+        model: None,
+        provider_controls: Default::default(),
+        provider_profile: None,
+        provider_capacity: None,
+        provider_compatibility_block_cause: None,
+        coordination_status: Default::default(),
+        runtime_generation: 1,
+        status: MemberRunStatus::Idle,
+        native_session: None,
+        provider_cwd_hint: None,
+        provider_environment_observation: None,
+        owned_paths: Vec::new(),
+        zero_output_streak: 0,
+        last_consumed_work_version: None,
+        started_at: "unix-ms:1".into(),
+        last_event_at: None,
+        finished_at: None,
+    };
+    let canonical_host = CanonicalMemberRunAdmission {
+        context: MutationContext {
+            execution_space_id: execution_space_id.into(),
+            authenticated_actor: actor(ActorKind::Service, "fixture-node-daemon"),
+            authority_actor: Some(actor(ActorKind::AgentMember, host_id)),
+            command_name: "team_run.materialize_member_run".into(),
+            idempotency_key: format!("member-run-create-{host_member_run_id}"),
+            expected_version: 0,
+            request_fingerprint: None,
+        },
+        run: MemberRun {
+            id: host_member_run_id.clone(),
+            agent_member_id: host_id.into(),
+            team_run_id: run_id.into(),
+            role_snapshot: "host".into(),
+            provider_profile_snapshot: None,
+            requested_controls: serde_json::json!({}),
+            effective_controls: serde_json::json!({}),
+            coordination_status: CanonicalMemberCoordinationStatus::Active,
+            runtime_status: MemberRuntimeStatus::Idle,
+            runtime_generation: 1,
+            workspace_binding_id: None,
+            native_session: None,
+            version: 1,
+            started_at: "unix-ms:1".into(),
+            last_event_at: None,
+            finished_at: None,
+        },
+    };
     store
         .create_team_run_with_member_runs_from_agent_team(
             &AgentTeamRun {
@@ -308,20 +365,25 @@ fn seed_team(
                 previous_run_id: None,
                 host_surface: "test".into(),
                 host_thread_id: None,
-                host_actor: None,
-                host_control_mode: Default::default(),
+                host_actor: Some(TeamActorRef {
+                    kind: TeamActorKind::Host,
+                    id: host_id.into(),
+                    display_name: Some(host_id.into()),
+                    authn_source: Some("team_membership:host".into()),
+                }),
+                host_control_mode: firm_core::HostControlMode::Managed,
                 objective: "Execute delegated Work".into(),
                 execution_root: None,
                 status: TeamRunStatus::Running,
-                member_run_ids: Vec::new(),
+                member_run_ids: vec![host_member_run_id],
                 budget_limit_usd: None,
                 created_at: "unix-ms:1".into(),
                 updated_at: "unix-ms:1".into(),
                 completed_at: None,
             },
             execution_space_id,
-            &[],
-            &[],
+            std::slice::from_ref(&host_runtime),
+            std::slice::from_ref(&canonical_host),
         )
         .unwrap();
 }

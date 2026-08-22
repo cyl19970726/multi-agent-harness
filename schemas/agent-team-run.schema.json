@@ -37,7 +37,7 @@
         "authn_source": { "type": ["string", "null"], "minLength": 1 }
       }
     },
-    "host_control_mode": { "type": "string", "enum": ["managed", "external"] },
+    "host_control_mode": { "type": "string", "enum": ["managed", "external_interactive"] },
     "objective": { "type": "string", "minLength": 1 },
     "execution_root": { "type": ["string", "null"], "minLength": 1 },
     "status": {

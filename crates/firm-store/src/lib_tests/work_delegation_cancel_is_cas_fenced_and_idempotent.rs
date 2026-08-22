@@ -7,26 +7,87 @@ fn work_delegation_cancel_is_cas_fenced_and_idempotent() {
     let source = store
         .insert_work(
             assigned_delegation_work(&run_a, &member_a, "source-cancel"),
-            host_work_context("work-source-cancel", "create-source-cancel", "unix-ms:2"),
+            run_host_work_context(
+                &run_a,
+                "work-source-cancel",
+                "create-source-cancel",
+                "unix-ms:2",
+            ),
         )
         .expect("create source Work");
     let (delegation, _) = store
         .create_work_delegation_with_target_work(
             delegation_request("delegation-cancel", &source, &run_b.agent_team_id),
             assigned_delegation_work(&run_b, &member_b, "target-cancel"),
-            host_work_context(
+            run_host_work_context(
+                &run_a,
                 "delegation-create-cancel",
                 "delegate-source-cancel",
                 "unix-ms:3",
             ),
         )
         .expect("create Delegation");
+    let operations_before_refusals = store
+        .read_jsonl::<WorkDelegationOperation>("work_delegation_operations.jsonl")
+        .unwrap()
+        .len();
+    for (kind, id, suffix) in [
+        (TeamActorKind::Host, "forged-host", "host"),
+        (TeamActorKind::Operator, "operator", "operator"),
+        (TeamActorKind::Service, "service", "service"),
+    ] {
+        let mut forged = run_host_work_context(
+            &run_a,
+            &format!("delegation-cancel-refused-{suffix}"),
+            &format!("cancel-refused-{suffix}"),
+            "unix-ms:4",
+        );
+        forged.performed_by_actor = TeamActorRef {
+            kind,
+            id: id.into(),
+            display_name: None,
+            authn_source: Some("hostile-test".into()),
+        };
+        let error = store
+            .cancel_work_delegation(
+                &delegation.id,
+                delegation.version,
+                "hostile cancellation",
+                forged,
+            )
+            .expect_err("only the exact Host may use Host cancellation authority");
+        assert!(
+            error.to_string().contains("DELEGATION_NOT_AUTHORIZED")
+                || error
+                    .to_string()
+                    .contains("TEAM_RUN_HOST_AUTHORITY_MISMATCH")
+        );
+    }
+    assert_eq!(
+        store
+            .read_jsonl::<WorkDelegationOperation>("work_delegation_operations.jsonl")
+            .unwrap()
+            .len(),
+        operations_before_refusals,
+        "forged Host, Operator, and Service attempts have zero cancellation side effects"
+    );
+    assert_eq!(
+        store
+            .latest_work_delegations()
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == delegation.id)
+            .unwrap()
+            .state,
+        WorkDelegationState::Active
+    );
     let stale = store
         .cancel_work_delegation(
             &delegation.id,
             0,
             "target no longer needed",
-            host_work_context(
+            run_host_work_context(
+                &run_a,
                 "delegation-cancel-stale",
                 "cancel-delegation-stale",
                 "unix-ms:4",
@@ -34,7 +95,8 @@ fn work_delegation_cancel_is_cas_fenced_and_idempotent() {
         )
         .expect_err("stale expected version is fenced");
     assert!(stale.to_string().contains("DELEGATION_VERSION_CONFLICT"));
-    let context = host_work_context(
+    let context = run_host_work_context(
+        &run_a,
         "delegation-cancel-event",
         "cancel-delegation-command",
         "unix-ms:5",
@@ -65,7 +127,7 @@ fn work_delegation_cancel_is_cas_fenced_and_idempotent() {
             &delegation.id,
             delegation.version,
             "different reason",
-            host_work_context("ignored", "cancel-delegation-command", "unix-ms:6"),
+            run_host_work_context(&run_a, "ignored", "cancel-delegation-command", "unix-ms:6"),
         )
         .expect_err("same key cannot change cancel reason");
     assert!(conflict.to_string().contains("IDEMPOTENCY_CONFLICT"));

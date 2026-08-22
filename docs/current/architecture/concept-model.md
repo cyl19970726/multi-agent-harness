@@ -15,6 +15,14 @@ objects are archive evidence only; `AgentTeam`, `Work`, identity-first
 `Message`, provider-native sessions, and fenced `RuntimeCommand` effects form
 the current model.
 
+The Team Host is not another executor object. `AgentTeam.host_agent_id`
+resolves one active `TeamMembership(role=host)` for the same `AgentMember`
+model. A current TeamRun has exactly one Host MemberRun. Managed Hosts follow
+the ordinary MemberRun/AgentSession/NodeDaemon/runtime-adapter relation;
+`external_interactive` is the same identity and role with a detached
+user-driven runtime and an explicit pull-only delivery guarantee. See
+[ADR 0057](../../decisions/0057-host-is-an-agent-member.md).
+
 ## Implementation-bound invariants
 
 Open-enum vocabularies: harness defines a canonical starter set in Rust,

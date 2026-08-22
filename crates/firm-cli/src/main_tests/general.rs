@@ -248,27 +248,49 @@ fn persisted_native_test_member(
         None,
         "test",
         None,
+        HostControlMode::Managed,
         None,
         None,
         None,
         None,
-        &[TeamMemberSpec {
-            agent_member_id: "agent-provider-callback".into(),
-            name: "ProviderCallback".into(),
-            role: "reviewer".into(),
-            provider: provider.into(),
-            execution_mode: Some(mode.into()),
-            model: None,
-            effort: None,
-            service_tier: None,
-            provider_cwd_hint: None,
-            owned_paths: Vec::new(),
-            resume_native_session_id: None,
-            initial_work: None,
-        }],
+        &[
+            TeamMemberSpec {
+                agent_member_id: "host".into(),
+                name: "Host".into(),
+                role: "host".into(),
+                provider: "codex".into(),
+                execution_mode: Some("codex_app_server".into()),
+                model: None,
+                effort: None,
+                service_tier: None,
+                provider_cwd_hint: None,
+                owned_paths: Vec::new(),
+                resume_native_session_id: None,
+                initial_work: None,
+            },
+            TeamMemberSpec {
+                agent_member_id: "agent-native-open".into(),
+                name: "ProviderCallback".into(),
+                role: "reviewer".into(),
+                provider: provider.into(),
+                execution_mode: Some(mode.into()),
+                model: None,
+                effort: None,
+                service_tier: None,
+                provider_cwd_hint: None,
+                owned_paths: Vec::new(),
+                resume_native_session_id: None,
+                initial_work: None,
+            },
+        ],
     )
     .expect("create persisted provider callback member");
-    let initial = created.member_runs[0].clone();
+    let initial = created
+        .member_runs
+        .iter()
+        .find(|member| member.agent_member_id == "agent-native-open")
+        .expect("provider callback MemberRun")
+        .clone();
     let mut running = initial.clone();
     running.status = MemberRunStatus::Running;
     running.native_session = Some(NativeSessionRef {
@@ -423,7 +445,7 @@ fn make_member(id: &str) -> ProviderLaunchProfile {
         provider: "codex".into(),
         model: None,
         profile: None,
-        provider_config: ProviderLaunchConfig::default(),
+        provider_config: harness_core::ProviderLaunchConfig::default(),
         capabilities: Vec::new(),
         team_ids: Vec::new(),
         prompt_ref: None,
@@ -775,6 +797,7 @@ fn create_two_member_team_run_for_provider(store: &HarnessStore, provider: &str)
         None,
         "test",
         None,
+        HostControlMode::Managed,
         None,
         None,
         None,
@@ -808,6 +831,20 @@ fn create_two_member_team_run_for_provider(store: &HarnessStore, provider: &str)
                 resume_native_session_id: None,
                 initial_work: None,
             },
+            TeamMemberSpec {
+                agent_member_id: "host".into(),
+                name: "Host".into(),
+                role: "host".into(),
+                provider: "codex".into(),
+                execution_mode: Some("codex_app_server".into()),
+                model: None,
+                effort: None,
+                service_tier: None,
+                provider_cwd_hint: None,
+                owned_paths: Vec::new(),
+                resume_native_session_id: None,
+                initial_work: None,
+            },
         ],
     )
     .expect("create team run")
@@ -818,31 +855,6 @@ fn ensure_test_runtime_fabric(
     created: &CreatedTeamRun,
     lease: &TeamSupervisorLease,
 ) {
-    let team = store
-        .latest_teams()
-        .expect("read test Team")
-        .remove(&created.team_run.agent_team_id)
-        .expect("test Team");
-    ensure_unit_test_canonical_members(
-        store,
-        &lease.execution_space_id,
-        &created.team_run.agent_team_id,
-        &[TeamMemberSpec {
-            agent_member_id: team.host_agent_id,
-            name: "TestHost".into(),
-            role: "host".into(),
-            provider: "codex".into(),
-            execution_mode: Some("codex_app_server".into()),
-            model: None,
-            effort: None,
-            service_tier: None,
-            provider_cwd_hint: None,
-            owned_paths: Vec::new(),
-            resume_native_session_id: None,
-            initial_work: None,
-        }],
-    )
-    .expect("materialize canonical test Host");
     ensure_team_message_fabric(
         store,
         &created.team_run.id,
@@ -877,34 +889,27 @@ fn ensure_foreign_test_message_fabric(
         .expect("read test Team")
         .remove(&created.team_run.agent_team_id)
         .expect("test Team");
-    let mut members = vec![TeamMemberSpec {
-        agent_member_id: team.host_agent_id.clone(),
-        name: "ForeignTestHost".into(),
-        role: "host".into(),
-        provider: "codex".into(),
-        execution_mode: Some("codex_app_server".into()),
-        model: None,
-        effort: None,
-        service_tier: None,
-        provider_cwd_hint: None,
-        owned_paths: Vec::new(),
-        resume_native_session_id: None,
-        initial_work: None,
-    }];
-    members.extend(created.member_runs.iter().map(|member| TeamMemberSpec {
-        agent_member_id: member.agent_member_id.clone(),
-        name: member.name.clone(),
-        role: member.role.clone(),
-        provider: member.provider.clone(),
-        execution_mode: Some("codex_app_server".into()),
-        model: member.model.clone(),
-        effort: None,
-        service_tier: None,
-        provider_cwd_hint: None,
-        owned_paths: member.owned_paths.clone(),
-        resume_native_session_id: None,
-        initial_work: None,
-    }));
+    let members = created
+        .member_runs
+        .iter()
+        .map(|member| TeamMemberSpec {
+            agent_member_id: member.agent_member_id.clone(),
+            name: member.name.clone(),
+            role: member.role.clone(),
+            provider: member.provider.clone(),
+            execution_mode: member
+                .provider_profile
+                .as_ref()
+                .map(|profile| profile.execution_mode.clone()),
+            model: member.model.clone(),
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: member.owned_paths.clone(),
+            resume_native_session_id: None,
+            initial_work: None,
+        })
+        .collect::<Vec<_>>();
     ensure_unit_test_canonical_team(store, execution_space_id, &team, &members)
         .expect("materialize foreign durable AgentTeam and TeamMemberships");
     ensure_team_message_fabric(

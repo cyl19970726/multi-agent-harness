@@ -119,7 +119,10 @@ fn host_inbox_shows_work_attention_after_submit() {
         !attentions.is_empty(),
         "submitting work creates a HostAttention"
     );
-    let attn = &attentions[0];
+    let attn = attentions
+        .iter()
+        .find(|attention| attention["kind"] == "work_review_requested")
+        .expect("review request attention");
     assert_eq!(attn["kind"].as_str().unwrap(), "work_review_requested");
     assert_eq!(attn["work_id"].as_str().unwrap(), work.id);
     assert_eq!(attn["status"].as_str().unwrap(), "actionable");

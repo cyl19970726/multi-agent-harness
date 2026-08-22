@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(test)]
 pub(super) fn compatibility_team_actor(id: &str, authn_source: &str) -> TeamActorRef {
     TeamActorRef {
         kind: if id == "host" {

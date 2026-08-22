@@ -253,6 +253,7 @@ pub(super) fn exact_host_binding_lease_from_args(
     Ok(latest)
 }
 
+#[cfg(any())]
 pub(super) fn headless_host_project_context(
     resolved: &ResolvedStore,
     run: &AgentTeamRun,
@@ -274,6 +275,7 @@ pub(super) fn headless_host_project_context(
         })
 }
 
+#[cfg(any())]
 pub(super) fn synthetic_headless_host_member(
     run: &AgentTeamRun,
     provider: &str,
@@ -315,6 +317,9 @@ pub(super) fn synthetic_headless_host_member(
     }
 }
 
+// Historical implementation retained as source evidence only. It is excluded
+// from every build so an external Host can never trigger a provider effect.
+#[cfg(any())]
 pub(super) fn dispatch_headless_host_once(
     store: &HarnessStore,
     resolved: &ResolvedStore,
@@ -365,7 +370,7 @@ pub(super) fn dispatch_headless_host_once(
             run.host_surface
         ))
     })?;
-    let host_binding = descriptor.headless_host.ok_or_else(|| {
+    let host_binding = descriptor.external_host_transport.ok_or_else(|| {
         if provider == "codex" {
             CliError::Usage(
                 "HEADLESS_HOST_READ_ONLY_UNAVAILABLE: Codex exact-session resume inherits the existing session sandbox and cannot currently prove a read-only Host turn; use the interactive Host or a provider transport that enforces read-only resume"
@@ -462,7 +467,7 @@ pub(super) fn dispatch_headless_host_once(
                     sender_kind: SenderKind::System,
                 };
                 match host_binding.binding {
-                    harness_application::HostRuntimeKind::KimiAcp => {
+                    harness_application::ExternalHostTransportKind::KimiAcp => {
                         let turn = harness_provider_kimi::run_kimi_host_turn(
                             &project_context.project_root,
                             thread_id,
@@ -475,7 +480,7 @@ pub(super) fn dispatch_headless_host_once(
                             turn.provider_receipt_id,
                         );
                     }
-                    harness_application::HostRuntimeKind::ClaudeCli => {}
+                    harness_application::ExternalHostTransportKind::ClaudeCli => {}
                 }
 
                 let outcome = run_claude_host_delivery(
@@ -567,4 +572,16 @@ pub(super) fn dispatch_headless_host_once(
         "attention_ids": delivered_attention_ids,
         "provider_summary": summary,
     }))
+}
+
+#[allow(dead_code)]
+pub(super) fn dispatch_headless_host_once(
+    _store: &HarnessStore,
+    _resolved: &ResolvedStore,
+    _args: &[String],
+) -> CliResult<serde_json::Value> {
+    Err(CliError::Usage(
+        "EXTERNAL_HOST_IS_PULL_ONLY: Harness cannot drive an external Host provider turn or prove provider receipt; read and acknowledge the Host inbox explicitly"
+            .to_string(),
+    ))
 }

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn work_changes_requested_emits_host_attention_for_bound_run() {
+fn host_authored_changes_requested_does_not_wake_the_same_host() {
     let (root, store, run, member, _) = work_test_fixture("work-cr-ha");
     let work = store
         .insert_work(
@@ -41,9 +41,8 @@ fn work_changes_requested_emits_host_attention_for_bound_run() {
         .iter()
         .find(|a| a.work_id == work.id && a.kind == HostAttentionKind::WorkChangesRequested);
     assert!(
-        cr.is_some(),
-        "bound run must emit WorkChangesRequested on request changes"
+        cr.is_none(),
+        "Host-authored changes requested must not recursively wake the same Host"
     );
-    assert_eq!(cr.unwrap().team_run_id, run.id);
     std::fs::remove_dir_all(root).expect("remove temp store");
 }

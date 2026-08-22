@@ -358,6 +358,20 @@ impl HarnessStore {
         }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        let current = self
+            .latest_work_delegations_unlocked()?
+            .remove(delegation_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!("delegation not found: {delegation_id}"))
+            })?;
+        self.require_work_delegation_actor_unlocked(
+            &context.performed_by_actor,
+            &current.source_work_ref.team_run_id,
+            &current.source_owner_member_id,
+            "cancel",
+        )?;
+        // Authorization precedes replay for the same reason as delegation
+        // creation: an idempotency key is not an authority token.
         if let Some(existing) = self
             .all_work_delegation_revisions_unlocked()?
             .into_iter()
@@ -374,39 +388,11 @@ impl HarnessStore {
                 context.idempotency_key, existing.event.id
             )));
         }
-        let current = self
-            .latest_work_delegations_unlocked()?
-            .remove(delegation_id)
-            .ok_or_else(|| {
-                StoreError::Conflict(format!("delegation not found: {delegation_id}"))
-            })?;
         if current.version != expected_version {
             return Err(StoreError::Conflict(format!(
                 "DELEGATION_VERSION_CONFLICT: {} is version {}, expected {expected_version}",
                 current.id, current.version
             )));
-        }
-        match context.performed_by_actor.kind {
-            TeamActorKind::Host | TeamActorKind::Operator | TeamActorKind::Service => {}
-            TeamActorKind::AgentMember
-                if context.performed_by_actor.id == current.source_owner_member_id => {}
-            TeamActorKind::ProviderRuntimeProjection => {
-                let member = self.require_member_run_unlocked(
-                    &context.performed_by_actor.id,
-                    &current.source_work_ref.team_run_id,
-                )?;
-                if member_identity(&member) != current.source_owner_member_id {
-                    return Err(StoreError::Conflict(
-                        "DELEGATION_NOT_AUTHORIZED: only source owner or Host may cancel"
-                            .to_string(),
-                    ));
-                }
-            }
-            _ => {
-                return Err(StoreError::Conflict(
-                    "DELEGATION_NOT_AUTHORIZED: only source owner or Host may cancel".to_string(),
-                ))
-            }
         }
         let mut next = current.clone();
         next.state = WorkDelegationState::Cancelled;

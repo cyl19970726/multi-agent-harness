@@ -43,6 +43,20 @@ fn mcp_team_run_create_without_legacy_mission_omits_mission_context() {
     );
     let payload = call_payload(&response);
     let team_run_id = payload["team_run_id"].as_str().expect("team_run_id");
+    assert_eq!(payload["host_runtime"]["mode"], "managed");
+    assert_eq!(
+        payload["host_runtime"]["delivery_guarantee"],
+        "daemon_managed"
+    );
+    assert_eq!(
+        payload["host_runtime"]["runtime_residency"],
+        "managed_member_run"
+    );
+    assert_eq!(
+        payload["host_runtime"]["workspace_policy"],
+        "provider_read_only_or_distinct_host_workspace"
+    );
+    assert!(payload["host_runtime"]["warning"].is_null());
     assert!(
         payload["mission_id"].is_null(),
         "mission-less Team must not report a Mission id: {payload}"

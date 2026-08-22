@@ -444,6 +444,7 @@ function RunDialog({
   const [objective, setObjective] = useState("");
   const [executionRoot, setExecutionRoot] = useState("");
   const [budget, setBudget] = useState("");
+  const [hostRuntimeMode, setHostRuntimeMode] = useState<"managed" | "external_interactive">("managed");
   const [providerOverrides, setProviderOverrides] = useState<Record<string, string>>({});
   const [phase, setPhase] = useState<"form" | "created" | "started">("form");
   const [submitting, setSubmitting] = useState(false);
@@ -474,6 +475,7 @@ function RunDialog({
       ? resolvedMembers.map((member) => {
           const entry = providerEntryFor(effectiveProvider(member));
           return {
+            agentMemberId: member.id,
             name: member.name ?? member.id,
             role: member.role ?? "member",
             provider: entry?.provider ?? member.provider ?? "codex",
@@ -489,6 +491,7 @@ function RunDialog({
       executionRoot: executionRoot.trim() || undefined,
       budgetLimitUsd: Number.isFinite(budgetValue) && budgetValue > 0 ? budgetValue : undefined,
       members,
+      hostRuntimeMode,
     });
     const ok = await onAction?.(descriptor.path, descriptor.body);
     setSubmitting(false);
@@ -561,6 +564,9 @@ function RunDialog({
           </Field>
           <Field label="Execution root" hint="Optional workspace path; defaults to the selected project binding.">
             {(id) => <TextInput id={id} value={executionRoot} onChange={(event) => setExecutionRoot(event.target.value)} />}
+          </Field>
+          <Field label="Host runtime" hint="Managed uses the same daemon/session lifecycle as Members. External interactive is pull-only and intentionally weaker.">
+            {(id) => <Select id={id} value={hostRuntimeMode} onChange={(event) => setHostRuntimeMode(event.target.value as "managed" | "external_interactive")}><option value="managed">Managed (recommended)</option><option value="external_interactive">External interactive · pull only</option></Select>}
           </Field>
           <Field label="Budget (USD)" hint="Optional per-run budget limit.">
             {(id) => (

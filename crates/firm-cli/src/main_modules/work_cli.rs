@@ -213,7 +213,7 @@ pub(super) fn team_run_work_command(
             let context = if let Some(member_run_id) = value(args, "--member-run-id") {
                 member_work_context(args, &source_run_id, &member_run_id)?
             } else {
-                host_work_context(args)
+                host_work_context(store, &source_run_id, args)?
             };
             let now = context.created_at.clone();
             let request_hash = content_hash_hex16(&context.idempotency_key);
@@ -325,7 +325,7 @@ pub(super) fn team_run_work_command(
                         &required(args, "--delegation-id")?,
                         required_work_version(args)?,
                         &required(args, "--reason")?,
-                        host_work_context(args),
+                        host_work_context(store, &required(args, "--team-run-id")?, args)?,
                     )?;
                     print_json(&delegation)
                 }
@@ -341,7 +341,7 @@ pub(super) fn team_run_work_command(
             let context = if let Some(member_run_id) = acting_member_run_id.as_deref() {
                 member_work_context(args, &team_run_id, member_run_id)?
             } else {
-                host_work_context(args)
+                host_work_context(store, &team_run_id, args)?
             };
             let claim_mode = value(args, "--claim-mode")
                 .map(|raw| parse_work_claim_mode(&raw))
@@ -439,7 +439,7 @@ pub(super) fn team_run_work_command(
                     required_work_version(args)?,
                     &membership_id,
                     &space_id,
-                    host_work_context(args),
+                    host_work_context_for_work(store, &required(args, "--work-id")?, args)?,
                 )?;
                 append_work_event(
                     store,
@@ -456,7 +456,7 @@ pub(super) fn team_run_work_command(
                     &required(args, "--work-id")?,
                     required_work_version(args)?,
                     &member_run_id,
-                    host_work_context(args),
+                    host_work_context_for_work(store, &required(args, "--work-id")?, args)?,
                 )?;
                 append_work_event(
                     store,
@@ -481,7 +481,7 @@ pub(super) fn team_run_work_command(
                     )
                 })?;
             let report =
-                store.migrate_work_responsibility(&space_id, host_work_context(args))?;
+                store.migrate_work_responsibility(&space_id, migration_host_work_context(args))?;
             print_json(&report)
         }
         "claim" => {
@@ -550,7 +550,7 @@ pub(super) fn team_run_work_command(
                     &work_id,
                     expected_version,
                     &reason,
-                    host_work_context(args),
+                    host_work_context(store, &team_run_id, args)?,
                 )?;
                 append_work_event(
                     store,
@@ -592,7 +592,7 @@ pub(super) fn team_run_work_command(
                     &work_id,
                     expected_version,
                     &resolution,
-                    host_work_context(args),
+                    host_work_context(store, &team_run_id, args)?,
                 )?;
                 append_work_event(
                     store,
@@ -630,7 +630,7 @@ pub(super) fn team_run_work_command(
                 let work = store.release_work_as_host(
                     &work_id,
                     expected_version,
-                    host_work_context(args),
+                    host_work_context(store, &team_run_id, args)?,
                 )?;
                 append_work_event(
                     store,
@@ -702,11 +702,12 @@ pub(super) fn team_run_work_command(
         }
         "request-changes" => {
             let reason = required(args, "--reason")?;
+            let work_id = required(args, "--work-id")?;
             let work = store.request_work_changes(
-                &required(args, "--work-id")?,
+                &work_id,
                 required_work_version(args)?,
                 &reason,
-                host_work_context(args),
+                host_work_context_for_work(store, &work_id, args)?,
             )?;
             append_work_event(
                 store,
@@ -730,7 +731,7 @@ pub(super) fn team_run_work_command(
             let work = store.accept_work(
                 &work_id,
                 expected_version,
-                host_work_context(args),
+                host_work_context_for_work(store, &work_id, args)?,
             )?;
             append_work_event(
                 store,
@@ -745,11 +746,12 @@ pub(super) fn team_run_work_command(
         }
         "cancel" => {
             let reason = required(args, "--reason")?;
+            let work_id = required(args, "--work-id")?;
             let work = store.cancel_work(
-                &required(args, "--work-id")?,
+                &work_id,
                 required_work_version(args)?,
                 &reason,
-                host_work_context(args),
+                host_work_context_for_work(store, &work_id, args)?,
             )?;
             append_work_event(
                 store,
@@ -762,18 +764,24 @@ pub(super) fn team_run_work_command(
             roll_up_target_work_delegations(store, &work, args)?;
             print_json(&work)
         }
-        "retarget" => print_json(&store.retarget_work_execution(
-            &required(args, "--work-id")?,
-            required_work_version(args)?,
-            &required(args, "--successor-team-run-id")?,
-            value(args, "--successor-member-run-id").as_deref(),
-            host_work_context(args),
-        )?),
-        "reconcile-projection" => print_json(&store.reconcile_work_projection_provenance(
-            &required(args, "--work-id")?,
-            required_work_version(args)?,
-            host_work_context(args),
-        )?),
+        "retarget" => {
+            let work_id = required(args, "--work-id")?;
+            print_json(&store.retarget_work_execution(
+                &work_id,
+                required_work_version(args)?,
+                &required(args, "--successor-team-run-id")?,
+                value(args, "--successor-member-run-id").as_deref(),
+                host_work_context_for_work(store, &work_id, args)?,
+            )?)
+        }
+        "reconcile-projection" => {
+            let work_id = required(args, "--work-id")?;
+            print_json(&store.reconcile_work_projection_provenance(
+                &work_id,
+                required_work_version(args)?,
+                host_work_context_for_work(store, &work_id, args)?,
+            )?)
+        }
         "reconcile-delivery" => print_json(&store.reconcile_stale_work_delivery_claim(
             &required(args, "--team-run-id")?,
             &required(args, "--delivery-id")?,

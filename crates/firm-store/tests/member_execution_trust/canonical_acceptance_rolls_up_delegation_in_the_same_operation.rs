@@ -51,12 +51,10 @@ fn canonical_acceptance_rolls_up_delegation_in_the_same_operation() {
             finished_at: None,
         },
     );
-    let host_actor = TeamActorRef {
-        kind: TeamActorKind::Host,
-        id: "host".into(),
-        display_name: None,
-        authn_source: Some("test".into()),
-    };
+    let host_actor = harness
+        .store
+        .exact_team_run_host_actor(&source.team_run_id)
+        .expect("resolve exact source TeamRun Host");
     let (delegation, target) = harness
         .store
         .create_work_delegation_with_target_work(

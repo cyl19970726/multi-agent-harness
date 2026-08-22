@@ -16,6 +16,7 @@ use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 /// Build the bounded, triage-only turn delivered to the exact bound Host
 /// session.  The provider transport is supplied by the CLI adapter layer; this
 /// module owns only the permission contract and the durable attention facts.
+#[allow(dead_code)] // Historical prompt projection; no current path drives an external Host.
 pub fn build_headless_host_prompt(
     team_run_id: &str,
     objective: &str,
@@ -435,7 +436,7 @@ mod tests {
             host_surface: "codex".into(),
             host_thread_id: Some("thread-1".into()),
             host_actor: None,
-            host_control_mode: HostControlMode::External,
+            host_control_mode: HostControlMode::ExternalInteractive,
             objective: "test".into(),
             execution_root: None,
             status: TeamRunStatus::Running,
@@ -472,6 +473,11 @@ mod tests {
             claimed_host_lease_id: None,
             claimed_host_lease_generation: None,
             claimed_host_lease_owner_id: None,
+            claimed_recipient_member_run_id: None,
+            claimed_recipient_session_id: None,
+            claimed_recipient_session_generation: None,
+            claimed_node_daemon_id: None,
+            claimed_node_daemon_generation: None,
             provider_receipt_id: None,
             last_failure_reason: None,
             created_at: "unix-ms:1".into(),
