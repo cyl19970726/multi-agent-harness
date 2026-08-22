@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),"..");
 const read=(file)=>readFile(join(root,file),"utf8");
-const [model,types,board,graph,inspector,workspace]=await Promise.all([
-  read("src/model/roleViews.ts"),read("src/types.ts"),read("src/components/workbench/team/TeamWorksBoard.tsx"),read("src/components/workbench/team/WorkGraphView.tsx"),read("src/components/workbench/team/WorkGraphInspector.tsx"),read("src/surfaces/TeamWorkspace.tsx"),
+const [model,types,board,graph,kanban,inspector,workspace,selection]=await Promise.all([
+  read("src/model/roleViews.ts"),read("src/types.ts"),read("src/components/workbench/team/TeamWorksBoard.tsx"),read("src/components/workbench/team/WorkGraphView.tsx"),read("src/components/workbench/team/WorkKanbanView.tsx"),read("src/components/workbench/team/WorkGraphInspector.tsx"),read("src/surfaces/TeamWorkspace.tsx"),read("src/app/selection.ts"),
 ]);
 
 const retiredLineageField=["parent","work","id"].join("_");
@@ -19,10 +19,14 @@ assert.match(model,/action:"replace_work_dependencies"/,"dependency action inten
 assert.match(model,/works\/\$\{id\}\/dependencies/,"dependency action route is missing");
 assert.match(workspace,/graph=\{view\.data\.work_graph/,"TeamWorkspace does not pass the authoritative graph");
 assert.match(board,/attentionIds\.has\(work\.work_id\)/,"attention filter does not consume the authoritative attention set");
-assert.match(graph,/data-work-graph-node/,"desktop graph nodes are missing");
-assert.match(graph,/markerEnd="url\(#work-graph-arrow\)"/,"hard dependency edges are not rendered");
-assert.match(graph,/ArrowLeft/);assert.match(graph,/ArrowRight/);assert.match(graph,/ArrowUp/);assert.match(graph,/ArrowDown/);
-assert.match(graph,/team-work-graph-compact/,"compact graph fallback is missing");
+for(const capability of [/@xyflow\/react/,/@dagrejs\/dagre/,/ReactFlow/,/MiniMap/,/Controls/,/Background/,/fitView/,/panOnScroll/,/MarkerType\.ArrowClosed/])assert.match(graph,capability,"infinite-canvas graph capability is missing");
+assert.match(graph,/nodesDraggable=\{false\}/,"graph node movement can imply a semantic write");
+assert.match(graph,/nodesConnectable=\{false\}/,"graph permits direct semantic edge creation");
+assert.match(graph,/deleteKeyCode=\{null\}/,"graph permits client-side semantic deletion");
+assert.match(kanban,/phase:"open"/);assert.match(kanban,/phase:"active"/);assert.match(kanban,/phase:"review"/);assert.match(kanban,/phase:"closed"/);
+assert.match(kanban,/draggable=\{false\}/,"Kanban cards imply drag-to-mutate lifecycle authority");
+assert.match(board,/viewMode==="graph"/);assert.match(board,/WorkKanbanView/);
+assert.match(selection,/teamWorkView/);assert.match(workspace,/onViewModeChange/);
 assert.match(inspector,/Server-authoritative readiness/,"readiness provenance is not visible");
 assert.match(inspector,/failed_or_cancelled_prerequisite_work_ids/,"failed/cancelled prerequisite attention is hidden");
 assert.match(inspector,/prepareRoleAction/,"dependency editor bypasses the closed action adapter");
