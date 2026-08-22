@@ -20,6 +20,8 @@ mod host_lease_renew_and_release_reject_stale_exact_fence;
 mod host_session_validator_valid_receipt_creates_exact_interactive_lease;
 #[path = "../general/invalid_host_session_validation_preserves_observable_unleased_binding.rs"]
 mod invalid_host_session_validation_preserves_observable_unleased_binding;
+#[path = "../general/managed_host_ignores_external_binding_environment.rs"]
+mod managed_host_ignores_external_binding_environment;
 #[cfg(any())]
 #[path = "../general/member_to_host_is_delivered_manual_ack_but_member_mail_stays_queued.rs"]
 mod member_to_host_is_delivered_manual_ack_but_member_mail_stays_queued;

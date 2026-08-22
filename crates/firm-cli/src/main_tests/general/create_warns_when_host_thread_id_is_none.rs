@@ -14,7 +14,7 @@ fn create_warns_when_host_thread_id_is_none() {
         None,
         "test-surface",
         None, // no host_thread_id → L0 warning
-        HostControlMode::Managed,
+        HostControlMode::ExternalInteractive,
         None,
         None,
         None,
@@ -24,7 +24,7 @@ fn create_warns_when_host_thread_id_is_none() {
             name: "OnlyMember".into(),
             role: "sole".into(),
             provider: "codex".into(),
-            execution_mode: Some("codex_app_server".into()),
+            execution_mode: Some(EXECUTION_MODE_EXTERNAL_INTERACTIVE.into()),
             model: None,
             effort: None,
             service_tier: None,
