@@ -90,6 +90,12 @@ for (const required of [
     failures.push(`crates/firm-core/src/work.rs: exact read-only legacy decode seam is missing ${required}`);
   }
 }
+for (const [token, expected] of [["parent_work_id", 2], ["legacy_containment_ref", 3]]) {
+  const actual = legacyDecodeDeclaration.split(token).length - 1;
+  if (actual !== expected) {
+    failures.push(`crates/firm-core/src/work.rs: ${token} occurs ${actual} times; exact decode seam requires ${expected}`);
+  }
+}
 const legacyDecodeTest = read("crates/firm-core/src/lib_tests/work_contracts.rs");
 for (const required of [
   '"parent_work_id": "historical-parent"',
@@ -98,6 +104,12 @@ for (const required of [
 ]) {
   if (!legacyDecodeTest.includes(required)) {
     failures.push(`crates/firm-core/src/lib_tests/work_contracts.rs: compatibility assertion is missing ${required}`);
+  }
+}
+for (const [token, expected] of [["parent_work_id", 2], ["legacy_containment_ref", 3]]) {
+  const actual = legacyDecodeTest.split(token).length - 1;
+  if (actual !== expected) {
+    failures.push(`crates/firm-core/src/lib_tests/work_contracts.rs: ${token} occurs ${actual} times; exact compatibility test requires ${expected}`);
   }
 }
 
