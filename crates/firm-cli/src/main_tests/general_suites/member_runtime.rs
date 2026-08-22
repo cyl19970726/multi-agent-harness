@@ -64,6 +64,8 @@ mod provider_authority_never_borrows_a_sole_foreign_space_session;
 mod provider_error_after_start_claim_applies_close_before_prebind_failure;
 #[path = "../general/provider_error_does_not_turn_pending_close_into_provider_receipt.rs"]
 mod provider_error_does_not_turn_pending_close_into_provider_receipt;
+#[path = "../general/provider_exit_detaches_terminal_session_before_same_native_reopen.rs"]
+mod provider_exit_detaches_terminal_session_before_same_native_reopen;
 #[path = "../general/provider_interaction_cas_rebases_retries_and_fences_lifecycle.rs"]
 mod provider_interaction_cas_rebases_retries_and_fences_lifecycle;
 #[path = "../general/provider_start_claim_accepts_reopened_queued_generation.rs"]

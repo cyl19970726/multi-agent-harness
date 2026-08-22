@@ -339,6 +339,9 @@ pub(crate) fn bind_team_runtime_supervisor(
             .provider_profile
             .as_ref()
             .and_then(|profile| profile.capability_fingerprint.clone());
+        if session.control_state == next {
+            continue;
+        }
         store.bind_agent_session_control_state(
             &MutationContext {
                 execution_space_id: execution_space_id.to_string(),
@@ -346,8 +349,8 @@ pub(crate) fn bind_team_runtime_supervisor(
                 authority_actor: None,
                 command_name: "node_daemon.team_supervisor.bind_session".into(),
                 idempotency_key: format!(
-                    "session-control:{}:{}:{}",
-                    session.id, supervisor_id, supervisor_generation
+                    "session-control:{}:{}:{}:{}",
+                    session.id, supervisor_id, supervisor_generation, member.runtime_generation
                 ),
                 expected_version: session.version,
                 request_fingerprint: None,
