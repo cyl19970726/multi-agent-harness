@@ -201,3 +201,89 @@ fn failed_prerequisite_commits_replayable_cross_team_run_reconciliation_outbox()
     assert_eq!(matches(&first.attentions), 1);
     assert_eq!(matches(&second.attentions), 1);
 }
+
+#[test]
+fn cancelled_prerequisite_uses_only_canonical_work_authority_and_replays_outbox() {
+    let (_root, store, run, _, _) = work_test_fixture("dependency-cancel-canonical");
+    let prerequisite = create_work(&store, &run.id, "work-prerequisite", 2);
+    let dependent = create_work(&store, &run.id, "work-dependent", 3);
+    let dependent = store
+        .replace_work_dependencies(
+            &dependent.id,
+            dependent.version,
+            vec![prerequisite.id.clone()],
+            host_work_context("event-dependent-edge", "key-dependent-edge", "unix-ms:4"),
+        )
+        .expect("dependent edge");
+    let legacy_before = store.work_operations().expect("legacy operations").len();
+
+    let cancelled = store
+        .cancel_work(
+            &prerequisite.id,
+            prerequisite.version,
+            "obsolete prerequisite",
+            host_work_context("native-cancel-event", "canonical-cancel-key", "unix-ms:5"),
+        )
+        .expect("canonical cancellation");
+    let replay = store
+        .cancel_work(
+            &prerequisite.id,
+            prerequisite.version,
+            "obsolete prerequisite",
+            host_work_context(
+                "different-envelope-event",
+                "canonical-cancel-key",
+                "unix-ms:99",
+            ),
+        )
+        .expect("exact canonical replay");
+    assert_eq!(cancelled, replay);
+    assert_eq!(
+        store.work_operations().expect("legacy operations").len(),
+        legacy_before,
+        "current cancellation must not append the legacy WorkOperation ledger"
+    );
+
+    let operations = store.canonical_operations().expect("canonical operations");
+    let cancellations = operations
+        .iter()
+        .filter(|operation| {
+            operation.event.aggregate_id == prerequisite.id
+                && operation.event.transition == "cancelled"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(cancellations.len(), 1);
+    assert!(cancellations[0]
+        .initial_outbox_records
+        .iter()
+        .any(|record| {
+            record["work_id"] == dependent.id
+                && record["kind"] == "work_prerequisite_needs_reconciliation"
+        }));
+    assert!(store
+        .work_events()
+        .expect("compatibility events")
+        .iter()
+        .any(|event| {
+            event.id == "native-cancel-event"
+                && event.work_id == prerequisite.id
+                && event.kind == WorkEventKind::Cancelled
+        }));
+
+    let first = store
+        .host_attention_inbox_for_team_run(&run.id, true)
+        .expect("first replay-safe outbox read");
+    let second = store
+        .host_attention_inbox_for_team_run(&run.id, true)
+        .expect("second replay-safe outbox read");
+    let count = |rows: &[HostAttention]| {
+        rows.iter()
+            .filter(|attention| {
+                attention.work_id == dependent.id
+                    && attention.kind == HostAttentionKind::WorkPrerequisiteNeedsReconciliation
+            })
+            .count()
+    };
+    assert_eq!(count(&first.attentions), 1);
+    assert_eq!(count(&second.attentions), 1);
+}

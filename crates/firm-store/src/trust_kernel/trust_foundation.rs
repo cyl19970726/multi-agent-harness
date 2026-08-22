@@ -384,6 +384,20 @@ impl HarnessStore {
         Ok(works)
     }
 
+    /// Decode-only compatibility view for callers that still resolve a
+    /// historical/native WorkEvent reference. Current Work state is never
+    /// reconstructed from these records; the canonical operation projection
+    /// remains the sole writer and authority.
+    pub(crate) fn trust_work_events_unlocked(&self) -> StoreResult<Vec<firm_core::WorkEvent>> {
+        Ok(self
+            .trust_operation_envelopes_unlocked()?
+            .into_iter()
+            .filter(|envelope| envelope.operation.event.aggregate_kind == "work")
+            .flat_map(|envelope| envelope.operation.immutable_side_records)
+            .filter_map(|record| serde_json::from_value::<firm_core::WorkEvent>(record).ok())
+            .collect())
+    }
+
     pub(crate) fn trust_work_delegation_revisions_unlocked(
         &self,
     ) -> StoreResult<Vec<WorkDelegationRevision>> {

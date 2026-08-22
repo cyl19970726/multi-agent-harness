@@ -433,16 +433,35 @@ impl HarnessStore {
         }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        if let Some(existing) = self.idempotent_work_operation_unlocked(
-            &context.idempotency_key,
-            work_id,
-            WorkEventKind::Cancelled,
-        )? {
-            return Ok(existing.work);
-        }
         require_host_actor(&context.performed_by_actor)?;
-        let current = self.current_work_unlocked(work_id, expected_version)?;
+        let current = self
+            .latest_works_unlocked()?
+            .remove(work_id)
+            .ok_or_else(|| StoreError::Conflict(format!("work not found: {work_id}")))?;
         self.require_exact_team_run_host_actor(&context.performed_by_actor, &current.team_run_id)?;
+        let request_payload = serde_json::json!({
+            "work_id": work_id,
+            "expected_version": expected_version,
+            "reason": reason,
+        });
+        let (mutation_context, fingerprint) = self.canonical_work_command_context_unlocked(
+            &current,
+            expected_version,
+            "work.cancel",
+            &context,
+            &request_payload,
+        )?;
+        if let Some(replay) =
+            self.replay_current_work_mutation_unlocked(&mutation_context, work_id, &fingerprint)?
+        {
+            return Ok(replay.projection);
+        }
+        if current.version != expected_version {
+            return Err(StoreError::Conflict(format!(
+                "WORK_VERSION_CONFLICT: Work {work_id} is version {}, expected {expected_version}",
+                current.version
+            )));
+        }
         if current.is_terminal() {
             return Err(StoreError::Conflict(format!(
                 "work {work_id} is already terminal"
@@ -456,7 +475,34 @@ impl HarnessStore {
         next.blocker_reason = Some(reason.to_string());
         next.version += 1;
         next.updated_at = context.created_at.clone();
-        self.append_work_transition_unlocked(current, next, WorkEventKind::Cancelled, context)
+        // Preserve the historical WorkEvent read contract as an immutable
+        // record inside the one canonical operation. It is not a second Work
+        // writer: the resulting Work projection and its successor outbox are
+        // committed by commit_current_work_mutation_unlocked.
+        let compatibility_event = WorkEvent {
+            id: context.event_id.clone(),
+            team_run_id: next.team_run_id.clone(),
+            work_id: next.id.clone(),
+            sequence: next.version,
+            kind: WorkEventKind::Cancelled,
+            expected_version,
+            resulting_version: next.version,
+            performed_by_actor: context.performed_by_actor.clone(),
+            authority_actor: context.authority_actor.clone(),
+            causation_ref: context.causation_ref.clone(),
+            idempotency_key: context.idempotency_key.clone(),
+            payload: request_payload.clone(),
+            created_at: context.created_at.clone(),
+        };
+        let result = self.commit_current_work_mutation_unlocked(
+            &mutation_context,
+            "cancelled",
+            request_payload,
+            &next,
+            vec![serde_json::to_value(compatibility_event)?],
+            Vec::new(),
+        )?;
+        Ok(result.projection)
     }
 
     /// Close a non-terminal Work as failed by an explicit Host decision.
