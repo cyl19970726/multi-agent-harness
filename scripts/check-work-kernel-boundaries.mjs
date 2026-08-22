@@ -225,7 +225,6 @@ for (const forbidden of [
   "onConnect=",
   "onEdgesDelete=",
   "onNodesDelete=",
-  "onNodeDragStop=",
   "prerequisite_work_ids.push",
   "successor_work_ids.push",
 ]) {
