@@ -244,9 +244,12 @@ impl CliError {
 /// Whether canonical Message fabric still exposes a Host delivery that has not
 /// reached acknowledgement. The compatibility TeamMessage delivery policy is
 /// not authority for this current status projection.
-pub(crate) fn has_actionable_unacknowledged_host_delivery(message: &TeamMessageProjection) -> bool {
+pub(crate) fn has_actionable_unacknowledged_host_delivery(
+    message: &TeamMessageProjection,
+    host_runtime_id: &str,
+) -> bool {
     message.deliveries.iter().any(|delivery| {
-        delivery.member_id == "host"
+        delivery.member_id == host_runtime_id
             && matches!(
                 delivery.status,
                 TeamDeliveryStatus::Queued
