@@ -297,23 +297,41 @@ pub struct FailureAnalysis {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkModuleId {
+    IntegrationPlan,
+}
+
+impl WorkModuleId {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::IntegrationPlan => "integration-plan",
+        }
+    }
+}
+
+impl std::fmt::Display for WorkModuleId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkModuleDefinition {
-    pub module_id: String,
+    pub module_id: WorkModuleId,
     pub module_version: u64,
     pub schema_version: u64,
     pub display_name: String,
     pub config_schema: serde_json::Value,
-    pub allowed_actions: Vec<String>,
-    pub relation_types: Vec<String>,
     pub default_gate_templates: Vec<serde_json::Value>,
     pub implementation_ref: String,
 }
 
 pub fn integration_plan_module_v1() -> WorkModuleDefinition {
     WorkModuleDefinition {
-        module_id: "integration-plan".into(),
+        module_id: WorkModuleId::IntegrationPlan,
         module_version: 1,
         schema_version: 1,
         display_name: "Integration Plan".into(),
@@ -327,8 +345,6 @@ pub fn integration_plan_module_v1() -> WorkModuleDefinition {
                 "combined_verification", "rollback_plan"
             ]
         }),
-        allowed_actions: vec!["attach".into(), "detach".into(), "resolve_gates".into()],
-        relation_types: vec!["prerequisite".into(), "converges_into".into()],
         default_gate_templates: vec![serde_json::json!({
             "gate_type": "integration-plan-completeness",
             "gate_contract_version": "1",
@@ -344,7 +360,7 @@ pub struct WorkModuleBinding {
     pub id: String,
     pub work_id: String,
     pub work_revision: u64,
-    pub module_id: String,
+    pub module_id: WorkModuleId,
     pub module_version: u64,
     pub resolved_config: serde_json::Value,
     pub config_fingerprint: String,
@@ -543,4 +559,33 @@ pub struct TrustError {
     pub resource_id: String,
     #[serde(default)]
     pub current_version: Option<u64>,
+}
+
+#[cfg(test)]
+mod work_module_contract_tests {
+    use super::*;
+
+    #[test]
+    fn module_registry_is_closed_and_does_not_advertise_graph_authority() {
+        let definition = integration_plan_module_v1();
+        assert_eq!(definition.module_id, WorkModuleId::IntegrationPlan);
+        let wire = serde_json::to_value(definition).expect("serialize module definition");
+        assert_eq!(wire["module_id"], "integration-plan");
+        assert!(wire.get("relation_types").is_none());
+        assert!(wire.get("allowed_actions").is_none());
+
+        let unknown = serde_json::from_value::<WorkModuleBinding>(serde_json::json!({
+            "id": "binding-1",
+            "work_id": "work-1",
+            "work_revision": 1,
+            "module_id": "unknown-module",
+            "module_version": 1,
+            "resolved_config": {},
+            "config_fingerprint": "sha256:config",
+            "attached_by": {"kind": "agent_member", "id": "member-1"},
+            "attached_at": "unix-ms:1",
+            "version": 1
+        }));
+        assert!(unknown.is_err(), "unknown module ids fail closed");
+    }
 }
