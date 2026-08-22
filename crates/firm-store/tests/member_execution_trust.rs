@@ -260,13 +260,14 @@ fn seed_team(store: &HarnessStore, label: &str, member_ids: &[&str]) -> AgentTea
                 .expect("create durable Team AgentMember");
         }
     }
+    let host_agent_id = member_ids[0].to_string();
     let team = AgentTeam {
         id: team_id.clone(),
         name: "trust team".into(),
         description: "trust fixture".into(),
         legacy_mission_id: Some(mission_id.clone()),
         mission_id,
-        host_agent_id: member_ids[0].into(),
+        host_agent_id: host_agent_id.clone(),
         node_id: NODE.into(),
         status: AgentTeamStatus::Active,
         revision: 1,
@@ -317,7 +318,12 @@ fn seed_team(store: &HarnessStore, label: &str, member_ids: &[&str]) -> AgentTea
         previous_run_id: None,
         host_surface: "test".into(),
         host_thread_id: None,
-        host_actor: None,
+        host_actor: Some(TeamActorRef {
+            kind: TeamActorKind::Host,
+            id: host_agent_id,
+            display_name: Some("Trust fixture Host".into()),
+            authn_source: Some("test_team_membership:host".into()),
+        }),
         host_control_mode: Default::default(),
         objective: "trust test".into(),
         execution_root: None,
@@ -360,12 +366,9 @@ fn acquire_supervisor(
 
 fn seed_team_work(store: &HarnessStore, label: &str, work_id: &str) -> String {
     let run = seed_team(store, label, &["host"]);
-    let actor = TeamActorRef {
-        kind: TeamActorKind::Host,
-        id: "host".into(),
-        display_name: None,
-        authn_source: Some("test".into()),
-    };
+    let actor = store
+        .exact_team_run_host_actor(&run.id)
+        .expect("resolve exact fixture Host");
     let created = store
         .insert_work(
             Work {
@@ -447,12 +450,9 @@ fn seed_active_team_work(store: &HarnessStore, label: &str, work_id: &str) -> St
         },
     );
     let team_id = seed_team_work_from_run(store, &run, work_id);
-    let host = TeamActorRef {
-        kind: TeamActorKind::Host,
-        id: "host".into(),
-        display_name: None,
-        authn_source: Some("test".into()),
-    };
+    let host = store
+        .exact_team_run_host_actor(&run.id)
+        .expect("resolve exact fixture Host");
     store
         .assign_work(
             work_id,
@@ -494,12 +494,9 @@ fn seed_active_team_work(store: &HarnessStore, label: &str, work_id: &str) -> St
 }
 
 fn seed_team_work_from_run(store: &HarnessStore, run: &AgentTeamRun, work_id: &str) -> String {
-    let actor = TeamActorRef {
-        kind: TeamActorKind::Host,
-        id: "host".into(),
-        display_name: None,
-        authn_source: Some("test".into()),
-    };
+    let actor = store
+        .exact_team_run_host_actor(&run.id)
+        .expect("resolve exact fixture Host");
     store
         .insert_work(
             Work {
