@@ -106,6 +106,9 @@ use node_team_commands::*;
 #[path = "main_modules/team_provider_profiles.rs"]
 mod team_provider_profiles;
 use team_provider_profiles::*;
+#[path = "main_modules/managed_host_profile.rs"]
+mod managed_host_profile;
+use managed_host_profile::*;
 #[path = "main_modules/provider_native_identity.rs"]
 mod provider_native_identity;
 use provider_native_identity::*;

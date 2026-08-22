@@ -221,3 +221,66 @@ fn managed_kimi_host_requires_a_workspace_distinct_from_the_team_root() {
         std::fs::remove_dir_all(root).expect("remove test store");
     }
 }
+
+#[test]
+fn managed_kimi_host_rejects_another_member_run_in_the_same_writable_workspace() {
+    let (store, root) = temp_store("managed-host-kimi-duplicate-writer");
+    let workspace = isolated_host_worktree(root.as_path());
+    let members = [
+        TeamMemberSpec {
+            agent_member_id: "host".into(),
+            name: "Host".into(),
+            role: "host".into(),
+            provider: "kimi".into(),
+            execution_mode: Some("kimi_acp".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: Some(workspace.clone()),
+            owned_paths: Vec::new(),
+            resume_native_session_id: None,
+            initial_work: None,
+        },
+        TeamMemberSpec {
+            agent_member_id: "worker".into(),
+            name: "Worker".into(),
+            role: "implementer".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: Some(workspace),
+            owned_paths: Vec::new(),
+            resume_native_session_id: None,
+            initial_work: None,
+        },
+    ];
+    let error = match create_team_run(
+        &store,
+        None,
+        None,
+        None,
+        "Reject two writable drivers",
+        None,
+        "test",
+        None,
+        HostControlMode::Managed,
+        None,
+        None,
+        None,
+        None,
+        &members,
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("duplicate writable Host workspace must fail during Store admission"),
+    };
+    assert!(error
+        .to_string()
+        .contains("MANAGED_HOST_WORKSPACE_ALREADY_CLAIMED"));
+    assert!(store
+        .fabric_agent_sessions("unit-test-space")
+        .expect("read AgentSessions")
+        .is_empty());
+    std::fs::remove_dir_all(root).expect("remove test store");
+}

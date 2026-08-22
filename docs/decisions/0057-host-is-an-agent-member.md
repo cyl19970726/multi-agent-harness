@@ -61,8 +61,11 @@ receipt.
   Kimi ACP cannot; it may retain an honestly frozen `FullAccess` ceiling only
   with an explicit Host `provider_cwd_hint` distinct from the Team execution
   root. Host coding still requires explicit Host-owned Work and an
-  independently leased workspace. This preserves one driver per writable
-  workspace without inventing a Kimi sandbox.
+  independently reserved workspace. The active Host MemberRun is the durable
+  Store authority for that canonical cwd: same-lock admission rejects another
+  active MemberRun at the same root, and session materialization revalidates
+  the reservation. This preserves one driver per writable workspace without
+  inventing a Kimi sandbox.
 
 ## Acceptance
 
@@ -72,5 +75,6 @@ receipt.
 - Host/Member runtime unification introduces no parent/child Work authority or nested Team topology.
 - All four providers select the ordinary Team runtime binding for managed Hosts.
 - Managed Kimi Host admission fails before AgentSession materialization when
-  the independent Host workspace is absent or aliases the Team execution root.
+  the Host workspace is absent, aliases the Team execution root, or is already
+  reserved by another active MemberRun.
 - Dynamic Workflow retirement, package boundaries, source-size ceiling, deterministic tests, and exact-SHA independent Review remain green.

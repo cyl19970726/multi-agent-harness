@@ -1,6 +1,99 @@
 use super::*;
 
 impl HarnessStore {
+    fn validate_unique_managed_host_workspaces_unlocked(
+        &self,
+        team_run: &AgentTeamRun,
+        incoming: &[ProviderRuntimeProjection],
+    ) -> StoreResult<()> {
+        let current_members = latest_by_id(
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
+            |member| member.id.clone(),
+        );
+        let current_runs =
+            latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
+                run.id.clone()
+            });
+        let is_managed_kimi_host = |run: &AgentTeamRun, member: &ProviderRuntimeProjection| {
+            run.host_control_mode == firm_core::HostControlMode::Managed
+                && member.provider == "kimi"
+                && run.host_actor.as_ref().is_some_and(|host| {
+                    host.kind == TeamActorKind::Host && host.id == member.agent_member_id
+                })
+        };
+        let active_with_root = |member: &&ProviderRuntimeProjection| {
+            member.coordination_is_active()
+                && member.finished_at.is_none()
+                && member
+                    .provider_cwd_hint
+                    .as_deref()
+                    .is_some_and(|root| !root.trim().is_empty())
+        };
+        let existing = current_members
+            .values()
+            .filter(active_with_root)
+            .collect::<Vec<_>>();
+
+        for host in incoming
+            .iter()
+            .filter(|member| is_managed_kimi_host(team_run, member))
+        {
+            let Some(root) = host.provider_cwd_hint.as_deref() else {
+                continue;
+            };
+            if existing.iter().any(|member| {
+                member.id != host.id && member.provider_cwd_hint.as_deref() == Some(root)
+            }) || incoming.iter().any(|member| {
+                member.id != host.id
+                    && member.coordination_is_active()
+                    && member.finished_at.is_none()
+                    && member.provider_cwd_hint.as_deref() == Some(root)
+            }) {
+                return Err(StoreError::Conflict(format!(
+                    "MANAGED_HOST_WORKSPACE_ALREADY_CLAIMED: Kimi Host MemberRun {} requires unique writable workspace {}",
+                    host.id, root
+                )));
+            }
+        }
+
+        for member in incoming.iter().filter(active_with_root) {
+            let root = member
+                .provider_cwd_hint
+                .as_deref()
+                .expect("active_with_root proved a workspace");
+            if existing.iter().any(|host| {
+                host.id != member.id
+                    && host.provider_cwd_hint.as_deref() == Some(root)
+                    && current_runs
+                        .get(&host.team_run_id)
+                        .is_some_and(|run| is_managed_kimi_host(run, host))
+            }) {
+                return Err(StoreError::Conflict(format!(
+                    "MANAGED_HOST_WORKSPACE_ALREADY_CLAIMED: workspace {} is reserved by an active managed Kimi Host",
+                    root
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Revalidate legacy/pre-upgrade rows immediately before a managed Kimi
+    /// Host can materialize an AgentSession. New admissions reserve the same
+    /// canonical cwd under the Store write lock, so this check plus admission
+    /// serialization proves one active writer for the workspace.
+    pub fn require_unique_managed_host_workspace(
+        &self,
+        team_run: &AgentTeamRun,
+        member: &ProviderRuntimeProjection,
+    ) -> StoreResult<()> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.validate_unique_managed_host_workspaces_unlocked(
+            team_run,
+            std::slice::from_ref(member),
+        )
+    }
+
     pub(super) fn validate_new_team_run_from_agent_team_unlocked(
         &self,
         value: &AgentTeamRun,
@@ -755,6 +848,7 @@ impl HarnessStore {
             }
             _ => {}
         }
+        self.validate_unique_managed_host_workspaces_unlocked(value, runtimes)?;
         self.validate_new_trust_member_runs_unlocked(execution_space_id, value, canonical)?;
         self.append_jsonl_unlocked("team_runs.jsonl", value)?;
         for runtime in runtimes {
@@ -829,6 +923,7 @@ impl HarnessStore {
                 canonical.run.id
             )));
         }
+        self.validate_unique_managed_host_workspaces_unlocked(next, std::slice::from_ref(member))?;
         self.validate_new_trust_member_runs_unlocked(
             execution_space_id,
             next,
