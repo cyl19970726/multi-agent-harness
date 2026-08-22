@@ -160,22 +160,25 @@ pub(super) fn claim_canonical_work_for_member(
                 && lease.expires_unix_ms > current_unix_ms_u64()
         })
         .ok_or_else(|| CliError::Usage("NODE_DAEMON_GENERATION_FENCED".into()))?;
-    let works = ledger
-        .store
-        .latest_works()?
-        .into_iter()
+    let all_works = ledger.store.latest_works()?;
+    let works = all_works
+        .iter()
         .filter(|work| {
             work.team_run_id == ledger.run_id
                 && work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
                 && work.active_member_run_id.as_deref() == Some(member.id.as_str())
                 && !work.is_terminal()
         })
+        .cloned()
         .map(|work| (work.id.clone(), work))
         .collect::<BTreeMap<_, _>>();
     let mut bindings = ledger
         .store
         .fabric_work_execution_bindings(&execution_space_id)?;
-    for work in works.values() {
+    for work in works
+        .values()
+        .filter(|work| harness_core::work_readiness(work, &all_works).ready)
+    {
         if !bindings.iter().any(|binding| {
             binding.work_id == work.id
                 && binding.status == harness_core::agentfirm_api::WorkExecutionBindingStatus::Active
@@ -234,7 +237,17 @@ pub(super) fn claim_canonical_work_for_member(
                 && delivery.status == harness_core::agentfirm_api::WorkDeliveryStatus::Queued
         })
         .collect::<Vec<_>>();
-    queued.sort_by(|left, right| left.id.cmp(&right.id));
+    queued.sort_by(|left, right| {
+        let left_work = works.get(&left.work_id);
+        let right_work = works.get(&right.work_id);
+        match (left_work, right_work) {
+            (Some(left_work), Some(right_work)) => work_priority_rank(right_work.priority)
+                .cmp(&work_priority_rank(left_work.priority))
+                .then_with(|| left_work.created_at.cmp(&right_work.created_at))
+                .then_with(|| left_work.id.cmp(&right_work.id)),
+            _ => left.id.cmp(&right.id),
+        }
+    });
     for delivery in queued {
         let Some(work) = works.get(&delivery.work_id) else {
             continue;
@@ -242,6 +255,7 @@ pub(super) fn claim_canonical_work_for_member(
         if work.version != delivery.work_revision
             || work.active_member_run_id.as_deref() != Some(member.id.as_str())
             || work.is_terminal()
+            || !harness_core::work_readiness(work, &all_works).ready
         {
             continue;
         }
@@ -750,11 +764,11 @@ impl TeamRunLedger {
         &self,
         member_id: &str,
     ) -> CliResult<Vec<(Work, ProviderWorkDispatch)>> {
-        let works = self
-            .store
-            .latest_works()?
-            .into_iter()
+        let all_works = self.store.latest_works()?;
+        let works = all_works
+            .iter()
             .filter(|work| work.team_run_id == self.run_id)
+            .cloned()
             .map(|work| (work.id.clone(), work))
             .collect::<std::collections::HashMap<_, _>>();
         let mut queued = self
@@ -770,8 +784,9 @@ impl TeamRunLedger {
                 let work = works.get(&delivery.work_id)?;
                 (work.version == delivery.work_version
                     && work.active_member_run_id.as_deref() == Some(member_id)
-                    && !work.is_terminal())
-                .then(|| (work.clone(), delivery))
+                    && !work.is_terminal()
+                    && harness_core::work_readiness(work, &all_works).ready)
+                    .then(|| (work.clone(), delivery))
             })
             .collect::<Vec<_>>();
         queued.sort_by(|(left, _), (right, _)| {
