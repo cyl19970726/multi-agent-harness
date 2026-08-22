@@ -42,7 +42,7 @@ fn work_execution_binding_rechecks_authoritative_dependency_readiness() {
                 event_id: "dependencies-dependent".into(),
                 performed_by_actor: firm_core::TeamActorRef {
                     kind: firm_core::TeamActorKind::Host,
-                    id: "fixture-host".into(),
+                    id: "host-a".into(),
                     display_name: None,
                     authn_source: Some("test".into()),
                 },
