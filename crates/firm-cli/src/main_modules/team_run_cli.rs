@@ -1,5 +1,28 @@
 use super::*;
 
+pub(super) fn uses_external_host_binding(mode: HostControlMode) -> bool {
+    mode == HostControlMode::ExternalInteractive
+}
+
+pub(super) fn is_unbound_external_host(
+    mode: HostControlMode,
+    host_thread_id: Option<&str>,
+) -> bool {
+    uses_external_host_binding(mode) && host_thread_id.is_none()
+}
+
+pub(super) fn admitted_ambient_host_binding(
+    mode: HostControlMode,
+    surface: Option<String>,
+    thread_id: Option<String>,
+) -> (Option<String>, Option<String>) {
+    if uses_external_host_binding(mode) {
+        (surface, thread_id)
+    } else {
+        (None, None)
+    }
+}
+
 pub(super) fn team_run_command(
     store: &HarnessStore,
     resolved: &ResolvedStore,
@@ -122,35 +145,6 @@ pub(super) fn team_run_command(
                         .map_err(|_| CliError::Usage("--budget-usd must be a number".to_string()))
                 })
                 .transpose()?;
-            let env_host_surface = std::env::var("STAR_HARNESS_HOST_SURFACE")
-                .ok()
-                .filter(|s| !s.trim().is_empty());
-            let env_host_thread_id = std::env::var("STAR_HARNESS_HOST_THREAD_ID")
-                .ok()
-                .filter(|s| !s.trim().is_empty());
-            // Refuse ambiguous partial auto-bind: both must be present or
-            // neither; a single env var is a misconfiguration, not intent.
-            match (&env_host_surface, &env_host_thread_id) {
-                (Some(_), None) => {
-                    eprintln!(
-                        "[WARNING] STAR_HARNESS_HOST_SURFACE is set but STAR_HARNESS_HOST_THREAD_ID is missing — refusing to auto-bind"
-                    );
-                }
-                (None, Some(_)) => {
-                    eprintln!(
-                        "[WARNING] STAR_HARNESS_HOST_THREAD_ID is set but STAR_HARNESS_HOST_SURFACE is missing — refusing to auto-bind"
-                    );
-                }
-                (Some(_), Some(_)) | (None, None) => {}
-            }
-            let host_surface = canonical_surface(
-                &value(args, "--host-surface")
-                    .or_else(|| env_host_surface.clone())
-                    .unwrap_or_else(|| "cli".into()),
-            )
-            .to_string();
-            let host_thread_id =
-                value(args, "--host-thread-id").or_else(|| env_host_thread_id.clone());
             let requested_host_mode = value(args, "--host-runtime-mode");
             let execution_space_id = resolved
                 .execution_space_context
@@ -171,6 +165,51 @@ pub(super) fn team_run_command(
                 &mut members,
                 requested_host_mode.as_deref(),
             )?;
+            let (env_host_surface, env_host_thread_id) =
+                if uses_external_host_binding(host_control_mode) {
+                    (
+                        std::env::var("STAR_HARNESS_HOST_SURFACE")
+                            .ok()
+                            .filter(|s| !s.trim().is_empty()),
+                        std::env::var("STAR_HARNESS_HOST_THREAD_ID")
+                            .ok()
+                            .filter(|s| !s.trim().is_empty()),
+                    )
+                } else {
+                    (None, None)
+                };
+            let explicit_host_surface = value(args, "--host-surface");
+            let explicit_host_thread_id = value(args, "--host-thread-id");
+            let (ambient_host_surface, ambient_host_thread_id) = admitted_ambient_host_binding(
+                host_control_mode,
+                env_host_surface.clone(),
+                env_host_thread_id.clone(),
+            );
+            if uses_external_host_binding(host_control_mode) {
+                // Refuse ambiguous partial auto-bind only for an external Host.
+                // Managed Hosts are daemon-driven AgentMembers and must ignore
+                // ambient interactive-host hook variables entirely.
+                match (&env_host_surface, &env_host_thread_id) {
+                    (Some(_), None) => {
+                        eprintln!(
+                            "[WARNING] STAR_HARNESS_HOST_SURFACE is set but STAR_HARNESS_HOST_THREAD_ID is missing — refusing to auto-bind"
+                        );
+                    }
+                    (None, Some(_)) => {
+                        eprintln!(
+                            "[WARNING] STAR_HARNESS_HOST_THREAD_ID is set but STAR_HARNESS_HOST_SURFACE is missing — refusing to auto-bind"
+                        );
+                    }
+                    (Some(_), Some(_)) | (None, None) => {}
+                }
+            }
+            let host_surface = canonical_surface(
+                &explicit_host_surface
+                    .or(ambient_host_surface)
+                    .unwrap_or_else(|| "cli".into()),
+            )
+            .to_string();
+            let host_thread_id = explicit_host_thread_id.or(ambient_host_thread_id);
             let created = create_team_run(
                 store,
                 resolved.context.as_ref(),
@@ -204,7 +243,10 @@ pub(super) fn team_run_command(
                     eprintln!("[WARNING] {warning}");
                 }
             }
-            if host_thread_id.is_none() {
+            if is_unbound_external_host(
+                created.team_run.host_control_mode,
+                host_thread_id.as_deref(),
+            ) {
                 eprintln!(
                     "[WARNING] Team run {} created without host binding — member messages will queue silently.\n\
                      Bind with: harness team-run bind-host --id {} --surface <surface> --thread-id <thread-id>",
@@ -380,7 +422,12 @@ pub(super) fn team_run_command(
                     },
                     "node_daemon": node_daemon,
                 }))?;
-                if unacked_messages > 0 && run.host_thread_id.is_none() {
+                if unacked_messages > 0
+                    && is_unbound_external_host(
+                        run.host_control_mode,
+                        run.host_thread_id.as_deref(),
+                    )
+                {
                     eprintln!(
                         "[WARNING] {unacked_messages} unacked message(s) queued without host binding — member messages may be waiting silently.\n\
                          Bind with: harness team-run bind-host --id {} --surface <surface> --thread-id <thread-id>",
@@ -409,7 +456,12 @@ pub(super) fn team_run_command(
                     );
                 }
                 println!("unacked_messages (canonical Host deliveries): {unacked_messages}");
-                if unacked_messages > 0 && run.host_thread_id.is_none() {
+                if unacked_messages > 0
+                    && is_unbound_external_host(
+                        run.host_control_mode,
+                        run.host_thread_id.as_deref(),
+                    )
+                {
                     eprintln!(
                         "[WARNING] {unacked_messages} unacked message(s) queued without host binding — member messages may be waiting silently.\n\
                          Bind with: harness team-run bind-host --id {} --surface <surface> --thread-id <thread-id>",
@@ -699,7 +751,7 @@ pub(super) fn team_run_command(
             let id = required(args, "--id")?;
             let run = latest_team_run(store, &id)?;
             // L1: auto-bind from star-harness hook env when unambiguous.
-            if run.host_thread_id.is_none() {
+            if is_unbound_external_host(run.host_control_mode, run.host_thread_id.as_deref()) {
                 let env_surface = std::env::var("STAR_HARNESS_HOST_SURFACE")
                     .ok()
                     .filter(|s| !s.trim().is_empty());
@@ -727,12 +779,15 @@ pub(super) fn team_run_command(
             }
             // Re-read after potential auto-bind so the warning sees fresh state.
             let current = latest_team_run(store, &id)?;
-            if current.host_thread_id.is_none() {
+            if is_unbound_external_host(
+                current.host_control_mode,
+                current.host_thread_id.as_deref(),
+            ) {
                 eprintln!(
                     "[WARNING] Team run {id} has no host binding — member messages will queue silently.\n\
                      Bind with: harness team-run bind-host --id {id} --surface <surface> --thread-id <thread-id>"
                 );
-            } else {
+            } else if uses_external_host_binding(current.host_control_mode) {
                 let (_lease, warning) = acquire_validated_interactive_host_lease(
                     store,
                     &current,
