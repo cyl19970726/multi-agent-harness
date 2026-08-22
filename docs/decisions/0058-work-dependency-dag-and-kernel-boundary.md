@@ -91,18 +91,18 @@ through an ordinary Work-linked Message; the Message itself changes nothing.
 ```text
 firm-core / Work kernel
   model · lifecycle · operation · dependency · responsibility · module/gate invariants
-                  |
-                  v
-firm-store
+                         ^
+                         |
+firm-application         |  depends only on firm-core
+  WorkPersistence port · generic WorkApplication<P> · Work use cases
+          ^
+          | implements port
+firm-store               |  depends on firm-application + firm-core
   load/lock/CAS · atomic append · rebuildable projections · outbox/attention
-                  |
-                  v
-one Work application service
-  create · dependency mutation · claim/start · submit/review/accept/cancel
-                  |
-                  v
-CLI / HTTP / MCP / Role Actions           RoleViews / Dashboard
-  authenticated protocol adapters          server-derived graph and explanations
+          ^
+          |
+CLI composition root ----+----> HTTP / MCP / Role Actions / RoleViews
+                               Dashboard renders server facts
 ```
 
 The Work kernel is pure domain policy. It must not depend on Store, CLI, HTTP,
@@ -110,12 +110,16 @@ MCP, Dashboard, NodeDaemon, provider adapters, GitHub, or Notion. It owns the
 three lifecycle axes, legal operations, graph validation, readiness, terminal
 immutability, responsibility invariants, and Module/Gate constraints.
 
-The Store owns persistence mechanics, concurrency control, atomic append,
-rebuildable projections, notifications, and recovery. It does not invent
-state transitions. One application service orchestrates use cases and is used
-by every mutation transport. NodeDaemon and providers execute effects but own
-no Work state. Dashboard submits commands and renders server facts; it is not
-a readiness authority.
+`firm-application` depends only on `firm-core`. It defines the
+`WorkPersistence` port and generic `WorkApplication<P>` use cases; it never
+imports the concrete Store or a runtime package. `firm-store` depends on
+`firm-core` plus `firm-application` and implements that port with concurrency
+control, atomic append, rebuildable projections, notifications, and recovery.
+It does not invent state transitions. The CLI is the composition root: it
+wires the concrete Store into the generic application and exposes the same use
+cases through every mutation transport. NodeDaemon and providers execute
+effects but own no Work state. Dashboard submits commands and renders server
+facts; it is not a readiness authority.
 
 The Work kernel may remain a cohesive module inside `firm-core`. A separate
 crate is justified only by a real reuse or dependency boundary; an empty
@@ -173,14 +177,16 @@ The Work DAG operates only over the current Work authority.
 The cutover is accepted only when:
 
 1. active roots contain zero `parent_work_id`, `child Work`, or equivalent
-   current-contract surfaces outside the explicit historical allowlist;
+   current-contract surfaces outside the exact read-only core decode seam,
+   its compatibility test, and the explicit historical allowlist;
 2. self-edge, duplicate, missing prerequisite, direct cycle, transitive cycle,
    fan-in, fan-out, stale revision, concurrent update, failed prerequisite, and
    cancelled prerequisite tests pass;
 3. CLI, HTTP, MCP, Role Actions, RoleViews, and Dashboard use the same
    application/kernel semantics;
-4. package-boundary checks prevent core-to-outer-layer and Store-to-CLI
-   dependencies, and no maintained file exceeds 1,500 lines;
+4. package-boundary checks require application-to-core-only dependency,
+   Store implementation of the application port, CLI composition, no
+   core-to-outer-layer dependency, and no maintained file over 1,500 lines;
 5. Dashboard graph facts come from server projections and explain readiness;
 6. canonical Skills and generated plugin mirrors teach peer Work plus explicit
    dependencies and contain no child-Work procedure; and

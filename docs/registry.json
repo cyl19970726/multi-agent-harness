@@ -2178,7 +2178,7 @@
       "lifecycle": "stable",
       "canonicalFor": [
         "flat Work hard-dependency DAG and readiness invariants",
-        "Work kernel, Store, application, transport and Dashboard package boundary",
+        "Work kernel and application-port dependency-inversion boundary across Store, transports and Dashboard",
         "constrained Member Work/dependency proposals and closed Work Module scope"
       ],
       "dependsOn": [

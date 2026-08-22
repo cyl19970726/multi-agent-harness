@@ -55,11 +55,14 @@ execution binding. Terminal Work is immutable.
 
 The `firm-core` Work kernel owns lifecycle legality, DAG validation, readiness,
 terminal immutability, responsibility, and Module/Gate invariants. `firm-store`
-owns locks, CAS, atomic append, projections, notifications, and recovery. One
-application service owns Work use cases; CLI, HTTP, MCP, and Role Actions are
-adapters to it. RoleViews return derived graph facts and the Dashboard renders
-them without recomputing authority. NodeDaemon and providers execute effects
-but never own Work state.
+does not sit beneath the application layer. `firm-application` depends only on
+`firm-core`, defines `WorkPersistence`, and owns generic
+`WorkApplication<P>` use cases. `firm-store` depends on core + application and
+implements that port with locks, CAS, atomic append, projections,
+notifications, and recovery. CLI composes the concrete Store and exposes the
+same application through HTTP, MCP, and Role Actions. RoleViews return derived
+graph facts and Dashboard renders them without recomputing authority.
+NodeDaemon and providers execute effects but never own Work state.
 
 ## Creation and dependency authority
 

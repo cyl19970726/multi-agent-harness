@@ -126,5 +126,6 @@ Before adding an object, module, page or document:
 6. Which schema, store, API, UI and acceptance evidence make the claim real?
 7. Which older direction becomes superseded and how is it removed from default
    context?
-8. Does Work policy remain in the kernel, persistence in Store, orchestration
-   in one application service, and presentation in RoleViews/Dashboard?
+8. Does Work policy remain in core, does application depend only on core and
+   define the persistence port, does Store implement that port, and does CLI
+   alone compose the concrete adapters and presentation surfaces?

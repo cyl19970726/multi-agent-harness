@@ -45,10 +45,15 @@ const textExtensions = new Set([
 ]);
 const forbiddenWorkContainment = [
   { label: "retired Work containment field", pattern: /parent_work_id/i },
+  { label: "legacy decode projection outside its exact core seam", pattern: /legacy_containment_ref/i },
   { label: "retired child-Work vocabulary", pattern: /\bchild[\s_-]+work\b/i },
 ];
 const failures = [];
 const repositoryFiles = trackedAndUntrackedFiles();
+const exactLegacyDecodeSeam = new Set([
+  "crates/firm-core/src/work.rs",
+  "crates/firm-core/src/lib_tests/work_contracts.rs",
+]);
 
 for (const [path, reason] of historicalVocabularyAllowlist) {
   if (!reason.trim()) failures.push(`${path}: allowlist reason is empty`);
@@ -69,7 +74,30 @@ for (const path of repositoryFiles) {
   if (!existsSync(resolve(root, path))) continue;
   const content = read(path);
   for (const { label, pattern } of forbiddenWorkContainment) {
+    const seamAllowsPattern = exactLegacyDecodeSeam.has(path) &&
+      label !== "retired child-Work vocabulary";
+    if (seamAllowsPattern) continue;
     if (pattern.test(content)) failures.push(`${path}: ${label}`);
+  }
+}
+
+const legacyDecodeDeclaration = read("crates/firm-core/src/work.rs");
+for (const required of [
+  '#[serde(default, rename = "parent_work_id", skip_serializing)]',
+  "pub legacy_containment_ref: Option<String>",
+]) {
+  if (!legacyDecodeDeclaration.includes(required)) {
+    failures.push(`crates/firm-core/src/work.rs: exact read-only legacy decode seam is missing ${required}`);
+  }
+}
+const legacyDecodeTest = read("crates/firm-core/src/lib_tests/work_contracts.rs");
+for (const required of [
+  '"parent_work_id": "historical-parent"',
+  'value.get("parent_work_id").is_none()',
+  'value.get("legacy_containment_ref").is_none()',
+]) {
+  if (!legacyDecodeTest.includes(required)) {
+    failures.push(`crates/firm-core/src/lib_tests/work_contracts.rs: compatibility assertion is missing ${required}`);
   }
 }
 
@@ -90,7 +118,6 @@ for (const forbidden of [
 
 const storeManifest = read("crates/firm-store/Cargo.toml");
 for (const forbidden of [
-  "firm-application",
   "firm-cli",
   "firm-runtime-host",
   "firm-runtime-supervisor",
@@ -105,18 +132,52 @@ if (!storeManifest.includes("firm-core")) {
 }
 
 const applicationManifest = read("crates/firm-application/Cargo.toml");
-for (const required of ["firm-core", "firm-store"]) {
-  if (!applicationManifest.includes(required)) {
-    failures.push(`crates/firm-application/Cargo.toml: application must depend on ${required}`);
+if (!applicationManifest.includes("firm-core")) {
+  failures.push("crates/firm-application/Cargo.toml: application must depend inward on firm-core");
+}
+for (const forbidden of [
+  "firm-store",
+  "firm-cli",
+  "firm-fabric",
+  "firm-runtime-contract",
+  "firm-runtime-host",
+  "firm-runtime-supervisor",
+  "firm-provider-",
+]) {
+  if (applicationManifest.includes(forbidden)) {
+    failures.push(`crates/firm-application/Cargo.toml: application must not depend on ${forbidden}`);
   }
 }
-if (applicationManifest.includes("firm-cli")) {
-  failures.push("crates/firm-application/Cargo.toml: application must not depend outward on firm-cli");
+
+for (const required of ["firm-core", "firm-application"]) {
+  if (!storeManifest.includes(required)) {
+    failures.push(`crates/firm-store/Cargo.toml: store must depend on ${required}`);
+  }
 }
 
 const cliManifest = read("crates/firm-cli/Cargo.toml");
-if (!cliManifest.includes("firm-application")) {
-  failures.push("crates/firm-cli/Cargo.toml: CLI must consume firm-application");
+for (const required of ["firm-application", "firm-store"]) {
+  if (!cliManifest.includes(required)) {
+    failures.push(`crates/firm-cli/Cargo.toml: CLI composition root must consume ${required}`);
+  }
+}
+
+const applicationServicePath = "crates/firm-application/src/work_service.rs";
+if (!existsSync(resolve(root, applicationServicePath))) {
+  failures.push(`${applicationServicePath}: Work application service is missing`);
+} else {
+  const applicationService = read(applicationServicePath);
+  for (const required of ["pub trait WorkPersistence", "pub struct WorkApplication"]) {
+    if (!applicationService.includes(required)) {
+      failures.push(`${applicationServicePath}: missing ${required}`);
+    }
+  }
+}
+const storeApplicationPath = "crates/firm-store/src/store_work_application.rs";
+if (!existsSync(resolve(root, storeApplicationPath))) {
+  failures.push(`${storeApplicationPath}: WorkPersistence adapter is missing`);
+} else if (!read(storeApplicationPath).includes("impl WorkPersistence for HarnessStore")) {
+  failures.push(`${storeApplicationPath}: HarnessStore must implement WorkPersistence`);
 }
 
 const maintainedRoots = ["apps/", "crates/", "docs/current/", "plugins/star-harness/skills/", "schemas/", "scripts/", "skills/"];
