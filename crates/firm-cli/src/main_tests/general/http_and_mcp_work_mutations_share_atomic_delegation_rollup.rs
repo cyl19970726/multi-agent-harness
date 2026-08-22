@@ -65,6 +65,7 @@ fn http_and_mcp_work_mutations_share_atomic_delegation_rollup() {
         None,
         "test",
         None,
+        HostControlMode::Managed,
         None,
         Some("surface-target-team".into()),
         None,

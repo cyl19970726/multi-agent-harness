@@ -362,7 +362,7 @@ export interface TeamRun {
   host_surface?: string | null;
   host_thread_id?: string | null;
   host_actor?: TeamActorRef | null;
-  host_control_mode?: "managed" | "external" | string;
+  host_control_mode?: "managed" | "external_interactive" | string;
   objective?: string | null;
   /** Concrete workspace selected for this attempt; distinct from the centralized store root. */
   execution_root?: string | null;

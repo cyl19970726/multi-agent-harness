@@ -112,26 +112,6 @@ impl HarnessStore {
         Ok(())
     }
 
-    /// Compatibility-only projection writer for fixtures/imports that have no
-    /// current MemberRuns. Current runtime creation must use
-    /// [`Self::create_team_run_with_member_runs_from_agent_team`] so TeamRun and
-    /// canonical MemberRun authority share one validation boundary.
-    #[cfg(test)]
-    pub(crate) fn legacy_create_team_run_projection_for_test(
-        &self,
-        value: &AgentTeamRun,
-        execution_space_id: &str,
-    ) -> StoreResult<()> {
-        value
-            .validate()
-            .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        require_non_empty_store(execution_space_id, "Execution Space id")?;
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        self.validate_new_team_run_from_agent_team_unlocked(value, execution_space_id)?;
-        self.append_jsonl_unlocked("team_runs.jsonl", value)
-    }
-
     /// Reconstruct one raw historical ProviderRuntimeProjection during an
     /// explicit Legacy import. It is intentionally not a current admission
     /// path and never materializes the canonical MemberRun.
@@ -729,6 +709,52 @@ impl HarnessStore {
         let _lock = self.acquire_write_lock()?;
         self.validate_new_team_run_from_agent_team_unlocked(value, execution_space_id)?;
         self.validate_member_run_admission_rows_unlocked(value, runtimes, canonical)?;
+        let team = latest_by_id(self.all_agent_teams()?, |team| team.id.clone())
+            .remove(&value.agent_team_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "TEAM_RUN_REQUIRES_TEAM: AgentTeam {} not found",
+                    value.agent_team_id
+                ))
+            })?;
+        let host_runtimes = runtimes
+            .iter()
+            .filter(|runtime| runtime.agent_member_id == team.host_agent_id)
+            .collect::<Vec<_>>();
+        let [host_runtime] = host_runtimes.as_slice() else {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_RUN_REQUIRES_HOST_MEMBER_RUN: TeamRun {} has {} Host MemberRuns",
+                value.id,
+                host_runtimes.len()
+            )));
+        };
+        if value
+            .host_actor
+            .as_ref()
+            .is_none_or(|actor| actor.kind != TeamActorKind::Host || actor.id != team.host_agent_id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_RUN_HOST_AUTHORITY_MISMATCH: TeamRun {} must bind Host actor to AgentMember {}",
+                value.id, team.host_agent_id
+            )));
+        }
+        match value.host_control_mode {
+            firm_core::HostControlMode::Managed if host_runtime.is_external_interactive() => {
+                return Err(StoreError::Conflict(
+                    "MANAGED_HOST_REQUIRES_TEAM_RUNTIME: Host MemberRun is external_interactive"
+                        .to_string(),
+                ));
+            }
+            firm_core::HostControlMode::ExternalInteractive
+                if !host_runtime.is_external_interactive() =>
+            {
+                return Err(StoreError::Conflict(
+                    "EXTERNAL_HOST_REQUIRES_USER_DRIVEN_MEMBER_RUN: Host MemberRun is managed"
+                        .to_string(),
+                ));
+            }
+            _ => {}
+        }
         self.validate_new_trust_member_runs_unlocked(execution_space_id, value, canonical)?;
         self.append_jsonl_unlocked("team_runs.jsonl", value)?;
         for runtime in runtimes {

@@ -737,6 +737,19 @@ pub(super) fn create_team_run_value(
             members = team_member_specs_from_definition(store, execution_space_id, team_id)?;
         }
     }
+    let host_thread_id = optional_json_string(body, "host_thread_id")?;
+    let host_control_mode =
+        parse_host_runtime_mode(optional_json_string(body, "host_runtime_mode")?.as_deref())?;
+    let team_id = agent_team_id.as_deref().ok_or_else(|| {
+        CliError::Usage("agent_team_id is required for every AgentTeamRun".to_string())
+    })?;
+    apply_host_runtime_mode(
+        store,
+        execution_space_id,
+        team_id,
+        &mut members,
+        host_control_mode,
+    )?;
     let budget_limit_usd = match body.get("budget_limit_usd") {
         None | Some(serde_json::Value::Null) => None,
         Some(value) => Some(value.as_f64().ok_or_else(|| {
@@ -753,7 +766,8 @@ pub(super) fn create_team_run_value(
         &required_json_string(body, "objective")?,
         budget_limit_usd,
         &host_surface,
-        optional_json_string(body, "host_thread_id")?,
+        host_thread_id,
+        host_control_mode,
         optional_json_string(body, "previous_run_id")?,
         agent_team_id,
         None,

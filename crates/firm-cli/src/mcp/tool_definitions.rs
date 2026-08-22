@@ -72,6 +72,7 @@ pub(super) fn tool_definitions() -> Value {
                     "execution_root": {"type": "string", "minLength": 1, "description": "Optional TeamRun execution root. Must be the selected project_root or a Git worktree sharing its git common directory; defaults to project_root."},
                     "host_surface": {"type": "string", "minLength": 1, "description": "Exact provider-native Host surface, for example codex-app. Defaults to mcp when the calling Host does not bind itself."},
                     "host_thread_id": {"type": "string", "minLength": 1, "description": "Exact native Host task/session id. Required for Plugin safe-boundary delivery to this Host."},
+                    "host_runtime_mode": {"type": "string", "enum": ["managed", "external_interactive"], "default": "managed", "description": "Managed is the default and runs the Host through the same MemberRun/AgentSession/NodeDaemon path as Members. external_interactive is user-driven and pull-only; host_thread_id is external-only."},
                     "members": {
                         "type": "array",
                         "description": "One entry per team member.",
@@ -80,6 +81,7 @@ pub(super) fn tool_definitions() -> Value {
                             "type": "object",
                             "properties": {
                                 "name": {"type": "string", "minLength": 1, "description": "Member display name, unique within the run."},
+                                "agent_member_id": {"type": "string", "minLength": 1, "description": "Exact durable AgentMember identity, including the Host AgentMember."},
                                 "role": {"type": "string", "minLength": 1, "description": "e.g. coordinator / implementer / reviewer."},
                                 "provider": {"type": "string", "minLength": 1, "description": "Provider label. Harness-driven modes require a registered codex, claude, kimi, or pi adapter; external_interactive accepts any non-empty label because Harness does not execute it."},
                                 "execution_mode": {"type": "string", "enum": ["codex_app_server", "claude_agent_sdk", "kimi_acp", "pi_rpc", "external_interactive"], "description": "Optional provider-specific Agent Team mode. Current bindings are codex_app_server, claude_agent_sdk, kimi_acp, and pi_rpc; retired one-shot modes such as codex_exec and claude_cli are rejected. external_interactive declares the user's own already-open session: Harness spawns no provider process, does not constrain its provider label, and the member polls its own inbox."},
@@ -91,7 +93,7 @@ pub(super) fn tool_definitions() -> Value {
                                 "initial_work": {"type": "string", "minLength": 1, "description": "Optional completion criteria for one initial Host-assigned Work. Omit to create the member idle."},
                                 "resume_native_session_id": {"type": "string", "minLength": 1, "description": "Explicit provider-owned session to resume. Never inferred from recent local history."}
                             },
-                            "required": ["name", "role", "provider"]
+                            "required": ["agent_member_id", "name", "role", "provider"]
                         }
                     }
                 },
@@ -411,7 +413,7 @@ pub(super) fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_reopen_member",
-            "description": "Reopen a closed ProviderRuntimeProjection in place. Managed adapters increment runtime_generation, start a new adapter process, and resume the exact provider-native session; Harness never reconstructs a transcript or silently starts fresh. external_interactive reopens only the coordination binding because its process and conversation are user-owned. Retired members cannot reopen.",
+            "description": "Reopen a closed ProviderRuntimeProjection in place. The exact Host may explicitly switch managed ↔ external_interactive only while closed; the transition advances one fenced generation and never imports an external transcript. Retired members cannot reopen.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -419,6 +421,9 @@ pub(super) fn tool_definitions() -> Value {
                     "member_run_id": {"type": "string"},
                     "reason": {"type": "string"},
                     "reopened_by": {"type": "string", "default": "host"},
+                    "host_runtime_mode": {"type": "string", "enum": ["managed", "external_interactive"]},
+                    "execution_mode": {"type": "string", "description": "Required persistent provider mode when switching an external Host to managed."},
+                    "host_thread_id": {"type": "string", "description": "Optional pull-session locator when switching to external_interactive."},
                     "max_concurrency": {"type": "integer", "minimum": 1, "default": 4},
                     "idle_timeout_s": {"type": "integer", "minimum": 1, "default": 120}
                 },

@@ -13,6 +13,11 @@ pub(super) enum RoleActionIntent {
         completion_criteria_markdown: String,
         #[serde(default)]
         parent_work_id: Option<String>,
+        /// Optional durable responsibility target. Ordinary Members may set
+        /// this only for a bounded child of Work they actively own, and only
+        /// to an active ordinary Member membership.
+        #[serde(default)]
+        assignee_membership_id: Option<String>,
         #[serde(default)]
         eligible_member_ids: Vec<String>,
         #[serde(default)]

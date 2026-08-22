@@ -6,7 +6,6 @@
 //! frames — every diagnostic goes to stderr (the store resolver's deprecation
 //! warnings included), so the wire is never corrupted.
 //!
-//! Protocol surface (the minimum a host needs):
 //! - `initialize` → protocolVersion / capabilities / serverInfo handshake.
 //! - `notifications/initialized` (and any other notification) → no response.
 //! - `ping` → `{}`.
@@ -31,16 +30,16 @@ mod tool_definitions;
 use tool_definitions::tool_definitions;
 
 use crate::{
-    add_team_run_member, agentfirm_api, answer_provider_message_value, close_team_member_value,
-    create_team_run, current_unix_ms_u64, deactivate_team_run_member,
+    add_team_run_member, agentfirm_api, answer_provider_message_value, apply_host_runtime_mode,
+    close_team_member_value, create_team_run, current_unix_ms_u64, deactivate_team_run_member,
     delegate_team_run_to_node_daemon, format_work_brief_line, generated_id,
     host_inbox_for_native_thread, interrupt_team_member_value, latest_member_runs_in_append_order,
     latest_team_run, latest_team_runs_in_append_order, mutate_team_work_value, now_string,
-    reconcile_team_work_delivery_value, rename_team_run_member, reopen_team_member_value,
-    reopened_member_requires_supervisor_start, serde_snake_label, steer_team_member_value,
-    team_member_specs_from_definition, team_run_board_summary_text, team_run_inbox,
-    team_run_mission_id, transition_team_run, visible_member_actions_in_append_order,
-    work_operation_cursors, ResolvedStore, TeamMemberSpec,
+    parse_host_runtime_mode, reconcile_team_work_delivery_value, rename_team_run_member,
+    reopen_team_member_value, reopened_member_requires_supervisor_start, serde_snake_label,
+    steer_team_member_value, team_member_specs_from_definition, team_run_board_summary_text,
+    team_run_inbox, team_run_mission_id, transition_team_run,
+    visible_member_actions_in_append_order, work_operation_cursors, ResolvedStore, TeamMemberSpec,
 };
 
 /// MCP protocol revision this server speaks, echoed verbatim in `initialize`
@@ -1091,6 +1090,25 @@ fn tool_team_run_create(
         members = team_member_specs_from_definition(store, execution_space_id, &agent_team_id)
             .map_err(|error| error.to_string())?;
     }
+    let host_thread_id = optional_str(arguments, "host_thread_id")?;
+    let host_control_mode =
+        parse_host_runtime_mode(optional_str(arguments, "host_runtime_mode")?.as_deref())
+            .map_err(|error| error.to_string())?;
+    let execution_space_id = resolved
+        .execution_space_context
+        .as_ref()
+        .map(|space| space.id.as_str())
+        .ok_or_else(|| {
+            "team run creation requires an explicitly selected execution space".to_string()
+        })?;
+    apply_host_runtime_mode(
+        store,
+        execution_space_id,
+        &agent_team_id,
+        &mut members,
+        host_control_mode,
+    )
+    .map_err(|error| error.to_string())?;
     let created = create_team_run(
         store,
         resolved.context.as_ref(),
@@ -1104,7 +1122,8 @@ fn tool_team_run_create(
         optional_str(arguments, "host_surface")?
             .as_deref()
             .unwrap_or("mcp"),
-        optional_str(arguments, "host_thread_id")?,
+        host_thread_id,
+        host_control_mode,
         optional_str(arguments, "previous_run_id")?,
         Some(agent_team_id),
         None,

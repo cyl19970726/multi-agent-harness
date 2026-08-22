@@ -92,14 +92,18 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
             "objective":"Canonical Team Message journey",
             "host_surface":"codex-app",
             "host_thread_id":"canonical-message-host-thread",
-            "members":[{"agent_member_id":member_id,"name":"member","role":"builder","provider":"codex"}]
+            "host_runtime_mode":"external_interactive",
+            "members":[
+                {"agent_member_id":host_id,"name":"host","role":"host","provider":"codex"},
+                {"agent_member_id":member_id,"name":"member","role":"builder","provider":"codex"}
+            ]
         }),
     );
     assert_eq!(status, 200, "TeamRun: {created_run}");
     let run_id = created_run["result"]["team_run"]["id"]
         .as_str()
         .expect("TeamRun id");
-    let member_run_id = created_run["result"]["member_runs"][0]["id"]
+    let member_run_id = created_run["result"]["member_runs"][1]["id"]
         .as_str()
         .expect("MemberRun id");
 

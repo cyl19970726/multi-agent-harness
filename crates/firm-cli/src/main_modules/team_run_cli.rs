@@ -149,6 +149,27 @@ pub(super) fn team_run_command(
             .to_string();
             let host_thread_id =
                 value(args, "--host-thread-id").or_else(|| env_host_thread_id.clone());
+            let requested_host_mode = value(args, "--host-runtime-mode");
+            let host_control_mode = parse_host_runtime_mode(requested_host_mode.as_deref())?;
+            let execution_space_id = resolved
+                .execution_space_context
+                .as_ref()
+                .map(|space| space.id.as_str())
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "team-run create requires an explicitly selected --space".into(),
+                    )
+                })?;
+            let team_id = agent_team_id.as_deref().ok_or_else(|| {
+                CliError::Usage("--agent-team-id is required for team-run create".into())
+            })?;
+            apply_host_runtime_mode(
+                store,
+                execution_space_id,
+                team_id,
+                &mut members,
+                host_control_mode,
+            )?;
             let created = create_team_run(
                 store,
                 resolved.context.as_ref(),
@@ -161,6 +182,7 @@ pub(super) fn team_run_command(
                 budget_limit_usd,
                 &host_surface,
                 host_thread_id.clone(),
+                host_control_mode,
                 value(args, "--previous"),
                 agent_team_id,
                 value(args, "--mission-id"),
@@ -665,6 +687,9 @@ pub(super) fn team_run_command(
             &serde_json::json!({
                 "reason": value(args, "--reason").unwrap_or_else(|| "Host reopened member".to_string()),
                 "reopened_by": value(args, "--reopened-by").unwrap_or_else(|| "host".to_string()),
+                "host_runtime_mode": value(args, "--host-runtime-mode"),
+                "execution_mode": value(args, "--execution-mode"),
+                "host_thread_id": value(args, "--host-thread-id"),
             }),
         )?)?,
         "start" => {

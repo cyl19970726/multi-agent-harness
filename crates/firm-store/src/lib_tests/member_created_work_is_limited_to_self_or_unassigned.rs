@@ -21,7 +21,7 @@ fn member_created_work_is_limited_to_self_or_unassigned() {
     assert!(
         error
             .to_string()
-            .contains("only self-owned or unassigned Work"),
+            .contains("MEMBER_PEER_DELEGATION_REQUIRES_OWNED_PARENT"),
         "error: {error}"
     );
 
@@ -45,6 +45,55 @@ fn member_created_work_is_limited_to_self_or_unassigned() {
     );
     assert_eq!(self_owned.owner_member_id.as_deref(), Some("agent-a"));
 
+    let mut bounded_child = unassigned_test_work(&run.id, "work-bounded-child");
+    bounded_child.parent_work_id = Some(self_owned.id.clone());
+    bounded_child.assignee_membership_id = Some(format!(
+        "membership:{}:{}",
+        run.agent_team_id, member_b.agent_member_id
+    ));
+    let bounded_child = store
+        .insert_work(
+            bounded_child,
+            member_work_context(
+                &member_a.id,
+                "we-member-bounded-child",
+                "member-create-bounded-child",
+                "unix-ms:4",
+            ),
+        )
+        .expect("Member atomically assigns bounded child Work to ordinary peer");
+    assert_eq!(bounded_child.owner_member_id.as_deref(), Some("agent-b"));
+    assert!(bounded_child.active_member_run_id.is_none());
+
+    let before = store
+        .latest_works()
+        .expect("Works before forbidden Host target");
+    let mut host_target = unassigned_test_work(&run.id, "work-host-target");
+    host_target.parent_work_id = Some(self_owned.id.clone());
+    host_target.assignee_membership_id =
+        Some(format!("membership:{}:{}", run.agent_team_id, "agent-host"));
+    let error = store
+        .insert_work(
+            host_target,
+            member_work_context(
+                &member_a.id,
+                "we-member-host-target",
+                "member-create-host-target",
+                "unix-ms:5",
+            ),
+        )
+        .expect_err("Member must never assign Work to Host membership");
+    assert!(error
+        .to_string()
+        .contains("Host and Observer targets are forbidden"));
+    assert_eq!(
+        store
+            .latest_works()
+            .expect("Works after forbidden Host target"),
+        before,
+        "forbidden assignment must have zero Work side effects"
+    );
+
     let unassigned = store
         .insert_work(
             unassigned_test_work(&run.id, "work-unassigned-child"),
@@ -52,7 +101,7 @@ fn member_created_work_is_limited_to_self_or_unassigned() {
                 &member_a.id,
                 "we-member-open",
                 "member-create-open",
-                "unix-ms:4",
+                "unix-ms:6",
             ),
         )
         .expect("Member creates unassigned Work");

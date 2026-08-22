@@ -41,8 +41,9 @@ pub struct AgentTeamRun {
     pub host_surface: String,
     #[serde(default)]
     pub host_thread_id: Option<String>,
-    /// Typed Lead identity for new writes. Historical rows infer the reserved
-    /// Host actor from `host_surface` and `host_thread_id`.
+    /// Exact Host AgentMember identity for current writes. Historical rows may
+    /// still contain the reserved `host` compatibility actor and remain
+    /// readable, but that spelling is never current authority.
     #[serde(default)]
     pub host_actor: Option<TeamActorRef>,
     /// Whether Harness owns a persistent Host connection or observes an
@@ -71,7 +72,8 @@ pub struct AgentTeamRun {
 pub enum HostControlMode {
     Managed,
     #[default]
-    External,
+    #[serde(alias = "external")]
+    ExternalInteractive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

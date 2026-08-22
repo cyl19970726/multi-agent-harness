@@ -345,7 +345,7 @@ fn append_runtime_team(store: &HarnessStore, team_id: &str, run_id: &str) {
             host_surface: "test".into(),
             host_thread_id: None,
             host_actor: None,
-            host_control_mode: firm_core::HostControlMode::External,
+            host_control_mode: firm_core::HostControlMode::ExternalInteractive,
             objective: format!("runtime authority for {team_id}"),
             execution_root: None,
             status: firm_core::TeamRunStatus::Running,

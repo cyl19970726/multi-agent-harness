@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn work_transitions_dont_fail_for_unbound_run() {
+fn work_creation_fails_closed_for_unbound_historical_run() {
     let root = team_test_root("work-unbound-ha");
     let store = HarnessStore::new(&root);
     let run = AgentTeamRun {
@@ -55,40 +55,19 @@ fn work_transitions_dont_fail_for_unbound_run() {
     store
         .legacy_import_append_member_run_projection(&member)
         .expect("append member");
-    let work = store
+    let error = store
         .insert_work(
             unassigned_test_work(&run.id, "work-unbound-ha-1"),
             host_work_context("we-ub-1", "create-ub-ha", "unix-ms:2"),
         )
-        .expect("create Work");
-    let claimed = store
-        .claim_work(
-            &work.id,
-            work.version,
-            &member.id,
-            member_work_context(&member.id, "we-ub-2", "claim-ub-ha", "unix-ms:3"),
-        )
-        .expect("claim Work");
-    let _submitted = store
-        .submit_work(
-            &claimed.id,
-            claimed.version,
-            &member.id,
-            "done",
-            vec!["artifact://x".into()],
-            vec![],
-            member_work_context(&member.id, "we-ub-3", "submit-ub-ha", "unix-ms:4"),
-        )
-        .expect("submit Work with unbound run");
-    let attentions = store.host_attentions().expect("host attentions");
-    // HostAttention is still emitted at the store level even for unbound runs;
-    // the runtime delivery layer gates on binding, not the store.
-    let review = attentions
-        .iter()
-        .find(|a| a.work_id == work.id && a.kind == HostAttentionKind::WorkReviewRequested);
+        .expect_err("unbound historical TeamRun cannot authorize current Work");
     assert!(
-        review.is_some(),
-        "WorkReviewRequested must still be emitted for unbound runs"
+        error
+            .to_string()
+            .contains("MEMBER_RUN_MATERIALIZATION_INCOMPLETE"),
+        "current Work must fail closed without canonical MemberRun authority: {error}"
     );
+    assert!(store.latest_works().expect("read Works").is_empty());
+    assert!(store.host_attentions().expect("read attentions").is_empty());
     std::fs::remove_dir_all(root).expect("remove temp store");
 }

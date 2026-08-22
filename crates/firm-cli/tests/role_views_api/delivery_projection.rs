@@ -112,7 +112,11 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
             "objective":"Delivery projection acceptance",
             "host_surface":"codex",
             "host_thread_id":host_thread_id,
-            "members":[{"agent_member_id":member_id,"name":"member","role":"builder","provider":"codex"}]
+            "host_runtime_mode":"external_interactive",
+            "members":[
+                {"agent_member_id":host_id,"name":"host","role":"host","provider":"codex"},
+                {"agent_member_id":member_id,"name":"member","role":"builder","provider":"codex"}
+            ]
         }),
     );
     assert_eq!(status, 200, "TeamRun: {created_run}");
@@ -120,7 +124,7 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
         .as_str()
         .expect("TeamRun id")
         .to_string();
-    let member_run_id = created_run["result"]["member_runs"][0]["id"]
+    let member_run_id = created_run["result"]["member_runs"][1]["id"]
         .as_str()
         .expect("MemberRun id")
         .to_string();

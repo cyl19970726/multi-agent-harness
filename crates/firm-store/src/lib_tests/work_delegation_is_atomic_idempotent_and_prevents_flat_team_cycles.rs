@@ -7,12 +7,13 @@ fn work_delegation_is_atomic_idempotent_and_prevents_flat_team_cycles() {
     let source = store
         .insert_work(
             assigned_delegation_work(&run_a, &member_a, "source-a"),
-            host_work_context("work-source-a", "create-source-a", "unix-ms:2"),
+            run_host_work_context(&run_a, "work-source-a", "create-source-a", "unix-ms:2"),
         )
         .expect("create source Work");
     let request = delegation_request("delegation-a-b", &source, &run_b.agent_team_id);
     let target_request = assigned_delegation_work(&run_b, &member_b, "target-b");
-    let create_context = host_work_context(
+    let create_context = run_host_work_context(
+        &run_a,
         "delegation-create-a-b",
         "delegate-source-a-to-b",
         "unix-ms:3",
@@ -70,7 +71,8 @@ fn work_delegation_is_atomic_idempotent_and_prevents_flat_team_cycles() {
         .create_work_delegation_with_target_work(
             changed_entity_ids,
             changed_target_id,
-            host_work_context(
+            run_host_work_context(
+                &run_a,
                 "delegation-created-retry-envelope",
                 "delegate-source-a-to-b",
                 "unix-ms:4",
@@ -87,7 +89,7 @@ fn work_delegation_is_atomic_idempotent_and_prevents_flat_team_cycles() {
         .create_work_delegation_with_target_work(
             conflicting,
             assigned_delegation_work(&run_b, &member_b, "unused-target"),
-            host_work_context("ignored", "delegate-source-a-to-b", "unix-ms:4"),
+            run_host_work_context(&run_a, "ignored", "delegate-source-a-to-b", "unix-ms:4"),
         )
         .expect_err("one idempotency key cannot change intent");
     assert!(conflict.to_string().contains("IDEMPOTENCY_CONFLICT"));
@@ -98,7 +100,8 @@ fn work_delegation_is_atomic_idempotent_and_prevents_flat_team_cycles() {
         .create_work_delegation_with_target_work(
             reverse,
             reverse_target,
-            host_work_context(
+            run_host_work_context(
+                &run_b,
                 "delegation-create-b-a",
                 "delegate-target-b-to-a",
                 "unix-ms:5",

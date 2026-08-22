@@ -193,26 +193,22 @@ pub(super) fn execute_canonical_role_action(
             let recipient_runtime_ids = recipient_ids
                 .into_iter()
                 .map(|identity_id| {
-                    if identity_id == team.host_agent_id {
-                        Ok("host".to_string())
-                    } else {
-                        let matching = member_runs
-                            .iter()
-                            .filter(|run| {
-                                run.agent_member_id == identity_id
-                                    && run.coordination_status == MemberCoordinationStatus::Active
-                            })
-                            .collect::<Vec<_>>();
-                        match matching.as_slice() {
-                            [run] => Ok(run.id.clone()),
-                            _ => Err(encoded_error(
-                                "AGENT_SESSION_AMBIGUOUS",
-                                "message recipient requires exactly one active Team Member",
-                                "agent_identity",
-                                &identity_id,
-                                None,
-                            )),
-                        }
+                    let matching = member_runs
+                        .iter()
+                        .filter(|run| {
+                            run.agent_member_id == identity_id
+                                && run.coordination_status == MemberCoordinationStatus::Active
+                        })
+                        .collect::<Vec<_>>();
+                    match matching.as_slice() {
+                        [run] => Ok(run.id.clone()),
+                        _ => Err(encoded_error(
+                            "AGENT_SESSION_AMBIGUOUS",
+                            "message recipient requires exactly one active Team MemberRun, including the Host",
+                            "agent_identity",
+                            &identity_id,
+                            None,
+                        )),
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -243,14 +239,10 @@ pub(super) fn execute_canonical_role_action(
                 work_id,
                 source_plan_ref: None,
                 sender: Some(sender.clone()),
-                sender_runtime_id: if actor_is_host {
-                    "host".into()
-                } else {
-                    actor_member_run
-                        .as_ref()
-                        .cloned()
-                        .unwrap_or_else(|| auth.actor.id.clone())
-                },
+                sender_runtime_id: actor_member_run
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or_else(|| auth.actor.id.clone()),
                 recipients: recipient_runtime_ids
                     .iter()
                     .map(|id| harness_core::TeamRecipientRef {

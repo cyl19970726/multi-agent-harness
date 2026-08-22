@@ -843,6 +843,7 @@ pub struct ProviderWorkDispatchUpdate {
 #[serde(rename_all = "snake_case")]
 pub enum HostAttentionKind {
     HostBindingStale,
+    WorkChanged,
     WorkReviewRequested,
     WorkBlocked,
     WorkAccepted,
@@ -908,6 +909,19 @@ pub struct HostAttention {
     pub claimed_host_lease_generation: Option<u64>,
     #[serde(default)]
     pub claimed_host_lease_owner_id: Option<String>,
+    /// Exact managed Host delivery fence. These fields are absent for the
+    /// external interactive Host transport and prevent a successor session or
+    /// daemon generation from settling an older provider effect.
+    #[serde(default)]
+    pub claimed_recipient_member_run_id: Option<String>,
+    #[serde(default)]
+    pub claimed_recipient_session_id: Option<String>,
+    #[serde(default)]
+    pub claimed_recipient_session_generation: Option<u64>,
+    #[serde(default)]
+    pub claimed_node_daemon_id: Option<String>,
+    #[serde(default)]
+    pub claimed_node_daemon_generation: Option<u64>,
     #[serde(default)]
     pub provider_receipt_id: Option<String>,
     #[serde(default)]
@@ -961,6 +975,18 @@ impl Validate for HostAttention {
         if let Some(owner_id) = &self.claimed_host_lease_owner_id {
             require_non_empty(owner_id, "HostAttention.claimed_host_lease_owner_id")?;
         }
+        if let Some(member_run_id) = &self.claimed_recipient_member_run_id {
+            require_non_empty(
+                member_run_id,
+                "HostAttention.claimed_recipient_member_run_id",
+            )?;
+        }
+        if let Some(session_id) = &self.claimed_recipient_session_id {
+            require_non_empty(session_id, "HostAttention.claimed_recipient_session_id")?;
+        }
+        if let Some(daemon_id) = &self.claimed_node_daemon_id {
+            require_non_empty(daemon_id, "HostAttention.claimed_node_daemon_id")?;
+        }
         if let Some(receipt_id) = &self.provider_receipt_id {
             require_non_empty(receipt_id, "HostAttention.provider_receipt_id")?;
         }
@@ -977,16 +1003,39 @@ impl Validate for HostAttention {
             self.claimed_host_lease_generation.is_some(),
             self.claimed_host_lease_owner_id.is_some(),
         );
+        let managed_fence = (
+            self.claimed_recipient_member_run_id.is_some(),
+            self.claimed_recipient_session_id.is_some(),
+            self.claimed_recipient_session_generation.is_some(),
+            self.claimed_node_daemon_id.is_some(),
+            self.claimed_node_daemon_generation.is_some(),
+        );
         if !matches!(lease_fence, (false, false, false) | (true, true, true)) {
             return Err(ValidationError::Invalid {
                 field: "HostAttention.claimed_host_lease",
                 reason: "lease_id, generation, and owner_id must be all present or all absent",
             });
         }
+        if !matches!(
+            managed_fence,
+            (false, false, false, false, false) | (true, true, true, true, true)
+        ) {
+            return Err(ValidationError::Invalid {
+                field: "HostAttention.claimed_managed_host",
+                reason: "MemberRun, AgentSession, session generation, NodeDaemon, and daemon generation must be all present or all absent",
+            });
+        }
+        let external_claim = claim_binding == (true, true, true)
+            && managed_fence == (false, false, false, false, false);
+        let managed_claim = claim_binding == (true, true, false)
+            && self.claimed_host_surface.as_deref() == Some("managed")
+            && lease_fence == (false, false, false)
+            && managed_fence == (true, true, true, true, true);
         match self.status {
             HostAttentionStatus::Actionable | HostAttentionStatus::EscalationRequired => {
                 if claim_binding != (false, false, false)
                     || lease_fence != (false, false, false)
+                    || managed_fence != (false, false, false, false, false)
                     || self.provider_receipt_id.is_some()
                 {
                     return Err(ValidationError::Invalid {
@@ -996,18 +1045,18 @@ impl Validate for HostAttention {
                 }
             }
             HostAttentionStatus::Claimed => {
-                if claim_binding != (true, true, true) || self.provider_receipt_id.is_some() {
+                if (!external_claim && !managed_claim) || self.provider_receipt_id.is_some() {
                     return Err(ValidationError::Invalid {
                         field: "HostAttention.status",
-                        reason: "claimed rows require claim_id, Host surface, and Host thread, and cannot have a provider receipt",
+                        reason: "claimed rows require exactly one external thread or managed session/daemon fence and cannot have a provider receipt",
                     });
                 }
             }
             HostAttentionStatus::Delivered | HostAttentionStatus::Acknowledged => {
-                if claim_binding != (true, true, true) || self.provider_receipt_id.is_none() {
+                if (!external_claim && !managed_claim) || self.provider_receipt_id.is_none() {
                     return Err(ValidationError::Invalid {
                         field: "HostAttention.status",
-                        reason: "delivered and acknowledged rows require claim_id, Host surface, Host thread, and provider receipt",
+                        reason: "delivered and acknowledged rows require exactly one external thread or managed session/daemon fence and a provider receipt",
                     });
                 }
             }

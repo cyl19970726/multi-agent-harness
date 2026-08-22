@@ -873,6 +873,33 @@ impl HarnessStore {
         expected: &ProviderRuntimeProjection,
         next: &ProviderRuntimeProjection,
     ) -> StoreResult<()> {
+        self.compare_and_advance_member_run_generation_with_host_mode(expected, next, None)
+    }
+
+    /// Reopen the exact Host MemberRun into a different control mode while
+    /// atomically advancing its runtime generation and the TeamRun mode. This
+    /// is the sole write boundary for managed ↔ external_interactive changes;
+    /// ordinary MemberRuns and live Host generations cannot use it.
+    pub fn compare_and_transition_host_mode(
+        &self,
+        expected_run: &firm_core::AgentTeamRun,
+        next_run: &firm_core::AgentTeamRun,
+        expected: &ProviderRuntimeProjection,
+        next: &ProviderRuntimeProjection,
+    ) -> StoreResult<()> {
+        self.compare_and_advance_member_run_generation_with_host_mode(
+            expected,
+            next,
+            Some((expected_run, next_run)),
+        )
+    }
+
+    fn compare_and_advance_member_run_generation_with_host_mode(
+        &self,
+        expected: &ProviderRuntimeProjection,
+        next: &ProviderRuntimeProjection,
+        host_mode_transition: Option<(&firm_core::AgentTeamRun, &firm_core::AgentTeamRun)>,
+    ) -> StoreResult<()> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let current = latest_by_id(
@@ -887,6 +914,74 @@ impl HarnessStore {
                 expected.id
             )));
         }
+        let next_team_run = if let Some((expected_run, next_run)) = host_mode_transition {
+            let current_run = self.require_team_run_unlocked(&current.team_run_id)?;
+            if current_run != *expected_run {
+                return Err(StoreError::Conflict(format!(
+                    "TEAM_RUN_CHANGED: TeamRun {} changed concurrently; retry Host mode transition",
+                    current.team_run_id
+                )));
+            }
+            if expected_run.host_control_mode == next_run.host_control_mode {
+                return Err(StoreError::Conflict(
+                    "HOST_MODE_TRANSITION_REQUIRED: target Host mode must differ".into(),
+                ));
+            }
+            if expected_run.host_actor.as_ref().is_none_or(|actor| {
+                actor.kind != TeamActorKind::Host || actor.id != current.agent_member_id
+            }) || next_run.host_actor != expected_run.host_actor
+            {
+                return Err(StoreError::Conflict(
+                    "HOST_AUTHORITY_FENCED: mode transition requires the exact durable Host AgentMember"
+                        .into(),
+                ));
+            }
+            if current.coordination_is_active()
+                || !matches!(
+                    current.status,
+                    MemberRunStatus::Stopped | MemberRunStatus::Completed | MemberRunStatus::Failed
+                )
+            {
+                return Err(StoreError::Conflict(
+                    "HOST_MODE_TRANSITION_REQUIRES_CLOSED_RUNTIME: Close and settle the Host runtime before changing mode"
+                        .into(),
+                ));
+            }
+            let mut allowed = expected_run.clone();
+            allowed.host_control_mode = next_run.host_control_mode;
+            allowed.host_thread_id = next_run.host_thread_id.clone();
+            allowed.updated_at = next_run.updated_at.clone();
+            if allowed != *next_run {
+                return Err(StoreError::Conflict(
+                    "HOST_MODE_TRANSITION_SCOPE: transition may change only Host mode, external thread reference, and timestamp"
+                        .into(),
+                ));
+            }
+            match next_run.host_control_mode {
+                firm_core::HostControlMode::Managed => {
+                    if next.is_external_interactive() || next_run.host_thread_id.is_some() {
+                        return Err(StoreError::Conflict(
+                            "MANAGED_HOST_REQUIRES_TEAM_RUNTIME: managed Host cannot retain external_interactive profile or external thread"
+                                .into(),
+                        ));
+                    }
+                }
+                firm_core::HostControlMode::ExternalInteractive => {
+                    if !next.is_external_interactive() || next.native_session.is_some() {
+                        return Err(StoreError::Conflict(
+                            "EXTERNAL_HOST_REQUIRES_USER_DRIVEN_MEMBER_RUN: external Host must use external_interactive without a native-session binding"
+                                .into(),
+                        ));
+                    }
+                }
+            }
+            next_run
+                .validate()
+                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+            Some(next_run)
+        } else {
+            None
+        };
         let execution_space_id = self.require_current_member_mutation_scope_unlocked(&current)?;
         ensure_member_provenance_unchanged(&current, next)?;
         ensure_member_lifecycle_revision(&current, next)?;
@@ -978,6 +1073,10 @@ impl HarnessStore {
         // Prove both rows serialize before the first durable mutation.
         serde_json::to_value(next)?;
         serde_json::to_value(&canonical)?;
+        if let Some(next_team_run) = next_team_run {
+            serde_json::to_value(next_team_run)?;
+            self.append_jsonl_unlocked("team_runs.jsonl", next_team_run)?;
+        }
         self.append_jsonl_unlocked("member_runs.jsonl", next)?;
         self.commit_trust_projection_unlocked(
             &context,

@@ -77,9 +77,10 @@ authoring, atomic per-recipient delivery
 claim/provider receipt/per-recipient acknowledgement, cross-process control
 routing, reconnect, and
 explicit Close. Historical Codex/Claude/Kimi exec modes are never Agent Team
-fallbacks. Current direct-delivery compatibility routes and Claude/Kimi
-headless Host entry points use distinct typed bindings implemented by provider
-packages; historical mode decoding cannot authorize either surface. Dynamic
+fallbacks. Current direct-delivery compatibility routes and explicit external
+Host entry points use distinct typed transports implemented by provider
+packages; managed Hosts use the ordinary Team binding, and historical mode
+decoding cannot authorize either surface. Dynamic
 Workflow remains retired and has no runtime fallback.
 
 Real self-hosting follows the canonical

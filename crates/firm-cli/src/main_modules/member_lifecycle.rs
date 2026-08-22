@@ -516,6 +516,8 @@ pub(super) fn wait_for_idle_member_wake(
         }
         let canonical_messages = claim_canonical_messages_for_member(ledger, member_row)?;
         if !canonical_messages.is_empty() {
+            let host_attentions =
+                claim_managed_host_attentions_for_member(ledger, member_row, true)?;
             backoff.reset();
             let expected = member_row.clone();
             member_row.status = MemberRunStatus::Running;
@@ -527,7 +529,25 @@ pub(super) fn wait_for_idle_member_wake(
                 member_row,
                 harness_core::agentfirm_api::AgentSessionStatus::Active,
             )?;
-            return Ok(IdleMemberWake::Messages(canonical_messages));
+            return Ok(IdleMemberWake::Messages {
+                messages: canonical_messages,
+                host_attentions,
+            });
+        }
+        let host_attentions = claim_managed_host_attentions_for_member(ledger, member_row, false)?;
+        if !host_attentions.is_empty() {
+            backoff.reset();
+            let expected = member_row.clone();
+            member_row.status = MemberRunStatus::Running;
+            member_row.finished_at = None;
+            member_row.last_event_at = Some(now_string());
+            ledger.save_member_run(&expected, member_row)?;
+            transition_provider_session_for_member(
+                ledger,
+                member_row,
+                harness_core::agentfirm_api::AgentSessionStatus::Active,
+            )?;
+            return Ok(IdleMemberWake::HostAttentions(host_attentions));
         }
         // Build pure views from the store for the decision function.
         let member_view = build_member_wake_view(
@@ -577,7 +597,10 @@ pub(super) fn wait_for_idle_member_wake(
                                 member_row,
                                 harness_core::agentfirm_api::AgentSessionStatus::Active,
                             )?;
-                            return Ok(IdleMemberWake::Messages(pending));
+                            return Ok(IdleMemberWake::Messages {
+                                messages: pending,
+                                host_attentions: Vec::new(),
+                            });
                         }
                         backoff.reset();
                         let expected = member_row.clone();
@@ -625,7 +648,10 @@ pub(super) fn wait_for_idle_member_wake(
                         member_row,
                         harness_core::agentfirm_api::AgentSessionStatus::Active,
                     )?;
-                    return Ok(IdleMemberWake::Messages(notifs));
+                    return Ok(IdleMemberWake::Messages {
+                        messages: notifs,
+                        host_attentions: Vec::new(),
+                    });
                 }
                 // DeliverPending predicted but nothing claimable — fall through to Sleep.
             }

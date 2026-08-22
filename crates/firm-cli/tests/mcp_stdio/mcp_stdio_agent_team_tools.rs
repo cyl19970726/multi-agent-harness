@@ -261,6 +261,7 @@ fn mcp_stdio_agent_team_tools() {
                 "budget_limit_usd": 5.5,
                 "host_surface": "codex-app",
                 "host_thread_id": "codex-host-mcp",
+                "host_runtime_mode": "external_interactive",
                 "members": [
                     {"name": "lead", "role": "coordinator", "provider": "kimi", "agent_member_id": stable_agent_id, "initial_work": "Coordinate the TeamRun and report evidence."},
                     {"name": "worker-1", "role": "implementer", "provider": "codex", "agent_member_id": worker_agent_id, "model": "gpt-5", "provider_cwd_hint": project_root, "owned_paths": ["crates/a", "docs"], "initial_work": "Implement the requested slice and pass checks."}

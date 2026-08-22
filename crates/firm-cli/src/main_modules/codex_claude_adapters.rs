@@ -147,14 +147,14 @@ pub(super) fn run_claude_host_delivery(
     project: &ProjectContext,
 ) -> CliResult<DeliveryOutcome> {
     let binding = harness_application::provider_descriptor("claude")
-        .and_then(|descriptor| descriptor.headless_host)
+        .and_then(|descriptor| descriptor.external_host_transport)
         .ok_or_else(|| {
             CliError::Usage(
                 "HEADLESS_HOST_UNSUPPORTED: Claude has no declared Host binding".to_string(),
             )
         })?;
     if member.provider != "claude"
-        || binding.binding != harness_application::HostRuntimeKind::ClaudeCli
+        || binding.binding != harness_application::ExternalHostTransportKind::ClaudeCli
     {
         return Err(CliError::Usage(format!(
             "HEADLESS_HOST_BINDING_MISMATCH: expected claude/claude_cli, got {}/{}",

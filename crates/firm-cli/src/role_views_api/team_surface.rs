@@ -262,12 +262,13 @@ pub(crate) fn team_view(
     let identity_conflicted = !identity_attention.is_empty();
     let disabled =
         (!host_authorized).then_some("authenticated actor is not this Team's exact Host");
-    let message_disabled = disabled
-        .map(str::to_string)
-        .or_else(|| message_fabric_disabled(&facts, store, team));
+    let message_disabled = message_fabric_disabled(&facts, store, team);
     let mut actions = Vec::new();
     if let Some(run_id) = run_id {
-        actions.push(action("create_work", "team_run", run_id, 0, disabled));
+        // Host and ordinary Members share the create surface. The mutation
+        // policy distinguishes unrestricted Host creation from a Member's
+        // bounded child-Work delegation under its actively owned parent.
+        actions.push(action("create_work", "team_run", run_id, 0, None));
         actions.push(action(
             "send_message",
             "team_run",
@@ -588,10 +589,53 @@ pub(crate) fn team_view(
             .cloned()
             .collect(),
     );
+    let host_attention_inbox =
+        run.and_then(|run| store.host_attention_inbox_for_team_run(&run.id, false).ok());
+    let host_member_run_id = run_id.and_then(|selected_run_id| {
+        facts.member_runs.iter().find_map(|member_run| {
+            (member_run["team_run_id"] == selected_run_id
+                && member_run["agent_member_id"] == team.host_agent_id)
+                .then(|| member_run["id"].as_str())
+                .flatten()
+        })
+    });
+    let host_runtime = run.map(|run| {
+        let managed = run.host_control_mode == HostControlMode::Managed;
+        let queued_attentions = host_attention_inbox
+            .as_ref()
+            .map(|inbox| {
+                inbox
+                    .attentions
+                    .iter()
+                    .filter(|attention| attention.needs_host_action())
+                    .count()
+            })
+            .unwrap_or(0);
+        let last_inbox_read_at = host_attention_inbox.as_ref().and_then(|inbox| {
+            inbox
+                .attentions
+                .iter()
+                .filter(|attention| {
+                    attention.status == harness_core::HostAttentionStatus::Acknowledged
+                })
+                .map(|attention| attention.updated_at.as_str())
+                .max()
+        });
+        json!({
+            "agent_member_id": team.host_agent_id,
+            "member_run_id": host_member_run_id,
+            "mode": if managed { "managed" } else { "external_interactive" },
+            "delivery_guarantee": if managed { "daemon_managed" } else { "pull_only" },
+            "runtime_residency": if managed { "managed_member_run" } else { "detached_user_driven" },
+            "queued_actionable_items": queued_attentions,
+            "last_inbox_read_at": last_inbox_read_at,
+            "warning": (!managed).then_some("External Host must read or wait for inbox updates"),
+        })
+    });
     Ok(envelope(
         "host_console",
         &facts,
-        json!({"team_ref":team.id,"mission_ref":team.mission_id,"mission_context":mission_context,"team_supervisor":supervisor,"host_inbox":host_inbox,"member_runtime":members,"runtime_recovery":runtime_recovery,"pressure_summary":pressure_summary,"all_works":works,"work_queues":{"ready":works.iter().filter(|w|w["phase"]=="open"&&w["condition"]=="normal").cloned().collect::<Vec<_>>(),"unassigned":works.iter().filter(|w|w["owner_actor_ref"].is_null()).cloned().collect::<Vec<_>>(),"blocked":works.iter().filter(|w|w["condition"]=="blocked").cloned().collect::<Vec<_>>(),"review":by_phase("review"),"integration":works.iter().filter(|w|w["module_refs"].as_array().is_some_and(|a|a.iter().any(|m|m=="integration-plan"))).cloned().collect::<Vec<_>>()},"member_capacity":members,"convergence_plans":[],"reusable_findings":findings,"workspace_conflicts":record_summaries("workspace_binding",raw_workspace_attention),"provider_capacity_attention":[{"state":"not_modeled","reason":"Provider account quota is not modeled in this RoleView."}],"deliveries_requiring_reconcile":record_summaries("work_delivery",facts.work_deliveries.iter().filter(|delivery|delivery_requires_team_reconcile(delivery,&team_work_ids)).cloned().collect()),"gate_attention":requirements,"daemon_summary":{"node_id":team.node_id,"lease_status":store.latest_node_daemon_lease(&team.node_id).ok().flatten().map(|lease|enum_string(&lease.status)),"generation":store.latest_node_daemon_lease(&team.node_id).ok().flatten().map(|lease|lease.generation)},"collaboration":collaboration}),
+        json!({"team_ref":team.id,"mission_ref":team.mission_id,"mission_context":mission_context,"team_supervisor":supervisor,"host_runtime":host_runtime,"host_inbox":host_inbox,"member_runtime":members,"runtime_recovery":runtime_recovery,"pressure_summary":pressure_summary,"all_works":works,"work_queues":{"ready":works.iter().filter(|w|w["phase"]=="open"&&w["condition"]=="normal").cloned().collect::<Vec<_>>(),"unassigned":works.iter().filter(|w|w["owner_actor_ref"].is_null()).cloned().collect::<Vec<_>>(),"blocked":works.iter().filter(|w|w["condition"]=="blocked").cloned().collect::<Vec<_>>(),"review":by_phase("review"),"integration":works.iter().filter(|w|w["module_refs"].as_array().is_some_and(|a|a.iter().any(|m|m=="integration-plan"))).cloned().collect::<Vec<_>>()},"member_capacity":members,"convergence_plans":[],"reusable_findings":findings,"workspace_conflicts":record_summaries("workspace_binding",raw_workspace_attention),"provider_capacity_attention":[{"state":"not_modeled","reason":"Provider account quota is not modeled in this RoleView."}],"deliveries_requiring_reconcile":record_summaries("work_delivery",facts.work_deliveries.iter().filter(|delivery|delivery_requires_team_reconcile(delivery,&team_work_ids)).cloned().collect()),"gate_attention":requirements,"daemon_summary":{"node_id":team.node_id,"lease_status":store.latest_node_daemon_lease(&team.node_id).ok().flatten().map(|lease|enum_string(&lease.status)),"generation":store.latest_node_daemon_lease(&team.node_id).ok().flatten().map(|lease|lease.generation)},"collaboration":collaboration}),
         identity_attention,
         actions,
     ))
@@ -771,16 +815,14 @@ pub(crate) fn read_session_event_projection(
 /// bound thread the Host has no provider session at all.
 pub(crate) fn host_session_mode(run: Option<&AgentTeamRun>) -> &'static str {
     match run {
+        Some(run) if run.host_control_mode == HostControlMode::Managed => "harness_managed",
         Some(run)
             if run
                 .host_thread_id
                 .as_deref()
                 .is_some_and(|id| !id.trim().is_empty()) =>
         {
-            match run.host_control_mode {
-                HostControlMode::Managed => "harness_managed",
-                HostControlMode::External => "external_interactive",
-            }
+            "external_interactive"
         }
         _ => "unbound",
     }

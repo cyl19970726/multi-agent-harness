@@ -98,7 +98,7 @@ export function prepareRoleAction(
   let body:Record<string,unknown>;
   try{
     switch(action.kind as ExecutableRoleActionKind){
-      case "create_work": body={action:"create_work",work_id:required("work_id"),title:required("title"),context_markdown:fields.context_markdown??"",completion_criteria_markdown:required("completion_criteria_markdown"),claim_mode:fields.claim_mode||"host_assign",priority:fields.priority||"normal"};break;
+      case "create_work": body={action:"create_work",work_id:required("work_id"),title:required("title"),context_markdown:fields.context_markdown??"",completion_criteria_markdown:required("completion_criteria_markdown"),parent_work_id:fields.parent_work_id?.trim()||undefined,assignee_membership_id:fields.assignee_membership_id?.trim()||undefined,claim_mode:fields.claim_mode||"host_assign",priority:fields.priority||"normal"};break;
       case "accept_work": body={action:"accept_work"};break;
       case "reconcile_delivery": body={action:"reconcile_delivery",evidence_ref:required("evidence_ref")};break;
       case "reconcile_message_delivery": body={action:"reconcile_message_delivery",outcome:fields.outcome||"retry_safe_failure",evidence_ref:required("evidence_ref")};break;
@@ -308,12 +308,13 @@ export interface TeamInboxData {
 }
 export interface MissionContextSummary {id:string; title:string; objective:string; context:string; desired_outcome:string|null; status:string; outcome_summary:string|null; created_at:string; updated_at:string; completed_at:string|null; log:Array<{id:string;revision:number;kind:string;body:string;actor:string;created_at:string}>}
 export interface TeamSupervisorSummary {team_run_id:string; supervisor_id:string; generation:number; current:boolean; heartbeat_unix_ms:number; expires_unix_ms:number; owner_locator:string; node_daemon_generation:number; status:string}
+export interface HostRuntimeSummary {agent_member_id:string;member_run_id:string|null;mode:"managed"|"external_interactive";delivery_guarantee:"daemon_managed"|"pull_only";runtime_residency:"managed_member_run"|"detached_user_driven";queued_actionable_items:number;last_inbox_read_at:string|null;warning:string|null}
 export interface HostConsoleData {
   team_ref:string; mission_ref:string; all_works:WorkSummary[]; work_queues:Record<string,WorkSummary[]>;
   member_capacity:MemberCapacitySummary[]; convergence_plans:RoleRecordSummary[]; reusable_findings:RoleRecordSummary[];
   workspace_conflicts:RoleRecordSummary[]; provider_capacity_attention:Array<{state:"not_modeled";reason:string}>; deliveries_requiring_reconcile:RoleRecordSummary[];
   gate_attention:RoleRecordSummary[]; daemon_summary:{node_id:string;lease_status:string|null;generation:number|null};
-  mission_context:MissionContextSummary|null; team_supervisor:TeamSupervisorSummary|null; host_inbox:MessageSummary[];
+  mission_context:MissionContextSummary|null; team_supervisor:TeamSupervisorSummary|null; host_runtime:HostRuntimeSummary|null; host_inbox:MessageSummary[];
   member_runtime:MemberCapacitySummary[]; runtime_recovery:RoleRecordSummary[]; pressure_summary:TeamPressureSummary; collaboration:CollaborationProjectionSummary; runtime_fabric:RuntimeFabricSummary;
 }
 export type ProviderObservationSemanticKind =

@@ -321,17 +321,16 @@ pub(crate) fn agent_workspace_view(
                     .cmp(&left["runtime_generation"].as_u64())
             })
     });
-    let selected_member_run = if selected_is_host {
-        None
-    } else {
-        run_id
-            .and_then(|current_run_id| {
-                member_runs
-                    .iter()
-                    .find(|member_run| member_run["team_run_id"] == current_run_id)
-            })
-            .or_else(|| member_runs.first())
-    };
+    // Host is an AgentMember and resolves through the same MemberRun selector.
+    // External interactive Hosts still have a detached user-driven MemberRun,
+    // but no unverifiable native session is fabricated for it.
+    let selected_member_run = run_id
+        .and_then(|current_run_id| {
+            member_runs
+                .iter()
+                .find(|member_run| member_run["team_run_id"] == current_run_id)
+        })
+        .or_else(|| member_runs.first());
     // Provider-private Session data is owner-bound, not merely Team-authorized.
     // The exact Host can read the Host Session. The exact Member can read that
     // Member's Session. Host authority selecting a Member receives only public
@@ -364,7 +363,7 @@ pub(crate) fn agent_workspace_view(
     });
     // Only an exact MemberRun selector plus its current canonical AgentSession
     // can receive the process-local live overlay. MemberRun and AgentSession
-    // generations are independent fences; Host runs without a MemberRun stay null.
+    // generations are independent fences; detached external Hosts stay null.
     let live_provider_activity = if may_read_private_session {
         let project_binding_id = store
             .provider_compatibility_scope()

@@ -47,7 +47,21 @@ fn initial_member_admission_rejects_foreign_only_identity_without_any_durable_wr
         std::slice::from_ref(&foreign_only),
     )
     .expect("seed foreign-only AgentMember");
-    let members = vec![local, foreign_only];
+    let host = TeamMemberSpec {
+        agent_member_id: "host".into(),
+        name: "Host".into(),
+        role: "host".into(),
+        provider: "codex".into(),
+        execution_mode: Some("codex_app_server".into()),
+        model: None,
+        effort: None,
+        service_tier: None,
+        provider_cwd_hint: None,
+        owned_paths: Vec::new(),
+        resume_native_session_id: None,
+        initial_work: None,
+    };
+    let members = vec![host, local, foreign_only];
     let before = durable_store_file_bytes(&store);
 
     let error = match create_team_run(
@@ -59,6 +73,7 @@ fn initial_member_admission_rejects_foreign_only_identity_without_any_durable_wr
         None,
         "test",
         None,
+        HostControlMode::Managed,
         None,
         Some(team_id.clone()),
         None,
@@ -82,7 +97,7 @@ fn initial_member_admission_rejects_foreign_only_identity_without_any_durable_wr
         &store,
         "unit-test-space",
         &team_id,
-        std::slice::from_ref(&members[1]),
+        std::slice::from_ref(&members[2]),
     )
     .expect("materialize the same AgentMember in the selected space");
     let retried = create_team_run(
@@ -94,6 +109,7 @@ fn initial_member_admission_rejects_foreign_only_identity_without_any_durable_wr
         None,
         "test",
         None,
+        HostControlMode::Managed,
         None,
         Some(team_id),
         None,
@@ -101,7 +117,7 @@ fn initial_member_admission_rejects_foreign_only_identity_without_any_durable_wr
         &members,
     )
     .expect("zero-write rejection must leave the roster retryable");
-    assert_eq!(retried.member_runs.len(), 2);
+    assert_eq!(retried.member_runs.len(), 3);
     assert_eq!(retried.works.len(), 2);
     std::fs::remove_dir_all(root).expect("cleanup");
 }

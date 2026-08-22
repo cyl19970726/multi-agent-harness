@@ -7,14 +7,20 @@ fn work_delegation_cancel_is_cas_fenced_and_idempotent() {
     let source = store
         .insert_work(
             assigned_delegation_work(&run_a, &member_a, "source-cancel"),
-            host_work_context("work-source-cancel", "create-source-cancel", "unix-ms:2"),
+            run_host_work_context(
+                &run_a,
+                "work-source-cancel",
+                "create-source-cancel",
+                "unix-ms:2",
+            ),
         )
         .expect("create source Work");
     let (delegation, _) = store
         .create_work_delegation_with_target_work(
             delegation_request("delegation-cancel", &source, &run_b.agent_team_id),
             assigned_delegation_work(&run_b, &member_b, "target-cancel"),
-            host_work_context(
+            run_host_work_context(
+                &run_a,
                 "delegation-create-cancel",
                 "delegate-source-cancel",
                 "unix-ms:3",
@@ -26,7 +32,8 @@ fn work_delegation_cancel_is_cas_fenced_and_idempotent() {
             &delegation.id,
             0,
             "target no longer needed",
-            host_work_context(
+            run_host_work_context(
+                &run_a,
                 "delegation-cancel-stale",
                 "cancel-delegation-stale",
                 "unix-ms:4",
@@ -34,7 +41,8 @@ fn work_delegation_cancel_is_cas_fenced_and_idempotent() {
         )
         .expect_err("stale expected version is fenced");
     assert!(stale.to_string().contains("DELEGATION_VERSION_CONFLICT"));
-    let context = host_work_context(
+    let context = run_host_work_context(
+        &run_a,
         "delegation-cancel-event",
         "cancel-delegation-command",
         "unix-ms:5",
@@ -65,7 +73,7 @@ fn work_delegation_cancel_is_cas_fenced_and_idempotent() {
             &delegation.id,
             delegation.version,
             "different reason",
-            host_work_context("ignored", "cancel-delegation-command", "unix-ms:6"),
+            run_host_work_context(&run_a, "ignored", "cancel-delegation-command", "unix-ms:6"),
         )
         .expect_err("same key cannot change cancel reason");
     assert!(conflict.to_string().contains("IDEMPOTENCY_CONFLICT"));

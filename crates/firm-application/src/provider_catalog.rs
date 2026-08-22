@@ -17,19 +17,21 @@ pub struct TeamRuntimeBinding {
     pub binding: TeamRuntimeKind,
 }
 
-/// Closed implementation selector for the optional headless Host surface.
+/// Closed selector for an explicitly external Host notification transport.
+/// It is never the standard managed Team Host runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum HostRuntimeKind {
+pub enum ExternalHostTransportKind {
     ClaudeCli,
     KimiAcp,
 }
 
-/// A Host binding is not a Team fallback and owns no coordination lifecycle.
+/// An external Host transport is not a Team fallback and owns no coordination
+/// lifecycle, AgentSession, provider receipt, or acknowledgement authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct HostRuntimeBinding {
+pub struct ExternalHostTransportBinding {
     pub execution_mode: &'static str,
-    pub binding: HostRuntimeKind,
+    pub binding: ExternalHostTransportKind,
 }
 
 /// Closed selector for the still-current `/v1/agents/*` compatibility route.
@@ -63,7 +65,7 @@ pub struct HistoricalProviderMode {
 pub struct ProviderDescriptor {
     pub provider: &'static str,
     pub team: TeamRuntimeBinding,
-    pub headless_host: Option<HostRuntimeBinding>,
+    pub external_host_transport: Option<ExternalHostTransportBinding>,
     pub direct_delivery_compatibility: Option<CompatibilityDeliveryBinding>,
     pub event_decoder: bool,
     pub version_probe: bool,
@@ -80,7 +82,7 @@ pub const PROVIDERS: [ProviderDescriptor; 4] = [
             execution_mode: "codex_app_server",
             binding: TeamRuntimeKind::Codex,
         },
-        headless_host: None,
+        external_host_transport: None,
         direct_delivery_compatibility: Some(CompatibilityDeliveryBinding {
             execution_mode: "codex_exec",
             binding: CompatibilityDeliveryKind::CodexExec,
@@ -100,9 +102,9 @@ pub const PROVIDERS: [ProviderDescriptor; 4] = [
             execution_mode: "claude_agent_sdk",
             binding: TeamRuntimeKind::Claude,
         },
-        headless_host: Some(HostRuntimeBinding {
+        external_host_transport: Some(ExternalHostTransportBinding {
             execution_mode: "claude_cli",
-            binding: HostRuntimeKind::ClaudeCli,
+            binding: ExternalHostTransportKind::ClaudeCli,
         }),
         direct_delivery_compatibility: Some(CompatibilityDeliveryBinding {
             execution_mode: "claude_cli",
@@ -123,9 +125,9 @@ pub const PROVIDERS: [ProviderDescriptor; 4] = [
             execution_mode: "kimi_acp",
             binding: TeamRuntimeKind::Kimi,
         },
-        headless_host: Some(HostRuntimeBinding {
+        external_host_transport: Some(ExternalHostTransportBinding {
             execution_mode: "kimi_acp",
-            binding: HostRuntimeKind::KimiAcp,
+            binding: ExternalHostTransportKind::KimiAcp,
         }),
         direct_delivery_compatibility: Some(CompatibilityDeliveryBinding {
             execution_mode: "kimi_exec",
@@ -146,7 +148,7 @@ pub const PROVIDERS: [ProviderDescriptor; 4] = [
             execution_mode: "pi_rpc",
             binding: TeamRuntimeKind::Pi,
         },
-        headless_host: None,
+        external_host_transport: None,
         direct_delivery_compatibility: None,
         event_decoder: true,
         version_probe: true,
@@ -234,7 +236,7 @@ mod tests {
     #[test]
     fn host_compatibility_and_historical_surfaces_remain_distinct() {
         let codex = provider_descriptor("codex").unwrap();
-        assert!(codex.headless_host.is_none());
+        assert!(codex.external_host_transport.is_none());
         assert_eq!(
             codex.direct_delivery_compatibility.unwrap().execution_mode,
             "codex_exec"
@@ -242,7 +244,10 @@ mod tests {
         assert_eq!(codex.historical_modes[0].execution_mode, "codex_exec");
 
         let claude = provider_descriptor("claude").unwrap();
-        assert_eq!(claude.headless_host.unwrap().execution_mode, "claude_cli");
+        assert_eq!(
+            claude.external_host_transport.unwrap().execution_mode,
+            "claude_cli"
+        );
         assert_eq!(
             claude.direct_delivery_compatibility.unwrap().execution_mode,
             "claude_cli"
@@ -250,7 +255,10 @@ mod tests {
         assert_eq!(claude.historical_modes[0].execution_mode, "claude_cli");
 
         let kimi = provider_descriptor("kimi").unwrap();
-        assert_eq!(kimi.headless_host.unwrap().execution_mode, "kimi_acp");
+        assert_eq!(
+            kimi.external_host_transport.unwrap().execution_mode,
+            "kimi_acp"
+        );
         assert_eq!(
             kimi.direct_delivery_compatibility.unwrap().execution_mode,
             "kimi_exec"
@@ -267,7 +275,7 @@ mod tests {
         assert_eq!(compatibility_delivery_kind("pi"), None);
 
         let pi = provider_descriptor("pi").unwrap();
-        assert!(pi.headless_host.is_none());
+        assert!(pi.external_host_transport.is_none());
         assert!(pi.direct_delivery_compatibility.is_none());
     }
 

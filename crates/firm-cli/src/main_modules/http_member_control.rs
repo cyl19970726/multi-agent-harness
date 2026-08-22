@@ -377,12 +377,31 @@ pub(crate) fn reopen_team_member_value(
         .into_iter()
         .find(|member| member.id == member_run_id)
         .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+    let requested_host_mode = optional_json_string(body, "host_runtime_mode")?
+        .as_deref()
+        .map(|mode| parse_host_runtime_mode(Some(mode)))
+        .transpose()?;
+    let is_host = run.host_actor.as_ref().is_some_and(|actor| {
+        actor.kind == TeamActorKind::Host && actor.id == member.agent_member_id
+    });
+    if requested_host_mode.is_some() && !is_host {
+        return Err(CliError::Usage(
+            "host_runtime_mode may change only the exact Host AgentMember runtime".into(),
+        ));
+    }
+    let target_host_mode = requested_host_mode.unwrap_or(run.host_control_mode);
+    let mode_transition = is_host && target_host_mode != run.host_control_mode;
     if member.coordination_is_retired() {
         return Err(CliError::Usage(format!(
             "member run {member_run_id} is retired; create a new ProviderRuntimeProjection instead"
         )));
     }
     if member.coordination_is_active() {
+        if mode_transition {
+            return Err(CliError::Usage(
+                "Close and settle the Host runtime before changing host_runtime_mode".into(),
+            ));
+        }
         let external_interactive = member.is_external_interactive();
         let supervisor_current = store
             .latest_team_supervisor_lease(team_run_id)?
@@ -408,13 +427,41 @@ pub(crate) fn reopen_team_member_value(
             serde_snake_label(&member.status)
         )));
     }
+    let transition_expected = mode_transition.then(|| member.clone());
+    if mode_transition {
+        member.native_session = None;
+        member.provider_compatibility_block_cause = None;
+        member.provider_profile = Some(match target_host_mode {
+            HostControlMode::ExternalInteractive => team_member_provider_profile_for_mode(
+                &member.provider,
+                Some(EXECUTION_MODE_EXTERNAL_INTERACTIVE),
+            ),
+            HostControlMode::Managed => {
+                let execution_mode = required_json_string(body, "execution_mode")?;
+                if execution_mode == EXECUTION_MODE_EXTERNAL_INTERACTIVE {
+                    return Err(CliError::Usage(
+                        "managed Host transition requires a persistent provider execution_mode"
+                            .into(),
+                    ));
+                }
+                team_member_provider_profile_for_mode(&member.provider, Some(&execution_mode))
+            }
+        });
+    }
     let external_interactive = member.is_external_interactive();
     let mut history_continuity = if external_interactive {
         "external_user_owned"
     } else {
         "provider_native_session"
     };
-    if !external_interactive {
+    if mode_transition {
+        history_continuity = if external_interactive {
+            "managed_session_preserved_as_history_external_coordination_only"
+        } else {
+            "external_history_not_imported_new_managed_native_session"
+        };
+    }
+    if !external_interactive && !mode_transition {
         // Reopen is a coordination transition, but for an already-bound native
         // session it is also the Host's explicit intent to resume that exact
         // history. Freshly probe before the runtime generation changes so an
@@ -481,7 +528,7 @@ pub(crate) fn reopen_team_member_value(
             )));
         }
     }
-    let expected = member.clone();
+    let expected = transition_expected.unwrap_or_else(|| member.clone());
     member.runtime_generation = member.runtime_generation.checked_add(1).ok_or_else(|| {
         CliError::Usage(format!(
             "member run {member_run_id} runtime generation overflowed"
@@ -496,7 +543,19 @@ pub(crate) fn reopen_team_member_value(
     };
     member.finished_at = None;
     member.last_event_at = Some(now_string());
-    store_conflict_as_usage(store.compare_and_advance_member_run_generation(&expected, &member))?;
+    if mode_transition {
+        let mut next_run = run.clone();
+        next_run.host_control_mode = target_host_mode;
+        next_run.host_thread_id = optional_json_string(body, "host_thread_id")?;
+        next_run.updated_at = now_string();
+        store_conflict_as_usage(
+            store.compare_and_transition_host_mode(&run, &next_run, &expected, &member),
+        )?;
+    } else {
+        store_conflict_as_usage(
+            store.compare_and_advance_member_run_generation(&expected, &member),
+        )?;
+    }
 
     let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
     ledger.append_action(
@@ -534,6 +593,12 @@ pub(crate) fn reopen_team_member_value(
             "team_run_start_required"
         },
         "history_continuity": history_continuity,
+        "host_runtime_mode": if is_host {
+            Some(serde_snake_label(&target_host_mode))
+        } else {
+            None
+        },
+        "mode_transition": mode_transition,
         "idempotent": false,
     }))
 }

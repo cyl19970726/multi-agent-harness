@@ -340,11 +340,111 @@ impl HarnessStore {
         attention.claimed_host_lease_id = None;
         attention.claimed_host_lease_generation = None;
         attention.claimed_host_lease_owner_id = None;
+        attention.claimed_recipient_member_run_id = None;
+        attention.claimed_recipient_session_id = None;
+        attention.claimed_recipient_session_generation = None;
+        attention.claimed_node_daemon_id = None;
+        attention.claimed_node_daemon_generation = None;
         attention.provider_receipt_id = None;
         attention.last_failure_reason = None;
         attention.updated_at = updated_at.to_string();
         self.append_jsonl_unlocked("host_attentions.jsonl", &attention)?;
         Ok(HostAttentionClaimResult::Claimed(Box::new(attention)))
+    }
+
+    /// Claim a bounded HostAttention batch for the managed Host MemberRun.
+    /// The claim is fenced to the exact AgentSession and machine NodeDaemon
+    /// generations; external Host bindings cannot call this path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn claim_managed_host_attention_batch(
+        &self,
+        execution_space_id: &str,
+        team_run_id: &str,
+        member_run_id: &str,
+        session_id: &str,
+        session_generation: u64,
+        daemon_id: &str,
+        daemon_generation: u64,
+        claim_id: &str,
+        limit: usize,
+        include_low_value: bool,
+        now_unix_ms: u64,
+        updated_at: &str,
+    ) -> StoreResult<Vec<HostAttention>> {
+        require_non_empty_store(claim_id, "managed Host attention claim id")?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.reconcile_work_host_attentions_unlocked()?;
+        let run = self.require_team_run_unlocked(team_run_id)?;
+        if run.host_control_mode != firm_core::HostControlMode::Managed {
+            return Err(StoreError::Conflict(
+                "MANAGED_HOST_CLAIM_REQUIRES_MANAGED_TEAM_RUN".to_string(),
+            ));
+        }
+        let team = latest_by_id(self.all_agent_teams()?, |team| team.id.clone())
+            .remove(&run.agent_team_id)
+            .ok_or_else(|| StoreError::Conflict("managed Host Team is missing".to_string()))?;
+        let member = self.require_member_run_unlocked(member_run_id, team_run_id)?;
+        if member.agent_member_id != team.host_agent_id || member.is_external_interactive() {
+            return Err(StoreError::Conflict(
+                "MANAGED_HOST_MEMBER_RUN_FENCED".to_string(),
+            ));
+        }
+        let session = self
+            .fabric_agent_sessions(execution_space_id)?
+            .into_iter()
+            .find(|session| {
+                session.id == session_id
+                    && session.agent_member_id == team.host_agent_id
+                    && session.runtime_generation == session_generation
+                    && session.node_daemon_id == daemon_id
+                    && session.node_daemon_generation == daemon_generation
+                    && session.lifecycle != firm_core::agentfirm_api::AgentSessionStatus::Closed
+            })
+            .ok_or_else(|| StoreError::Conflict("AGENT_SESSION_GENERATION_FENCED".to_string()))?;
+        let lease = self
+            .latest_node_daemon_lease(&session.node_id)?
+            .filter(|lease| {
+                lease.daemon_id == daemon_id
+                    && lease.generation == daemon_generation
+                    && lease.status == NodeDaemonLeaseStatus::Active
+                    && lease.expires_unix_ms > now_unix_ms
+            })
+            .ok_or_else(|| StoreError::Conflict("NODE_DAEMON_GENERATION_FENCED".to_string()))?;
+        let mut eligible = self
+            .latest_host_attentions_unlocked()?
+            .into_values()
+            .filter(|attention| {
+                attention.team_run_id == team_run_id
+                    && attention.status == HostAttentionStatus::Actionable
+                    && (include_low_value || attention.kind != HostAttentionKind::WorkChanged)
+            })
+            .collect::<Vec<_>>();
+        eligible.sort_by(|left, right| {
+            compare_store_timestamps(&left.created_at, &right.created_at)
+                .then(left.id.cmp(&right.id))
+        });
+        eligible.truncate(limit.max(1));
+        for attention in &mut eligible {
+            attention.status = HostAttentionStatus::Claimed;
+            attention.attempt = attention.attempt.saturating_add(1);
+            attention.claim_id = Some(claim_id.to_string());
+            attention.claimed_host_surface = Some("managed".to_string());
+            attention.claimed_host_thread_id = None;
+            attention.claimed_host_lease_id = None;
+            attention.claimed_host_lease_generation = None;
+            attention.claimed_host_lease_owner_id = None;
+            attention.claimed_recipient_member_run_id = Some(member_run_id.to_string());
+            attention.claimed_recipient_session_id = Some(session_id.to_string());
+            attention.claimed_recipient_session_generation = Some(session_generation);
+            attention.claimed_node_daemon_id = Some(lease.daemon_id.clone());
+            attention.claimed_node_daemon_generation = Some(lease.generation);
+            attention.provider_receipt_id = None;
+            attention.last_failure_reason = None;
+            attention.updated_at = updated_at.to_string();
+            self.append_jsonl_unlocked("host_attentions.jsonl", attention)?;
+        }
+        Ok(eligible)
     }
 
     /// Record provider-native delivery receipt for the currently-owned claim.
@@ -360,8 +460,10 @@ impl HarnessStore {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let mut attention = self.require_host_attention_unlocked(attention_id)?;
-        if attention.status == HostAttentionStatus::Delivered
-            && attention.claim_id.as_deref() == Some(claim_id)
+        if matches!(
+            attention.status,
+            HostAttentionStatus::Delivered | HostAttentionStatus::Acknowledged
+        ) && attention.claim_id.as_deref() == Some(claim_id)
             && attention.provider_receipt_id.as_deref() == Some(provider_receipt_id)
         {
             return Ok(attention);
@@ -376,6 +478,18 @@ impl HarnessStore {
         let surface = attention.claimed_host_surface.clone().ok_or_else(|| {
             StoreError::Conflict("claimed HostAttention has no Host surface".to_string())
         })?;
+        if surface == "managed" {
+            self.require_managed_host_attention_fence_unlocked(&attention, updated_at)?;
+            // The shared runtime calls this only from the provider's exact
+            // input-acceptance callback. For a managed recipient that is both
+            // transport receipt and durable inbox intake/cursor progression;
+            // external UI/hook visibility never enters this branch.
+            attention.status = HostAttentionStatus::Acknowledged;
+            attention.provider_receipt_id = Some(provider_receipt_id.to_string());
+            attention.updated_at = updated_at.to_string();
+            self.append_jsonl_unlocked("host_attentions.jsonl", &attention)?;
+            return Ok(attention);
+        }
         let thread_id = attention.claimed_host_thread_id.clone().ok_or_else(|| {
             StoreError::Conflict("claimed HostAttention has no Host thread id".to_string())
         })?;
@@ -430,6 +544,11 @@ impl HarnessStore {
         attention.claimed_host_lease_id = None;
         attention.claimed_host_lease_generation = None;
         attention.claimed_host_lease_owner_id = None;
+        attention.claimed_recipient_member_run_id = None;
+        attention.claimed_recipient_session_id = None;
+        attention.claimed_recipient_session_generation = None;
+        attention.claimed_node_daemon_id = None;
+        attention.claimed_node_daemon_generation = None;
         attention.provider_receipt_id = None;
         attention.last_failure_reason = Some(reason.to_string());
         attention.updated_at = updated_at.to_string();

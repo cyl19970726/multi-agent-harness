@@ -67,6 +67,35 @@ The `AgentIdentity` name is a deprecated same-ID read-only compatibility
 projection of `AgentMember`: legacy readers resolve the same row, and nothing
 may be bound to it as a second identity root.
 
+## Team Host runtime
+
+[ADR 0057](../../decisions/0057-host-is-an-agent-member.md) closes the former
+Host/Member execution split. The Host is the exact `AgentMember` named by
+`AgentTeam.host_agent_id` and its one active `TeamMembership(role=host)`.
+Every current TeamRun resolves one Host MemberRun.
+
+In the default `managed` mode, that MemberRun uses the same AgentSession,
+NodeDaemon, RuntimeCommand, provider admission, TeamRuntimeAdapter, Message
+claim/receipt/ACK, and Close/Reopen lifecycle as every other managed
+participant. Host authority is role policy, not a provider feature and not a
+second runtime species. Managed Host status delivery additionally carries the
+exact recipient MemberRun, AgentSession/runtime generation, and NodeDaemon
+generation fence before a provider receipt can settle it.
+
+`external_interactive` is an explicit user-driven exception. It keeps the same
+Host AgentMember and business authority but has only a detached MemberRun and
+durable pull-based inbox. Harness does not claim an unverifiable native session,
+timely wake, provider receipt, or ACK. Historical `external` values decode to
+this mode without fabricating managed evidence, and there is no silent fallback
+between modes.
+
+Work events, Messages, and runtime/recovery attentions remain independent
+canonical planes. The daemon may batch them into the next Host cycle, but
+delivery does not authorize Work mutation and provider completion does not
+mean Host acceptance. Ordinary progress is batched; decisions, blocked Work,
+submission, direct Messages, and recovery facts can wake an idle managed Host.
+Host-authored status updates do not recursively wake that same Host.
+
 `TeamRun` and `MemberRun` remain internal diagnostics and history
 projections. They are not provider runtime authority and never scope durable
 identity or Work responsibility. No CLI, HTTP, MCP,

@@ -1,6 +1,74 @@
 use super::*;
 
 impl HarnessStore {
+    pub(super) fn require_managed_host_attention_fence_unlocked(
+        &self,
+        attention: &HostAttention,
+        observed_at: &str,
+    ) -> StoreResult<()> {
+        let run = self.require_team_run_unlocked(&attention.team_run_id)?;
+        if run.host_control_mode != firm_core::HostControlMode::Managed {
+            return Err(StoreError::Conflict(
+                "MANAGED_HOST_ATTENTION_MODE_FENCED".to_string(),
+            ));
+        }
+        let scope = self.current_team_run_execution_space_unlocked(&run)?;
+        let member_run_id = attention
+            .claimed_recipient_member_run_id
+            .as_deref()
+            .ok_or_else(|| StoreError::Conflict("managed claim has no MemberRun".to_string()))?;
+        let session_id = attention
+            .claimed_recipient_session_id
+            .as_deref()
+            .ok_or_else(|| StoreError::Conflict("managed claim has no AgentSession".to_string()))?;
+        let session_generation =
+            attention
+                .claimed_recipient_session_generation
+                .ok_or_else(|| {
+                    StoreError::Conflict("managed claim has no session generation".to_string())
+                })?;
+        let daemon_id = attention
+            .claimed_node_daemon_id
+            .as_deref()
+            .ok_or_else(|| StoreError::Conflict("managed claim has no NodeDaemon".to_string()))?;
+        let daemon_generation = attention.claimed_node_daemon_generation.ok_or_else(|| {
+            StoreError::Conflict("managed claim has no daemon generation".to_string())
+        })?;
+        let team = latest_by_id(self.all_agent_teams()?, |team| team.id.clone())
+            .remove(&run.agent_team_id)
+            .ok_or_else(|| StoreError::Conflict("managed Host Team is missing".to_string()))?;
+        let member = self.require_member_run_unlocked(member_run_id, &run.id)?;
+        if member.agent_member_id != team.host_agent_id || member.is_external_interactive() {
+            return Err(StoreError::Conflict(
+                "MANAGED_HOST_MEMBER_RUN_FENCED".to_string(),
+            ));
+        }
+        let session = self
+            .fabric_agent_sessions(&scope)?
+            .into_iter()
+            .find(|session| {
+                session.id == session_id
+                    && session.agent_member_id == team.host_agent_id
+                    && session.runtime_generation == session_generation
+                    && session.node_daemon_id == daemon_id
+                    && session.node_daemon_generation == daemon_generation
+                    && session.lifecycle != firm_core::agentfirm_api::AgentSessionStatus::Closed
+            })
+            .ok_or_else(|| StoreError::Conflict("AGENT_SESSION_GENERATION_FENCED".to_string()))?;
+        let observed_unix_ms = parse_iso8601_to_unix_ms(observed_at).ok_or_else(|| {
+            StoreError::Conflict("managed Host completion requires unix-ms updated_at".to_string())
+        })?;
+        self.latest_node_daemon_lease(&session.node_id)?
+            .filter(|lease| {
+                lease.daemon_id == daemon_id
+                    && lease.generation == daemon_generation
+                    && lease.status == NodeDaemonLeaseStatus::Active
+                    && lease.expires_unix_ms > observed_unix_ms
+            })
+            .ok_or_else(|| StoreError::Conflict("NODE_DAEMON_GENERATION_FENCED".to_string()))?;
+        Ok(())
+    }
+
     pub(super) fn require_team_run_unlocked(&self, team_run_id: &str) -> StoreResult<AgentTeamRun> {
         latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
             run.id.clone()
@@ -201,6 +269,11 @@ impl HarnessStore {
                 claimed_host_lease_id: None,
                 claimed_host_lease_generation: None,
                 claimed_host_lease_owner_id: None,
+                claimed_recipient_member_run_id: None,
+                claimed_recipient_session_id: None,
+                claimed_recipient_session_generation: None,
+                claimed_node_daemon_id: None,
+                claimed_node_daemon_generation: None,
                 provider_receipt_id: None,
                 last_failure_reason: None,
                 created_at: observed_at.to_string(),
@@ -317,13 +390,24 @@ impl HarnessStore {
     pub(super) fn host_attention_for_work_operation(
         operation: &WorkOperation,
     ) -> Option<HostAttention> {
+        if operation.event.performed_by_actor.kind == TeamActorKind::Host {
+            return None;
+        }
         let kind = match operation.event.kind {
             WorkEventKind::Submitted => HostAttentionKind::WorkReviewRequested,
             WorkEventKind::Blocked => HostAttentionKind::WorkBlocked,
             WorkEventKind::Accepted => HostAttentionKind::WorkAccepted,
             WorkEventKind::ChangesRequested => HostAttentionKind::WorkChangesRequested,
             WorkEventKind::Cancelled => HostAttentionKind::WorkCancelled,
-            _ => return None,
+            WorkEventKind::Created
+            | WorkEventKind::Assigned
+            | WorkEventKind::Claimed
+            | WorkEventKind::Started
+            | WorkEventKind::Released
+            | WorkEventKind::Resumed
+            | WorkEventKind::Updated
+            | WorkEventKind::Rebound
+            | WorkEventKind::ExecutionRetargeted => HostAttentionKind::WorkChanged,
         };
         Some(HostAttention {
             id: format!("host-attention-{}", operation.event.id),
@@ -341,6 +425,11 @@ impl HarnessStore {
             claimed_host_lease_id: None,
             claimed_host_lease_generation: None,
             claimed_host_lease_owner_id: None,
+            claimed_recipient_member_run_id: None,
+            claimed_recipient_session_id: None,
+            claimed_recipient_session_generation: None,
+            claimed_node_daemon_id: None,
+            claimed_node_daemon_generation: None,
             provider_receipt_id: None,
             last_failure_reason: None,
             created_at: operation.event.created_at.clone(),
@@ -403,7 +492,10 @@ impl HarnessStore {
             .filter(|attention| attention.team_run_id == team_run_id)
             .filter(|attention| include_all || attention.needs_host_action())
             .collect::<Vec<_>>();
-        let warning = if run.host_thread_id.is_none() && !attentions.is_empty() {
+        let warning = if run.host_control_mode == firm_core::HostControlMode::ExternalInteractive
+            && run.host_thread_id.is_none()
+            && !attentions.is_empty()
+        {
             Some(format!(
                 "UNBOUND_HOST: TeamRun {} has actionable Host attention but no exact native Host task; bind host_surface + host_thread_id before delivery",
                 run.id

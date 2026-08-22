@@ -54,6 +54,7 @@ consequences, affected modules, and validation path.
 | [0054](0054-ai-first-docs-page-model-and-storage.md) | superseded by DOC-108 | The AI-first Docs page model retired with the built-in Docs layer |
 | [0055](0055-remote-node-fabric.md) | accepted; implemented | One Fabric Control Plane, outbound NodeGateway children, and FabricStore as the sole cross-Node route truth |
 | [0056](0056-correlated-message-and-session-permission-cutover.md) | accepted; implemented | Provider questions are correlated Messages; permission is frozen at AgentSession start; the second interaction object is removed |
+| [0057](0057-host-is-an-agent-member.md) | accepted; implementation tracked by DEV-59 | Managed and external interactive Hosts share AgentMember identity and role authority; managed Hosts use the ordinary Team runtime and exact-session inbox path |
 
 ## Split Rule
 

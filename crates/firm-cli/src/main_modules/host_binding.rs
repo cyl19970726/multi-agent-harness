@@ -365,7 +365,7 @@ pub(super) fn dispatch_headless_host_once(
             run.host_surface
         ))
     })?;
-    let host_binding = descriptor.headless_host.ok_or_else(|| {
+    let host_binding = descriptor.external_host_transport.ok_or_else(|| {
         if provider == "codex" {
             CliError::Usage(
                 "HEADLESS_HOST_READ_ONLY_UNAVAILABLE: Codex exact-session resume inherits the existing session sandbox and cannot currently prove a read-only Host turn; use the interactive Host or a provider transport that enforces read-only resume"
@@ -462,7 +462,7 @@ pub(super) fn dispatch_headless_host_once(
                     sender_kind: SenderKind::System,
                 };
                 match host_binding.binding {
-                    harness_application::HostRuntimeKind::KimiAcp => {
+                    harness_application::ExternalHostTransportKind::KimiAcp => {
                         let turn = harness_provider_kimi::run_kimi_host_turn(
                             &project_context.project_root,
                             thread_id,
@@ -475,7 +475,7 @@ pub(super) fn dispatch_headless_host_once(
                             turn.provider_receipt_id,
                         );
                     }
-                    harness_application::HostRuntimeKind::ClaudeCli => {}
+                    harness_application::ExternalHostTransportKind::ClaudeCli => {}
                 }
 
                 let outcome = run_claude_host_delivery(

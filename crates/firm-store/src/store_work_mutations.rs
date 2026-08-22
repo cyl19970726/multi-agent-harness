@@ -75,6 +75,46 @@ impl HarnessStore {
         work.resolution = None;
         work.created_at = context.created_at.clone();
         work.updated_at = context.created_at.clone();
+        let execution_space_id = self.current_team_run_execution_space_unlocked(&team_run)?;
+        let team_id = work.accountable_team_id.as_deref();
+        let memberships = self.fabric_team_memberships(&execution_space_id)?;
+        let assigned_membership = if let Some(membership_id) =
+            work.assignee_membership_id.as_deref()
+        {
+            let team_id = work.accountable_team_id.as_deref().ok_or_else(|| {
+                StoreError::Conflict(
+                    "WORK_NOT_TEAM_SCOPED: membership assignment requires accountable_team_id"
+                        .to_string(),
+                )
+            })?;
+            let membership = memberships
+                .iter()
+                .find(|membership| membership.id == membership_id)
+                .ok_or_else(|| {
+                    StoreError::Conflict(format!("ASSIGNEE_MEMBERSHIP_NOT_FOUND: {membership_id}"))
+                })?;
+            if membership.team_id != team_id
+                || membership.state != firm_core::agentfirm_api::TeamMembershipStatus::Active
+                || membership.role != firm_core::agentfirm_api::TeamMembershipRole::Member
+            {
+                return Err(StoreError::Conflict(format!(
+                    "ASSIGNEE_MEMBERSHIP_NOT_ELIGIBLE: TeamMembership {membership_id} must be an active ordinary Member of Team {team_id}; Host and Observer targets are forbidden"
+                )));
+            }
+            if work
+                .owner_member_id
+                .as_deref()
+                .is_some_and(|owner| owner != membership.agent_member_id)
+            {
+                return Err(StoreError::Conflict(
+                    "owner_member_id does not match assignee_membership_id".to_string(),
+                ));
+            }
+            work.owner_member_id = Some(membership.agent_member_id.clone());
+            Some(membership.clone())
+        } else {
+            None
+        };
         if let Some(member_run_id) = work.active_member_run_id.as_deref() {
             let member = self.require_member_run_unlocked(member_run_id, &work.team_run_id)?;
             self.ensure_member_can_receive_work_unlocked(&member)?;
@@ -118,23 +158,110 @@ impl HarnessStore {
                     ));
                 }
                 work.created_by_member_id = Some(own_identity.clone());
-                if work
+                let creator_membership = memberships
+                    .iter()
+                    .find(|membership| {
+                        Some(membership.team_id.as_str()) == team_id
+                            && membership.agent_member_id == own_identity
+                            && membership.state
+                                == firm_core::agentfirm_api::TeamMembershipStatus::Active
+                    })
+                    .ok_or_else(|| {
+                        StoreError::Conflict(
+                            "WORK_CREATOR_MEMBERSHIP_NOT_ACTIVE: runtime actor has no exact active TeamMembership"
+                                .to_string(),
+                        )
+                    })?;
+                if creator_membership.role == firm_core::agentfirm_api::TeamMembershipRole::Observer
+                {
+                    return Err(StoreError::Conflict(
+                        "WORK_CREATE_FORBIDDEN: Observer cannot create Work".to_string(),
+                    ));
+                }
+                // Old TeamRuns did not persist an exact Host actor/runtime
+                // relation. Keep those records readable as the historical
+                // ordinary-runtime model; current runs derive Host authority
+                // from the exact Host membership below.
+                let creator_is_ordinary = creator_membership.role
+                    == firm_core::agentfirm_api::TeamMembershipRole::Member
+                    || team_run.host_actor.is_none();
+                let peer_target = work
                     .owner_member_id
                     .as_deref()
-                    .is_some_and(|owner| owner != own_identity)
-                    || work
+                    .is_some_and(|owner| owner != own_identity);
+                if peer_target && creator_is_ordinary {
+                    let parent_id = work.parent_work_id.as_deref().ok_or_else(|| {
+                        StoreError::Conflict(
+                            "MEMBER_PEER_DELEGATION_REQUIRES_OWNED_PARENT: ordinary Members may target a peer only with a bounded child Work"
+                                .to_string(),
+                        )
+                    })?;
+                    let parent =
+                        self.latest_works_unlocked()?
+                            .remove(parent_id)
+                            .ok_or_else(|| {
+                                StoreError::Conflict(format!(
+                                    "MEMBER_PEER_DELEGATION_PARENT_NOT_FOUND: {parent_id}"
+                                ))
+                            })?;
+                    if parent.team_run_id != work.team_run_id
+                        || parent.owner_member_id.as_deref() != Some(own_identity.as_str())
+                        || parent.active_member_run_id.as_deref() != Some(member.id.as_str())
+                        || parent.is_terminal()
+                    {
+                        return Err(StoreError::Conflict(
+                            "MEMBER_PEER_DELEGATION_NOT_AUTHORIZED: creator must actively own a non-terminal parent Work in the same TeamRun"
+                                .to_string(),
+                        ));
+                    }
+                    if assigned_membership.as_ref().is_none_or(|membership| {
+                        membership.role != firm_core::agentfirm_api::TeamMembershipRole::Member
+                    }) {
+                        return Err(StoreError::Conflict(
+                            "MEMBER_PEER_DELEGATION_TARGET_FORBIDDEN: target must be an active ordinary Member, never Host or Observer"
+                                .to_string(),
+                        ));
+                    }
+                    if work.active_member_run_id.is_some() {
+                        return Err(StoreError::Conflict(
+                            "MEMBER_PEER_DELEGATION_EXECUTION_NOT_BOUND: child responsibility assignment cannot create provider execution authority"
+                                .to_string(),
+                        ));
+                    }
+                } else if creator_is_ordinary
+                    && work
                         .active_member_run_id
                         .as_deref()
                         .is_some_and(|owner| owner != member.id)
                 {
                     return Err(StoreError::Conflict(
-                        "an ordinary Member may create only self-owned or unassigned Work"
+                        "an ordinary Member may bind execution only to its own MemberRun"
                             .to_string(),
                     ));
                 }
             }
             _ => {
                 require_host_actor(&context.performed_by_actor)?;
+                let team_id = team_id.ok_or_else(|| {
+                    StoreError::Conflict("Host Work requires an accountable Team".to_string())
+                })?;
+                let team = latest_by_id(self.all_agent_teams()?, |team| team.id.clone())
+                    .remove(team_id)
+                    .ok_or_else(|| StoreError::Conflict("AgentTeam not found".to_string()))?;
+                let exact_current_host = context.performed_by_actor.id == team.host_agent_id
+                    && memberships.iter().any(|membership| {
+                        membership.team_id == team_id
+                            && membership.agent_member_id == team.host_agent_id
+                            && membership.role == firm_core::agentfirm_api::TeamMembershipRole::Host
+                            && membership.state
+                                == firm_core::agentfirm_api::TeamMembershipStatus::Active
+                    });
+                if team_run.host_actor.is_some() && !exact_current_host {
+                    return Err(StoreError::Conflict(
+                        "HOST_AUTHORITY_FENCED: actor is not the exact active Host AgentMember"
+                            .to_string(),
+                    ));
+                }
                 if work.created_by_member_id.is_some() {
                     return Err(StoreError::Conflict(
                         "only a ProviderRuntimeProjection actor may set created_by_member_id"

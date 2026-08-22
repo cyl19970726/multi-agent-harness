@@ -8,7 +8,8 @@ work_contract: ADR 0050; Work/WorkEvent/WorkDelivery are the responsibility path
 ```
 
 This document is the smallest required context for adding a new Agent Team
-provider or changing how a persistent `MemberRun` continues work. It extends
+provider or changing how a persistent `MemberRun`—including the Team Host's
+MemberRun—continues work. It extends
 the mailbox and runtime substrate in [Agent Runtime](agent-runtime.md) without
 creating a Harness `Goal`, Plan Gate, task graph, or provider transcript copy.
 
@@ -21,6 +22,7 @@ execution:
 AgentTeam (durable, flat)
   -> AgentTeamRun
   -> MemberRun
+       -> TeamMembership role (host | member)
        -> active Work + WorkDelivery
        -> Harness Mailbox
        -> Workspace
@@ -43,6 +45,12 @@ These layers answer different questions:
 Work is the durable responsibility contract. A provider-native Goal or
 completion condition is a session-local way to continue that Work. It
 must never become a second product Goal or silently replace Host acceptance.
+
+Host and Member use this same continuation model. Their Team permissions and
+status subscription policies differ by exact TeamMembership role; provider
+capability never grants Host authority. A managed Host is daemon-driven like a
+managed Member. An external interactive Host is the declared `user_driven`
+exception and receives no timely-wake or provider-receipt promise.
 
 ## Continuation Has Two Independent Axes
 

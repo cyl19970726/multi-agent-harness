@@ -43,13 +43,14 @@ use crate::{
     active_work_continuation_prompt, emit_live_provider_activity, mark_message_delivered,
     member_work_collaboration_envelope, native_session_ref, now_string, parse_round_result,
     prepare_provider_effect, refresh_member_after_provider_callbacks,
-    require_provider_session_authority, settle_provider_effect, settle_provider_effect_not_applied,
+    requeue_managed_host_attentions, require_provider_session_authority,
+    settle_managed_host_attentions, settle_provider_effect, settle_provider_effect_not_applied,
     stop_member_for_latched_close, team_messages_prompt, transition_provider_session_for_member,
     wait_for_idle_member_wake, work_contract_prompt, ClaimedWork, CliError, CliResult,
-    ControlReceiver, IdleMemberWake, LiveMemberControlRegistration, LiveProviderTurnGuard,
-    MemberActionStatus, MemberControlCommand, MemberOutcome, MemberRoundResult, MemberRunStatus,
-    MemberRuntimeContext, ProviderRuntimeProjection, TeamMessageProjection, TeamRunEventSourceKind,
-    TeamRunLedger,
+    ControlReceiver, HostAttention, IdleMemberWake, LiveMemberControlRegistration,
+    LiveProviderTurnGuard, MemberActionStatus, MemberControlCommand, MemberOutcome,
+    MemberRoundResult, MemberRunStatus, MemberRuntimeContext, ProviderRuntimeProjection,
+    TeamMessageProjection, TeamRunEventSourceKind, TeamRunLedger,
 };
 
 /// Deterministic integration hook: pause after the provider terminal boundary
@@ -132,6 +133,7 @@ struct CycleInput {
     prompt: String,
     active_work: Option<ClaimedWork>,
     accepted_messages: Vec<TeamMessageProjection>,
+    host_attentions: Vec<HostAttention>,
     /// New `last_consumed_work_version`; None leaves the tracker unchanged.
     consumed_work_version: Option<u64>,
 }
@@ -193,6 +195,7 @@ fn idle_wake_into_cycle<A: TeamRuntimeAdapter<Error = CliError>>(
                 prompt,
                 active_work: Some(*claimed),
                 accepted_messages: Vec::new(),
+                host_attentions: Vec::new(),
                 consumed_work_version: Some(consumed),
             }))
         }
@@ -211,20 +214,61 @@ fn idle_wake_into_cycle<A: TeamRuntimeAdapter<Error = CliError>>(
                 prompt,
                 active_work: None,
                 accepted_messages: Vec::new(),
+                host_attentions: Vec::new(),
                 consumed_work_version: Some(consumed),
             }))
         }
-        IdleMemberWake::Messages(messages) => {
-            let prompt = team_messages_prompt(
+        IdleMemberWake::Messages {
+            messages,
+            host_attentions,
+        } => {
+            let mut prompt = team_messages_prompt(
                 "TEAM MESSAGES arrived. They are conversation, not Work ownership. \
                  Address the question or coordination request, and use the Works \
                  board for any durable responsibility.",
                 &messages,
             );
+            if !host_attentions.is_empty() {
+                prompt.push_str(
+                    "\n\nBATCHED TEAM STATUS (coordination facts, not Work ownership):\n",
+                );
+                for attention in &host_attentions {
+                    prompt.push_str(&format!(
+                        "- {:?}: work={} version={} source={}\n",
+                        attention.kind,
+                        attention.work_id,
+                        attention.work_version,
+                        attention.source_event_ref
+                    ));
+                }
+            }
             Ok(Ok(CycleInput {
                 prompt,
                 active_work: None,
                 accepted_messages: messages,
+                host_attentions,
+                consumed_work_version: None,
+            }))
+        }
+        IdleMemberWake::HostAttentions(attentions) => {
+            let mut prompt = String::from(
+                "TEAM STATUS ATTENTION arrived for the Host. These are durable coordination facts, not new Work ownership. Review, respond, or route only when a decision is required.\n\n",
+            );
+            for attention in &attentions {
+                prompt.push_str(&format!(
+                    "- {:?}: work={} version={} source={} member_run={}\n",
+                    attention.kind,
+                    attention.work_id,
+                    attention.work_version,
+                    attention.source_event_ref,
+                    attention.member_run_id.as_deref().unwrap_or("none")
+                ));
+            }
+            Ok(Ok(CycleInput {
+                prompt,
+                active_work: None,
+                accepted_messages: Vec::new(),
+                host_attentions: attentions,
                 consumed_work_version: None,
             }))
         }
@@ -565,6 +609,12 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                         .last()
                         .map(|message| message.id.as_str())
                 })
+                .or_else(|| {
+                    cycle
+                        .host_attentions
+                        .last()
+                        .map(|attention| attention.id.as_str())
+                })
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("continuation:{}:{round}", member_row.id));
             let source_record_id = format!("{source_record_id}:turn:{round}");
@@ -576,7 +626,18 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 member_row,
                 harness_core::agentfirm_api::AgentSessionStatus::Active,
             )?;
-            let effect = prepare_provider_effect(ledger, member_row, &source_record_id, &prompt)?;
+            let effect =
+                match prepare_provider_effect(ledger, member_row, &source_record_id, &prompt) {
+                    Ok(effect) => effect,
+                    Err(error) => {
+                        requeue_managed_host_attentions(
+                            ledger,
+                            &cycle.host_attentions,
+                            &error.to_string(),
+                        )?;
+                        return Err(error);
+                    }
+                };
             let profile = member_row.provider_profile.as_ref().ok_or_else(|| {
                 CliError::Usage(format!(
                     "RUNTIME_ADAPTER_PROFILE_MISSING: {} has no persisted provider profile",
@@ -588,6 +649,11 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                 .and_then(|()| preflight_start_cycle(adapter, &effect.target_session));
             if let Err(error) = adapter_admission {
                 settle_provider_effect_not_applied(ledger, &effect, error.to_string())?;
+                requeue_managed_host_attentions(
+                    ledger,
+                    &cycle.host_attentions,
+                    &error.to_string(),
+                )?;
                 return Err(error);
             }
             let mut accepted_provider_receipt: Option<String> = None;
@@ -660,6 +726,11 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                             provider_receipt,
                         )?;
                     }
+                    settle_managed_host_attentions(
+                        ledger,
+                        &cycle.host_attentions,
+                        provider_receipt,
+                    )?;
                     if !terminal_control_dispatched.get() {
                         crate::transition_provider_session_runtime_control(
                             ledger,
@@ -978,6 +1049,11 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                         "{provider} cycle returned without a provider input-acceptance receipt"
                     ));
                     settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
+                    requeue_managed_host_attentions(
+                        ledger,
+                        &cycle.host_attentions,
+                        &error.to_string(),
+                    )?;
                     return Err(error);
                 }
                 Err(error) => {
@@ -991,6 +1067,11 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                     );
                     if accepted_provider_receipt.is_none() {
                         settle_provider_effect_not_applied(ledger, &effect, error.to_string())?;
+                        requeue_managed_host_attentions(
+                            ledger,
+                            &cycle.host_attentions,
+                            &error.to_string(),
+                        )?;
                     }
                     let action = ledger.append_action(
                         &member_row.id,

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn work_cancel_emits_host_attention_for_bound_run() {
+fn host_authored_work_cancel_does_not_wake_the_same_host() {
     let (root, store, run, member, _) = work_test_fixture("work-cancel-ha");
     let work = store
         .insert_work(
@@ -30,9 +30,8 @@ fn work_cancel_emits_host_attention_for_bound_run() {
         .iter()
         .find(|a| a.work_id == work.id && a.kind == HostAttentionKind::WorkCancelled);
     assert!(
-        cancelled.is_some(),
-        "bound run must emit WorkCancelled on cancel"
+        cancelled.is_none(),
+        "a Host-authored cancellation must not recursively wake the same Host"
     );
-    assert_eq!(cancelled.unwrap().team_run_id, run.id);
     std::fs::remove_dir_all(root).expect("remove temp store");
 }
