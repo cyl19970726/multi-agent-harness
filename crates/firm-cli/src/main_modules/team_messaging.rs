@@ -719,6 +719,7 @@ pub(super) fn canonical_team_messages_for_run(
             .map(str::to_owned)
             .ok_or_else(|| CliError::Usage("TeamRun references a missing AgentTeam".into()))?,
     };
+    let host_runtime_id = projected_host_runtime_id(&run, &host_identity, &identity_to_runtime)?;
     let mut projected = Vec::new();
     let deliveries = store.fabric_message_deliveries(&execution_space_id)?;
     for message in store
@@ -732,7 +733,7 @@ pub(super) fn canonical_team_messages_for_run(
             .filter_map(|delivery| {
                 let recipient_agent_member_id = delivery.recipient_agent_member_id.as_deref()?;
                 let runtime_id = if recipient_agent_member_id == host_identity {
-                    "host".to_string()
+                    host_runtime_id.clone()
                 } else {
                     identity_to_runtime
                         .get(recipient_agent_member_id)
@@ -748,9 +749,9 @@ pub(super) fn canonical_team_messages_for_run(
                     && recipient.id == host_identity
             })
         {
-            let mut row = project_canonical_inbox_message(&message, "host", None);
+            let mut row = project_canonical_inbox_message(&message, &host_runtime_id, None);
             row.sender_runtime_id = if message.sender_actor_ref.id == host_identity {
-                "host".to_string()
+                host_runtime_id.clone()
             } else {
                 identity_to_runtime
                     .get(&message.sender_actor_ref.id)
@@ -766,7 +767,7 @@ pub(super) fn canonical_team_messages_for_run(
         let mut row =
             project_canonical_inbox_message(&message, first_runtime, Some(first_delivery));
         row.sender_runtime_id = if message.sender_actor_ref.id == host_identity {
-            "host".to_string()
+            host_runtime_id.clone()
         } else {
             identity_to_runtime
                 .get(&message.sender_actor_ref.id)
@@ -804,6 +805,25 @@ pub(super) fn canonical_team_messages_for_run(
     Ok(projected)
 }
 
+fn projected_host_runtime_id(
+    run: &AgentTeamRun,
+    host_identity: &str,
+    identity_to_runtime: &BTreeMap<String, String>,
+) -> CliResult<String> {
+    match run.host_control_mode {
+        HostControlMode::Managed => identity_to_runtime
+            .get(host_identity)
+            .cloned()
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "MANAGED_HOST_MEMBER_RUN_MISSING: TeamRun {} has no MemberRun for Host AgentMember {}",
+                    run.id, host_identity
+                ))
+            }),
+        HostControlMode::ExternalInteractive => Ok("host".to_string()),
+    }
+}
+
 /// Resolve the one Execution Space that owns a TeamRun's canonical runtime
 /// projections. MemberRun materialization is the frozen run-scoped binding;
 /// Node registrations are only a fail-closed fallback for a pre-materialized
@@ -819,9 +839,28 @@ pub(super) fn team_run_unacknowledged_message_count(
     store: &HarnessStore,
     team_run_id: &str,
 ) -> CliResult<usize> {
+    let run = latest_team_run(store, team_run_id)?;
+    let host_identity = latest_teams(store)?
+        .remove(&run.agent_team_id)
+        .map(|team| team.host_agent_id)
+        .or_else(|| {
+            legacy_team_definitions_by_id(store)
+                .ok()?
+                .get(&run.agent_team_id)?
+                .get("host_agent_id")?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| CliError::Usage("TeamRun references a missing AgentTeam".into()))?;
+    let identity_to_runtime = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .filter(|member| member.team_run_id == team_run_id)
+        .map(|member| (member.agent_member_id, member.id))
+        .collect::<BTreeMap<_, _>>();
+    let host_runtime_id = projected_host_runtime_id(&run, &host_identity, &identity_to_runtime)?;
     Ok(canonical_team_messages_for_run(store, team_run_id)?
         .iter()
-        .filter(|message| has_actionable_unacknowledged_host_delivery(message))
+        .filter(|message| has_actionable_unacknowledged_host_delivery(message, &host_runtime_id))
         .count())
 }
 

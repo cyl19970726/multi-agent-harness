@@ -21,6 +21,11 @@ fn canonical_message_fabric_drives_lineage_status_and_member_detail_without_lega
         .remove(&created.team_run.agent_team_id)
         .expect("Team exists");
     let member = &created.member_runs[0];
+    let host_member = created
+        .member_runs
+        .iter()
+        .find(|member| member.agent_member_id == team.host_agent_id)
+        .expect("managed Host MemberRun");
     let legacy_path = store.root().join("team_messages.jsonl");
     std::fs::write(&legacy_path, b"{malformed legacy archive")
         .expect("seed unreadable Legacy archive sentinel");
@@ -111,6 +116,19 @@ fn canonical_message_fabric_drives_lineage_status_and_member_detail_without_lega
     assert!(current
         .iter()
         .all(|message| !message.id.starts_with("foreign-")));
+    let host_request = current
+        .iter()
+        .find(|message| message.id == "canonical-host-request")
+        .expect("managed Host request projection");
+    assert_eq!(host_request.sender_runtime_id, host_member.id);
+    let member_reply = current
+        .iter()
+        .find(|message| message.id == "canonical-member-reply")
+        .expect("managed Host recipient projection");
+    assert_eq!(
+        member_reply.recipient_runtime_ids,
+        vec![host_member.id.clone()]
+    );
     let member_inbox = team_run_inbox(&store, &created.team_run.id, &member.id, true)
         .expect("exact-space Member inbox");
     assert_eq!(
@@ -133,8 +151,8 @@ fn canonical_message_fabric_drives_lineage_status_and_member_detail_without_lega
         Some(1),
         "canonical sender identity must project back to its MemberRun"
     );
-    let host_inbox =
-        team_run_inbox(&store, &created.team_run.id, "host", true).expect("exact-space Host inbox");
+    let host_inbox = team_run_inbox(&store, &created.team_run.id, &host_member.id, true)
+        .expect("exact-space managed Host inbox");
     assert_eq!(
         host_inbox
             .iter()
