@@ -1,4 +1,5 @@
 use super::*;
+use harness_core::CurrentWorkDraft;
 
 #[test]
 fn supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery() {

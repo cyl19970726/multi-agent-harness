@@ -1,4 +1,5 @@
 use super::*;
+use harness_core::CurrentWorkDraft;
 
 pub(super) fn team_run_work_command(
     store: &HarnessStore,

@@ -1,4 +1,5 @@
 use super::*;
+use harness_core::CurrentWorkDraft;
 
 /// Parse one `--member name:role:provider[/mode][:model][@path1,path2][#brief]` spec.
 ///

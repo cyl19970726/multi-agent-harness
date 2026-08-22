@@ -4,9 +4,9 @@ use std::process::Command;
 use std::{fs::OpenOptions, io::Write};
 
 use harness_core::{
-    AgentTeamRun, HostAttention, HostAttentionKind, HostAttentionStatus, HostBindingLeaseStatus,
-    HostControlMode, TeamActorKind, TeamActorRef, TeamRunStatus, Work, WorkClaimMode,
-    WorkCommandContext, WorkCondition, WorkPhase, WorkPriority,
+    AgentTeamRun, CurrentWorkDraft, HostAttention, HostAttentionKind, HostAttentionStatus,
+    HostBindingLeaseStatus, HostControlMode, TeamActorKind, TeamActorRef, TeamRunStatus,
+    WorkClaimMode, WorkCommandContext, WorkPriority,
 };
 use harness_store::HarnessStore;
 

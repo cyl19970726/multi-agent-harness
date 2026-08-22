@@ -1,4 +1,5 @@
 use super::*;
+use harness_core::CurrentWorkDraft;
 
 #[test]
 fn host_inbox_shows_work_attention_after_submit() {
