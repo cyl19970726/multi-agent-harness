@@ -74,14 +74,24 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
             "arguments": {
                 "objective": "Exercise canonical MCP provider response bridge",
                 "agent_team_id": team_id,
-                "members": [{
-                    "name": "mcp-question-worker",
-                    "role": "implementer",
-                    "provider": "codex",
-                    "execution_mode": "codex_app_server",
-                    "agent_member_id": worker_id,
-                    "initial_work": "Ask one deterministic provider question"
-                }]
+                "host_runtime_mode": "external_interactive",
+                "members": [
+                    {
+                        "name": "mcp-host",
+                        "role": "host",
+                        "provider": "codex",
+                        "execution_mode": "external_interactive",
+                        "agent_member_id": host_id
+                    },
+                    {
+                        "name": "mcp-question-worker",
+                        "role": "implementer",
+                        "provider": "codex",
+                        "execution_mode": "codex_app_server",
+                        "agent_member_id": worker_id,
+                        "initial_work": "Ask one deterministic provider question"
+                    }
+                ]
             }
         }),
     ));

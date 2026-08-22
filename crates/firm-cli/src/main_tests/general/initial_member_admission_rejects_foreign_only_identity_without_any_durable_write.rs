@@ -4,7 +4,7 @@ use super::*;
 fn initial_member_admission_rejects_foreign_only_identity_without_any_durable_write() {
     let (store, root) = temp_store("initial-member-admission-space-fence");
     let (project_context, team_id) =
-        ensure_legacy_unit_test_team_binding(&store).expect("seed exact Team binding");
+        ensure_legacy_unit_test_team_binding(&store, None).expect("seed exact Team binding");
     let local = TeamMemberSpec {
         agent_member_id: "agent-initial-local".into(),
         name: "InitialLocal".into(),

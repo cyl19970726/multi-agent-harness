@@ -722,13 +722,27 @@ impl ServeHandle {
         object
             .entry("agent_team_id".to_string())
             .or_insert_with(|| serde_json::Value::String(team_id.clone()));
+        let team = teams.get(&team_id).cloned().expect("fixture AgentTeam");
+        let needs_host = !object
+            .get("members")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|members| {
+                members.iter().any(|member| {
+                    member["agent_member_id"].as_str() == Some(team.host_agent_id.as_str())
+                })
+            });
+        if needs_host {
+            object.insert(
+                "host_runtime_mode".into(),
+                serde_json::Value::String("external_interactive".into()),
+            );
+        }
         let Some(members) = object
             .get_mut("members")
             .and_then(serde_json::Value::as_array_mut)
         else {
             return prepared;
         };
-        let team = teams.get(&team_id).cloned().expect("fixture AgentTeam");
         let creator = ActorRef {
             kind: ActorKind::Service,
             id: "integration-test-fixture".into(),
@@ -825,6 +839,28 @@ impl ServeHandle {
                 .expect("create durable fixture TeamMembership");
             member_object.insert("agent_member_id".into(), serde_json::Value::String(id));
         }
+        if !members
+            .iter()
+            .any(|member| member["agent_member_id"].as_str() == Some(team.host_agent_id.as_str()))
+        {
+            let host = store
+                .trust_agent_members(&execution_space_id)
+                .expect("read fixture AgentMembers")
+                .into_iter()
+                .find(|member| member.id == team.host_agent_id)
+                .expect("fixture Team has exact Host AgentMember");
+            let provider = host
+                .provider_profile_ref
+                .as_deref()
+                .expect("fixture Host has provider profile");
+            members.push(serde_json::json!({
+                "agent_member_id": host.id,
+                "name": host.name,
+                "role": "host",
+                "provider": provider,
+                "execution_mode": "external_interactive",
+            }));
+        }
         prepared
     }
 
@@ -910,7 +946,7 @@ impl ServeHandle {
         let payload = normalized_body.to_string();
         let mut stream = TcpStream::connect(self.addr()).expect("connect post");
         stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(Duration::from_secs(15)))
             .expect("timeout");
         let token_header = token
             .map(|value| format!("X-Harness-Company-OS-Token: {value}\r\n"))
@@ -1142,14 +1178,18 @@ pub fn run_firm_with_env(
             .flatten()
             .filter_map(Result::ok)
             .any(|entry| {
-                std::fs::read_to_string(entry.path().join("teams.jsonl"))
-                    .is_ok_and(|rows| rows.contains("team-runtime-fixture"))
+                ["agentfirm_trust_operations.jsonl", "teams.jsonl"]
+                    .iter()
+                    .any(|ledger| {
+                        std::fs::read_to_string(entry.path().join(ledger))
+                            .is_ok_and(|rows| rows.contains("team-runtime-fixture"))
+                    })
             });
     let is_team_run_create = args
         .windows(2)
         .any(|window| window == ["team-run", "create"]);
     let has_team = args.contains(&"--agent-team-id");
-    let mut normalized = Vec::with_capacity(args.len() + 2);
+    let mut normalized = Vec::with_capacity(args.len() + 6);
     let mut skip_legacy_value = false;
     for a in args {
         if skip_legacy_value {
@@ -1166,6 +1206,17 @@ pub fn run_firm_with_env(
     if fixture_team_exists && is_team_run_create && !has_team {
         normalized.push("--agent-team-id");
         normalized.push("team-runtime-fixture");
+    }
+    if fixture_team_exists && is_team_run_create {
+        let has_host = args
+            .iter()
+            .any(|arg| arg.starts_with("agent-runtime-host:"));
+        if !has_host {
+            normalized.push("--host-runtime-mode");
+            normalized.push("external_interactive");
+            normalized.push("--member");
+            normalized.push("agent-runtime-host:host:kimi/external_interactive");
+        }
     }
     for a in normalized {
         cmd.arg(a);

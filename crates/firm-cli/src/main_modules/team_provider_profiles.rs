@@ -82,6 +82,18 @@ pub(super) fn apply_host_runtime_mode(
     Ok(())
 }
 
+pub(super) fn configure_host_runtime_mode(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    team_id: &str,
+    members: &mut [TeamMemberSpec],
+    requested_mode: Option<&str>,
+) -> CliResult<HostControlMode> {
+    let mode = parse_host_runtime_mode(requested_mode)?;
+    apply_host_runtime_mode(store, execution_space_id, team_id, members, mode)?;
+    Ok(mode)
+}
+
 pub(super) fn team_member_specs_from_definition(
     store: &HarnessStore,
     execution_space_id: &str,

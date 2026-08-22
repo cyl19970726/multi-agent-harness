@@ -257,6 +257,12 @@ fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::
         .collect()
 }
 
+fn worker_member_run(home: &TempHome, project_id: &str) -> Option<serde_json::Value> {
+    store_rows(home, project_id, "member_runs.jsonl")
+        .into_iter()
+        .find(|member| member["agent_member_id"] == "codex-worker")
+}
+
 fn wait_for_runtime_projection(description: &str, mut ready: impl FnMut() -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while !ready() {
@@ -300,6 +306,10 @@ fn create_single_member_run(
             "team-capacity-fixture",
             "--objective",
             "Prove the capacity preflight gates provider start without consuming Work",
+            "--host-runtime-mode",
+            "external_interactive",
+            "--member",
+            "agent-capacity-host:host:codex/external_interactive",
             "--member",
             &member_with_work,
         ],
@@ -679,10 +689,7 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
         &project_id,
         "codex-worker:implementer:codex:gpt-5.6",
     );
-    let before = store_rows(&home, &project_id, "member_runs.jsonl")
-        .into_iter()
-        .next()
-        .expect("member run before start");
+    let before = worker_member_run(&home, &project_id).expect("member run before start");
 
     let start = fake.run(
         &home,
@@ -701,9 +708,7 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
         String::from_utf8_lossy(&start.stderr)
     );
     wait_for_runtime_projection("exhausted capacity refusal", || {
-        store_rows(&home, &project_id, "member_runs.jsonl")
-            .into_iter()
-            .next()
+        worker_member_run(&home, &project_id)
             .is_some_and(|member| member["provider_capacity"]["state"] == "exhausted")
             && store_rows(&home, &project_id, "member_actions.jsonl")
                 .iter()
@@ -713,10 +718,7 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
     // 0. Identity stays reconstructable. Everything a Host needs to resume the
     //    same member — rather than create a new one — is byte-identical; only
     //    the status, the new observation, and its timestamp moved.
-    let after = store_rows(&home, &project_id, "member_runs.jsonl")
-        .into_iter()
-        .next()
-        .expect("member run after start");
+    let after = worker_member_run(&home, &project_id).expect("member run after start");
     for field in [
         "id",
         "team_run_id",
@@ -783,10 +785,7 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
             .exists(),
         "a blocked start must not fabricate TeamMessages"
     );
-    let member = store_rows(&home, &project_id, "member_runs.jsonl")
-        .into_iter()
-        .next()
-        .expect("member run");
+    let member = worker_member_run(&home, &project_id).expect("member run");
     assert_eq!(member["status"], serde_json::json!("blocked"));
     // 4. The snapshot is durable on the ProviderRuntimeProjection, so the Dashboard sees it
     //    without a second probe, and it stays distinct from compatibility.
@@ -846,9 +845,7 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
                 .is_some_and(|delivery| delivery["status"] != "queued")
     });
     assert!(
-        store_rows(&home, &project_id, "member_runs.jsonl")
-            .into_iter()
-            .next()
+        worker_member_run(&home, &project_id)
             .is_some_and(|member| !member["native_session"].is_null()),
         "the recovered start must bind the first provider-native session"
     );
@@ -891,9 +888,7 @@ fn unknown_capacity_still_starts_the_member_and_delivers_work() {
         String::from_utf8_lossy(&start.stderr)
     );
     wait_for_runtime_projection("unknown capacity provider delivery", || {
-        store_rows(&home, &project_id, "member_runs.jsonl")
-            .into_iter()
-            .next()
+        worker_member_run(&home, &project_id)
             .is_some_and(|member| member["provider_capacity"]["state"] == "unknown")
             && canonical_work_deliveries(&home, &project_id)
                 .into_iter()
@@ -901,10 +896,7 @@ fn unknown_capacity_still_starts_the_member_and_delivers_work() {
                 .is_some_and(|delivery| delivery["status"] != "queued")
     });
 
-    let member = store_rows(&home, &project_id, "member_runs.jsonl")
-        .into_iter()
-        .next()
-        .expect("member run");
+    let member = worker_member_run(&home, &project_id).expect("member run");
     assert_eq!(
         member["provider_capacity"]["state"],
         serde_json::json!("unknown"),
@@ -957,6 +949,10 @@ fn a_disabled_preflight_records_no_snapshot_and_never_blocks() {
             "team-capacity-fixture",
             "--objective",
             "Prove the preflight can be disabled without changing semantics",
+            "--host-runtime-mode",
+            "external_interactive",
+            "--member",
+            "agent-capacity-host:host:codex/external_interactive",
             "--member",
             "codex-worker:implementer:codex:gpt-5.6#Run provider Work with preflight disabled",
         ])
@@ -1010,10 +1006,7 @@ fn a_disabled_preflight_records_no_snapshot_and_never_blocks() {
             .is_some_and(|delivery| delivery["status"] != "queued")
     });
 
-    let member = store_rows(&home, &project_id, "member_runs.jsonl")
-        .into_iter()
-        .next()
-        .expect("member run");
+    let member = worker_member_run(&home, &project_id).expect("member run");
     assert_eq!(
         member["provider_capacity"],
         serde_json::Value::Null,

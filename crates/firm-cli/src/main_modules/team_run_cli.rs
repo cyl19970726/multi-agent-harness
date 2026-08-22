@@ -150,7 +150,6 @@ pub(super) fn team_run_command(
             let host_thread_id =
                 value(args, "--host-thread-id").or_else(|| env_host_thread_id.clone());
             let requested_host_mode = value(args, "--host-runtime-mode");
-            let host_control_mode = parse_host_runtime_mode(requested_host_mode.as_deref())?;
             let execution_space_id = resolved
                 .execution_space_context
                 .as_ref()
@@ -163,12 +162,12 @@ pub(super) fn team_run_command(
             let team_id = agent_team_id.as_deref().ok_or_else(|| {
                 CliError::Usage("--agent-team-id is required for team-run create".into())
             })?;
-            apply_host_runtime_mode(
+            let host_control_mode = configure_host_runtime_mode(
                 store,
                 execution_space_id,
                 team_id,
                 &mut members,
-                host_control_mode,
+                requested_host_mode.as_deref(),
             )?;
             let created = create_team_run(
                 store,

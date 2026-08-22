@@ -738,17 +738,16 @@ pub(super) fn create_team_run_value(
         }
     }
     let host_thread_id = optional_json_string(body, "host_thread_id")?;
-    let host_control_mode =
-        parse_host_runtime_mode(optional_json_string(body, "host_runtime_mode")?.as_deref())?;
+    let requested_host_mode = optional_json_string(body, "host_runtime_mode")?;
     let team_id = agent_team_id.as_deref().ok_or_else(|| {
         CliError::Usage("agent_team_id is required for every AgentTeamRun".to_string())
     })?;
-    apply_host_runtime_mode(
+    let host_control_mode = configure_host_runtime_mode(
         store,
         execution_space_id,
         team_id,
         &mut members,
-        host_control_mode,
+        requested_host_mode.as_deref(),
     )?;
     let budget_limit_usd = match body.get("budget_limit_usd") {
         None | Some(serde_json::Value::Null) => None,

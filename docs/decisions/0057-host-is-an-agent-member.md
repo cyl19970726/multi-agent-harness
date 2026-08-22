@@ -36,10 +36,9 @@ receipt.
    planes. The runtime may present them as one cycle input batch but cannot use
    one plane to authorize or mutate another.
 6. Host and Member share execution capability and lifecycle language. Role
-   policy is separate: Host may route and decide Team Work; an ordinary Member
-   may create self/unassigned Work and atomically assign only a bounded child
-   of its actively owned parent to an active ordinary Member. Host and Observer
-   membership targets are rejected.
+   policy remains separate from runtime identity. Work creation, assignment,
+   dependency topology, and readiness belong to the canonical flat Work DAG
+   application service rather than this Host-runtime decision.
 7. Host-visible status derives deterministically from canonical Work/runtime
    facts. Duplicate source ids are idempotent, Host-authored status does not
    self-wake, and one claimed batch produces at most one provider cycle.
@@ -65,7 +64,6 @@ receipt.
 - Store admission rejects a missing, duplicate, wrong-identity, or mode-mismatched Host MemberRun.
 - Managed Message and status delivery cannot settle across an AgentSession or NodeDaemon generation change.
 - External delivery never claims managed receipt semantics.
-- Bounded peer child-Work assignment succeeds only for an ordinary Member target and forbidden targets leave zero Work side effects.
+- Host/Member runtime unification introduces no parent/child Work authority or nested Team topology.
 - All four providers select the ordinary Team runtime binding for managed Hosts.
 - Dynamic Workflow retirement, package boundaries, source-size ceiling, deterministic tests, and exact-SHA independent Review remain green.
-

@@ -47,7 +47,7 @@ fn post_team_run_creates_entities_and_get_snapshot_projects_them() {
         Some("http"),
         "HTTP-created runs default host_surface to http"
     );
-    assert_eq!(result["member_runs"].as_array().map(Vec::len), Some(2));
+    assert_eq!(result["member_runs"].as_array().map(Vec::len), Some(3));
     assert_eq!(
         result["member_runs"][1]["provider_cwd_hint"].as_str(),
         Some(project_root.to_str().expect("project root"))
@@ -72,7 +72,7 @@ fn post_team_run_creates_entities_and_get_snapshot_projects_them() {
     assert_eq!(team_runs[0]["budget_limit_usd"].as_f64(), Some(5.0));
     assert_eq!(
         team_runs[0]["member_run_ids"].as_array().map(Vec::len),
-        Some(2)
+        Some(3)
     );
     let waves = snapshot["legacy_waves"].as_array().expect("legacy_waves");
     assert_eq!(waves.len(), 1, "waves: {waves:?}");
@@ -80,7 +80,7 @@ fn post_team_run_creates_entities_and_get_snapshot_projects_them() {
     assert_eq!(waves[0]["executor_run_ids"], serde_json::json!([]));
 
     let member_runs = snapshot["member_runs"].as_array().expect("member_runs");
-    assert_eq!(member_runs.len(), 2, "member_runs: {member_runs:?}");
+    assert_eq!(member_runs.len(), 3, "member_runs: {member_runs:?}");
     assert!(
         member_runs
             .iter()
@@ -105,14 +105,14 @@ fn post_team_run_creates_entities_and_get_snapshot_projects_them() {
         "host-assigned initial Works: {works:?}"
     );
 
-    // Folded events: 1 run + 2 member runs + 2 Works, seq 1..=5.
+    // Folded events: 1 run + 3 member runs (including Host) + 2 Works.
     let events = snapshot["team_run_events"]
         .as_array()
         .expect("team_run_events");
-    assert_eq!(events.len(), 5, "events: {events:?}");
+    assert_eq!(events.len(), 6, "events: {events:?}");
     let mut seqs: Vec<u64> = events.iter().filter_map(|e| e["seq"].as_u64()).collect();
     seqs.sort_unstable();
-    assert_eq!(seqs, vec![1, 2, 3, 4, 5]);
+    assert_eq!(seqs, vec![1, 2, 3, 4, 5, 6]);
     assert!(
         events
             .iter()

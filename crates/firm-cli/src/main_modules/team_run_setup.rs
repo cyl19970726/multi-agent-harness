@@ -397,6 +397,7 @@ pub(super) fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Val
 #[cfg(test)]
 pub(super) fn ensure_legacy_unit_test_team_binding(
     store: &HarnessStore,
+    host_spec: Option<&TeamMemberSpec>,
 ) -> CliResult<(ProjectContext, String)> {
     // This compatibility fixture is compiled only into the `firm` unit-test
     // binary. Production and integration-test command paths must always supply
@@ -474,6 +475,9 @@ pub(super) fn ensure_legacy_unit_test_team_binding(
         .iter()
         .any(|member| member.id == "host")
     {
+        let host_provider = host_spec
+            .map(|member| member.provider.as_str())
+            .unwrap_or("codex");
         store.create_trust_agent_member(
             &harness_core::agentfirm_api::MutationContext {
                 execution_space_id: SPACE_ID.into(),
@@ -491,10 +495,14 @@ pub(super) fn ensure_legacy_unit_test_team_binding(
                 role: "host".into(),
                 capabilities: Vec::new(),
                 skill_refs: Vec::new(),
-                provider_profile_ref: Some("codex".into()),
+                provider_profile_ref: Some(host_provider.into()),
                 model_preference: None,
                 workspace_policy: "managed-worktree".into(),
-                permission_ceiling: harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite,
+                permission_ceiling: if matches!(host_provider, "kimi" | "pi") {
+                    harness_core::agentfirm_api::PermissionCeiling::FullAccess
+                } else {
+                    harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite
+                },
                 organization_status:
                     harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active,
                 version: 1,
@@ -600,7 +608,10 @@ pub(super) fn ensure_unit_test_canonical_members(
                     authenticated_actor: creator.clone(),
                     authority_actor: None,
                     command_name: "unit_test.agent_member.create".into(),
-                    idempotency_key: format!("unit-test-member:{}", member.agent_member_id),
+                    idempotency_key: format!(
+                        "unit-test-member:{execution_space_id}:{}",
+                        member.agent_member_id
+                    ),
                     expected_version: 0,
                     request_fingerprint: None,
                 },
@@ -643,7 +654,7 @@ pub(super) fn ensure_unit_test_canonical_members(
                     authority_actor: None,
                     command_name: "unit_test.team_membership.join".into(),
                     idempotency_key: format!(
-                        "unit-test-membership:{team_id}:{}",
+                        "unit-test-membership:{execution_space_id}:{team_id}:{}",
                         member.agent_member_id
                     ),
                     expected_version: 0,
@@ -802,7 +813,12 @@ pub(super) fn create_team_run(
         && mission_id.is_none()
         && wave_id.is_none()
     {
-        Some(ensure_legacy_unit_test_team_binding(store)?)
+        Some(ensure_legacy_unit_test_team_binding(
+            store,
+            members
+                .iter()
+                .find(|member| member.agent_member_id == "host"),
+        )?)
     } else {
         None
     };

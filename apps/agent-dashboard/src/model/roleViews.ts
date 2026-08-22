@@ -98,7 +98,7 @@ export function prepareRoleAction(
   let body:Record<string,unknown>;
   try{
     switch(action.kind as ExecutableRoleActionKind){
-      case "create_work": body={action:"create_work",work_id:required("work_id"),title:required("title"),context_markdown:fields.context_markdown??"",completion_criteria_markdown:required("completion_criteria_markdown"),parent_work_id:fields.parent_work_id?.trim()||undefined,assignee_membership_id:fields.assignee_membership_id?.trim()||undefined,claim_mode:fields.claim_mode||"host_assign",priority:fields.priority||"normal"};break;
+      case "create_work": body={action:"create_work",work_id:required("work_id"),title:required("title"),context_markdown:fields.context_markdown??"",completion_criteria_markdown:required("completion_criteria_markdown"),claim_mode:fields.claim_mode||"host_assign",priority:fields.priority||"normal"};break;
       case "accept_work": body={action:"accept_work"};break;
       case "reconcile_delivery": body={action:"reconcile_delivery",evidence_ref:required("evidence_ref")};break;
       case "reconcile_message_delivery": body={action:"reconcile_message_delivery",outcome:fields.outcome||"retry_safe_failure",evidence_ref:required("evidence_ref")};break;

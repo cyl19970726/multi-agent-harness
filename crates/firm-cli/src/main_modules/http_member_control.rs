@@ -953,6 +953,25 @@ pub(super) fn acknowledge_provider_request_as_host(
     if delivery.status == CanonicalMessageDeliveryStatus::Acknowledged {
         return Ok(());
     }
+    if run.host_control_mode == HostControlMode::ExternalInteractive {
+        store.acknowledge_external_message_delivery(
+            &harness_core::agentfirm_api::MutationContext {
+                execution_space_id,
+                authenticated_actor: ActorRef {
+                    kind: ActorKind::AgentMember,
+                    id: host_identity,
+                },
+                authority_actor: None,
+                command_name: "external_host.interaction.acknowledge".into(),
+                idempotency_key: format!("external-host-interaction:{}:ack", request.id),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            &delivery.id,
+            &now_string(),
+        )?;
+        return Ok(());
+    }
     let sessions = store
         .fabric_agent_sessions(&execution_space_id)?
         .into_iter()

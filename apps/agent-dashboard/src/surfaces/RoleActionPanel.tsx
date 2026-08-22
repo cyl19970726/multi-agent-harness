@@ -22,8 +22,6 @@ const FIELD_SPECS: Record<string, Array<{ name: string; label: string; multiline
     { name: "title", label: "Title" },
     { name: "context_markdown", label: "Context", multiline: true },
     { name: "completion_criteria_markdown", label: "Completion criteria", multiline: true },
-    { name: "parent_work_id", label: "Parent Work ID (required for Member delegation)" },
-    { name: "assignee_membership_id", label: "Assignee TeamMembership ID" },
   ],
   assign_work: [{ name: "member_run_id", label: "MemberRun ID" }],
   rebind_work: [{ name: "member_run_id", label: "Replacement MemberRun ID" }],

@@ -70,7 +70,7 @@ fn post_mutation_response_is_bounded_and_dashboard_can_refresh_from_get_snapshot
     let (status, scoped) = serve.get_json(&format!("/v1/team-runs/{run_id}/snapshot"));
     assert_eq!(status, 200, "scoped: {scoped}");
     assert_eq!(scoped["team_runs"].as_array().map(Vec::len), Some(1));
-    assert_eq!(scoped["member_runs"].as_array().map(Vec::len), Some(1));
+    assert_eq!(scoped["member_runs"].as_array().map(Vec::len), Some(2));
     assert_eq!(scoped["missions"].as_array().map(Vec::len), Some(0));
     assert!(
         serde_json::to_vec(&scoped).unwrap().len() < 64 * 1024,

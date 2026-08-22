@@ -262,13 +262,12 @@ pub(crate) fn team_view(
     let identity_conflicted = !identity_attention.is_empty();
     let disabled =
         (!host_authorized).then_some("authenticated actor is not this Team's exact Host");
-    let message_disabled = message_fabric_disabled(&facts, store, team);
+    let message_disabled = disabled
+        .map(str::to_string)
+        .or_else(|| message_fabric_disabled(&facts, store, team));
     let mut actions = Vec::new();
     if let Some(run_id) = run_id {
-        // Host and ordinary Members share the create surface. The mutation
-        // policy distinguishes unrestricted Host creation from a Member's
-        // bounded child-Work delegation under its actively owned parent.
-        actions.push(action("create_work", "team_run", run_id, 0, None));
+        actions.push(action("create_work", "team_run", run_id, 0, disabled));
         actions.push(action(
             "send_message",
             "team_run",

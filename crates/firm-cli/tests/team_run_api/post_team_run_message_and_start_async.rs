@@ -39,7 +39,7 @@ fn post_team_run_message_and_start_async() {
         .iter()
         .filter_map(|m| m["id"].as_str().map(str::to_string))
         .collect();
-    assert_eq!(member_ids.len(), 2);
+    assert_eq!(member_ids.len(), 3);
     // Route a handoff from the worker to the lead.
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
@@ -70,7 +70,7 @@ fn post_team_run_message_and_start_async() {
     assert_eq!(snapshot["team_messages"].as_array().map(Vec::len), Some(1));
     assert_eq!(
         snapshot["team_run_events"].as_array().map(Vec::len),
-        Some(5)
+        Some(6)
     );
 
     // Unknown run id is rejected by the canonical trust contract, with no append.

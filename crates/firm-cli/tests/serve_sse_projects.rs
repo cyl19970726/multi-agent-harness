@@ -335,6 +335,10 @@ fn external_work_and_delivery_writes_invalidate_a_healthy_stream_and_snapshot_co
                 &team_id,
                 "--objective",
                 "Exercise external Work projection",
+                "--host-runtime-mode",
+                "external_interactive",
+                "--member",
+                "agent-sse-host:host:codex/external_interactive",
                 "--member",
                 "agent-sse-worker:builder:kimi#Own external Work",
                 "--json",
@@ -346,7 +350,7 @@ fn external_work_and_delivery_writes_invalidate_a_healthy_stream_and_snapshot_co
         .as_str()
         .expect("team run id")
         .to_string();
-    let member_run_id = created_run["member_runs"][0]["id"]
+    let member_run_id = created_run["member_runs"][1]["id"]
         .as_str()
         .expect("member run id")
         .to_string();

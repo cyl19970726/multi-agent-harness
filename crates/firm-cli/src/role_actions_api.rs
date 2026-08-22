@@ -375,13 +375,13 @@ pub fn execute(
                 context_markdown,
                 completion_criteria_markdown,
                 parent_work_id,
-                assignee_membership_id,
                 eligible_member_ids,
                 prerequisite_work_ids,
                 claim_mode,
                 priority,
             },
         ) => {
+            let host_id = require_host(&auth, &team.host_agent_id, "team_run", route.team_run_id)?;
             if let Some(replay) =
                 work_replay(store, &auth, &work_id, harness_core::WorkEventKind::Created)?
             {
@@ -396,28 +396,13 @@ pub fn execute(
                     Some(0),
                 ));
             }
-            let context = if is_host(&auth, &team.host_agent_id) {
-                host_context(&auth, &team.host_agent_id, false)
-            } else {
-                let parent_id = parent_work_id.as_deref().ok_or_else(|| {
-                    encoded_error(
-                        "MEMBER_PEER_DELEGATION_REQUIRES_OWNED_PARENT",
-                        "ordinary Members may create only bounded child Work under Work they actively own",
-                        "team_run",
-                        route.team_run_id,
-                        None,
-                    )
-                })?;
-                let parent = current_work(store, route.team_run_id, parent_id)?;
-                let member_run_id = require_exact_work_member(store, &auth, &parent)?;
-                member_context(&auth, &member_run_id)
-            };
+            let context = host_context(&auth, host_id, false);
             store.insert_work(
                 Work {
                     id: work_id,
                     team_run_id: route.team_run_id.to_string(),
                     accountable_team_id: Some(team.id.clone()),
-                    assignee_membership_id,
+                    assignee_membership_id: None,
                     parent_work_id,
                     title,
                     context_markdown,

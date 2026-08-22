@@ -140,6 +140,9 @@ use supervisor_control::*;
 #[path = "main_modules/member_work_coordination.rs"]
 mod member_work_coordination;
 use member_work_coordination::*;
+#[path = "main_modules/managed_host_delivery.rs"]
+mod managed_host_delivery;
+use managed_host_delivery::*;
 #[path = "main_modules/member_lifecycle.rs"]
 mod member_lifecycle;
 use member_lifecycle::*;

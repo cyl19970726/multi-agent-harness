@@ -29,6 +29,10 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
         .as_str()
         .expect("member id")
         .to_string();
+    let host_member_id = created["member_runs"][1]["id"]
+        .as_str()
+        .expect("Host member id")
+        .to_string();
     let store = HarnessStore::new(home.spaces_dir().join(&project_id));
 
     // Team provenance is required at TeamRun creation after the clean cutover.
@@ -177,7 +181,7 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
             .into_iter()
             .map(|member| member.id)
             .collect::<std::collections::BTreeSet<_>>(),
-        std::collections::BTreeSet::from([member_id.clone()]),
+        std::collections::BTreeSet::from([member_id.clone(), host_member_id]),
         "recovery must not mint a replacement durable ProviderRuntimeProjection identity"
     );
 
