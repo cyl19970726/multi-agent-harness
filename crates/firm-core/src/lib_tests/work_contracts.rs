@@ -14,7 +14,7 @@ fn work_prerequisite_satisfaction_is_distinct_from_claim_readiness() {
             accountable_team_id: None,
             assignee_membership_id: None,
             created_by_member_id: None,
-            legacy_parent_work_id: None,
+            legacy_containment_ref: None,
             title: id.into(),
             context_markdown: String::new(),
             completion_criteria_markdown: "done".into(),
@@ -100,12 +100,12 @@ fn legacy_parent_work_is_decode_only_evidence() {
     });
     let work: Work = serde_json::from_value(value.clone()).expect("legacy parent decodes");
     assert_eq!(
-        work.legacy_parent_work_id.as_deref(),
+        work.legacy_containment_ref.as_deref(),
         Some("historical-parent")
     );
     value = serde_json::to_value(work).expect("current Work serializes");
     assert!(value.get("parent_work_id").is_none());
-    assert!(value.get("legacy_parent_work_id").is_none());
+    assert!(value.get("legacy_containment_ref").is_none());
 }
 
 #[test]

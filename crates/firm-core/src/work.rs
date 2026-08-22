@@ -440,7 +440,7 @@ pub struct Work {
     /// old JSONL rows readable without keeping `parent_work_id` in the current
     /// model or schema authority.
     #[serde(default, rename = "parent_work_id", skip_serializing)]
-    pub legacy_parent_work_id: Option<String>,
+    pub legacy_containment_ref: Option<String>,
     pub title: String,
     pub context_markdown: String,
     pub completion_criteria_markdown: String,
@@ -587,8 +587,8 @@ impl Validate for Work {
 
         for (value, field) in [
             (
-                self.legacy_parent_work_id.as_deref(),
-                "Work.legacy_parent_work_id",
+                self.legacy_containment_ref.as_deref(),
+                "Work.legacy_containment_ref",
             ),
             (
                 self.assignee_membership_id.as_deref(),

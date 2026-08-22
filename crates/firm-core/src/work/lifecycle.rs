@@ -111,7 +111,7 @@ mod tests {
             team_run_id: "run-1".into(),
             accountable_team_id: Some("team-1".into()),
             assignee_membership_id: None,
-            legacy_parent_work_id: None,
+            legacy_containment_ref: None,
             title: "Work".into(),
             context_markdown: String::new(),
             completion_criteria_markdown: "done".into(),
