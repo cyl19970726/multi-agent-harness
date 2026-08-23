@@ -292,7 +292,7 @@ mod tests {
                     "authenticated_actor": {"kind": "service", "id": "daemon"},
                     "command": "open_runtime",
                     "required_capability": "runtime.open",
-                    "idempotency_key": format!("provider-process:session:1:4:2:7:1:OpenRuntime"),
+                    "idempotency_key": "provider-process:session:1:4:2:7:1:OpenRuntime",
                     "request_fingerprint": "fingerprint",
                     "status": "applied",
                     "phase": "settled",
