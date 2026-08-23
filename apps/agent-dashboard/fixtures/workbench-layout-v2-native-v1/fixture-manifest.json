@@ -20,6 +20,7 @@
     "team_runs.jsonl",
     "member_runs.jsonl",
     "work_operations.jsonl",
+    "current_work_deliveries.jsonl",
     "team_messages.jsonl",
     "member_actions.jsonl",
     "team_run_events.jsonl",
@@ -32,7 +33,7 @@
     "The TeamRun requires agent_team_id, execution_node_id, and project_binding_id; Mission is derived through AgentTeam.",
     "Four MemberRuns include running, reviewing, and blocked pressure states and remain eligible to carry forward.",
     "Shared Works carry stable ownership without using Messages as an assignment authority; their append-only events preserve a continuous version chain.",
-    "The fixture covers visible unassigned and assigned queues, team claim, start, block, resume, submit, and explicit Host acceptance, including Work delivery invalidation.",
+    "The fixture covers visible unassigned and assigned queues, team claim, start, block, resume, submit, explicit Host acceptance, and canonical Work delivery receipts.",
     "The selected Member exposes a native plan request, Host challenge, revised proposal, and approval in one conversation correlation explicitly linked by work_id.",
     "The current TeamRun records execution root; member snapshots record actual cwd, Git identity, and discovered path roots only.",
     "No durable thinking row exists; live preview must be injected after SSE connects."

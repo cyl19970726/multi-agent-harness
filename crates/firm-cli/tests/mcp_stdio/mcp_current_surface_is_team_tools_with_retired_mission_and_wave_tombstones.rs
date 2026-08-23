@@ -42,6 +42,7 @@ fn mcp_current_surface_is_team_tools_with_retired_mission_and_wave_tombstones() 
         "team_run_send_message",
         "team_message_acknowledge",
         "team_run_reconcile_delivery",
+        "team_run_work_reconcile_delivery",
     ] {
         assert!(
             !names.contains(removed),
@@ -90,6 +91,7 @@ fn mcp_current_surface_is_team_tools_with_retired_mission_and_wave_tombstones() 
         "team_run_send_message",
         "team_message_acknowledge",
         "team_run_reconcile_delivery",
+        "team_run_work_reconcile_delivery",
         "mission_create",
         "mission_update_context",
         "mission_close",

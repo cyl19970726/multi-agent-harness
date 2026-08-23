@@ -152,66 +152,6 @@ pub fn execute(
             replayed: operations.len() == before,
         });
     }
-    if let Some((node_id, delivery_id)) = parse_operator_route(path) {
-        let intent = serde_json::from_slice::<OperatorActionIntent>(body).map_err(|error| {
-            encoded_error(
-                "INVALID_STATE_TRANSITION",
-                format!("invalid closed operator action intent: {error}"),
-                "route",
-                path,
-                None,
-            )
-        })?;
-        if confirmed_action != Some("reconcile_delivery") {
-            return Err(encoded_error(
-                "CONFIRMATION_REQUIRED",
-                "server confirmation header must exactly confirm reconcile_delivery",
-                "work_delivery",
-                delivery_id,
-                None,
-            ));
-        }
-        let exact_node = auth.actor.kind == ActorKind::Service && auth.actor.id == node_id;
-        if !exact_node {
-            return Err(encoded_error(
-                "UNAUTHORIZED_ACTOR",
-                "operator credential is not bound to the addressed Execution Node",
-                "execution_node",
-                node_id,
-                None,
-            ));
-        }
-        if let Some(replay) = canonical_replay(store, &auth, "work_delivery", delivery_id)? {
-            return Ok(replay);
-        }
-        let OperatorActionIntent::ReconcileDelivery { evidence_ref } = intent else {
-            return Err(encoded_error(
-                "INVALID_STATE_TRANSITION",
-                "semantic action does not match WorkDelivery route",
-                "work_delivery",
-                delivery_id,
-                None,
-            ));
-        };
-        let result = crate::agentfirm_api::execute(
-            store,
-            auth,
-            crate::agentfirm_api::TrustCommand::ReconcileWorkDelivery {
-                delivery_id: delivery_id.to_string(),
-                evidence_ref,
-                updated_at: now_string(),
-            },
-        )?;
-        return Ok(RoleActionResult {
-            ok: true,
-            action_protocol_version: "agentfirm.role_actions.v1",
-            projection: result.projection,
-            event_id: result.event_id,
-            resulting_version: result.resulting_version,
-            store_sequence: result.store_sequence,
-            replayed: result.replayed,
-        });
-    }
     if let Some((team_id, work_id)) = parse_accept_route(path) {
         let intent = serde_json::from_slice::<RoleActionIntent>(body).map_err(|error| {
             encoded_error(
@@ -846,7 +786,7 @@ mod tests {
         assert!(is_http_mutation_path(
             "/v1/agentfirm/teams/team-1/works/work-1/dependencies"
         ));
-        assert!(is_http_mutation_path(
+        assert!(!is_http_mutation_path(
             "/v1/agentfirm/nodes/node-1/work-deliveries/delivery-1/reconcile"
         ));
         assert!(is_http_mutation_path(

@@ -8,7 +8,7 @@ pub(super) fn team_run_work_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|replace-dependencies|delegate|delegation|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|reconcile-delivery|migrate-responsibility|poll-github-ci",
+        "team-run work list|show|create|replace-dependencies|delegate|delegation|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|migrate-responsibility|poll-github-ci",
     )?;
     if matches!(args[0].as_str(), "delegate" | "delegation") {
         return Err(CliError::Usage(
@@ -773,12 +773,8 @@ pub(super) fn team_run_work_command(
                 host_work_context_for_work(store, &work_id, args)?,
             )?)
         }
-        "reconcile-delivery" => Err(CliError::Usage(
-            "RETIRED_WRITE_AUTHORITY: legacy delivery reconciliation is audit-only; canonical WorkDelivery reconciliation requires exact NodeDaemon/session authority"
-                .into(),
-        )),
         other => Err(CliError::Usage(format!(
-            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|review|request-changes|accept|cancel|retarget|reconcile-projection|reconcile-delivery"
+            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|review|request-changes|accept|cancel|retarget|reconcile-projection"
         ))),
     }
 }

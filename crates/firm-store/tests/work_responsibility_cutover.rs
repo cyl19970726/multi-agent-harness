@@ -360,8 +360,6 @@ fn append_legacy_work_row(
         reports: Vec::new(),
         evidence_records: Vec::new(),
         decisions: Vec::new(),
-        deliveries: Vec::new(),
-        delivery_updates: Vec::new(),
         delegation_revisions: Vec::new(),
     };
     let mut row = serde_json::to_value(&operation).expect("operation JSON");
@@ -434,13 +432,15 @@ fn membership_assignment_is_cas_fenced_and_needs_no_runtime() {
     assert_eq!(assigned.owner_member_id.as_deref(), Some("worker-assign"));
     assert_eq!(assigned.active_member_run_id, None);
     assert_eq!(assigned.phase, WorkPhase::Open);
-    let deliveries = store
-        .legacy_provider_work_dispatches_for_export()
-        .expect("deliveries")
+    let assigned_operation = store
+        .work_operations()
+        .expect("Work operations")
         .into_iter()
-        .filter(|delivery| delivery.work_id == "work-assign-1")
-        .count();
-    assert_eq!(deliveries, 0, "membership assignment creates no dispatch");
+        .find(|operation| operation.work.id == "work-assign-1" && operation.work.version == 2)
+        .expect("assignment operation");
+    let wire = serde_json::to_value(assigned_operation).expect("assignment wire");
+    assert!(wire.get("deliveries").is_none());
+    assert!(wire.get("delivery_updates").is_none());
 
     // Reassignment is the same CAS path and records the previous assignee.
     let stale_reassign = store

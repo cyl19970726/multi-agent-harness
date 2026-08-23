@@ -49,18 +49,6 @@ function hasContinuousVersions(history) {
   ));
 }
 
-function latestDeliveries(operations) {
-  const byId = new Map();
-  for (const operation of operations) {
-    for (const delivery of operation.deliveries ?? []) byId.set(delivery.id, delivery);
-    for (const update of operation.delivery_updates ?? []) {
-      const delivery = byId.get(update.delivery_id);
-      if (delivery) byId.set(update.delivery_id, { ...delivery, ...update, id: delivery.id });
-    }
-  }
-  return [...byId.values()];
-}
-
 async function main() {
   const manifest = JSON.parse(await readFile(join(fixtureRoot, "fixture-manifest.json"), "utf8"));
   const repoRoot = resolve(dashboardRoot, "../..");
@@ -81,9 +69,9 @@ async function main() {
     readFile(join(dashboardRoot, "src/components/workbench/context/ContextRail.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/index.css"), "utf8"),
   ]);
-  const [missions, waves, teams, runs, members, workOperations, messages, actions, events] = await Promise.all([
+  const [missions, waves, teams, runs, members, workOperations, workDeliveries, messages, actions, events] = await Promise.all([
     rows("missions.jsonl"), rows("waves.jsonl"), rows("teams.jsonl"), rows("team_runs.jsonl"),
-    rows("member_runs.jsonl"), rows("work_operations.jsonl"), rows("team_messages.jsonl"),
+    rows("member_runs.jsonl"), rows("work_operations.jsonl"), rows("current_work_deliveries.jsonl"), rows("team_messages.jsonl"),
     rows("member_actions.jsonl"), rows("team_run_events.jsonl"),
   ]);
 
@@ -192,9 +180,9 @@ async function main() {
     "Fixture proves unassigned and assigned queues, team claim, block/resume, submit, and explicit Host acceptance while retaining live board pressure",
   );
   check(
-    latestDeliveries(workOperations).length >= 4
-      && latestDeliveries(workOperations).every((delivery) => delivery.team_run_id === manifest.team_run_id),
-    "Work history rebuilds concrete same-TeamRun delivery projections",
+    workDeliveries.length >= 4
+      && workDeliveries.every((delivery) => delivery.authority === "canonical_trust" && delivery.team_run_id === manifest.team_run_id),
+    "Fixture carries concrete canonical same-TeamRun delivery projections",
   );
   check(
     messages.some((item) => item.id === "msg-qa-blocker")

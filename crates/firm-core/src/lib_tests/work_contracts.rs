@@ -68,18 +68,6 @@ fn work_prerequisite_satisfaction_is_distinct_from_claim_readiness() {
 }
 
 #[test]
-fn legacy_work_delivery_update_defaults_to_unsequenced() {
-    let update: ProviderWorkDispatchUpdate = serde_json::from_value(serde_json::json!({
-        "delivery_id": "delivery-legacy",
-        "status": "queued",
-        "attempt": 1,
-        "updated_at": "unix-ms:1"
-    }))
-    .expect("legacy delivery update remains readable");
-    assert_eq!(update.update_sequence, 0);
-}
-
-#[test]
 fn legacy_parent_work_is_decode_only_evidence() {
     let mut value = serde_json::json!({
         "id": "work-legacy",

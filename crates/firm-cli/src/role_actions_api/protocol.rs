@@ -176,9 +176,6 @@ pub(super) enum RoleActionIntent {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum OperatorActionIntent {
-    ReconcileDelivery {
-        evidence_ref: String,
-    },
     ReconcileMessageDelivery {
         outcome: DeliveryReconcileOutcome,
         evidence_ref: String,
@@ -446,16 +443,6 @@ pub(super) fn parse_dependencies_route(path: &str) -> Option<(&str, &str)> {
     match parts.as_slice() {
         ["v1", "agentfirm", "teams", team_id, "works", work_id, "dependencies"] => {
             Some((team_id, work_id))
-        }
-        _ => None,
-    }
-}
-
-pub(super) fn parse_operator_route(path: &str) -> Option<(&str, &str)> {
-    let parts = path.trim_matches('/').split('/').collect::<Vec<_>>();
-    match parts.as_slice() {
-        ["v1", "agentfirm", "nodes", node_id, "work-deliveries", delivery_id, "reconcile"] => {
-            Some((node_id, delivery_id))
         }
         _ => None,
     }
@@ -763,7 +750,6 @@ pub fn is_http_mutation_path(path: &str) -> bool {
     parse_route(path).is_some()
         || parse_accept_route(path).is_some()
         || parse_dependencies_route(path).is_some()
-        || parse_operator_route(path).is_some()
         || parse_canonical_route(path).is_some()
 }
 

@@ -40,7 +40,7 @@ const TEAM_WORK_ACTIONS = {
   submit_work:"submit",
 } as const;
 
-export type ExecutableRoleActionKind = "create_work" | "accept_work" | "reconcile_delivery" | keyof typeof TEAM_WORK_ACTIONS
+export type ExecutableRoleActionKind = "create_work" | "accept_work" | keyof typeof TEAM_WORK_ACTIONS
   | "change_work_dependencies"
   | "request_changes" | "revise_work" | "send_message" | "reply_message" | "request_decision"
   | "interrupt_member_run" | "close_member_run" | "reopen_member_run" | "retire_member_run" | "resume_native_session"
@@ -76,9 +76,7 @@ export function prepareRoleAction(
   const workspaceActions:Record<string,string>={provision_workspace:"provision",attach_workspace:"attach",archive_workspace:"archive",cleanup_workspace:"cleanup"};
   const workRecordActions:Record<string,string>={request_changes:"request-changes",revise_work:"revise",write_report:"reports",write_finding:"findings",write_failure:"failure-analyses",request_gate_evaluation:"gate-requirements"};
   const messageActions:Record<string,string>={send_message:"send",reply_message:"reply",request_decision:"request-decision"};
-  const path=action.kind==="reconcile_delivery"&&node
-    ?`/v1/agentfirm/nodes/${node}/work-deliveries/${id}/reconcile`
-    :action.kind==="reconcile_message_delivery"&&node?`/v1/agentfirm/nodes/${node}/message-deliveries/${id}/reconcile`
+  const path=action.kind==="reconcile_message_delivery"&&node?`/v1/agentfirm/nodes/${node}/message-deliveries/${id}/reconcile`
     :action.kind==="resolve_runtime_recovery"&&node?`/v1/agentfirm/nodes/${node}/runtime-commands/${id}/resolve`
     :["start_daemon","stop_daemon","admit_provider"].includes(action.kind)&&node?`/v1/agentfirm/nodes/${node}/${action.kind==="start_daemon"?"daemon-start":action.kind==="stop_daemon"?"daemon-stop":"provider-admission"}`
     :action.kind==="diagnose"&&node?`/v1/views/operator/${node}`
@@ -104,7 +102,6 @@ export function prepareRoleAction(
       case "create_work": body={action:"create_work",work_id:required("work_id"),title:required("title"),context_markdown:fields.context_markdown??"",completion_criteria_markdown:required("completion_criteria_markdown"),claim_mode:fields.claim_mode||"host_assign",priority:fields.priority||"normal"};break;
       case "change_work_dependencies": body={action:"replace_work_dependencies",prerequisite_work_ids:(fields.prerequisite_work_ids??"").split(",").map(value=>value.trim()).filter(Boolean),reason:required("reason")};break;
       case "accept_work": body={action:"accept_work"};break;
-      case "reconcile_delivery": body={action:"reconcile_delivery",evidence_ref:required("evidence_ref")};break;
       case "reconcile_message_delivery": body={action:"reconcile_message_delivery",outcome:fields.outcome||"retry_safe_failure",evidence_ref:required("evidence_ref")};break;
       case "resolve_runtime_recovery": body={action:"resolve_runtime_recovery",resolution:fields.resolution||"keep_recovery_required",evidence_ref:required("evidence_ref")};break;
       case "assign_work": body={action:"assign_work",member_run_id:required("member_run_id")};break;
@@ -139,7 +136,7 @@ export function prepareRoleAction(
       case "start_work": body={action:"start_work"};break;
     }
   }catch(error){return {error:error instanceof Error?error.message:String(error)}}
-  const confirmation:Record<string,string>={cancel_work:"cancel",accept_work:"accept",reconcile_delivery:"reconcile_delivery",reconcile_message_delivery:"reconcile_message_delivery",resolve_runtime_recovery:"resolve_runtime_recovery",close_member_run:"close_member_run",retire_member_run:"retire_member_run",cleanup_workspace:"cleanup_workspace",waive_gate:"waive_gate",revoke_waiver:"revoke_waiver",start_daemon:"daemon-start",stop_daemon:"daemon-stop"};
+  const confirmation:Record<string,string>={cancel_work:"cancel",accept_work:"accept",reconcile_message_delivery:"reconcile_message_delivery",resolve_runtime_recovery:"resolve_runtime_recovery",close_member_run:"close_member_run",retire_member_run:"retire_member_run",cleanup_workspace:"cleanup_workspace",waive_gate:"waive_gate",revoke_waiver:"revoke_waiver",start_daemon:"daemon-start",stop_daemon:"daemon-stop"};
   if(confirmation[action.kind]&&!confirmed)return {error:"Server-enforced confirmation is required."};
   return {path,body,headers:{"Idempotency-Key":crypto.randomUUID(),"If-Match":String(action.required_version),...(confirmation[action.kind]?{"X-AgentFirm-Confirm":confirmation[action.kind]}:{})}};
 }
@@ -154,7 +151,6 @@ export function roleActionRoute(action:AllowedAction,context:{teamId?:string;tea
   if(action.kind==="create_work"&&run)return `/v1/agentfirm/team-runs/${run}/works`;
   if(action.kind==="change_work_dependencies"&&team)return `/v1/agentfirm/teams/${team}/works/${id}/dependencies`;
   if(action.kind==="accept_work"&&team)return `/v1/agentfirm/teams/${team}/works/${id}/accept`;
-  if(action.kind==="reconcile_delivery"&&node)return `/v1/agentfirm/nodes/${node}/work-deliveries/${id}/reconcile`;
   if(action.kind==="reconcile_message_delivery"&&node)return `/v1/agentfirm/nodes/${node}/message-deliveries/${id}/reconcile`;
   if(action.kind==="resolve_runtime_recovery"&&node)return `/v1/agentfirm/nodes/${node}/runtime-commands/${id}/resolve`;
   if(action.kind==="diagnose"&&node)return `/v1/views/operator/${node}`;

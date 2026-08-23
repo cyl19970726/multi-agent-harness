@@ -118,16 +118,6 @@
       "returns": "resource_projection"
     },
     {
-      "ui_action": "reconcile_delivery",
-      "http_endpoint": "POST /v1/agentfirm/nodes/{node_id}/work-deliveries/{delivery_id}/reconcile",
-      "application_command": "work_delivery.reconcile",
-      "actor_policy": "exact_execution_node_service",
-      "expected_version_source": "CanonicalOperation(work_delivery).resulting_version",
-      "resulting_event": "failed",
-      "returns": "resource_projection",
-      "confirmation": "reconcile_delivery"
-    },
-    {
       "ui_action": "request_changes",
       "http_endpoint": "POST /v1/agentfirm/teams/{team_id}/works/{work_id}/request-changes",
       "application_command": "work.request_changes",

@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum CurrentWorkDeliveryAuthority {
     CanonicalTrust,
-    LegacyCompatibility,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,15 +15,12 @@ pub enum CurrentWorkDeliveryIntegrityAnnotation {
     AgentSessionMissing,
     TeamMembershipMissing,
     CanonicalJoinConflict,
-    LegacyReadOnlyCompatibility,
-    ProviderReceiptAbsenceIsNotEvidenceOfNonDelivery,
 }
 
 /// Non-persisted application read model for current Work delivery state.
 ///
 /// Every row originates from one canonical trust `CanonicalWorkDelivery` and
-/// is joined to its exact WorkExecutionBinding, Work, and AgentSession. Legacy
-/// ProviderWorkDispatch rows are deliberately absent from this projection.
+/// is joined to its exact WorkExecutionBinding, Work, and AgentSession.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CurrentWorkDeliveryView {

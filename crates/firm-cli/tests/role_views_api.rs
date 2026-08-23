@@ -28,9 +28,10 @@ use firm_env::{
     TempHome,
 };
 use harness_core::agentfirm_api::{
-    ActorKind, ActorRef, AgentSession, AgentSessionControlState, AgentSessionStatus, DeliveryClaim,
+    ActorKind, ActorRef, AgentSession, AgentSessionControlState, AgentSessionStatus,
     MutationContext, NativeSessionAvailability, NativeSessionRef, PermissionCeiling,
-    RuntimeCommandBinding, RuntimeDispatchMode, RuntimeDriverRef,
+    RuntimeActivity, RuntimeCommandBinding, RuntimeDispatchMode, RuntimeDriverRef,
+    RuntimeResidency,
 };
 use harness_core::{
     ExecutionNode, ExecutionNodeStatus, MemberCoordinationStatus, MemberRunStatus,
@@ -384,6 +385,8 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
                     },
                     composition_fingerprint: Some("role-view:composition".into()),
                     capability_fingerprint: Some("role-view:capability".into()),
+                    runtime_residency: RuntimeResidency::Detached,
+                    activity: RuntimeActivity::Idle,
                     ..Default::default()
                 },
                 native_session_ref: Some(NativeSessionRef {
@@ -1031,145 +1034,6 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     );
     assert_eq!(status, 409, "same key changed command: {reused_claim_key}");
 
-    // Seed a genuinely claimed canonical delivery so the Operator action is
-    // proven against Store-live state, not an empty RoleView fixture.
-    let trust_member_run = store
-        .trust_member_runs(&space_id)
-        .expect("trust MemberRuns")
-        .into_iter()
-        .find(|member_run| member_run.id == member_run_id)
-        .expect("canonical MemberRun");
-    let supervisor = match store
-        .latest_team_supervisor_lease(run_id)
-        .expect("Supervisor lease")
-    {
-        Some(lease) => lease,
-        None => {
-            let daemon = store
-                .latest_node_daemon_lease(node_id)
-                .expect("NodeDaemon lease")
-                .expect("live NodeDaemon lease");
-            store
-                .acquire_team_supervisor_under_node_lease(
-                    run_id,
-                    node_id,
-                    &daemon.daemon_id,
-                    daemon.generation,
-                    &space_id,
-                    &project_id,
-                    "role-action-test-supervisor",
-                    std::process::id(),
-                    "test://role-action-loop",
-                    unix_ms(),
-                    60_000,
-                )
-                .expect("acquire test Supervisor")
-        }
-    };
-    let delivery_context = MutationContext {
-        execution_space_id: space_id.clone(),
-        authenticated_actor: ActorRef {
-            kind: ActorKind::AgentMember,
-            id: team.host_agent_id.clone(),
-        },
-        authority_actor: None,
-        command_name: "work_delivery.create".into(),
-        idempotency_key: "seed-store-live-delivery".into(),
-        expected_version: 0,
-        request_fingerprint: None,
-    };
-    let created_deliveries = store
-        .create_trust_work_deliveries(
-            &delivery_context,
-            claimed["event_id"].as_str().expect("claim event id"),
-            "work-store-live-1",
-            2,
-            &[member_run_id.to_string()],
-            "2026-08-10T00:00:00Z",
-        )
-        .expect("create Store-live WorkDelivery");
-    let delivery_id = created_deliveries.projection[0].id.clone();
-    let claim_context = MutationContext {
-        execution_space_id: space_id.clone(),
-        authenticated_actor: ActorRef {
-            kind: ActorKind::Service,
-            id: supervisor.supervisor_id.clone(),
-        },
-        authority_actor: None,
-        command_name: "work_delivery.claim".into(),
-        idempotency_key: "claim-store-live-delivery".into(),
-        expected_version: 0,
-        request_fingerprint: None,
-    };
-    store
-        .claim_trust_work_delivery(
-            &claim_context,
-            &delivery_id,
-            DeliveryClaim {
-                claim_id: "store-live-delivery-claim".into(),
-                supervisor_generation: supervisor.generation,
-                member_generation: trust_member_run.runtime_generation,
-                claim_expires_at: "2099-01-01T00:00:00Z".into(),
-            },
-            2,
-            "2026-08-10T00:00:01Z",
-        )
-        .expect("claim Store-live WorkDelivery");
-
-    let operator_route = format!("/v1/views/operator/{node_id}?project={project_id}");
-    let (status, operator_before_reconcile) =
-        serve.get_json_with_headers(&operator_route, &[("X-AgentFirm-Token", OPERATOR_TOKEN)]);
-    assert_eq!(
-        status, 200,
-        "Operator RoleView: {operator_before_reconcile}"
-    );
-    let (status, delegated_operator_view) = serve.get_json_with_headers(
-        &operator_route,
-        &[("X-AgentFirm-Token", DELEGATED_OPERATOR_TOKEN)],
-    );
-    assert_eq!(
-        status, 403,
-        "delegated Service authority must not receive executable Operator actions: {delegated_operator_view}"
-    );
-    assert!(
-        operator_before_reconcile["allowed_actions"]
-            .as_array()
-            .is_some_and(|actions| actions.iter().all(|action| {
-                action["kind"] != "reconcile_delivery" || action["target_ref"]["id"] != delivery_id
-            })),
-        "a transitional delivery must not become current Operator authority"
-    );
-    let reconcile_route = format!(
-        "/v1/agentfirm/nodes/{node_id}/work-deliveries/{delivery_id}/reconcile?project={project_id}"
-    );
-    let canonical_before_reconcile = store
-        .canonical_operations_for_space(&space_id)
-        .expect("before operator rejection")
-        .len();
-    let reconcile_headers = [
-        ("X-AgentFirm-Token", OPERATOR_TOKEN),
-        ("Idempotency-Key", "retired-reconcile-store-live-delivery"),
-        ("If-Match", "1"),
-        ("X-AgentFirm-Confirm", "reconcile_delivery"),
-    ];
-    let (status, retired_reconcile) = serve.post_json_with_headers(
-        &reconcile_route,
-        &serde_json::json!({"action":"reconcile_delivery","evidence_ref":"check:operator-recovery"}),
-        &reconcile_headers,
-    );
-    assert_eq!(
-        status, 409,
-        "retired reconcile must fail closed: {retired_reconcile}"
-    );
-    assert_eq!(
-        store
-            .canonical_operations_for_space(&space_id)
-            .expect("after retired operator rejection")
-            .len(),
-        canonical_before_reconcile,
-        "retired delivery reconciliation must have zero canonical side effects"
-    );
-
     let submit_route = format!(
         "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-1/submit?project={project_id}"
     );
@@ -1336,6 +1200,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
             && operation.event.transition == "accepted"),
         "canonical acceptance and its delegation/gate/report roll-up must be one canonical operation");
 
+    let operator_route = format!("/v1/views/operator/{node_id}?project={project_id}");
     assert_action_matrix_and_final_projections(ActionMatrixContext {
         serve: &serve,
         store: &store,

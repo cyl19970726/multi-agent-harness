@@ -904,7 +904,7 @@ export interface WorkEvent {
 }
 
 export interface WorkDelivery {
-  authority: "canonical_trust" | "legacy_compatibility";
+  authority: "canonical_trust";
   read_only: true;
   execution_space_id?: string | null;
   team_run_id: string;
@@ -917,7 +917,7 @@ export interface WorkDelivery {
   recipient_agent_session_id?: string | null;
   recipient_agent_session_generation?: number | null;
   target_node_id?: string | null;
-  status: "queued" | "claimed" | "provider_received" | "failed" | "expired" | "invalidated";
+  status: "queued" | "claimed" | "provider_received" | "failed";
   attempt: number;
   claim_id?: string | null;
   claimed_node_daemon_generation?: number | null;

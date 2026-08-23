@@ -41,8 +41,7 @@ impl HarnessStore {
     }
 
     /// Project current Work deliveries only from canonical trust authority.
-    /// Broken canonical joins fail closed instead of falling back to a legacy
-    /// ProviderWorkDispatch row that happens to share a Work id.
+    /// Broken canonical joins fail closed.
     pub fn current_work_deliveries(
         &self,
         execution_space_id: &str,
@@ -207,78 +206,5 @@ impl HarnessStore {
         }
         views.sort_by(|left, right| left.delivery_id.cmp(&right.delivery_id));
         Ok(views)
-    }
-
-    /// Explicit audit-only compatibility adapter. It refuses any TeamRun for
-    /// which a current canonical Execution Space can be resolved, so a legacy
-    /// row can never fill a canonical gap.
-    pub fn legacy_current_work_deliveries_for_team_run_export(
-        &self,
-        team_run_id: &str,
-    ) -> StoreResult<Vec<CurrentWorkDeliveryView>> {
-        if let Some(run) = self
-            .team_runs()?
-            .into_iter()
-            .rev()
-            .find(|run| run.id == team_run_id)
-        {
-            let detail = match self.current_team_run_execution_space(&run) {
-                Ok(execution_space_id) => {
-                    format!("resolves canonical Execution Space {execution_space_id}")
-                }
-                Err(error) => {
-                    format!("has a TeamRun row but no explicit legacy-only proof: {error}")
-                }
-            };
-            return Err(StoreError::Conflict(format!(
-                "LEGACY_WORK_DELIVERY_SCOPE_NOT_LEGACY_ONLY: TeamRun {team_run_id} {detail}"
-            )));
-        }
-        self.legacy_provider_work_dispatches_for_export()?
-            .into_iter()
-            .filter(|delivery| delivery.team_run_id == team_run_id)
-            .map(|delivery| {
-                let status = match delivery.status {
-                    ProviderWorkDispatchStatus::Queued =>
-                        firm_core::agentfirm_api::WorkDeliveryStatus::Queued,
-                    ProviderWorkDispatchStatus::Claimed =>
-                        firm_core::agentfirm_api::WorkDeliveryStatus::Claimed,
-                    ProviderWorkDispatchStatus::ProviderReceived =>
-                        firm_core::agentfirm_api::WorkDeliveryStatus::ProviderReceived,
-                    ProviderWorkDispatchStatus::Failed =>
-                        firm_core::agentfirm_api::WorkDeliveryStatus::Failed,
-                    ProviderWorkDispatchStatus::Invalidated =>
-                        firm_core::agentfirm_api::WorkDeliveryStatus::Invalidated,
-                };
-                Ok(CurrentWorkDeliveryView {
-                    authority: CurrentWorkDeliveryAuthority::LegacyCompatibility,
-                    read_only: true,
-                    execution_space_id: None,
-                    team_run_id: delivery.team_run_id,
-                    work_id: delivery.work_id,
-                    work_revision: delivery.work_version,
-                    work_execution_binding_id: None,
-                    delivery_id: delivery.id,
-                    recipient_agent_member_id: None,
-                    recipient_member_run_id: Some(delivery.recipient_member_run_id),
-                    recipient_agent_session_id: None,
-                    recipient_agent_session_generation: None,
-                    target_node_id: None,
-                    status,
-                    attempt: delivery.attempt,
-                    claim_id: delivery.claim_id,
-                    claimed_node_daemon_generation: None,
-                    provider_receipt_id: delivery.provider_receipt_id,
-                    failure_code: delivery.failure_reason,
-                    version: 0,
-                    created_at: delivery.updated_at.clone(),
-                    updated_at: delivery.updated_at,
-                    integrity_annotations: vec![
-                        CurrentWorkDeliveryIntegrityAnnotation::LegacyReadOnlyCompatibility,
-                        CurrentWorkDeliveryIntegrityAnnotation::ProviderReceiptAbsenceIsNotEvidenceOfNonDelivery,
-                    ],
-                })
-            })
-            .collect()
     }
 }

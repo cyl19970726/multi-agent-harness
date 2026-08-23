@@ -116,23 +116,6 @@ pub enum TrustCommand {
         evidence_ref: String,
         updated_at: String,
     },
-    CreateWorkDeliveries {
-        work_event_id: String,
-        work_id: String,
-        work_revision: u64,
-        recipient_member_run_ids: Vec<String>,
-        updated_at: String,
-    },
-    RetryWorkDelivery {
-        delivery_id: String,
-        current_work_revision: u64,
-        updated_at: String,
-    },
-    ReconcileWorkDelivery {
-        delivery_id: String,
-        evidence_ref: String,
-        updated_at: String,
-    },
     ProvisionWorkspace {
         binding: MemberWorkspaceBinding,
     },
@@ -196,9 +179,6 @@ impl TrustCommand {
             Self::CreateTeamMessage { .. } => "team_message.create",
             Self::RetryMessageDelivery { .. } => "message_delivery.retry",
             Self::ReconcileMessageDelivery { .. } => "message_delivery.reconcile",
-            Self::CreateWorkDeliveries { .. } => "work_delivery.create",
-            Self::RetryWorkDelivery { .. } => "work_delivery.retry",
-            Self::ReconcileWorkDelivery { .. } => "work_delivery.reconcile",
             Self::ProvisionWorkspace { .. } => "workspace.provision",
             Self::TransitionWorkspace { next, .. } => match next {
                 WorkspaceLifecycle::Archived => "workspace.archive",
@@ -248,14 +228,6 @@ impl TrustCommand {
                 let _ = (delivery_id, id);
                 false
             }
-            (
-                Self::RetryWorkDelivery { delivery_id, .. },
-                ["v1", "work-deliveries", id, "retry"],
-            )
-            | (
-                Self::ReconcileWorkDelivery { delivery_id, .. },
-                ["v1", "work-deliveries", id, "reconcile"],
-            ) => delivery_id == id,
             (
                 Self::ProvisionWorkspace { binding },
                 ["v1", "member-runs", id, "workspace", "provision"],
@@ -633,12 +605,6 @@ pub fn execute(
         | TrustCommand::RetryMessageDelivery { .. }
         | TrustCommand::ReconcileMessageDelivery { .. } => Err(StoreError::Conflict(
             "RETIRED_RUNTIME_WRITER: use NodeDaemon-authored canonical Message and MessageDelivery"
-                .into(),
-        )),
-        TrustCommand::CreateWorkDeliveries { .. }
-        | TrustCommand::RetryWorkDelivery { .. }
-        | TrustCommand::ReconcileWorkDelivery { .. } => Err(StoreError::Conflict(
-            "RETIRED_RUNTIME_WRITER: use NodeDaemon-authored canonical WorkExecutionBinding and CanonicalWorkDelivery"
                 .into(),
         )),
         TrustCommand::ProvisionWorkspace { mut binding } => {

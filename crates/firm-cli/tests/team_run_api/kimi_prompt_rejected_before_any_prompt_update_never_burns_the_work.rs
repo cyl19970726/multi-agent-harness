@@ -92,7 +92,7 @@ fn kimi_prompt_rejected_before_any_prompt_update_never_burns_the_work() {
     // The core contract: no receipt was published for a turn the provider
     // never accepted. The canonical claim may be visible before provider
     // cleanup settles its negative acknowledgement, so wait for that durable
-    // transition instead of consulting the retired ProviderWorkDispatch row.
+    // transition in the canonical delivery projection.
     let mut settled = None;
     for _ in 0..300 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");

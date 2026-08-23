@@ -213,59 +213,6 @@ pub fn seed_historical_mission(home: &TempHome, space_id: &str, id: &str, title:
     .expect("append historical mission");
 }
 
-/// Reconstruct the latest ProviderWorkDispatch projection from crash-atomic Work
-/// operations plus later claim/receipt updates. Integration tests use this
-/// instead of treating update rows as standalone deliveries.
-pub fn work_deliveries(home: &TempHome, project_id: &str) -> Vec<serde_json::Value> {
-    let store = home.spaces_dir().join(project_id);
-    let mut order = Vec::<String>::new();
-    let mut by_id = std::collections::HashMap::<String, serde_json::Value>::new();
-    let operations =
-        std::fs::read_to_string(store.join("work_operations.jsonl")).expect("work operations");
-    for line in operations.lines().filter(|line| !line.trim().is_empty()) {
-        let row: serde_json::Value = serde_json::from_str(line).expect("work operation JSON");
-        for delivery in row["deliveries"].as_array().into_iter().flatten() {
-            let id = delivery["id"]
-                .as_str()
-                .expect("ProviderWorkDispatch id")
-                .to_string();
-            if !by_id.contains_key(&id) {
-                order.push(id.clone());
-            }
-            by_id.insert(id, delivery.clone());
-        }
-    }
-    if let Ok(updates) = std::fs::read_to_string(store.join("work_delivery_updates.jsonl")) {
-        for line in updates.lines().filter(|line| !line.trim().is_empty()) {
-            let update: serde_json::Value =
-                serde_json::from_str(line).expect("ProviderWorkDispatch update JSON");
-            let id = update["delivery_id"]
-                .as_str()
-                .expect("ProviderWorkDispatch update id");
-            if let Some(delivery) = by_id.get_mut(id) {
-                let object = delivery
-                    .as_object_mut()
-                    .expect("ProviderWorkDispatch object");
-                for key in [
-                    "status",
-                    "attempt",
-                    "claim_id",
-                    "claimed_by_supervisor_id",
-                    "claimed_generation",
-                    "provider_receipt_id",
-                    "updated_at",
-                ] {
-                    object.insert(key.to_string(), update[key].clone());
-                }
-            }
-        }
-    }
-    order
-        .into_iter()
-        .filter_map(|id| by_id.remove(&id))
-        .collect()
-}
-
 pub fn latest_works(home: &TempHome, project_id: &str) -> Vec<serde_json::Value> {
     let operations = std::fs::read_to_string(
         home.spaces_dir()

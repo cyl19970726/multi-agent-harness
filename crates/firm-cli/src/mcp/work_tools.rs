@@ -372,11 +372,3 @@ pub(super) fn tool_team_run_work_mutate(
     .map_err(|error| error.to_string())?;
     Ok(json!(work))
 }
-
-pub(super) fn tool_team_run_work_reconcile_delivery(
-    store: &HarnessStore,
-    arguments: &Value,
-) -> Result<Value, String> {
-    reconcile_team_work_delivery_value(store, required_str(arguments, "team_run_id")?, arguments)
-        .map_err(|error| error.to_string())
-}

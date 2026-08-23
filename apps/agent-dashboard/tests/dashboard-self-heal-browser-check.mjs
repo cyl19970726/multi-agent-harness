@@ -18,6 +18,7 @@ async function jsonl(name) {
 }
 
 const workOperations = await jsonl("work_operations");
+const workDeliveries = await jsonl("current_work_deliveries");
 const works = workOperations.map((operation) => operation.work);
 const fixtureSnapshot = {
   generated_at: "2026-08-05T08:00:00Z",
@@ -29,7 +30,7 @@ const fixtureSnapshot = {
   team_messages: await jsonl("team_messages"),
   works,
   work_events: workOperations.map((operation) => operation.event),
-  work_deliveries: workOperations.flatMap((operation) => operation.deliveries ?? []),
+  work_deliveries: workDeliveries,
   member_actions: await jsonl("member_actions"),
   delegation_runs: await jsonl("delegation_runs"),
   team_run_events: await jsonl("team_run_events"),

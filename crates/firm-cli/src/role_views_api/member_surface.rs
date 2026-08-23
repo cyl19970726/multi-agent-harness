@@ -351,9 +351,9 @@ pub(crate) fn operator_view(
             projected
         })
         .collect::<Vec<_>>();
-    // Canonical WorkDelivery reconciliation is an exact NodeDaemon/session
-    // RuntimeCommand action, not an Operator RoleAction and never a legacy
-    // legacy delivery mutation.
+    // Message reconciliation remains an exact target-NodeDaemon action.
+    // Work provider failure is settled by the active RuntimeCommand path and
+    // is not exposed as a separate Operator RoleAction.
     let mut operator_actions = Vec::new();
     for delivery in facts
         .message_deliveries

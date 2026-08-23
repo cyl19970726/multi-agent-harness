@@ -14,7 +14,7 @@ fn supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery() 
                     created.team_run.id.clone(),
                     created.team_run.agent_team_id.clone(),
                     "Deliver canonical Work".into(),
-                    "Exercise NodeDaemon ProviderWorkDispatch wiring".into(),
+                    "Exercise NodeDaemon canonical delivery wiring".into(),
                     "Provider receipt is canonical".into(),
                     WorkClaimMode::HostAssign,
                     WorkPriority::Normal,
@@ -37,27 +37,6 @@ fn supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery() 
             },
         )
         .expect("create assigned Work");
-    store
-        .create_trust_work_deliveries(
-            &harness_core::agentfirm_api::MutationContext {
-                execution_space_id: "unit-test-space".into(),
-                authenticated_actor: harness_core::agentfirm_api::ActorRef {
-                    kind: harness_core::agentfirm_api::ActorKind::Service,
-                    id: "test-host".into(),
-                },
-                authority_actor: None,
-                command_name: "test.work_delivery.create".into(),
-                idempotency_key: "canonical-supervisor-work-delivery".into(),
-                expected_version: 0,
-                request_fingerprint: None,
-            },
-            "canonical-supervisor-work-event",
-            &work.id,
-            work.version,
-            std::slice::from_ref(&member.id),
-            "unix-ms:4",
-        )
-        .expect("create canonical ProviderWorkDispatch");
     let lease = store
         .acquire_test_supervisor_lease(
             &created.team_run.id,
@@ -114,19 +93,6 @@ fn supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery() 
         current[0].authority,
         harness_application::CurrentWorkDeliveryAuthority::CanonicalTrust
     );
-    assert!(
-        store
-            .legacy_provider_work_dispatches_for_export()
-            .expect("historical ProviderWorkDispatch rows")
-            .into_iter()
-            .filter(|delivery| delivery.work_id == work.id)
-            .all(|delivery| {
-                delivery.status == harness_core::ProviderWorkDispatchStatus::Queued
-                    && delivery.attempt == 0
-                    && delivery.provider_receipt_id.is_none()
-            }),
-        "canonical provider settlement must not rewrite legacy audit evidence"
-    );
     std::fs::remove_dir_all(root).expect("cleanup");
 }
 
@@ -173,29 +139,6 @@ fn supervisor_skips_not_ready_delivery_and_claims_ready_predecessor() {
         "unix-ms:4",
         vec![predecessor.id.clone()],
     );
-    for (index, work) in [&predecessor, &dependent].into_iter().enumerate() {
-        store
-            .create_trust_work_deliveries(
-                &harness_core::agentfirm_api::MutationContext {
-                    execution_space_id: "unit-test-space".into(),
-                    authenticated_actor: harness_core::agentfirm_api::ActorRef {
-                        kind: harness_core::agentfirm_api::ActorKind::Service,
-                        id: "test-host".into(),
-                    },
-                    authority_actor: None,
-                    command_name: "test.work_delivery.create".into(),
-                    idempotency_key: format!("ready-selection-delivery-{index}"),
-                    expected_version: 0,
-                    request_fingerprint: None,
-                },
-                &format!("ready-selection-event-{index}"),
-                &work.id,
-                work.version,
-                std::slice::from_ref(&member.id),
-                "unix-ms:5",
-            )
-            .expect("create canonical WorkDelivery");
-    }
     let lease = store
         .acquire_test_supervisor_lease(
             &created.team_run.id,
@@ -220,7 +163,7 @@ fn supervisor_skips_not_ready_delivery_and_claims_ready_predecessor() {
         .expect("readiness-filtered current queue");
     assert!(
         ready_current.is_empty(),
-        "a legacy queued row cannot appear before a canonical binding exists"
+        "no current delivery exists before a canonical binding is created"
     );
 
     let claimed = claim_canonical_work_for_member(&ledger, &member)
@@ -251,19 +194,6 @@ fn supervisor_skips_not_ready_delivery_and_claims_ready_predecessor() {
             .all(|delivery| delivery.work_id != dependent.id),
         "not-ready Work must not receive an execution binding or fabric delivery"
     );
-    let historical_delivery = store
-        .legacy_provider_work_dispatches_for_export()
-        .expect("compatibility delivery projection")
-        .into_iter()
-        .find(|delivery| delivery.work_id == dependent.id)
-        .expect("not-ready compatibility delivery remains visible");
-    assert_eq!(
-        historical_delivery.status,
-        harness_core::ProviderWorkDispatchStatus::Queued
-    );
-    assert_eq!(historical_delivery.attempt, 0);
-    assert!(historical_delivery.claim_id.is_none());
-    assert!(historical_delivery.provider_receipt_id.is_none());
     let current_views = store
         .current_work_deliveries_for_team_run(&created.team_run.id)
         .expect("current canonical delivery views");
@@ -271,7 +201,7 @@ fn supervisor_skips_not_ready_delivery_and_claims_ready_predecessor() {
         current_views
             .iter()
             .all(|delivery| delivery.work_id != dependent.id),
-        "a stale legacy row must not fill a canonical delivery gap"
+        "an unready Work must not appear in the canonical delivery projection"
     );
     let ready_after_claim = ledger
         .queued_works_for(&member.id)

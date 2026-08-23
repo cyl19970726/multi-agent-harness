@@ -250,11 +250,11 @@ pub(super) fn print_help() {
   mission list|show (read-only legacy rows; Mission writers retired by DOC-108)
   mission log show --mission-id <id> [--tail <n>] (read-only legacy)
   legacy wave list|show|history (historical reads only)
-  team-run create|list|status|recover|host-inbox|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|answer-message|events|complete|cancel
+  team-run create|list|status|recover|host-inbox|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|close-member|reopen-member|deactivate-member|start|answer-message|events|complete|cancel
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.
-  team-run work list|show|create|assign|claim|start|block|resume|release|submit|review|request-changes|accept|cancel|reconcile-delivery
+  team-run work list|show|create|assign|claim|start|block|resume|release|submit|review|request-changes|accept|cancel
   team-run work list [--brief] [--since <cursor>] --team-run-id <id> [--status <status>] [--member-run-id <id>]
       --brief: one plain-text line per Work, no JSON wrapper.
       --since <cursor>: only Works whose latest WorkOperation postdates the

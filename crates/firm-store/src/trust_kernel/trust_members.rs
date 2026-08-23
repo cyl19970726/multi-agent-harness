@@ -785,35 +785,6 @@ impl HarnessStore {
             })?;
         prepared.context = context.clone();
         prepared.transition = transition_name;
-        if matches!(
-            transition,
-            CurrentTeamMemberLifecycleTransition::Close
-                | CurrentTeamMemberLifecycleTransition::Retire
-        ) {
-            for mut delivery in self.trust_work_deliveries(&execution_space_id)? {
-                if delivery.recipient_member_run_id != member_run_id {
-                    continue;
-                }
-                if transition == CurrentTeamMemberLifecycleTransition::Close
-                    && delivery.status == WorkDeliveryStatus::Queued
-                {
-                    delivery.freeze_generation = Some(next.runtime_generation);
-                    delivery.version += 1;
-                    delivery.updated_at = updated_at.to_string();
-                    prepared.side_records.push(serde_json::to_value(delivery)?);
-                } else if transition == CurrentTeamMemberLifecycleTransition::Retire
-                    && matches!(
-                        delivery.status,
-                        WorkDeliveryStatus::Queued | WorkDeliveryStatus::Claimed
-                    )
-                {
-                    delivery.status = WorkDeliveryStatus::Invalidated;
-                    delivery.version += 1;
-                    delivery.updated_at = updated_at.to_string();
-                    prepared.side_records.push(serde_json::to_value(delivery)?);
-                }
-            }
-        }
         required(&context.execution_space_id, "execution_space_id")?;
         required(&context.authenticated_actor.id, "authenticated_actor.id")?;
         required(&context.command_name, "command_name")?;

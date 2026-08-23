@@ -72,15 +72,15 @@ fn blocked_work_can_be_resumed_by_owner_or_host_with_a_recorded_resolution() {
         Some(blocked_record.id.as_str())
     );
     assert_eq!(resolved_record.work_version, resumed.version);
-    assert!(store
-        .legacy_provider_work_dispatches_for_export()
-        .expect("deliveries")
-        .iter()
-        .any(|delivery| {
-            delivery.work_id == resumed.id
-                && delivery.work_version == resumed.version
-                && delivery.status == ProviderWorkDispatchStatus::Queued
-        }));
+    let resumed_operation = store
+        .work_operations()
+        .expect("Work operations")
+        .into_iter()
+        .find(|operation| operation.event.id == resumed_event.id)
+        .expect("resumed operation");
+    let wire = serde_json::to_value(resumed_operation).expect("operation wire");
+    assert!(wire.get("deliveries").is_none());
+    assert!(wire.get("delivery_updates").is_none());
 
     let blocked_by_host = store
         .block_work_as_host(

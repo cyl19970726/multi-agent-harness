@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use firm_core::agentfirm_api::{CanonicalWorkDelivery, WorkDeliveryStatus};
 use firm_core::{
     content_hash_hex16, AgentTeam, AgentTeamRun, Decision, DelegationRun, Evidence, ExecutionNode,
     ExecutionNodeStatus, Gap, GitHubLink, HostAttention, HostAttentionInbox, HostAttentionKind,
@@ -16,8 +17,7 @@ use firm_core::{
     ProviderChildThread, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
     ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
     ProviderCompatibilityStatus, ProviderExecutionStatus, ProviderIntegrationProfile,
-    ProviderLaunchProfile, ProviderProcess, ProviderRuntimeProjection, ProviderWorkDispatch,
-    ProviderWorkDispatchStatus, ProviderWorkDispatchUpdate, RegistryDeliveryAttempt,
+    ProviderLaunchProfile, ProviderProcess, ProviderRuntimeProjection, RegistryDeliveryAttempt,
     RegistryDeliveryStatus, RegistryMessage, Review, TeamActorKind, TeamActorRef,
     TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection, TeamRunEvent,
     TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision, Work,
@@ -305,12 +305,6 @@ pub enum TeamMessageDeliveryClaimResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorkDeliveryClaimResult {
-    Claimed(Box<ProviderWorkDispatch>),
-    NotQueued,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostAttentionClaimResult {
     Claimed(Box<HostAttention>),
     NotActionable,
@@ -333,7 +327,6 @@ mod store_store_base;
 mod store_team_admission;
 mod store_team_journal;
 mod store_work_application;
-mod store_work_delivery;
 mod store_work_graph;
 mod store_work_mutations;
 mod store_work_projection;
@@ -557,20 +550,6 @@ fn same_team_run_event_semantics(left: &TeamRunEvent, right: &TeamRunEvent) -> b
         && left.entity_id == right.entity_id
         && left.operation == right.operation
         && left.summary == right.summary
-}
-
-fn apply_work_delivery_update(
-    delivery: &mut ProviderWorkDispatch,
-    update: ProviderWorkDispatchUpdate,
-) {
-    delivery.status = update.status;
-    delivery.attempt = update.attempt;
-    delivery.claim_id = update.claim_id;
-    delivery.claimed_by_supervisor_id = update.claimed_by_supervisor_id;
-    delivery.claimed_generation = update.claimed_generation;
-    delivery.provider_receipt_id = update.provider_receipt_id;
-    delivery.failure_reason = update.failure_reason;
-    delivery.updated_at = update.updated_at;
 }
 
 fn require_non_empty_store(value: &str, label: &str) -> StoreResult<()> {

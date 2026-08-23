@@ -194,20 +194,6 @@ pub(super) fn tool_definitions() -> Value {
             "inputSchema": {"type": "object", "properties": {"team_run_id": {"type": "string"}, "work_id": {"type": "string"}, "expected_version": {"type": "integer", "minimum": 0}, "reason": {"type": "string", "minLength": 1}, "caused_by_message_id": {"type": "string"}, "idempotency_key": {"type": "string"}}, "required": ["team_run_id", "work_id", "expected_version", "reason"]}
         },
         {
-            "name": "team_run_work_reconcile_delivery",
-            "description": "Retired compatibility endpoint. It always fails closed; canonical WorkDelivery reconciliation requires exact NodeDaemon/session authority.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "team_run_id": {"type": "string"},
-                    "delivery_id": {"type": "string"},
-                    "supervisor_id": {"type": "string"},
-                    "supervisor_generation": {"type": "integer", "minimum": 1}
-                },
-                "required": ["team_run_id", "delivery_id", "supervisor_id", "supervisor_generation"]
-            }
-        },
-        {
             "name": "collaboration_delegation_list",
             "description": "Read the Company Control Plane's canonical cross-Team Delegations. This tool never folds an Execution Space's retired local WorkDelegation ledger.",
             "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"source_team_id": {"type": "string", "minLength": 1}, "target_team_id": {"type": "string", "minLength": 1}, "node_id": {"type": "string", "minLength": 1}, "state": {"type": "string", "enum": ["proposed", "awaiting_target_decision", "provisioning_target_work", "active", "result_available", "cancellation_requested", "terminal"]}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}, "cursor": {"type": "string", "minLength": 1}}}

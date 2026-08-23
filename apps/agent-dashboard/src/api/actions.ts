@@ -6,7 +6,6 @@
 //   POST /v1/agents                            { name, role, provider?, skill[], team[], ... }
 //   POST /v1/agents/{id}/deliver               { start_runtime?, dry_run?, ... }
 //   POST /v1/agents/{id}/retry-delivery        { message_id, ... }
-//   POST /v1/agents/{id}/reconcile-delivery    { delivery_id, status, ... }
 //   POST /v1/agents/{id}/close                 {}
 //
 // The agent id / task id belong in the URL PATH, never the body. The earlier
@@ -267,30 +266,6 @@ export function retryDelivery(
   return {
     method: "POST",
     path: `/v1/agents/${encodeId(agentId)}/retry-delivery`,
-    body,
-  };
-}
-
-/**
- * Reconcile a stuck Harness delivery attempt to a terminal state.
- */
-export function reconcileDelivery(
-  agentId: string,
-  params: { deliveryId: string; status?: string; terminalSource?: string; reason?: string },
-): ActionDescriptor {
-  const body: Record<string, unknown> = { delivery_id: params.deliveryId };
-  if (params.status) {
-    body.status = params.status;
-  }
-  if (params.terminalSource) {
-    body.terminal_source = params.terminalSource;
-  }
-  if (params.reason) {
-    body.reason = params.reason;
-  }
-  return {
-    method: "POST",
-    path: `/v1/agents/${encodeId(agentId)}/reconcile-delivery`,
     body,
   };
 }

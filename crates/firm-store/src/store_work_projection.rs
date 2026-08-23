@@ -195,8 +195,6 @@ impl HarnessStore {
                     reports: Vec::new(),
                     evidence_records: Vec::new(),
                     decisions: Vec::new(),
-                    deliveries: Vec::new(),
-                    delivery_updates: Vec::new(),
                     delegation_revisions: Vec::new(),
                 };
                 self.append_work_operation_unlocked(&operation)?;
@@ -219,51 +217,6 @@ impl HarnessStore {
         })
     }
 
-    pub(super) fn initial_work_deliveries_unlocked(
-        &self,
-        work: &Work,
-        event_id: &str,
-        updated_at: &str,
-    ) -> StoreResult<Vec<ProviderWorkDispatch>> {
-        let Some(member_run_id) = work.active_member_run_id.as_deref() else {
-            return Ok(Vec::new());
-        };
-        let member = self.require_member_run_unlocked(member_run_id, &work.team_run_id)?;
-        if self
-            .ensure_member_can_receive_work_unlocked(&member)
-            .is_err()
-        {
-            return Ok(Vec::new());
-        }
-        // Skip loopback deliveries for terminal work: the owning member
-        // already knows their work is Done/Cancelled — self-notification is
-        // redundant. Non-terminal events (Created, Assigned, ChangesRequested,
-        // Resumed, Rebound) genuinely need delivery even to the owner.
-        if work.is_terminal() {
-            if let Some(ref owner_id) = work.owner_member_id {
-                if owner_id == &member_identity(&member) {
-                    return Ok(Vec::new());
-                }
-            }
-        }
-        Ok(vec![ProviderWorkDispatch {
-            id: format!("work-delivery-{event_id}-{member_run_id}"),
-            work_event_id: event_id.to_string(),
-            team_run_id: work.team_run_id.clone(),
-            work_id: work.id.clone(),
-            work_version: work.version,
-            recipient_member_run_id: member_run_id.to_string(),
-            status: ProviderWorkDispatchStatus::Queued,
-            attempt: 0,
-            claim_id: None,
-            claimed_by_supervisor_id: None,
-            claimed_generation: None,
-            provider_receipt_id: None,
-            failure_reason: None,
-            updated_at: updated_at.to_string(),
-        }])
-    }
-
     pub(super) fn current_work_unlocked(
         &self,
         work_id: &str,
@@ -282,19 +235,28 @@ impl HarnessStore {
         Ok(current)
     }
 
+    pub(super) fn canonical_work_deliveries_for_work_unlocked(
+        &self,
+        work: &Work,
+    ) -> StoreResult<Vec<CanonicalWorkDelivery>> {
+        let run = self.require_team_run_unlocked(&work.team_run_id)?;
+        let execution_space_id = self.current_team_run_execution_space(&run)?;
+        Ok(self
+            .fabric_work_deliveries(&execution_space_id)?
+            .into_iter()
+            .filter(|delivery| delivery.work_id == work.id)
+            .collect())
+    }
+
     pub(super) fn ensure_deliveries_reassignable_unlocked(&self, work: &Work) -> StoreResult<()> {
         if self
-            .latest_work_deliveries_unlocked()?
-            .values()
+            .canonical_work_deliveries_for_work_unlocked(work)?
+            .iter()
             .any(|delivery| {
-                delivery.work_id == work.id
-                    && delivery.work_version == work.version
-                    && work.active_member_run_id.as_deref()
-                        == Some(delivery.recipient_member_run_id.as_str())
+                delivery.work_revision == work.version
                     && matches!(
                         delivery.status,
-                        ProviderWorkDispatchStatus::Claimed
-                            | ProviderWorkDispatchStatus::ProviderReceived
+                        WorkDeliveryStatus::Claimed | WorkDeliveryStatus::ProviderReceived
                     )
             })
         {
@@ -835,23 +797,6 @@ impl HarnessStore {
         Ok(())
     }
 
-    pub(super) fn next_work_delivery_update_sequence_unlocked(&self) -> StoreResult<u64> {
-        let embedded_max = self
-            .work_operations_unlocked()?
-            .into_iter()
-            .flat_map(|operation| operation.delivery_updates)
-            .map(|update| update.update_sequence)
-            .max()
-            .unwrap_or(0);
-        let standalone_max = self
-            .read_jsonl::<ProviderWorkDispatchUpdate>("work_delivery_updates.jsonl")?
-            .into_iter()
-            .map(|update| update.update_sequence)
-            .max()
-            .unwrap_or(0);
-        Ok(embedded_max.max(standalone_max).saturating_add(1))
-    }
-
     pub(super) fn latest_works_unlocked(
         &self,
     ) -> StoreResult<std::collections::BTreeMap<String, Work>> {
@@ -871,55 +816,5 @@ impl HarnessStore {
             }
         }
         Ok(latest)
-    }
-
-    pub(super) fn latest_work_deliveries_unlocked(
-        &self,
-    ) -> StoreResult<std::collections::BTreeMap<String, ProviderWorkDispatch>> {
-        let mut deliveries = std::collections::BTreeMap::new();
-        let mut legacy_updates = Vec::new();
-        let mut sequenced_updates = Vec::new();
-        let mut legacy_order = 0_u64;
-        for operation in self.work_operations_unlocked()? {
-            for delivery in operation.deliveries {
-                deliveries.insert(delivery.id.clone(), delivery);
-            }
-            for update in operation.delivery_updates {
-                if update.update_sequence == 0 {
-                    legacy_updates.push((update.updated_at.clone(), legacy_order, update));
-                    legacy_order = legacy_order.saturating_add(1);
-                } else {
-                    sequenced_updates.push(update);
-                }
-            }
-        }
-        for update in
-            self.read_jsonl::<ProviderWorkDispatchUpdate>("work_delivery_updates.jsonl")?
-        {
-            if update.update_sequence == 0 {
-                legacy_updates.push((update.updated_at.clone(), legacy_order, update));
-                legacy_order = legacy_order.saturating_add(1);
-            } else {
-                sequenced_updates.push(update);
-            }
-        }
-        // Rows written before update_sequence existed remain readable. Their
-        // best available ordering evidence is timestamp plus stable file-scan
-        // order. All new writes are then folded by the Store-assigned sequence,
-        // independent of caller clocks or which JSONL file carries the update.
-        legacy_updates.sort_by(|left, right| {
-            compare_store_timestamps(&left.0, &right.0).then(left.1.cmp(&right.1))
-        });
-        sequenced_updates.sort_by_key(|update| update.update_sequence);
-        for update in legacy_updates
-            .into_iter()
-            .map(|(_, _, update)| update)
-            .chain(sequenced_updates)
-        {
-            if let Some(delivery) = deliveries.get_mut(&update.delivery_id) {
-                apply_work_delivery_update(delivery, update);
-            }
-        }
-        Ok(deliveries)
     }
 }

@@ -312,9 +312,7 @@ fn invalidation_is_queued_across_snapshot_marker_to_get_boundary() {
 }
 
 #[test]
-fn external_work_and_legacy_delivery_writes_invalidate_without_overriding_current_snapshot() {
-    use std::io::Write as _;
-
+fn external_work_write_invalidates_and_current_snapshot_converges() {
     let home = TempHome::new("sse-external-work");
     let project_id = init_project(&home, "alpha");
     create_space(&home, "space-alpha", &project_id);
@@ -407,76 +405,13 @@ fn external_work_and_legacy_delivery_writes_invalidate_without_overriding_curren
         "authoritative snapshot did not converge after invalidation: {snapshot}"
     );
 
-    // ProviderWorkDispatch rows are retained as legacy audit evidence. They
-    // remain watched so an open SSE stream reports raw-store changes, but the
-    // current snapshot must never promote them into canonical Work delivery.
-    let operations_path = home
-        .spaces_dir()
-        .join("space-alpha")
-        .join("work_operations.jsonl");
-    let delivery = std::fs::read_to_string(&operations_path)
-        .expect("read Work operations")
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .flat_map(|operation| {
-            operation["deliveries"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default()
-        })
-        .find(|delivery| delivery["work_id"] == work_id)
-        .expect("legacy Work delivery audit row");
     assert!(
         snapshot["work_deliveries"]
             .as_array()
             .expect("snapshot deliveries")
             .iter()
             .all(|candidate| candidate["work_id"] != work_id),
-        "legacy-only delivery must not enter the current snapshot: {snapshot}"
-    );
-    let update = serde_json::json!({
-        "delivery_id": delivery["id"],
-        "update_sequence": 1,
-        "status": "failed",
-        "attempt": 1,
-        "claim_id": null,
-        "claimed_by_supervisor_id": null,
-        "claimed_generation": null,
-        "provider_receipt_id": null,
-        "failure_reason": "deterministic external-writer fixture",
-        "updated_at": "unix-ms:2"
-    });
-    let updates_path = home
-        .spaces_dir()
-        .join("space-alpha")
-        .join("work_delivery_updates.jsonl");
-    let mut updates = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&updates_path)
-        .expect("open delivery updates");
-    writeln!(updates, "{update}").expect("append delivery update");
-    updates.sync_all().expect("fsync delivery update");
-
-    let delivery_invalidations = collect_sse_data(&mut sse, Duration::from_secs(6), 1);
-    let delivery_invalidation = delivery_invalidations
-        .iter()
-        .find(|frame| frame["ledger"] == "work_delivery_updates.jsonl")
-        .unwrap_or_else(|| {
-            panic!("healthy SSE missed external delivery append: {delivery_invalidations:?}")
-        });
-    assert_eq!(delivery_invalidation["scope_id"], "space-alpha");
-    assert_eq!(delivery_invalidation["revision"], 1);
-
-    let (status, refreshed) = serve.get_json(&format!("/v1/snapshot{query}"));
-    assert_eq!(status, 200);
-    assert!(
-        refreshed["work_deliveries"]
-            .as_array()
-            .expect("refreshed deliveries")
-            .iter()
-            .all(|candidate| candidate["id"] != delivery["id"]),
-        "legacy update overrode the canonical delivery projection: {refreshed}"
+        "creating Work alone must not invent provider delivery: {snapshot}"
     );
 }
 

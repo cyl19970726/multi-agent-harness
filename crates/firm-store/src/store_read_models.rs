@@ -458,15 +458,58 @@ impl HarnessStore {
         Ok(events)
     }
 
-    /// Explicit legacy audit/export reader. Never use this projection to make
-    /// a current scheduling, recovery, API, CLI, MCP, RoleView, or Dashboard
-    /// decision.
-    pub fn legacy_provider_work_dispatches_for_export(
+    pub fn team_supervisor_leases(&self) -> StoreResult<Vec<TeamSupervisorLease>> {
+        self.read_jsonl("team_supervisor_leases.jsonl")
+    }
+
+    pub fn latest_team_supervisor_lease(
         &self,
-    ) -> StoreResult<Vec<ProviderWorkDispatch>> {
+        team_run_id: &str,
+    ) -> StoreResult<Option<TeamSupervisorLease>> {
+        Ok(latest_by_id(self.team_supervisor_leases()?, |lease| {
+            lease.team_run_id.clone()
+        })
+        .remove(team_run_id))
+    }
+
+    pub fn team_member_close_requests(&self) -> StoreResult<Vec<TeamMemberCloseRequest>> {
+        self.read_jsonl("team_member_close_requests.jsonl")
+    }
+
+    pub fn latest_team_member_close_request(
+        &self,
+        member_run_id: &str,
+    ) -> StoreResult<Option<TeamMemberCloseRequest>> {
+        Ok(latest_by_id(self.team_member_close_requests()?, |request| {
+            request.member_run_id.clone()
+        })
+        .remove(member_run_id))
+    }
+
+    pub fn member_actions(&self) -> StoreResult<Vec<MemberAction>> {
+        self.read_jsonl("member_actions.jsonl")
+    }
+
+    pub fn delegation_runs(&self) -> StoreResult<Vec<DelegationRun>> {
+        self.read_jsonl("delegation_runs.jsonl")
+    }
+
+    /// Raw historical event rows for explicit Legacy diagnostics/export.
+    /// Current product projections must use `current_team_run_events`.
+    pub fn legacy_team_run_events(&self) -> StoreResult<Vec<TeamRunEvent>> {
+        self.read_jsonl("team_run_events.jsonl")
+    }
+
+    /// Read the current event projection only after the whole TeamRun has one
+    /// coherent canonical Execution Space.
+    pub fn current_team_run_events(&self, team_run_id: &str) -> StoreResult<Vec<TeamRunEvent>> {
+        self.init()?;
+        let run = self.require_team_run_unlocked(team_run_id)?;
+        self.current_team_run_execution_space(&run)?;
         Ok(self
-            .latest_work_deliveries_unlocked()?
-            .into_values()
+            .read_jsonl("team_run_events.jsonl")?
+            .into_iter()
+            .filter(|event: &TeamRunEvent| event.team_run_id == team_run_id)
             .collect())
     }
 }

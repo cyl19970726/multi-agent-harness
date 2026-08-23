@@ -94,18 +94,14 @@ fn review_required_kimi_033_blocks_initial_start_and_http_work_rebind_before_acp
         latest_work.active_member_run_id.as_deref(),
         Some(original_member_id)
     );
-    let delivery = store
-        .legacy_provider_work_dispatches_for_export()
-        .expect("latest deliveries")
-        .into_iter()
-        .find(|delivery| delivery.work_id == work_id)
-        .expect("ProviderWorkDispatch");
-    assert_eq!(
-        delivery.status,
-        harness_core::ProviderWorkDispatchStatus::Queued
+    assert!(
+        store
+            .current_work_deliveries_for_team_run(run_id)
+            .expect("canonical WorkDeliveries")
+            .into_iter()
+            .all(|delivery| delivery.work_id != work_id),
+        "a provider rejected before admission must not receive a canonical WorkDelivery"
     );
-    assert_eq!(delivery.attempt, 0);
-    assert!(delivery.provider_receipt_id.is_none());
     assert!(store
         .member_runs()
         .expect("member rows")

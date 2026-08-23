@@ -12,13 +12,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use firm_core::agentfirm_api::{
     ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus, CandidateKind, CandidateRef,
-    Confidence, DeliveryClaim, FailureAnalysis, GateEvaluation, GateRequirement,
-    GateRequirementSource, GateVerdict, GateWaiver, GateWaiverState, MemberCoordinationStatus,
-    MemberRun, MemberRuntimeStatus, MemberWorkspaceBinding, MutationContext,
-    NativeSessionAvailability, NativeSessionRef, PermissionCeiling, PrimaryCauseStatus,
-    RetrySafety, TeamMembership, TeamMembershipRole, TeamMembershipStatus, TrustError,
-    TrustErrorCode, WorkFinding, WorkFindingKind, WorkReport, WorkReportKind, WorkspaceLifecycle,
-    WorkspaceMode, WorkspaceOwnership, WorkspaceSafetyProof,
+    Confidence, FailureAnalysis, GateEvaluation, GateRequirement, GateRequirementSource,
+    GateVerdict, GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberRun,
+    MemberRuntimeStatus, MemberWorkspaceBinding, MutationContext, NativeSessionAvailability,
+    NativeSessionRef, PermissionCeiling, PrimaryCauseStatus, RetrySafety, TeamMembership,
+    TeamMembershipRole, TeamMembershipStatus, TrustError, TrustErrorCode, WorkFinding,
+    WorkFindingKind, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
+    WorkspaceOwnership, WorkspaceSafetyProof,
 };
 use firm_core::{
     AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, MemberRunStatus,
@@ -73,6 +73,7 @@ fn member_actor(id: &str) -> ActorRef {
     }
 }
 
+#[cfg(any())]
 fn service(id: &str) -> ActorRef {
     ActorRef {
         kind: ActorKind::Service,
@@ -80,6 +81,7 @@ fn service(id: &str) -> ActorRef {
     }
 }
 
+#[cfg(any())]
 fn unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -338,6 +340,7 @@ fn seed_team(store: &HarnessStore, label: &str, member_ids: &[&str]) -> AgentTea
     run
 }
 
+#[cfg(any())]
 fn acquire_supervisor(
     store: &HarnessStore,
     run: &AgentTeamRun,
@@ -658,6 +661,7 @@ fn message(id: &str, team_run_id: &str, sender: &ActorRef, recipients: &[&str]) 
     }
 }
 
+#[cfg(any())]
 fn delivery_claim(id: &str, supervisor_generation: u64, member_generation: u64) -> DeliveryClaim {
     DeliveryClaim {
         claim_id: id.into(),
@@ -806,8 +810,6 @@ mod pre_cutover_member_run_materialization_tolerance_is_field_generic;
 mod pre_cutover_member_run_without_canonical_last_event_at_still_materializes;
 #[path = "member_execution_trust/result_and_failure_reports_require_their_risk_evidence.rs"]
 mod result_and_failure_reports_require_their_risk_evidence;
-#[path = "member_execution_trust/stale_work_revision_requires_current_supervisor_before_invalidation.rs"]
-mod stale_work_revision_requires_current_supervisor_before_invalidation;
 #[cfg(any())]
 #[path = "member_execution_trust/successor_supervisor_fences_stale_claim_before_any_canonical_side_effect.rs"]
 mod successor_supervisor_fences_stale_claim_before_any_canonical_side_effect;

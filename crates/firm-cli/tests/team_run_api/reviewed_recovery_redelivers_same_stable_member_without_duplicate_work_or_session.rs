@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_session() {
+fn reviewed_recovery_rebinds_same_stable_member_without_premature_delivery_or_duplicate_identity() {
     let home = TempHome::new("team-run-reviewed-stable-id-recovery");
     let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -63,7 +63,7 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
             "--title",
             "Preserve stable recovery provenance",
             "--completion-criteria",
-            "One rebound revision and one fresh delivery",
+            "One rebound revision; delivery waits for an exact AgentSession binding",
             "--event-id",
             "work-event-stable-recovery-create",
             "--idempotency-key",
@@ -204,21 +204,18 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
         original_generation + 1
     );
     let fresh_deliveries = store
-        .legacy_provider_work_dispatches_for_export()
-        .expect("WorkDeliveries")
+        .current_work_deliveries_for_team_run(&run_id)
+        .expect("canonical WorkDeliveries")
         .into_iter()
         .filter(|delivery| {
             delivery.work_id == "work-stable-recovery"
-                && delivery.work_version == rebound_work.version
+                && delivery.work_revision == rebound_work.version
         })
         .collect::<Vec<_>>();
-    assert_eq!(fresh_deliveries.len(), 1);
-    assert_eq!(fresh_deliveries[0].recipient_member_run_id, member_id);
-    assert_eq!(
-        fresh_deliveries[0].status,
-        harness_core::ProviderWorkDispatchStatus::Queued
+    assert!(
+        fresh_deliveries.is_empty(),
+        "recovery may rebind accountable Work, but canonical delivery requires an exact AgentSession and must not be fabricated before provider start"
     );
-    assert!(fresh_deliveries[0].provider_receipt_id.is_none());
 
     let retry_report = recover(true);
     assert_eq!(retry_report["rebound_works"].as_u64(), Some(0));

@@ -133,20 +133,6 @@ pub(super) fn ack_host_attention_value(
     Ok(serde_json::json!({ "attention": final_attention, "idempotent": false }))
 }
 
-/// Explicit successor-Supervisor reconciliation for a stale Work delivery
-/// claim. Like the CLI path, this only requeues a claim from an older
-/// generation and never guesses that a provider accepted the Work.
-pub(crate) fn reconcile_team_work_delivery_value(
-    _store: &HarnessStore,
-    _team_run_id: &str,
-    _body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    Err(CliError::Usage(
-        "RETIRED_WRITE_AUTHORITY: legacy delivery reconciliation is audit-only; canonical WorkDelivery reconciliation requires exact NodeDaemon/session authority"
-            .into(),
-    ))
-}
-
 pub(super) fn create_message_value(
     store: &HarnessStore,
     body: &serde_json::Value,

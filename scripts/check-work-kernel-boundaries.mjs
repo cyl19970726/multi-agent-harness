@@ -199,6 +199,60 @@ for (const path of currentDeliverySurfacePaths) {
     }
   }
 }
+const currentStoreWorkMutationPaths = [
+  "crates/firm-store/src/store_work_application.rs",
+  "crates/firm-store/src/store_work_mutations.rs",
+  "crates/firm-store/src/store_work_state.rs",
+];
+for (const path of currentStoreWorkMutationPaths) {
+  const content = read(path);
+  for (const forbidden of [
+    "initial_work_deliveries_unlocked",
+    "latest_work_deliveries_unlocked",
+    "legacy_provider_work_dispatches_for_export",
+    "ProviderWorkDispatch",
+    "ProviderWorkDispatchStatus",
+    "ProviderWorkDispatchUpdate",
+  ]) {
+    if (content.includes(forbidden)) {
+      failures.push(`${path}: current Work mutation references legacy delivery authority ${forbidden}`);
+    }
+  }
+}
+if (existsSync(resolve(root, "crates/firm-store/src/store_work_delivery.rs"))) {
+  failures.push("crates/firm-store/src/store_work_delivery.rs: retired delivery authority module must be deleted");
+}
+const legacyDeliveryRuntimePaths = trackedAndUntrackedFiles().filter((path) =>
+  existsSync(resolve(root, path)) && (
+    path.startsWith("crates/firm-core/src/")
+    || path.startsWith("crates/firm-store/src/")
+    || path.startsWith("crates/firm-cli/src/")
+    || path.startsWith("apps/agent-dashboard/src/")
+    || path.startsWith("schemas/role-views/")
+  ),
+);
+for (const path of legacyDeliveryRuntimePaths) {
+  const content = read(path);
+  for (const forbidden of [
+    "ProviderWorkDispatch",
+    "legacy_provider_work_dispatches_for_export",
+    "trust_work_deliveries",
+    "create_trust_work_deliveries",
+    "claim_trust_work_delivery",
+    "receive_trust_work_delivery",
+    "retry_trust_work_delivery",
+    "reconcile_trust_work_delivery",
+    "work_delivery_updates.jsonl",
+    "team_run_work_reconcile_delivery",
+  ]) {
+    if (content.includes(forbidden)) {
+      failures.push(`${path}: retired Work delivery runtime surface remains: ${forbidden}`);
+    }
+  }
+  if (/pub struct WorkDelivery\b/.test(content)) {
+    failures.push(`${path}: retired run-addressed WorkDelivery type remains`);
+  }
+}
 for (const required of [
   "pub struct CurrentWorkDeliveryView",
   "pub enum CurrentWorkDeliveryAuthority",

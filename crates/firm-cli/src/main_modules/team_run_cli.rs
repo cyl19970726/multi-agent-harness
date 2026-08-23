@@ -30,7 +30,7 @@ pub(super) fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|board-summary|work|recover|host-inbox|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|answer-message|events|wait|complete|cancel",
+        "team-run create|list|status|board-summary|work|recover|host-inbox|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|add-member|rename-member|close-member|reopen-member|deactivate-member|start|answer-message|events|wait|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -675,24 +675,6 @@ pub(super) fn team_run_command(
                     );
                 }
             }
-        }
-        "ack" => {
-            return Err(CliError::Usage(
-                "RETIRED_WRITE_AUTHORITY: team-run ack cannot authenticate the recipient session; acknowledge canonical MessageDelivery through the target NodeDaemon"
-                    .to_string(),
-            ));
-        }
-        "reconcile-delivery" => {
-            return Err(CliError::Usage(
-                "RETIRED_WRITE_AUTHORITY: team-run reconcile-delivery cannot supply NodeDaemon delivery authority; use canonical target-NodeDaemon reconciliation"
-                    .to_string(),
-            ));
-        }
-        "send" => {
-            return Err(CliError::Usage(
-                "RETIRED_WRITE_AUTHORITY: team-run send cannot select a sender identity; use an authenticated AgentFirm Role Action or source NodeDaemon RuntimeCommand"
-                    .to_string(),
-            ));
         }
         "add-member" => {
             let mut member = parse_team_member_spec(&required(args, "--member")?)?;
