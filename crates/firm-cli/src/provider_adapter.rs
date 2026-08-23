@@ -309,9 +309,7 @@ pub(crate) fn execute_team_control(
     let admission =
         match prepare_team_control_effect(ledger, member, source_record_id, reason, close) {
             Ok(admission) => admission,
-            Err(CliError::Usage(detail))
-                if detail.starts_with("RUNTIME_COMMAND_REPLAY_APPLIED:") =>
-            {
+            Err(CliError::ProviderEffectAccepted(_)) => {
                 return Ok(ProviderControlDispatch::Replayed)
             }
             Err(error) => return Err(error),

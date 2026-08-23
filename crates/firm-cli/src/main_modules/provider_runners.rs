@@ -23,7 +23,7 @@ pub(super) fn run_member_orchestration(
     }
     let hard_anchor = member.clone();
     let mut accepted = member.clone();
-    let mut generation = 0u64;
+    let mut transport_attempt = 0u64;
     loop {
         let mut current = ledger
             .latest_member_run(&member.id)
@@ -111,7 +111,7 @@ pub(super) fn run_member_orchestration(
         // Capacity preflight runs once, before the adapter claims anything.
         // A blocked member returns here, so its Assignment stays `queued` and
         // is still deliverable after the provider recovers.
-        if generation == 0 {
+        if transport_attempt == 0 {
             match provider_capacity_start_gate(ledger, &mut current, &context.cwd) {
                 Ok(Some(outcome)) => return outcome,
                 Ok(None) => {}
@@ -161,7 +161,7 @@ pub(super) fn run_member_orchestration(
             }
         };
         accepted = current.clone();
-        generation += 1;
+        transport_attempt += 1;
         let execution_mode = current
             .provider_profile
             .as_ref()
@@ -171,23 +171,31 @@ pub(super) fn run_member_orchestration(
             execution_mode,
         ) {
             Some(crate::runtime_adapter::SharedTeamRuntimeKind::Kimi) => {
-                run_kimi_member_shared(ledger, objective, &current, &context, generation)
+                run_kimi_member_shared(ledger, objective, &current, &context, transport_attempt)
             }
             Some(crate::runtime_adapter::SharedTeamRuntimeKind::Codex) => {
-                run_codex_member_shared(ledger, objective, &current, &context, generation)
+                run_codex_member_shared(ledger, objective, &current, &context, transport_attempt)
             }
             Some(crate::runtime_adapter::SharedTeamRuntimeKind::Claude) => {
                 run_claude_agent_sdk_team_member_shared(
-                    ledger, objective, &current, &context, generation,
+                    ledger,
+                    objective,
+                    &current,
+                    &context,
+                    transport_attempt,
                 )
             }
             Some(crate::runtime_adapter::SharedTeamRuntimeKind::DeepSeek) => {
                 run_deepseek_harness_team_member_shared(
-                    ledger, objective, &current, &context, generation,
+                    ledger,
+                    objective,
+                    &current,
+                    &context,
+                    transport_attempt,
                 )
             }
             Some(crate::runtime_adapter::SharedTeamRuntimeKind::Pi) => {
-                run_pi_team_member(ledger, objective, &current, &context, generation)
+                run_pi_team_member(ledger, objective, &current, &context, transport_attempt)
             }
             None => Err(CliError::Usage(format!(
                 "team member adapter not implemented for provider {}",
@@ -220,10 +228,14 @@ pub(super) fn run_member_orchestration(
                     ),
                 );
             }
-            (Ok(_), Err(release_error)) => Err(release_error),
-            (Err(provider_error), Err(release_error)) => Err(CliError::Usage(format!(
-                "RUNTIME_COMMAND_RECOVERY_REQUIRED: provider attempt ended with {provider_error}; durable AgentSession release also failed: {release_error}"
+            (Ok(_), Err(release_error)) => Err(CliError::RuntimeRecoveryRequired(format!(
+                "provider attempt returned but durable AgentSession release failed: {release_error}"
             ))),
+            (Err(provider_error), Err(release_error)) => {
+                Err(CliError::RuntimeRecoveryRequired(format!(
+                    "provider attempt ended with {provider_error}; durable AgentSession release also failed: {release_error}"
+                )))
+            }
         };
         match result {
             Ok(outcome) => {
@@ -257,6 +269,18 @@ pub(super) fn run_member_orchestration(
                 return outcome;
             }
             Err(error) => {
+                let durable_process_outcome =
+                    durable_provider_process_outcome(ledger, &current, transport_attempt);
+                // A later uncertain provider effect always dominates the
+                // process command's earlier certainty. Otherwise the durable
+                // process command is the boundary fact: once Open/Resume was
+                // accepted, an ordinary projection error cannot authorize a
+                // fresh transport attempt.
+                let retry_authority = provider_retry_authority_after_failure(
+                    &error,
+                    &durable_process_outcome,
+                    transport_attempt,
+                );
                 let reason = error.to_string();
                 eprintln!("[member-runtime-error] {}: {reason}", current.id);
                 let mut latest = ledger
@@ -289,8 +313,9 @@ pub(super) fn run_member_orchestration(
                 // RuntimeCommand is the recovery inventory; surface that
                 // state once and stop the supervisor instead of creating an
                 // unbounded reconnect loop that could repeat the effect.
-                if reason.contains("RUNTIME_COMMAND_RECOVERY_REQUIRED")
-                    || reason.contains("ambiguous in-flight RuntimeCommand")
+                if let harness_application::ProviderRetryAuthority::RequireReconciliation {
+                    recovery_ref,
+                } = retry_authority
                 {
                     let _ = transition_provider_session_for_member(
                         ledger,
@@ -307,7 +332,7 @@ pub(super) fn run_member_orchestration(
                             "runtime_recovery_required",
                             MemberActionStatus::Failed,
                             "provider effect requires operator reconciliation",
-                            &reason,
+                            &recovery_ref,
                         );
                         let _ = ledger.fold_event(
                             TeamRunEventSourceKind::Member,
@@ -361,8 +386,11 @@ pub(super) fn run_member_orchestration(
                         ),
                     );
                 }
-                journal_member_disconnected(ledger, &latest, generation, &reason);
-                if automatic_provider_transport_retry_exhausted(generation) {
+                journal_member_disconnected(ledger, &latest, transport_attempt, &reason);
+                if matches!(
+                    retry_authority,
+                    harness_application::ProviderRetryAuthority::StopNoRetry
+                ) {
                     let mut exhausted = ledger
                         .latest_member_run(&latest.id)
                         .ok()
@@ -372,10 +400,22 @@ pub(super) fn run_member_orchestration(
                     exhausted.status = MemberRunStatus::Blocked;
                     exhausted.finished_at = None;
                     exhausted.last_event_at = Some(now_string());
-                    let summary = format!(
-                        "PROVIDER_TRANSPORT_RETRY_EXHAUSTED: {} automatic attempts failed; explicit Host reconciliation is required; last error: {reason}",
-                        MAX_AUTOMATIC_PROVIDER_TRANSPORT_ATTEMPTS
-                    );
+                    let summary = if matches!(
+                        durable_process_outcome,
+                        harness_application::ProviderEffectOutcome::Accepted { .. }
+                    ) {
+                        format!(
+                            "PROVIDER_EFFECT_ACCEPTED_NO_REPLAY: the provider process effect was already accepted; explicit Host reconciliation is required; later error: {reason}"
+                        )
+                    } else if matches!(error, CliError::ProviderAdmissionRejected(_)) {
+                        format!(
+                            "PROVIDER_ADMISSION_REJECTED_NO_EFFECT: explicit Host correction or new intent is required; {reason}"
+                        )
+                    } else {
+                        format!(
+                            "PROVIDER_TRANSPORT_RETRY_EXHAUSTED: {transport_attempt} automatic attempts failed; explicit Host reconciliation is required; last error: {reason}"
+                        )
+                    };
                     if ledger.save_member_run(&expected, &exhausted).is_ok() {
                         let _ = ledger.append_action(
                             &exhausted.id,
@@ -569,8 +609,8 @@ pub(super) fn run_codex_member_shared(
                 None,
                 Some(error.to_string()),
             )?;
-            return Err(CliError::Usage(format!(
-                "RUNTIME_COMMAND_RECOVERY_REQUIRED: Codex open/resume could not be verified after spawn: {error}"
+            return Err(CliError::RuntimeRecoveryRequired(format!(
+                "Codex open/resume could not be verified after spawn: {error}"
             )));
         }
     };
@@ -802,8 +842,8 @@ pub(super) fn run_claude_agent_sdk_team_member_shared(
                 None,
                 Some(error.to_string()),
             )?;
-            return Err(CliError::Usage(format!(
-                "RUNTIME_COMMAND_RECOVERY_REQUIRED: Claude open/resume could not be verified after spawn: {error}"
+            return Err(CliError::RuntimeRecoveryRequired(format!(
+                "Claude open/resume could not be verified after spawn: {error}"
             )));
         }
     };
@@ -1051,8 +1091,8 @@ pub(super) fn run_deepseek_harness_team_member_shared(
                 None,
                 Some(error.to_string()),
             )?;
-            return Err(CliError::Usage(format!(
-                "RUNTIME_COMMAND_RECOVERY_REQUIRED: DeepSeek open/resume could not be verified after spawn: {error}"
+            return Err(CliError::RuntimeRecoveryRequired(format!(
+                "DeepSeek open/resume could not be verified after spawn: {error}"
             )));
         }
     };
@@ -1177,9 +1217,7 @@ pub(super) fn run_kimi_member_shared(
             client.provider_version()
         );
         settle_provider_effect(ledger, &process_effect, false, None, Some(detail.clone()))?;
-        return Err(CliError::Usage(format!(
-            "RUNTIME_COMMAND_RECOVERY_REQUIRED: {detail}"
-        )));
+        return Err(CliError::RuntimeRecoveryRequired(detail));
     }
     let effective_model = client.model().map(str::to_string);
     let effective_effort = client.effort().map(str::to_string);
@@ -1187,10 +1225,7 @@ pub(super) fn run_kimi_member_shared(
         .session_id()
         .filter(|session| !session.trim().is_empty())
         .ok_or_else(|| {
-            CliError::Usage(
-                "RUNTIME_COMMAND_RECOVERY_REQUIRED: Kimi ACP handshake omitted session id"
-                    .to_string(),
-            )
+            CliError::RuntimeRecoveryRequired("Kimi ACP handshake omitted session id".to_string())
         })?
         .to_string();
     let mut callback_member = member_row.clone();
@@ -1289,8 +1324,8 @@ pub(super) fn run_kimi_member_shared(
                 None,
                 Some(error.to_string()),
             )?;
-            return Err(CliError::Usage(format!(
-                "RUNTIME_COMMAND_RECOVERY_REQUIRED: Kimi open/resume could not be verified after spawn: {error}"
+            return Err(CliError::RuntimeRecoveryRequired(format!(
+                "Kimi open/resume could not be verified after spawn: {error}"
             )));
         }
     };

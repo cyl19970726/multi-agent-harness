@@ -579,6 +579,7 @@ pub enum TrustErrorCode {
     DeliveryClaimConflict,
     DeliveryReceiptMissing,
     DeliveryRecoveryUncertain,
+    RuntimeEffectUnknown,
     WorkRevisionStale,
     WorkExecutionBindingActive,
     WorkspacePathUnsafe,

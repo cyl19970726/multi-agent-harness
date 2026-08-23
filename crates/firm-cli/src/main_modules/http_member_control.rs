@@ -258,8 +258,8 @@ pub(super) fn close_team_member_value(
                 },
             );
         }
-        return Err(CliError::Usage(
-            "RUNTIME_COMMAND_RECOVERY_REQUIRED: managed AgentSession has no current provider-loop authority; reconcile its RuntimeCommand/session state before Close"
+        return Err(CliError::RuntimeRecoveryRequired(
+            "managed AgentSession has no current provider-loop authority; reconcile its RuntimeCommand/session state before Close"
                 .into(),
         ));
     };

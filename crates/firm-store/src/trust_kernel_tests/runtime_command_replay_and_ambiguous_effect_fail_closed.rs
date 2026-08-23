@@ -82,7 +82,13 @@ fn runtime_command_replay_and_ambiguous_effect_fail_closed() {
     let error = store
         .prepare_runtime_command(&second_context, &second, current_unix_ms(), "t3")
         .expect_err("ambiguous accepted command fences a successor");
-    assert!(error.to_string().contains("reconciliation is required"));
+    assert_eq!(
+        error
+            .trust_error()
+            .expect("ambiguous effect remains a typed TrustError")
+            .code,
+        TrustErrorCode::RuntimeEffectUnknown
+    );
     assert_eq!(store.canonical_operations().unwrap().len(), before);
 
     let settle_context = MutationContext {

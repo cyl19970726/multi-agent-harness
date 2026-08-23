@@ -225,6 +225,22 @@ for (const token of [
   if (!server.includes(token)) failures.push(`missing executable hard-cutover fence: ${token}`);
 }
 const legacyStore = productionRustTree(["crates/firm-store/src"]);
+const retryPolicySources = productionRustTree([
+  "crates/firm-cli/src",
+  "crates/firm-application/src",
+]);
+for (const retiredClassifier of [
+  /\.contains\(\s*"RUNTIME_COMMAND_RECOVERY_REQUIRED"\s*\)/,
+  /\.contains\(\s*"ambiguous in-flight RuntimeCommand"\s*\)/,
+  /\.contains\(\s*"WORK_NOT_READY"\s*\)/,
+  /\.starts_with\(\s*"RUNTIME_COMMAND_REPLAY_APPLIED:/,
+]) {
+  if (retiredClassifier.test(retryPolicySources)) {
+    failures.push(
+      `runtime retry authority still depends on display text: ${retiredClassifier}`,
+    );
+  }
+}
 if (legacyStore.match(/pub fn append_team_message_checked[\s\S]{0,450}RETIRED_RUNTIME_WRITER/g)?.length !== 1) {
   failures.push("retired manual TeamMessage Store seam is not a single fail-closed entry point");
 }

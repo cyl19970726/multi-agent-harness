@@ -265,8 +265,8 @@ pub(super) fn require_latched_close_runtime_postcondition(
     if detached_idle && exact_close_applied {
         return Ok(());
     }
-    Err(CliError::Usage(format!(
-        "RUNTIME_COMMAND_RECOVERY_REQUIRED: pending Close for {} lacks an exact verified provider CloseMember postcondition (native_session_bound={}, residency={:?}, activity={:?}, current_turn={}, close_applied={exact_close_applied})",
+    Err(CliError::RuntimeRecoveryRequired(format!(
+        "pending Close for {} lacks an exact verified provider CloseMember postcondition (native_session_bound={}, residency={:?}, activity={:?}, current_turn={}, close_applied={exact_close_applied})",
         member.id,
         member.native_session.is_some() || session.native_session_ref.is_some(),
         session.control_state.runtime_residency,
@@ -291,8 +291,8 @@ pub(super) fn stop_member_for_latched_close(
     if session.lifecycle == harness_core::agentfirm_api::AgentSessionStatus::Active
         && session.current_turn_id.is_some()
     {
-        return Err(CliError::Usage(format!(
-            "RUNTIME_COMMAND_RECOVERY_REQUIRED: latched Team close {} found an active provider turn without its owning live adapter",
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "latched Team close {} found an active provider turn without its owning live adapter",
             close.id
         )));
     }
@@ -372,15 +372,15 @@ pub(super) fn stop_member_for_latched_close(
                             | MemberRunStatus::Stopped
                     )
                 {
-                    return Err(CliError::Usage(format!(
-                        "RUNTIME_COMMAND_RECOVERY_REQUIRED: member {} authority changed while applying the verified Close receipt",
+                    return Err(CliError::RuntimeRecoveryRequired(format!(
+                        "member {} authority changed while applying the verified Close receipt",
                         member_row.id
                     )));
                 }
                 let pending = pending_member_close(&ledger.store, &member_row.id)?;
                 if pending.as_ref().map(|request| request.id.as_str()) != Some(close.id.as_str()) {
-                    return Err(CliError::Usage(format!(
-                        "RUNTIME_COMMAND_RECOVERY_REQUIRED: member {} Close latch changed while applying its provider receipt",
+                    return Err(CliError::RuntimeRecoveryRequired(format!(
+                        "member {} Close latch changed while applying its provider receipt",
                         member_row.id
                     )));
                 }
@@ -392,8 +392,8 @@ pub(super) fn stop_member_for_latched_close(
     if member_row.status != MemberRunStatus::Stopped
         || member_row.coordination_status != MemberCoordinationStatus::Closed
     {
-        return Err(CliError::Usage(format!(
-            "RUNTIME_COMMAND_RECOVERY_REQUIRED: member {} Close projection exceeded the bounded CAS retry budget",
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "member {} Close projection exceeded the bounded CAS retry budget",
             member_row.id
         )));
     }
@@ -461,20 +461,16 @@ pub(super) fn wait_for_idle_member_wake(
                             close
                         }
                         Some(_) => {
-                            let error = CliError::Usage(
-                                "RUNTIME_COMMAND_RECOVERY_REQUIRED: live close differs from durable close latch"
-                                    .into(),
-                            );
-                            let _ = reply.send(Err(CliError::Usage(error.to_string())));
-                            return Err(error);
+                            let detail = "live close differs from durable close latch";
+                            let _ =
+                                reply.send(Err(CliError::RuntimeRecoveryRequired(detail.into())));
+                            return Err(CliError::RuntimeRecoveryRequired(detail.into()));
                         }
                         None => {
-                            let error = CliError::Usage(
-                                "RUNTIME_COMMAND_RECOVERY_REQUIRED: live close has no durable close latch"
-                                    .into(),
-                            );
-                            let _ = reply.send(Err(CliError::Usage(error.to_string())));
-                            return Err(error);
+                            let detail = "live close has no durable close latch";
+                            let _ =
+                                reply.send(Err(CliError::RuntimeRecoveryRequired(detail.into())));
+                            return Err(CliError::RuntimeRecoveryRequired(detail.into()));
                         }
                     };
                     return Ok(IdleMemberWake::CloseRequested {

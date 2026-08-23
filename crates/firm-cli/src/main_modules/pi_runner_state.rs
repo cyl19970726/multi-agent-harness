@@ -205,8 +205,8 @@ pub(super) fn run_pi_team_member(
                 None,
                 Some(error.to_string()),
             )?;
-            return Err(CliError::Usage(format!(
-                "RUNTIME_COMMAND_RECOVERY_REQUIRED: Pi open/resume could not be verified after spawn: {error}"
+            return Err(CliError::RuntimeRecoveryRequired(format!(
+                "Pi open/resume could not be verified after spawn: {error}"
             )));
         }
     };

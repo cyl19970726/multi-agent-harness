@@ -221,6 +221,18 @@ pub enum StoreError {
     CompanyOsMissingReference(String),
 }
 
+impl StoreError {
+    /// Preserve the typed Trust Kernel decision across the compatibility
+    /// `Conflict(String)` wire boundary. Policy callers must inspect this
+    /// value instead of classifying the display message.
+    pub fn trust_error(&self) -> Option<firm_core::agentfirm_api::TrustError> {
+        match self {
+            Self::Conflict(value) => serde_json::from_str(value).ok(),
+            _ => None,
+        }
+    }
+}
+
 pub type StoreResult<T> = Result<T, StoreError>;
 
 /// Crash-atomic composite row for cross-Team delegation. The target Work
