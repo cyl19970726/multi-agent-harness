@@ -249,6 +249,12 @@ the platform (`cwd` for Codex exec, `--add-dir` / process cwd for Claude).
 The harness now implements MCP server attachment via a neutral contract. Both
 target platforms consume MCP servers uniformly.
 
+For managed Agent Team execution, this neutral provider capability does not
+make Harness coordination an MCP surface. Launch composition removes MCP server
+ids `harness`, `agentfirm`, and `star-harness`; Work, Message, accept, Close,
+and Reopen use the Supervisor-authenticated `firm` CLI. Unrelated reviewed MCP
+servers remain available to the provider.
+
 A neutral `mcp` block on the launch spec, sourced from the provider launch profile:
 
 ```text

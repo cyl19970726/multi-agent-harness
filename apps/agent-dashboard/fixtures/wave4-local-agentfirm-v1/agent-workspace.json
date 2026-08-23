@@ -75,6 +75,18 @@
         "provider_version":null
       }
     ],
+    "current_session":{
+      "agent_session_id":"agent-session-1",
+      "agent_session_generation":1,
+      "lifecycle":"active",
+      "runtime_residency":"attached",
+      "activity":"running",
+      "provider":"codex",
+      "effective_permission_ceiling":"full_access",
+      "workspace_cwd":"/fixture/workspace",
+      "native_session_ref":null,
+      "native_session_open_target":null
+    },
     "session_event_projection":{
       "schema_version":"agentfirm.provider_observation.v1",
       "agent_session_id":null,
@@ -103,6 +115,8 @@
       "model_preference":null,
       "workspace_policy":"isolated_worktree",
       "permission_ceiling":"full_access",
+      "effective_permission_ceiling":"full_access",
+      "resolved_workspace_cwd":"/fixture/workspace",
       "forbidden_actions":[],
       "forbidden_actions_projection":"not_modeled",
       "workspace_binding":null

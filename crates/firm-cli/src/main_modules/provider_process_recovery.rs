@@ -84,6 +84,7 @@ mod tests {
             "runtime_generation": 1,
             "lifecycle": "active",
             "effective_permission_ceiling": "full_access",
+            "workspace_cwd": "/tmp",
             "permission_envelope_ref": "permission:member",
             "native_session_ref": null,
             "current_turn_id": null,

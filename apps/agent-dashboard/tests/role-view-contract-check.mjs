@@ -55,7 +55,8 @@ Object.assign(publicAgentWorkspaceFixture.data.selected_agent,{current_member_ru
 for(const member of publicAgentWorkspaceFixture.data.roster){delete member.runtime_state;member.coordination_status=null;member.capacity="not_projected";}
 delete publicAgentWorkspaceFixture.data.live_provider_activity;
 delete publicAgentWorkspaceFixture.data.session_event_projection;
-Object.assign(publicAgentWorkspaceFixture.data.configuration,{prompt_ref:null,tool_refs:[],provider_profile_ref:null,model_preference:null,workspace_policy:null,permission_ceiling:null,forbidden_actions:[],workspace_binding:null});
+delete publicAgentWorkspaceFixture.data.current_session;
+Object.assign(publicAgentWorkspaceFixture.data.configuration,{prompt_ref:null,tool_refs:[],provider_profile_ref:null,model_preference:null,workspace_policy:null,permission_ceiling:null,effective_permission_ceiling:null,resolved_workspace_cwd:null,forbidden_actions:[],workspace_binding:null});
 assert.equal(agentWorkspaceValidate(publicAgentWorkspaceFixture),true,`public Agent Workspace projection: ${ajv.errorsText(agentWorkspaceValidate.errors)}`);
 for(const [label,mutate] of [
   ["Session list",fixture=>{fixture.data.sessions=[]}],
@@ -67,6 +68,7 @@ for(const [label,mutate] of [
   ["selected runtime generation",fixture=>{fixture.data.selected_agent.runtime_generation=2}],
   ["native activity",fixture=>{fixture.data.session_activity={items:[]}}],
   ["Session event projection",fixture=>{fixture.data.session_event_projection=privateAgentWorkspaceFixture.data.session_event_projection}],
+  ["current AgentSession",fixture=>{fixture.data.current_session=privateAgentWorkspaceFixture.data.current_session}],
   ["live provider activity",fixture=>{fixture.data.live_provider_activity=privateAgentWorkspaceFixture.data.live_provider_activity}],
   ["provider profile",fixture=>{fixture.data.configuration.provider_profile_ref="private-profile"}],
   ["model preference",fixture=>{fixture.data.configuration.model_preference="private-model"}],

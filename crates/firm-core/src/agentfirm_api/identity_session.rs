@@ -297,6 +297,13 @@ pub struct AgentSession {
     pub provider_profile_ref: String,
     pub permission_envelope_ref: String,
     pub effective_permission_ceiling: PermissionCeiling,
+    /// Exact canonical provider cwd frozen when this Session is created.
+    ///
+    /// Legacy/non-writable Sessions may omit it. New trusted-development
+    /// FullAccess Sessions must carry it so the provider starts in the exact
+    /// selected workspace. Multiple Sessions may intentionally share a cwd.
+    #[serde(default)]
+    pub workspace_cwd: Option<String>,
     pub lifecycle: AgentSessionStatus,
     pub runtime_generation: u64,
     /// Orthogonal, bounded control facts. This does not mirror provider-native

@@ -1,14 +1,22 @@
 use super::*;
 
 #[test]
-fn native_session_open_target_rejects_unsupported_or_unsafe_sessions() {
+fn native_session_open_target_supports_codex_and_rejects_unsafe_sessions() {
     let codex = native_session_open_target(&native_open_test_member(
         "codex",
         "codex_app_server",
         "thread-1",
     ))
-    .expect_err("Codex has no registered native UI target");
-    assert!(codex.to_string().contains("supports only Claude Agent SDK"));
+    .expect("Codex app-server native thread has a registered Desktop target");
+    assert_eq!(codex["uri"], "codex://threads/thread-1");
+    assert_eq!(codex["desktop_session_id"], "thread-1");
+
+    let unsupported =
+        native_session_open_target(&native_open_test_member("kimi", "kimi_acp", "session-1"))
+            .expect_err("Kimi has no registered native Desktop target");
+    assert!(unsupported
+        .to_string()
+        .contains("has no reviewed Desktop open target"));
 
     let unsafe_id = native_session_open_target(&native_open_test_member(
         "claude",

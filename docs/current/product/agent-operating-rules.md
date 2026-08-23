@@ -152,10 +152,11 @@ remain internal execution aids.
 
 Work is durable responsibility; a provider-native Goal is only one
 possible continuation mechanism for executing it. Each active MemberRun/native
-session/writable Workspace must have exactly one top-level execution driver:
+session must have exactly one top-level execution driver:
 either Harness starts the next provider cycle (`host_driven`) or an observed
 provider-native continuation loop does (`provider_driven`). Never activate a
 native goal and also issue an ordinary Harness start for the same work. A
+separate Session may share the same cwd; worktree isolation is optional.
 provider-driven member may complete many native cycles without creating a new
 MemberRun, but provider satisfaction never implies Host acceptance. Providers
 without a reviewed native continuation capability remain first-class

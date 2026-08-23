@@ -399,6 +399,13 @@ impl CodexAppServerClient {
     pub fn connect(cwd: &Path, env: &[(String, String)]) -> CliResult<Self> {
         let mut command = Command::new("codex");
         command
+            // Managed Agent Team coordination is CLI-only. The user's Codex
+            // profile may register a `harness` MCP server for interactive
+            // desktop use; disable that inherited server for this owned
+            // app-server process so Work/Message mutations cannot silently
+            // switch authority paths.
+            .arg("-c")
+            .arg("mcp_servers.harness.enabled=false")
             .arg("app-server")
             .arg("--listen")
             .arg("stdio://")

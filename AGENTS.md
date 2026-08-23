@@ -185,13 +185,14 @@ doc carries the contract behind each rule.
    immediately before every drive; uncertain claimed deliveries require
    explicit reconciliation, never blind replay. Replacing a runtime drains or
    interrupts active turns first and never lets two runtime generations drive
-   the same writable Workspace; resume the same native session under a higher
+   the same MemberRun/native session; resume that native session under a higher
    Supervisor generation only when the reviewed contract allows, otherwise
    record the reason and start a new session, retaining the old one as
    history.
-8. **One execution driver.** Each active MemberRun/native session/writable
-   Workspace has exactly one top-level execution driver: `host_driven` or
-   `provider_driven`. Never activate a provider-native goal and also issue an
+8. **One execution driver.** Each active MemberRun/native session has exactly
+   one top-level execution driver: `host_driven` or `provider_driven`.
+   Multiple explicitly bound Sessions may share one cwd; worktrees are optional
+   task isolation. Never activate a provider-native goal and also issue an
    ordinary Harness start for the same work. Provider satisfaction never
    implies Host acceptance
    ([docs/current/architecture/member-continuation-model.md](docs/current/architecture/member-continuation-model.md),

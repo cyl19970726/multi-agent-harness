@@ -56,6 +56,7 @@ consequences, affected modules, and validation path.
 | [0056](0056-correlated-message-and-session-permission-cutover.md) | accepted; implemented | Provider questions are correlated Messages; permission is frozen at AgentSession start; the second interaction object is removed |
 | [0057](0057-host-is-an-agent-member.md) | accepted; implementation tracked by DEV-59 | Managed and external interactive Hosts share AgentMember identity and role authority; managed Hosts use the ordinary Team runtime and exact-session inbox path |
 | [0058](0058-work-dependency-dag-and-kernel-boundary.md) | accepted; DEV-60 cutover | Flat Work dependency DAG, kernel/package boundary, constrained Member proposals, and closed Module scope |
+| [0059](0059-trusted-development-full-access-and-explicit-cwd.md) | accepted; DEV-65 implementation | Managed coding Hosts/Members use frozen FullAccess and exact cwd; shared cwd is allowed, worktrees are optional, and agent coordination is CLI-only |
 
 ## Split Rule
 

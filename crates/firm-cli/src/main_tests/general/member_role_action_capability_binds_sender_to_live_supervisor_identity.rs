@@ -139,6 +139,7 @@ fn member_role_action_capability_binds_sender_to_live_supervisor_identity() {
             expected_version: work.version,
             idempotency_key: "forged-sibling-work-start".into(),
             body: start_body.clone(),
+            confirmed_action: None,
         },
     )
     .expect_err("one member capability cannot select its sibling identity");
@@ -163,6 +164,7 @@ fn member_role_action_capability_binds_sender_to_live_supervisor_identity() {
             expected_version: work.version,
             idempotency_key: "valid-member-work-start".into(),
             body: start_body,
+            confirmed_action: None,
         },
     )
     .expect("exact live capability performs canonical Work Role Action");

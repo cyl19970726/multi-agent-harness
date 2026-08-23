@@ -175,6 +175,7 @@ pub(super) fn build_member_run_for_team(
     project_context: Option<&ProjectContext>,
     team_run_id: &str,
     member: &TeamMemberSpec,
+    execution_root: Option<&str>,
 ) -> CliResult<ProviderRuntimeProjection> {
     let profile =
         team_member_provider_profile_for_mode(&member.provider, member.execution_mode.as_deref());
@@ -226,13 +227,23 @@ pub(super) fn build_member_run_for_team(
         runtime_generation: 1,
         status: MemberRunStatus::Idle,
         native_session,
-        provider_cwd_hint: member
-            .provider_cwd_hint
-            .as_deref()
-            .map(|value| {
-                validate_workspace_override(project_context, value, "member provider_cwd_hint")
-            })
-            .transpose()?,
+        // The compatibility field name remains `provider_cwd_hint`, but new
+        // MemberRuns freeze the exact resolved cwd here. An explicit member
+        // override wins; otherwise the exact TeamRun execution root is used.
+        provider_cwd_hint: Some(validate_workspace_override(
+            project_context,
+            member
+                .provider_cwd_hint
+                .as_deref()
+                .or(execution_root)
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "MEMBER_WORKSPACE_REQUIRED: managed MemberRun requires an exact cwd"
+                            .to_string(),
+                    )
+                })?,
+            "member workspace cwd",
+        )?),
         provider_environment_observation: None,
         owned_paths: member.owned_paths.clone(),
         started_at: now_string(),
@@ -382,9 +393,8 @@ pub(super) fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Val
             "host_member_run_id": host_member_run.map(|member| member.id.as_str()),
             "delivery_guarantee": if managed { "daemon_managed" } else { "pull_only" },
             "runtime_residency": if managed { "managed_member_run" } else { "detached_user_driven" },
-            "workspace_policy": if managed { "provider_read_only_or_distinct_host_workspace" } else { "user_managed" },
-            "workspace_requirement": (managed && host_member_run.is_some_and(|member| member.provider == "kimi"))
-                .then_some("explicit_distinct_provider_cwd_hint"),
+            "workspace_policy": if managed { "trusted_full_access_exact_cwd_shared_allowed" } else { "user_managed" },
+            "workspace_requirement": managed.then_some("exact_canonical_cwd_shared_or_isolated"),
             "warning": (!managed).then_some("External Host must read or wait for inbox updates"),
         },
     })
@@ -479,9 +489,6 @@ pub(super) fn ensure_legacy_unit_test_team_binding(
         .iter()
         .any(|member| member.id == "host")
     {
-        let host_provider = host_spec
-            .map(|member| member.provider.as_str())
-            .unwrap_or("codex");
         store.create_trust_agent_member(
             &harness_core::agentfirm_api::MutationContext {
                 execution_space_id: SPACE_ID.into(),
@@ -499,14 +506,15 @@ pub(super) fn ensure_legacy_unit_test_team_binding(
                 role: "host".into(),
                 capabilities: Vec::new(),
                 skill_refs: Vec::new(),
-                provider_profile_ref: Some(host_provider.into()),
+                provider_profile_ref: Some(
+                    host_spec
+                        .map(|member| member.provider.as_str())
+                        .unwrap_or("codex")
+                        .into(),
+                ),
                 model_preference: None,
                 workspace_policy: "managed-worktree".into(),
-                permission_ceiling: if matches!(host_provider, "kimi" | "pi") {
-                    harness_core::agentfirm_api::PermissionCeiling::FullAccess
-                } else {
-                    harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite
-                },
+                permission_ceiling: harness_core::agentfirm_api::PermissionCeiling::FullAccess,
                 organization_status:
                     harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active,
                 version: 1,
@@ -629,15 +637,7 @@ pub(super) fn ensure_unit_test_canonical_members(
                     provider_profile_ref: Some(member.provider.clone()),
                     model_preference: member.model.clone(),
                     workspace_policy: "managed-worktree".into(),
-                    permission_ceiling: if matches!(member.provider.as_str(), "kimi" | "pi") {
-                        // Pi RPC has no filesystem containment for write/edit.
-                        // Unit-test Team fixtures mirror the explicit trusted
-                        // development policy; Kimi's callback bridge likewise
-                        // admits only an exact full-access ceiling.
-                        harness_core::agentfirm_api::PermissionCeiling::FullAccess
-                    } else {
-                        harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite
-                    },
+                    permission_ceiling: harness_core::agentfirm_api::PermissionCeiling::FullAccess,
                     organization_status:
                         harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active,
                     version: 1,
@@ -939,7 +939,12 @@ pub(super) fn create_team_run(
     let mut member_runs = Vec::new();
     let mut member_run_ids = Vec::new();
     for member in members {
-        let member_run = build_member_run_for_team(Some(project_context), &run_id, member)?;
+        let member_run = build_member_run_for_team(
+            Some(project_context),
+            &run_id,
+            member,
+            Some(&execution_root),
+        )?;
         member_run_ids.push(member_run.id.clone());
         member_runs.push(member_run);
     }
@@ -1130,7 +1135,12 @@ pub(super) fn add_team_run_member(
             member.name
         )));
     }
-    let member_run = build_member_run_for_team(project_context, team_run_id, member)?;
+    let member_run = build_member_run_for_team(
+        project_context,
+        team_run_id,
+        member,
+        current.execution_root.as_deref(),
+    )?;
     let execution_space_id = team_run_execution_space_id(store, &current)?;
     let mut next = current.clone();
     next.member_run_ids.push(member_run.id.clone());

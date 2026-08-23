@@ -1,6 +1,47 @@
 use super::*;
 
 impl HarnessStore {
+    fn validate_full_access_workspace_unlocked(&self, incoming: &AgentSession) -> StoreResult<()> {
+        if incoming.effective_permission_ceiling != PermissionCeiling::FullAccess {
+            return Ok(());
+        }
+        let raw_workspace = incoming.workspace_cwd.as_deref().ok_or_else(|| {
+            trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "FULL_ACCESS_WORKSPACE_REQUIRED: FullAccess AgentSession requires an exact canonical cwd",
+                "agent_session",
+                &incoming.id,
+                None,
+            )
+        })?;
+        let canonical = std::fs::canonicalize(raw_workspace).map_err(|error| {
+            trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                format!(
+                    "FULL_ACCESS_WORKSPACE_NOT_CANONICAL: workspace {} cannot be resolved: {error}",
+                    raw_workspace
+                ),
+                "agent_session",
+                &incoming.id,
+                None,
+            )
+        })?;
+        if canonical.as_path() != Path::new(raw_workspace) {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                format!(
+                    "FULL_ACCESS_WORKSPACE_NOT_CANONICAL: expected exact canonical cwd {}",
+                    canonical.display()
+                ),
+                "agent_session",
+                &incoming.id,
+                None,
+            ));
+        }
+
+        Ok(())
+    }
+
     /// AF-ADR-014 compatibility projection. There is no AgentIdentity writer:
     /// every row is derived from the sole durable AgentMember with the same id.
     pub fn fabric_agent_identities(
@@ -163,6 +204,7 @@ impl HarnessStore {
                 None,
             ));
         }
+        self.validate_full_access_workspace_unlocked(&session)?;
         let current_count = self
             .fabric_agent_sessions(&context.execution_space_id)?
             .into_iter()

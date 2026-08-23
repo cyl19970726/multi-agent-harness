@@ -283,7 +283,7 @@ pub(super) fn print_help() {
   member inbox [--all] [--json]
   member message send|reply|request-decision --body <markdown>
                    [--recipient-agent-id <stable-agent-identity>] [--work-id <id>]
-  member work claim|start|block|resume|release|submit --work-id <id> --expected-version <n>
+  member work create|assign|claim|start|block|resume|release|submit|accept --expected-version <n> ...
   [--project <id|path>] provider admit --provider <name> --execution-mode <mode> --provider-version <version>
                  --adapter-contract-version <version> --evidence <ref>
                  [--policy strict|advisory] [--actor <id>] [--json]

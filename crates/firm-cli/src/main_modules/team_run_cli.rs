@@ -1037,8 +1037,8 @@ pub(super) fn member_run_command(store: &HarnessStore, args: &[String]) -> CliRe
 }
 
 /// Resolve an explicit provider-owned UI target without changing the native
-/// session binding. Claude Desktop imports SDK/CLI sessions through this deep
-/// link and deterministically exposes them as `local_<native-id>`.
+/// session binding. This is an observation/open action only; Harness never
+/// mirrors the provider transcript into its durable coordination store.
 pub(super) fn native_session_open_target(
     member: &ProviderRuntimeProjection,
 ) -> CliResult<serde_json::Value> {
@@ -1048,18 +1048,6 @@ pub(super) fn native_session_open_target(
             member.id
         ))
     })?;
-    if member.provider != "claude" || session.provider != "claude" {
-        return Err(CliError::Usage(format!(
-            "member run {} uses provider {}; open-native currently supports only Claude Agent SDK sessions",
-            member.id, member.provider
-        )));
-    }
-    if session.execution_mode != "claude_agent_sdk" {
-        return Err(CliError::Usage(format!(
-            "member run {} uses Claude mode {}; Desktop import is verified only for claude_agent_sdk",
-            member.id, session.execution_mode
-        )));
-    }
     let native_id = session.native_session_id.trim();
     if native_id.is_empty()
         || !native_id
@@ -1071,15 +1059,37 @@ pub(super) fn native_session_open_target(
             member.id
         )));
     }
+    let (uri, desktop_session_id, concurrency_warning) = match (
+        member.provider.as_str(),
+        session.provider.as_str(),
+        session.execution_mode.as_str(),
+    ) {
+        ("codex", "codex", "codex_app_server") => (
+            format!("codex://threads/{native_id}"),
+            native_id.to_string(),
+            "Codex Desktop opens the same provider-native thread for observation/chat; Harness remains the only runtime driver for Work delivery.",
+        ),
+        ("claude", "claude", "claude_agent_sdk") => (
+            format!("claude://resume?session={native_id}"),
+            format!("local_{native_id}"),
+            "Use Claude Desktop for observation while Harness drives this Member; simultaneous SDK and Desktop generation is not verified.",
+        ),
+        _ => {
+            return Err(CliError::Usage(format!(
+                "member run {} provider/mode {}/{} has no reviewed Desktop open target",
+                member.id, member.provider, session.execution_mode
+            )))
+        }
+    };
     Ok(serde_json::json!({
         "member_run_id": member.id,
-        "provider": "claude",
+        "provider": member.provider,
         "execution_mode": session.execution_mode,
         "native_session_id": native_id,
-        "uri": format!("claude://resume?session={native_id}"),
-        "desktop_session_id": format!("local_{native_id}"),
+        "uri": uri,
+        "desktop_session_id": desktop_session_id,
         "ownership": "provider_native",
-        "concurrency_warning": "Use Claude Desktop for observation while Harness drives this Member; simultaneous SDK and Desktop generation is not verified.",
+        "concurrency_warning": concurrency_warning,
     }))
 }
 

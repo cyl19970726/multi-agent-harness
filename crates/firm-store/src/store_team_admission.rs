@@ -1,124 +1,6 @@
 use super::*;
 
-fn canonical_member_workspace(
-    member: &ProviderRuntimeProjection,
-) -> StoreResult<Option<std::path::PathBuf>> {
-    let Some(root) = member
-        .provider_cwd_hint
-        .as_deref()
-        .filter(|root| !root.trim().is_empty())
-    else {
-        return Ok(None);
-    };
-    std::fs::canonicalize(root).map(Some).map_err(|error| {
-        StoreError::Conflict(format!(
-            "MANAGED_HOST_WORKSPACE_NOT_CANONICAL: MemberRun {} workspace {} cannot be canonicalized: {}",
-            member.id, root, error
-        ))
-    })
-}
-
 impl HarnessStore {
-    fn validate_unique_managed_host_workspaces_unlocked(
-        &self,
-        team_run: &AgentTeamRun,
-        incoming: &[ProviderRuntimeProjection],
-    ) -> StoreResult<()> {
-        let current_members = latest_by_id(
-            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
-            |member| member.id.clone(),
-        );
-        let current_runs =
-            latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
-                run.id.clone()
-            });
-        let is_managed_host = |run: &AgentTeamRun, member: &ProviderRuntimeProjection| {
-            run.host_control_mode == firm_core::HostControlMode::Managed
-                && run.host_actor.as_ref().is_some_and(|host| {
-                    host.kind == TeamActorKind::Host && host.id == member.agent_member_id
-                })
-        };
-        let active_with_root = |member: &&ProviderRuntimeProjection| {
-            member.coordination_is_active()
-                && member.finished_at.is_none()
-                && member
-                    .provider_cwd_hint
-                    .as_deref()
-                    .is_some_and(|root| !root.trim().is_empty())
-        };
-        let existing = current_members
-            .values()
-            .filter(active_with_root)
-            .collect::<Vec<_>>();
-
-        for host in incoming
-            .iter()
-            .filter(|member| is_managed_host(team_run, member))
-        {
-            let Some(root) = canonical_member_workspace(host)? else {
-                continue;
-            };
-            for member in existing.iter().copied().chain(incoming.iter()) {
-                if member.id != host.id
-                    && member.coordination_is_active()
-                    && member.finished_at.is_none()
-                    && canonical_member_workspace(member)?.as_ref() == Some(&root)
-                {
-                    return Err(StoreError::Conflict(format!(
-                        "MANAGED_HOST_WORKSPACE_ALREADY_CLAIMED: managed Host MemberRun {} requires unique reserved workspace {}",
-                        host.id,
-                        root.display()
-                    )));
-                }
-            }
-        }
-
-        let existing_managed_hosts = existing
-            .iter()
-            .copied()
-            .filter(|host| {
-                current_runs
-                    .get(&host.team_run_id)
-                    .is_some_and(|run| is_managed_host(run, host))
-            })
-            .collect::<Vec<_>>();
-        for member in incoming.iter().filter(active_with_root) {
-            if existing_managed_hosts.is_empty() {
-                continue;
-            }
-            let root = canonical_member_workspace(member)?
-                .expect("active_with_root proved a canonical workspace");
-            for host in &existing_managed_hosts {
-                if host.id != member.id && canonical_member_workspace(host)?.as_ref() == Some(&root)
-                {
-                    return Err(StoreError::Conflict(format!(
-                        "MANAGED_HOST_WORKSPACE_ALREADY_CLAIMED: workspace {} is reserved by an active managed Host",
-                        root.display()
-                    )));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Revalidate legacy/pre-upgrade rows immediately before a managed Host
-    /// with an explicit isolated workspace can materialize an AgentSession.
-    /// New admissions reserve the same canonical cwd under the Store write
-    /// lock, so this check plus admission serialization proves one active
-    /// writer for the workspace.
-    pub fn require_unique_managed_host_workspace(
-        &self,
-        team_run: &AgentTeamRun,
-        member: &ProviderRuntimeProjection,
-    ) -> StoreResult<()> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        self.validate_unique_managed_host_workspaces_unlocked(
-            team_run,
-            std::slice::from_ref(member),
-        )
-    }
-
     pub(super) fn validate_new_team_run_from_agent_team_unlocked(
         &self,
         value: &AgentTeamRun,
@@ -279,10 +161,6 @@ impl HarnessStore {
             }
             let latest_run = self.require_team_run_unlocked(&value.team_run_id)?;
             self.ensure_unique_member_identity_unlocked(&latest_run, value)?;
-            self.validate_unique_managed_host_workspaces_unlocked(
-                &latest_run,
-                std::slice::from_ref(value),
-            )?;
         }
         self.append_jsonl_unlocked("member_runs.jsonl", value)
     }
@@ -877,7 +755,6 @@ impl HarnessStore {
             }
             _ => {}
         }
-        self.validate_unique_managed_host_workspaces_unlocked(value, runtimes)?;
         self.validate_new_trust_member_runs_unlocked(execution_space_id, value, canonical)?;
         self.append_jsonl_unlocked("team_runs.jsonl", value)?;
         for runtime in runtimes {
@@ -952,7 +829,6 @@ impl HarnessStore {
                 canonical.run.id
             )));
         }
-        self.validate_unique_managed_host_workspaces_unlocked(next, std::slice::from_ref(member))?;
         self.validate_new_trust_member_runs_unlocked(
             execution_space_id,
             next,

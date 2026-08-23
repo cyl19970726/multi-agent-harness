@@ -141,7 +141,7 @@ Provider
 | Codex message delivery | [codex-message-delivery.md](codex-message-delivery.md) | implemented | Identity-first Message, subscription expansion, per-recipient CanonicalMessageDelivery, NodeDaemon/AgentSession fencing, queue policy and delivery proof. |
 | Claude Code | [claude.md](claude.md) | adapter implemented; locked SDK 0.3.220 reports Claude Code 2.1.220 current | `claude_agent_sdk` is the managed Team mode for Host and Members; `claude_cli` remains historical Team metadata and an explicitly external compatibility transport only. |
 | Kimi (Moonshot) | [kimi.md](kimi.md) · [ACP Team runtime](kimi-agent-team.md) | adapter implemented; installed 0.36.1 current for reviewed slices | `kimi_acp` is the Team mode. Prompt delivery, K3/max controls, generation-crossing same-session resume with attach replay drained, bounded full-access receipts, next-round batched mail, and the ACP `session/cancel` notification are reviewed. |
-| Pi | [pi.md](pi.md) | adapter implemented; 0.84.2 reviewed | `pi_rpc` is the persistent Team mode. Work and ordinary mail use distinct next-round receipts; persistent sessions force thinking off, `read_only` maps to Pi's read-only `--tools`, `workspace_write` fails closed because `--tools` is not a workspace sandbox, and `full_access` records no verified adapter boundary. |
+| Pi | [pi.md](pi.md) | adapter implemented; 0.84.2 reviewed | `pi_rpc` is the persistent Team mode. Work and ordinary mail use distinct next-round receipts; trusted-development managed Sessions use the reviewed unrestricted FullAccess mapping. Pi still cannot prove complete writable-child drain, so strict quiesce honestly remains unavailable. |
 | DeepSeek Harness | [deepseek-harness.md](deepseek-harness.md) | native adapter implemented; exact 0.1.1-rc.2 / b150a551 reviewed | `deepseek_sdk` composes upstream DSH plugins and binds the native AgentHandle/Session directly. Create/resume, inbox-splice receipt, host-driven turns, cancel and Close are live-proven; Goal plugins are absent and strong quiesce/release remain degraded. |
 | Provider live acceptance | [live-agent-team-acceptance-2026-07-21.md](live-agent-team-acceptance-2026-07-21.md) | accepted + blocked live evidence | Historical acceptance plus the 2026-07-30 two-pass Codex/Claude/Kimi persistent-Team matrix: Host/Peer mail, real Codex Steer/Interrupt, Kimi next-round receipts, Supervisor restart on the same native sessions, Organization projection, and explicit Close. |
 | OpenClaw / cloud agent | not yet created | idea | Future remote or cloud-hosted provider implementation. |
@@ -177,8 +177,8 @@ README until they need their own file.
 10. A provider adapter must document native-store discovery, availability,
     privacy/retention, resume, missing-session behavior, and version drift in
     addition to its tool list and reverse-RPC methods.
-11. One MemberRun/native session/writable Workspace has one top-level execution
-    driver. An adapter must never start a Harness cycle while a provider-native
+11. One MemberRun/native session has one top-level execution driver. An adapter
+    must never start a Harness cycle while a provider-native
     continuation loop owns that same work.
 12. Provider-native continuation is optional. Absence of Goal mode degrades to
     `host_driven`; it does not make the provider an invalid Agent Team member.

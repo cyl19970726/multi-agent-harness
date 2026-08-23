@@ -202,7 +202,7 @@ starts:
    generation when compatible, otherwise record the reason and start a new
    native session, retaining the old one as history;
 6. reconcile queued/claimed mail, permissions, model controls, cwd/Skill
-   roots, and the single writable-Workspace driver; and
+   roots, and each Session's single execution driver; and
 7. probe lane by lane: fresh correlated delivery, same-session answer, and
    exact-recipient acknowledgement where the consumer exposes it.
 
@@ -383,3 +383,13 @@ GitHub release
 - Examples referenced in docs must be checked by CI.
 - Any doc above roughly 500 lines should produce a warning and include a reason
   if it stays unsplit.
+Managed coding Agent Teams use the CLI-only collaboration surface. Inside an
+exact Host or Member Session, use `firm member message send`, `firm member work
+start|submit|accept`, and the Host-authorized `firm team-run close-member` /
+`reopen-member` controls. These commands submit the exact Supervisor-issued
+capability; they do not write the Store directly. Managed provider launch
+profiles remove Harness mutation MCP servers.
+
+Trusted-development Sessions must be newly created with FullAccess and a
+canonical cwd. The cwd may be shared by Host and Members; choose a separate
+worktree only when the task needs filesystem or Git-history isolation.

@@ -491,6 +491,11 @@ impl HttpExchange<'_> {
                             )
                         })?;
                     let provider_profile = team_member_provider_profile(provider_kind);
+                    let workspace_cwd = projects
+                        .exact_project_context_for(project_param.as_deref(), project_id)?
+                        .project_root
+                        .display()
+                        .to_string();
                     let availability =
                         crate::provider_adapter::provider_availability(provider_kind)
                             .map_err(CliError::Usage)?;
@@ -528,6 +533,9 @@ impl HttpExchange<'_> {
                             identity.id, identity.version
                         ),
                         effective_permission_ceiling: identity.permission_ceiling,
+                        workspace_cwd: (identity.permission_ceiling
+                            == harness_core::agentfirm_api::PermissionCeiling::FullAccess)
+                            .then_some(workspace_cwd),
                         lifecycle: AgentSessionStatus::Cold,
                         runtime_generation: 1,
                         control_state: agent_session_control_state_for_profile(

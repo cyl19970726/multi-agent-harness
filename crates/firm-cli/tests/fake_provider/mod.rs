@@ -406,6 +406,13 @@ if [ "$1" = "--version" ]; then
   printf '%s\n' 'codex-cli 0.148.0-alpha.9'
   exit 0
 fi
+# Codex accepts global `-c key=value` overrides before its subcommand. Managed
+# Team runtimes use one to disable inherited Harness mutation MCP servers, so
+# the fake app-server must parse the same command-line shape.
+while [ "$1" = "-c" ]; do
+  shift
+  [ "$#" -gt 0 ] && shift
+done
 if [ "$1" = "app-server" ]; then
   thread_id="thread_fake_codex_app_server"
   turn_id="turn_fake_codex_app_server"

@@ -748,7 +748,7 @@ fn pi_prompt_receipt_survives_disconnect_without_redelivery() {
 }
 
 #[test]
-fn pi_workspace_write_without_containment_fails_before_spawn() {
+fn pi_workspace_write_managed_member_is_rejected_before_spawn() {
     let home = TempHome::new("pi-workspace-write-admission");
     let project_id = init_pi_project(&home, "pi-workspace-write-admission");
     create_pi_identity_with_ceiling(
@@ -771,7 +771,7 @@ fn pi_workspace_write_without_containment_fails_before_spawn() {
         &[],
         &[("PI_BIN", fake_pi.as_str()), ("FAKE_PI_RESULT", "DONE")],
     );
-    let (_, created) = serve.post_json(
+    let (status, created) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
             "objective": "Pi workspace_write fail-closed admission",
@@ -784,18 +784,15 @@ fn pi_workspace_write_without_containment_fails_before_spawn() {
             }]
         }),
     );
-    let run_id = created["result"]["team_run"]["id"]
-        .as_str()
-        .expect("run id")
-        .to_string();
-    let (status, body) = serve.post_json(
-        &format!("/v1/team-runs/{run_id}/start"),
-        &serde_json::json!({}),
+    assert_eq!(
+        status, 400,
+        "workspace_write must fail admission: {created}"
     );
-    assert_eq!(status, 400, "workspace_write must fail admission: {body}");
     assert!(
-        body.to_string().contains("PI_PERMISSION_ADMISSION_FAILED"),
-        "admission failure must identify the uncontained Pi ceiling: {body}"
+        created
+            .to_string()
+            .contains("TRUSTED_DEVELOPMENT_FULL_ACCESS_REQUIRED"),
+        "admission failure must identify the frozen lower ceiling: {created}"
     );
     assert!(
         !cwd_marker.exists(),
@@ -816,10 +813,10 @@ fn pi_workspace_write_without_containment_fails_before_spawn() {
 }
 
 #[test]
-fn pi_read_only_busy_close_releases_runtime_without_overclaiming_quiesce() {
+fn pi_full_access_busy_close_fails_closed_without_overclaiming_quiesce() {
     let home = TempHome::new("pi-busy-close");
     let project_id = init_pi_project(&home, "pi-busy-close");
-    create_pi_identity_with_ceiling(&home, &project_id, "agent-pi-close-read", "read_only");
+    create_pi_identity_with_ceiling(&home, &project_id, "agent-pi-close-full", "full_access");
     let session_file = home.base().join("pi-sessions/close-session.jsonl");
     let prompt_marker = home.base().join("pi-close-prompt.txt");
     let fake_bin = fake_provider::install_pi_rpc_shim(
@@ -845,7 +842,7 @@ fn pi_read_only_busy_close_releases_runtime_without_overclaiming_quiesce() {
         &serde_json::json!({
             "objective": "Pi busy close conformance",
             "members": [{
-                "agent_member_id": "agent-pi-close-read",
+                "agent_member_id": "agent-pi-close-full",
                 "name": "pi-worker",
                 "role": "reviewer",
                 "provider": "pi",
@@ -879,45 +876,30 @@ fn pi_read_only_busy_close_releases_runtime_without_overclaiming_quiesce() {
             "requested_by": "host"
         }),
     );
-    assert_eq!(status, 200, "busy close failed: {closed}");
-    assert_eq!(closed["result"]["status"], "closed");
-    let evidence = &closed["result"]["provider_terminal_evidence"];
-    assert_eq!(evidence["provider_terminal_event"], "agent_settled");
-    assert_eq!(evidence["post_abort_observation"]["is_streaming"], false);
-    assert_eq!(
-        evidence["post_abort_observation"]["pending_message_count"],
-        0
-    );
-    assert_eq!(
-        evidence["member_runtime_close"]["managed_runtime_released"],
-        "satisfied"
-    );
-    assert_eq!(
-        evidence["member_runtime_close"]["native_session_retained"],
-        "satisfied"
+    assert_eq!(status, 400, "unsafe FullAccess close must fail: {closed}");
+    assert!(
+        closed.to_string().contains("PendingDependency")
+            && closed
+                .to_string()
+                .contains("writable-child drain is unprovable"),
+        "refusal must name the exact unproven FullAccess boundary: {closed}"
     );
     assert!(
         session_file.is_file(),
-        "Close must preserve the provider-native JSONL session"
+        "native Session truth must remain readable after refusal"
     );
-    poll_snapshot(&serve, "Pi member stopped after close", |snapshot| {
-        member_snapshot(snapshot, &member_id)
-            .is_some_and(|member| member["status"].as_str() == Some("stopped"))
-    });
 
     let store = harness_store::HarnessStore::new(home.spaces_dir().join(&project_id));
     let space_id = firm_env::current_space_id(&home);
     let commands = store
         .runtime_commands(&space_id)
-        .expect("Pi Close runtime command evidence");
+        .expect("Pi refused Close runtime command evidence");
     assert!(
-        commands.iter().any(|command| {
-            command.command == harness_core::agentfirm_api::RuntimeCommandKind::CloseMember
-                && command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
-                && command.postcondition_status
-                    == harness_core::agentfirm_api::RuntimePostconditionStatus::Satisfied
+        commands.iter().all(|command| {
+            command.command != harness_core::agentfirm_api::RuntimeCommandKind::CloseMember
+                || command.status != harness_core::agentfirm_api::RuntimeCommandStatus::Applied
         }),
-        "Close must durably settle the narrow CloseMember effect: {commands:?}"
+        "unproven Close must never settle Applied: {commands:?}"
     );
     assert!(
         commands.iter().all(|command| {

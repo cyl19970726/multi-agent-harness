@@ -84,6 +84,7 @@ fn session(id: &str, identity_id: &str) -> AgentSession {
         provider_profile_ref: "codex-default".into(),
         permission_envelope_ref: "permission-default".into(),
         effective_permission_ceiling: PermissionCeiling::WorkspaceWrite,
+        workspace_cwd: None,
         lifecycle: AgentSessionStatus::Idle,
         runtime_generation: 1,
         control_state: firm_core::agentfirm_api::AgentSessionControlState {

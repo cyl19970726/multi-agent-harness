@@ -17,6 +17,7 @@
     "provider_profile_ref": {"type": "string", "minLength": 1},
     "permission_envelope_ref": {"type": "string", "minLength": 1},
     "effective_permission_ceiling": {"enum": ["read_only", "workspace_write", "full_access"]},
+    "workspace_cwd": {"type": ["string", "null"], "minLength": 1},
     "lifecycle": {"enum": ["cold", "idle", "active", "waiting", "interrupted", "recovery_required", "closed"]},
     "runtime_generation": {"type": "integer", "minimum": 1},
     "control_state": {"$ref": "#/$defs/control_state"},
@@ -28,6 +29,12 @@
     "last_active_at": {"type": "string", "minLength": 1},
     "closed_at": {"type": ["string", "null"]}
   },
+  "allOf": [
+    {
+      "if": {"properties": {"effective_permission_ceiling": {"const": "full_access"}}, "required": ["effective_permission_ceiling"]},
+      "then": {"required": ["workspace_cwd"], "properties": {"workspace_cwd": {"type": "string", "minLength": 1}}}
+    }
+  ],
   "$defs": {
     "control_state": {
       "type": "object",

@@ -78,16 +78,13 @@ In the default `managed` mode, that MemberRun uses the same AgentSession,
 NodeDaemon, RuntimeCommand, provider admission, TeamRuntimeAdapter, Message
 claim/receipt/ACK, and Close/Reopen lifecycle as every other managed
 participant. Host authority is role policy, not a provider feature and not a
-second runtime species. Its coordination AgentSession is `ReadOnly` whenever
-the provider can prove that ceiling. Kimi ACP cannot, so a managed Kimi Host
-retains an honestly declared `FullAccess` ceiling only when
-`provider_cwd_hint` selects an explicit workspace distinct from the Team
-execution root. The active Host MemberRun is the Store-owned reservation for
-that canonical cwd. The Store canonicalizes roots, freezes
-`provider_cwd_hint` as immutable MemberRun provenance, rejects conflicting
-initial/raw/dynamic admission under the same lock, and revalidates the
-reservation before AgentSession creation. A Host that owns coding Work always
-needs a separately reserved workspace.
+second runtime species. In trusted development, every managed coding Host and
+Member starts with an honestly declared `FullAccess` ceiling. The exact
+canonical cwd is resolved and frozen on the MemberRun/AgentSession before the
+provider starts. A Host and multiple Members may share that cwd, including
+concurrently; worktrees are optional task-level isolation, not a runtime
+identity or lease authority. Existing lower-permission Sessions are never
+widened in place.
 Managed Host status delivery additionally carries the
 exact recipient MemberRun, AgentSession/runtime generation, and NodeDaemon
 generation fence before a provider receipt can settle it.

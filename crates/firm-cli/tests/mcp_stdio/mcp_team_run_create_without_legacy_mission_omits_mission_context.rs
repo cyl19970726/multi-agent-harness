@@ -54,7 +54,11 @@ fn mcp_team_run_create_without_legacy_mission_omits_mission_context() {
     );
     assert_eq!(
         payload["host_runtime"]["workspace_policy"],
-        "provider_read_only_or_distinct_host_workspace"
+        "trusted_full_access_exact_cwd_shared_allowed"
+    );
+    assert_eq!(
+        payload["host_runtime"]["workspace_requirement"],
+        "exact_canonical_cwd_shared_or_isolated"
     );
     assert!(payload["host_runtime"]["warning"].is_null());
     assert!(

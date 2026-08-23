@@ -291,6 +291,34 @@ fn build_launch_spec_carries_mcp_from_provider_config() {
 }
 
 #[test]
+fn build_launch_spec_removes_harness_mutation_mcp_but_keeps_unrelated_servers() {
+    let mut member = sample_member();
+    member.provider_config.mcp = Some(LaunchMcp {
+        servers: vec![
+            LaunchMcpServer {
+                id: "harness".to_string(),
+                transport: Some("stdio".to_string()),
+                command: vec!["firm".to_string(), "mcp".to_string()],
+                url: None,
+                allowed_tools: Vec::new(),
+            },
+            LaunchMcpServer {
+                id: "fs".to_string(),
+                transport: Some("stdio".to_string()),
+                command: vec!["mcp-fs".to_string()],
+                url: None,
+                allowed_tools: vec!["read".to_string()],
+            },
+        ],
+    });
+
+    let spec = build_launch_spec(&member, &sample_message());
+    let mcp = spec.mcp.expect("unrelated MCP server remains available");
+    assert_eq!(mcp.servers.len(), 1);
+    assert_eq!(mcp.servers[0].id, "fs");
+}
+
+#[test]
 fn build_launch_spec_mcp_none_when_absent() {
     let member = sample_member();
     assert!(member.provider_config.mcp.is_none());

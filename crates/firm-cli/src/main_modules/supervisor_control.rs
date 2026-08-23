@@ -620,6 +620,7 @@ where
         expected_version,
         idempotency_key,
         body,
+        confirmed_action,
         ..
     } = &request
     {
@@ -643,11 +644,17 @@ where
             expected_version: *expected_version,
             request_fingerprint: None,
         };
-        let result = role_actions_api::execute(store, auth, path, &serde_json::to_vec(body)?, None)
-            .map_err(|error| match error {
-                StoreError::Conflict(encoded) => CliError::Usage(encoded),
-                other => CliError::Store(other),
-            })?;
+        let result = role_actions_api::execute(
+            store,
+            auth,
+            path,
+            &serde_json::to_vec(body)?,
+            confirmed_action.as_deref(),
+        )
+        .map_err(|error| match error {
+            StoreError::Conflict(encoded) => CliError::Usage(encoded),
+            other => CliError::Store(other),
+        })?;
         return serde_json::to_value(result).map_err(CliError::Json);
     }
     match request.requirement() {

@@ -378,8 +378,23 @@ pub fn build_launch_spec(member: &ProviderLaunchProfile, message: &RegistryMessa
         // apply their own default meanwhile.
         tools: Vec::new(),
         workspace: member.provider_cwd_hint.clone(),
-        // MCP from provider_config (Pillar 2); now available.
-        mcp: member.provider_config.mcp.clone(),
+        // Managed collaboration mutations are CLI-only. Preserve unrelated
+        // provider MCP servers, but never attach the Harness/AgentFirm server
+        // to an agent launch spec.
+        mcp: member.provider_config.mcp.as_ref().and_then(|mcp| {
+            let servers = mcp
+                .servers
+                .iter()
+                .filter(|server| {
+                    !matches!(
+                        server.id.trim().to_ascii_lowercase().as_str(),
+                        "harness" | "agentfirm" | "star-harness"
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            (!servers.is_empty()).then_some(LaunchMcp { servers })
+        }),
         skill_refs: member.skill_refs.clone(),
         // Resume an existing provider session when the member already carries a
         // provider thread/session id from a prior delivery. This is what lets

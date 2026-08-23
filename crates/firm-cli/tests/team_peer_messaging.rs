@@ -68,6 +68,7 @@ fn seed_sender_session(home: &TempHome, project_id: &str, node_id: &str) {
                 permission_envelope_ref: "permission-default".into(),
                 effective_permission_ceiling:
                     harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite,
+                workspace_cwd: None,
                 lifecycle: harness_core::agentfirm_api::AgentSessionStatus::Idle,
                 runtime_generation: 1,
                 control_state: harness_core::agentfirm_api::AgentSessionControlState {
