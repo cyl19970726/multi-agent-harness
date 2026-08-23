@@ -832,41 +832,9 @@ pub struct WorkEvent {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderWorkDispatchStatus {
-    Queued,
-    Claimed,
-    ProviderReceived,
-    Failed,
-    Invalidated,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProviderWorkDispatch {
-    pub id: String,
-    pub work_event_id: String,
-    pub team_run_id: String,
-    pub work_id: String,
-    pub work_version: u64,
-    pub recipient_member_run_id: String,
-    pub status: ProviderWorkDispatchStatus,
-    pub attempt: u32,
-    #[serde(default)]
-    pub claim_id: Option<String>,
-    #[serde(default)]
-    pub claimed_by_supervisor_id: Option<String>,
-    #[serde(default)]
-    pub claimed_generation: Option<u64>,
-    #[serde(default)]
-    pub provider_receipt_id: Option<String>,
-    #[serde(default)]
-    pub failure_reason: Option<String>,
-    pub updated_at: String,
-}
-
-/// One crash-atomic store row: event, resulting projection, and initial outbox
-/// deliveries are serialized as one JSONL record.
+/// One crash-atomic store row: event, resulting projection, and immutable
+/// Work-owned side records are serialized as one JSONL record. Provider
+/// delivery belongs exclusively to the canonical trust fabric.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkOperation {
     pub event: WorkEvent,
@@ -881,10 +849,6 @@ pub struct WorkOperation {
     pub evidence_records: Vec<WorkEvidence>,
     #[serde(default)]
     pub decisions: Vec<WorkOperationalDecision>,
-    #[serde(default)]
-    pub deliveries: Vec<ProviderWorkDispatch>,
-    #[serde(default)]
-    pub delivery_updates: Vec<ProviderWorkDispatchUpdate>,
     /// Delegation projection transitions caused by this exact Work mutation.
     /// Keeping them in the same row closes the crash gap between target Work
     /// state and its cross-Team responsibility projection.
@@ -931,28 +895,6 @@ pub struct WorkResponsibilityMigrationReport {
     pub migrated_work_ids: Vec<String>,
     pub entries: Vec<WorkResponsibilityMigrationEntry>,
     pub created_at: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProviderWorkDispatchUpdate {
-    pub delivery_id: String,
-    /// Store-global ordering for delivery projection updates. Legacy rows
-    /// deserialize as zero and are folded before sequenced writes.
-    #[serde(default)]
-    pub update_sequence: u64,
-    pub status: ProviderWorkDispatchStatus,
-    pub attempt: u32,
-    #[serde(default)]
-    pub claim_id: Option<String>,
-    #[serde(default)]
-    pub claimed_by_supervisor_id: Option<String>,
-    #[serde(default)]
-    pub claimed_generation: Option<u64>,
-    #[serde(default)]
-    pub provider_receipt_id: Option<String>,
-    #[serde(default)]
-    pub failure_reason: Option<String>,
-    pub updated_at: String,
 }
 
 /// Why the exact bound Host must inspect durable Agent Team state.

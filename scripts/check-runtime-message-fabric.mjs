@@ -276,15 +276,10 @@ for (const functionName of retiredWave4AMessageTokens.slice(0, 2).concat(retired
   if (!pattern.test(store)) failures.push(`retired Store seam ${functionName} is not explicitly quarantined`);
 }
 
-if (!server.includes('"send" => {\n            return Err(CliError::Usage(\n                "RETIRED_WRITE_AUTHORITY: team-run send')) {
-  failures.push("team-run send CLI is not a hard-retired writer");
-}
-for (const [command, marker] of [
-  ["ack", "team-run ack cannot authenticate the recipient session"],
-  ["reconcile-delivery", "team-run reconcile-delivery cannot supply NodeDaemon delivery authority"],
-]) {
-  if (!server.includes(`"${command}" => {`) || !server.includes(marker)) {
-    failures.push(`team-run ${command} CLI is not a hard-retired writer`);
+const teamRunCli = productionRust("crates/firm-cli/src/main_modules/team_run_cli.rs");
+for (const command of ["send", "ack", "reconcile-delivery"]) {
+  if (teamRunCli.includes(`"${command}" => {`)) {
+    failures.push(`retired team-run ${command} CLI remains dispatchable instead of being absent`);
   }
 }
 const mcp = rustTree([

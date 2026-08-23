@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn rebind_redelivers_same_member_run_id_at_a_higher_runtime_generation() {
+fn rebind_advances_same_member_run_to_a_higher_runtime_generation() {
     let (root, store, run, member, _) = work_test_fixture("same-id-generation-rebind");
     let mut assigned = unassigned_test_work(&run.id, "work-same-id-rebind");
     assigned.claim_mode = WorkClaimMode::HostAssign;
@@ -57,16 +57,6 @@ fn rebind_redelivers_same_member_run_id_at_a_higher_runtime_generation() {
         .expect("Rebound operation");
     assert_eq!(operation.event.payload["previous_runtime_generation"], 1);
     assert_eq!(operation.event.payload["replacement_runtime_generation"], 2);
-    assert!(store
-        .latest_work_deliveries()
-        .unwrap()
-        .iter()
-        .any(|delivery| {
-            delivery.work_id == rebound.id
-                && delivery.work_version == rebound.version
-                && delivery.recipient_member_run_id == replacement.id
-                && delivery.status == ProviderWorkDispatchStatus::Queued
-        }));
     assert!(store
         .rebind_work(
             &rebound.id,

@@ -564,8 +564,3 @@ mod mcp_stdio_agent_team_tools;
 #[cfg(any())]
 #[path = "mcp_stdio/mcp_stdio_external_interactive_member_authorship.rs"]
 mod mcp_stdio_external_interactive_member_authorship;
-
-// Historical Wave4A delivery claim/reconcile seam retained as source-only migration evidence.
-#[cfg(any())]
-#[path = "mcp_stdio/mcp_stdio_work_rebind_and_successor_delivery_reconcile.rs"]
-mod mcp_stdio_work_rebind_and_successor_delivery_reconcile;

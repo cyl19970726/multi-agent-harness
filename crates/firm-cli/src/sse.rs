@@ -437,7 +437,6 @@ const EXECUTION_INVALIDATION_FILES: &[&str] = &[
     "provider_child_threads.jsonl",
     "delegation_runs.jsonl",
     "work_operations.jsonl",
-    "work_delivery_updates.jsonl",
     "host_attentions.jsonl",
     "agentfirm_trust_operations.jsonl",
 ];

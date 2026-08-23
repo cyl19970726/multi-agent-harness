@@ -105,7 +105,7 @@ Mutation surface (all executable Work mutations):
 ```bash
 firm team-run work list|show|create|assign|claim|start|block|resume|release
 firm team-run work submit|review|request-changes|accept|cancel|retarget
-firm team-run work reconcile-delivery|poll-github-ci
+firm team-run work reconcile-projection|poll-github-ci
 ```
 
 `firm work list` (DOC-106) replaces the retired `firm company work

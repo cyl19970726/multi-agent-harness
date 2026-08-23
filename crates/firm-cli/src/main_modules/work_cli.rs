@@ -8,7 +8,7 @@ pub(super) fn team_run_work_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|replace-dependencies|delegate|delegation|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|reconcile-delivery|migrate-responsibility|poll-github-ci",
+        "team-run work list|show|create|replace-dependencies|delegate|delegation|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|migrate-responsibility|poll-github-ci",
     )?;
     if matches!(args[0].as_str(), "delegate" | "delegation") {
         return Err(CliError::Usage(
@@ -140,7 +140,7 @@ pub(super) fn team_run_work_command(
                 .filter(|event| event.work_id == work_id)
                 .collect::<Vec<_>>();
             let deliveries = store
-                .latest_work_deliveries()?
+                .current_work_deliveries_for_team_run(&work.team_run_id)?
                 .into_iter()
                 .filter(|delivery| delivery.work_id == work_id)
                 .collect::<Vec<_>>();
@@ -773,20 +773,8 @@ pub(super) fn team_run_work_command(
                 host_work_context_for_work(store, &work_id, args)?,
             )?)
         }
-        "reconcile-delivery" => print_json(&store.reconcile_stale_work_delivery_claim(
-            &required(args, "--team-run-id")?,
-            &required(args, "--delivery-id")?,
-            &required(args, "--supervisor-id")?,
-            required(args, "--supervisor-generation")?
-                .parse::<u64>()
-                .map_err(|_| {
-                    CliError::Usage("--supervisor-generation must be an integer".to_string())
-                })?,
-            current_unix_ms_u64(),
-            &now_string(),
-        )?),
         other => Err(CliError::Usage(format!(
-            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|review|request-changes|accept|cancel|retarget|reconcile-projection|reconcile-delivery"
+            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|review|request-changes|accept|cancel|retarget|reconcile-projection"
         ))),
     }
 }

@@ -75,7 +75,6 @@ fn mcp_stdio_agent_team_tools() {
             "team_run_work_release",
             "team_run_work_request_changes",
             "team_run_work_cancel",
-            "team_run_work_reconcile_delivery",
             "collaboration_delegation_list",
             "collaboration_delegation_show",
             "execution_node_list",
@@ -162,19 +161,6 @@ fn mcp_stdio_agent_team_tools() {
             "work_id",
             "member_run_id",
             "expected_version"
-        ])
-    );
-    let reconcile_work_schema = &tools
-        .iter()
-        .find(|tool| tool["name"].as_str() == Some("team_run_work_reconcile_delivery"))
-        .expect("team_run_work_reconcile_delivery definition")["inputSchema"];
-    assert_eq!(
-        reconcile_work_schema["required"],
-        serde_json::json!([
-            "team_run_id",
-            "delivery_id",
-            "supervisor_id",
-            "supervisor_generation"
         ])
     );
     let create_schema = tools

@@ -36,67 +36,19 @@ impl HarnessStore {
         execution_space_id: &str,
     ) -> StoreResult<Vec<CanonicalWorkDelivery>> {
         Ok(self
-            .materialized_fabric_work_deliveries_unlocked(execution_space_id)?
+            .canonical_fabric_work_deliveries_unlocked(execution_space_id)?
             .into_values()
             .collect())
     }
 
-    pub(super) fn materialized_fabric_work_deliveries_unlocked(
+    pub(super) fn canonical_fabric_work_deliveries_unlocked(
         &self,
         execution_space_id: &str,
     ) -> StoreResult<BTreeMap<String, CanonicalWorkDelivery>> {
-        let mut latest = self.latest_fabric_side_records_unlocked(
+        self.latest_fabric_side_records_unlocked(
             execution_space_id,
             |row: &CanonicalWorkDelivery| row.id.clone(),
-        )?;
-        let works = self.latest_works_unlocked()?;
-        let sessions = self.fabric_agent_sessions(execution_space_id)?;
-        for binding in self.fabric_work_execution_bindings(execution_space_id)? {
-            if binding.status != WorkExecutionBindingStatus::Active
-                || latest.contains_key(&binding.delivery_id)
-            {
-                continue;
-            }
-            let Some(work) = works.get(&binding.work_id) else {
-                continue;
-            };
-            let Some(session) = sessions
-                .iter()
-                .find(|session| session.id == binding.agent_session_id)
-            else {
-                continue;
-            };
-            if work.version != binding.work_revision
-                || session.agent_member_id != binding.agent_member_id
-                || session.runtime_generation != binding.agent_session_generation
-                || session.lifecycle == AgentSessionStatus::Closed
-            {
-                continue;
-            }
-            latest.insert(
-                binding.delivery_id.clone(),
-                CanonicalWorkDelivery {
-                    id: binding.delivery_id.clone(),
-                    work_id: binding.work_id.clone(),
-                    work_revision: binding.work_revision,
-                    work_execution_binding_id: binding.id.clone(),
-                    recipient_agent_member_id: binding.agent_member_id.clone(),
-                    recipient_session_id: binding.agent_session_id.clone(),
-                    recipient_session_generation: binding.agent_session_generation,
-                    target_node_id: session.node_id.clone(),
-                    status: WorkDeliveryStatus::Queued,
-                    attempt: 1,
-                    claim_id: None,
-                    claimed_node_daemon_generation: None,
-                    provider_receipt_id: None,
-                    failure_code: None,
-                    version: 1,
-                    created_at: binding.bound_at.clone(),
-                    updated_at: binding.bound_at.clone(),
-                },
-            );
-        }
-        Ok(latest)
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -123,7 +75,7 @@ impl HarnessStore {
             delivery_id,
         )?;
         let mut delivery = self
-            .materialized_fabric_work_deliveries_unlocked(&context.execution_space_id)?
+            .canonical_fabric_work_deliveries_unlocked(&context.execution_space_id)?
             .remove(delivery_id)
             .ok_or_else(|| {
                 trust_error(
@@ -308,6 +260,74 @@ impl HarnessStore {
             delivery_id,
             "provider_received",
             serde_json::json!({"claim_id": claim_id, "provider_receipt_id": provider_receipt_id}),
+            &delivery,
+            vec![serde_json::to_value(&delivery)?],
+            Vec::new(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_work_provider_failure(
+        &self,
+        context: &MutationContext,
+        delivery_id: &str,
+        node_id: &str,
+        daemon_id: &str,
+        daemon_generation: u64,
+        claim_id: &str,
+        failure_code: &str,
+        updated_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<CanonicalWorkDelivery>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            node_id,
+            daemon_id,
+            daemon_generation,
+            &context.authenticated_actor,
+            "work_delivery",
+            delivery_id,
+        )?;
+        let mut delivery = self
+            .latest_fabric_side_records_unlocked(
+                &context.execution_space_id,
+                |row: &CanonicalWorkDelivery| row.id.clone(),
+            )?
+            .remove(delivery_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "WorkDelivery not found",
+                    "work_delivery",
+                    delivery_id,
+                    None,
+                )
+            })?;
+        if delivery.status != WorkDeliveryStatus::Claimed
+            || delivery.claim_id.as_deref() != Some(claim_id)
+            || delivery.claimed_node_daemon_generation != Some(daemon_generation)
+            || delivery.target_node_id != node_id
+            || delivery.provider_receipt_id.is_some()
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "provider failure does not match one exact unreceived WorkDelivery claim",
+                "work_delivery",
+                delivery_id,
+                Some(delivery.version),
+            ));
+        }
+        delivery.status = WorkDeliveryStatus::Failed;
+        delivery.failure_code = Some(failure_code.to_string());
+        delivery.version += 1;
+        delivery.updated_at = updated_at.to_string();
+        self.commit_trust_projection_unlocked(
+            context,
+            "work_delivery_failure",
+            delivery_id,
+            "provider_negative_ack",
+            serde_json::json!({"claim_id": claim_id, "failure_code": failure_code}),
             &delivery,
             vec![serde_json::to_value(&delivery)?],
             Vec::new(),

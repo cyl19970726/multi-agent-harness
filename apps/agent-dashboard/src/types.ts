@@ -904,20 +904,29 @@ export interface WorkEvent {
 }
 
 export interface WorkDelivery {
-  id: string;
-  work_event_id: string;
+  authority: "canonical_trust";
+  read_only: true;
+  execution_space_id?: string | null;
   team_run_id: string;
   work_id: string;
-  work_version: number;
-  recipient_member_run_id: string;
-  status: "queued" | "claimed" | "provider_received" | "failed" | "invalidated";
+  work_revision: number;
+  work_execution_binding_id?: string | null;
+  delivery_id: string;
+  recipient_agent_member_id?: string | null;
+  recipient_member_run_id?: string | null;
+  recipient_agent_session_id?: string | null;
+  recipient_agent_session_generation?: number | null;
+  target_node_id?: string | null;
+  status: "queued" | "claimed" | "provider_received" | "failed";
   attempt: number;
   claim_id?: string | null;
-  claimed_by_supervisor_id?: string | null;
-  claimed_generation?: number | null;
+  claimed_node_daemon_generation?: number | null;
   provider_receipt_id?: string | null;
-  failure_reason?: string | null;
+  failure_code?: string | null;
+  version: number;
+  created_at: string;
   updated_at: string;
+  integrity_annotations?: string[];
 }
 
 export type WorkDelegationState = "active" | "blocked" | "completed" | "failed" | "cancelled";

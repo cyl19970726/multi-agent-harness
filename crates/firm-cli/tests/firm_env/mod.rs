@@ -213,59 +213,6 @@ pub fn seed_historical_mission(home: &TempHome, space_id: &str, id: &str, title:
     .expect("append historical mission");
 }
 
-/// Reconstruct the latest ProviderWorkDispatch projection from crash-atomic Work
-/// operations plus later claim/receipt updates. Integration tests use this
-/// instead of treating update rows as standalone deliveries.
-pub fn work_deliveries(home: &TempHome, project_id: &str) -> Vec<serde_json::Value> {
-    let store = home.spaces_dir().join(project_id);
-    let mut order = Vec::<String>::new();
-    let mut by_id = std::collections::HashMap::<String, serde_json::Value>::new();
-    let operations =
-        std::fs::read_to_string(store.join("work_operations.jsonl")).expect("work operations");
-    for line in operations.lines().filter(|line| !line.trim().is_empty()) {
-        let row: serde_json::Value = serde_json::from_str(line).expect("work operation JSON");
-        for delivery in row["deliveries"].as_array().into_iter().flatten() {
-            let id = delivery["id"]
-                .as_str()
-                .expect("ProviderWorkDispatch id")
-                .to_string();
-            if !by_id.contains_key(&id) {
-                order.push(id.clone());
-            }
-            by_id.insert(id, delivery.clone());
-        }
-    }
-    if let Ok(updates) = std::fs::read_to_string(store.join("work_delivery_updates.jsonl")) {
-        for line in updates.lines().filter(|line| !line.trim().is_empty()) {
-            let update: serde_json::Value =
-                serde_json::from_str(line).expect("ProviderWorkDispatch update JSON");
-            let id = update["delivery_id"]
-                .as_str()
-                .expect("ProviderWorkDispatch update id");
-            if let Some(delivery) = by_id.get_mut(id) {
-                let object = delivery
-                    .as_object_mut()
-                    .expect("ProviderWorkDispatch object");
-                for key in [
-                    "status",
-                    "attempt",
-                    "claim_id",
-                    "claimed_by_supervisor_id",
-                    "claimed_generation",
-                    "provider_receipt_id",
-                    "updated_at",
-                ] {
-                    object.insert(key.to_string(), update[key].clone());
-                }
-            }
-        }
-    }
-    order
-        .into_iter()
-        .filter_map(|id| by_id.remove(&id))
-        .collect()
-}
-
 pub fn latest_works(home: &TempHome, project_id: &str) -> Vec<serde_json::Value> {
     let operations = std::fs::read_to_string(
         home.spaces_dir()
@@ -882,7 +829,11 @@ impl ServeHandle {
         let payload = body.to_string();
         let mut stream = TcpStream::connect(self.addr()).expect("connect post");
         stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            // Authenticated Role Action requests can legitimately wait for a
+            // serialized Store mutation under slower CI runners. Match the
+            // ordinary POST helper's bounded response window; this never
+            // retries or resends the mutation.
+            .set_read_timeout(Some(Duration::from_secs(15)))
             .expect("timeout");
         let mut header_lines = String::new();
         for (name, value) in headers {
@@ -1044,15 +995,20 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// Linux may report `ECONNRESET` after the server has already written a
-/// complete `Connection: close` response. Accept that transport ending only
-/// when the declared Content-Length is fully present; never retry a mutation.
+/// Linux may report `ECONNRESET`, `EAGAIN`, or a timeout after the server has
+/// already written a complete `Connection: close` response. Accept that
+/// transport ending only when the declared Content-Length is fully present;
+/// never retry a mutation.
 fn read_http_to_string(stream: &mut TcpStream, raw: &mut String) -> std::io::Result<()> {
     match stream.read_to_string(raw) {
         Ok(_) => Ok(()),
         Err(error)
-            if error.kind() == std::io::ErrorKind::ConnectionReset
-                && complete_http_response(raw) =>
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::WouldBlock
+                    | std::io::ErrorKind::TimedOut
+            ) && complete_http_response(raw) =>
         {
             Ok(())
         }

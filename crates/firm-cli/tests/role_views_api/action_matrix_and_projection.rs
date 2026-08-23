@@ -606,8 +606,16 @@ pub(super) fn assert_action_matrix_and_final_projections(context: ActionMatrixCo
             .any(|item| item["reason_code"] == "multiple_active_member_runs")));
 
     let global_route = format!("/v1/views/global-work?project={project_id}");
-    let (status, global) =
-        serve.get_json_with_headers(&global_route, &[("X-AgentFirm-Token", TOKEN)]);
+    let mut response = None;
+    for _ in 0..40 {
+        let current = serve.get_json_with_headers(&global_route, &[("X-AgentFirm-Token", TOKEN)]);
+        if current.0 != 503 || current.1["error"]["code"] != "SNAPSHOT_UNSTABLE" {
+            response = Some(current);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let (status, global) = response.expect("Global Work projection must reach a stable snapshot");
     assert_eq!(status, 200, "Global Work RoleView: {global}");
     assert_eq!(global["view_kind"], "global_work");
     assert!(global["data"]["items"].as_array().is_some_and(|items| items

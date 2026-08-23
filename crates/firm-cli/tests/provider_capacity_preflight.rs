@@ -910,11 +910,11 @@ fn unknown_capacity_still_starts_the_member_and_delivers_work() {
             .any(|action| action["action_type"].as_str() == Some("provider_unavailable")),
         "unknown capacity must not record provider_unavailable: {actions:?}"
     );
-    // ProviderWorkDispatch was consumed by a real round, proving the guard opened.
+    // A canonical delivery was consumed by a real round, proving the guard opened.
     let delivery = canonical_work_deliveries(&home, &project_id)
         .into_iter()
         .next()
-        .expect("ProviderWorkDispatch");
+        .expect("canonical WorkDelivery");
     assert_ne!(
         delivery["status"],
         serde_json::json!("queued"),

@@ -133,33 +133,6 @@ pub(super) fn ack_host_attention_value(
     Ok(serde_json::json!({ "attention": final_attention, "idempotent": false }))
 }
 
-/// Explicit successor-Supervisor reconciliation for a stale Work delivery
-/// claim. Like the CLI path, this only requeues a claim from an older
-/// generation and never guesses that a provider accepted the Work.
-pub(crate) fn reconcile_team_work_delivery_value(
-    store: &HarnessStore,
-    team_run_id: &str,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    let delivery_id = required_json_string(body, "delivery_id")?;
-    let supervisor_id = required_json_string(body, "supervisor_id")?;
-    let supervisor_generation = body
-        .get("supervisor_generation")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| {
-            CliError::Usage("supervisor_generation must be an unsigned integer".to_string())
-        })?;
-    let delivery = store_conflict_as_usage(store.reconcile_stale_work_delivery_claim(
-        team_run_id,
-        &delivery_id,
-        &supervisor_id,
-        supervisor_generation,
-        current_unix_ms_u64(),
-        &now_string(),
-    ))?;
-    Ok(serde_json::to_value(delivery)?)
-}
-
 pub(super) fn create_message_value(
     store: &HarnessStore,
     body: &serde_json::Value,

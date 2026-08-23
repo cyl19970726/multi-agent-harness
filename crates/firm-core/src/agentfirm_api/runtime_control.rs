@@ -361,38 +361,6 @@ pub enum WorkDeliveryStatus {
     Claimed,
     ProviderReceived,
     Failed,
-    Expired,
-    Invalidated,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorkDelivery {
-    pub id: String,
-    pub work_event_id: String,
-    pub work_id: String,
-    pub work_revision: u64,
-    pub recipient_member_run_id: String,
-    pub status: WorkDeliveryStatus,
-    pub attempt: u32,
-    #[serde(default)]
-    pub claim_id: Option<String>,
-    #[serde(default)]
-    pub claimed_supervisor_generation: Option<u64>,
-    #[serde(default)]
-    pub claimed_member_generation: Option<u64>,
-    #[serde(default)]
-    pub claim_expires_at: Option<String>,
-    #[serde(default)]
-    pub freeze_generation: Option<u64>,
-    #[serde(default)]
-    pub provider_receipt_id: Option<String>,
-    #[serde(default)]
-    pub failure_code: Option<String>,
-    #[serde(default)]
-    pub failure_detail: Option<String>,
-    pub version: u64,
-    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

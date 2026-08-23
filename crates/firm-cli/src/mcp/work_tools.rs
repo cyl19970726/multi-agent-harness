@@ -89,7 +89,7 @@ pub(super) fn tool_team_run_work_show(
         .filter(|event| event.team_run_id == team_run_id && event.work_id == work_id)
         .collect::<Vec<_>>();
     let deliveries = store
-        .latest_work_deliveries()
+        .current_work_deliveries_for_team_run(team_run_id)
         .map_err(|error| error.to_string())?
         .into_iter()
         .filter(|delivery| delivery.team_run_id == team_run_id && delivery.work_id == work_id)
@@ -371,12 +371,4 @@ pub(super) fn tool_team_run_work_mutate(
     }
     .map_err(|error| error.to_string())?;
     Ok(json!(work))
-}
-
-pub(super) fn tool_team_run_work_reconcile_delivery(
-    store: &HarnessStore,
-    arguments: &Value,
-) -> Result<Value, String> {
-    reconcile_team_work_delivery_value(store, required_str(arguments, "team_run_id")?, arguments)
-        .map_err(|error| error.to_string())
 }

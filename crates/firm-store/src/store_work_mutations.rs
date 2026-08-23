@@ -147,8 +147,6 @@ impl HarnessStore {
             }
         }
         self.validate_work_relations_unlocked(&work)?;
-        let deliveries =
-            self.initial_work_deliveries_unlocked(&work, &context.event_id, &context.created_at)?;
         let operation = WorkOperation {
             event: WorkEvent {
                 id: context.event_id,
@@ -170,8 +168,6 @@ impl HarnessStore {
             reports: Vec::new(),
             evidence_records: Vec::new(),
             decisions: Vec::new(),
-            deliveries,
-            delivery_updates: Vec::new(),
             delegation_revisions: Vec::new(),
         };
         self.append_work_operation_unlocked(&operation)?;
@@ -411,12 +407,6 @@ impl HarnessStore {
             reports: Vec::new(),
             evidence_records: Vec::new(),
             decisions: Vec::new(),
-            deliveries: self.initial_work_deliveries_unlocked(
-                &target_work,
-                &format!("{}:target-work", context.event_id),
-                &context.created_at,
-            )?,
-            delivery_updates: Vec::new(),
             delegation_revisions: Vec::new(),
         };
         let event = WorkDelegationEvent {
@@ -597,8 +587,8 @@ impl HarnessStore {
     /// Rebind non-terminal Work to a replacement runtime generation of the
     /// same stable member identity. This is the sole safe Host primitive after
     /// a runtime dies: the version bump fences the old runtime, the Rebound
-    /// event records both bindings, and a fresh ProviderWorkDispatch targets the new
-    /// ProviderRuntimeProjection.
+    /// event records both bindings. The NodeDaemon creates a fresh canonical
+    /// WorkExecutionBinding and WorkDelivery for the new runtime generation.
     ///
     /// A still-claimed delivery is an uncertain handoff and must first be
     /// completed, failed by its current lease owner, or reconciled by a
@@ -684,12 +674,9 @@ impl HarnessStore {
             )));
         }
         if self
-            .latest_work_deliveries_unlocked()?
-            .values()
-            .any(|delivery| {
-                delivery.work_id == work_id
-                    && delivery.status == ProviderWorkDispatchStatus::Claimed
-            })
+            .canonical_work_deliveries_for_work_unlocked(&current)?
+            .iter()
+            .any(|delivery| delivery.status == WorkDeliveryStatus::Claimed)
         {
             return Err(StoreError::Conflict(
                 "RECONCILIATION_REQUIRED: Work has a claimed delivery".to_string(),
@@ -875,12 +862,9 @@ impl HarnessStore {
             }
         }
         if self
-            .latest_work_deliveries_unlocked()?
-            .values()
-            .any(|delivery| {
-                delivery.work_id == work_id
-                    && delivery.status == ProviderWorkDispatchStatus::Claimed
-            })
+            .canonical_work_deliveries_for_work_unlocked(&current)?
+            .iter()
+            .any(|delivery| delivery.status == WorkDeliveryStatus::Claimed)
         {
             return Err(StoreError::Conflict(
                 "RECONCILIATION_REQUIRED: Work has a claimed delivery".to_string(),

@@ -4,12 +4,11 @@ import { Button } from "@/components/ui/button";
 import type { AllowedAction, RoleActionExecutor } from "../model/roleViews";
 import { prepareRoleAction, roleActionRoute } from "../model/roleViews";
 
-const CRITICAL = new Set(["accept_work", "cancel_work", "reconcile_delivery", "reconcile_message_delivery", "resolve_runtime_recovery", "close_member_run", "retire_member_run", "cleanup_workspace", "waive_gate", "revoke_waiver", "start_daemon", "stop_daemon"]);
+const CRITICAL = new Set(["accept_work", "cancel_work", "reconcile_message_delivery", "resolve_runtime_recovery", "close_member_run", "retire_member_run", "cleanup_workspace", "waive_gate", "revoke_waiver", "start_daemon", "stop_daemon"]);
 const EXECUTABLE = new Set([
   "create_work", "assign_work", "rebind_work", "release_work", "accept_work",
   "change_work_dependencies",
   "cancel_work", "claim_work", "start_work", "block_work", "unblock_work", "submit_work",
-  "reconcile_delivery",
   "request_changes", "revise_work", "send_message", "reply_message", "request_decision",
   "interrupt_member_run", "close_member_run", "reopen_member_run", "retire_member_run", "resume_native_session",
   "provision_workspace", "attach_workspace", "archive_workspace", "cleanup_workspace",
@@ -37,7 +36,6 @@ const FIELD_SPECS: Record<string, Array<{ name: string; label: string; multiline
     { name: "artifact_refs", label: "Artifact refs (comma-separated)" },
     { name: "check_refs", label: "Check/evidence refs (comma-separated)" },
   ],
-  reconcile_delivery: [{ name: "evidence_ref", label: "Recovery evidence ref" }],
   reconcile_message_delivery: [{ name: "evidence_ref", label: "Recovery evidence ref" },{name:"outcome",label:"Outcome (acknowledged or retry_safe_failure)"}],
   resolve_runtime_recovery: [{ name: "evidence_ref", label: "Provider/native-session evidence ref" },{name:"resolution",label:"Resolution (confirm_applied, confirm_not_applied, or keep_recovery_required)"}],
   request_changes: [{name:"reason",label:"Requested changes",multiline:true}],

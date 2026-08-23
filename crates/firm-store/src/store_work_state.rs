@@ -817,47 +817,6 @@ impl HarnessStore {
             .count() as u64
             + 1;
         let payload = self.work_graph_outbox_payload_unlocked(&next, kind, payload)?;
-        let deliveries = if matches!(
-            kind,
-            WorkEventKind::Assigned
-                | WorkEventKind::ChangesRequested
-                | WorkEventKind::Resumed
-                | WorkEventKind::Rebound
-                | WorkEventKind::ExecutionRetargeted
-                | WorkEventKind::Accepted
-                | WorkEventKind::Cancelled
-        ) {
-            self.initial_work_deliveries_unlocked(&next, &context.event_id, &context.created_at)?
-        } else {
-            Vec::new()
-        };
-        let mut next_delivery_update_sequence =
-            self.next_work_delivery_update_sequence_unlocked()?;
-        let delivery_updates = self
-            .latest_work_deliveries_unlocked()?
-            .into_values()
-            .filter(|delivery| {
-                delivery.work_id == current.id
-                    && delivery.status == ProviderWorkDispatchStatus::Queued
-                    && delivery.work_version < next.version
-            })
-            .map(|delivery| {
-                let update_sequence = next_delivery_update_sequence;
-                next_delivery_update_sequence = next_delivery_update_sequence.saturating_add(1);
-                ProviderWorkDispatchUpdate {
-                    delivery_id: delivery.id,
-                    update_sequence,
-                    status: ProviderWorkDispatchStatus::Invalidated,
-                    attempt: delivery.attempt,
-                    claim_id: delivery.claim_id,
-                    claimed_by_supervisor_id: delivery.claimed_by_supervisor_id,
-                    claimed_generation: delivery.claimed_generation,
-                    provider_receipt_id: delivery.provider_receipt_id,
-                    failure_reason: delivery.failure_reason,
-                    updated_at: context.created_at.clone(),
-                }
-            })
-            .collect();
         let evidence_records = reports
             .iter()
             .map(|report| {
@@ -906,8 +865,6 @@ impl HarnessStore {
             reports,
             evidence_records,
             decisions,
-            deliveries,
-            delivery_updates,
             delegation_revisions,
         };
         self.append_work_operation_unlocked(&operation)?;

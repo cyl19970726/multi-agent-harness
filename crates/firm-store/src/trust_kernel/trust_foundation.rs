@@ -106,6 +106,7 @@ impl HarnessStore {
         })
     }
 
+    #[cfg(any())]
     pub(super) fn require_current_trust_supervisor_unlocked(
         &self,
         context: &MutationContext,
@@ -187,21 +188,6 @@ impl HarnessStore {
             })
             .and_then(|envelope| event_projection::<TeamMessage>(&envelope))
             .map(|message| message.team_run_id)
-    }
-
-    pub(super) fn trust_work_team_run_unlocked(&self, work_id: &str) -> StoreResult<String> {
-        self.latest_works_unlocked()?
-            .remove(work_id)
-            .map(|work| work.team_run_id)
-            .ok_or_else(|| {
-                trust_error(
-                    TrustErrorCode::WorkRevisionStale,
-                    "WorkDelivery references a missing Work",
-                    "work",
-                    work_id,
-                    None,
-                )
-            })
     }
 
     pub(super) fn trust_team_work_unlocked(

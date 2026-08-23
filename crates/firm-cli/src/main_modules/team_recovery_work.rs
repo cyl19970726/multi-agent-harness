@@ -13,77 +13,6 @@ pub(super) enum MemberRecoveryPath {
     Terminal { reason: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct DeliveryReconciliationFailure {
-    pub(super) succeeded_ids: Vec<String>,
-    pub(super) failed_delivery_id: String,
-    pub(super) failure: String,
-}
-
-impl DeliveryReconciliationFailure {
-    pub(super) fn into_cli_error(self) -> CliError {
-        let succeeded_ids = if self.succeeded_ids.is_empty() {
-            "none".to_string()
-        } else {
-            self.succeeded_ids.join(",")
-        };
-        CliError::Usage(format!(
-            "WORK_DELIVERY_RECONCILIATION_FAILED: reconciled={} succeeded_ids={} failed_delivery_id={} failure={}; member reopen/rebind fenced",
-            self.succeeded_ids.len(),
-            succeeded_ids,
-            self.failed_delivery_id,
-            self.failure
-        ))
-    }
-}
-
-/// Reconcile only stale claims owned by an earlier Supervisor generation.
-///
-/// The returned ids are persisted successes, never attempts. The first
-/// failure carries the exact successful prefix so append-only partial success
-/// remains honest and a retry can safely skip the now-queued deliveries.
-pub(super) fn reconcile_stale_delivery_claims<F>(
-    deliveries: &[ProviderWorkDispatch],
-    supervisor: Option<&harness_core::TeamSupervisorLease>,
-    now: u64,
-    now_str: &str,
-    mut reconcile: F,
-) -> Result<Vec<String>, DeliveryReconciliationFailure>
-where
-    F: FnMut(
-        &ProviderWorkDispatch,
-        &harness_core::TeamSupervisorLease,
-        u64,
-        &str,
-    ) -> Result<(), String>,
-{
-    let mut succeeded_ids = Vec::new();
-    let Some(lease) = supervisor else {
-        return Ok(succeeded_ids);
-    };
-    if lease.status != harness_core::TeamSupervisorLeaseStatus::Active {
-        return Ok(succeeded_ids);
-    }
-    for delivery in deliveries {
-        let is_stale_claim = delivery.status == ProviderWorkDispatchStatus::Claimed
-            && delivery
-                .claimed_generation
-                .is_some_and(|generation| generation < lease.generation);
-        if !is_stale_claim {
-            continue;
-        }
-        if let Err(failure) = reconcile(delivery, lease, now, now_str) {
-            return Err(DeliveryReconciliationFailure {
-                succeeded_ids,
-                failed_delivery_id: delivery.id.clone(),
-                failure,
-            });
-        }
-        succeeded_ids.push(delivery.id.clone());
-    }
-    Ok(succeeded_ids)
-}
-
 /// Pure function: classify a member's recovery path. Does not perform I/O or
 /// mutation. Unit-testable across every edge case without a store.
 pub(super) fn classify_member_recovery_path(
@@ -187,11 +116,7 @@ pub(super) fn team_run_recover(
         .into_iter()
         .filter(|work| work.team_run_id == team_run_id)
         .collect();
-    let deliveries: Vec<ProviderWorkDispatch> = store
-        .latest_work_deliveries()?
-        .into_iter()
-        .filter(|delivery| delivery.team_run_id == team_run_id)
-        .collect();
+    let deliveries = store.current_work_deliveries_for_team_run(team_run_id)?;
     let supervisor = store.latest_team_supervisor_lease(team_run_id)?;
     let supervisor_current = supervisor.as_ref().is_some_and(is_supervisor_current);
 
@@ -365,33 +290,25 @@ pub(super) fn team_run_recover(
         std::process::exit(1);
     }
 
-    // ── Phase 2: reconcile stale deliveries ──────────────────────────
-    let now = current_unix_ms_u64();
+    // ── Phase 2: canonical delivery diagnostics ──────────────────────
+    // Recovery never interprets or mutates legacy delivery projections.
+    // claims. Canonical claim reconciliation belongs to the exact
+    // NodeDaemon/AgentSession RuntimeCommand authority; this operator command
+    // reports those facts and preserves the no-blind-replay fence.
+    let canonical_claimed_deliveries = deliveries
+        .iter()
+        .filter(|delivery| {
+            delivery.status == harness_core::agentfirm_api::WorkDeliveryStatus::Claimed
+        })
+        .count() as u64;
+    let canonical_provider_received_deliveries = deliveries
+        .iter()
+        .filter(|delivery| {
+            delivery.status == harness_core::agentfirm_api::WorkDeliveryStatus::ProviderReceived
+        })
+        .count() as u64;
+    let reconciled = 0_u64;
     let now_str = now_string();
-    let reconciled_ids = reconcile_stale_delivery_claims(
-        &deliveries,
-        supervisor.as_ref(),
-        now,
-        &now_str,
-        |delivery, lease, reconciled_at_unix_ms, reconciled_at| {
-            store
-                .reconcile_stale_work_delivery_claim(
-                    team_run_id,
-                    &delivery.id,
-                    &lease.supervisor_id,
-                    lease.generation,
-                    reconciled_at_unix_ms,
-                    reconciled_at,
-                )
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-        },
-    )
-    .map_err(DeliveryReconciliationFailure::into_cli_error)?;
-    let reconciled = reconciled_ids.len() as u64;
-    if !json && reconciled > 0 {
-        println!("reconciled_stale_deliveries: {reconciled}");
-    }
 
     // ── Phase 3: reopen compatible sessions ──────────────────────────
     let mut reopened = 0u64;
@@ -557,6 +474,8 @@ pub(super) fn team_run_recover(
         "members": members.len(),
         "works_total": works.len(),
         "reconciled_deliveries": reconciled,
+        "canonical_claimed_deliveries": canonical_claimed_deliveries,
+        "canonical_provider_received_deliveries": canonical_provider_received_deliveries,
         "reopened": reopened,
         "rebound_works": rebound,
         "skipped": skipped,

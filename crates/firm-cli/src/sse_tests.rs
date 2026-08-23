@@ -581,7 +581,6 @@ fn snapshot_only_execution_ledgers_have_an_invalidation_path() {
         "provider_child_threads.jsonl",
         "delegation_runs.jsonl",
         "work_operations.jsonl",
-        "work_delivery_updates.jsonl",
     ] {
         assert!(
             EXECUTION_INVALIDATION_FILES.contains(&ledger),

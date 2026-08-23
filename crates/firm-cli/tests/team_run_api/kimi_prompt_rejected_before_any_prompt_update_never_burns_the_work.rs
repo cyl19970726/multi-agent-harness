@@ -90,31 +90,44 @@ fn kimi_prompt_rejected_before_any_prompt_update_never_burns_the_work() {
     assert!(reject_once.exists(), "the scripted rejection fired");
 
     // The core contract: no receipt was published for a turn the provider
-    // never accepted. The retired WorkDelivery projection remains historical;
-    // current runtime truth is the exact RuntimeCommand, which must settle as
-    // Failed/NotApplied rather than burn the Work or require recovery.
-    let (_, snapshot) = serve.get_json("/v1/snapshot");
-    let work_delivery = snapshot["work_deliveries"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|delivery| delivery["work_id"].as_str() == Some(work_id.as_str()))
-        .cloned()
-        .expect("Work delivery");
+    // never accepted. The canonical claim may be visible before provider
+    // cleanup settles its negative acknowledgement, so wait for that durable
+    // transition in the canonical delivery projection.
+    let mut settled = None;
+    for _ in 0..300 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let delivery = snapshot["work_deliveries"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|delivery| delivery["work_id"].as_str() == Some(work_id.as_str()))
+            .cloned();
+        if delivery
+            .as_ref()
+            .is_some_and(|delivery| delivery["status"].as_str() == Some("failed"))
+        {
+            settled = delivery;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let work_delivery = settled.expect("canonical Work delivery negative acknowledgement");
     assert_eq!(
         work_delivery["status"].as_str(),
-        Some("queued"),
-        "the historical WorkDelivery projection must not become runtime authority: {work_delivery}"
+        Some("failed"),
+        "provider rejection must settle the exact canonical claim: {work_delivery}"
     );
     assert_eq!(
         work_delivery["attempt"].as_u64(),
-        Some(0),
-        "the historical WorkDelivery projection must remain untouched: {work_delivery}"
+        Some(1),
+        "canonical delivery attempt identity must remain stable: {work_delivery}"
     );
     assert!(
         work_delivery["provider_receipt_id"].is_null(),
         "a rejected prompt must publish no provider receipt: {work_delivery}"
     );
+    assert_eq!(work_delivery["authority"].as_str(), Some("canonical_trust"));
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
     let store = HarnessStore::new(home.spaces_dir().join(&project_id));
     let commands = store
         .runtime_commands(&current_space_id(&home))

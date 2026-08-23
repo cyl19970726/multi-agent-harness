@@ -145,6 +145,25 @@ NodeDaemon lease, and Work owner under canonical Store authority. Work result,
 progress, finding, failure, revise, submit, gate, and acceptance remain Work
 operations.
 
+Every current CLI, HTTP, MCP, RoleView, recovery diagnostic, and Dashboard
+reader consumes the non-persisted `CurrentWorkDeliveryView`. The application
+projection joins canonical Work, `WorkExecutionBinding`,
+`CanonicalWorkDelivery`, AgentSession, MemberRun, and TeamRun facts inside one
+explicit Execution Space. Broken canonical joins fail closed. The retired
+run-addressed dispatch record and its update ledger have been removed; there is
+no compatibility reader, export adapter, fallback, or migration path.
+
+| Reader | Current source |
+| --- | --- |
+| CLI and MCP Work show | TeamRun-scoped `CurrentWorkDeliveryView` |
+| HTTP Work detail | TeamRun-scoped `CurrentWorkDeliveryView` |
+| Dashboard snapshot | one projection per explicit Execution Space |
+| RoleView and member status | same Execution-Space projection |
+| TeamRun recovery | canonical claim/receipt diagnostics only |
+
+The repository Work boundary gate rejects direct legacy delivery readers and
+types from every maintained current product module in this table.
+
 ### Runtime control
 
 Start, resume, turn, queued input, interrupt, and stop all use the same durable
@@ -290,12 +309,10 @@ Codex, Claude, Kimi, Pi, and DeepSeek Harness expose separate, closed capability
   result/evidence reference.
 
 Provider adapters consume only canonical claimed `CanonicalMessageDelivery` or
-WorkDelivery plus a NodeDaemon-built `ProviderInvocation`. The retired
-`ProviderDispatchEnvelope` and the ledgers from the development batch
-historically named “Wave 4A” have no current
-writer, reader, fallback, migration, SSE, RoleView, Dashboard, CLI, HTTP, MCP,
-or adapter authority. A narrowly enumerated historical export may remain
-read-only and is excluded from current projections and migration.
+`CanonicalWorkDelivery` plus a NodeDaemon-built `ProviderInvocation`. The
+retired dispatch envelope, run-addressed Work dispatch record, and associated
+update ledgers have no runtime type, writer, reader, fallback, SSE, RoleView,
+Dashboard, CLI, HTTP, MCP, recovery, adapter, audit/export, or migration path.
 
 ## Product views and clients
 

@@ -41,15 +41,10 @@ async function jsonl(name) {
 
 const manifest = JSON.parse(await readFile(join(fixtureRoot, "fixture-manifest.json"), "utf8"));
 const workOperations = await jsonl("work_operations");
+const workDeliveries = await jsonl("current_work_deliveries");
 const worksById = new Map();
-const deliveriesById = new Map();
 for (const operation of workOperations) {
   worksById.set(operation.work.id, operation.work);
-  for (const delivery of operation.deliveries ?? []) deliveriesById.set(delivery.id, delivery);
-  for (const update of operation.delivery_updates ?? []) {
-    const delivery = deliveriesById.get(update.delivery_id);
-    if (delivery) deliveriesById.set(update.delivery_id, { ...delivery, ...update, id: delivery.id });
-  }
 }
 
 const snapshot = {
@@ -62,7 +57,7 @@ const snapshot = {
   team_messages: await jsonl("team_messages"),
   works: [...worksById.values()],
   work_events: workOperations.map((operation) => operation.event),
-  work_deliveries: [...deliveriesById.values()],
+  work_deliveries: workDeliveries,
   member_actions: await jsonl("member_actions"),
   delegation_runs: await jsonl("delegation_runs"),
   team_run_events: await jsonl("team_run_events"),

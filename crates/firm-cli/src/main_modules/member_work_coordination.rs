@@ -763,7 +763,7 @@ impl TeamRunLedger {
     pub(super) fn queued_works_for(
         &self,
         member_id: &str,
-    ) -> CliResult<Vec<(Work, ProviderWorkDispatch)>> {
+    ) -> CliResult<Vec<(Work, harness_application::CurrentWorkDeliveryView)>> {
         let all_works = self.store.latest_works()?;
         let works = all_works
             .iter()
@@ -773,16 +773,16 @@ impl TeamRunLedger {
             .collect::<std::collections::HashMap<_, _>>();
         let mut queued = self
             .store
-            .latest_work_deliveries()?
+            .current_work_deliveries_for_team_run(&self.run_id)?
             .into_iter()
             .filter(|delivery| {
                 delivery.team_run_id == self.run_id
-                    && delivery.recipient_member_run_id == member_id
-                    && delivery.status == ProviderWorkDispatchStatus::Queued
+                    && delivery.recipient_member_run_id.as_deref() == Some(member_id)
+                    && delivery.status == harness_core::agentfirm_api::WorkDeliveryStatus::Queued
             })
             .filter_map(|delivery| {
                 let work = works.get(&delivery.work_id)?;
-                (work.version == delivery.work_version
+                (work.version == delivery.work_revision
                     && work.active_member_run_id.as_deref() == Some(member_id)
                     && !work.is_terminal()
                     && harness_core::work_readiness(work, &all_works).ready)
@@ -811,7 +811,7 @@ impl TeamRunLedger {
     /// Return the member's sole durable active Work, or the next ready shared-
     /// pool Work it is eligible to claim, when no ownership delivery exists.
     /// This drives another provider-native cycle without fabricating a
-    /// ProviderWorkDispatch: self-claim is discovered from the shared board and the
+    /// delivery row: self-claim is discovered from the shared board and the
     /// Member must perform the explicit atomic claim itself.
     pub(super) fn active_work_continuation_for(&self, member_id: &str) -> CliResult<Option<Work>> {
         let all_works = self.store.latest_works()?;
@@ -930,28 +930,67 @@ impl TeamRunLedger {
     ) -> CliResult<()> {
         self.require_supervisor_lease()?;
         if let Some(execution_space_id) = self.store.trust_member_run_scope(member_id)? {
+            let member = self
+                .latest_member_run(member_id)?
+                .ok_or_else(|| CliError::Usage(format!("member run not found: {member_id}")))?;
+            let sessions = self
+                .store
+                .fabric_agent_sessions(&execution_space_id)?
+                .into_iter()
+                .filter(|session| {
+                    session.agent_member_id == member.agent_member_id
+                        && session.lifecycle
+                            != harness_core::agentfirm_api::AgentSessionStatus::Closed
+                })
+                .collect::<Vec<_>>();
+            if sessions.len() != 1 {
+                return Err(CliError::Usage(format!(
+                    "AGENT_SESSION_AMBIGUOUS: Work negative acknowledgement for {} found {} current sessions",
+                    member.agent_member_id,
+                    sessions.len()
+                )));
+            }
+            let session = sessions.into_iter().next().expect("one session");
+            let daemon = self
+                .store
+                .latest_node_daemon_lease(&session.node_id)?
+                .filter(|lease| {
+                    lease.daemon_id == session.node_daemon_id
+                        && lease.generation == session.node_daemon_generation
+                        && lease.status == NodeDaemonLeaseStatus::Active
+                        && lease.expires_unix_ms > current_unix_ms_u64()
+                })
+                .ok_or_else(|| CliError::Usage("NODE_DAEMON_GENERATION_FENCED".into()))?;
             for delivery in self
                 .store
-                .trust_work_deliveries(&execution_space_id)?
+                .fabric_work_deliveries(&execution_space_id)?
                 .into_iter()
                 .filter(|delivery| {
-                    delivery.recipient_member_run_id == member_id
+                    delivery.recipient_agent_member_id == member.agent_member_id
+                        && delivery.recipient_session_id == session.id
+                        && delivery.recipient_session_generation == session.runtime_generation
                         && delivery.status
                             == harness_core::agentfirm_api::WorkDeliveryStatus::Claimed
-                        && delivery.claimed_supervisor_generation
-                            == Some(self.supervisor_generation)
+                        && delivery.claimed_node_daemon_generation == Some(daemon.generation)
                         && delivery.provider_receipt_id.is_none()
                 })
             {
-                self.store.reconcile_trust_work_delivery(
+                let claim_id = delivery.claim_id.as_deref().ok_or_else(|| {
+                    CliError::Usage(format!("WORK_DELIVERY_CLAIM_ID_MISSING: {}", delivery.id))
+                })?;
+                self.store.record_work_provider_failure(
                     &canonical_delivery_context(
                         &execution_space_id,
-                        &self.supervisor_id,
+                        &daemon.daemon_id,
                         "node_daemon.work_delivery.negative_ack",
                         format!("{}:negative-ack", delivery.id),
-                        delivery.version.saturating_sub(1),
+                        0,
                     ),
                     &delivery.id,
+                    &session.node_id,
+                    &daemon.daemon_id,
+                    daemon.generation,
+                    claim_id,
                     &format!("provider-negative-ack:{reason}"),
                     &now_string(),
                 )?;
@@ -1098,7 +1137,7 @@ impl TeamRunLedger {
     /// Claim queued terminal-work notifications for an idle member.
     ///
     /// When a Work the member owns reaches a terminal status (Done or
-    /// Cancelled), the store may hold a queued [`ProviderWorkDispatch`] for that
+    /// Cancelled), the store may hold a queued compatibility delivery for that
     /// transition. This method claims those notification deliveries and
     /// converts each into an informational [`TeamMessageProjection`] from the Host
     /// so the member sees the transition as mail rather than as a new

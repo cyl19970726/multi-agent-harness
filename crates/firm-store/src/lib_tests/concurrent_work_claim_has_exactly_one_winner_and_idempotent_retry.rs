@@ -63,12 +63,5 @@ fn concurrent_work_claim_has_exactly_one_winner_and_idempotent_retry() {
         )
         .expect("idempotent retry");
     assert_eq!(retried, winner);
-    assert!(
-        store
-            .latest_work_deliveries()
-            .expect("deliveries")
-            .is_empty(),
-        "the winning Member already possesses self-claimed Work in its bound runtime"
-    );
     std::fs::remove_dir_all(root).expect("remove temp store");
 }
