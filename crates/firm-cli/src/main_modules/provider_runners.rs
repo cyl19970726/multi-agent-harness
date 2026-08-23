@@ -1001,6 +1001,12 @@ pub(super) fn run_deepseek_harness_team_member_shared(
             std::ffi::OsString::from(permission_mode),
         ),
         (
+            std::ffi::OsString::from("DSH_SYSTEM_PROMPT"),
+            std::ffi::OsString::from(
+                "You are a durable Star Harness AgentMember. Work and identity-first Messages are the coordination authority; DeepSeek Harness goals or plans are not. Use the available tools to perform requested repository work and Supervisor-bound `firm member message` / `firm member work` Role Actions. A provider turn ending is not semantic success: when Work asks you to submit, run the exact Role Action and leave Host acceptance to the Host. Never claim a command succeeded unless its tool result proves it.",
+            ),
+        ),
+        (
             std::ffi::OsString::from("NODE_USE_ENV_PROXY"),
             std::ffi::OsString::from("1"),
         ),
