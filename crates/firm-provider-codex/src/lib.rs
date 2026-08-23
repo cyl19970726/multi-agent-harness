@@ -89,10 +89,21 @@ fn thread_open_params(
             "ephemeral": false
         }),
     };
+    let mut config = serde_json::Map::new();
     if let Some(reasoning_effort) = reasoning_effort {
-        params["config"] = serde_json::json!({
-            "model_reasoning_effort": reasoning_effort,
-        });
+        config.insert(
+            "model_reasoning_effort".to_string(),
+            serde_json::json!(reasoning_effort),
+        );
+    }
+    if sandbox == "workspace-write" {
+        config.insert(
+            "sandbox_workspace_write".to_string(),
+            serde_json::json!({ "network_access": true }),
+        );
+    }
+    if !config.is_empty() {
+        params["config"] = serde_json::Value::Object(config);
     }
     params
 }
