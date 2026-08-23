@@ -74,7 +74,7 @@ impl<'a> KimiTeamRuntime<'a> {
 
     fn contract_preflight(
         &self,
-        fence: harness_runtime_contract::RuntimeFence<'_>,
+        fence: harness_runtime_contract::RuntimeBindingFence,
         capability: harness_runtime_contract::SemanticCapability,
     ) -> Result<
         harness_runtime_contract::AdmissionDecision,
@@ -567,7 +567,7 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
 
     fn open_or_resume(
         &mut self,
-        fence: harness_runtime_contract::RuntimeFence<'_>,
+        fence: harness_runtime_contract::RuntimeBindingFence,
         native_session_ref: Option<&str>,
     ) -> Result<
         harness_runtime_contract::RuntimeObservation,
@@ -595,7 +595,7 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
 
     fn execute_control(
         &mut self,
-        fence: harness_runtime_contract::RuntimeFence<'_>,
+        fence: harness_runtime_contract::RuntimeBindingFence,
         request: harness_runtime_contract::ControlRequest,
     ) -> Result<
         harness_runtime_contract::EffectReceipt,
@@ -668,7 +668,7 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
 
     fn observe(
         &mut self,
-        fence: harness_runtime_contract::RuntimeFence<'_>,
+        fence: harness_runtime_contract::RuntimeBindingFence,
     ) -> Result<
         harness_runtime_contract::RuntimeObservation,
         harness_runtime_contract::RuntimeContractError,
@@ -682,7 +682,7 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
 
     fn inspect_effect(
         &mut self,
-        fence: harness_runtime_contract::RuntimeFence<'_>,
+        fence: harness_runtime_contract::RuntimeBindingFence,
         _effect_id: &str,
     ) -> Result<
         harness_runtime_contract::EffectInspection,
@@ -697,7 +697,7 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
 
     fn reconcile(
         &mut self,
-        fence: harness_runtime_contract::RuntimeFence<'_>,
+        fence: harness_runtime_contract::RuntimeBindingFence,
         _inspection: &harness_runtime_contract::EffectInspection,
     ) -> Result<
         harness_runtime_contract::ReconcileReceipt,
@@ -712,7 +712,7 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
 
     fn close_runtime(
         &mut self,
-        fence: harness_runtime_contract::RuntimeFence<'_>,
+        fence: harness_runtime_contract::RuntimeBindingFence,
     ) -> Result<
         harness_runtime_contract::MemberRuntimeCloseReceipt,
         harness_runtime_contract::RuntimeContractError,
@@ -787,7 +787,7 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
 
     fn quiesce(
         &mut self,
-        fence: harness_runtime_contract::RuntimeFence<'_>,
+        fence: harness_runtime_contract::RuntimeBindingFence,
     ) -> Result<
         harness_runtime_contract::QuiesceReceipt,
         harness_runtime_contract::RuntimeContractError,
@@ -821,7 +821,7 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
         builder.record(
             QuiesceStep::FenceAdmission,
             RuntimePostconditionStatus::Satisfied,
-            "exact RuntimeFence admitted",
+            "exact RuntimeBindingFence admitted",
         )?;
         builder.record(
             QuiesceStep::InhibitContinuation,
@@ -863,7 +863,7 @@ impl harness_runtime_contract::RuntimeAdapter for KimiTeamRuntime<'_> {
 
     fn release(
         &mut self,
-        fence: harness_runtime_contract::RuntimeFence<'_>,
+        fence: harness_runtime_contract::RuntimeBindingFence,
     ) -> Result<
         harness_runtime_contract::ReleaseReceipt,
         harness_runtime_contract::RuntimeContractError,
@@ -948,9 +948,7 @@ mod tests {
 
     fn bound_adapter() -> (
         KimiTeamRuntime<'static>,
-        harness_core::agentfirm_api::RuntimeCommandBinding,
-        String,
-        u64,
+        harness_runtime_contract::RuntimeBindingFence,
     ) {
         use harness_core::agentfirm_api::{
             AgentSessionControlState, AgentSessionStatus, MemberExecutionDriver,
@@ -1009,6 +1007,8 @@ mod tests {
             closed_at: None,
         };
         let binding = harness_core::agentfirm_api::RuntimeCommandBinding {
+            target_member_run_id: Some("member-run-kimi-test".to_string()),
+            target_member_run_generation: Some(session.runtime_generation),
             target_session_id: Some(session.id.clone()),
             target_runtime_generation: Some(session.runtime_generation),
             target_driver_generation: Some(session.control_state.driver_generation),
@@ -1019,13 +1019,76 @@ mod tests {
             capability_profile_version: Some("agentfirm-runtime-adapter-v1".to_string()),
             permission_envelope_ref: Some(session.permission_envelope_ref.clone()),
         };
+        let member = harness_core::agentfirm_api::MemberRun {
+            id: "member-run-kimi-test".to_string(),
+            agent_member_id: session.agent_member_id.clone(),
+            team_run_id: "team-run-kimi-test".to_string(),
+            role_snapshot: "member".to_string(),
+            provider_profile_snapshot: None,
+            requested_controls: serde_json::json!({}),
+            effective_controls: serde_json::json!({}),
+            coordination_status: harness_core::agentfirm_api::MemberCoordinationStatus::Active,
+            runtime_status: harness_core::agentfirm_api::MemberRuntimeStatus::Idle,
+            runtime_generation: session.runtime_generation,
+            workspace_binding_id: None,
+            native_session: session.native_session_ref.clone(),
+            version: 1,
+            started_at: "t0".to_string(),
+            last_event_at: None,
+            finished_at: None,
+        };
+        let daemon = harness_core::NodeDaemonLease {
+            node_id: session.node_id.clone(),
+            daemon_id: session.node_daemon_id.clone(),
+            generation: session.node_daemon_generation,
+            instance_id: "instance-kimi-test".to_string(),
+            status: harness_core::NodeDaemonLeaseStatus::Active,
+            acquired_unix_ms: 1,
+            renewed_unix_ms: 1,
+            expires_unix_ms: 100,
+            released_unix_ms: None,
+        };
+        let command = harness_core::agentfirm_api::RuntimeCommandRecord {
+            id: "command-kimi-test".to_string(),
+            execution_space_id: session.execution_space_id.clone(),
+            target_node_id: session.node_id.clone(),
+            target_node_daemon_id: daemon.daemon_id.clone(),
+            target_node_daemon_generation: daemon.generation,
+            authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                kind: harness_core::agentfirm_api::ActorKind::Service,
+                id: daemon.daemon_id.clone(),
+            },
+            command: harness_core::agentfirm_api::RuntimeCommandKind::StartCycle,
+            required_capability: "cycle.start".to_string(),
+            idempotency_key: "command-kimi-test".to_string(),
+            request_fingerprint: "fingerprint-kimi-test".to_string(),
+            status: harness_core::agentfirm_api::RuntimeCommandStatus::Accepted,
+            phase: harness_core::agentfirm_api::RuntimeCommandPhase::Prepared,
+            effect_certainty: harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown,
+            postcondition_status: harness_core::agentfirm_api::RuntimePostconditionStatus::Unknown,
+            binding,
+            precondition: Default::default(),
+            postcondition: Default::default(),
+            target_session_id: Some(session.id.clone()),
+            target_session_generation: Some(session.runtime_generation),
+            source_record_id: None,
+            result: None,
+            failure_code: None,
+            version: 1,
+            created_at: "t0".to_string(),
+            updated_at: "t0".to_string(),
+        };
+        let fence = harness_runtime_contract::RuntimeBindingFence::from_admitted_command(
+            &command, &session, &member, &daemon, None, 2,
+        )
+        .expect("exact admitted runtime binding");
         let client = KimiAcpClient::scripted_for_close_contract();
         let mut adapter =
             KimiTeamRuntime::new(client, |_request| Ok(Value::Null), |_request| Ok(()));
         adapter
             .bind_authority_session(session, &profile)
             .expect("bind exact Kimi authority");
-        (adapter, binding, node_daemon_id, node_daemon_generation)
+        (adapter, fence)
     }
 
     #[test]
@@ -1096,14 +1159,9 @@ mod tests {
     fn close_runtime_proves_provider_ack_clean_reap_and_native_session_retention_once() {
         use harness_runtime_contract::RuntimeAdapter;
 
-        let (mut adapter, binding, daemon_id, daemon_generation) = bound_adapter();
-        let fence = harness_runtime_contract::RuntimeFence {
-            binding: &binding,
-            target_node_daemon_id: &daemon_id,
-            target_node_daemon_generation: daemon_generation,
-        };
+        let (mut adapter, fence) = bound_adapter();
         let receipt = adapter
-            .close_runtime(fence)
+            .close_runtime(fence.clone())
             .expect("verified reversible Team Close");
         receipt.verify().expect("complete close receipt");
         assert_eq!(
@@ -1120,11 +1178,7 @@ mod tests {
             .any(|evidence| evidence.contains("exit status: 0")));
         assert_eq!(adapter.native_session_locator(), "scripted-session");
 
-        let second = adapter.close_runtime(harness_runtime_contract::RuntimeFence {
-            binding: &binding,
-            target_node_daemon_id: &daemon_id,
-            target_node_daemon_generation: daemon_generation,
-        });
+        let second = adapter.close_runtime(fence);
         assert!(second.is_err(), "live handle disposal must be one-shot");
     }
 
@@ -1133,12 +1187,8 @@ mod tests {
     fn strict_quiesce_and_release_are_denied_before_any_process_effect() {
         use harness_runtime_contract::RuntimeAdapter;
 
-        let (mut adapter, binding, daemon_id, daemon_generation) = bound_adapter();
-        let quiesce = adapter.quiesce(harness_runtime_contract::RuntimeFence {
-            binding: &binding,
-            target_node_daemon_id: &daemon_id,
-            target_node_daemon_generation: daemon_generation,
-        });
+        let (mut adapter, fence) = bound_adapter();
+        let quiesce = adapter.quiesce(fence.clone());
         assert!(matches!(
             quiesce,
             Err(
@@ -1148,11 +1198,7 @@ mod tests {
                 }
             )
         ));
-        let release = adapter.release(harness_runtime_contract::RuntimeFence {
-            binding: &binding,
-            target_node_daemon_id: &daemon_id,
-            target_node_daemon_generation: daemon_generation,
-        });
+        let release = adapter.release(fence);
         assert!(matches!(
             release,
             Err(

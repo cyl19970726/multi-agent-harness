@@ -30,7 +30,7 @@ use harness_runtime_contract::{
     EffectInspection, EffectReceipt, ExecutionCycleOutcome, MemberRuntimeCloseReceipt,
     NativeControlPrimitive, ProviderControlAction, ProviderControlPlan, ProviderNativeControl,
     ProviderTerminalFailure, QuiesceReceipt, QuiesceReceiptBuilder, QuiesceStep, ReconcileReceipt,
-    ReleaseReceipt, RuntimeAdapter, RuntimeContractError, RuntimeDescription, RuntimeFence,
+    ReleaseReceipt, RuntimeAdapter, RuntimeBindingFence, RuntimeContractError, RuntimeDescription,
     SemanticCapability, SteerProviderResult, SteerRequest, TeamRuntimeAdapter,
 };
 
@@ -744,7 +744,7 @@ impl DeepSeekTeamRuntime {
 
     fn contract_preflight(
         &self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         capability: SemanticCapability,
     ) -> Result<AdmissionDecision, RuntimeContractError> {
         let session =
@@ -1066,7 +1066,7 @@ impl RuntimeAdapter for DeepSeekTeamRuntime {
 
     fn open_or_resume(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         native_session_ref: Option<&str>,
     ) -> Result<harness_runtime_contract::RuntimeObservation, RuntimeContractError> {
         self.contract_preflight(fence, SemanticCapability::OpenOrResume)?;
@@ -1086,7 +1086,7 @@ impl RuntimeAdapter for DeepSeekTeamRuntime {
 
     fn execute_control(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         request: ControlRequest,
     ) -> Result<EffectReceipt, RuntimeContractError> {
         let capability = match &request.intent {
@@ -1155,7 +1155,7 @@ impl RuntimeAdapter for DeepSeekTeamRuntime {
 
     fn observe(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
     ) -> Result<harness_runtime_contract::RuntimeObservation, RuntimeContractError> {
         self.contract_preflight(fence, SemanticCapability::Observe)?;
         self.transport
@@ -1166,7 +1166,7 @@ impl RuntimeAdapter for DeepSeekTeamRuntime {
 
     fn close_runtime(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
     ) -> Result<MemberRuntimeCloseReceipt, RuntimeContractError> {
         self.contract_preflight(fence, SemanticCapability::CloseRuntime)?;
         let evidence = self
@@ -1232,7 +1232,7 @@ impl RuntimeAdapter for DeepSeekTeamRuntime {
 
     fn inspect_effect(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         _effect_id: &str,
     ) -> Result<EffectInspection, RuntimeContractError> {
         self.contract_preflight(fence, SemanticCapability::InspectEffect)?;
@@ -1241,14 +1241,17 @@ impl RuntimeAdapter for DeepSeekTeamRuntime {
 
     fn reconcile(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         _inspection: &EffectInspection,
     ) -> Result<ReconcileReceipt, RuntimeContractError> {
         self.contract_preflight(fence, SemanticCapability::Reconcile)?;
         unreachable!("DeepSeek reconcile is not admitted")
     }
 
-    fn quiesce(&mut self, fence: RuntimeFence<'_>) -> Result<QuiesceReceipt, RuntimeContractError> {
+    fn quiesce(
+        &mut self,
+        fence: RuntimeBindingFence,
+    ) -> Result<QuiesceReceipt, RuntimeContractError> {
         // A profile that honestly carries the Degraded binding fails here
         // before a provider effect. Building the receipt below keeps a future
         // accidental Verified claim fail-closed as well.
@@ -1282,7 +1285,7 @@ impl RuntimeAdapter for DeepSeekTeamRuntime {
         builder.record(
             QuiesceStep::FenceAdmission,
             RuntimePostconditionStatus::Satisfied,
-            "exact RuntimeFence admitted",
+            "exact RuntimeBindingFence admitted",
         )?;
         builder.record(
             QuiesceStep::InhibitContinuation,
@@ -1323,7 +1326,10 @@ impl RuntimeAdapter for DeepSeekTeamRuntime {
         Ok(receipt)
     }
 
-    fn release(&mut self, fence: RuntimeFence<'_>) -> Result<ReleaseReceipt, RuntimeContractError> {
+    fn release(
+        &mut self,
+        fence: RuntimeBindingFence,
+    ) -> Result<ReleaseReceipt, RuntimeContractError> {
         if self.canonical_released {
             return Err(RuntimeContractError::AlreadyReleased);
         }

@@ -836,7 +836,10 @@ impl HttpExchange<'_> {
             };
             let command_binding = command_target_session
                 .as_ref()
-                .map(runtime_command_binding_for_session)
+                .map(|session| {
+                    runtime_command_binding_for_current_session(store_owned, project_id, session)
+                })
+                .transpose()?
                 .unwrap_or_default();
             let command_precondition = command_target_session
                 .as_ref()

@@ -256,6 +256,8 @@ fn close_profile_and_session() -> (ProviderIntegrationProfile, AgentSession) {
 
 fn binding(session: &AgentSession) -> RuntimeCommandBinding {
     RuntimeCommandBinding {
+        target_member_run_id: Some("member-run-1".to_string()),
+        target_member_run_generation: Some(session.runtime_generation),
         target_session_id: Some(session.id.clone()),
         target_runtime_generation: Some(session.runtime_generation),
         target_driver_generation: Some(session.control_state.driver_generation),
@@ -266,6 +268,70 @@ fn binding(session: &AgentSession) -> RuntimeCommandBinding {
         capability_profile_version: Some("codex-app-server-v1".to_string()),
         permission_envelope_ref: Some(session.permission_envelope_ref.clone()),
     }
+}
+
+fn admitted_fence(session: &AgentSession) -> RuntimeBindingFence {
+    let member = harness_core::agentfirm_api::MemberRun {
+        id: "member-run-1".to_string(),
+        agent_member_id: session.agent_member_id.clone(),
+        team_run_id: "team-run-1".to_string(),
+        role_snapshot: "member".to_string(),
+        provider_profile_snapshot: None,
+        requested_controls: serde_json::json!({}),
+        effective_controls: serde_json::json!({}),
+        coordination_status: harness_core::agentfirm_api::MemberCoordinationStatus::Active,
+        runtime_status: harness_core::agentfirm_api::MemberRuntimeStatus::Idle,
+        runtime_generation: session.runtime_generation,
+        workspace_binding_id: None,
+        native_session: session.native_session_ref.clone(),
+        version: 1,
+        started_at: "t0".to_string(),
+        last_event_at: None,
+        finished_at: None,
+    };
+    let daemon = harness_core::NodeDaemonLease {
+        node_id: session.node_id.clone(),
+        daemon_id: session.node_daemon_id.clone(),
+        generation: session.node_daemon_generation,
+        instance_id: "instance-1".to_string(),
+        status: harness_core::NodeDaemonLeaseStatus::Active,
+        acquired_unix_ms: 1,
+        renewed_unix_ms: 1,
+        expires_unix_ms: 100,
+        released_unix_ms: None,
+    };
+    let command = harness_core::agentfirm_api::RuntimeCommandRecord {
+        id: "command-1".to_string(),
+        execution_space_id: session.execution_space_id.clone(),
+        target_node_id: session.node_id.clone(),
+        target_node_daemon_id: daemon.daemon_id.clone(),
+        target_node_daemon_generation: daemon.generation,
+        authenticated_actor: harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::Service,
+            id: daemon.daemon_id.clone(),
+        },
+        command: harness_core::agentfirm_api::RuntimeCommandKind::StartCycle,
+        required_capability: "cycle.start".to_string(),
+        idempotency_key: "command-1".to_string(),
+        request_fingerprint: "fingerprint-1".to_string(),
+        status: harness_core::agentfirm_api::RuntimeCommandStatus::Accepted,
+        phase: harness_core::agentfirm_api::RuntimeCommandPhase::Prepared,
+        effect_certainty: harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown,
+        postcondition_status: harness_core::agentfirm_api::RuntimePostconditionStatus::Unknown,
+        binding: binding(session),
+        precondition: Default::default(),
+        postcondition: Default::default(),
+        target_session_id: Some(session.id.clone()),
+        target_session_generation: Some(session.runtime_generation),
+        source_record_id: None,
+        result: None,
+        failure_code: None,
+        version: 1,
+        created_at: "t0".to_string(),
+        updated_at: "t0".to_string(),
+    };
+    RuntimeBindingFence::from_admitted_command(&command, session, &member, &daemon, None, 2)
+        .expect("exact admitted runtime binding")
 }
 
 #[test]
@@ -376,7 +442,7 @@ fn started_and_terminal_frames_require_the_exact_owned_thread() {
 #[test]
 fn failed_terminal_is_settled_and_close_does_not_interrupt_it_again() {
     let (profile, session) = close_profile_and_session();
-    let fence_binding = binding(&session);
+    let fence = admitted_fence(&session);
     let bridge = FakeBridge::completed("failed");
     bridge.frames.borrow_mut()[0].as_mut().unwrap()["params"]["turn"]["error"] = serde_json::json!({
         "message": "provider overloaded",
@@ -407,15 +473,8 @@ fn failed_terminal_is_settled_and_close_does_not_interrupt_it_again() {
     );
     assert!(outcome.terminal_observation.settled_boundary_observed);
 
-    let close = harness_runtime_contract::RuntimeAdapter::close_runtime(
-        &mut adapter,
-        RuntimeFence {
-            binding: &fence_binding,
-            target_node_daemon_id: "daemon-1",
-            target_node_daemon_generation: 3,
-        },
-    )
-    .unwrap();
+    let close =
+        harness_runtime_contract::RuntimeAdapter::close_runtime(&mut adapter, fence).unwrap();
     close.verify().unwrap();
     let bridge = adapter.into_inner();
     assert_eq!(bridge.interrupts, 0);
@@ -561,18 +620,12 @@ fn host_driven_cycle_fails_closed_on_an_unclassified_native_goal() {
 #[test]
 fn close_reaps_once_and_retains_the_native_thread_without_claiming_quiesce() {
     let (profile, session) = close_profile_and_session();
-    let binding = binding(&session);
+    let fence = admitted_fence(&session);
     let mut adapter = CodexTeamRuntime::new(FakeBridge::completed("completed"));
     TeamRuntimeAdapter::bind_authority_session(&mut adapter, session, &profile).unwrap();
-    let receipt = harness_runtime_contract::RuntimeAdapter::close_runtime(
-        &mut adapter,
-        RuntimeFence {
-            binding: &binding,
-            target_node_daemon_id: "daemon-1",
-            target_node_daemon_generation: 3,
-        },
-    )
-    .unwrap();
+    let receipt =
+        harness_runtime_contract::RuntimeAdapter::close_runtime(&mut adapter, fence.clone())
+            .unwrap();
     receipt.verify().unwrap();
     assert_eq!(
         receipt.native_session_retained,
@@ -582,15 +635,8 @@ fn close_reaps_once_and_retains_the_native_thread_without_claiming_quiesce() {
         .evidence
         .iter()
         .all(|item| !item.contains("flush") && !item.contains("writable")));
-    let error = harness_runtime_contract::RuntimeAdapter::close_runtime(
-        &mut adapter,
-        RuntimeFence {
-            binding: &binding,
-            target_node_daemon_id: "daemon-1",
-            target_node_daemon_generation: 3,
-        },
-    )
-    .unwrap_err();
+    let error =
+        harness_runtime_contract::RuntimeAdapter::close_runtime(&mut adapter, fence).unwrap_err();
     assert_eq!(error, RuntimeContractError::AlreadyReleased);
 }
 
@@ -602,22 +648,15 @@ fn close_inhibits_provider_driven_goal_before_interrupting_its_active_turn() {
         runtime_generation: session.runtime_generation,
         driver_generation: session.control_state.driver_generation,
     };
-    let binding = binding(&session);
+    let fence = admitted_fence(&session);
     let mut bridge = FakeBridge::completed("interrupted");
     bridge.thread_status_before_terminal = "active";
     bridge.goal_status = Some("active");
     let mut adapter = CodexTeamRuntime::new(bridge);
     TeamRuntimeAdapter::bind_authority_session(&mut adapter, session, &profile).unwrap();
 
-    let receipt = harness_runtime_contract::RuntimeAdapter::close_runtime(
-        &mut adapter,
-        RuntimeFence {
-            binding: &binding,
-            target_node_daemon_id: "daemon-1",
-            target_node_daemon_generation: 3,
-        },
-    )
-    .unwrap();
+    let receipt =
+        harness_runtime_contract::RuntimeAdapter::close_runtime(&mut adapter, fence).unwrap();
 
     receipt.verify().unwrap();
     let bridge = adapter.into_inner();
@@ -635,22 +674,14 @@ fn strong_quiesce_controls_an_active_goal_but_fails_closed_on_unprovable_drain_a
         runtime_generation: session.runtime_generation,
         driver_generation: session.control_state.driver_generation,
     };
-    let binding = binding(&session);
+    let fence = admitted_fence(&session);
     let mut bridge = FakeBridge::completed("interrupted");
     bridge.thread_status_before_terminal = "active";
     bridge.goal_status = Some("active");
     let mut adapter = CodexTeamRuntime::new(bridge);
     TeamRuntimeAdapter::bind_authority_session(&mut adapter, session, &profile).unwrap();
 
-    let error = harness_runtime_contract::RuntimeAdapter::quiesce(
-        &mut adapter,
-        RuntimeFence {
-            binding: &binding,
-            target_node_daemon_id: "daemon-1",
-            target_node_daemon_generation: 3,
-        },
-    )
-    .unwrap_err();
+    let error = harness_runtime_contract::RuntimeAdapter::quiesce(&mut adapter, fence).unwrap_err();
 
     assert!(error.to_string().contains("quiesce"), "{error}");
     let bridge = adapter.into_inner();

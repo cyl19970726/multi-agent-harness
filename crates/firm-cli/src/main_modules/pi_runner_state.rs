@@ -163,6 +163,7 @@ pub(super) fn run_pi_team_member(
     if let Err(error) = crate::runtime_adapter::preflight_profile_effect(
         profile,
         &process_effect.target_session,
+        &process_effect.fence,
         crate::runtime_adapter_contract::SemanticCapability::OpenOrResume,
     ) {
         settle_provider_effect_not_applied(ledger, &process_effect, error.to_string())?;
@@ -190,14 +191,9 @@ pub(super) fn run_pi_team_member(
     };
     let mut adapter = pi_rpc::PiTeamRuntime::new(pi_client);
     adapter.bind_authority_session(process_effect.target_session.clone(), profile)?;
-    let process_binding = runtime_command_binding_for_session(&process_effect.target_session);
     let open_observation = match crate::runtime_adapter_contract::RuntimeAdapter::open_or_resume(
         &mut adapter,
-        crate::runtime_adapter_contract::RuntimeFence {
-            binding: &process_binding,
-            target_node_daemon_id: &process_effect.target_session.node_daemon_id,
-            target_node_daemon_generation: process_effect.target_session.node_daemon_generation,
-        },
+        process_effect.fence.clone(),
         resume_session_file,
     ) {
         Ok(observation) => observation,

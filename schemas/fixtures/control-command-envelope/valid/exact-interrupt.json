@@ -11,6 +11,8 @@
   "expected_version": 5,
   "expires_unix_ms": 9999999999999,
   "binding": {
+    "target_member_run_id": "member-run-1",
+    "target_member_run_generation": 7,
     "target_session_id": "session-1",
     "target_runtime_generation": 3,
     "target_driver_generation": 4,

@@ -250,22 +250,7 @@ pub(super) struct ProviderEffectAdmission {
     pub(super) settle_context: harness_core::agentfirm_api::MutationContext,
     pub(super) control_plan: Option<crate::provider_adapter::ProviderControlPlan>,
     pub(super) target_session: harness_core::agentfirm_api::AgentSession,
-}
-
-pub(super) fn runtime_command_binding_for_session(
-    session: &harness_core::agentfirm_api::AgentSession,
-) -> harness_core::agentfirm_api::RuntimeCommandBinding {
-    harness_core::agentfirm_api::RuntimeCommandBinding {
-        target_session_id: Some(session.id.clone()),
-        target_runtime_generation: Some(session.runtime_generation),
-        target_driver_generation: Some(session.control_state.driver_generation),
-        target_driver: session.control_state.driver_ref.clone(),
-        native_session_ref: session.native_session_ref.clone(),
-        composition_fingerprint: session.control_state.composition_fingerprint.clone(),
-        capability_fingerprint: session.control_state.capability_fingerprint.clone(),
-        permission_envelope_ref: Some(session.permission_envelope_ref.clone()),
-        ..Default::default()
-    }
+    pub(super) fence: crate::runtime_adapter_contract::RuntimeBindingFence,
 }
 
 pub(super) fn runtime_command_postcondition_for(
@@ -346,7 +331,8 @@ pub(super) fn prepare_provider_effect_kind(
         RuntimeEffectCertainty,
     };
 
-    let (execution_space_id, session) = provider_session_for_member(ledger, member)?;
+    let (execution_space_id, canonical_member, session) =
+        provider_runtime_subject_for_member(ledger, member)?;
     let lifecycle_is_eligible = match command_kind {
         harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider
         | harness_core::agentfirm_api::RuntimeCommandKind::StartCycle
@@ -438,7 +424,7 @@ pub(super) fn prepare_provider_effect_kind(
         // the already-frozen daemon lease and use an idempotency-derived
         // observation marker instead of sampling a new wall clock.
         expires_unix_ms: lease.expires_unix_ms,
-        binding: runtime_command_binding_for_session(&session),
+        binding: runtime_command_binding_for_member_session(&canonical_member, &session),
         precondition: harness_core::agentfirm_api::RuntimeCommandPrecondition {
             expected_session_version: Some(session.version),
             expected_residency: Some(session.control_state.runtime_residency),
@@ -485,10 +471,18 @@ pub(super) fn prepare_provider_effect_kind(
             admission.projection.id
         )));
     }
+    let fence = runtime_binding_fence_for_admission(
+        ledger,
+        &admission,
+        &session,
+        &canonical_member,
+        &lease,
+    )?;
     Ok(ProviderEffectAdmission {
         command_id,
         control_plan: None,
         target_session: session,
+        fence,
         settle_context: harness_core::agentfirm_api::MutationContext {
             execution_space_id: admission_context.execution_space_id,
             authenticated_actor: daemon_actor,
@@ -578,7 +572,8 @@ pub(super) fn prepare_provider_process_effect(
     use harness_core::agentfirm_api::{
         ActorKind, ActorRef, ControlCommandEnvelope, RuntimeCommandKind,
     };
-    let (execution_space_id, session) = provider_session_for_member(ledger, member)?;
+    let (execution_space_id, canonical_member, session) =
+        provider_runtime_subject_for_member(ledger, member)?;
     let lease = ledger
         .store
         .latest_node_daemon_lease(&session.node_id)?
@@ -635,7 +630,7 @@ pub(super) fn prepare_provider_process_effect(
         idempotency_key: idempotency_key.clone(),
         expected_version: 0,
         expires_unix_ms: current_unix_ms_u64().saturating_add(30_000),
-        binding: runtime_command_binding_for_session(&session),
+        binding: runtime_command_binding_for_member_session(&canonical_member, &session),
         precondition: harness_core::agentfirm_api::RuntimeCommandPrecondition {
             expected_session_version: Some(session.version),
             expected_residency: Some(session.control_state.runtime_residency),
@@ -672,10 +667,18 @@ pub(super) fn prepare_provider_process_effect(
             admission.projection.effect_certainty
         )));
     }
+    let fence = runtime_binding_fence_for_admission(
+        ledger,
+        &admission,
+        &session,
+        &canonical_member,
+        &lease,
+    )?;
     Ok(ProviderEffectAdmission {
         command_id,
         control_plan: None,
         target_session: session,
+        fence,
         settle_context: harness_core::agentfirm_api::MutationContext {
             execution_space_id: context.execution_space_id,
             authenticated_actor: daemon_actor,
@@ -794,6 +797,18 @@ pub(super) fn provider_session_for_member(
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,
 ) -> CliResult<(String, harness_core::agentfirm_api::AgentSession)> {
+    let (execution_space_id, _, session) = provider_runtime_subject_for_member(ledger, member)?;
+    Ok((execution_space_id, session))
+}
+
+fn provider_runtime_subject_for_member(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+) -> CliResult<(
+    String,
+    harness_core::agentfirm_api::MemberRun,
+    harness_core::agentfirm_api::AgentSession,
+)> {
     use harness_core::agentfirm_api::AgentSessionStatus;
 
     let run = latest_team_run(&ledger.store, &ledger.run_id)?;
@@ -883,7 +898,7 @@ pub(super) fn provider_session_for_member(
             session.execution_space_id
         )));
     }
-    Ok((execution_space_id, session))
+    Ok((execution_space_id, canonical_member.clone(), session))
 }
 
 /// Persist the bounded live-runtime projection used by driver/composition

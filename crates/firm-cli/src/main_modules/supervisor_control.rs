@@ -1029,7 +1029,9 @@ pub(super) fn managed_member_runtime_close_is_settled(
     if !exact_supervisor_driver {
         return Ok(false);
     }
-    let expected_binding = runtime_command_binding_for_session(session);
+    let mut expected_binding = runtime_command_binding_for_session(session);
+    expected_binding.target_member_run_id = Some(member.id.clone());
+    expected_binding.target_member_run_generation = Some(member.runtime_generation);
     let close_sources = [
         format!("{}:idle:close-runtime", close_request.id),
         format!("{}:active:close-runtime", close_request.id),

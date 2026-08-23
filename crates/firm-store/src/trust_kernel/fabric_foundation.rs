@@ -1,5 +1,12 @@
 use super::*;
 
+pub(super) enum RuntimeBindingAdmission {
+    Invocation,
+    RuntimeCommand {
+        allow_native_session_attachment: bool,
+    },
+}
+
 impl HarnessStore {
     pub(super) fn latest_fabric_side_records_unlocked<T, F>(
         &self,
@@ -80,11 +87,85 @@ impl HarnessStore {
         &self,
         session: &AgentSession,
         binding: &firm_core::agentfirm_api::RuntimeCommandBinding,
-        allow_native_session_attachment: bool,
+        admission: RuntimeBindingAdmission,
         resource_kind: &str,
         resource_id: &str,
         current_version: Option<u64>,
     ) -> StoreResult<()> {
+        let (require_member_run_binding, allow_native_session_attachment) = match admission {
+            RuntimeBindingAdmission::Invocation => (false, false),
+            RuntimeBindingAdmission::RuntimeCommand {
+                allow_native_session_attachment,
+            } => (
+                matches!(
+                    session.control_state.driver_ref,
+                    RuntimeDriverRef::TeamSupervisor { .. }
+                ),
+                allow_native_session_attachment,
+            ),
+        };
+        match (
+            binding.target_member_run_id.as_deref(),
+            binding.target_member_run_generation,
+        ) {
+            (Some(member_run_id), Some(member_run_generation)) => {
+                let members = self
+                    .trust_member_runs(&session.execution_space_id)?
+                    .into_iter()
+                    .filter(|member| member.id == member_run_id)
+                    .collect::<Vec<_>>();
+                match members.as_slice() {
+                    [member]
+                        if member.agent_member_id == session.agent_member_id
+                            && member.runtime_generation == member_run_generation
+                            && member.coordination_status
+                                == firm_core::agentfirm_api::MemberCoordinationStatus::Active =>
+                    {
+                        if let RuntimeDriverRef::TeamSupervisor { team_run_id, .. } =
+                            &session.control_state.driver_ref
+                        {
+                            if member.team_run_id != *team_run_id {
+                                return Err(trust_error(
+                                    TrustErrorCode::MemberRunGenerationFenced,
+                                    "provider effect MemberRun belongs to another TeamRun",
+                                    resource_kind,
+                                    resource_id,
+                                    current_version,
+                                ));
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(trust_error(
+                            TrustErrorCode::MemberRunGenerationFenced,
+                            "provider effect does not bind the exact active MemberRun identity and generation",
+                            resource_kind,
+                            resource_id,
+                            current_version,
+                        ))
+                    }
+                }
+            }
+            (None, None) if !require_member_run_binding => (),
+            (None, None) => {
+                return Err(trust_error(
+                    TrustErrorCode::MemberRunGenerationFenced,
+                    "team-supervised provider effect requires an exact MemberRun identity and generation",
+                    resource_kind,
+                    resource_id,
+                    current_version,
+                ))
+            }
+            _ => {
+                return Err(trust_error(
+                    TrustErrorCode::MemberRunGenerationFenced,
+                    "provider effect carries a partial MemberRun binding",
+                    resource_kind,
+                    resource_id,
+                    current_version,
+                ))
+            }
+        }
         let composition_matches = session
             .control_state
             .composition_fingerprint

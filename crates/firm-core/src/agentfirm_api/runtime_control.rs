@@ -45,6 +45,10 @@ pub enum RuntimeCommandKind {
 #[serde(deny_unknown_fields)]
 pub struct RuntimeCommandBinding {
     #[serde(default)]
+    pub target_member_run_id: Option<String>,
+    #[serde(default)]
+    pub target_member_run_generation: Option<u64>,
+    #[serde(default)]
     pub target_session_id: Option<String>,
     #[serde(default)]
     pub target_runtime_generation: Option<u64>,

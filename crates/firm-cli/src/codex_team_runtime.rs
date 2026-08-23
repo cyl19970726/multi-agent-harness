@@ -122,7 +122,7 @@ impl<B: CodexAppServerBridge> rt::RuntimeAdapter for CodexTeamRuntime<'_, B> {
 
     fn open_or_resume(
         &mut self,
-        fence: rt::RuntimeFence<'_>,
+        fence: rt::RuntimeBindingFence,
         native_session_ref: Option<&str>,
     ) -> Result<rt::RuntimeObservation, rt::RuntimeContractError> {
         rt::RuntimeAdapter::open_or_resume(&mut self.0, fence, native_session_ref)
@@ -130,7 +130,7 @@ impl<B: CodexAppServerBridge> rt::RuntimeAdapter for CodexTeamRuntime<'_, B> {
 
     fn execute_control(
         &mut self,
-        fence: rt::RuntimeFence<'_>,
+        fence: rt::RuntimeBindingFence,
         request: rt::ControlRequest,
     ) -> Result<rt::EffectReceipt, rt::RuntimeContractError> {
         rt::RuntimeAdapter::execute_control(&mut self.0, fence, request)
@@ -138,14 +138,14 @@ impl<B: CodexAppServerBridge> rt::RuntimeAdapter for CodexTeamRuntime<'_, B> {
 
     fn observe(
         &mut self,
-        fence: rt::RuntimeFence<'_>,
+        fence: rt::RuntimeBindingFence,
     ) -> Result<rt::RuntimeObservation, rt::RuntimeContractError> {
         rt::RuntimeAdapter::observe(&mut self.0, fence)
     }
 
     fn inspect_effect(
         &mut self,
-        fence: rt::RuntimeFence<'_>,
+        fence: rt::RuntimeBindingFence,
         effect_id: &str,
     ) -> Result<rt::EffectInspection, rt::RuntimeContractError> {
         rt::RuntimeAdapter::inspect_effect(&mut self.0, fence, effect_id)
@@ -153,7 +153,7 @@ impl<B: CodexAppServerBridge> rt::RuntimeAdapter for CodexTeamRuntime<'_, B> {
 
     fn reconcile(
         &mut self,
-        fence: rt::RuntimeFence<'_>,
+        fence: rt::RuntimeBindingFence,
         inspection: &rt::EffectInspection,
     ) -> Result<rt::ReconcileReceipt, rt::RuntimeContractError> {
         rt::RuntimeAdapter::reconcile(&mut self.0, fence, inspection)
@@ -161,21 +161,21 @@ impl<B: CodexAppServerBridge> rt::RuntimeAdapter for CodexTeamRuntime<'_, B> {
 
     fn close_runtime(
         &mut self,
-        fence: rt::RuntimeFence<'_>,
+        fence: rt::RuntimeBindingFence,
     ) -> Result<rt::MemberRuntimeCloseReceipt, rt::RuntimeContractError> {
         rt::RuntimeAdapter::close_runtime(&mut self.0, fence)
     }
 
     fn quiesce(
         &mut self,
-        fence: rt::RuntimeFence<'_>,
+        fence: rt::RuntimeBindingFence,
     ) -> Result<rt::QuiesceReceipt, rt::RuntimeContractError> {
         rt::RuntimeAdapter::quiesce(&mut self.0, fence)
     }
 
     fn release(
         &mut self,
-        fence: rt::RuntimeFence<'_>,
+        fence: rt::RuntimeBindingFence,
     ) -> Result<rt::ReleaseReceipt, rt::RuntimeContractError> {
         rt::RuntimeAdapter::release(&mut self.0, fence)
     }

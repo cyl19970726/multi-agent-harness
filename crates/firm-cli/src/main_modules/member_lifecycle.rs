@@ -243,7 +243,9 @@ pub(super) fn require_latched_close_runtime_postcondition(
     if member.native_session.is_none() && session.native_session_ref.is_none() && detached_idle {
         return Ok(());
     }
-    let expected_binding = runtime_command_binding_for_session(&session);
+    let mut expected_binding = runtime_command_binding_for_session(&session);
+    expected_binding.target_member_run_id = Some(member.id.clone());
+    expected_binding.target_member_run_generation = Some(member.runtime_generation);
     let exact_close_applied = ledger
         .store
         .runtime_commands(&execution_space_id)?

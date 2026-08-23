@@ -6,39 +6,15 @@ use super::*;
 // Capability honesty
 // ---------------------------------------------------------------------------
 
-pub(super) fn canonical_runtime_binding(
-    session: &harness_core::agentfirm_api::AgentSession,
-) -> harness_core::agentfirm_api::RuntimeCommandBinding {
-    harness_core::agentfirm_api::RuntimeCommandBinding {
-        target_session_id: Some(session.id.clone()),
-        target_runtime_generation: Some(session.runtime_generation),
-        target_driver_generation: Some(session.control_state.driver_generation),
-        target_driver: session.control_state.driver_ref.clone(),
-        native_session_ref: session.native_session_ref.clone(),
-        composition_fingerprint: session.control_state.composition_fingerprint.clone(),
-        capability_fingerprint: session.control_state.capability_fingerprint.clone(),
-        capability_profile_version: session
-            .control_state
-            .capability_fingerprint
-            .as_ref()
-            .map(|_| "agentfirm-runtime-adapter-v1".to_string()),
-        permission_envelope_ref: Some(session.permission_envelope_ref.clone()),
-    }
-}
-
 pub(super) fn preflight_start_cycle<A: TeamRuntimeAdapter<Error = CliError>>(
     adapter: &A,
     session: &harness_core::agentfirm_api::AgentSession,
+    fence: &crate::runtime_adapter_contract::RuntimeBindingFence,
 ) -> CliResult<()> {
-    let binding = canonical_runtime_binding(session);
     crate::runtime_adapter_contract::preflight_effect(
         crate::runtime_adapter_contract::RuntimeAdapter::describe(adapter),
         session,
-        crate::runtime_adapter_contract::RuntimeFence {
-            binding: &binding,
-            target_node_daemon_id: &session.node_daemon_id,
-            target_node_daemon_generation: session.node_daemon_generation,
-        },
+        fence.clone(),
         crate::runtime_adapter_contract::SemanticCapability::StartCycle,
         &[],
     )
@@ -52,6 +28,7 @@ pub(super) fn preflight_start_cycle<A: TeamRuntimeAdapter<Error = CliError>>(
 pub(crate) fn preflight_profile_effect(
     profile: &harness_core::ProviderIntegrationProfile,
     session: &harness_core::agentfirm_api::AgentSession,
+    fence: &crate::runtime_adapter_contract::RuntimeBindingFence,
     capability: crate::runtime_adapter_contract::SemanticCapability,
 ) -> CliResult<()> {
     harness_core::Validate::validate(profile).map_err(|error| {
@@ -76,15 +53,10 @@ pub(crate) fn preflight_profile_effect(
         capability_fingerprint,
         capability_bindings: profile.capability_bindings.clone(),
     };
-    let binding = canonical_runtime_binding(session);
     crate::runtime_adapter_contract::preflight_effect(
         &description,
         session,
-        crate::runtime_adapter_contract::RuntimeFence {
-            binding: &binding,
-            target_node_daemon_id: &session.node_daemon_id,
-            target_node_daemon_generation: session.node_daemon_generation,
-        },
+        fence.clone(),
         capability,
         &[],
     )
