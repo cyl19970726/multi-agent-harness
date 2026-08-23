@@ -740,9 +740,13 @@ pub(super) fn bound_member_role_context() -> CliResult<BoundMemberRoleContext> {
                     .into(),
             )
         })?;
-    let capability_token = env::var("FIRM_MEMBER_ROLE_ACTION_TOKEN").map_err(|_| {
-        CliError::Usage("member Role Actions require the live Supervisor capability token".into())
-    })?;
+    let capability_token = env::var("FIRM_MEMBER_ROLE_ACTION_TOKEN")
+        .or_else(|_| env::var("DSH_FIRM_MEMBER_ROLE_ACTION_TOKEN"))
+        .map_err(|_| {
+            CliError::Usage(
+                "member Role Actions require the live Supervisor capability token".into(),
+            )
+        })?;
     Ok(BoundMemberRoleContext {
         team_run_id,
         member_run_id,
