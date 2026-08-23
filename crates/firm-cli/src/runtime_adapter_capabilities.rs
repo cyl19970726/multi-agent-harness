@@ -184,6 +184,9 @@ pub(crate) fn capability_bindings_for(provider: &str) -> Option<Vec<CapabilityBi
         SharedTeamRuntimeKind::Claude => {
             Some(crate::claude_team_runtime::ClaudeTeamRuntime::capability_bindings())
         }
+        SharedTeamRuntimeKind::DeepSeek => {
+            Some(crate::deepseek_team_runtime::DeepSeekTeamRuntime::capability_bindings())
+        }
     }
 }
 

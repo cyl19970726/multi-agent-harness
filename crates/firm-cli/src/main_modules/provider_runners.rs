@@ -181,6 +181,11 @@ pub(super) fn run_member_orchestration(
                     ledger, objective, &current, &context, generation,
                 )
             }
+            Some(crate::runtime_adapter::SharedTeamRuntimeKind::DeepSeek) => {
+                run_deepseek_harness_team_member_shared(
+                    ledger, objective, &current, &context, generation,
+                )
+            }
             Some(crate::runtime_adapter::SharedTeamRuntimeKind::Pi) => {
                 run_pi_team_member(ledger, objective, &current, &context, generation)
             }
@@ -862,6 +867,249 @@ pub(super) fn run_claude_agent_sdk_team_member_shared(
 
 pub(super) fn claude_team_permission_mode() -> &'static str {
     "bypassPermissions"
+}
+
+pub(super) fn deepseek_harness_runner_path(cwd: &Path) -> CliResult<PathBuf> {
+    if let Ok(explicit) = std::env::var("FIRM_DEEPSEEK_MEMBER_RUNNER")
+        .or_else(|_| std::env::var("HARNESS_DEEPSEEK_MEMBER_RUNNER"))
+    {
+        let path = PathBuf::from(explicit);
+        if path.is_file() {
+            return Ok(path);
+        }
+        return Err(CliError::Usage(format!(
+            "FIRM_DEEPSEEK_MEMBER_RUNNER points at {}, which is not a file",
+            path.display()
+        )));
+    }
+    let current_executable = std::env::current_exe()
+        .ok()
+        .map(|path| fs::canonicalize(&path).unwrap_or(path));
+    deepseek_harness_runner_path_from(cwd, current_executable.as_deref())
+}
+
+pub(super) fn deepseek_harness_runner_path_from(
+    cwd: &Path,
+    current_executable: Option<&Path>,
+) -> CliResult<PathBuf> {
+    const RELATIVE: &str = "apps/deepseek-member-runner/bin/deepseek-member-runner.mjs";
+    let mut bases = Vec::new();
+    if let Some(executable) = current_executable {
+        bases.extend(executable.ancestors().map(Path::to_path_buf));
+    }
+    bases.extend(cwd.ancestors().map(Path::to_path_buf));
+    let mut visited = HashSet::new();
+    for base in bases
+        .into_iter()
+        .filter(|base| visited.insert(base.clone()))
+    {
+        let candidate = base.join(RELATIVE);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    // Fail explicitly rather than silently degrading to the `-p` path: a member
+    // that quietly loses its control channel is exactly the failure this mode
+    // exists to remove. Since `deepseek_sdk` is the only DeepSeek Harness Team
+    // mode, this message tells a first-time runner how to repair the host.
+    Err(CliError::Usage(format!(
+        "deepseek_sdk runner not found. Looked for `{RELATIVE}` from {} and \
+         the installed Harness binary, and HARNESS_DEEPSEEK_MEMBER_RUNNER is unset.\n\
+         Fix one of:\n  \
+         - install Star Harness with `pnpm star-harness:install`\n  \
+         - run from a checkout that contains the runner, or point \
+         HARNESS_DEEPSEEK_MEMBER_RUNNER at it\n  \
+         - install its exact dependencies: npm install --prefix apps/deepseek-member-runner",
+        cwd.display()
+    )))
+}
+
+/// Drive one native Cordis/AgentHandle-backed DeepSeek Harness member.
+///
+/// Harness owns coordination; the runner owns exactly one provider-native
+/// session. Coordination records stay provider-neutral while lifecycle control
+/// is backed by the DSH plugin transport.
+pub(super) fn run_deepseek_harness_team_member_shared(
+    ledger: &TeamRunLedger,
+    objective: &str,
+    member: &ProviderRuntimeProjection,
+    context: &MemberRuntimeContext,
+    transport_attempt: u64,
+) -> CliResult<MemberOutcome> {
+    use crate::runtime_adapter::TeamRuntimeAdapter as _;
+
+    ledger.require_supervisor_lease()?;
+    let mut member_row = member.clone();
+    let profile = member_row.provider_profile.clone().ok_or_else(|| {
+        CliError::Usage(format!(
+            "RUNTIME_ADAPTER_PROFILE_MISSING: {} has no persisted provider profile",
+            member_row.id
+        ))
+    })?;
+    let runner = deepseek_harness_runner_path(&context.cwd)?;
+    let envelope = member_work_collaboration_envelope(
+        ledger,
+        context.execution_space_id.as_deref(),
+        context.project_id.as_deref(),
+        context.project_selector.as_deref(),
+        &member_row,
+        None,
+    )?;
+    let process_effect = prepare_provider_process_effect(ledger, &member_row, transport_attempt)?;
+    if let Err(error) = crate::runtime_adapter::preflight_profile_effect(
+        &profile,
+        &process_effect.target_session,
+        crate::runtime_adapter_contract::SemanticCapability::OpenOrResume,
+    ) {
+        settle_provider_effect_not_applied(ledger, &process_effect, error.to_string())?;
+        return Err(error);
+    }
+    let permission_mode = harness_provider_deepseek::compile_harness_permission(
+        process_effect.target_session.effective_permission_ceiling,
+    )
+    .0;
+    let mut environment = envelope
+        .environment(&context.role_action_token)
+        .into_iter()
+        .map(|(key, value)| {
+            (
+                std::ffi::OsString::from(key),
+                std::ffi::OsString::from(value),
+            )
+        })
+        .collect::<Vec<_>>();
+    let dsh_home = std::env::var_os("DSH_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".dsh")))
+        .ok_or_else(|| {
+            CliError::Usage("DEEPSEEK_HARNESS_HOME_UNAVAILABLE: set DSH_HOME or HOME".to_string())
+        })?;
+    environment.extend([
+        (
+            std::ffi::OsString::from("DSH_CWD"),
+            context.cwd.as_os_str().to_os_string(),
+        ),
+        (
+            std::ffi::OsString::from("DSH_SESSION_ROOT"),
+            dsh_home
+                .join("sessions")
+                .join("star-harness")
+                .into_os_string(),
+        ),
+        (
+            std::ffi::OsString::from("DSH_PERMISSION_MODE"),
+            std::ffi::OsString::from(permission_mode),
+        ),
+        (
+            std::ffi::OsString::from("NODE_USE_ENV_PROXY"),
+            std::ffi::OsString::from("1"),
+        ),
+    ]);
+    let mut adapter = match crate::deepseek_team_runtime::DeepSeekTeamRuntime::spawn(
+        crate::deepseek_team_runtime::DeepSeekTeamRuntimeConfig {
+            runner_path: runner,
+            cwd: context.cwd.clone(),
+            team_run_id: ledger.run_id.clone(),
+            member_run_id: member.id.clone(),
+            member_name: member.name.clone(),
+            role_label: member.role.clone(),
+            owned_paths: member.owned_paths.clone(),
+            model: member.model.clone(),
+            effort: member.provider_controls.reasoning_effort.requested.clone(),
+            permission_mode: permission_mode.to_string(),
+            allowed_tools: None,
+            disallowed_tools: None,
+            setting_sources: vec!["project".to_string(), "user".to_string()],
+            resume_session_id: member
+                .native_session
+                .as_ref()
+                .map(|session| session.native_session_id.clone()),
+            environment,
+        },
+    ) {
+        Ok(adapter) => adapter,
+        Err(error) => {
+            settle_provider_effect_not_applied(ledger, &process_effect, error.to_string())?;
+            return Err(error);
+        }
+    };
+    adapter.bind_authority_session(process_effect.target_session.clone(), &profile)?;
+    let binding = runtime_command_binding_for_session(&process_effect.target_session);
+    let resume_ref = member
+        .native_session
+        .as_ref()
+        .map(|session| session.native_session_id.as_str());
+    let open_observation = match crate::runtime_adapter_contract::RuntimeAdapter::open_or_resume(
+        &mut adapter,
+        crate::runtime_adapter_contract::RuntimeFence {
+            binding: &binding,
+            target_node_daemon_id: &process_effect.target_session.node_daemon_id,
+            target_node_daemon_generation: process_effect.target_session.node_daemon_generation,
+        },
+        resume_ref,
+    ) {
+        Ok(observation) => observation,
+        Err(error) => {
+            settle_provider_effect(
+                ledger,
+                &process_effect,
+                false,
+                None,
+                Some(error.to_string()),
+            )?;
+            return Err(CliError::Usage(format!(
+                "RUNTIME_COMMAND_RECOVERY_REQUIRED: DeepSeek open/resume could not be verified after spawn: {error}"
+            )));
+        }
+    };
+    settle_provider_effect(
+        ledger,
+        &process_effect,
+        true,
+        Some(serde_json::json!({
+            "provider": "deepseek_harness",
+            "phase": "runtime_attached",
+            "observation": open_observation,
+        })),
+        None,
+    )?;
+    transition_provider_session_runtime_control(
+        ledger,
+        &member_row,
+        harness_core::agentfirm_api::RuntimeResidency::Attached,
+        harness_core::agentfirm_api::RuntimeActivity::Idle,
+    )?;
+    let expected = member_row.clone();
+    member_row.native_session = Some(native_session_ref(
+        &member_row,
+        adapter.native_session_locator(),
+        adapter.native_locator_kind(),
+    ));
+    if member_row
+        .provider_controls
+        .service_tier
+        .requested
+        .is_some()
+    {
+        member_row
+            .provider_controls
+            .service_tier
+            .mark_unsupported("DeepSeek Harness exposes no reviewed service-tier control");
+    }
+    member_row.status = MemberRunStatus::Idle;
+    member_row.last_event_at = Some(now_string());
+    let (live_control, registration) =
+        register_live_member_control(&member_row, &context.role_action_token, 16);
+    ledger.save_member_run(&expected, &member_row)?;
+    crate::runtime_adapter::run_team_member_with_adapter(
+        ledger,
+        objective,
+        &mut member_row,
+        context,
+        &mut adapter,
+        &live_control,
+        Some(registration),
+    )
 }
 
 pub(super) fn run_kimi_member_shared(

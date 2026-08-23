@@ -56,6 +56,7 @@ mod agentfirm_api;
 mod claude_team_runtime;
 mod codex_app_server;
 mod codex_team_runtime;
+mod deepseek_team_runtime;
 mod execution_space;
 mod execution_space_commands;
 #[cfg(unix)]
@@ -106,6 +107,9 @@ use node_team_commands::*;
 #[path = "main_modules/team_provider_profiles.rs"]
 mod team_provider_profiles;
 use team_provider_profiles::*;
+#[path = "main_modules/deepseek_provider_profile.rs"]
+mod deepseek_provider_profile;
+use deepseek_provider_profile::*;
 #[path = "main_modules/managed_host_profile.rs"]
 mod managed_host_profile;
 use managed_host_profile::*;

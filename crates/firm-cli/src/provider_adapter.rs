@@ -118,7 +118,7 @@ pub(crate) fn node_session_capabilities(provider: &str) -> Option<NodeSessionCap
         // NodeDaemon-owned AgentSession handles have not yet been proven.
         // Report the narrower truth and fail closed instead of inheriting the
         // generic Team adapter's capabilities.
-        "claude" | "kimi" | "pi" => NodeSessionCapabilities {
+        "claude" | "deepseek_harness" | "kimi" | "pi" => NodeSessionCapabilities {
             start: false,
             resume: false,
             cancel_turn: false,
@@ -208,7 +208,7 @@ pub(crate) fn team_loop_capabilities(provider: &str) -> Option<ProviderCapabilit
         // Codex app-server exposes steer, but the adapter still has to prove a
         // safe injection point at runtime; the static matrix alone never does.
         "codex" => true,
-        "claude" | "kimi" | "pi" => false,
+        "claude" | "deepseek_harness" | "kimi" | "pi" => false,
         _ => return None,
     };
     // Honesty rule: a bool the code cannot back is an overclaim. Pi had no
@@ -216,7 +216,7 @@ pub(crate) fn team_loop_capabilities(provider: &str) -> Option<ProviderCapabilit
     // it reports the narrower truth; its executable capability report lives
     // in `runtime_adapter::TeamRuntimeAdapter::capability_bindings`.
     let (inspect_state, reconcile_effect) = match provider {
-        "pi" => (false, false),
+        "pi" | "deepseek_harness" => (false, false),
         _ => (true, true),
     };
     Some(ProviderCapabilities {
@@ -241,6 +241,7 @@ pub(crate) fn control_plan(
     let primitive = match provider {
         "codex" => NativeControlPrimitive::CodexTurnInterrupt,
         "claude" => NativeControlPrimitive::ClaudeAgentSdkInterrupt,
+        "deepseek_harness" => NativeControlPrimitive::DeepSeekHarnessCancel,
         "kimi" => NativeControlPrimitive::KimiAcpCancel,
         "pi" => NativeControlPrimitive::PiRpcInterrupt,
         _ => return Err(format!("PROVIDER_CONTROL_UNSUPPORTED: {provider}")),
@@ -437,12 +438,18 @@ pub(crate) fn map_permission(
     provider: &str,
     requested: PermissionCeiling,
 ) -> Result<ProviderPermissionMapping, String> {
-    if !matches!(provider, "codex" | "claude" | "kimi" | "pi") {
+    if !matches!(
+        provider,
+        "codex" | "claude" | "deepseek_harness" | "kimi" | "pi"
+    ) {
         return Err(format!("PROVIDER_CAPABILITY_UNPROVABLE: {provider}"));
     }
     let compiled = match provider {
         "codex" => Ok(harness_provider_codex::compile_node_permission(requested)),
         "claude" => Ok(harness_provider_claude::compile_agent_sdk_permission(
+            requested,
+        )),
+        "deepseek_harness" => Ok(harness_provider_deepseek::compile_harness_permission(
             requested,
         )),
         "kimi" => harness_provider_kimi::compile_acp_permission(requested)
@@ -493,8 +500,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn four_provider_conformance_matrix_is_closed_and_fail_closed() {
-        for provider in ["codex", "claude", "pi"] {
+    fn provider_conformance_matrix_is_closed_and_fail_closed() {
+        for provider in ["codex", "claude", "deepseek_harness", "pi"] {
             let capabilities = team_loop_capabilities(provider).expect("known provider");
             assert!(capabilities.create_attach_resume);
             assert!(capabilities.queue_next_turn);
@@ -526,6 +533,10 @@ mod tests {
         let claude_full = map_permission("claude", PermissionCeiling::FullAccess).unwrap();
         assert_eq!(claude_full.native_sandbox, "unrestricted");
         assert_eq!(claude_full.native_approval, "bypassPermissions");
+        let deepseek_write =
+            map_permission("deepseek_harness", PermissionCeiling::WorkspaceWrite).unwrap();
+        assert_eq!(deepseek_write.native_sandbox, "workspace-write");
+        assert_eq!(deepseek_write.native_approval, "dsh-sandbox-policy");
         assert!(map_permission("kimi", PermissionCeiling::ReadOnly).is_err());
         assert!(map_permission("kimi", PermissionCeiling::WorkspaceWrite).is_err());
         let kimi = map_permission("kimi", PermissionCeiling::FullAccess).unwrap();

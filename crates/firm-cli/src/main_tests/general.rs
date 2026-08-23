@@ -785,6 +785,7 @@ fn create_two_member_team_run_for_provider(store: &HarnessStore, provider: &str)
         "claude" => "claude_agent_sdk",
         "kimi" => "kimi_acp",
         "pi" => "pi_rpc",
+        "deepseek_harness" => "deepseek_sdk",
         _ => panic!("unsupported test provider {provider}"),
     };
     create_team_run(

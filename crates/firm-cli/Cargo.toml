@@ -22,6 +22,7 @@ harness_provider_codex = { package = "firm-provider-codex", path = "../firm-prov
 harness_provider_kimi = { package = "firm-provider-kimi", path = "../firm-provider-kimi" }
 harness_provider_pi = { package = "firm-provider-pi", path = "../firm-provider-pi" }
 harness_provider_claude = { package = "firm-provider-claude", path = "../firm-provider-claude" }
+harness_provider_deepseek = { package = "firm-provider-deepseek", path = "../firm-provider-deepseek" }
 harness_store = { package = "firm-store", path = "../firm-store" }
 harness_fabric = { package = "firm-fabric", path = "../firm-fabric" }
 harness_governance = { package = "firm-governance", path = "../firm-governance" }

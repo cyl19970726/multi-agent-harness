@@ -165,6 +165,7 @@ pub enum ProviderControlAction {
 pub enum NativeControlPrimitive {
     CodexTurnInterrupt,
     ClaudeAgentSdkInterrupt,
+    DeepSeekHarnessCancel,
     KimiAcpCancel,
     PiRpcInterrupt,
 }

@@ -172,6 +172,7 @@ uniform mailbox promise:
 | Claude `claude_agent_sdk` | `in_turn` | Streaming input may reach the active provider turn. |
 | Codex `codex_app_server` | `next_round` | Mail remains queued until the next native round. |
 | Kimi `kimi_acp` | `next_round_batched` | Mail is claimed and rendered together at the next round boundary. |
+| DeepSeek Harness `deepseek_sdk` | `next_round_batched` | Mail enters the next host-driven DSH cycle through `Agent.followup`; native Goal plugins are absent. |
 
 This field describes delivery timing only. Provider-native transcripts remain
 the sole turn/execution record and are never copied into current Message or
@@ -184,8 +185,10 @@ observe the provider-native state transition before treating the execution
 driver as `provider_driven`. Prompt text alone is not proof.
 
 Providers without reviewed native continuation capability remain first-class
-`host_driven` members. DeepSeek currently belongs here as a conformance shim
-only; it is not admitted as a provider-driven managed runtime by this model.
+`host_driven` members. DeepSeek Harness is admitted in that form: its reviewed
+composition deliberately omits DSH Goal plugins, so it cannot silently become
+`provider_driven` even though the upstream framework supports plugin-defined
+continuation.
 
 ## Provider Adapter Contract
 

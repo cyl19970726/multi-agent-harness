@@ -4,7 +4,7 @@ use super::*;
 /// `--member name:role:provider[/mode][:model][@path1,path2]` spelling or the
 /// HTTP JSON body. `/mode` selects the execution mode; the driven Agent Team
 /// modes are `codex_app_server`, `kimi_acp`, `claude_agent_sdk`,
-/// `pi_rpc`, and
+/// `pi_rpc`, `deepseek_sdk`, and
 /// `external_interactive` declares the user's own already-open interactive
 /// session that Harness never spawns or drives (it polls its own inbox).
 #[derive(Clone)]
@@ -306,7 +306,8 @@ pub(super) fn finalize_provider_integration_profile(profile: &mut ProviderIntegr
         ("pi", "pi_rpc")
         | ("kimi", "kimi_acp")
         | ("codex", "codex_app_server")
-        | ("claude", "claude_agent_sdk") => {
+        | ("claude", "claude_agent_sdk")
+        | ("deepseek_harness", "deepseek_sdk") => {
             crate::runtime_adapter::capability_bindings_for(&profile.provider)
         }
         _ => None,
@@ -383,6 +384,21 @@ pub(super) fn finalize_provider_integration_profile(profile: &mut ProviderIntegr
                                 .to_string()),
                         ("claude", "observe", Some("2.1.220")) =>
                             Some("live:2026-07-28:claude_agent_sdk@2.1.220:team-run-1785230417407-p72711-0:member-run-1785230417407-p72711-1:session-ec91628d-a514-4d40-ae9c-7f73ecf3c40f:two-round-runtime-lifecycle+listSessions+native-jsonl"
+                                .to_string()),
+                        ("deepseek_harness", "open_or_resume", Some("0.1.1-rc.2")) =>
+                            Some("live:DEV-63:deepseek_sdk@0.1.1-rc.2+b150a551:star-3b69a281-44a0-4068-87a6-02d355f434d9:create+exact-session-resume"
+                                .to_string()),
+                        ("deepseek_harness", "start_cycle", Some("0.1.1-rc.2")) =>
+                            Some("live:DEV-63:deepseek_sdk@0.1.1-rc.2+b150a551:dev63-proxy-input-1+dev63-proxy-input-2:matching-inbox-splice+completed"
+                                .to_string()),
+                        ("deepseek_harness", "interrupt_current_cycle", Some("0.1.1-rc.2")) =>
+                            Some("live:DEV-63:deepseek_sdk@0.1.1-rc.2+b150a551:star-dc77b84b-fa18-48e6-9d00-6f45e175137c:dev63-final-interrupt-input+cancel+same-session-idle"
+                                .to_string()),
+                        ("deepseek_harness", "close_runtime", Some("0.1.1-rc.2")) =>
+                            Some("live:DEV-63:deepseek_sdk@0.1.1-rc.2+b150a551:member_closed+owned-runner-exit+native-session-retained"
+                                .to_string()),
+                        ("deepseek_harness", "observe", Some("0.1.1-rc.2")) =>
+                            Some("live:DEV-63:deepseek_sdk@0.1.1-rc.2+b150a551:owned-runner+typed-session-events+transport-liveness"
                                 .to_string()),
                         _ => None,
                     };
@@ -650,6 +666,9 @@ pub(super) fn team_member_provider_profile_for_mode(
                 note: Some("user-driven external session; Harness enforces nothing".to_string()),
             },
         });
+    }
+    if provider == "deepseek_harness" && matches!(requested_mode, Some("deepseek_sdk") | None) {
+        return deepseek_provider_profile();
     }
     // Agent Team Claude members are persistent Agent SDK sessions. Historical
     // `claude_cli` records remain readable but cannot start a new member.

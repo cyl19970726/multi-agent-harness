@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn four_provider_native_control_seam_is_durable_replay_safe_and_fail_closed() {
+fn five_provider_native_control_seam_is_durable_replay_safe_and_fail_closed() {
     use harness_core::agentfirm_api::{
         AgentSessionStatus, PermissionCeiling, RuntimeCommandStatus, RuntimeDispatchMode,
         RuntimeEffectCertainty, RuntimePostconditionStatus,
@@ -15,6 +15,10 @@ fn four_provider_native_control_seam_is_durable_replay_safe_and_fail_closed() {
         (
             "claude",
             crate::provider_adapter::NativeControlPrimitive::ClaudeAgentSdkInterrupt,
+        ),
+        (
+            "deepseek_harness",
+            crate::provider_adapter::NativeControlPrimitive::DeepSeekHarnessCancel,
         ),
         (
             "kimi",

@@ -14,7 +14,7 @@ const rejectText = (relative, pattern, message) => {
   if (pattern.test(text)) failures.push(`${relative}: ${message}`);
 };
 
-const providerCrates = ["codex", "claude", "kimi", "pi"];
+const providerCrates = ["codex", "claude", "kimi", "pi", "deepseek"];
 for (const provider of providerCrates) {
   const base = `crates/firm-provider-${provider}`;
   if (!fs.existsSync(path.join(root, base, "src"))) {
@@ -45,8 +45,8 @@ requireText(
 );
 requireText(
   "crates/firm-application/src/provider_catalog.rs",
-  /PROVIDERS: \[ProviderDescriptor; 4\]/,
-  "canonical provider catalog must remain closed over the four production providers",
+  /PROVIDERS: \[ProviderDescriptor; 5\]/,
+  "canonical provider catalog must remain closed over the five production providers",
 );
 requireText(
   "crates/firm-provider-claude/src/runner_contract.rs",
@@ -57,6 +57,16 @@ requireText(
   "apps/claude-member-runner/src/protocol.mjs",
   /runner-v1\.json/,
   "Claude Node runner must consume the same versioned contract before SDK loading",
+);
+requireText(
+  "crates/firm-provider-deepseek/src/runner_contract.rs",
+  /runner-v1\.json/,
+  "DeepSeek Harness Rust binding must consume the shared versioned runner contract",
+);
+requireText(
+  "apps/deepseek-member-runner/src/member-runner.mjs",
+  /runner-v1\.json/,
+  "DeepSeek Harness runner must consume the same versioned contract before plugin loading",
 );
 
 for (const retiredCliNativeFile of [
@@ -69,7 +79,7 @@ for (const retiredCliNativeFile of [
 }
 
 const mcpTools = read("crates/firm-cli/src/mcp/tool_definitions.rs");
-for (const mode of ["codex_app_server", "claude_agent_sdk", "kimi_acp", "pi_rpc"]) {
+for (const mode of ["codex_app_server", "claude_agent_sdk", "kimi_acp", "pi_rpc", "deepseek_sdk"]) {
   if (!mcpTools.includes(`\"${mode}\"`)) {
     failures.push(`crates/firm-cli/src/mcp/tool_definitions.rs: missing current Team mode ${mode}`);
   }
@@ -81,4 +91,4 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log("Provider runtime package boundaries: 4 providers, neutral contracts, application policy, and CLI composition verified.");
+console.log("Provider runtime package boundaries: 5 providers, neutral contracts, application policy, and CLI composition verified.");

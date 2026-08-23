@@ -224,7 +224,7 @@ or remains unknown; resolution never blindly repeats the native effect.
 
 ## Provider conformance
 
-Codex, Claude, Kimi, and Pi expose separate, closed capability tuples:
+Codex, Claude, Kimi, Pi, and DeepSeek Harness expose separate, closed capability tuples:
 
 - requested permission must fit both the AgentMember ceiling and provider
   adapter capability, and the ceiling must be verifiably enforced — the
@@ -252,8 +252,9 @@ Codex, Claude, Kimi, and Pi expose separate, closed capability tuples:
   (open/resume, start cycle, inject current cycle, queue at native boundary,
   interrupt, continuation inspection/control, narrow Team Close, strong
   quiesce, and release) into provider primitives with an executable per-intent
-  capability report. Pi, Codex app-server, Claude Agent SDK, and Kimi ACP all
-  enters through this shared loop; `firm-provider-{codex,claude,kimi,pi}` own
+  capability report. Pi, Codex app-server, Claude Agent SDK, Kimi ACP, and
+  DeepSeek Harness all enter through this shared loop;
+  `firm-provider-{codex,claude,kimi,pi,deepseek}` own
   native transport, observation, permission mapping, and exact-version
   receipts, while application composition owns Work/Message/RuntimeCommand
   preparation and settlement;
@@ -266,10 +267,12 @@ Codex, Claude, Kimi, and Pi expose separate, closed capability tuples:
   observation, and durable native flush. A provider that cannot observe one of
   those postconditions remains degraded and fails closed; a process exit or
   session-close ACK never fills in missing evidence;
-- DeepSeek is not a managed production provider in this contract. Any current
-  DeepSeek harness work is treated as a faithful conformance shim/table-driven
-  test surface until a reviewed native adapter, exact version, capability
-  evidence, and live acceptance exist;
+- DeepSeek Harness `deepseek_sdk` is a managed host-driven Team mode at exact
+  upstream `0.1.1-rc.2` / `b150a551`. Its native Cordis composition uses
+  `ctx.agents.create/resume`, `Agent.followup`, `Agent.cancel`, `whenIdle`, and
+  provider-owned JSONL sessions. Goal plugins are intentionally absent;
+  `quiesce`, `release`, effect inspection/reconciliation, and standalone Node
+  sessions remain degraded or unsupported and fail closed;
 - Codex has a proven NodeDaemon-owned app-server start/resume/stop path;
   standalone cancel remains disabled until a native turn is bound;
 - Claude, Kimi, and Pi remain disabled for standalone AgentSession lifecycle
@@ -357,8 +360,8 @@ Release requires:
 - real Host→Team/Member and Member→Host/Team Message journeys with
   subscriptions, per-recipient delivery, provider receipt, ACK/cursor, and
   sibling Team/Node/Space negatives;
-- Codex/Claude/Kimi/Pi permission and queue/current-turn conformance;
-- executable native control conformance for all four adapters, explicit
+- Codex/Claude/Kimi/Pi/DeepSeek Harness permission and queue/current-turn conformance;
+- executable native control conformance for all five adapters, explicit
   unavailable-provider negatives, and real provider-backed dogfood for each
   provider available in the release environment;
 - executable zero-match governance for retired runtime/message authorities;
