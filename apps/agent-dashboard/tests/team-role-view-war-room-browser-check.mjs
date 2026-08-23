@@ -93,7 +93,30 @@ try {
     const selectedFixtureNode=page.locator('[data-work-graph-node="work-roleview-1"]').filter({visible:true});
     assert.equal(await selectedFixtureNode.count(),scenario.kind==="populated"?1:0,"authoritative Work graph lost its Work node");
     assert.equal(await page.locator('[data-testid="team-work-graph"]').filter({visible:true}).count(),scenario.kind==="populated"?1:0,"infinite graph canvas visibility is incorrect");
-    if(scenario.kind==="populated"){assert.equal(await page.getByLabel("Work graph viewport controls").count(),1,"graph controls are missing");assert.equal(await page.getByLabel("Work graph minimap").count(),1,"graph minimap is missing");await page.getByRole("tab",{name:"Kanban"}).click();await page.waitForURL(/teamWorkView=kanban/);assert.equal(await page.locator("[data-work-phase-column]").count(),4,"Kanban does not expose four canonical phase columns");assert.equal(await page.locator('[data-work-kanban-card="work-roleview-1"]').count(),1,"Kanban lost the shared Work projection");await page.screenshot({path:join(evidenceDir,`team-console-kanban--${viewport.width}x${viewport.height}.png`),animations:"disabled"});await page.getByRole("tab",{name:"Graph"}).click();await page.waitForFunction(()=>!new URL(location.href).searchParams.has("teamWorkView"));}
+    if(scenario.kind==="populated"){
+      assert.equal(await page.getByLabel("Work graph viewport controls").count(),1,"graph controls are missing");
+      assert.equal(await page.getByLabel("Work graph minimap").count(),1,"graph minimap is missing");
+      const graphCanvas=page.locator('[data-testid="work-graph-infinite-canvas"]');
+      assert.equal(await graphCanvas.evaluate((element)=>element.scrollWidth<=element.clientWidth),true,"dependency canvas expands beyond its Work panel");
+      await page.getByRole("tab",{name:"Kanban"}).click();
+      await page.waitForURL(/teamWorkView=kanban/);
+      assert.equal(await page.locator("[data-work-phase-column]").count(),4,"Kanban does not expose four canonical phase columns");
+      assert.equal(await page.locator('[data-work-kanban-card="work-roleview-1"]').count(),1,"Kanban lost the shared Work projection");
+      const kanban=page.locator('[data-testid="work-kanban-columns"]');
+      const workspace=page.locator('[data-testid="authenticated-team-workspace"]');
+      const [kanbanBox,workspaceBox]=await Promise.all([kanban.boundingBox(),workspace.boundingBox()]);
+      assert.ok(kanbanBox&&workspaceBox&&kanbanBox.width<=workspaceBox.width+1,"Kanban strip expands the Team Workspace instead of owning horizontal scroll");
+      if(viewport.width<1280){
+        assert.equal(await kanban.evaluate((element)=>element.scrollWidth>element.clientWidth),true,"constrained Kanban has no internal horizontal scroll");
+        await kanban.evaluate((element)=>{element.scrollLeft=element.scrollWidth;});
+        const [hostBox,closedBox]=await Promise.all([kanban.boundingBox(),page.locator('[data-work-phase-column="closed"]').boundingBox()]);
+        assert.ok(hostBox&&closedBox&&closedBox.x>=hostBox.x-1&&closedBox.x+closedBox.width<=hostBox.x+hostBox.width+1,`Closed Kanban phase is not reachable inside the board scroller at ${viewport.width}px: ${JSON.stringify({hostBox,closedBox})}`);
+      }
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true,"Kanban leaks horizontal overflow to the page shell");
+      await page.screenshot({path:join(evidenceDir,`team-console-kanban--${viewport.width}x${viewport.height}.png`),animations:"disabled"});
+      await page.getByRole("tab",{name:"Graph"}).click();
+      await page.waitForFunction(()=>!new URL(location.href).searchParams.has("teamWorkView"));
+    }
     const worksCaptureName=teamConsoleOnly ? (scenario.kind==="populated"?`team-console-works--${viewport.width}x${viewport.height}.png`:`team-console-empty-works--${viewport.width}x${viewport.height}.png`) : (scenario.kind==="populated"?`war-room-workspace--${viewport.width}x${viewport.height}.png`:`war-room-empty--${viewport.width}x${viewport.height}.png`);
     await page.screenshot({path:join(evidenceDir,worksCaptureName),animations:"disabled"});
     if(scenario.kind==="populated"&&viewport.width===1440){failNextTeamView=true;await page.evaluate(()=>window.__roleViewStream.emit());await page.getByRole("alert").filter({hasText:"Refresh failed"}).waitFor();assert.equal(await page.locator('[data-work-graph-node="work-roleview-1"]').filter({visible:true}).count(),1,"failed refetch destroyed last-good Work graph");await page.getByRole("button",{name:"Retry"}).click();await page.getByRole("alert").filter({hasText:"Refresh failed"}).waitFor({state:"detached"});assert.equal(responseErrors.length,1,"stale-path fixture did not observe exactly one failed RoleView response");assert.match(responseErrors[0],/^503 .*team-workspace/);assert.equal(consoleErrors.every((entry)=>entry.includes("Failed to load resource")),true,"stale-path emitted an unexpected console error");responseErrors.length=0;consoleErrors.length=0;}

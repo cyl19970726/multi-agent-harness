@@ -23,8 +23,12 @@ for(const capability of [/@xyflow\/react/,/@dagrejs\/dagre/,/ReactFlow/,/MiniMap
 assert.match(graph,/nodesDraggable=\{false\}/,"graph node movement can imply a semantic write");
 assert.match(graph,/nodesConnectable=\{false\}/,"graph permits direct semantic edge creation");
 assert.match(graph,/deleteKeyCode=\{null\}/,"graph permits client-side semantic deletion");
+assert.match(graph,/ResizeObserver/,"graph layout does not measure its Work panel");
+assert.match(graph,/No dependency links in this view/,"an all-independent Work set is rendered as an unexplained empty dependency canvas");
+assert.match(graph,/hasVisibleDependencies/,"graph does not distinguish a real DAG from an all-independent Work set");
 assert.match(kanban,/phase:"open"/);assert.match(kanban,/phase:"active"/);assert.match(kanban,/phase:"review"/);assert.match(kanban,/phase:"closed"/);
 assert.match(kanban,/draggable=\{false\}/,"Kanban cards imply drag-to-mutate lifecycle authority");
+assert.match(kanban,/overflow-x-auto/,"Kanban does not own its constrained horizontal overflow");
 assert.match(board,/viewMode==="graph"/);assert.match(board,/WorkKanbanView/);
 assert.match(selection,/teamWorkView/);assert.match(workspace,/onViewModeChange/);
 assert.match(inspector,/Server-authoritative readiness/,"readiness provenance is not visible");
