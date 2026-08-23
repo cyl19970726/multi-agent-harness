@@ -401,37 +401,6 @@ impl TeamRunLedger {
         )
     }
 
-    /// Fold a causal transition once; retries return the first durable event.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn fold_event_once(
-        &self,
-        stable_key: &str,
-        source_kind: TeamRunEventSourceKind,
-        member_run_id: Option<String>,
-        entity_type: &str,
-        entity_id: &str,
-        operation: &str,
-        summary: &str,
-    ) -> CliResult<TeamRunEvent> {
-        let _guard = self.write_lock();
-        Ok(self.store.ensure_team_run_event_next(
-            stable_key,
-            TeamRunEvent {
-                id: String::new(),
-                seq: 0,
-                team_run_id: self.run_id.clone(),
-                source_kind,
-                member_run_id,
-                delegation_run_id: None,
-                entity_type: entity_type.to_string(),
-                entity_id: entity_id.to_string(),
-                operation: operation.to_string(),
-                summary: summary.to_string(),
-                occurred_at: now_string(),
-            },
-        )?)
-    }
-
     /// Append one MemberAction (seq = max existing action seq for the run + 1,
     /// assigned under the lock).
     pub(super) fn append_action(

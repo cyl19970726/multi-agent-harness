@@ -387,7 +387,9 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
         .iter()
         .any(|action| action["kind"] == "send_message" && action["disabled_reason"].is_null()));
 
-    // A TeamRun without a bound Host thread is honestly unbound.
+    // External-interactive ownership comes from the exact Host MemberRun, not
+    // from an optional provider thread locator. Missing thread remains
+    // pull-only and never fabricates an AgentSession.
     let (status, unbound_run) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
@@ -409,7 +411,7 @@ fn delivery_projection_is_consistent_correlated_and_host_mode_is_labeled() {
     assert_eq!(status, 200, "unbound Host view: {unbound_workspace}");
     assert_eq!(
         unbound_workspace["data"]["selected_agent"]["host_session_mode"],
-        "unbound"
+        "external_interactive"
     );
     assert_eq!(
         unbound_workspace["data"]["session_event_projection"]["disabled_reason"],

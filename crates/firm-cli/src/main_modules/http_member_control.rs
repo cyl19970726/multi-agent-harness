@@ -819,6 +819,10 @@ pub(super) fn answer_provider_message_value_with_hook(
     }
     let sender =
         authenticated_host_answer_sender(store, team_run_id, authenticated_actor, authn_source)?;
+    let host_member_run_id =
+        store_conflict_as_usage(store.active_host_member_binding(team_run_id))?
+            .member_run
+            .id;
     let answer = serde_json::from_value::<ProviderAnswerRequest>(body.clone())
         .map_err(|error| CliError::Usage(format!("invalid provider answer body: {error}")))?;
     let choice = answer.option_id.filter(|value| !value.trim().is_empty());
@@ -874,12 +878,15 @@ pub(super) fn answer_provider_message_value_with_hook(
         source_plan_ref: request.source_plan_ref.clone(),
         sender: Some(sender.clone()),
         sender_runtime_id: match sender.kind {
-            TeamActorKind::Host => "host".to_string(),
+            TeamActorKind::Host => host_member_run_id,
             TeamActorKind::Operator => format!("operator:{}", sender.id),
             TeamActorKind::Service => format!("service:{}", sender.id),
             _ => unreachable!("provider response authority is coordination-plane only"),
         },
-        recipients: vec![compatibility_team_recipient(&request_body.member)],
+        recipients: vec![TeamRecipientRef {
+            kind: TeamRecipientKind::ProviderRuntimeProjection,
+            id: request_body.member.clone(),
+        }],
         recipient_runtime_ids: vec![request_body.member.clone()],
         kind: ProviderDispatchIntent::ProviderInteractionResponse,
         body: response_json,

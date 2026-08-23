@@ -120,6 +120,13 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
 
     let store = HarnessStore::new(home.spaces_dir().join("mcp-space-provider-interaction"));
     let execution_space_id = "mcp-space-provider-interaction";
+    let host_member_run_id = store
+        .member_runs()
+        .expect("current runtime projections")
+        .into_iter()
+        .find(|member| member.team_run_id == run_id && member.agent_member_id == host_id)
+        .expect("exact external Host MemberRun")
+        .id;
     let mut request_id = None;
     for _ in 0..100 {
         request_id = store
@@ -225,7 +232,7 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
         "tools/call",
         serde_json::json!({
             "name": "team_run_inbox",
-            "arguments": {"team_run_id": run_id, "member_run_id": "host"}
+            "arguments": {"team_run_id": run_id, "member_run_id": host_member_run_id.clone()}
         }),
     ));
     assert!(
@@ -346,7 +353,7 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
         "tools/call",
         serde_json::json!({
             "name": "team_run_inbox",
-            "arguments": {"team_run_id": run_id, "member_run_id": "host"}
+            "arguments": {"team_run_id": run_id, "member_run_id": host_member_run_id.clone()}
         }),
     ));
     assert!(
@@ -359,7 +366,7 @@ fn mcp_answers_canonical_provider_request_with_transport_identity_and_exact_retr
         "tools/call",
         serde_json::json!({
             "name": "team_run_inbox",
-            "arguments": {"team_run_id": run_id, "member_run_id": "host", "all": true}
+            "arguments": {"team_run_id": run_id, "member_run_id": host_member_run_id, "all": true}
         }),
     ));
     assert!(

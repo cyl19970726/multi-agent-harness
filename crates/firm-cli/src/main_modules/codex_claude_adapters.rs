@@ -131,49 +131,6 @@ pub(super) fn run_codex_exec_delivery(
     })
 }
 
-/// Execute the reviewed Claude exact-session headless Host binding.
-///
-/// This deliberately bypasses the direct-delivery compatibility registry:
-/// sharing the Claude CLI transport does not make Host execution a
-/// compatibility route or an Agent Team fallback.
-#[allow(clippy::too_many_arguments)]
-#[cfg(any())]
-pub(super) fn run_claude_host_delivery(
-    store: &HarnessStore,
-    member: &ProviderLaunchProfile,
-    runtime: &ProviderProcess,
-    message: &RegistryMessage,
-    delivery_id: &str,
-    timeout_ms: u64,
-    project: &ProjectContext,
-) -> CliResult<DeliveryOutcome> {
-    let binding = harness_application::provider_descriptor("claude")
-        .and_then(|descriptor| descriptor.external_host_transport)
-        .ok_or_else(|| {
-            CliError::Usage(
-                "HEADLESS_HOST_UNSUPPORTED: Claude has no declared Host binding".to_string(),
-            )
-        })?;
-    if member.provider != "claude"
-        || binding.binding != harness_application::ExternalHostTransportKind::ClaudeCli
-    {
-        return Err(CliError::Usage(format!(
-            "HEADLESS_HOST_BINDING_MISMATCH: expected claude/claude_cli, got {}/{}",
-            member.provider, binding.execution_mode
-        )));
-    }
-    run_claude_delivery_surface(
-        store,
-        member,
-        runtime,
-        message,
-        delivery_id,
-        timeout_ms,
-        project,
-        true,
-    )
-}
-
 /// Run one `/v1/agents/*` compatibility delivery, routed only through the
 /// explicit compatibility registry.
 #[allow(clippy::too_many_arguments)]

@@ -74,6 +74,17 @@ Host/Member execution split. The Host is the exact `AgentMember` named by
 `AgentTeam.host_agent_id` and its one active `TeamMembership(role=host)`.
 Every current TeamRun resolves one Host MemberRun.
 
+The application-owned `HostRuntimeBinding` resolver is the only current join
+from Host role authority to runtime identity. It requires the exact active Host
+membership, TeamRun Host actor, active canonical MemberRun and synchronized
+runtime projection. Managed mode additionally requires one attached
+AgentSession under the exact live TeamSupervisor and NodeDaemon generations;
+external-interactive mode requires zero AgentSessions and exposes only the
+exact Host MemberRun inbox. CLI, HTTP, Store delivery, RoleViews, and Dashboard
+consume this result instead of independently inferring Host mode. The literal
+`host` is never a runtime id, and a control-plane-visible row is never a
+provider receipt.
+
 In the default `managed` mode, that MemberRun uses the same AgentSession,
 NodeDaemon, RuntimeCommand, provider admission, TeamRuntimeAdapter, Message
 claim/receipt/ACK, and Close/Reopen lifecycle as every other managed

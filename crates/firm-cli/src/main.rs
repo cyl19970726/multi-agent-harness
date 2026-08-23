@@ -16,12 +16,12 @@ use harness_core::{
     build_launch_spec, content_hash_hex16, provider_interaction_response_id, AgentTeam,
     AgentTeamRun, AgentTeamStatus, ControlTopology, DelegationRun, Evidence, ExecutionNode,
     ExecutionNodeStatus, ExecutionSpace, GitHubLink, GitHubLinkKind, HostAttention,
-    HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind, HostControlMode,
-    HostDispatchConfig, LaunchMcp, LaunchSpec, LegacyWave, MemberAction, MemberActionStatus,
-    MemberCoordinationStatus, MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot,
-    MessageTerminalSource, MissionLogEntry, NativeSessionAvailability, NativeSessionRef,
-    NodeDaemonLeaseStatus, NodeProjectRegistration, NodeProjectRegistrationStatus,
-    OrdinaryMessageBoundary, ProjectContext, ProjectKind, ProviderAccountRef, ProviderCapabilities,
+    HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind, HostControlMode, LaunchMcp,
+    LaunchSpec, LegacyWave, MemberAction, MemberActionStatus, MemberCoordinationStatus,
+    MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot, MessageTerminalSource,
+    MissionLogEntry, NativeSessionAvailability, NativeSessionRef, NodeDaemonLeaseStatus,
+    NodeProjectRegistration, NodeProjectRegistrationStatus, OrdinaryMessageBoundary,
+    ProjectContext, ProjectKind, ProviderAccountRef, ProviderCapabilities,
     ProviderCapacityConfidence, ProviderCapacityEvidence, ProviderCapacitySnapshot,
     ProviderCapacityState, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
     ProviderCompatibilityAdmissionPolicy, ProviderCompatibilityBlockBoundary,
@@ -60,7 +60,6 @@ mod execution_space;
 mod execution_space_commands;
 #[cfg(unix)]
 mod fabric_runtime;
-mod host_dispatcher;
 mod kimi_acp;
 mod kimi_team_runtime;
 mod legacy_company_os;

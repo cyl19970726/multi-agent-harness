@@ -20,19 +20,6 @@ pub(super) fn compatibility_team_actor(id: &str, authn_source: &str) -> TeamActo
     }
 }
 
-pub(super) fn compatibility_team_recipient(id: &str) -> TeamRecipientRef {
-    TeamRecipientRef {
-        kind: if id == "host" {
-            TeamRecipientKind::Host
-        } else if id.starts_with("agent-member:") {
-            TeamRecipientKind::AgentMember
-        } else {
-            TeamRecipientKind::ProviderRuntimeProjection
-        },
-        id: id.to_string(),
-    }
-}
-
 #[cfg(any())]
 pub(super) fn parse_team_actor_kind(value: &str) -> CliResult<TeamActorKind> {
     match value {
@@ -197,30 +184,27 @@ pub(super) fn prepare_team_message_as(
 ) -> CliResult<TeamMessageProjection> {
     // Fail fast on an unknown run id rather than journaling an orphan message.
     let run = latest_team_run(store, team_run_id)?;
+    let host_binding = store_conflict_as_usage(store.active_host_member_binding(team_run_id))?;
+    let host_member_run_id = host_binding.member_run.id;
     if body.trim().is_empty() {
         return Err(CliError::Usage(
             "team message body must not be empty".to_string(),
         ));
     }
-    let valid_member = |id: &str| id == "host" || run.member_run_ids.iter().any(|row| row == id);
+    let valid_member = |id: &str| run.member_run_ids.iter().any(|row| row == id);
     let member_runs = latest_member_runs_in_append_order(store)?
         .into_iter()
         .filter(|member| member.team_run_id == team_run_id)
         .collect::<Vec<_>>();
     let sender_runtime_id = match sender.kind {
         TeamActorKind::Host => {
-            if sender.id != "host"
-                && run
-                    .host_actor
-                    .as_ref()
-                    .is_none_or(|actor| actor.id != sender.id)
-            {
+            if sender.id != host_binding.host_agent_member_id {
                 return Err(CliError::Usage(format!(
                     "Host actor {} is not bound to team run {team_run_id}",
                     sender.id
                 )));
             }
-            "host".to_string()
+            host_member_run_id.clone()
         }
         TeamActorKind::ProviderRuntimeProjection => {
             let member = member_runs
@@ -279,17 +263,15 @@ pub(super) fn prepare_team_message_as(
                 "duplicate message recipient: {recipient}"
             )));
         }
-        if recipient != "host" {
-            let member = member_runs
-                .iter()
-                .find(|member| member.id == recipient.as_str())
-                .ok_or_else(|| {
-                    CliError::Usage(format!(
-                        "message recipient {recipient} has no ProviderRuntimeProjection projection in team run {team_run_id}"
-                    ))
-                })?;
-            ensure_member_coordination_open(member)?;
-        }
+        let member = member_runs
+            .iter()
+            .find(|member| member.id == recipient.as_str())
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "message recipient {recipient} has no ProviderRuntimeProjection projection in team run {team_run_id}"
+                ))
+            })?;
+        ensure_member_coordination_open(member)?;
     }
     if let Some(work_id) = work_id.as_deref() {
         let work = store
@@ -317,7 +299,14 @@ pub(super) fn prepare_team_message_as(
         sender_runtime_id: sender_runtime_id.clone(),
         recipients: recipient_runtime_ids
             .iter()
-            .map(|member_id| compatibility_team_recipient(member_id))
+            .map(|member_id| TeamRecipientRef {
+                kind: if member_id == &host_member_run_id {
+                    TeamRecipientKind::Host
+                } else {
+                    TeamRecipientKind::ProviderRuntimeProjection
+                },
+                id: member_id.clone(),
+            })
             .collect(),
         recipient_runtime_ids: recipient_runtime_ids.clone(),
         kind,
@@ -336,7 +325,8 @@ pub(super) fn prepare_team_message_as(
                 policy: match delivery_mode {
                     TeamMessageDeliveryMode::InjectDelivered => TeamDeliveryPolicy::Inject,
                     TeamMessageDeliveryMode::Routed
-                        if member_id == "host" && sender.kind != TeamActorKind::Host =>
+                        if member_id == &host_member_run_id
+                            && sender.kind != TeamActorKind::Host =>
                     {
                         TeamDeliveryPolicy::ManualAck
                     }
@@ -345,7 +335,8 @@ pub(super) fn prepare_team_message_as(
                 status: match delivery_mode {
                     TeamMessageDeliveryMode::InjectDelivered => TeamDeliveryStatus::Delivered,
                     TeamMessageDeliveryMode::Routed
-                        if member_id == "host" && sender.kind != TeamActorKind::Host =>
+                        if member_id == &host_member_run_id
+                            && sender.kind != TeamActorKind::Host =>
                     {
                         TeamDeliveryStatus::Delivered
                     }
@@ -354,7 +345,8 @@ pub(super) fn prepare_team_message_as(
                 attempt: match delivery_mode {
                     TeamMessageDeliveryMode::InjectDelivered => 1,
                     TeamMessageDeliveryMode::Routed
-                        if member_id == "host" && sender.kind != TeamActorKind::Host =>
+                        if member_id == &host_member_run_id
+                            && sender.kind != TeamActorKind::Host =>
                     {
                         1
                     }
@@ -425,17 +417,7 @@ pub(super) fn publish_team_message(
         },
         TeamActorKind::Host => ActorRef {
             kind: ActorKind::AgentMember,
-            id: if sender.id == "host" {
-                store
-                    .latest_teams()?
-                    .remove(&run.agent_team_id)
-                    .map(|team| team.host_agent_id)
-                    .ok_or_else(|| {
-                        CliError::Usage("TeamRun references a missing AgentTeam".into())
-                    })?
-            } else {
-                sender.id.clone()
-            },
+            id: sender.id.clone(),
         },
         TeamActorKind::Operator => ActorRef {
             kind: ActorKind::Human,
@@ -446,27 +428,14 @@ pub(super) fn publish_team_message(
         .recipient_runtime_ids
         .iter()
         .map(|recipient| {
-            if recipient == "host" {
-                Ok(MessageRecipientRef {
-                    kind: MessageRecipientKind::AgentMember,
-                    id: store
-                        .latest_teams()?
-                        .remove(&run.agent_team_id)
-                        .map(|team| team.host_agent_id)
-                        .ok_or_else(|| {
-                            CliError::Usage("TeamRun references a missing AgentTeam".into())
-                        })?,
-                })
-            } else {
-                let stable = member_runs
-                    .iter()
-                    .find(|member| member.id == *recipient && member.team_run_id == run.id)
-                    .ok_or_else(|| CliError::Usage(format!("member run not found: {recipient}")))?;
-                Ok(MessageRecipientRef {
-                    kind: MessageRecipientKind::AgentMember,
-                    id: stable.agent_member_id.clone(),
-                })
-            }
+            let stable = member_runs
+                .iter()
+                .find(|member| member.id == *recipient && member.team_run_id == run.id)
+                .ok_or_else(|| CliError::Usage(format!("member run not found: {recipient}")))?;
+            Ok(MessageRecipientRef {
+                kind: MessageRecipientKind::AgentMember,
+                id: stable.agent_member_id.clone(),
+            })
         })
         .collect::<CliResult<Vec<_>>>()?;
     let target_ref = recipients
@@ -611,23 +580,21 @@ pub(crate) fn team_run_inbox(
     include_all: bool,
 ) -> CliResult<Vec<TeamMessageProjection>> {
     let run = latest_team_run(store, team_run_id)?;
-    if member_run_id != "host" {
-        if !run
-            .member_run_ids
-            .iter()
-            .any(|member_id| member_id == member_run_id)
-        {
-            return Err(CliError::Usage(format!(
-                "inbox recipient {member_run_id} does not belong to team run {team_run_id}"
-            )));
-        }
-        let member = latest_member_runs_in_append_order(store)?
-            .into_iter()
-            .find(|member| member.id == member_run_id)
-            .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
-        if !include_all && !member.coordination_is_active() {
-            return Ok(Vec::new());
-        }
+    if !run
+        .member_run_ids
+        .iter()
+        .any(|member_id| member_id == member_run_id)
+    {
+        return Err(CliError::Usage(format!(
+            "inbox recipient {member_run_id} does not belong to team run {team_run_id}"
+        )));
+    }
+    let member = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .find(|member| member.id == member_run_id)
+        .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+    if !include_all && !member.coordination_is_active() {
+        return Ok(Vec::new());
     }
     let mut messages = canonical_team_messages_for_run(store, team_run_id)?
         .into_iter()
@@ -707,19 +674,9 @@ pub(super) fn canonical_team_messages_for_run(
         .filter(|member| member.team_run_id == team_run_id)
         .map(|member| (member.agent_member_id.clone(), member.id.clone()))
         .collect::<BTreeMap<_, _>>();
-    let host_identity = match latest_teams(store)?.remove(&run.agent_team_id) {
-        Some(team) => team.host_agent_id,
-        // Pre-cutover migration fact (DOC-108): the Team exists only in the
-        // retired legacy ledger; tolerate it as read-only legacy context. A
-        // team id absent from both ledgers still fails closed.
-        None => legacy_team_definitions_by_id(store)?
-            .get(&run.agent_team_id)
-            .and_then(|team| team.get("host_agent_id"))
-            .and_then(|host| host.as_str())
-            .map(str::to_owned)
-            .ok_or_else(|| CliError::Usage("TeamRun references a missing AgentTeam".into()))?,
-    };
-    let host_runtime_id = projected_host_runtime_id(&run, &host_identity, &identity_to_runtime)?;
+    let host_binding = store_conflict_as_usage(store.host_member_binding(team_run_id))?;
+    let host_identity = host_binding.host_agent_member_id;
+    let host_runtime_id = host_binding.member_run.id;
     let mut projected = Vec::new();
     let deliveries = store.fabric_message_deliveries(&execution_space_id)?;
     for message in store
@@ -805,25 +762,6 @@ pub(super) fn canonical_team_messages_for_run(
     Ok(projected)
 }
 
-fn projected_host_runtime_id(
-    run: &AgentTeamRun,
-    host_identity: &str,
-    identity_to_runtime: &BTreeMap<String, String>,
-) -> CliResult<String> {
-    match run.host_control_mode {
-        HostControlMode::Managed => identity_to_runtime
-            .get(host_identity)
-            .cloned()
-            .ok_or_else(|| {
-                CliError::Usage(format!(
-                    "MANAGED_HOST_MEMBER_RUN_MISSING: TeamRun {} has no MemberRun for Host AgentMember {}",
-                    run.id, host_identity
-                ))
-            }),
-        HostControlMode::ExternalInteractive => Ok("host".to_string()),
-    }
-}
-
 /// Resolve the one Execution Space that owns a TeamRun's canonical runtime
 /// projections. MemberRun materialization is the frozen run-scoped binding;
 /// Node registrations are only a fail-closed fallback for a pre-materialized
@@ -840,24 +778,9 @@ pub(super) fn team_run_unacknowledged_message_count(
     team_run_id: &str,
 ) -> CliResult<usize> {
     let run = latest_team_run(store, team_run_id)?;
-    let host_identity = latest_teams(store)?
-        .remove(&run.agent_team_id)
-        .map(|team| team.host_agent_id)
-        .or_else(|| {
-            legacy_team_definitions_by_id(store)
-                .ok()?
-                .get(&run.agent_team_id)?
-                .get("host_agent_id")?
-                .as_str()
-                .map(str::to_owned)
-        })
-        .ok_or_else(|| CliError::Usage("TeamRun references a missing AgentTeam".into()))?;
-    let identity_to_runtime = latest_member_runs_in_append_order(store)?
-        .into_iter()
-        .filter(|member| member.team_run_id == team_run_id)
-        .map(|member| (member.agent_member_id, member.id))
-        .collect::<BTreeMap<_, _>>();
-    let host_runtime_id = projected_host_runtime_id(&run, &host_identity, &identity_to_runtime)?;
+    let host_runtime_id = store_conflict_as_usage(store.host_member_binding(&run.id))?
+        .member_run
+        .id;
     Ok(canonical_team_messages_for_run(store, team_run_id)?
         .iter()
         .filter(|message| has_actionable_unacknowledged_host_delivery(message, &host_runtime_id))
@@ -910,22 +833,6 @@ pub(super) fn project_canonical_inbox_message(
         failure_reason: delivery.failure_detail.clone(),
         updated_at: delivery.updated_at.clone(),
     });
-    let deliveries = delivery_projection.into_iter().chain(
-        (delivery.is_none() && member_run_id == "host").then(|| ProviderDispatchAttempt {
-            member_id: "host".into(),
-            policy: TeamDeliveryPolicy::Queue,
-            status: TeamDeliveryStatus::Delivered,
-            attempt: 1,
-            claim_id: None,
-            claimed_by_supervisor_id: None,
-            claimed_generation: Some(message.source_authority_generation),
-            claimed_unix_ms: None,
-            claim_expires_unix_ms: None,
-            provider_receipt_id: Some("control-plane-visible".into()),
-            failure_reason: None,
-            updated_at: message.created_at.clone(),
-        }),
-    );
     TeamMessageProjection {
         id: message.id.clone(),
         team_run_id: message.team_run_id.clone().unwrap_or_default(),
@@ -968,7 +875,7 @@ pub(super) fn project_canonical_inbox_message(
             }
         }),
         evidence_refs: message.evidence_refs.clone(),
-        deliveries: deliveries.collect(),
+        deliveries: delivery_projection.into_iter().collect(),
         created_at: message.created_at.clone(),
     }
 }
@@ -1003,7 +910,10 @@ pub(crate) fn host_inbox_for_native_thread(
         {
             continue;
         }
-        let messages = team_run_inbox(store, &run.id, "host", include_all)?;
+        let host_member_run_id = store_conflict_as_usage(store.host_member_binding(&run.id))?
+            .member_run
+            .id;
+        let messages = team_run_inbox(store, &run.id, &host_member_run_id, include_all)?;
         let attentions = attentions_by_run.get(run.id.as_str());
         let has_content = !messages.is_empty() || attentions.is_some_and(|a| !a.is_empty());
         if include_all || has_content {

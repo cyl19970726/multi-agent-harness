@@ -207,12 +207,29 @@ fn failed_prerequisite_commits_replayable_cross_team_run_reconciliation_outbox()
     let mut successor_run = run.clone();
     successor_run.id = "tr-dependency-reconciliation-successor".into();
     successor_run.previous_run_id = Some(run.id.clone());
-    successor_run.member_run_ids.clear();
+    let mut successor_host = store
+        .member_runs()
+        .expect("fixture runtime projections")
+        .into_iter()
+        .find(|member| member.agent_member_id == "agent-host" && member.team_run_id == run.id)
+        .expect("source exact Host MemberRun");
+    successor_host.id = "mr-dependency-reconciliation-successor-host".into();
+    successor_host.team_run_id = successor_run.id.clone();
+    successor_run.member_run_ids = vec![successor_host.id.clone()];
     successor_run.created_at = "unix-ms:3".into();
     successor_run.updated_at = "unix-ms:3".into();
+    let execution_space_id = "unit-test-space";
     store
-        .append_jsonl("team_runs.jsonl", &successor_run)
-        .expect("append successor TeamRun fixture");
+        .create_team_run_with_member_runs_from_agent_team(
+            &successor_run,
+            execution_space_id,
+            std::slice::from_ref(&successor_host),
+            &[canonical_member_admission_for_test(
+                execution_space_id,
+                &successor_host,
+            )],
+        )
+        .expect("create successor TeamRun with exact Host MemberRun");
     let dependent = create_work(&store, &successor_run.id, "work-dependent", 4);
     let dependent = store
         .replace_work_dependencies(

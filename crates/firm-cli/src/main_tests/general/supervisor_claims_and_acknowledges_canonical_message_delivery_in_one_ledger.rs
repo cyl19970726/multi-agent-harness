@@ -279,6 +279,9 @@ fn supervisor_claims_and_acknowledges_canonical_message_delivery_in_one_ledger()
             &now_string(),
         )
         .expect_err("successor daemon must fence stale Host delivery settlement");
-    assert!(error.to_string().contains("NODE_DAEMON_GENERATION_FENCED"));
+    assert!(
+        error.to_string().contains("HOST_RUNTIME_SUPERVISOR_FENCED"),
+        "central HostRuntimeBinding must fence the stale daemon/supervisor pair: {error}"
+    );
     std::fs::remove_dir_all(root).expect("cleanup");
 }
