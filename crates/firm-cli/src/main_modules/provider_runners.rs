@@ -269,9 +269,17 @@ pub(super) fn run_member_orchestration(
                 return outcome;
             }
             Err(error) => {
-                let retry_authority = error.provider_retry_authority(
+                let durable_process_outcome =
+                    durable_provider_process_outcome(ledger, &current, transport_attempt);
+                // A later uncertain provider effect always dominates the
+                // process command's earlier certainty. Otherwise the durable
+                // process command is the boundary fact: once Open/Resume was
+                // accepted, an ordinary projection error cannot authorize a
+                // fresh transport attempt.
+                let retry_authority = provider_retry_authority_after_failure(
+                    &error,
+                    durable_process_outcome.as_ref(),
                     transport_attempt,
-                    MAX_AUTOMATIC_PROVIDER_TRANSPORT_ATTEMPTS,
                 );
                 let reason = error.to_string();
                 eprintln!("[member-runtime-error] {}: {reason}", current.id);
@@ -392,7 +400,14 @@ pub(super) fn run_member_orchestration(
                     exhausted.status = MemberRunStatus::Blocked;
                     exhausted.finished_at = None;
                     exhausted.last_event_at = Some(now_string());
-                    let summary = if matches!(error, CliError::ProviderAdmissionRejected(_)) {
+                    let summary = if matches!(
+                        durable_process_outcome,
+                        Some(harness_application::ProviderEffectOutcome::Accepted { .. })
+                    ) {
+                        format!(
+                            "PROVIDER_EFFECT_ACCEPTED_NO_REPLAY: the provider process effect was already accepted; explicit Host reconciliation is required; later error: {reason}"
+                        )
+                    } else if matches!(error, CliError::ProviderAdmissionRejected(_)) {
                         format!(
                             "PROVIDER_ADMISSION_REJECTED_NO_EFFECT: explicit Host correction or new intent is required; {reason}"
                         )
