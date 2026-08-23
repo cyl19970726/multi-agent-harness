@@ -991,15 +991,20 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// Linux may report `ECONNRESET` after the server has already written a
-/// complete `Connection: close` response. Accept that transport ending only
-/// when the declared Content-Length is fully present; never retry a mutation.
+/// Linux may report `ECONNRESET`, `EAGAIN`, or a timeout after the server has
+/// already written a complete `Connection: close` response. Accept that
+/// transport ending only when the declared Content-Length is fully present;
+/// never retry a mutation.
 fn read_http_to_string(stream: &mut TcpStream, raw: &mut String) -> std::io::Result<()> {
     match stream.read_to_string(raw) {
         Ok(_) => Ok(()),
         Err(error)
-            if error.kind() == std::io::ErrorKind::ConnectionReset
-                && complete_http_response(raw) =>
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::WouldBlock
+                    | std::io::ErrorKind::TimedOut
+            ) && complete_http_response(raw) =>
         {
             Ok(())
         }
