@@ -13,7 +13,8 @@ Work, Message, or identity authority.
 | Package version | `0.1.1-rc.2` |
 | Reviewed source revision | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` |
 | Native protocol | `deepseek-harness-native/v1` |
-| Composition fingerprint | `deepseek-harness-native/v1@dsh-0.1.1-rc.2+b150a551` |
+| Protocol fingerprint | `deepseek-harness-native/v1@dsh-0.1.1-rc.2+b150a551` |
+| Cordis composition fingerprint | `sha256:333c529f67aa2237096dd5191cfd4c46842d14eed786669b9be18b9cc4e2401f` |
 | Native session locator | `deepseek_harness_session` |
 | Execution driver | `host_driven` |
 
@@ -28,6 +29,13 @@ filesystem and bash sandbox tools, subprocess ownership, token metering and
 compaction plugins. DSH Goal plugins are deliberately not loaded. A change to
 the plugin tree, exact versions, or configuration changes the reviewed
 composition and requires the provider upgrade gate.
+
+Before spawning Node or loading Cordis, the Rust adapter verifies the exact
+runner dependency manifest, every installed reviewed `@deepseek-ai/dsh-*`
+package version, and the SHA-256 of `cordis.yml`. The native `session_bound`
+handshake then independently revalidates provider version, reviewed upstream
+source revision, and composition fingerprint before an AgentSession can bind.
+Missing or conflicting evidence fails closed.
 
 ## Authority and lifecycle
 

@@ -3,6 +3,7 @@ import contract from "../contract/runner-v1.json" with { type: "json" };
 
 export const PROTOCOL_VERSION = contract.protocolVersion;
 export const PROTOCOL_FINGERPRINT = contract.fingerprint;
+const REVIEWED_PROVIDER = contract.reviewedProvider;
 
 const textOf = (message) => (message?.content ?? [])
   .filter((block) => block?.type === "text")
@@ -55,9 +56,9 @@ export function createMemberRunner({ runtime, emit }) {
     emit("session_bound", {
       sessionId: handle.agent.session.id,
       resumed: Boolean(payload.resumeSessionId),
-      providerVersion: "0.1.1-rc.2",
-      sourceRevision: "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
-      compositionFingerprint: PROTOCOL_FINGERPRINT,
+      providerVersion: REVIEWED_PROVIDER.version,
+      sourceRevision: REVIEWED_PROVIDER.sourceRevision,
+      compositionFingerprint: REVIEWED_PROVIDER.compositionFingerprint,
       tag: `${payload.teamRunId}:${payload.memberRunId}`,
       title: `${payload.memberName} · ${payload.roleLabel ?? "member"}`,
       model: options.agentOptions.model,

@@ -12,9 +12,8 @@
 //! be reported as compatible.
 
 use std::ffi::OsString;
-use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::JoinHandle;
@@ -35,9 +34,11 @@ use harness_runtime_contract::{
     SemanticCapability, SteerProviderResult, SteerRequest, TeamRuntimeAdapter,
 };
 
+mod composition;
 mod error;
 mod permission;
 mod runner_contract;
+use composition::*;
 pub use error::{DeepSeekError, DeepSeekResult};
 pub use permission::*;
 
@@ -54,6 +55,8 @@ fn now_string() -> String {
 
 pub const REVIEWED_DEEPSEEK_HARNESS_VERSION: &str = "0.1.1-rc.2";
 pub const REVIEWED_DEEPSEEK_SOURCE_REVISION: &str = "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e";
+pub const REVIEWED_DEEPSEEK_COMPOSITION_FINGERPRINT: &str =
+    "sha256:333c529f67aa2237096dd5191cfd4c46842d14eed786669b9be18b9cc4e2401f";
 const DEEPSEEK_BINDING_ID: &str = "deepseek-harness-0.1.1-rc.2+b150a551";
 const DEEPSEEK_NATIVE_PROTOCOL: &str = "deepseek-harness-native/v1";
 const CONTROL_POLL: Duration = Duration::from_millis(25);
@@ -205,7 +208,7 @@ struct DeepSeekRunnerTransport {
 
 impl DeepSeekRunnerTransport {
     fn spawn(config: &DeepSeekTeamRuntimeConfig) -> CliResult<Self> {
-        verify_runner_harness_version(&config.runner_path)?;
+        verify_runner_harness_composition(&config.runner_path)?;
         // Validate and freeze the shared Rust/Node protocol before spawning
         // the runner or allowing it to load the DSH plugin composition.
         let start_frame = config.start_frame()?;
@@ -380,23 +383,7 @@ impl DeepSeekRunnerTransport {
                     "DEEPSEEK_HARNESS_PROTOCOL_ERROR: session_bound lacked sessionId".into(),
                 )
             })?;
-        let version = event
-            .data
-            .get("providerVersion")
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                CliError::Usage(
-                    "DEEPSEEK_HARNESS_VERSION_UNVERIFIED: session_bound lacked providerVersion"
-                        .into(),
-                )
-            })?;
-        if version != REVIEWED_DEEPSEEK_HARNESS_VERSION {
-            return Err(CliError::Usage(format!(
-                "DEEPSEEK_HARNESS_VERSION_UNREVIEWED: expected DSH {}, observed {version}",
-                REVIEWED_DEEPSEEK_HARNESS_VERSION
-            )));
-        }
+        let version = verify_session_bound_provider_identity(&event.data)?;
         if let Some(expected) = self.expected_resume_session_id.as_deref() {
             if expected != session_id {
                 return Err(CliError::Usage(format!(
@@ -411,7 +398,7 @@ impl DeepSeekRunnerTransport {
             )));
         }
         self.native_session_id = session_id.to_string();
-        self.provider_version = Some(version.to_string());
+        self.provider_version = Some(version);
         if matches!(self.state, TransportState::Starting) {
             self.state = TransportState::Idle;
         }
@@ -1410,42 +1397,6 @@ fn assistant_projection(data: &Value) -> (String, u32) {
         }
     }
     (text, tools)
-}
-
-fn verify_runner_harness_version(runner_path: &Path) -> CliResult<()> {
-    let package = runner_path
-        .parent()
-        .and_then(Path::parent)
-        .map(|root| root.join("package.json"))
-        .ok_or_else(|| {
-            CliError::Usage(format!(
-                "cannot resolve DeepSeek runner package from {}",
-                runner_path.display()
-            ))
-        })?;
-    let raw = fs::read_to_string(&package).map_err(|error| {
-        CliError::Usage(format!(
-            "failed to read DeepSeek runner package {}: {error}",
-            package.display()
-        ))
-    })?;
-    let value: Value = serde_json::from_str(&raw)?;
-    let observed = value
-        .pointer("/dependencies/@deepseek-ai~1dsh-agent")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            CliError::Usage(format!(
-                "DeepSeek runner package {} does not pin @deepseek-ai/dsh-agent",
-                package.display()
-            ))
-        })?;
-    if observed != REVIEWED_DEEPSEEK_HARNESS_VERSION {
-        return Err(CliError::Usage(format!(
-            "DEEPSEEK_HARNESS_VERSION_UNREVIEWED: expected DSH {}, package pins {observed}",
-            REVIEWED_DEEPSEEK_HARNESS_VERSION
-        )));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
