@@ -32,9 +32,8 @@ impl HarnessStore {
             latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
                 run.id.clone()
             });
-        let is_managed_kimi_host = |run: &AgentTeamRun, member: &ProviderRuntimeProjection| {
+        let is_managed_host = |run: &AgentTeamRun, member: &ProviderRuntimeProjection| {
             run.host_control_mode == firm_core::HostControlMode::Managed
-                && member.provider == "kimi"
                 && run.host_actor.as_ref().is_some_and(|host| {
                     host.kind == TeamActorKind::Host && host.id == member.agent_member_id
                 })
@@ -54,7 +53,7 @@ impl HarnessStore {
 
         for host in incoming
             .iter()
-            .filter(|member| is_managed_kimi_host(team_run, member))
+            .filter(|member| is_managed_host(team_run, member))
         {
             let Some(root) = canonical_member_workspace(host)? else {
                 continue;
@@ -66,7 +65,7 @@ impl HarnessStore {
                     && canonical_member_workspace(member)?.as_ref() == Some(&root)
                 {
                     return Err(StoreError::Conflict(format!(
-                        "MANAGED_HOST_WORKSPACE_ALREADY_CLAIMED: Kimi Host MemberRun {} requires unique writable workspace {}",
+                        "MANAGED_HOST_WORKSPACE_ALREADY_CLAIMED: managed Host MemberRun {} requires unique reserved workspace {}",
                         host.id,
                         root.display()
                     )));
@@ -74,26 +73,26 @@ impl HarnessStore {
             }
         }
 
-        let existing_managed_kimi_hosts = existing
+        let existing_managed_hosts = existing
             .iter()
             .copied()
             .filter(|host| {
                 current_runs
                     .get(&host.team_run_id)
-                    .is_some_and(|run| is_managed_kimi_host(run, host))
+                    .is_some_and(|run| is_managed_host(run, host))
             })
             .collect::<Vec<_>>();
         for member in incoming.iter().filter(active_with_root) {
-            if existing_managed_kimi_hosts.is_empty() {
+            if existing_managed_hosts.is_empty() {
                 continue;
             }
             let root = canonical_member_workspace(member)?
                 .expect("active_with_root proved a canonical workspace");
-            for host in &existing_managed_kimi_hosts {
+            for host in &existing_managed_hosts {
                 if host.id != member.id && canonical_member_workspace(host)?.as_ref() == Some(&root)
                 {
                     return Err(StoreError::Conflict(format!(
-                        "MANAGED_HOST_WORKSPACE_ALREADY_CLAIMED: workspace {} is reserved by an active managed Kimi Host",
+                        "MANAGED_HOST_WORKSPACE_ALREADY_CLAIMED: workspace {} is reserved by an active managed Host",
                         root.display()
                     )));
                 }
@@ -102,10 +101,11 @@ impl HarnessStore {
         Ok(())
     }
 
-    /// Revalidate legacy/pre-upgrade rows immediately before a managed Kimi
-    /// Host can materialize an AgentSession. New admissions reserve the same
-    /// canonical cwd under the Store write lock, so this check plus admission
-    /// serialization proves one active writer for the workspace.
+    /// Revalidate legacy/pre-upgrade rows immediately before a managed Host
+    /// with an explicit isolated workspace can materialize an AgentSession.
+    /// New admissions reserve the same canonical cwd under the Store write
+    /// lock, so this check plus admission serialization proves one active
+    /// writer for the workspace.
     pub fn require_unique_managed_host_workspace(
         &self,
         team_run: &AgentTeamRun,
