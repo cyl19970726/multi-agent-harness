@@ -6,6 +6,7 @@ import { boot, installFailLoud } from "@deepseek-ai/dsh-app-boot";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { createMemberRunner } from "../src/member-runner.mjs";
+import { registerMemberRoleActionEnvironment } from "../src/member-role-action-env.mjs";
 
 const name = "star-deepseek-member-runner";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -18,6 +19,7 @@ function emit(event, data) {
 
 try {
   ctx = await boot(name, resolve(root, "cordis.yml"));
+  registerMemberRoleActionEnvironment(ctx);
   const runtime = {
     create: (options) => ctx.agents.create({ ...options, sessionId: SessionId(options.sessionId) }),
     resume: (options) => ctx.agents.resume({ ...options, resumeSessionId: SessionId(options.resumeSessionId) }),
