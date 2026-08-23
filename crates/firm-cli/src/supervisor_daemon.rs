@@ -46,6 +46,14 @@ extern "C" {
 /// Uses a hash-based fallback under /tmp when the FIRM_HOME path exceeds
 /// the macOS AF_UNIX 104-byte limit.
 pub(crate) fn node_daemon_socket_path(firm_home: &Path, node_id: &str) -> PathBuf {
+    // FIRM_HOME may reach the same directory through filesystem aliases (for
+    // example macOS exposes /tmp through /private/tmp). The daemon socket is
+    // machine-scoped authority, so derive both the direct path and long-path
+    // hash from one canonical filesystem identity instead of the caller's raw
+    // spelling. The home already exists in normal daemon flows; the
+    // best-effort fallback preserves deterministic behavior during setup and
+    // focused path tests.
+    let firm_home = crate::project::canonicalize_best_effort(firm_home);
     let direct = firm_home.join("nodes").join(node_id).join("daemon.sock");
     let direct_str = direct.to_string_lossy();
     if direct_str.len() < 100 {
