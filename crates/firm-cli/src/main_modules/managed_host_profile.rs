@@ -1,12 +1,11 @@
 use super::*;
 
 /// A managed Host is a coordination runtime, not a second writable driver in
-/// the Team execution root. Providers that can prove `ReadOnly` are narrowed
-/// to it. Kimi ACP cannot prove either narrower ceiling, so it may retain an
-/// honestly declared `FullAccess` ceiling only when its MemberRun is pinned to
-/// an explicit, uniquely reserved workspace distinct from the Team execution
-/// root. The Store-owned MemberRun reservation keeps one writable driver per
-/// workspace without inventing a provider sandbox.
+/// the Team execution root. Without an isolated Host workspace, providers that
+/// can prove `ReadOnly` are narrowed to it. An explicit, uniquely reserved
+/// workspace distinct from the Team execution root may instead retain the
+/// durable AgentMember ceiling. The Store-owned MemberRun reservation keeps
+/// one writable driver per workspace without inventing a provider sandbox.
 pub(super) fn effective_member_permission_ceiling(
     store: &HarnessStore,
     durable_ceiling: harness_core::agentfirm_api::PermissionCeiling,
@@ -22,10 +21,28 @@ pub(super) fn effective_member_permission_ceiling(
     }
 
     let read_only = harness_core::agentfirm_api::PermissionCeiling::ReadOnly;
-    if crate::provider_adapter::map_permission(&member.provider, read_only).is_ok() {
+    let supports_read_only =
+        crate::provider_adapter::map_permission(&member.provider, read_only).is_ok();
+    if durable_ceiling == read_only {
+        if supports_read_only {
+            return Ok(read_only);
+        }
+        return Err(CliError::Usage(format!(
+            "MANAGED_HOST_PERMISSION_UNPROVABLE: provider {} cannot prove ReadOnly for Host AgentMember {}",
+            member.provider, member.agent_member_id
+        )));
+    }
+    if supports_read_only
+        && member
+            .provider_cwd_hint
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+    {
         return Ok(read_only);
     }
-    if durable_ceiling != harness_core::agentfirm_api::PermissionCeiling::FullAccess {
+    if !supports_read_only
+        && durable_ceiling != harness_core::agentfirm_api::PermissionCeiling::FullAccess
+    {
         return Err(CliError::Usage(format!(
             "MANAGED_HOST_PERMISSION_UNPROVABLE: provider {} cannot prove ReadOnly and Host AgentMember {} is not frozen to FullAccess",
             member.provider, member.agent_member_id

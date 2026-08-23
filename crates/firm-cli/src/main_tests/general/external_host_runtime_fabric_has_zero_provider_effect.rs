@@ -179,24 +179,68 @@ fn four_provider_managed_hosts_materialize_honest_isolated_sessions() {
 }
 
 #[test]
-fn managed_kimi_host_requires_a_workspace_distinct_from_the_team_root() {
-    for alias_team_root in [false, true] {
-        let label = if alias_team_root {
-            "managed-host-kimi-shared-root"
-        } else {
-            "managed-host-kimi-no-isolation"
-        };
-        let (store, root) = temp_store(label);
+fn managed_codex_host_keeps_workspace_write_in_a_distinct_reserved_workspace() {
+    use harness_core::agentfirm_api::PermissionCeiling;
+
+    let (store, root) = temp_store("managed-host-codex-distinct-workspace");
+    let host_workspace = isolated_host_worktree(root.as_path());
+    let created = host_only_run(
+        &store,
+        "codex",
+        HostControlMode::Managed,
+        Some(host_workspace),
+    );
+    let lease = store
+        .acquire_test_supervisor_lease(
+            &created.team_run.id,
+            "managed-host-codex-distinct-workspace",
+            std::process::id(),
+            "test://managed-host",
+            current_unix_ms_u64(),
+            60_000,
+        )
+        .expect("acquire test Supervisor lease");
+
+    ensure_test_runtime_fabric(&store, &created, &lease);
+
+    let sessions = store
+        .fabric_agent_sessions(&lease.execution_space_id)
+        .expect("read AgentSessions");
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(
+        sessions[0].effective_permission_ceiling,
+        PermissionCeiling::WorkspaceWrite
+    );
+    std::fs::remove_dir_all(root).expect("remove test store");
+}
+
+#[test]
+fn managed_writable_host_requires_a_workspace_distinct_from_the_team_root() {
+    for (provider, alias_team_root) in [("codex", true), ("kimi", false), ("kimi", true)] {
+        let label = format!(
+            "managed-host-{provider}-{}",
+            if alias_team_root {
+                "shared-root"
+            } else {
+                "no-isolation"
+            }
+        );
+        let (store, root) = temp_store(&label);
         let provider_cwd_hint = alias_team_root.then(|| {
             let project = root.join("unit-test-project");
             std::fs::create_dir_all(&project).expect("create shared Team root");
             project.display().to_string()
         });
-        let created = host_only_run(&store, "kimi", HostControlMode::Managed, provider_cwd_hint);
+        let created = host_only_run(
+            &store,
+            provider,
+            HostControlMode::Managed,
+            provider_cwd_hint,
+        );
         let lease = store
             .acquire_test_supervisor_lease(
                 &created.team_run.id,
-                label,
+                &label,
                 std::process::id(),
                 "test://managed-host",
                 current_unix_ms_u64(),
@@ -210,7 +254,7 @@ fn managed_kimi_host_requires_a_workspace_distinct_from_the_team_root() {
             &lease.node_daemon_id,
             lease.node_daemon_generation,
         )
-        .expect_err("Kimi FullAccess Host without workspace isolation must fail closed");
+        .expect_err("writable Host without workspace isolation must fail closed");
         assert!(error
             .to_string()
             .contains("MANAGED_HOST_WORKSPACE_ISOLATION_REQUIRED"));
@@ -223,66 +267,68 @@ fn managed_kimi_host_requires_a_workspace_distinct_from_the_team_root() {
 }
 
 #[test]
-fn managed_kimi_host_rejects_another_member_run_in_the_same_writable_workspace() {
-    let (store, root) = temp_store("managed-host-kimi-duplicate-writer");
-    let workspace = isolated_host_worktree(root.as_path());
-    let members = [
-        TeamMemberSpec {
-            agent_member_id: "host".into(),
-            name: "Host".into(),
-            role: "host".into(),
-            provider: "kimi".into(),
-            execution_mode: Some("kimi_acp".into()),
-            model: None,
-            effort: None,
-            service_tier: None,
-            provider_cwd_hint: Some(workspace.clone()),
-            owned_paths: Vec::new(),
-            resume_native_session_id: None,
-            initial_work: None,
-        },
-        TeamMemberSpec {
-            agent_member_id: "worker".into(),
-            name: "Worker".into(),
-            role: "implementer".into(),
-            provider: "codex".into(),
-            execution_mode: Some("codex_app_server".into()),
-            model: None,
-            effort: None,
-            service_tier: None,
-            provider_cwd_hint: Some(format!("{workspace}/.")),
-            owned_paths: Vec::new(),
-            resume_native_session_id: None,
-            initial_work: None,
-        },
-    ];
-    let error = match create_team_run(
-        &store,
-        None,
-        None,
-        None,
-        "Reject two writable drivers",
-        None,
-        "test",
-        None,
-        HostControlMode::Managed,
-        None,
-        None,
-        None,
-        None,
-        &members,
-    ) {
-        Err(error) => error,
-        Ok(_) => panic!("duplicate writable Host workspace must fail during Store admission"),
-    };
-    assert!(error
-        .to_string()
-        .contains("MANAGED_HOST_WORKSPACE_ALREADY_CLAIMED"));
-    assert!(store
-        .fabric_agent_sessions("unit-test-space")
-        .expect("read AgentSessions")
-        .is_empty());
-    std::fs::remove_dir_all(root).expect("remove test store");
+fn managed_writable_host_rejects_another_member_run_in_the_same_workspace() {
+    for (host_provider, host_mode) in [("codex", "codex_app_server"), ("kimi", "kimi_acp")] {
+        let (store, root) = temp_store(&format!("managed-host-{host_provider}-duplicate-writer"));
+        let workspace = isolated_host_worktree(root.as_path());
+        let members = [
+            TeamMemberSpec {
+                agent_member_id: "host".into(),
+                name: "Host".into(),
+                role: "host".into(),
+                provider: host_provider.into(),
+                execution_mode: Some(host_mode.into()),
+                model: None,
+                effort: None,
+                service_tier: None,
+                provider_cwd_hint: Some(workspace.clone()),
+                owned_paths: Vec::new(),
+                resume_native_session_id: None,
+                initial_work: None,
+            },
+            TeamMemberSpec {
+                agent_member_id: "worker".into(),
+                name: "Worker".into(),
+                role: "implementer".into(),
+                provider: "codex".into(),
+                execution_mode: Some("codex_app_server".into()),
+                model: None,
+                effort: None,
+                service_tier: None,
+                provider_cwd_hint: Some(format!("{workspace}/.")),
+                owned_paths: Vec::new(),
+                resume_native_session_id: None,
+                initial_work: None,
+            },
+        ];
+        let error = match create_team_run(
+            &store,
+            None,
+            None,
+            None,
+            "Reject two writable drivers",
+            None,
+            "test",
+            None,
+            HostControlMode::Managed,
+            None,
+            None,
+            None,
+            None,
+            &members,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("duplicate writable Host workspace must fail during Store admission"),
+        };
+        assert!(error
+            .to_string()
+            .contains("MANAGED_HOST_WORKSPACE_ALREADY_CLAIMED"));
+        assert!(store
+            .fabric_agent_sessions("unit-test-space")
+            .expect("read AgentSessions")
+            .is_empty());
+        std::fs::remove_dir_all(root).expect("remove test store");
+    }
 }
 
 #[test]
