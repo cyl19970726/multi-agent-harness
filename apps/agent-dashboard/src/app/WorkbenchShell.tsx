@@ -217,7 +217,7 @@ export function WorkbenchShell({
               (selection.surface === "agents" && Boolean(selection.memberId)) ||
               (selection.surface === "team" && Boolean(selection.teamId || selection.memberRunId));
             return fullBleed ? (
-              <div className="flex h-full min-h-0 flex-1">{surface}</div>
+              <div className="flex h-full min-h-0 min-w-0 flex-1">{surface}</div>
             ) : (
               <div className="flex-1 overflow-y-auto">
                 <div className="mx-auto w-full max-w-[1480px] p-3 sm:p-5 xl:p-6">{surface}</div>
