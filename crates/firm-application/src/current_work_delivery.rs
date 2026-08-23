@@ -11,16 +11,14 @@ pub enum CurrentWorkDeliveryAuthority {
 #[serde(rename_all = "snake_case")]
 pub enum CurrentWorkDeliveryIntegrityAnnotation {
     RecipientMemberRunNotProvable,
-    WorkExecutionBindingMissing,
-    AgentSessionMissing,
-    TeamMembershipMissing,
-    CanonicalJoinConflict,
 }
 
 /// Non-persisted application read model for current Work delivery state.
 ///
 /// Every row originates from one canonical trust `CanonicalWorkDelivery` and
-/// is joined to its exact WorkExecutionBinding, Work, and AgentSession.
+/// is joined to its exact WorkExecutionBinding, Work, AgentSession, and
+/// TeamMembership. A missing or conflicting canonical join fails the read;
+/// annotations are reserved for non-authoritative display enrichment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CurrentWorkDeliveryView {

@@ -22,6 +22,15 @@ fn insert_work_revision(
 }
 
 impl HarnessStore {
+    fn current_work_delivery_store_sequence(&self, execution_space_id: &str) -> StoreResult<u64> {
+        Ok(self
+            .canonical_operations_for_space(execution_space_id)?
+            .into_iter()
+            .map(|operation| operation.event.store_sequence)
+            .max()
+            .unwrap_or(0))
+    }
+
     pub fn current_work_deliveries_for_team_run(
         &self,
         team_run_id: &str,
@@ -43,6 +52,23 @@ impl HarnessStore {
     /// Project current Work deliveries only from canonical trust authority.
     /// Broken canonical joins fail closed.
     pub fn current_work_deliveries(
+        &self,
+        execution_space_id: &str,
+    ) -> StoreResult<Vec<CurrentWorkDeliveryView>> {
+        for _ in 0..4 {
+            let before = self.current_work_delivery_store_sequence(execution_space_id)?;
+            let projected = self.current_work_deliveries_once(execution_space_id);
+            let after = self.current_work_delivery_store_sequence(execution_space_id)?;
+            if before == after {
+                return projected;
+            }
+        }
+        Err(StoreError::Conflict(
+            "CURRENT_WORK_DELIVERY_SNAPSHOT_UNSTABLE: canonical trust authority changed during four bounded projection attempts".into(),
+        ))
+    }
+
+    fn current_work_deliveries_once(
         &self,
         execution_space_id: &str,
     ) -> StoreResult<Vec<CurrentWorkDeliveryView>> {
@@ -106,10 +132,26 @@ impl HarnessStore {
                     delivery.id, delivery.work_id, delivery.work_revision
                 ))
             })?;
-            let binding = bindings.get(&delivery.work_execution_binding_id);
-            let session = sessions.get(&delivery.recipient_session_id);
-            let membership =
-                binding.and_then(|binding| memberships.get(&binding.team_membership_id));
+            let binding = bindings
+                .get(&delivery.work_execution_binding_id)
+                .ok_or_else(|| {
+                    StoreError::Conflict(format!(
+                        "CURRENT_WORK_DELIVERY_BINDING_MISSING: delivery {} references missing WorkExecutionBinding {}",
+                        delivery.id, delivery.work_execution_binding_id
+                    ))
+                })?;
+            let session = sessions.get(&delivery.recipient_session_id).ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "CURRENT_WORK_DELIVERY_SESSION_MISSING: delivery {} references missing AgentSession {}",
+                    delivery.id, delivery.recipient_session_id
+                ))
+            })?;
+            let membership = memberships.get(&binding.team_membership_id).ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "CURRENT_WORK_DELIVERY_MEMBERSHIP_MISSING: delivery {} binding {} references missing TeamMembership {}",
+                    delivery.id, binding.id, binding.team_membership_id
+                ))
+            })?;
             let team_run = team_runs.get(&work.team_run_id).ok_or_else(|| {
                 StoreError::Conflict(format!(
                     "CURRENT_WORK_DELIVERY_TEAM_RUN_MISSING: delivery {} references missing TeamRun {}",
@@ -117,44 +159,25 @@ impl HarnessStore {
                 ))
             })?;
             let mut integrity_annotations = Vec::new();
-            if binding.is_none() {
-                integrity_annotations
-                    .push(CurrentWorkDeliveryIntegrityAnnotation::WorkExecutionBindingMissing);
-            }
-            if session.is_none() {
-                integrity_annotations
-                    .push(CurrentWorkDeliveryIntegrityAnnotation::AgentSessionMissing);
-            }
-            if binding.is_some() && membership.is_none() {
-                integrity_annotations
-                    .push(CurrentWorkDeliveryIntegrityAnnotation::TeamMembershipMissing);
-            }
-            let binding_conflicts = binding.is_some_and(|binding| {
-                binding.work_id != delivery.work_id
-                    || binding.work_revision != delivery.work_revision
-                    || binding.delivery_id != delivery.id
-                    || binding.agent_member_id != delivery.recipient_agent_member_id
-                    || binding.agent_session_id != delivery.recipient_session_id
-                    || binding.agent_session_generation != delivery.recipient_session_generation
-                    || work.accountable_team_id.as_deref() != Some(binding.team_id.as_str())
-                    || team_run.agent_team_id != binding.team_id
-            });
-            let session_conflicts = session.is_some_and(|session| {
-                session.execution_space_id != execution_space_id
-                    || session.agent_member_id != delivery.recipient_agent_member_id
-                    || session.runtime_generation != delivery.recipient_session_generation
-                    || session.node_id != delivery.target_node_id
-            });
-            let membership_conflicts =
-                binding
-                    .zip(membership)
-                    .is_some_and(|(binding, membership)| {
-                        membership.team_id != binding.team_id
-                            || membership.agent_member_id != delivery.recipient_agent_member_id
-                    });
+            let binding_conflicts = binding.work_id != delivery.work_id
+                || binding.work_revision != delivery.work_revision
+                || binding.delivery_id != delivery.id
+                || binding.agent_member_id != delivery.recipient_agent_member_id
+                || binding.agent_session_id != delivery.recipient_session_id
+                || binding.agent_session_generation != delivery.recipient_session_generation
+                || work.accountable_team_id.as_deref() != Some(binding.team_id.as_str())
+                || team_run.agent_team_id != binding.team_id;
+            let session_conflicts = session.execution_space_id != execution_space_id
+                || session.agent_member_id != delivery.recipient_agent_member_id
+                || session.runtime_generation != delivery.recipient_session_generation
+                || session.node_id != delivery.target_node_id;
+            let membership_conflicts = membership.team_id != binding.team_id
+                || membership.agent_member_id != delivery.recipient_agent_member_id;
             if binding_conflicts || session_conflicts || membership_conflicts {
-                integrity_annotations
-                    .push(CurrentWorkDeliveryIntegrityAnnotation::CanonicalJoinConflict);
+                return Err(StoreError::Conflict(format!(
+                    "CURRENT_WORK_DELIVERY_CANONICAL_JOIN_CONFLICT: delivery {} does not match its exact Work, binding, session, membership, or TeamRun",
+                    delivery.id
+                )));
             }
 
             let matching_member_runs = member_runs

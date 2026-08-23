@@ -36,67 +36,19 @@ impl HarnessStore {
         execution_space_id: &str,
     ) -> StoreResult<Vec<CanonicalWorkDelivery>> {
         Ok(self
-            .materialized_fabric_work_deliveries_unlocked(execution_space_id)?
+            .canonical_fabric_work_deliveries_unlocked(execution_space_id)?
             .into_values()
             .collect())
     }
 
-    pub(super) fn materialized_fabric_work_deliveries_unlocked(
+    pub(super) fn canonical_fabric_work_deliveries_unlocked(
         &self,
         execution_space_id: &str,
     ) -> StoreResult<BTreeMap<String, CanonicalWorkDelivery>> {
-        let mut latest = self.latest_fabric_side_records_unlocked(
+        self.latest_fabric_side_records_unlocked(
             execution_space_id,
             |row: &CanonicalWorkDelivery| row.id.clone(),
-        )?;
-        let works = self.latest_works_unlocked()?;
-        let sessions = self.fabric_agent_sessions(execution_space_id)?;
-        for binding in self.fabric_work_execution_bindings(execution_space_id)? {
-            if binding.status != WorkExecutionBindingStatus::Active
-                || latest.contains_key(&binding.delivery_id)
-            {
-                continue;
-            }
-            let Some(work) = works.get(&binding.work_id) else {
-                continue;
-            };
-            let Some(session) = sessions
-                .iter()
-                .find(|session| session.id == binding.agent_session_id)
-            else {
-                continue;
-            };
-            if work.version != binding.work_revision
-                || session.agent_member_id != binding.agent_member_id
-                || session.runtime_generation != binding.agent_session_generation
-                || session.lifecycle == AgentSessionStatus::Closed
-            {
-                continue;
-            }
-            latest.insert(
-                binding.delivery_id.clone(),
-                CanonicalWorkDelivery {
-                    id: binding.delivery_id.clone(),
-                    work_id: binding.work_id.clone(),
-                    work_revision: binding.work_revision,
-                    work_execution_binding_id: binding.id.clone(),
-                    recipient_agent_member_id: binding.agent_member_id.clone(),
-                    recipient_session_id: binding.agent_session_id.clone(),
-                    recipient_session_generation: binding.agent_session_generation,
-                    target_node_id: session.node_id.clone(),
-                    status: WorkDeliveryStatus::Queued,
-                    attempt: 1,
-                    claim_id: None,
-                    claimed_node_daemon_generation: None,
-                    provider_receipt_id: None,
-                    failure_code: None,
-                    version: 1,
-                    created_at: binding.bound_at.clone(),
-                    updated_at: binding.bound_at.clone(),
-                },
-            );
-        }
-        Ok(latest)
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -123,7 +75,7 @@ impl HarnessStore {
             delivery_id,
         )?;
         let mut delivery = self
-            .materialized_fabric_work_deliveries_unlocked(&context.execution_space_id)?
+            .canonical_fabric_work_deliveries_unlocked(&context.execution_space_id)?
             .remove(delivery_id)
             .ok_or_else(|| {
                 trust_error(

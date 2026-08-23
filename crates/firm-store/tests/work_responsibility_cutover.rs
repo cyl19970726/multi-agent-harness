@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use firm_core::agentfirm_api::{
     ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus, AgentSession,
-    AgentSessionStatus, MutationContext, PermissionCeiling, TeamMembership, TeamMembershipRole,
-    TeamMembershipStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
+    AgentSessionStatus, MutationContext, PermissionCeiling, RuntimeDispatchMode, TeamMembership,
+    TeamMembershipRole, TeamMembershipStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
 };
 use firm_core::{
     AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, Mission,
@@ -48,6 +48,28 @@ impl Drop for TestStore {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+fn rewrite_trust_operation(
+    root: &std::path::Path,
+    aggregate_id: &str,
+    mut rewrite: impl FnMut(&mut serde_json::Value),
+) {
+    let ledger = root.join("agentfirm_trust_operations.jsonl");
+    let contents = std::fs::read_to_string(&ledger).expect("read canonical trust ledger");
+    let mut found = false;
+    let mut rows = Vec::new();
+    for line in contents.lines() {
+        let mut row: serde_json::Value = serde_json::from_str(line).expect("parse trust row");
+        if row["operation"]["event"]["aggregate_id"] == aggregate_id {
+            rewrite(&mut row);
+            found = true;
+        }
+        rows.push(serde_json::to_string(&row).expect("serialize trust row"));
+    }
+    assert!(found, "canonical aggregate {aggregate_id} must exist");
+    std::fs::write(&ledger, format!("{}\n", rows.join("\n")))
+        .expect("rewrite canonical trust ledger fixture");
 }
 
 fn human(id: &str) -> ActorRef {
@@ -764,6 +786,90 @@ fn execution_binding_fences_runtime_without_owning_responsibility() {
             },
         )
         .expect("bind exact Work revision");
+    let canonical_ledger = fixture.root.join("agentfirm_trust_operations.jsonl");
+    let exact_rows = std::fs::read(&canonical_ledger).expect("snapshot canonical trust rows");
+
+    rewrite_trust_operation(&fixture.root, "binding-exact", |row| {
+        row["operation"]["immutable_side_records"] = serde_json::json!([]);
+    });
+    assert!(
+        store
+            .fabric_work_deliveries(SPACE)
+            .expect("read canonical deliveries")
+            .is_empty(),
+        "an active binding without a canonical delivery fact must not synthesize a queue row"
+    );
+    let missing_delivery = store
+        .claim_work_for_provider(
+            &trust_context(
+                ActorRef {
+                    kind: ActorKind::Service,
+                    id: "daemon-cutover".into(),
+                },
+                "work.claim",
+                "claim-missing-delivery",
+                0,
+            ),
+            "delivery-binding-exact",
+            NODE,
+            "daemon-cutover",
+            1,
+            "claim-missing-delivery",
+            RuntimeDispatchMode::QueueOnly,
+            "t4",
+        )
+        .expect_err("provider claim requires an actual canonical delivery fact");
+    assert!(missing_delivery
+        .to_string()
+        .contains("WorkDelivery not found"));
+
+    std::fs::write(&canonical_ledger, &exact_rows).expect("restore canonical rows");
+    rewrite_trust_operation(&fixture.root, "binding-exact", |row| {
+        row["operation"]["event"]["aggregate_kind"] =
+            serde_json::json!("orphaned_delivery_fixture");
+    });
+    let missing_binding = store
+        .current_work_deliveries(SPACE)
+        .expect_err("current delivery must fail closed without its binding");
+    assert!(missing_binding
+        .to_string()
+        .contains("CURRENT_WORK_DELIVERY_BINDING_MISSING"));
+
+    std::fs::write(&canonical_ledger, &exact_rows).expect("restore canonical rows");
+    rewrite_trust_operation(&fixture.root, "session-worker-binding", |row| {
+        row["operation"]["event"]["aggregate_kind"] = serde_json::json!("orphaned_session_fixture");
+    });
+    let missing_session = store
+        .current_work_deliveries(SPACE)
+        .expect_err("current delivery must fail closed without its session");
+    assert!(missing_session
+        .to_string()
+        .contains("CURRENT_WORK_DELIVERY_SESSION_MISSING"));
+
+    std::fs::write(&canonical_ledger, &exact_rows).expect("restore canonical rows");
+    rewrite_trust_operation(&fixture.root, "binding-exact", |row| {
+        row["operation"]["resulting_projection"]["team_membership_id"] =
+            serde_json::json!("missing-membership");
+    });
+    let missing_membership = store
+        .current_work_deliveries(SPACE)
+        .expect_err("current delivery must fail closed without its membership");
+    assert!(missing_membership
+        .to_string()
+        .contains("CURRENT_WORK_DELIVERY_MEMBERSHIP_MISSING"));
+
+    std::fs::write(&canonical_ledger, &exact_rows).expect("restore canonical rows");
+    rewrite_trust_operation(&fixture.root, "session-worker-binding", |row| {
+        row["operation"]["resulting_projection"]["runtime_generation"] = serde_json::json!(2);
+    });
+    let conflicting_join = store
+        .current_work_deliveries(SPACE)
+        .expect_err("current delivery must fail closed on a conflicting canonical join");
+    assert!(conflicting_join
+        .to_string()
+        .contains("CURRENT_WORK_DELIVERY_CANONICAL_JOIN_CONFLICT"));
+    std::fs::write(&canonical_ledger, &exact_rows).expect("restore canonical rows");
+
     let after_bind = store
         .latest_works()
         .expect("latest works")
