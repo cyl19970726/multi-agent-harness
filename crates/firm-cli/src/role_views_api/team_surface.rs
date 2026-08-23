@@ -598,16 +598,19 @@ pub(crate) fn team_view(
     );
     let host_attention_inbox =
         run.and_then(|run| store.host_attention_inbox_for_team_run(&run.id, false).ok());
-    let host_member_run_id = run_id.and_then(|selected_run_id| {
-        facts.member_runs.iter().find_map(|member_run| {
-            (member_run["team_run_id"] == selected_run_id
-                && member_run["agent_member_id"] == team.host_agent_id)
-                .then(|| member_run["id"].as_str())
-                .flatten()
-        })
-    });
-    let host_runtime = run.map(|run| {
-        let managed = run.host_control_mode == HostControlMode::Managed;
+    let host_runtime = run
+        .map(|run| {
+            let member = store.host_member_binding(&run.id).map_err(|error| {
+                (
+                    "409 Conflict",
+                    "HOST_RUNTIME_BINDING_INVALID",
+                    error.to_string(),
+                )
+            })?;
+            let live = store
+                .host_runtime_binding(&run.id, crate::current_unix_ms_u64())
+                .ok();
+            let managed = member.mode == HostControlMode::Managed;
         let queued_attentions = host_attention_inbox
             .as_ref()
             .map(|inbox| {
@@ -628,17 +631,23 @@ pub(crate) fn team_view(
                 .map(|attention| attention.updated_at.as_str())
                 .max()
         });
-        json!({
-            "agent_member_id": team.host_agent_id,
-            "member_run_id": host_member_run_id,
+        Ok(json!({
+            "agent_member_id": member.host_agent_member_id,
+            "member_run_id": member.member_run.id,
             "mode": if managed { "managed" } else { "external_interactive" },
             "delivery_guarantee": if managed { "daemon_managed" } else { "pull_only" },
             "runtime_residency": if managed { "managed_member_run" } else { "detached_user_driven" },
+            "provider":member.runtime.provider,
+            "runtime_generation":member.member_run.runtime_generation,
+            "agent_session_id":live.as_ref().and_then(|binding| match binding {harness_application::HostRuntimeBinding::Managed(binding)=>Some(binding.agent_session.id.as_str()),harness_application::HostRuntimeBinding::ExternalInteractive(_)=>None}),
+            "native_session_ref":live.as_ref().and_then(|binding| match binding {harness_application::HostRuntimeBinding::Managed(binding)=>binding.agent_session.native_session_ref.as_ref(),harness_application::HostRuntimeBinding::ExternalInteractive(_)=>None}),
+            "effective_permission_ceiling":live.as_ref().and_then(|binding| match binding {harness_application::HostRuntimeBinding::Managed(binding)=>Some(&binding.agent_session.effective_permission_ceiling),harness_application::HostRuntimeBinding::ExternalInteractive(_)=>None}),
             "queued_actionable_items": queued_attentions,
             "last_inbox_read_at": last_inbox_read_at,
-            "warning": (!managed).then_some("External Host must read or wait for inbox updates"),
+            "warning": if managed && live.is_none() {Some("Managed Host has no exact live AgentSession/Supervisor binding")} else if !managed {Some("External Host must read or wait for inbox updates")} else {None},
+        }))
         })
-    });
+        .transpose()?;
     Ok(envelope(
         "host_console",
         &facts,
@@ -820,17 +829,12 @@ pub(crate) fn read_session_event_projection(
 /// external interactive Host only lends its own provider thread for
 /// observation and must never be presented as a managed runtime; without a
 /// bound thread the Host has no provider session at all.
-pub(crate) fn host_session_mode(run: Option<&AgentTeamRun>) -> &'static str {
-    match run {
-        Some(run) if run.host_control_mode == HostControlMode::Managed => "harness_managed",
-        Some(run)
-            if run
-                .host_thread_id
-                .as_deref()
-                .is_some_and(|id| !id.trim().is_empty()) =>
-        {
-            "external_interactive"
-        }
-        _ => "unbound",
+pub(crate) fn host_session_mode(
+    binding: Option<&harness_application::HostMemberBinding>,
+) -> &'static str {
+    match binding.map(|binding| binding.mode) {
+        Some(HostControlMode::Managed) => "harness_managed",
+        Some(HostControlMode::ExternalInteractive) => "external_interactive",
+        None => "unbound",
     }
 }

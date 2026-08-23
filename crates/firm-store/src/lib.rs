@@ -320,6 +320,7 @@ pub struct HarnessStore {
 mod store_current_work_delivery;
 mod store_host_attention;
 mod store_host_attention_internals;
+mod store_host_runtime_binding;
 mod store_jsonl;
 mod store_node_runtime;
 mod store_read_models;

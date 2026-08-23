@@ -375,42 +375,25 @@ impl HarnessStore {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         self.reconcile_work_host_attentions_unlocked()?;
-        let run = self.require_team_run_unlocked(team_run_id)?;
-        if run.host_control_mode != firm_core::HostControlMode::Managed {
+        let firm_application::HostRuntimeBinding::Managed(binding) =
+            self.host_runtime_binding_unlocked(team_run_id, now_unix_ms)?
+        else {
             return Err(StoreError::Conflict(
                 "MANAGED_HOST_CLAIM_REQUIRES_MANAGED_TEAM_RUN".to_string(),
             ));
-        }
-        let team = latest_by_id(self.all_agent_teams()?, |team| team.id.clone())
-            .remove(&run.agent_team_id)
-            .ok_or_else(|| StoreError::Conflict("managed Host Team is missing".to_string()))?;
-        let member = self.require_member_run_unlocked(member_run_id, team_run_id)?;
-        if member.agent_member_id != team.host_agent_id || member.is_external_interactive() {
+        };
+        if binding.agent_session.execution_space_id != execution_space_id
+            || binding.member_run.id != member_run_id
+            || binding.agent_session.id != session_id
+            || binding.agent_session.runtime_generation != session_generation
+            || binding.node_daemon.daemon_id != daemon_id
+            || binding.node_daemon.generation != daemon_generation
+        {
             return Err(StoreError::Conflict(
-                "MANAGED_HOST_MEMBER_RUN_FENCED".to_string(),
+                "MANAGED_HOST_ATTENTION_BINDING_FENCED".to_string(),
             ));
         }
-        let session = self
-            .fabric_agent_sessions(execution_space_id)?
-            .into_iter()
-            .find(|session| {
-                session.id == session_id
-                    && session.agent_member_id == team.host_agent_id
-                    && session.runtime_generation == session_generation
-                    && session.node_daemon_id == daemon_id
-                    && session.node_daemon_generation == daemon_generation
-                    && session.lifecycle != firm_core::agentfirm_api::AgentSessionStatus::Closed
-            })
-            .ok_or_else(|| StoreError::Conflict("AGENT_SESSION_GENERATION_FENCED".to_string()))?;
-        let lease = self
-            .latest_node_daemon_lease(&session.node_id)?
-            .filter(|lease| {
-                lease.daemon_id == daemon_id
-                    && lease.generation == daemon_generation
-                    && lease.status == NodeDaemonLeaseStatus::Active
-                    && lease.expires_unix_ms > now_unix_ms
-            })
-            .ok_or_else(|| StoreError::Conflict("NODE_DAEMON_GENERATION_FENCED".to_string()))?;
+        let lease = binding.node_daemon;
         let mut eligible = self
             .latest_host_attentions_unlocked()?
             .into_values()

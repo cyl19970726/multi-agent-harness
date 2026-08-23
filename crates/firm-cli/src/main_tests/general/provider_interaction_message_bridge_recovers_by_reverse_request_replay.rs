@@ -190,12 +190,18 @@ fn provider_interaction_message_bridge_recovers_by_reverse_request_replay() {
 
     let messages =
         canonical_team_messages_for_run(&store, &created.team_run.id).expect("canonical messages");
+    let host_member_run_id = store
+        .host_member_binding(&created.team_run.id)
+        .expect("exact Host binding")
+        .member_run
+        .id;
     let latest_request = messages
         .iter()
         .find(|message| message.id == request.id)
         .expect("latest request");
     assert!(latest_request.deliveries.iter().any(|delivery| {
-        delivery.member_id == "host" && delivery.status == TeamDeliveryStatus::Acknowledged
+        delivery.member_id == host_member_run_id
+            && delivery.status == TeamDeliveryStatus::Acknowledged
     }));
     let response_message = messages
         .iter()

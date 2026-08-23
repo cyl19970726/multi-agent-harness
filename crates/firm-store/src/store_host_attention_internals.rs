@@ -1,4 +1,5 @@
 use super::*;
+use firm_application::HostRuntimeBinding;
 
 impl HarnessStore {
     pub(super) fn require_managed_host_attention_fence_unlocked(
@@ -6,13 +7,16 @@ impl HarnessStore {
         attention: &HostAttention,
         observed_at: &str,
     ) -> StoreResult<()> {
-        let run = self.require_team_run_unlocked(&attention.team_run_id)?;
-        if run.host_control_mode != firm_core::HostControlMode::Managed {
+        let observed_unix_ms = parse_iso8601_to_unix_ms(observed_at).ok_or_else(|| {
+            StoreError::Conflict("managed Host completion requires unix-ms updated_at".to_string())
+        })?;
+        let HostRuntimeBinding::Managed(binding) =
+            self.host_runtime_binding_unlocked(&attention.team_run_id, observed_unix_ms)?
+        else {
             return Err(StoreError::Conflict(
                 "MANAGED_HOST_ATTENTION_MODE_FENCED".to_string(),
             ));
-        }
-        let scope = self.current_team_run_execution_space_unlocked(&run)?;
+        };
         let member_run_id = attention
             .claimed_recipient_member_run_id
             .as_deref()
@@ -34,38 +38,16 @@ impl HarnessStore {
         let daemon_generation = attention.claimed_node_daemon_generation.ok_or_else(|| {
             StoreError::Conflict("managed claim has no daemon generation".to_string())
         })?;
-        let team = latest_by_id(self.all_agent_teams()?, |team| team.id.clone())
-            .remove(&run.agent_team_id)
-            .ok_or_else(|| StoreError::Conflict("managed Host Team is missing".to_string()))?;
-        let member = self.require_member_run_unlocked(member_run_id, &run.id)?;
-        if member.agent_member_id != team.host_agent_id || member.is_external_interactive() {
+        if binding.member_run.id != member_run_id
+            || binding.agent_session.id != session_id
+            || binding.agent_session.runtime_generation != session_generation
+            || binding.node_daemon.daemon_id != daemon_id
+            || binding.node_daemon.generation != daemon_generation
+        {
             return Err(StoreError::Conflict(
-                "MANAGED_HOST_MEMBER_RUN_FENCED".to_string(),
+                "MANAGED_HOST_ATTENTION_BINDING_FENCED".to_string(),
             ));
         }
-        let session = self
-            .fabric_agent_sessions(&scope)?
-            .into_iter()
-            .find(|session| {
-                session.id == session_id
-                    && session.agent_member_id == team.host_agent_id
-                    && session.runtime_generation == session_generation
-                    && session.node_daemon_id == daemon_id
-                    && session.node_daemon_generation == daemon_generation
-                    && session.lifecycle != firm_core::agentfirm_api::AgentSessionStatus::Closed
-            })
-            .ok_or_else(|| StoreError::Conflict("AGENT_SESSION_GENERATION_FENCED".to_string()))?;
-        let observed_unix_ms = parse_iso8601_to_unix_ms(observed_at).ok_or_else(|| {
-            StoreError::Conflict("managed Host completion requires unix-ms updated_at".to_string())
-        })?;
-        self.latest_node_daemon_lease(&session.node_id)?
-            .filter(|lease| {
-                lease.daemon_id == daemon_id
-                    && lease.generation == daemon_generation
-                    && lease.status == NodeDaemonLeaseStatus::Active
-                    && lease.expires_unix_ms > observed_unix_ms
-            })
-            .ok_or_else(|| StoreError::Conflict("NODE_DAEMON_GENERATION_FENCED".to_string()))?;
         Ok(())
     }
 
@@ -538,17 +520,15 @@ impl HarnessStore {
             .filter(|attention| attention.team_run_id == team_run_id)
             .filter(|attention| include_all || attention.needs_host_action())
             .collect::<Vec<_>>();
-        let warning = if run.host_control_mode == firm_core::HostControlMode::ExternalInteractive
-            && run.host_thread_id.is_none()
-            && !attentions.is_empty()
-        {
-            Some(format!(
-                "UNBOUND_HOST: TeamRun {} has actionable Host attention but no exact native Host task; bind host_surface + host_thread_id before delivery",
-                run.id
-            ))
-        } else {
-            None
-        };
+        let host_binding = self.host_member_binding(team_run_id)?;
+        let warning = (host_binding.mode == firm_core::HostControlMode::ExternalInteractive
+            && !attentions.is_empty())
+        .then(|| {
+            format!(
+                "EXTERNAL_HOST_PULL_ONLY: Host MemberRun {} must explicitly read this inbox; no provider receipt or timely wake is available",
+                host_binding.member_run.id
+            )
+        });
         Ok(HostAttentionInbox {
             team_run_id: run.id,
             host_surface: run.host_surface,

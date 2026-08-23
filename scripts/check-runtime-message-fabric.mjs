@@ -399,6 +399,66 @@ const roleViewTransport = productionRustTree([
   "crates/firm-cli/src/role_views_api.rs",
   "crates/firm-cli/src/role_views_api",
 ]);
+const hostRuntimeApplication = productionRust(
+  "crates/firm-application/src/host_runtime_binding.rs",
+);
+const hostRuntimeConsumers = productionRustTree([
+  "crates/firm-cli/src/main_modules/managed_host_delivery.rs",
+  "crates/firm-cli/src/main_modules/team_messaging.rs",
+  "crates/firm-cli/src/role_views_api",
+  "crates/firm-store/src/store_host_attention_internals.rs",
+]);
+const currentHostMessageWriters = productionRustTree([
+  "crates/firm-cli/src/main_modules/team_messaging.rs",
+  "crates/firm-cli/src/main_modules/provider_interactions.rs",
+  "crates/firm-cli/src/main_modules/http_member_control.rs",
+  "crates/firm-cli/src/main_modules/member_lifecycle.rs",
+]);
+for (const token of [
+  "pub enum HostRuntimeBinding",
+  "resolve_host_member_binding",
+  "resolve_host_runtime_binding",
+  "HOST_RUNTIME_MEMBERSHIP_AMBIGUOUS",
+  "EXTERNAL_HOST_SESSION_FORBIDDEN",
+]) {
+  if (!hostRuntimeApplication.includes(token)) {
+    failures.push(`canonical HostRuntimeBinding resolver is missing: ${token}`);
+  }
+}
+for (const retiredHostInference of [
+  "projected_host_runtime_id",
+  '"control-plane-visible"',
+  'team_run_inbox(store, &run.id, "host"',
+  "host_session_mode(run",
+]) {
+  if (hostRuntimeConsumers.includes(retiredHostInference)) {
+    failures.push(`current Host consumer retains independent/fake runtime inference: ${retiredHostInference}`);
+  }
+}
+for (const canonicalConsumer of ["host_member_binding", "host_runtime_binding"]) {
+  if (!hostRuntimeConsumers.includes(canonicalConsumer)) {
+    failures.push(`current Host consumers do not call the central resolver: ${canonicalConsumer}`);
+  }
+}
+for (const fakeHostRuntime of [
+  'recipient_runtime_ids: vec!["host"',
+  'delivery.member_id == "host"',
+  'member_run_id != "host"',
+  'sender_runtime_id: "host"',
+]) {
+  if (currentHostMessageWriters.includes(fakeHostRuntime)) {
+    failures.push(`current Message path retains the fake host runtime id: ${fakeHostRuntime}`);
+  }
+}
+try {
+  readFileSync("crates/firm-cli/src/host_dispatcher.rs", "utf8");
+  failures.push("retired external Host dispatcher module still exists");
+} catch (error) {
+  if (error?.code !== "ENOENT") throw error;
+}
+if (server.includes("host_dispatcher::poll_and_dispatch")) {
+  failures.push("Supervisor still polls the retired external Host dispatcher");
+}
 for (const roleViewScopeToken of [
   "current_team_run_execution_space(&run)",
   "resolved_space == space_id",

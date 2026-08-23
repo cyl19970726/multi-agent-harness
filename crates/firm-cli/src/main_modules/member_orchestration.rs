@@ -766,11 +766,6 @@ pub(crate) fn drive_prepared_team_run(
     // Fire the GitHub CI poll on the first iteration, then every
     // GITHUB_CI_POLL_INTERVAL (issue #369 Phase 2).
     let mut last_github_ci_poll = Instant::now() - GITHUB_CI_POLL_INTERVAL;
-    // Host dispatcher polling (issue #387 P0-2): throttle headless host rounds
-    // to the configured poll interval.
-    let host_dispatch_config = HostDispatchConfig::default();
-    let mut last_host_dispatch_poll =
-        Instant::now() - Duration::from_secs(host_dispatch_config.poll_interval_secs);
     loop {
         if !lease_lost {
             if let Err(error) = ledger.require_supervisor_lease() {
@@ -1019,25 +1014,6 @@ pub(crate) fn drive_prepared_team_run(
                 Ok(_) => {}
                 Err(error) => {
                     eprintln!("[supervisor] github linkage poll skipped: {error}");
-                }
-            }
-        }
-        // Host attention dispatch poll (issue #387 P0-2): throttled, best-effort,
-        // never fatal to the supervisor loop.
-        if !lease_lost
-            && last_host_dispatch_poll.elapsed()
-                >= Duration::from_secs(host_dispatch_config.poll_interval_secs)
-        {
-            last_host_dispatch_poll = Instant::now();
-            match host_dispatcher::poll_and_dispatch(
-                &ledger.store,
-                &ledger,
-                &objective,
-                &host_dispatch_config,
-            ) {
-                Ok(_) => {}
-                Err(error) => {
-                    eprintln!("[supervisor] host dispatcher poll skipped: {error}");
                 }
             }
         }

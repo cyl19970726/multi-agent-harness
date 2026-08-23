@@ -97,6 +97,22 @@ pub(crate) fn agent_workspace_view(
         .ok_or(("404 Not Found", "TEAM_NOT_FOUND", route_ref.to_string()))?;
     let run = route_run.or_else(|| facts.latest_run(resolved_team_id));
     let run_id = run.map(|run| run.id.as_str());
+    let host_member_binding = run
+        .map(|run| {
+            store.host_member_binding(&run.id).map_err(|error| {
+                (
+                    "409 Conflict",
+                    "HOST_RUNTIME_BINDING_INVALID",
+                    error.to_string(),
+                )
+            })
+        })
+        .transpose()?;
+    let host_runtime_binding = run.and_then(|run| {
+        store
+            .host_runtime_binding(&run.id, crate::current_unix_ms_u64())
+            .ok()
+    });
     let selected_agent_id = query
         .values
         .get("agent_id")
@@ -249,14 +265,14 @@ pub(crate) fn agent_workspace_view(
             "display_name":host_member.and_then(|member|member["name"].as_str()).unwrap_or("Host Agent"),
             "role":host_member.and_then(|member|member["role"].as_str()).unwrap_or("Host"),
             "organization_status":host_member.and_then(|member|member["organization_status"].as_str()).unwrap_or("active"),
-            "coordination_status":run.map(|run|enum_string(&run.status)),
-            "provider":run.map(|run|run.host_surface.clone()),
+            "coordination_status":host_member_binding.as_ref().map(|binding|enum_string(&binding.member_run.coordination_status)),
+            "provider":host_member_binding.as_ref().map(|binding|binding.runtime.provider.as_str()),
             "model":null,
-            "native_session_health":if run.and_then(|run|run.host_thread_id.as_ref()).is_some(){"available"}else{"unknown"},
-            "host_session_mode":host_session_mode(run),
-            "current_member_run_ref":null,
-            "runtime_state":run.map(|run|enum_string(&run.status)),
-            "runtime_generation":null,
+            "native_session_health":match host_runtime_binding.as_ref(){Some(harness_application::HostRuntimeBinding::Managed(binding))=>enum_string(&binding.agent_session.lifecycle),Some(harness_application::HostRuntimeBinding::ExternalInteractive(_))=>"external".to_string(),None=>"unbound".to_string()},
+            "host_session_mode":host_session_mode(host_member_binding.as_ref()),
+            "current_member_run_ref":host_member_binding.as_ref().map(|binding|binding.member_run.id.as_str()),
+            "runtime_state":host_member_binding.as_ref().map(|binding|enum_string(&binding.runtime.status)),
+            "runtime_generation":host_member_binding.as_ref().map(|binding|binding.member_run.runtime_generation),
             "capacity":"unknown",
             "active_work_count":0,
             "queued_work_count":0,
@@ -324,13 +340,20 @@ pub(crate) fn agent_workspace_view(
     // Host is an AgentMember and resolves through the same MemberRun selector.
     // External interactive Hosts still have a detached user-driven MemberRun,
     // but no unverifiable native session is fabricated for it.
-    let selected_member_run = run_id
-        .and_then(|current_run_id| {
+    let selected_member_run = if selected_is_host {
+        host_member_binding.as_ref().and_then(|binding| {
+            member_runs
+                .iter()
+                .find(|member_run| member_run["id"] == binding.member_run.id)
+        })
+    } else {
+        run_id.and_then(|current_run_id| {
             member_runs
                 .iter()
                 .find(|member_run| member_run["team_run_id"] == current_run_id)
         })
-        .or_else(|| member_runs.first());
+    }
+    .or_else(|| member_runs.first());
     // Provider-private Session data is owner-bound, not merely Team-authorized.
     // The exact Host can read the Host Session. The exact Member can read that
     // Member's Session. Host authority selecting a Member receives only public
@@ -348,9 +371,21 @@ pub(crate) fn agent_workspace_view(
     } else {
         Vec::new()
     };
-    let current_agent_session = match current_agent_sessions.as_slice() {
-        [session] => Some(*session),
-        _ => None,
+    let current_agent_session = if selected_is_host {
+        host_runtime_binding
+            .as_ref()
+            .and_then(|binding| match binding {
+                harness_application::HostRuntimeBinding::Managed(binding) => facts
+                    .agent_sessions
+                    .iter()
+                    .find(|session| session["id"] == binding.agent_session.id),
+                harness_application::HostRuntimeBinding::ExternalInteractive(_) => None,
+            })
+    } else {
+        match current_agent_sessions.as_slice() {
+            [session] => Some(*session),
+            _ => None,
+        }
     };
     // The owner-only historical projection is decoded on demand. It is
     // independent from the volatile live overlay and never enters a ledger.
@@ -509,7 +544,7 @@ pub(crate) fn agent_workspace_view(
         "execution_mode":if may_read_private_session {selected_member_run.and_then(|run|run["execution_mode"].as_str())} else {None},
         "runtime_status":if may_read_private_session {selected_runtime_status} else {None},
         "runtime_generation":if may_read_private_session {selected_member_run.and_then(|run|run["runtime_generation"].as_u64())} else {None},
-        "host_session_mode":if selected_is_host {Some(host_session_mode(run))} else {None},
+        "host_session_mode":if selected_is_host {Some(host_session_mode(host_member_binding.as_ref()))} else {None},
     });
     let unread_count = if projection_scope == "host_member_public" {
         public_unread_count

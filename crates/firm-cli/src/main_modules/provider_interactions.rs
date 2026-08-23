@@ -116,6 +116,10 @@ pub(super) fn provider_interaction_request_message(
     let _guard = ledger.write_lock();
     let run = latest_team_run(&ledger.store, &ledger.run_id)?;
     let execution_space_id = team_run_execution_space_id(&ledger.store, &run)?;
+    let host_member_run_id =
+        store_conflict_as_usage(ledger.store.active_host_member_binding(&ledger.run_id))?
+            .member_run
+            .id;
     let existing = ledger
         .store
         .fabric_messages(&execution_space_id)?
@@ -142,7 +146,7 @@ pub(super) fn provider_interaction_request_message(
                 display_name: Some(member.name.clone()),
                 authn_source: Some("provider_reverse_request".into()),
             },
-            vec!["host".into()],
+            vec![host_member_run_id.clone()],
             ProviderDispatchIntent::ProviderInteractionRequest,
             &canonical_body,
             None,
@@ -163,6 +167,7 @@ pub(super) fn provider_interaction_request_message(
         display_name: Some(member.name.clone()),
         authn_source: Some("provider_reverse_request".to_string()),
     };
+    let host_recipient_id = host_member_run_id.clone();
     let request = TeamMessageProjection {
         id: format!(
             "tmsg-provider-request-{}",
@@ -173,8 +178,11 @@ pub(super) fn provider_interaction_request_message(
         source_plan_ref: None,
         sender: Some(sender.clone()),
         sender_runtime_id: member.id.clone(),
-        recipients: vec![compatibility_team_recipient("host")],
-        recipient_runtime_ids: vec!["host".to_string()],
+        recipients: vec![TeamRecipientRef {
+            kind: TeamRecipientKind::Host,
+            id: host_recipient_id.clone(),
+        }],
+        recipient_runtime_ids: vec![host_member_run_id],
         kind: ProviderDispatchIntent::ProviderInteractionRequest,
         body: canonical_body,
         correlation_id,
@@ -182,7 +190,7 @@ pub(super) fn provider_interaction_request_message(
         response_intent: Some(ProviderResponseIntent::ResponseRequired),
         evidence_refs: Vec::new(),
         deliveries: vec![ProviderDispatchAttempt {
-            member_id: "host".to_string(),
+            member_id: host_recipient_id,
             policy: TeamDeliveryPolicy::ManualAck,
             status: TeamDeliveryStatus::Delivered,
             attempt: 1,

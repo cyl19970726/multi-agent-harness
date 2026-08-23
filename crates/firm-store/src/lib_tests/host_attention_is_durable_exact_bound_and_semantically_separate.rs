@@ -42,10 +42,9 @@ fn host_attention_is_durable_exact_bound_and_semantically_separate() {
         .host_attention_inbox_for_team_run(&run.id, false)
         .expect("unbound projection");
     assert_eq!(unbound.attentions.len(), 1);
-    assert!(unbound
-        .warning
-        .as_deref()
-        .is_some_and(|warning| { warning.contains("UNBOUND_HOST") && warning.contains(&run.id) }));
+    assert!(unbound.warning.as_deref().is_some_and(|warning| {
+        warning.contains("EXTERNAL_HOST_PULL_ONLY") && warning.contains(&member.id)
+    }));
     assert!(store
         .host_attention_inboxes_for_native_thread("codex-app", "other-task", false)
         .expect("other task")

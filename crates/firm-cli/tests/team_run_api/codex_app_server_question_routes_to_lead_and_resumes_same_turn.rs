@@ -54,6 +54,14 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
         .as_str()
         .unwrap()
         .to_string();
+    let host_member_run_id = created["result"]["member_runs"]
+        .as_array()
+        .expect("created MemberRuns")
+        .iter()
+        .find(|member| member["agent_member_id"].as_str() == Some(FIXTURE_HOST_ID))
+        .and_then(|member| member["id"].as_str())
+        .expect("exact Host MemberRun")
+        .to_string();
     let (status, _) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/start"),
         &serde_json::json!({}),
@@ -178,10 +186,7 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
             .into_iter()
             .flatten()
             .any(|delivery| {
-                // Current TeamRun surfaces use the stable runtime recipient
-                // alias `host`; the canonical AgentIdentity remains visible
-                // separately as `agent-runtime-host` in raw fabric rows.
-                delivery["member_id"].as_str() == Some("host")
+                delivery["member_id"].as_str() == Some(host_member_run_id.as_str())
                     && delivery["status"].as_str() == Some("acknowledged")
             });
         let response_delivered = snapshot["team_messages"]

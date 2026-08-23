@@ -327,7 +327,7 @@ export interface TeamInboxData {
 }
 export interface MissionContextSummary {id:string; title:string; objective:string; context:string; desired_outcome:string|null; status:string; outcome_summary:string|null; created_at:string; updated_at:string; completed_at:string|null; log:Array<{id:string;revision:number;kind:string;body:string;actor:string;created_at:string}>}
 export interface TeamSupervisorSummary {team_run_id:string; supervisor_id:string; generation:number; current:boolean; heartbeat_unix_ms:number; expires_unix_ms:number; owner_locator:string; node_daemon_generation:number; status:string}
-export interface HostRuntimeSummary {agent_member_id:string;member_run_id:string|null;mode:"managed"|"external_interactive";delivery_guarantee:"daemon_managed"|"pull_only";runtime_residency:"managed_member_run"|"detached_user_driven";queued_actionable_items:number;last_inbox_read_at:string|null;warning:string|null}
+export interface HostRuntimeSummary {agent_member_id:string;member_run_id:string;mode:"managed"|"external_interactive";delivery_guarantee:"daemon_managed"|"pull_only";runtime_residency:"managed_member_run"|"detached_user_driven";provider:string;runtime_generation:number;agent_session_id:string|null;native_session_ref:{native_session_id:string;provider:string;execution_mode:string}|null;effective_permission_ceiling:string|null;queued_actionable_items:number;last_inbox_read_at:string|null;warning:string|null}
 export interface HostConsoleData {
   team_ref:string; mission_ref:string; all_works:WorkSummary[]; work_graph:WorkGraph; work_queues:Record<string,WorkSummary[]>;
   member_capacity:MemberCapacitySummary[]; convergence_plans:RoleRecordSummary[]; reusable_findings:RoleRecordSummary[];

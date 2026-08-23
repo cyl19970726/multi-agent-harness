@@ -166,62 +166,6 @@ fn message_delivery_state_distinguishes_every_canonical_outcome() {
     );
 }
 
-fn host_run_fixture(host_thread_id: Option<&str>, mode: HostControlMode) -> AgentTeamRun {
-    AgentTeamRun {
-        id: "run-1".into(),
-        agent_team_id: "team-1".into(),
-        execution_node_id: "node-1".into(),
-        project_binding_id: "project-1".into(),
-        previous_run_id: None,
-        host_surface: "codex".into(),
-        host_thread_id: host_thread_id.map(str::to_owned),
-        host_actor: None,
-        host_control_mode: mode,
-        objective: "test".into(),
-        execution_root: None,
-        status: harness_core::TeamRunStatus::Running,
-        member_run_ids: Vec::new(),
-        budget_limit_usd: None,
-        created_at: "unix-ms:1".into(),
-        updated_at: "unix-ms:1".into(),
-        completed_at: None,
-    }
-}
-
-#[test]
-fn host_session_mode_distinguishes_managed_external_and_unbound() {
-    assert_eq!(
-        host_session_mode(Some(&host_run_fixture(
-            Some("thread-1"),
-            HostControlMode::ExternalInteractive
-        ))),
-        "external_interactive"
-    );
-    assert_eq!(
-        host_session_mode(Some(&host_run_fixture(
-            Some("thread-1"),
-            HostControlMode::Managed
-        ))),
-        "harness_managed"
-    );
-    assert_eq!(
-        host_session_mode(Some(&host_run_fixture(
-            None,
-            HostControlMode::ExternalInteractive
-        ))),
-        "unbound"
-    );
-    assert_eq!(
-        host_session_mode(Some(&host_run_fixture(
-            Some("  "),
-            HostControlMode::Managed
-        ))),
-        "harness_managed",
-        "managed Host addressability comes from its MemberRun/AgentSession, not host_thread_id"
-    );
-    assert_eq!(host_session_mode(None), "unbound");
-}
-
 #[test]
 fn exact_session_history_survives_a_member_adapter_generation_change() {
     let sessions = vec![json!({

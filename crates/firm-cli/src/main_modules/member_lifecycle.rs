@@ -185,12 +185,17 @@ pub(super) fn refresh_member_after_provider_callbacks(
         validate_provider_callback_drift(round_start, &latest)?;
     }
     if latest.status == MemberRunStatus::Waiting {
+        let host_member_run_id =
+            store_conflict_as_usage(ledger.store.active_host_member_binding(&ledger.run_id))?
+                .member_run
+                .id;
         let messages = ledger.canonical_team_messages()?;
         let message_unresolved = messages.iter().any(|request| {
             request.kind == ProviderDispatchIntent::ProviderInteractionRequest
                 && request.sender_runtime_id == latest.id
                 && request.deliveries.iter().any(|delivery| {
-                    delivery.member_id == "host" && delivery.status == TeamDeliveryStatus::Delivered
+                    delivery.member_id == host_member_run_id
+                        && delivery.status == TeamDeliveryStatus::Delivered
                 })
                 && !messages.iter().any(|response| {
                     response.kind == ProviderDispatchIntent::ProviderInteractionResponse
