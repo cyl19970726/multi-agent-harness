@@ -324,11 +324,21 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         restored_project.status.success(),
         "restore primary Project Binding: {restored_project:?}"
     );
+    let fake_bin =
+        fake_provider::install_codex_team_shim(&home.base().join("role-action-codex-bin"));
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
     let serve = ServeHandle::spawn_with_env(
         &home,
         &root,
         &["--space", &space_id],
-        &[("AGENTFIRM_HTTP_CREDENTIALS_JSON", credentials.as_str())],
+        &[
+            ("AGENTFIRM_HTTP_CREDENTIALS_JSON", credentials.as_str()),
+            ("PATH", path.as_str()),
+        ],
     );
     let (status, created_run) = serve.post_json(
         "/v1/team-runs",

@@ -55,16 +55,28 @@ impl HarnessStore {
         &self,
         execution_space_id: &str,
     ) -> StoreResult<Vec<CurrentWorkDeliveryView>> {
-        for _ in 0..4 {
+        // Canonical Work, binding, delivery, Session, membership, and MemberRun
+        // facts can span several append-only files. Use the canonical trust
+        // sequence as a seqlock: a changed sequence discards the mixed read,
+        // while a stable sequence returns either the complete projection or a
+        // stable integrity error. A short bounded backoff lets reads converge
+        // between active provider writes without taking the Store writer lock,
+        // so diagnostics remain available during write contention.
+        let mut backoff_ms = 1_u64;
+        for attempt in 0..16 {
             let before = self.current_work_delivery_store_sequence(execution_space_id)?;
             let projected = self.current_work_deliveries_once(execution_space_id);
             let after = self.current_work_delivery_store_sequence(execution_space_id)?;
             if before == after {
                 return projected;
             }
+            if attempt < 15 {
+                std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+                backoff_ms = backoff_ms.saturating_mul(2).min(25);
+            }
         }
         Err(StoreError::Conflict(
-            "CURRENT_WORK_DELIVERY_SNAPSHOT_UNSTABLE: canonical trust authority changed during four bounded projection attempts".into(),
+            "CURRENT_WORK_DELIVERY_SNAPSHOT_UNSTABLE: canonical trust authority changed throughout the bounded stabilization window".into(),
         ))
     }
 

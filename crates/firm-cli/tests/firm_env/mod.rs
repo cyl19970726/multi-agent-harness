@@ -829,7 +829,11 @@ impl ServeHandle {
         let payload = body.to_string();
         let mut stream = TcpStream::connect(self.addr()).expect("connect post");
         stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            // Authenticated Role Action requests can legitimately wait for a
+            // serialized Store mutation under slower CI runners. Match the
+            // ordinary POST helper's bounded response window; this never
+            // retries or resends the mutation.
+            .set_read_timeout(Some(Duration::from_secs(15)))
             .expect("timeout");
         let mut header_lines = String::new();
         for (name, value) in headers {
