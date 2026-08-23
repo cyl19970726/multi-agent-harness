@@ -6,22 +6,26 @@ pub(super) fn durable_provider_process_outcome(
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,
     transport_attempt: u64,
-) -> Option<harness_application::ProviderEffectOutcome> {
+) -> harness_application::ProviderEffectOutcome {
     let execution_space_id = match ledger.store.trust_member_run_scope(&member.id) {
         Ok(Some(execution_space_id)) => execution_space_id,
-        Ok(None) => return None,
+        Ok(None) => {
+            return harness_application::ProviderEffectOutcome::Unknown {
+                recovery_ref: format!("runtime-command:missing-scope:{}", member.id),
+            }
+        }
         Err(error) => {
-            return Some(harness_application::ProviderEffectOutcome::Unknown {
+            return harness_application::ProviderEffectOutcome::Unknown {
                 recovery_ref: format!("runtime-command-read:{error}"),
-            })
+            }
         }
     };
     let commands = match ledger.store.runtime_commands(&execution_space_id) {
         Ok(commands) => commands,
         Err(error) => {
-            return Some(harness_application::ProviderEffectOutcome::Unknown {
+            return harness_application::ProviderEffectOutcome::Unknown {
                 recovery_ref: format!("runtime-command-read:{error}"),
-            })
+            }
         }
     };
     let kind = if member.native_session.is_some() {
@@ -46,7 +50,7 @@ fn provider_process_outcome_from_commands(
     supervisor_generation: u64,
     transport_attempt: u64,
     kind: harness_core::agentfirm_api::RuntimeCommandKind,
-) -> Option<harness_application::ProviderEffectOutcome> {
+) -> harness_application::ProviderEffectOutcome {
     let suffix = format!(":{supervisor_generation}:{transport_attempt}:{kind:?}");
     let matches = commands
         .iter()
@@ -58,17 +62,23 @@ fn provider_process_outcome_from_commands(
         })
         .collect::<Vec<_>>();
     let command = match matches.as_slice() {
-        [] => return None,
+        [] => {
+            return harness_application::ProviderEffectOutcome::Unknown {
+                recovery_ref: format!(
+                    "runtime-command:missing-provider-process:{member_run_id}:{member_run_generation}:{supervisor_generation}:{transport_attempt}"
+                ),
+            }
+        }
         [command] => *command,
         _ => {
-            return Some(harness_application::ProviderEffectOutcome::Unknown {
+            return harness_application::ProviderEffectOutcome::Unknown {
                 recovery_ref: format!(
                     "runtime-command:ambiguous-provider-process:{member_run_id}:{member_run_generation}:{supervisor_generation}:{transport_attempt}"
                 ),
-            })
+            }
         }
     };
-    Some(match command.effect_certainty {
+    match command.effect_certainty {
         harness_core::agentfirm_api::RuntimeEffectCertainty::Applied => {
             harness_application::ProviderEffectOutcome::Accepted {
                 receipt_id: command.id.clone(),
@@ -88,12 +98,12 @@ fn provider_process_outcome_from_commands(
                 recovery_ref: command.id.clone(),
             }
         }
-    })
+    }
 }
 
 pub(super) fn provider_retry_authority_after_failure(
     error: &CliError,
-    durable_process_outcome: Option<&harness_application::ProviderEffectOutcome>,
+    durable_process_outcome: &harness_application::ProviderEffectOutcome,
     transport_attempt: u64,
 ) -> harness_application::ProviderRetryAuthority {
     let error_outcome = error.provider_effect_outcome();
@@ -105,23 +115,21 @@ pub(super) fn provider_retry_authority_after_failure(
                 MAX_AUTOMATIC_PROVIDER_TRANSPORT_ATTEMPTS,
             )
         }
-        (_, Some(outcome @ harness_application::ProviderEffectOutcome::Unknown { .. })) => {
+        (_, _) if matches!(error, CliError::ProviderAdmissionRejected(_)) => {
+            harness_application::ProviderRetryAuthority::StopNoRetry
+        }
+        (_, outcome @ harness_application::ProviderEffectOutcome::Unknown { .. }) => {
             harness_application::provider_retry_authority(
                 outcome,
                 transport_attempt,
                 MAX_AUTOMATIC_PROVIDER_TRANSPORT_ATTEMPTS,
             )
         }
-        (_, _) if matches!(error, CliError::ProviderAdmissionRejected(_)) => {
-            harness_application::ProviderRetryAuthority::StopNoRetry
-        }
-        (_, Some(outcome)) => harness_application::provider_retry_authority(
+        (_, outcome) => harness_application::provider_retry_authority(
             outcome,
             transport_attempt,
             MAX_AUTOMATIC_PROVIDER_TRANSPORT_ATTEMPTS,
         ),
-        (_, None) => error
-            .provider_retry_authority(transport_attempt, MAX_AUTOMATIC_PROVIDER_TRANSPORT_ATTEMPTS),
     }
 }
 
@@ -221,9 +229,15 @@ mod tests {
             }
         );
 
+        let missing_process_evidence = harness_application::ProviderEffectOutcome::Unknown {
+            recovery_ref: "runtime-command:missing-provider-process".into(),
+        };
         assert_eq!(
-            CliError::ProviderAdmissionRejected("session generation fenced".into())
-                .provider_retry_authority(1, 3),
+            provider_retry_authority_after_failure(
+                &CliError::ProviderAdmissionRejected("session generation fenced".into()),
+                &missing_process_evidence,
+                1,
+            ),
             harness_application::ProviderRetryAuthority::StopNoRetry
         );
         let accepted = CliError::ProviderEffectAccepted("runtime-command:applied".into());
@@ -234,21 +248,33 @@ mod tests {
             }
         );
         assert_eq!(
-            accepted.provider_retry_authority(1, 3),
+            harness_application::provider_retry_authority(
+                &accepted.provider_effect_outcome(),
+                1,
+                3,
+            ),
             harness_application::ProviderRetryAuthority::StopNoRetry
         );
         assert_eq!(
-            unknown.provider_retry_authority(1, 3),
+            harness_application::provider_retry_authority(&unknown.provider_effect_outcome(), 1, 3,),
             harness_application::ProviderRetryAuthority::RequireReconciliation {
                 recovery_ref: "runtime-command:uncertain".into()
             }
         );
         assert_eq!(
-            not_applied.provider_retry_authority(1, 3),
+            harness_application::provider_retry_authority(
+                &not_applied.provider_effect_outcome(),
+                1,
+                3,
+            ),
             harness_application::ProviderRetryAuthority::RetryWithNewAttempt { next_attempt: 2 }
         );
         assert_eq!(
-            not_applied.provider_retry_authority(3, 3),
+            harness_application::provider_retry_authority(
+                &not_applied.provider_effect_outcome(),
+                3,
+                3,
+            ),
             harness_application::ProviderRetryAuthority::StopNoRetry
         );
     }
@@ -295,8 +321,7 @@ mod tests {
                 7,
                 1,
                 harness_core::agentfirm_api::RuntimeCommandKind::OpenRuntime,
-            )
-            .expect("exact durable process command");
+            );
             assert!(matches!(
                 outcome,
                 harness_application::ProviderEffectOutcome::Accepted { .. }
@@ -304,13 +329,35 @@ mod tests {
             assert_eq!(
                 provider_retry_authority_after_failure(
                     &CliError::Usage("post-settlement projection write failed".into()),
-                    Some(&outcome),
+                    &outcome,
                     1,
                 ),
                 harness_application::ProviderRetryAuthority::StopNoRetry,
                 "{provider} post-settlement projection failure allocated another attempt"
             );
         }
+    }
+
+    #[test]
+    fn missing_durable_process_evidence_requires_reconciliation() {
+        let outcome = provider_process_outcome_from_commands(
+            &[],
+            "member-run",
+            1,
+            7,
+            1,
+            harness_core::agentfirm_api::RuntimeCommandKind::OpenRuntime,
+        );
+        assert_eq!(
+            provider_retry_authority_after_failure(
+                &CliError::Usage("ordinary projection failure".into()),
+                &outcome,
+                1,
+            ),
+            harness_application::ProviderRetryAuthority::RequireReconciliation {
+                recovery_ref: "runtime-command:missing-provider-process:member-run:1:7:1".into(),
+            }
+        );
     }
 
     fn test_agent_session() -> harness_core::agentfirm_api::AgentSession {

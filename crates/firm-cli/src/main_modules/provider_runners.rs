@@ -278,7 +278,7 @@ pub(super) fn run_member_orchestration(
                 // fresh transport attempt.
                 let retry_authority = provider_retry_authority_after_failure(
                     &error,
-                    durable_process_outcome.as_ref(),
+                    &durable_process_outcome,
                     transport_attempt,
                 );
                 let reason = error.to_string();
@@ -402,7 +402,7 @@ pub(super) fn run_member_orchestration(
                     exhausted.last_event_at = Some(now_string());
                     let summary = if matches!(
                         durable_process_outcome,
-                        Some(harness_application::ProviderEffectOutcome::Accepted { .. })
+                        harness_application::ProviderEffectOutcome::Accepted { .. }
                     ) {
                         format!(
                             "PROVIDER_EFFECT_ACCEPTED_NO_REPLAY: the provider process effect was already accepted; explicit Host reconciliation is required; later error: {reason}"

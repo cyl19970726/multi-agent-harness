@@ -287,21 +287,6 @@ impl CliError {
             },
         }
     }
-
-    fn provider_retry_authority(
-        &self,
-        transport_attempt: u64,
-        max_attempts: u64,
-    ) -> harness_application::ProviderRetryAuthority {
-        if matches!(self, Self::ProviderAdmissionRejected(_)) {
-            return harness_application::ProviderRetryAuthority::StopNoRetry;
-        }
-        harness_application::provider_retry_authority(
-            &self.provider_effect_outcome(),
-            transport_attempt,
-            max_attempts,
-        )
-    }
 }
 
 /// Whether canonical Message fabric still exposes a Host delivery that has not
