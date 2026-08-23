@@ -578,8 +578,8 @@ where
         .cloned();
     let Some(control) = control else {
         if matches!(request, LiveMemberControlRequest::Close { .. }) {
-            return Err(CliError::Usage(format!(
-                "RUNTIME_COMMAND_RECOVERY_REQUIRED: member {member_run_id} has no live provider handle; absence from the process-local registry is not proof that its managed runtime was released"
+            return Err(CliError::RuntimeRecoveryRequired(format!(
+                "member {member_run_id} has no live provider handle; absence from the process-local registry is not proof that its managed runtime was released"
             )));
         }
         return Err(CliError::Usage(format!(
@@ -760,8 +760,8 @@ where
     };
     if control.sender.send(command).is_err() {
         if is_close {
-            return Err(CliError::Usage(format!(
-                "RUNTIME_COMMAND_RECOVERY_REQUIRED: Close for {member_run_id} is durably latched but the owning live adapter channel ended before a provider Close receipt"
+            return Err(CliError::RuntimeRecoveryRequired(format!(
+                "Close for {member_run_id} is durably latched but the owning live adapter channel ended before a provider Close receipt"
             )));
         }
         return Err(CliError::Usage(format!(
@@ -790,8 +790,8 @@ where
     // one complete idle poll plus quiesce/release receipts.
     match reply_rx.recv_timeout(Duration::from_secs(30)) {
         Ok(result) => result,
-        Err(_) if is_close => Err(CliError::Usage(format!(
-            "RUNTIME_COMMAND_RECOVERY_REQUIRED: Close for {member_run_id} is durably latched but provider acknowledgement is uncertain"
+        Err(_) if is_close => Err(CliError::RuntimeRecoveryRequired(format!(
+            "Close for {member_run_id} is durably latched but provider acknowledgement is uncertain"
         ))),
         Err(_) => Err(CliError::Usage(
             "provider control acknowledgement timed out".to_string(),

@@ -236,6 +236,21 @@ bindings from this or another Team.
 | socket loss, timeout, callback race, or torn state after the boundary | `RecoveryRequired / Unknown` | no automatic repeat; reconcile first |
 | stale NodeDaemon or AgentSession generation | typed fenced error | zero side effects |
 
+The application layer keeps four closed results instead of recovering policy
+from display text: `DeliveryEligibility`, `AdmissionOutcome`,
+`ProviderEffectOutcome`, and `CycleOutcome`. A not-ready delivery consumes no
+transport attempt. `RejectedNoEffect` stops and requires corrected authority,
+binding, or new Host intent. Only a proven `NotApplied` provider effect may use
+the bounded automatic transport-attempt budget. `Accepted` is never resent,
+and `Unknown` always becomes explicit recovery. MemberRun, AgentSession,
+NodeDaemon, driver, and Supervisor generations remain fences; the transport
+attempt is a separate counter and cannot stand in for any generation.
+
+These decisions use typed Trust/Application results. Production retry code may
+not inspect `WORK_NOT_READY`, `RUNTIME_COMMAND_RECOVERY_REQUIRED`, provider
+stderr, or any other human-readable string. Terminal cycle observation is also
+separate from semantic Work submission and Host acceptance.
+
 `effect_certainty` and semantic `postcondition_status` are distinct. For
 example, a native interrupt frame may be sent (`Applied`) while terminal
 settlement is still `Unknown` until the adapter observes the provider's settled

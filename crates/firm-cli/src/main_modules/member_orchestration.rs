@@ -1243,11 +1243,7 @@ pub(super) fn reconcile_member_lifecycle_after_provider_error(
             // is not. Preserve the latch and let the ordinary error path mark
             // the exact session RecoveryRequired instead of fabricating a
             // Stopped member.
-            Err(CliError::Usage(message))
-                if message.contains("RUNTIME_COMMAND_RECOVERY_REQUIRED") =>
-            {
-                Ok(false)
-            }
+            Err(CliError::RuntimeRecoveryRequired(_)) => Ok(false),
             Err(error) => Err(error),
         };
     }

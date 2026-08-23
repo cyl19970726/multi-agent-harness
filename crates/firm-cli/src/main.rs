@@ -138,6 +138,9 @@ use team_run_cli::*;
 #[path = "main_modules/provider_process_recovery.rs"]
 mod provider_process_recovery;
 use provider_process_recovery::*;
+#[path = "main_modules/provider_effect_settlement.rs"]
+mod provider_effect_settlement;
+use provider_effect_settlement::*;
 #[path = "main_modules/runtime_binding_fence.rs"]
 mod runtime_binding_fence;
 use runtime_binding_fence::*;
@@ -229,6 +232,12 @@ enum CliError {
     Usage(String),
     #[error("{0}")]
     SupervisorLeaseLost(String),
+    #[error("RUNTIME_COMMAND_RECOVERY_REQUIRED: {0}")]
+    RuntimeRecoveryRequired(String),
+    #[error("PROVIDER_ADMISSION_REJECTED_NO_EFFECT: {0}")]
+    ProviderAdmissionRejected(String),
+    #[error("PROVIDER_EFFECT_ACCEPTED: {0}")]
+    ProviderEffectAccepted(String),
     #[error("store error: {0}")]
     Store(#[from] harness_store::StoreError),
     #[error("io error: {0}")]
@@ -246,6 +255,52 @@ impl CliError {
 
     fn is_provider_compatibility_blocked(&self) -> bool {
         matches!(self, Self::Usage(message) if message.starts_with("PROVIDER_COMPATIBILITY_BLOCKED:"))
+    }
+
+    fn provider_effect_outcome(&self) -> harness_application::ProviderEffectOutcome {
+        match self {
+            Self::RuntimeRecoveryRequired(recovery_ref) => {
+                harness_application::ProviderEffectOutcome::Unknown {
+                    recovery_ref: recovery_ref.clone(),
+                }
+            }
+            Self::Store(error)
+                if matches!(
+                    error.trust_error().map(|error| error.code),
+                    Some(harness_core::agentfirm_api::TrustErrorCode::RuntimeEffectUnknown)
+                ) =>
+            {
+                harness_application::ProviderEffectOutcome::Unknown {
+                    recovery_ref: error
+                        .trust_error()
+                        .map(|error| format!("{}:{}", error.resource_kind, error.resource_id))
+                        .unwrap_or_else(|| "runtime-command:unknown".to_string()),
+                }
+            }
+            Self::ProviderEffectAccepted(receipt_id) => {
+                harness_application::ProviderEffectOutcome::Accepted {
+                    receipt_id: receipt_id.clone(),
+                }
+            }
+            _ => harness_application::ProviderEffectOutcome::NotApplied {
+                reason: self.to_string(),
+            },
+        }
+    }
+
+    fn provider_retry_authority(
+        &self,
+        transport_attempt: u64,
+        max_attempts: u64,
+    ) -> harness_application::ProviderRetryAuthority {
+        if matches!(self, Self::ProviderAdmissionRejected(_)) {
+            return harness_application::ProviderRetryAuthority::StopNoRetry;
+        }
+        harness_application::provider_retry_authority(
+            &self.provider_effect_outcome(),
+            transport_attempt,
+            max_attempts,
+        )
     }
 }
 

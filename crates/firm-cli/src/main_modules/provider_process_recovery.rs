@@ -17,13 +17,10 @@ pub(super) fn provider_process_idempotency_key(
     )
 }
 
-pub(super) fn automatic_provider_transport_retry_exhausted(transport_attempt: u64) -> bool {
-    transport_attempt >= MAX_AUTOMATIC_PROVIDER_TRANSPORT_ATTEMPTS
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CliError;
 
     #[test]
     fn provider_process_retry_identity_is_stable_and_generation_scoped() {
@@ -64,11 +61,71 @@ mod tests {
     }
 
     #[test]
-    fn automatic_provider_transport_retries_are_bounded() {
-        assert!(!automatic_provider_transport_retry_exhausted(1));
-        assert!(!automatic_provider_transport_retry_exhausted(2));
-        assert!(automatic_provider_transport_retry_exhausted(3));
-        assert!(automatic_provider_transport_retry_exhausted(4));
+    fn cli_provider_errors_preserve_effect_certainty_without_message_parsing() {
+        let unknown = CliError::RuntimeRecoveryRequired("runtime-command:uncertain".into());
+        assert_eq!(
+            unknown.provider_effect_outcome(),
+            harness_application::ProviderEffectOutcome::Unknown {
+                recovery_ref: "runtime-command:uncertain".into()
+            }
+        );
+
+        let not_applied = CliError::Usage("spawn failed before provider input".into());
+        assert_eq!(
+            not_applied.provider_effect_outcome(),
+            harness_application::ProviderEffectOutcome::NotApplied {
+                reason: "spawn failed before provider input".into()
+            }
+        );
+
+        let trust_error = harness_core::agentfirm_api::TrustError {
+            code: harness_core::agentfirm_api::TrustErrorCode::RuntimeEffectUnknown,
+            message: "wording is not policy".into(),
+            retryable: false,
+            resource_kind: "runtime_command".into(),
+            resource_id: "runtime-command:1".into(),
+            current_version: None,
+        };
+        let store_unknown = CliError::Store(harness_store::StoreError::Conflict(
+            serde_json::to_string(&trust_error).expect("TrustError serializes"),
+        ));
+        assert_eq!(
+            store_unknown.provider_effect_outcome(),
+            harness_application::ProviderEffectOutcome::Unknown {
+                recovery_ref: "runtime_command:runtime-command:1".into()
+            }
+        );
+
+        assert_eq!(
+            CliError::ProviderAdmissionRejected("session generation fenced".into())
+                .provider_retry_authority(1, 3),
+            harness_application::ProviderRetryAuthority::StopNoRetry
+        );
+        let accepted = CliError::ProviderEffectAccepted("runtime-command:applied".into());
+        assert_eq!(
+            accepted.provider_effect_outcome(),
+            harness_application::ProviderEffectOutcome::Accepted {
+                receipt_id: "runtime-command:applied".into()
+            }
+        );
+        assert_eq!(
+            accepted.provider_retry_authority(1, 3),
+            harness_application::ProviderRetryAuthority::StopNoRetry
+        );
+        assert_eq!(
+            unknown.provider_retry_authority(1, 3),
+            harness_application::ProviderRetryAuthority::RequireReconciliation {
+                recovery_ref: "runtime-command:uncertain".into()
+            }
+        );
+        assert_eq!(
+            not_applied.provider_retry_authority(1, 3),
+            harness_application::ProviderRetryAuthority::RetryWithNewAttempt { next_attempt: 2 }
+        );
+        assert_eq!(
+            not_applied.provider_retry_authority(3, 3),
+            harness_application::ProviderRetryAuthority::StopNoRetry
+        );
     }
 
     fn test_agent_session() -> harness_core::agentfirm_api::AgentSession {

@@ -450,7 +450,7 @@ impl HarnessStore {
                 });
             if ambiguous {
                 return Err(trust_error(
-                    TrustErrorCode::InvalidStateTransition,
+                    TrustErrorCode::RuntimeEffectUnknown,
                     "AgentSession has an ambiguous in-flight RuntimeCommand; reconciliation is required",
                     "runtime_command",
                     &command.id,

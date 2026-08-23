@@ -116,9 +116,8 @@ struct PendingSteerSettlement {
 impl Drop for PendingSteerSettlement {
     fn drop(&mut self) {
         if let Some(reply) = self.reply.take() {
-            let _ = reply.send(Err(CliError::Usage(
-                "RUNTIME_COMMAND_RECOVERY_REQUIRED: steer ended without provider settlement"
-                    .to_string(),
+            let _ = reply.send(Err(CliError::RuntimeRecoveryRequired(
+                "steer ended without provider settlement".to_string(),
             )));
         }
     }
@@ -154,8 +153,8 @@ impl PendingControlReply {
 impl Drop for PendingControlReply {
     fn drop(&mut self) {
         if let Some(reply) = self.reply.take() {
-            let _ = reply.send(Err(CliError::Usage(
-                "RUNTIME_COMMAND_RECOVERY_REQUIRED: provider control ended before its durable postcondition receipt was published"
+            let _ = reply.send(Err(CliError::RuntimeRecoveryRequired(
+                "provider control ended before its durable postcondition receipt was published"
                     .to_string(),
             )));
         }
@@ -414,16 +413,16 @@ fn execute_member_runtime_close<A: TeamRuntimeAdapter<Error = CliError>>(
         }
         Err(error) => {
             settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
-            return Err(CliError::Usage(format!(
-                "RUNTIME_COMMAND_RECOVERY_REQUIRED: {} {boundary} Close is unproven: {error}",
+            return Err(CliError::RuntimeRecoveryRequired(format!(
+                "{} {boundary} Close is unproven: {error}",
                 adapter.provider()
             )));
         }
     };
     if let Err(error) = close_receipt.verify() {
         settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
-        return Err(CliError::Usage(format!(
-            "RUNTIME_COMMAND_RECOVERY_REQUIRED: {} {boundary} Close receipt is incomplete: {error}",
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "{} {boundary} Close receipt is incomplete: {error}",
             adapter.provider()
         )));
     }
@@ -744,8 +743,8 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                         .borrow_mut()
                         .remove(&request.token)
                         .ok_or_else(|| {
-                            CliError::Usage(format!(
-                                "RUNTIME_COMMAND_RECOVERY_REQUIRED: unknown steer token {}",
+                            CliError::RuntimeRecoveryRequired(format!(
+                                "unknown steer token {}",
                                 request.token
                             ))
                         })?;
@@ -779,9 +778,9 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                                 Some(detail.clone()),
                             )?;
                             if let Some(reply) = pending.reply.take() {
-                                let _ = reply.send(Err(CliError::Usage(format!(
-                                    "RUNTIME_COMMAND_RECOVERY_REQUIRED: {detail}"
-                                ))));
+                                let _ = reply.send(Err(CliError::RuntimeRecoveryRequired(
+                                    detail.clone(),
+                                )));
                             }
                             Ok(())
                         }
@@ -826,15 +825,15 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                                         close
                                     }
                                     Ok(Some(_)) => {
-                                        let detail = "RUNTIME_COMMAND_RECOVERY_REQUIRED: live Close no longer matches the exact durable Close latch".to_string();
-                                        let _ = reply.send(Err(CliError::Usage(detail.clone())));
+                                        let detail = "live Close no longer matches the exact durable Close latch".to_string();
+                                        let _ = reply.send(Err(CliError::RuntimeRecoveryRequired(detail.clone())));
                                         control_prepare_error = Some(detail.clone());
                                         control.fatal_error = Some(detail);
                                         return control;
                                     }
                                     Ok(None) => {
-                                        let detail = "RUNTIME_COMMAND_RECOVERY_REQUIRED: live Close has no durable Close latch".to_string();
-                                        let _ = reply.send(Err(CliError::Usage(detail.clone())));
+                                        let detail = "live Close has no durable Close latch".to_string();
+                                        let _ = reply.send(Err(CliError::RuntimeRecoveryRequired(detail.clone())));
                                         control_prepare_error = Some(detail.clone());
                                         control.fatal_error = Some(detail);
                                         return control;
@@ -1081,16 +1080,14 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                         &format!("{} provider round {round} failed", member_row.name),
                     )?;
                     if accepted_provider_receipt.is_some() {
-                        let detail = error.to_string();
-                        return Err(CliError::Usage(
-                            if detail.contains("RUNTIME_COMMAND_RECOVERY_REQUIRED") {
-                                detail
-                            } else {
-                                format!(
-                            "RUNTIME_COMMAND_RECOVERY_REQUIRED: {display} failed after accepting cycle input: {detail}"
-                        )
-                            },
-                        ));
+                        return Err(match error {
+                            CliError::RuntimeRecoveryRequired(detail) => {
+                                CliError::RuntimeRecoveryRequired(detail)
+                            }
+                            error => CliError::RuntimeRecoveryRequired(format!(
+                                "{display} failed after accepting cycle input: {error}"
+                            )),
+                        });
                     }
                     return Err(error);
                 }
@@ -1104,9 +1101,9 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
             if turn.input_acceptance_receipt.response_id.as_deref()
                 != accepted_provider_receipt.as_deref()
             {
-                return Err(CliError::Usage(format!(
-                "RUNTIME_COMMAND_RECOVERY_REQUIRED: {provider} terminal cycle receipt no longer matches the accepted input receipt"
-            )));
+                return Err(CliError::RuntimeRecoveryRequired(format!(
+                    "{provider} terminal cycle receipt no longer matches the accepted input receipt"
+                )));
             }
             if let Some(error) = control_prepare_error {
                 provider_adapter::settle_team_controls_without_terminal_ack(
@@ -1158,20 +1155,21 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
                     "RUNTIME_COMMAND_RECOVERY_REQUIRED: {provider} control lacked verified terminal acknowledgement"
                 ),
             );
-                return Err(CliError::Usage(format!(
-                "RUNTIME_COMMAND_RECOVERY_REQUIRED: {provider} control lacked verified terminal acknowledgement"
-            )));
+                return Err(CliError::RuntimeRecoveryRequired(format!(
+                    "{provider} control lacked verified terminal acknowledgement"
+                )));
             }
 
             let mut close_receipt = None;
             let mut close_request = None;
             if turn.close_requested_by_harness {
-                let request = crate::pending_member_close(&ledger.store, &member_row.id)?.ok_or_else(|| {
-                CliError::Usage(format!(
-                    "RUNTIME_COMMAND_RECOVERY_REQUIRED: {} requested Close without a durable pending close latch",
-                    member_row.id
-                ))
-            })?;
+                let request = crate::pending_member_close(&ledger.store, &member_row.id)?
+                    .ok_or_else(|| {
+                        CliError::RuntimeRecoveryRequired(format!(
+                            "{} requested Close without a durable pending close latch",
+                            member_row.id
+                        ))
+                    })?;
                 match execute_member_runtime_close(ledger, member_row, adapter, &request, "active")
                 {
                     Ok(receipt) => {

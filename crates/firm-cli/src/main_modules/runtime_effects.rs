@@ -332,7 +332,8 @@ pub(super) fn prepare_provider_effect_kind(
     };
 
     let (execution_space_id, canonical_member, session) =
-        provider_runtime_subject_for_member(ledger, member)?;
+        provider_runtime_subject_for_member(ledger, member)
+            .map_err(|error| CliError::ProviderAdmissionRejected(error.to_string()))?;
     let lifecycle_is_eligible = match command_kind {
         harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider
         | harness_core::agentfirm_api::RuntimeCommandKind::StartCycle
@@ -371,19 +372,22 @@ pub(super) fn prepare_provider_effect_kind(
     }
     let lease = ledger
         .store
-        .latest_node_daemon_lease(&session.node_id)?
+        .latest_node_daemon_lease(&session.node_id)
+        .map_err(|error| CliError::ProviderAdmissionRejected(error.to_string()))?
         .filter(|lease| {
             lease.daemon_id == session.node_daemon_id
                 && lease.generation == session.node_daemon_generation
                 && lease.status == NodeDaemonLeaseStatus::Active
                 && lease.expires_unix_ms > current_unix_ms_u64()
         })
-        .ok_or_else(|| CliError::Usage("NODE_DAEMON_GENERATION_FENCED".into()))?;
+        .ok_or_else(|| {
+            CliError::ProviderAdmissionRejected("NODE_DAEMON_GENERATION_FENCED".into())
+        })?;
     crate::provider_adapter::map_permission(
         &session.provider_kind,
         session.effective_permission_ceiling,
     )
-    .map_err(CliError::Usage)?;
+    .map_err(CliError::ProviderAdmissionRejected)?;
 
     let content_fingerprint =
         harness_store::canonical_json_fingerprint(&serde_json::json!({"content": content}));
@@ -447,29 +451,37 @@ pub(super) fn prepare_provider_effect_kind(
         expected_version: 0,
         request_fingerprint: Some(command_fingerprint),
     };
-    let admission = ledger.store.prepare_runtime_command(
-        &admission_context,
-        &command,
-        current_unix_ms_u64(),
-        &now_string(),
-    )?;
+    let admission = ledger
+        .store
+        .prepare_runtime_command(
+            &admission_context,
+            &command,
+            current_unix_ms_u64(),
+            &now_string(),
+        )
+        .map_err(|error| CliError::ProviderAdmissionRejected(error.to_string()))?;
     if admission.replayed {
-        let code = match (
+        let replay = match (
             admission.projection.status,
             admission.projection.effect_certainty,
         ) {
             (RuntimeCommandStatus::Applied, RuntimeEffectCertainty::Applied) => {
-                "RUNTIME_COMMAND_REPLAY_APPLIED"
+                Err(CliError::ProviderEffectAccepted(
+                    admission.projection.id.clone(),
+                ))
             }
             (RuntimeCommandStatus::Failed, RuntimeEffectCertainty::NotApplied) => {
-                "RUNTIME_COMMAND_REPLAY_FAILED"
+                Err(CliError::Usage(format!(
+                    "RUNTIME_COMMAND_REPLAY_FAILED: provider effect {} will not be repeated with the same attempt",
+                    admission.projection.id
+                )))
             }
-            _ => "RUNTIME_COMMAND_RECOVERY_REQUIRED",
+            _ => Err(CliError::RuntimeRecoveryRequired(format!(
+                "provider effect {} has unresolved certainty and will not be repeated",
+                admission.projection.id
+            ))),
         };
-        return Err(CliError::Usage(format!(
-            "{code}: provider effect {} will not be repeated",
-            admission.projection.id
-        )));
+        return replay;
     }
     let fence = runtime_binding_fence_for_admission(
         ledger,
@@ -511,59 +523,6 @@ pub(super) fn prepare_provider_effect(
     )
 }
 
-pub(super) fn settle_provider_effect(
-    ledger: &TeamRunLedger,
-    admission: &ProviderEffectAdmission,
-    applied: bool,
-    result: Option<serde_json::Value>,
-    failure_code: Option<String>,
-) -> CliResult<()> {
-    use harness_core::agentfirm_api::{
-        RuntimeCommandStatus, RuntimeEffectCertainty, RuntimePostconditionStatus,
-    };
-    ledger.store.settle_runtime_command_with_postcondition(
-        &admission.settle_context,
-        &admission.command_id,
-        if applied {
-            RuntimeCommandStatus::Applied
-        } else {
-            RuntimeCommandStatus::RecoveryRequired
-        },
-        if applied {
-            RuntimeEffectCertainty::Applied
-        } else {
-            RuntimeEffectCertainty::Unknown
-        },
-        if applied {
-            RuntimePostconditionStatus::Satisfied
-        } else {
-            RuntimePostconditionStatus::Unknown
-        },
-        result,
-        failure_code,
-        &now_string(),
-    )?;
-    Ok(())
-}
-
-pub(super) fn settle_provider_effect_not_applied(
-    ledger: &TeamRunLedger,
-    admission: &ProviderEffectAdmission,
-    failure_code: String,
-) -> CliResult<()> {
-    ledger.store.settle_runtime_command_with_postcondition(
-        &admission.settle_context,
-        &admission.command_id,
-        harness_core::agentfirm_api::RuntimeCommandStatus::Failed,
-        harness_core::agentfirm_api::RuntimeEffectCertainty::NotApplied,
-        harness_core::agentfirm_api::RuntimePostconditionStatus::Unsatisfied,
-        None,
-        Some(failure_code),
-        &now_string(),
-    )?;
-    Ok(())
-}
-
 pub(super) fn prepare_provider_process_effect(
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,
@@ -573,22 +532,26 @@ pub(super) fn prepare_provider_process_effect(
         ActorKind, ActorRef, ControlCommandEnvelope, RuntimeCommandKind,
     };
     let (execution_space_id, canonical_member, session) =
-        provider_runtime_subject_for_member(ledger, member)?;
+        provider_runtime_subject_for_member(ledger, member)
+            .map_err(|error| CliError::ProviderAdmissionRejected(error.to_string()))?;
     let lease = ledger
         .store
-        .latest_node_daemon_lease(&session.node_id)?
+        .latest_node_daemon_lease(&session.node_id)
+        .map_err(|error| CliError::ProviderAdmissionRejected(error.to_string()))?
         .filter(|lease| {
             lease.daemon_id == session.node_daemon_id
                 && lease.generation == session.node_daemon_generation
                 && lease.status == NodeDaemonLeaseStatus::Active
                 && lease.expires_unix_ms > current_unix_ms_u64()
         })
-        .ok_or_else(|| CliError::Usage("NODE_DAEMON_GENERATION_FENCED".into()))?;
+        .ok_or_else(|| {
+            CliError::ProviderAdmissionRejected("NODE_DAEMON_GENERATION_FENCED".into())
+        })?;
     crate::provider_adapter::map_permission(
         &session.provider_kind,
         session.effective_permission_ceiling,
     )
-    .map_err(CliError::Usage)?;
+    .map_err(CliError::ProviderAdmissionRejected)?;
     let kind = if member.native_session.is_some() {
         RuntimeCommandKind::ResumeNativeSession
     } else {
@@ -653,15 +616,13 @@ pub(super) fn prepare_provider_process_effect(
         expected_version: 0,
         request_fingerprint: Some(command_fingerprint),
     };
-    let admission = ledger.store.prepare_runtime_command(
-        &context,
-        &command,
-        current_unix_ms_u64(),
-        &now_string(),
-    )?;
+    let admission = ledger
+        .store
+        .prepare_runtime_command(&context, &command, current_unix_ms_u64(), &now_string())
+        .map_err(|error| CliError::ProviderAdmissionRejected(error.to_string()))?;
     if admission.replayed {
-        return Err(CliError::Usage(format!(
-            "RUNTIME_COMMAND_RECOVERY_REQUIRED: provider process command {} already exists as {:?}/{:?}; reconcile before spawn",
+        return Err(CliError::RuntimeRecoveryRequired(format!(
+            "provider process command {} already exists as {:?}/{:?}; reconcile before spawn",
             admission.projection.id,
             admission.projection.status,
             admission.projection.effect_certainty
@@ -763,8 +724,8 @@ pub(super) fn transition_provider_session_for_member(
             matching_stop_keys.sort();
             matching_stop_keys.dedup();
             if matching_stop_keys.len() != 1 {
-                return Err(CliError::Usage(format!(
-                    "RUNTIME_COMMAND_RECOVERY_REQUIRED: closing session {} requires one exact applied StopSession command, found {}",
+                return Err(CliError::RuntimeRecoveryRequired(format!(
+                    "closing session {} requires one exact applied StopSession command, found {}",
                     session.id,
                     matching_stop_keys.len()
                 )));
@@ -968,29 +929,16 @@ pub(crate) fn transition_provider_session_runtime_control(
         &now_string(),
     );
     if let Err(error) = result {
-        let ambiguous = ledger
-            .store
-            .runtime_commands(&execution_space_id)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|command| {
-                command.target_session_id.as_deref() == Some(session.id.as_str())
-                    && command.target_session_generation == Some(session.runtime_generation)
-                    && command.effect_certainty
-                        == harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown
-                    && matches!(
-                        command.status,
-                        harness_core::agentfirm_api::RuntimeCommandStatus::Accepted
-                            | harness_core::agentfirm_api::RuntimeCommandStatus::Quiesced
-                            | harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired
-                    )
-            })
-            .map(|command| format!("{}:{:?}/{:?}", command.id, command.command, command.status))
-            .collect::<Vec<_>>();
-        return Err(CliError::Usage(format!(
-            "{error}; ambiguous_runtime_commands=[{}]",
-            ambiguous.join(",")
-        )));
+        if let Some(trust_error) = error.trust_error() {
+            if trust_error.code == harness_core::agentfirm_api::TrustErrorCode::RuntimeEffectUnknown
+            {
+                return Err(CliError::RuntimeRecoveryRequired(format!(
+                    "{}:{}",
+                    trust_error.resource_kind, trust_error.resource_id
+                )));
+            }
+        }
+        return Err(CliError::Store(error));
     }
     Ok(())
 }
