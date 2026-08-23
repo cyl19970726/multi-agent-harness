@@ -1131,13 +1131,14 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         status, 403,
         "delegated Service authority must not receive executable Operator actions: {delegated_operator_view}"
     );
-    assert!(operator_before_reconcile["allowed_actions"]
-        .as_array()
-        .is_some_and(|actions| actions
-            .iter()
-            .any(|action| action["kind"] == "reconcile_delivery"
-                && action["target_ref"]["id"] == delivery_id
-                && action["required_version"] == 1)));
+    assert!(
+        operator_before_reconcile["allowed_actions"]
+            .as_array()
+            .is_some_and(|actions| actions.iter().all(|action| {
+                action["kind"] != "reconcile_delivery" || action["target_ref"]["id"] != delivery_id
+            })),
+        "a transitional delivery must not become current Operator authority"
+    );
     let reconcile_route = format!(
         "/v1/agentfirm/nodes/{node_id}/work-deliveries/{delivery_id}/reconcile?project={project_id}"
     );
@@ -1145,70 +1146,29 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .canonical_operations_for_space(&space_id)
         .expect("before operator rejection")
         .len();
-    let wrong_operator_headers = [
-        ("X-AgentFirm-Token", WRONG_OPERATOR_TOKEN),
-        ("Idempotency-Key", "wrong-node-reconcile"),
+    let reconcile_headers = [
+        ("X-AgentFirm-Token", OPERATOR_TOKEN),
+        ("Idempotency-Key", "retired-reconcile-store-live-delivery"),
         ("If-Match", "1"),
         ("X-AgentFirm-Confirm", "reconcile_delivery"),
     ];
-    let (status, wrong_operator) = serve.post_json_with_headers(
+    let (status, retired_reconcile) = serve.post_json_with_headers(
         &reconcile_route,
-        &serde_json::json!({"action":"reconcile_delivery","evidence_ref":"check:wrong-node"}),
-        &wrong_operator_headers,
-    );
-    assert_eq!(status, 409, "wrong node operator: {wrong_operator}");
-    assert_eq!(
-        store
-            .canonical_operations_for_space(&space_id)
-            .expect("after operator rejection")
-            .len(),
-        canonical_before_reconcile,
-        "wrong-machine Operator must have zero canonical side effects"
-    );
-    let delegated_operator_headers = [
-        ("X-AgentFirm-Token", DELEGATED_OPERATOR_TOKEN),
-        ("Idempotency-Key", "delegated-node-reconcile"),
-        ("If-Match", "1"),
-        ("X-AgentFirm-Confirm", "reconcile_delivery"),
-    ];
-    let (status, delegated_operator) = serve.post_json_with_headers(
-        &reconcile_route,
-        &serde_json::json!({"action":"reconcile_delivery","evidence_ref":"check:delegated-node"}),
-        &delegated_operator_headers,
+        &serde_json::json!({"action":"reconcile_delivery","evidence_ref":"check:operator-recovery"}),
+        &reconcile_headers,
     );
     assert_eq!(
         status, 409,
-        "delegated node authority: {delegated_operator}"
+        "retired reconcile must fail closed: {retired_reconcile}"
     );
     assert_eq!(
         store
             .canonical_operations_for_space(&space_id)
-            .expect("after delegated operator rejection")
+            .expect("after retired operator rejection")
             .len(),
         canonical_before_reconcile,
-        "Operator route requires the exact machine Service actor, not delegated authority"
+        "retired delivery reconciliation must have zero canonical side effects"
     );
-    let reconcile_headers = [
-        ("X-AgentFirm-Token", OPERATOR_TOKEN),
-        ("Idempotency-Key", "reconcile-store-live-delivery"),
-        ("If-Match", "1"),
-        ("X-AgentFirm-Confirm", "reconcile_delivery"),
-    ];
-    let (status, reconciled) = serve.post_json_with_headers(
-        &reconcile_route,
-        &serde_json::json!({"action":"reconcile_delivery","evidence_ref":"check:operator-recovery"}),
-        &reconcile_headers,
-    );
-    assert_eq!(status, 200, "Operator reconcile: {reconciled}");
-    assert_eq!(reconciled["projection"]["status"], "failed");
-    let (status, reconcile_replay) = serve.post_json_with_headers(
-        &reconcile_route,
-        &serde_json::json!({"action":"reconcile_delivery","evidence_ref":"check:operator-recovery"}),
-        &reconcile_headers,
-    );
-    assert_eq!(status, 200, "Operator reconcile replay: {reconcile_replay}");
-    assert_eq!(reconcile_replay["event_id"], reconciled["event_id"]);
-    assert_eq!(reconcile_replay["replayed"], true);
 
     let submit_route = format!(
         "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-1/submit?project={project_id}"

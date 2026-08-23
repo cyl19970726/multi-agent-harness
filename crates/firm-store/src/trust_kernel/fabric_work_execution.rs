@@ -314,6 +314,74 @@ impl HarnessStore {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_work_provider_failure(
+        &self,
+        context: &MutationContext,
+        delivery_id: &str,
+        node_id: &str,
+        daemon_id: &str,
+        daemon_generation: u64,
+        claim_id: &str,
+        failure_code: &str,
+        updated_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<CanonicalWorkDelivery>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            node_id,
+            daemon_id,
+            daemon_generation,
+            &context.authenticated_actor,
+            "work_delivery",
+            delivery_id,
+        )?;
+        let mut delivery = self
+            .latest_fabric_side_records_unlocked(
+                &context.execution_space_id,
+                |row: &CanonicalWorkDelivery| row.id.clone(),
+            )?
+            .remove(delivery_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "WorkDelivery not found",
+                    "work_delivery",
+                    delivery_id,
+                    None,
+                )
+            })?;
+        if delivery.status != WorkDeliveryStatus::Claimed
+            || delivery.claim_id.as_deref() != Some(claim_id)
+            || delivery.claimed_node_daemon_generation != Some(daemon_generation)
+            || delivery.target_node_id != node_id
+            || delivery.provider_receipt_id.is_some()
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "provider failure does not match one exact unreceived WorkDelivery claim",
+                "work_delivery",
+                delivery_id,
+                Some(delivery.version),
+            ));
+        }
+        delivery.status = WorkDeliveryStatus::Failed;
+        delivery.failure_code = Some(failure_code.to_string());
+        delivery.version += 1;
+        delivery.updated_at = updated_at.to_string();
+        self.commit_trust_projection_unlocked(
+            context,
+            "work_delivery_failure",
+            delivery_id,
+            "provider_negative_ack",
+            serde_json::json!({"claim_id": claim_id, "failure_code": failure_code}),
+            &delivery,
+            vec![serde_json::to_value(&delivery)?],
+            Vec::new(),
+        )
+    }
+
     pub fn bind_work_execution(
         &self,
         context: &MutationContext,

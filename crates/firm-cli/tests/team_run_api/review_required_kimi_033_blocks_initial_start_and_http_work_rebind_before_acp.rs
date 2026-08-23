@@ -95,7 +95,7 @@ fn review_required_kimi_033_blocks_initial_start_and_http_work_rebind_before_acp
         Some(original_member_id)
     );
     let delivery = store
-        .latest_work_deliveries()
+        .legacy_provider_work_dispatches_for_export()
         .expect("latest deliveries")
         .into_iter()
         .find(|delivery| delivery.work_id == work_id)

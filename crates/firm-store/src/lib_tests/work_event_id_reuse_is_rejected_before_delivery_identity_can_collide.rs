@@ -23,7 +23,13 @@ fn work_event_id_reuse_is_rejected_before_delivery_identity_can_collide() {
         .expect_err("caller event id reuse must be rejected");
     assert!(error.to_string().contains("WORK_EVENT_ID_CONFLICT"));
     assert_eq!(store.work_operations().expect("operations").len(), 1);
-    assert_eq!(store.latest_work_deliveries().expect("deliveries").len(), 1);
+    assert_eq!(
+        store
+            .legacy_provider_work_dispatches_for_export()
+            .expect("deliveries")
+            .len(),
+        1
+    );
 
     std::fs::remove_dir_all(root).expect("remove temp store");
 }

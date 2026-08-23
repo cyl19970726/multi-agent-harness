@@ -73,7 +73,7 @@ fn blocked_work_can_be_resumed_by_owner_or_host_with_a_recorded_resolution() {
     );
     assert_eq!(resolved_record.work_version, resumed.version);
     assert!(store
-        .latest_work_deliveries()
+        .legacy_provider_work_dispatches_for_export()
         .expect("deliveries")
         .iter()
         .any(|delivery| {

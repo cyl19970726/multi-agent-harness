@@ -14,7 +14,7 @@ fn historical_provider_receipt_does_not_lock_later_work_revisions() {
         )
         .expect("create assigned Work");
     let delivery = store
-        .latest_work_deliveries()
+        .legacy_provider_work_dispatches_for_export()
         .expect("deliveries")
         .into_iter()
         .find(|delivery| delivery.work_id == assigned.id)
@@ -94,7 +94,7 @@ fn historical_provider_receipt_does_not_lock_later_work_revisions() {
         Some(peer.id.as_str())
     );
     assert!(store
-        .latest_work_deliveries()
+        .legacy_provider_work_dispatches_for_export()
         .expect("deliveries")
         .iter()
         .any(|candidate| {
@@ -103,7 +103,7 @@ fn historical_provider_receipt_does_not_lock_later_work_revisions() {
                 && candidate.provider_receipt_id.as_deref() == Some("native-receipt-history")
         }));
     let reassigned_delivery = store
-        .latest_work_deliveries()
+        .legacy_provider_work_dispatches_for_export()
         .expect("deliveries")
         .into_iter()
         .find(|candidate| {

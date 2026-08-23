@@ -35,7 +35,7 @@ fn work_delivery_waits_for_prerequisites_and_current_lease_can_fail_its_claim() 
         )
         .expect("create dependent");
     let delivery = store
-        .latest_work_deliveries()
+        .legacy_provider_work_dispatches_for_export()
         .expect("deliveries")
         .into_iter()
         .find(|delivery| delivery.work_id == dependent.id)

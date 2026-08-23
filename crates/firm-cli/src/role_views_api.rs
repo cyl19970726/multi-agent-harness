@@ -118,7 +118,6 @@ pub(crate) struct Facts {
     run_sequence: u64,
     team_revisions: BTreeMap<String, u64>,
     run_revisions: BTreeMap<String, u64>,
-    canonical_versions: BTreeMap<(String, String), u64>,
     teams: Vec<AgentTeam>,
     runs: Vec<AgentTeamRun>,
     works: Vec<Work>,
@@ -231,19 +230,6 @@ impl Facts {
             .map(|op| op.event.store_sequence)
             .max()
             .unwrap_or(0);
-        let canonical_versions = operations.iter().fold(
-            BTreeMap::<(String, String), u64>::new(),
-            |mut versions, operation| {
-                versions.insert(
-                    (
-                        operation.event.aggregate_kind.clone(),
-                        operation.event.aggregate_id.clone(),
-                    ),
-                    operation.event.resulting_version,
-                );
-                versions
-            },
-        );
         let mut works = store
             .latest_works()
             .map_err(|error| error.to_string())?
@@ -325,7 +311,6 @@ impl Facts {
             run_sequence: run_revisions.values().sum(),
             team_revisions,
             run_revisions,
-            canonical_versions,
             teams: store
                 .latest_teams()
                 .map_err(|error| error.to_string())?
@@ -407,7 +392,7 @@ impl Facts {
                 .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
                 .collect(),
             work_deliveries: store
-                .trust_work_deliveries(space_id)
+                .current_work_deliveries(space_id)
                 .map_err(|error| error.to_string())?
                 .into_iter()
                 .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
@@ -583,14 +568,14 @@ fn record_summary(kind: &str, value: &Value) -> Value {
         .and_then(Value::as_str);
     json!({
         "kind":kind,
-        "id":first_string(&["id","message_id","work_id"]).unwrap_or("unknown"),
+        "id":first_string(&["id","delivery_id","message_id","work_id"]).unwrap_or("unknown"),
         "work_id":first_string(&["work_id"]),
         "member_run_id":first_string(&["member_run_id","recipient_member_run_id"]),
         "requirement_id":first_string(&["requirement_id"]),
         "status":first_string(&["state","status","lifecycle","verdict","runtime_status"]),
         "version":value.get("version").and_then(Value::as_u64),
         "actor_ref":actor_ref,
-        "summary":first_string(&["summary","summary_markdown","detail_markdown","observed_failure","reason"]),
+        "summary":first_string(&["summary","summary_markdown","detail_markdown","observed_failure","failure_code","reason"]),
         "created_at":first_string(&["created_at","evaluated_at","updated_at"]),
         "source_id":source_id,
         "target_id":target_id,
@@ -629,7 +614,7 @@ fn team_activity(
             .as_str()
             .is_some_and(|id| team_work_ids.contains(id))
     }) {
-        rows.push(json!({"source":"work_delivery","id":delivery["id"],"work_id":delivery["work_id"],"actor_ref":null,"status":delivery["status"],"summary":display_text(delivery["failure_detail"].as_str()),"created_at":delivery["updated_at"]}));
+        rows.push(json!({"source":"work_delivery","id":delivery["delivery_id"],"work_id":delivery["work_id"],"actor_ref":null,"status":delivery["status"],"summary":display_text(delivery["failure_code"].as_str()),"created_at":delivery["updated_at"]}));
     }
     for message in facts
         .messages

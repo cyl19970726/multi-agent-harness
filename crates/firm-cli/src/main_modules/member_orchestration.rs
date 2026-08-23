@@ -420,7 +420,7 @@ pub(crate) fn prepare_team_run_start_body(
     // Fail the whole start/reattach before reserving a Supervisor or moving the
     // TeamRun to running when any persistent adapter version is unreviewed.
     // The refreshed profile is still durable operator evidence; native-session
-    // locators and Work/ProviderWorkDispatch rows are intentionally untouched.
+    // locators and Work/canonical delivery rows are intentionally untouched.
     for member in &mut members {
         if member.is_external_interactive() {
             continue;

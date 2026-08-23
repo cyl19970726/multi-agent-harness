@@ -14,7 +14,7 @@ fn successor_supervisor_reconciles_a_stale_work_delivery_claim_before_reclaim() 
         )
         .expect("create assigned Work");
     let delivery = store
-        .latest_work_deliveries()
+        .legacy_provider_work_dispatches_for_export()
         .expect("deliveries")
         .into_iter()
         .find(|delivery| delivery.work_id == "work-reconcile")

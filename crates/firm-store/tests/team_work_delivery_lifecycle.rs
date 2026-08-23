@@ -238,7 +238,7 @@ fn set_member_state(
 fn deliveries_for(harness: &TestStore, work_id: &str) -> Vec<ProviderWorkDispatch> {
     harness
         .store
-        .latest_work_deliveries()
+        .legacy_provider_work_dispatches_for_export()
         .expect("read deliveries")
         .into_iter()
         .filter(|delivery| delivery.work_id == work_id)

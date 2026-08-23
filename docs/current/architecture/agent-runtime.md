@@ -145,6 +145,27 @@ NodeDaemon lease, and Work owner under canonical Store authority. Work result,
 progress, finding, failure, revise, submit, gate, and acceptance remain Work
 operations.
 
+Every current CLI, HTTP, MCP, RoleView, recovery diagnostic, and Dashboard
+reader consumes the non-persisted `CurrentWorkDeliveryView`. The application
+projection joins canonical Work, `WorkExecutionBinding`,
+`CanonicalWorkDelivery`, AgentSession, MemberRun, and TeamRun facts inside one
+explicit Execution Space. Broken canonical joins fail closed; an embedded
+legacy `ProviderWorkDispatch` can neither override a receipt nor fill a missing
+canonical row. The legacy projection is available only through its explicitly
+named read-only audit/export adapter.
+
+| Reader | Current source | Legacy handling |
+| --- | --- | --- |
+| CLI and MCP Work show | TeamRun-scoped `CurrentWorkDeliveryView` | none |
+| HTTP Work detail | TeamRun-scoped `CurrentWorkDeliveryView` | none |
+| Dashboard snapshot | one projection per explicit Execution Space | none |
+| RoleView and member status | same Execution-Space projection | none |
+| TeamRun recovery | canonical claim/receipt diagnostics only | zero mutation/effect |
+| historical export/tests | `legacy_provider_work_dispatches_for_export` | visibly read-only |
+
+The repository Work boundary gate rejects direct legacy delivery readers and
+types from every maintained current product module in this table.
+
 ### Runtime control
 
 Start, resume, turn, queued input, interrupt, and stop all use the same durable
@@ -290,12 +311,12 @@ Codex, Claude, Kimi, Pi, and DeepSeek Harness expose separate, closed capability
   result/evidence reference.
 
 Provider adapters consume only canonical claimed `CanonicalMessageDelivery` or
-WorkDelivery plus a NodeDaemon-built `ProviderInvocation`. The retired
-`ProviderDispatchEnvelope` and the ledgers from the development batch
-historically named “Wave 4A” have no current
-writer, reader, fallback, migration, SSE, RoleView, Dashboard, CLI, HTTP, MCP,
-or adapter authority. A narrowly enumerated historical export may remain
-read-only and is excluded from current projections and migration.
+`CanonicalWorkDelivery` plus a NodeDaemon-built `ProviderInvocation`. The
+retired `ProviderDispatchEnvelope`, `ProviderWorkDispatch`, and the ledgers from
+the development batch historically named “Wave 4A” have no current writer,
+fallback, SSE, RoleView, Dashboard, CLI, HTTP, MCP, recovery, or adapter
+authority. Narrowly named historical audit/export readers remain read-only and
+are excluded from current projections and migration.
 
 ## Product views and clients
 

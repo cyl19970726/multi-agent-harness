@@ -14,7 +14,7 @@ fn delivery_projection_folds_cross_file_updates_by_store_sequence() {
         )
         .expect("create assigned Work");
     let delivery = store
-        .latest_work_deliveries()
+        .legacy_provider_work_dispatches_for_export()
         .expect("deliveries")
         .into_iter()
         .find(|delivery| delivery.work_id == assigned.id)
@@ -63,7 +63,7 @@ fn delivery_projection_folds_cross_file_updates_by_store_sequence() {
         .expect("embedded update invalidates the later-requeued delivery");
     assert_eq!(released.version, 2);
     let projected = store
-        .latest_work_deliveries()
+        .legacy_provider_work_dispatches_for_export()
         .expect("project deliveries")
         .into_iter()
         .find(|candidate| candidate.id == delivery.id)

@@ -351,28 +351,10 @@ pub(crate) fn operator_view(
             projected
         })
         .collect::<Vec<_>>();
-    let mut operator_actions = facts
-        .work_deliveries
-        .iter()
-        .filter(|delivery| {
-            delivery["status"] == "claimed"
-                && delivery["recipient_member_run_id"]
-                    .as_str()
-                    .is_some_and(|id| node_member_run_ids.contains(id))
-        })
-        .filter_map(|delivery| {
-            let delivery_id = delivery["id"].as_str()?;
-            Some(action(
-                "reconcile_delivery",
-                "work_delivery",
-                delivery_id,
-                *facts
-                    .canonical_versions
-                    .get(&("work_delivery".into(), delivery_id.into()))?,
-                None,
-            ))
-        })
-        .collect::<Vec<_>>();
+    // Canonical WorkDelivery reconciliation is an exact NodeDaemon/session
+    // RuntimeCommand action, not an Operator RoleAction and never a legacy
+    // legacy delivery mutation.
+    let mut operator_actions = Vec::new();
     for delivery in facts
         .message_deliveries
         .iter()

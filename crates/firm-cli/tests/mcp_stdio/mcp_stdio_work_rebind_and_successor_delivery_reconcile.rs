@@ -165,7 +165,7 @@ fn mcp_stdio_work_rebind_and_successor_delivery_reconcile() {
     assert_eq!(rebound_version, initial_version + 1);
 
     let delivery = store
-        .latest_work_deliveries()
+        .legacy_provider_work_dispatches_for_export()
         .expect("latest WorkDeliveries")
         .into_iter()
         .find(|delivery| {

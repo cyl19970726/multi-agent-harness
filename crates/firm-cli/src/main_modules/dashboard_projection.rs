@@ -32,6 +32,7 @@ pub(super) fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::
     let mut agent_sessions = Vec::new();
     let mut team_memberships = Vec::new();
     let mut work_execution_bindings = Vec::new();
+    let mut work_deliveries = Vec::new();
     let mut canonical_messages = Vec::new();
     let mut canonical_message_deliveries = Vec::new();
     for execution_space_id in trust_scopes {
@@ -39,6 +40,7 @@ pub(super) fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::
         agent_sessions.extend(store.fabric_agent_sessions(&execution_space_id)?);
         team_memberships.extend(store.fabric_team_memberships(&execution_space_id)?);
         work_execution_bindings.extend(store.fabric_work_execution_bindings(&execution_space_id)?);
+        work_deliveries.extend(store.current_work_deliveries(&execution_space_id)?);
         let space_messages = store.fabric_messages(&execution_space_id)?;
         let deliveries = store.fabric_message_deliveries(&execution_space_id)?;
         canonical_messages.extend(space_messages.iter().cloned());
@@ -55,7 +57,6 @@ pub(super) fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::
     });
     let works = store.latest_works()?;
     let work_events = store.work_events()?;
-    let work_deliveries = store.latest_work_deliveries()?;
     let work_delegations = store.latest_work_delegations()?;
     let work_delegation_events = store.work_delegation_events()?;
     let execution_nodes = store.latest_execution_nodes()?;

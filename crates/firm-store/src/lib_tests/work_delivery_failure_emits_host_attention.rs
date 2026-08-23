@@ -14,7 +14,7 @@ fn work_delivery_failure_emits_host_attention() {
         )
         .expect("create assigned Work");
     let delivery = store
-        .latest_work_deliveries()
+        .legacy_provider_work_dispatches_for_export()
         .expect("deliveries")
         .into_iter()
         .find(|d| d.work_id == assigned.id)

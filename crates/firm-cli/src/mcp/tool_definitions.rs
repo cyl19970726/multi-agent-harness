@@ -130,7 +130,7 @@ pub(super) fn tool_definitions() -> Value {
                     "title": {"type": "string", "minLength": 1},
                     "context_markdown": {"type": "string"},
                     "completion_criteria_markdown": {"type": "string", "minLength": 1},
-                    "owner_member_run_id": {"type": "string", "minLength": 1, "description": "Optional concrete ProviderRuntimeProjection to receive the first ProviderWorkDispatch; stable AgentMember ownership is derived by the store."},
+                    "owner_member_run_id": {"type": "string", "minLength": 1, "description": "Optional concrete MemberRun used to derive stable AgentMember responsibility; provider delivery requires a later canonical execution binding."},
                     "claim_mode": {"type": "string", "enum": ["host_assign", "team_claim"]},
                     "eligible_member_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
                     "prerequisite_work_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
@@ -175,7 +175,7 @@ pub(super) fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_work_resume",
-            "description": "Host resumes blocked Work after recording how the blocker was resolved; the latest owner is woken through ProviderWorkDispatch.",
+            "description": "Host resumes blocked Work after recording how the blocker was resolved; the latest owner is woken through canonical Work delivery.",
             "inputSchema": {"type": "object", "properties": {"team_run_id": {"type": "string"}, "work_id": {"type": "string"}, "expected_version": {"type": "integer", "minimum": 0}, "resolution": {"type": "string", "minLength": 1}, "caused_by_message_id": {"type": "string"}, "idempotency_key": {"type": "string"}}, "required": ["team_run_id", "work_id", "expected_version", "resolution"]}
         },
         {
@@ -195,7 +195,7 @@ pub(super) fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_work_reconcile_delivery",
-            "description": "A successor Supervisor explicitly requeues one stale claimed ProviderWorkDispatch after a crash. The caller must name the successor Supervisor id and generation; this never guesses provider consumption or changes Work responsibility.",
+            "description": "Retired compatibility endpoint. It always fails closed; canonical WorkDelivery reconciliation requires exact NodeDaemon/session authority.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

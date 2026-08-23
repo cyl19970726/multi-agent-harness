@@ -312,7 +312,7 @@ fn invalidation_is_queued_across_snapshot_marker_to_get_boundary() {
 }
 
 #[test]
-fn external_work_and_delivery_writes_invalidate_a_healthy_stream_and_snapshot_converges() {
+fn external_work_and_legacy_delivery_writes_invalidate_without_overriding_current_snapshot() {
     use std::io::Write as _;
 
     let home = TempHome::new("sse-external-work");
@@ -407,15 +407,33 @@ fn external_work_and_delivery_writes_invalidate_a_healthy_stream_and_snapshot_co
         "authoritative snapshot did not converge after invalidation: {snapshot}"
     );
 
-    // ProviderWorkDispatch update rows are a separate ledger and must independently
-    // invalidate the same already-open stream. This simulates a supervisor or
-    // external runtime process committing a durable delivery status update.
-    let delivery = snapshot["work_deliveries"]
-        .as_array()
-        .expect("snapshot deliveries")
-        .iter()
+    // ProviderWorkDispatch rows are retained as legacy audit evidence. They
+    // remain watched so an open SSE stream reports raw-store changes, but the
+    // current snapshot must never promote them into canonical Work delivery.
+    let operations_path = home
+        .spaces_dir()
+        .join("space-alpha")
+        .join("work_operations.jsonl");
+    let delivery = std::fs::read_to_string(&operations_path)
+        .expect("read Work operations")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .flat_map(|operation| {
+            operation["deliveries"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
         .find(|delivery| delivery["work_id"] == work_id)
-        .expect("new Work delivery");
+        .expect("legacy Work delivery audit row");
+    assert!(
+        snapshot["work_deliveries"]
+            .as_array()
+            .expect("snapshot deliveries")
+            .iter()
+            .all(|candidate| candidate["work_id"] != work_id),
+        "legacy-only delivery must not enter the current snapshot: {snapshot}"
+    );
     let update = serde_json::json!({
         "delivery_id": delivery["id"],
         "update_sequence": 1,
@@ -457,8 +475,8 @@ fn external_work_and_delivery_writes_invalidate_a_healthy_stream_and_snapshot_co
             .as_array()
             .expect("refreshed deliveries")
             .iter()
-            .any(|candidate| candidate["id"] == delivery["id"] && candidate["status"] == "failed"),
-        "delivery projection did not converge after invalidation: {refreshed}"
+            .all(|candidate| candidate["id"] != delivery["id"]),
+        "legacy update overrode the canonical delivery projection: {refreshed}"
     );
 }
 

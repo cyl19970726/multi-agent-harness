@@ -321,7 +321,6 @@ pub(crate) fn global_work_view(spaces: &[(String, HarnessStore)], query: &Query)
         run_sequence: 0,
         team_revisions: BTreeMap::new(),
         run_revisions: BTreeMap::new(),
-        canonical_versions: BTreeMap::new(),
         teams: vec![],
         runs: vec![],
         works: vec![],

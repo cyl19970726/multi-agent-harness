@@ -458,7 +458,12 @@ impl HarnessStore {
         Ok(events)
     }
 
-    pub fn latest_work_deliveries(&self) -> StoreResult<Vec<ProviderWorkDispatch>> {
+    /// Explicit legacy audit/export reader. Never use this projection to make
+    /// a current scheduling, recovery, API, CLI, MCP, RoleView, or Dashboard
+    /// decision.
+    pub fn legacy_provider_work_dispatches_for_export(
+        &self,
+    ) -> StoreResult<Vec<ProviderWorkDispatch>> {
         Ok(self
             .latest_work_deliveries_unlocked()?
             .into_values()

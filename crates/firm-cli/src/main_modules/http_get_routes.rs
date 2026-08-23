@@ -284,7 +284,7 @@ impl HttpExchange<'_> {
                             .filter(|event| event.work_id == *work_id)
                             .collect::<Vec<_>>();
                         let deliveries = store
-                            .latest_work_deliveries()?
+                            .current_work_deliveries_for_team_run(team_run_id)?
                             .into_iter()
                             .filter(|delivery| delivery.work_id == *work_id)
                             .collect::<Vec<_>>();

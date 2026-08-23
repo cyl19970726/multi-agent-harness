@@ -204,7 +204,7 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
         original_generation + 1
     );
     let fresh_deliveries = store
-        .latest_work_deliveries()
+        .legacy_provider_work_dispatches_for_export()
         .expect("WorkDeliveries")
         .into_iter()
         .filter(|delivery| {

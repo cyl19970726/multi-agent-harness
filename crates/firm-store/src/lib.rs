@@ -323,6 +323,7 @@ pub struct HarnessStore {
     process_write_lock: Arc<AtomicBool>,
 }
 
+mod store_current_work_delivery;
 mod store_host_attention;
 mod store_host_attention_internals;
 mod store_jsonl;

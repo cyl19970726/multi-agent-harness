@@ -14,7 +14,7 @@ fn host_rebind_fences_old_runtime_and_preserves_provider_receipt_evidence() {
         )
         .expect("create assigned Work");
     let delivery = store
-        .latest_work_deliveries()
+        .legacy_provider_work_dispatches_for_export()
         .expect("deliveries")
         .into_iter()
         .find(|delivery| delivery.work_id == assigned.id)
@@ -97,7 +97,9 @@ fn host_rebind_fences_old_runtime_and_preserves_provider_receipt_evidence() {
         rebound.active_member_run_id.as_deref(),
         Some(replacement.id.as_str())
     );
-    let deliveries = store.latest_work_deliveries().expect("deliveries");
+    let deliveries = store
+        .legacy_provider_work_dispatches_for_export()
+        .expect("deliveries");
     assert!(deliveries.iter().any(|candidate| {
         candidate.id == delivery.id
             && candidate.status == ProviderWorkDispatchStatus::ProviderReceived

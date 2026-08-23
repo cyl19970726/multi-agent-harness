@@ -166,6 +166,48 @@ for (const required of ["firm-application", "firm-store"]) {
   }
 }
 
+const currentDeliverySurfacePaths = [
+  "crates/firm-cli/src/agentfirm_api.rs",
+  "crates/firm-cli/src/main_modules/dashboard_projection.rs",
+  "crates/firm-cli/src/main_modules/http_get_routes.rs",
+  "crates/firm-cli/src/main_modules/member_work_coordination.rs",
+  "crates/firm-cli/src/main_modules/team_recovery_work.rs",
+  "crates/firm-cli/src/main_modules/work_cli.rs",
+  "crates/firm-cli/src/mcp/work_tools.rs",
+  "crates/firm-cli/src/role_views_api.rs",
+  "crates/firm-cli/src/role_views_api/member_surface.rs",
+  "crates/firm-cli/src/role_views_api/team_surface.rs",
+];
+for (const path of currentDeliverySurfacePaths) {
+  if (!existsSync(resolve(root, path))) {
+    failures.push(`${path}: current WorkDelivery surface is missing`);
+    continue;
+  }
+  const content = read(path);
+  for (const forbidden of [
+    "latest_work_deliveries",
+    "legacy_provider_work_dispatches_for_export",
+    "trust_work_deliveries",
+    "create_trust_work_deliveries",
+    "reconcile_trust_work_delivery",
+    "reconcile_stale_work_delivery_claim",
+    "ProviderWorkDispatch",
+    "ProviderWorkDispatchStatus",
+  ]) {
+    if (content.includes(forbidden)) {
+      failures.push(`${path}: current WorkDelivery surface references legacy authority ${forbidden}`);
+    }
+  }
+}
+for (const required of [
+  "pub struct CurrentWorkDeliveryView",
+  "pub enum CurrentWorkDeliveryAuthority",
+]) {
+  if (!read("crates/firm-application/src/current_work_delivery.rs").includes(required)) {
+    failures.push(`crates/firm-application/src/current_work_delivery.rs: missing ${required}`);
+  }
+}
+
 const applicationServicePath = "crates/firm-application/src/work_service.rs";
 if (!existsSync(resolve(root, applicationServicePath))) {
   failures.push(`${applicationServicePath}: Work application service is missing`);

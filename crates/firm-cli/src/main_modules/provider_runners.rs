@@ -86,7 +86,7 @@ pub(super) fn run_member_orchestration(
         // fresh row and therefore loses to Close or any later mutation.
         accepted = current.clone();
         // Re-probe every transport generation. This is the last fence before
-        // capacity checks, ProviderWorkDispatch claim, process spawn, or native-session
+        // capacity checks, canonical Work claim, process spawn, or native-session
         // attach, so a binary upgraded to an unreviewed version cannot fall
         // into the reconnect loop or replay a rebound Work.
         let compatibility_boundary = if current.native_session.is_some() {

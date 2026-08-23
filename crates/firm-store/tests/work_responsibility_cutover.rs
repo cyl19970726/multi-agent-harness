@@ -435,7 +435,7 @@ fn membership_assignment_is_cas_fenced_and_needs_no_runtime() {
     assert_eq!(assigned.active_member_run_id, None);
     assert_eq!(assigned.phase, WorkPhase::Open);
     let deliveries = store
-        .latest_work_deliveries()
+        .legacy_provider_work_dispatches_for_export()
         .expect("deliveries")
         .into_iter()
         .filter(|delivery| delivery.work_id == "work-assign-1")

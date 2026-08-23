@@ -41,7 +41,10 @@ fn stale_work_revision_requires_current_supervisor_before_invalidation() {
     let delivery_before = harness.store.trust_work_deliveries(SPACE).unwrap();
     let member_before = harness.store.trust_member_runs(SPACE).unwrap();
     let work_before = harness.store.latest_works().unwrap();
-    let provider_before = harness.store.latest_work_deliveries().unwrap();
+    let provider_before = harness
+        .store
+        .legacy_provider_work_dispatches_for_export()
+        .unwrap();
     let operation_count_before = harness.store.canonical_operations().unwrap().len();
 
     for (actor, generation, claim_id) in [
@@ -92,7 +95,10 @@ fn stale_work_revision_requires_current_supervisor_before_invalidation() {
             "rejected Supervisor must not mutate Work"
         );
         assert_eq!(
-            harness.store.latest_work_deliveries().unwrap(),
+            harness
+                .store
+                .legacy_provider_work_dispatches_for_export()
+                .unwrap(),
             provider_before,
             "rejected Supervisor must create no provider dispatch side effect"
         );

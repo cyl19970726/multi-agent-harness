@@ -65,7 +65,7 @@ fn concurrent_work_claim_has_exactly_one_winner_and_idempotent_retry() {
     assert_eq!(retried, winner);
     assert!(
         store
-            .latest_work_deliveries()
+            .legacy_provider_work_dispatches_for_export()
             .expect("deliveries")
             .is_empty(),
         "the winning Member already possesses self-claimed Work in its bound runtime"

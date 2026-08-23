@@ -25,7 +25,7 @@ fn release_clears_safe_open_ownership_and_rejects_an_in_flight_delivery() {
     assert!(released.owner_member_id.is_none());
     assert!(released.active_member_run_id.is_none());
     assert!(store
-        .latest_work_deliveries()
+        .legacy_provider_work_dispatches_for_export()
         .expect("deliveries")
         .iter()
         .any(|delivery| {
@@ -43,7 +43,7 @@ fn release_clears_safe_open_ownership_and_rejects_an_in_flight_delivery() {
         )
         .expect("create second assigned Work");
     let delivery = store
-        .latest_work_deliveries()
+        .legacy_provider_work_dispatches_for_export()
         .expect("deliveries")
         .into_iter()
         .find(|delivery| delivery.work_id == in_flight.id)

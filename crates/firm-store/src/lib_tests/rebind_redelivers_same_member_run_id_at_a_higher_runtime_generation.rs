@@ -58,7 +58,7 @@ fn rebind_redelivers_same_member_run_id_at_a_higher_runtime_generation() {
     assert_eq!(operation.event.payload["previous_runtime_generation"], 1);
     assert_eq!(operation.event.payload["replacement_runtime_generation"], 2);
     assert!(store
-        .latest_work_deliveries()
+        .legacy_provider_work_dispatches_for_export()
         .unwrap()
         .iter()
         .any(|delivery| {
