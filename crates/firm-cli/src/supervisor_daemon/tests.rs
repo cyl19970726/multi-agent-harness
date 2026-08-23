@@ -234,6 +234,51 @@ fn node_daemon_socket_path_long_home_fallback() {
 }
 
 #[test]
+fn node_daemon_socket_path_uses_one_identity_for_alias_equivalent_long_homes() {
+    use std::os::unix::fs::symlink;
+
+    let tree = TestTree::new("socket-alias");
+    let physical_parent = tree.0.join("physical");
+    std::fs::create_dir_all(&physical_parent).expect("create physical home parent");
+    let alias_parent = tree.0.join("alias");
+    symlink(&physical_parent, &alias_parent).expect("create home path alias");
+    let long_suffix = "long-home-segment-".repeat(8);
+    let physical_home = physical_parent.join(&long_suffix);
+    std::fs::create_dir_all(&physical_home).expect("create long physical home");
+    let alias_home = alias_parent.join(&long_suffix);
+    let node_id = "00000000-0000-4000-8000-000000000001";
+
+    let physical_socket = node_daemon_socket_path(&physical_home, node_id);
+    let alias_socket = node_daemon_socket_path(&alias_home, node_id);
+
+    assert_eq!(physical_socket, alias_socket);
+    assert!(physical_socket
+        .to_string_lossy()
+        .starts_with("/tmp/firm-node-daemon-"));
+}
+
+#[test]
+fn node_daemon_socket_path_keeps_distinct_homes_and_nodes_isolated() {
+    let tree = TestTree::new("socket-isolation");
+    let long_suffix = "long-home-segment-".repeat(8);
+    let home_a = tree.0.join("home-a").join(&long_suffix);
+    let home_b = tree.0.join("home-b").join(&long_suffix);
+    std::fs::create_dir_all(&home_a).expect("create first long home");
+    std::fs::create_dir_all(&home_b).expect("create second long home");
+
+    let node_a = "00000000-0000-4000-8000-000000000001";
+    let node_b = "00000000-0000-4000-8000-000000000002";
+    assert_ne!(
+        node_daemon_socket_path(&home_a, node_a),
+        node_daemon_socket_path(&home_b, node_a)
+    );
+    assert_ne!(
+        node_daemon_socket_path(&home_a, node_a),
+        node_daemon_socket_path(&home_a, node_b)
+    );
+}
+
+#[test]
 fn node_daemon_socket_path_is_stable_per_node() {
     let root = std::path::Path::new("/some/store/root");
     let p1 = node_daemon_socket_path(root, "00000000-0000-4000-8000-000000000001");
