@@ -227,6 +227,10 @@ fn new_thread_uses_the_explicit_frozen_permission_mapping() {
     assert_eq!(params["approvalPolicy"], "never");
     assert_eq!(params["ephemeral"], false);
     assert_eq!(params["config"]["model_reasoning_effort"], "max");
+    assert_eq!(
+        params["config"]["sandbox_workspace_write"]["network_access"],
+        true
+    );
     assert_eq!(params["serviceTier"], "priority");
     assert!(params.get("threadId").is_none());
 }
@@ -247,6 +251,29 @@ fn resumed_thread_keeps_the_explicit_frozen_permission_mapping() {
     assert_eq!(params["approvalPolicy"], "never");
     assert_eq!(params["threadId"], "thread-123");
     assert!(params.get("ephemeral").is_none());
+    assert_eq!(params["config"]["model_reasoning_effort"], "high");
+    assert!(params["config"].get("sandbox_workspace_write").is_none());
+}
+
+#[test]
+fn resumed_workspace_write_thread_keeps_local_supervisor_network_access() {
+    let params = thread_open_params(
+        Path::new("/tmp/project"),
+        Some("gpt-test"),
+        None,
+        Some("default"),
+        Some("thread-123"),
+        "workspace-write",
+        "never",
+    );
+
+    assert_eq!(params["sandbox"], "workspace-write");
+    assert_eq!(params["approvalPolicy"], "never");
+    assert_eq!(params["threadId"], "thread-123");
+    assert_eq!(
+        params["config"]["sandbox_workspace_write"]["network_access"],
+        true
+    );
 }
 
 #[test]
