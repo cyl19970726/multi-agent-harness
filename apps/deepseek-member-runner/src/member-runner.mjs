@@ -76,6 +76,21 @@ export function createMemberRunner({ runtime, emit }) {
     let turnReason;
     const message = runtime.createUserMessage(payload.body);
     activeMessageId = message.id;
+    let acceptTimer;
+    let detachAcceptance = () => {};
+    const inputAccepted = new Promise((resolve, reject) => {
+      detachAcceptance = runtime.onEvent(current.agent.session, (event) => {
+        if (event.type !== "agent/inbox/spliced"
+          || !event.data?.inserted?.some((inserted) => inserted.id === message.id)) return;
+        clearTimeout(acceptTimer);
+        detachAcceptance();
+        resolve();
+      });
+      acceptTimer = setTimeout(() => {
+        detachAcceptance();
+        reject(new Error(`DSH_INPUT_NOT_ACCEPTED:${payload.id}`));
+      }, 30_000);
+    });
     const detachCycle = runtime.onEvent(current.agent.session, (event) => {
       if (event.type === "assistant/message") finalText = textOf(event.data?.message) || finalText;
       if (event.type === "tool/call") toolCallCount += 1;
@@ -83,6 +98,11 @@ export function createMemberRunner({ runtime, emit }) {
     });
     try {
       current.agent.followup(message);
+      // DSH can still report the previous idle boundary immediately after an
+      // interrupt. Bind this cycle to its exact inbox splice before awaiting
+      // idle/turn-end, otherwise a newly accepted followup can be settled as
+      // missing_terminal without ever observing its native turn.
+      await inputAccepted;
       await current.agent.whenIdle();
       await runtime.flush(current.agent.session);
       if (!interrupted) {
@@ -99,6 +119,8 @@ export function createMemberRunner({ runtime, emit }) {
         });
       }
     } finally {
+      clearTimeout(acceptTimer);
+      detachAcceptance();
       detachCycle();
       activeInputId = undefined;
       activeMessageId = undefined;

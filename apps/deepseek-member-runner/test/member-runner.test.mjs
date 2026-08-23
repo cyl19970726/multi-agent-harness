@@ -97,3 +97,28 @@ test("interrupt settles without fabricating turn completion and retains the sess
   );
   assert.equal(events.some(({ event }) => event === "turn_complete"), false);
 });
+
+test("post-interrupt followup waits for its exact inbox splice before the idle boundary", async () => {
+  const runtime = fakeRuntime();
+  const handle = await runtime.create({});
+  handle.agent.cancel = () => {};
+  handle.agent.whenIdle = async () => {};
+  handle.agent.followup = (message) => {
+    setImmediate(() => {
+      for (const listener of runtime.listeners) {
+        listener({ type: "agent/inbox/spliced", data: { inserted: [message] } });
+        listener({ type: "assistant/message", data: { message: { content: [{ type: "text", text: "resumed" }] } } });
+        listener({ type: "turn/end", data: { reason: { kind: "completed" } } });
+      }
+    });
+  };
+  runtime.create = async () => handle;
+  const events = [];
+  const runner = createMemberRunner({ runtime, emit: (event, data) => events.push({ event, data }) });
+  await runner.command({ command: "start", payload: { protocolVersion: PROTOCOL_VERSION, protocolFingerprint: PROTOCOL_FINGERPRINT } });
+  await runner.command({ command: "interrupt", payload: { reason: "idle interrupt boundary" } });
+  await runner.command({ command: "deliver", payload: { id: "post-interrupt", body: "continue" } });
+  const terminal = events.find(({ event, data }) => event === "turn_complete" && data.triggerMessageId === "post-interrupt");
+  assert.equal(terminal.data.isError, false);
+  assert.equal(terminal.data.terminalReason, "completed");
+});
