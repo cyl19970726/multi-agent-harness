@@ -25,8 +25,13 @@ fn partial_legacy_team_run_is_diagnostic_only_until_canonical_completeness_is_re
         std::slice::from_ref(&dangling_spec),
     )
     .expect("seed exact-space durable identity, but no canonical MemberRun");
-    let dangling = build_member_run_for_team(None, &created.team_run.id, &dangling_spec)
-        .expect("build historical dangling runtime projection");
+    let dangling = build_member_run_for_team(
+        None,
+        &created.team_run.id,
+        &dangling_spec,
+        created.team_run.execution_root.as_deref(),
+    )
+    .expect("build historical dangling runtime projection");
     let current = latest_team_run(&store, &created.team_run.id).expect("current TeamRun");
     let lease = store
         .acquire_test_supervisor_lease(

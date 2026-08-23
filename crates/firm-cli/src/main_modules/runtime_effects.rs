@@ -134,6 +134,7 @@ pub(super) enum LiveMemberControlRequest {
         expected_version: u64,
         idempotency_key: String,
         body: serde_json::Value,
+        confirmed_action: Option<String>,
     },
 }
 

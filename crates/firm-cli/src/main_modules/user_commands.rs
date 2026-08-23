@@ -761,6 +761,7 @@ pub(super) fn execute_bound_member_role_action(
     expected_version: u64,
     idempotency_key: String,
     body: serde_json::Value,
+    confirmed_action: Option<String>,
 ) -> CliResult<()> {
     let result = dispatch_live_member_control(
         store,
@@ -772,6 +773,7 @@ pub(super) fn execute_bound_member_role_action(
             expected_version,
             idempotency_key,
             body,
+            confirmed_action,
         },
     )?;
     print_json(&result)
@@ -903,20 +905,47 @@ pub(super) fn bound_member_message_command(store: &HarnessStore, args: &[String]
         team_revision,
         value(args, "--idempotency-key").unwrap_or_else(|| generated_id("member-message")),
         intent,
+        None,
     )
 }
 
 pub(super) fn bound_member_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "member work claim|start|block|resume|release|submit --work-id <id> --expected-version <n> ...",
+        "member work create|assign|claim|start|block|resume|release|submit|accept --expected-version <n> ...",
     )?;
     let context = bound_member_role_context()?;
-    let work_id = required(args, "--work-id")?;
     let expected_version = required(args, "--expected-version")?
         .parse::<u64>()
         .map_err(|_| CliError::Usage("--expected-version must be an unsigned integer".into()))?;
+    if args[0] == "create" {
+        return execute_bound_member_role_action(
+            store,
+            &context,
+            &format!("/v1/agentfirm/team-runs/{}/works", context.team_run_id),
+            expected_version,
+            value(args, "--idempotency-key").unwrap_or_else(|| generated_id("member-work")),
+            serde_json::json!({
+                "action": "create_work",
+                "work_id": required(args, "--work-id")?,
+                "title": required(args, "--title")?,
+                "context_markdown": value(args, "--context").unwrap_or_default(),
+                "completion_criteria_markdown": required(args, "--completion-criteria")?,
+                "claim_mode": value(args, "--claim-mode").unwrap_or_else(|| "host_assign".into()),
+                "priority": value(args, "--priority").unwrap_or_else(|| "normal".into()),
+            }),
+            None,
+        );
+    }
+    let work_id = required(args, "--work-id")?;
     let (operation, intent) = match args[0].as_str() {
+        "assign" => (
+            "assign",
+            serde_json::json!({
+                "action": "assign_work",
+                "member_run_id": required(args, "--member-run-id")?,
+            }),
+        ),
         "claim" => ("claim", serde_json::json!({"action": "claim_work"})),
         "start" => ("start", serde_json::json!({"action": "start_work"})),
         "block" => (
@@ -945,16 +974,25 @@ pub(super) fn bound_member_work_command(store: &HarnessStore, args: &[String]) -
                 "candidate_revision": required(args, "--candidate-revision")?,
             }),
         ),
+        "accept" => ("accept", serde_json::json!({"action": "accept_work"})),
         other => {
             return Err(CliError::Usage(format!(
-                "unknown member work command: {other}; expected claim|start|block|resume|release|submit"
+                "unknown member work command: {other}; expected create|assign|claim|start|block|resume|release|submit|accept"
             )))
         }
     };
-    let path = format!(
-        "/v1/agentfirm/team-runs/{}/works/{work_id}/{operation}",
-        context.team_run_id
-    );
+    let path = if operation == "accept" {
+        let run = latest_team_run(store, &context.team_run_id)?;
+        format!(
+            "/v1/agentfirm/teams/{}/works/{work_id}/accept",
+            run.agent_team_id
+        )
+    } else {
+        format!(
+            "/v1/agentfirm/team-runs/{}/works/{work_id}/{operation}",
+            context.team_run_id
+        )
+    };
     execute_bound_member_role_action(
         store,
         &context,
@@ -962,6 +1000,7 @@ pub(super) fn bound_member_work_command(store: &HarnessStore, args: &[String]) -
         expected_version,
         value(args, "--idempotency-key").unwrap_or_else(|| generated_id("member-work")),
         intent,
+        (operation == "accept").then_some("accept".to_string()),
     )
 }
 

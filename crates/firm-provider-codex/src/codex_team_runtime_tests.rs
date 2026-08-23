@@ -216,6 +216,7 @@ fn close_profile_and_session() -> (ProviderIntegrationProfile, AgentSession) {
         provider_profile_ref: "profile-1".to_string(),
         permission_envelope_ref: "permission-1".to_string(),
         effective_permission_ceiling: PermissionCeiling::FullAccess,
+        workspace_cwd: Some("/tmp".to_string()),
         lifecycle: AgentSessionStatus::Idle,
         runtime_generation: 8,
         control_state: AgentSessionControlState {

@@ -210,14 +210,26 @@ pub(super) fn validate_team_member_identity(
             "team member agent_member_id must not be empty".to_string(),
         ));
     }
-    if !store.all_trust_agent_members()?.iter().any(|candidate| {
-        candidate.id == agent_member_id
-            && candidate.organization_status
-                == harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active
-    }) {
+    let durable = store
+        .all_trust_agent_members()?
+        .into_iter()
+        .find(|candidate| {
+            candidate.id == agent_member_id
+                && candidate.organization_status
+                    == harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active
+        });
+    let Some(durable) = durable else {
         return Err(CliError::Usage(format!(
             "team member {} references missing canonical AgentMember {agent_member_id}",
             member.name
+        )));
+    };
+    if member.execution_mode.as_deref() != Some(EXECUTION_MODE_EXTERNAL_INTERACTIVE)
+        && durable.permission_ceiling != harness_core::agentfirm_api::PermissionCeiling::FullAccess
+    {
+        return Err(CliError::Usage(format!(
+            "TRUSTED_DEVELOPMENT_FULL_ACCESS_REQUIRED: managed coding AgentMember {} is frozen to {:?}; create a new FullAccess AgentMember/Session instead of widening it in place",
+            durable.id, durable.permission_ceiling
         )));
     }
     Ok(())

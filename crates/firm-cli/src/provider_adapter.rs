@@ -136,6 +136,11 @@ pub(crate) fn open_node_session(
     cwd: &Path,
     display_name: &str,
 ) -> Result<OpenedNodeSession, String> {
+    let provider_cwd = session
+        .workspace_cwd
+        .as_deref()
+        .map(Path::new)
+        .unwrap_or(cwd);
     let capabilities = node_session_capabilities(&session.provider_kind)
         .ok_or_else(|| format!("PROVIDER_CAPABILITY_UNPROVABLE: {}", session.provider_kind))?;
     let resuming = session.native_session_ref.is_some();
@@ -158,7 +163,7 @@ pub(crate) fn open_node_session(
     match session.provider_kind.as_str() {
         "codex" => {
             let client = CodexAppServerClient::spawn(
-                cwd,
+                provider_cwd,
                 CodexAppServerSpawnOptions {
                     model: None,
                     reasoning_effort: None,

@@ -106,10 +106,7 @@ fn standalone_codex_session_runs_through_node_daemon_and_replays_without_team_me
         started["result"]["native_session"]["execution_mode"],
         "node_daemon_app_server"
     );
-    assert_eq!(
-        started["result"]["permission"]["effective"],
-        "workspace_write"
-    );
+    assert_eq!(started["result"]["permission"]["effective"], "full_access");
     if !real_codex {
         assert!(
             std::fs::read_to_string(&thread_marker)

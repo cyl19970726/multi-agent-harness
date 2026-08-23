@@ -1,67 +1,48 @@
 use super::*;
 
-/// A managed Host is a coordination runtime, not a second writable driver in
-/// the Team execution root. Providers that can prove `ReadOnly` are narrowed
-/// to it. Kimi ACP cannot prove either narrower ceiling, so it may retain an
-/// honestly declared `FullAccess` ceiling only when its MemberRun is pinned to
-/// an explicit, uniquely reserved workspace distinct from the Team execution
-/// root. The Store-owned MemberRun reservation keeps one writable driver per
-/// workspace without inventing a provider sandbox.
+/// Trusted-development managed coding Agents use one provider-neutral policy:
+/// Host and Member both retain the durable FullAccess ceiling and freeze an
+/// exact canonical cwd in their AgentSession. Multiple explicitly bound
+/// Sessions may share that cwd; worktree isolation is an operator choice.
 pub(super) fn effective_member_permission_ceiling(
-    store: &HarnessStore,
+    _store: &HarnessStore,
     durable_ceiling: harness_core::agentfirm_api::PermissionCeiling,
-    run: &AgentTeamRun,
+    _run: &AgentTeamRun,
     member: &ProviderRuntimeProjection,
 ) -> CliResult<harness_core::agentfirm_api::PermissionCeiling> {
-    let is_host = run
-        .host_actor
-        .as_ref()
-        .is_some_and(|host| host.kind == TeamActorKind::Host && host.id == member.agent_member_id);
-    if !is_host {
-        return Ok(durable_ceiling);
-    }
-
-    let read_only = harness_core::agentfirm_api::PermissionCeiling::ReadOnly;
-    if crate::provider_adapter::map_permission(&member.provider, read_only).is_ok() {
-        return Ok(read_only);
-    }
-    if durable_ceiling != harness_core::agentfirm_api::PermissionCeiling::FullAccess {
+    let full_access = harness_core::agentfirm_api::PermissionCeiling::FullAccess;
+    if durable_ceiling != full_access {
         return Err(CliError::Usage(format!(
-            "MANAGED_HOST_PERMISSION_UNPROVABLE: provider {} cannot prove ReadOnly and Host AgentMember {} is not frozen to FullAccess",
-            member.provider, member.agent_member_id
+            "TRUSTED_DEVELOPMENT_FULL_ACCESS_REQUIRED: managed coding AgentMember {} is frozen to {:?}; create a new FullAccess AgentMember/Session instead of widening it in place",
+            member.agent_member_id, durable_ceiling
         )));
     }
-    let host_workspace = member
+    let workspace = member
         .provider_cwd_hint
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| {
             CliError::Usage(format!(
-                "MANAGED_HOST_WORKSPACE_ISOLATION_REQUIRED: provider {} requires an explicit Host provider_cwd_hint distinct from the Team execution root",
-                member.provider
+                "MEMBER_WORKSPACE_REQUIRED: MemberRun {} requires an exact canonical cwd",
+                member.id
             ))
         })?;
-    let host_workspace = project::canonicalize_best_effort(std::path::Path::new(host_workspace));
-    let team_workspace = run
-        .execution_root
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .map(std::path::Path::new)
-        .map(project::canonicalize_best_effort)
-        .ok_or_else(|| {
-            CliError::Usage(format!(
-                "MANAGED_HOST_WORKSPACE_ISOLATION_REQUIRED: provider {} cannot prove an independent Host workspace without an exact Team execution root",
-                member.provider
-            ))
-        })?;
-    if team_workspace == host_workspace {
+    let canonical = std::fs::canonicalize(workspace).map_err(|error| {
+        CliError::Usage(format!(
+            "MEMBER_WORKSPACE_NOT_CANONICAL: MemberRun {} cwd {} cannot be resolved: {error}",
+            member.id, workspace
+        ))
+    })?;
+    if canonical.as_path() != std::path::Path::new(workspace) {
         return Err(CliError::Usage(format!(
-            "MANAGED_HOST_WORKSPACE_ISOLATION_REQUIRED: provider {} Host workspace must differ from the Team execution root",
-            member.provider
+            "MEMBER_WORKSPACE_NOT_CANONICAL: MemberRun {} must freeze exact cwd {}",
+            member.id,
+            canonical.display()
         )));
     }
-    store.require_unique_managed_host_workspace(run, member)?;
-    Ok(durable_ceiling)
+    crate::provider_adapter::map_permission(&member.provider, full_access)
+        .map_err(CliError::Usage)?;
+    Ok(full_access)
 }
 
 pub(super) fn host_runtime_projection(mode: HostControlMode) -> serde_json::Value {
@@ -70,7 +51,8 @@ pub(super) fn host_runtime_projection(mode: HostControlMode) -> serde_json::Valu
         "mode": if managed { "managed" } else { "external_interactive" },
         "delivery_guarantee": if managed { "daemon_managed" } else { "pull_only" },
         "runtime_residency": if managed { "managed_member_run" } else { "detached_user_driven" },
-        "workspace_policy": if managed { "provider_read_only_or_distinct_host_workspace" } else { "user_managed" },
+        "workspace_policy": if managed { "trusted_full_access_exact_cwd_shared_allowed" } else { "user_managed" },
+        "workspace_requirement": managed.then_some("exact_canonical_cwd_shared_or_isolated"),
         "warning": (!managed).then_some("External Host delivery is weaker: Harness cannot drive or prove provider receipt; the Host must explicitly read and acknowledge its own inbox."),
     })
 }

@@ -84,9 +84,9 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
     });
     let opened = std::fs::read_to_string(&thread_marker).expect("Codex thread/start marker");
     assert!(
-        opened.contains("\"sandbox\":\"workspace-write\"")
+        opened.contains("\"sandbox\":\"danger-full-access\"")
             && opened.contains("\"approvalPolicy\":\"never\""),
-        "Team provider launch must consume the frozen WorkspaceWrite mapping: {opened}"
+        "Team provider launch must consume the frozen FullAccess mapping: {opened}"
     );
     let answer_path = format!("/v1/team-runs/{run_id}/messages/{interaction_id}/answer");
     let (status, unauthenticated) = serve.post_json(

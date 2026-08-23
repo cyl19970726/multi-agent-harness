@@ -373,6 +373,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
                 provider_profile_ref: "codex-app-server-v1".into(),
                 permission_envelope_ref: format!("agent-member:{worker_id}:permission"),
                 effective_permission_ceiling: PermissionCeiling::WorkspaceWrite,
+                workspace_cwd: None,
                 lifecycle: AgentSessionStatus::Idle,
                 runtime_generation: 1,
                 control_state: AgentSessionControlState {
@@ -582,6 +583,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         "sessions",
         "selected_session_id",
         "session_activity",
+        "current_session",
         "session_event_projection",
         "live_provider_activity",
     ] {
@@ -606,6 +608,8 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         "model_preference",
         "workspace_policy",
         "permission_ceiling",
+        "effective_permission_ceiling",
+        "resolved_workspace_cwd",
         "workspace_binding",
     ] {
         assert!(
@@ -668,6 +672,15 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
             .get("session_event_projection")
             .is_some(),
         "exact-self view must carry an on-demand Session projection or an explicit unavailable result"
+    );
+    let current_session = &member_self_workspace["data"]["current_session"];
+    assert!(current_session["agent_session_id"]
+        .as_str()
+        .is_some_and(|id| id.starts_with("agent-session:")));
+    assert_eq!(current_session["provider"], "codex");
+    assert_eq!(
+        member_self_workspace["data"]["configuration"]["effective_permission_ceiling"],
+        current_session["effective_permission_ceiling"]
     );
     let owner_projection = &member_self_workspace["data"]["session_event_projection"];
     assert_eq!(owner_projection["disabled_reason"], serde_json::Value::Null);

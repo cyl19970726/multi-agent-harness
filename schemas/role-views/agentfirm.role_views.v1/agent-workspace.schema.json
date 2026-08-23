@@ -25,6 +25,7 @@
         "team":{"$ref":"#/$defs/team"},
         "selected_agent":{"$ref":"#/$defs/selectedAgent"},
         "roster":{"type":"array","items":{"$ref":"#/$defs/rosterAgent"}},
+        "current_session":{"anyOf":[{"$ref":"#/$defs/currentSession"},{"type":"null"}]},
         "session_event_projection":{"$ref":"https://agentfirm.local/schemas/provider-events/session-event-projection.schema.json"},
         "live_provider_activity":{"anyOf":[{"$ref":"https://agentfirm.local/schemas/provider-events/live-provider-activity.schema.json"},{"type":"null"}]},
         "messages":{"type":"array","items":{"$ref":"common.schema.json#/$defs/messageSummary"}},
@@ -36,13 +37,13 @@
     "memberSelfPrivateData":{
       "allOf":[
         {"$ref":"#/$defs/agentWorkspaceData"},
-        {"type":"object","required":["session_event_projection","live_provider_activity"],"properties":{"projection_scope":{"const":"member_self_private"},"session_event_projection":{"$ref":"https://agentfirm.local/schemas/provider-events/session-event-projection.schema.json"},"live_provider_activity":{"anyOf":[{"$ref":"https://agentfirm.local/schemas/provider-events/live-provider-activity.schema.json"},{"type":"null"}]}}}
+        {"type":"object","required":["current_session","session_event_projection","live_provider_activity"],"properties":{"projection_scope":{"const":"member_self_private"},"session_event_projection":{"$ref":"https://agentfirm.local/schemas/provider-events/session-event-projection.schema.json"},"live_provider_activity":{"anyOf":[{"$ref":"https://agentfirm.local/schemas/provider-events/live-provider-activity.schema.json"},{"type":"null"}]}}}
       ]
     },
     "hostSelfPrivateData":{
       "allOf":[
         {"$ref":"#/$defs/agentWorkspaceData"},
-        {"type":"object","required":["session_event_projection","live_provider_activity"],"properties":{"projection_scope":{"const":"host_self_private"},"session_event_projection":{"$ref":"https://agentfirm.local/schemas/provider-events/session-event-projection.schema.json"},"live_provider_activity":{"type":"null"}}}
+        {"type":"object","required":["current_session","session_event_projection","live_provider_activity"],"properties":{"projection_scope":{"const":"host_self_private"},"session_event_projection":{"$ref":"https://agentfirm.local/schemas/provider-events/session-event-projection.schema.json"},"live_provider_activity":{"type":"null"}}}
       ]
     },
     "hostMemberPublicData":{
@@ -53,6 +54,7 @@
           "properties":{
             "projection_scope":{"const":"host_member_public"},
             "selected_agent":{"$ref":"#/$defs/publicSelectedAgent"},
+            "current_session":false,
             "session_event_projection":false,
             "live_provider_activity":false,
             "configuration":{"$ref":"#/$defs/publicConfiguration"}
@@ -95,10 +97,20 @@
       "required":["agent_member_ref","display_name","role","organization_status","coordination_status","capacity","active_work_count","queued_work_count","review_work_count","blocked_work_count","is_host"],
       "properties":{"agent_member_ref":{"$ref":"common.schema.json#/$defs/targetRef"},"display_name":{"type":"string"},"role":{"type":"string"},"organization_status":{"type":"string"},"coordination_status":{"type":["string","null"]},"capacity":{"type":"string"},"runtime_state":{"type":["string","null"]},"active_work_count":{"type":"integer"},"queued_work_count":{"type":"integer"},"review_work_count":{"type":"integer"},"blocked_work_count":{"type":"integer"},"is_host":{"type":"boolean"},"host_session_mode":{"enum":["harness_managed","external_interactive","unbound"]},"provider_compatibility":{"enum":["current","review_required","incompatible","unavailable","unknown",null]},"provider_compatibility_note":{"type":["string","null"]},"provider_version":{"type":["string","null"]},"provider_capability_admission":{"enum":["active","review_required","unavailable","unknown",null]},"provider_capability_note":{"type":["string","null"]}}
     },
+    "currentSession":{
+      "type":"object","additionalProperties":false,
+      "required":["agent_session_id","agent_session_generation","lifecycle","runtime_residency","activity","provider","effective_permission_ceiling","workspace_cwd","native_session_ref","native_session_open_target"],
+      "properties":{"agent_session_id":{"type":"string","minLength":1},"agent_session_generation":{"type":"integer","minimum":1},"lifecycle":{"type":"string"},"runtime_residency":{"type":"string"},"activity":{"type":"string"},"provider":{"type":"string","minLength":1},"effective_permission_ceiling":{"enum":["read_only","workspace_write","full_access"]},"workspace_cwd":{"type":["string","null"]},"native_session_ref":{"anyOf":[{"type":"object","additionalProperties":true,"required":["provider","execution_mode","native_session_id"],"properties":{"provider":{"type":"string","minLength":1},"execution_mode":{"type":"string","minLength":1},"native_session_id":{"type":"string","minLength":1}}},{"type":"null"}]},"native_session_open_target":{"anyOf":[{"$ref":"#/$defs/nativeSessionOpenTarget"},{"type":"null"}]}}
+    },
+    "nativeSessionOpenTarget":{
+      "type":"object","additionalProperties":true,
+      "required":["uri","desktop_session_id","provider","execution_mode"],
+      "properties":{"uri":{"type":"string","minLength":1},"desktop_session_id":{"type":"string","minLength":1},"provider":{"type":"string","minLength":1},"execution_mode":{"type":"string","minLength":1}}
+    },
     "configuration":{
       "type":"object","additionalProperties":false,
-      "required":["description","prompt_ref","prompt_projection","skill_refs","capabilities","tool_refs","tools_projection","provider_profile_ref","model_preference","workspace_policy","permission_ceiling","forbidden_actions","forbidden_actions_projection","workspace_binding"],
-      "properties":{"description":{"type":["string","null"]},"prompt_ref":{"type":["string","null"]},"prompt_projection":{"type":"string"},"skill_refs":{"type":"array","items":{"type":"string"}},"capabilities":{"type":"array","items":{"type":"string"}},"tool_refs":{"type":"array","items":{"type":"string"}},"tools_projection":{"type":"string"},"provider_profile_ref":{"type":["string","null"]},"model_preference":{"type":["string","null"]},"workspace_policy":{"type":["string","null"]},"permission_ceiling":{"type":["string","null"]},"forbidden_actions":{"type":"array","items":{"type":"string"}},"forbidden_actions_projection":{"type":"string"},"workspace_binding":{"anyOf":[{"$ref":"common.schema.json#/$defs/recordSummary"},{"type":"null"}]}}
+      "required":["description","prompt_ref","prompt_projection","skill_refs","capabilities","tool_refs","tools_projection","provider_profile_ref","model_preference","workspace_policy","permission_ceiling","effective_permission_ceiling","resolved_workspace_cwd","forbidden_actions","forbidden_actions_projection","workspace_binding"],
+      "properties":{"description":{"type":["string","null"]},"prompt_ref":{"type":["string","null"]},"prompt_projection":{"type":"string"},"skill_refs":{"type":"array","items":{"type":"string"}},"capabilities":{"type":"array","items":{"type":"string"}},"tool_refs":{"type":"array","items":{"type":"string"}},"tools_projection":{"type":"string"},"provider_profile_ref":{"type":["string","null"]},"model_preference":{"type":["string","null"]},"workspace_policy":{"type":["string","null"]},"permission_ceiling":{"type":["string","null"]},"effective_permission_ceiling":{"type":["string","null"]},"resolved_workspace_cwd":{"type":["string","null"]},"forbidden_actions":{"type":"array","items":{"type":"string"}},"forbidden_actions_projection":{"type":"string"},"workspace_binding":{"anyOf":[{"$ref":"common.schema.json#/$defs/recordSummary"},{"type":"null"}]}}
     },
     "publicConfiguration":{
       "allOf":[
@@ -111,6 +123,8 @@
             "model_preference":{"type":"null"},
             "workspace_policy":{"type":"null"},
             "permission_ceiling":{"type":"null"},
+            "effective_permission_ceiling":{"type":"null"},
+            "resolved_workspace_cwd":{"type":"null"},
             "tool_refs":{"type":"array","maxItems":0},
             "forbidden_actions":{"type":"array","maxItems":0},
             "workspace_binding":{"type":"null"}

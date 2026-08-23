@@ -689,6 +689,7 @@ fn execution_binding_fences_runtime_without_owning_responsibility() {
         provider_profile_ref: "codex-default".into(),
         permission_envelope_ref: "permission-default".into(),
         effective_permission_ceiling: PermissionCeiling::WorkspaceWrite,
+        workspace_cwd: None,
         lifecycle: AgentSessionStatus::Idle,
         runtime_generation: 1,
         control_state: Default::default(),

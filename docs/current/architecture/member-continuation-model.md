@@ -98,8 +98,8 @@ providers may perform many turns or cycles while executing one Work.
 
 The invariant is:
 
-> One native session and writable Workspace have one top-level execution
-> driver holding the execution lease at a time.
+> One MemberRun/native session has one top-level execution driver holding its
+> execution lease at a time. Explicitly separate Sessions may share a cwd.
 
 Valid:
 

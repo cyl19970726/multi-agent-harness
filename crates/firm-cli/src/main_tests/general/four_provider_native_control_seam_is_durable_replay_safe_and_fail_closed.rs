@@ -55,15 +55,7 @@ fn five_provider_native_control_seam_is_durable_replay_safe_and_fail_closed() {
         transition_provider_session_for_member(&ledger, &member, AgentSessionStatus::Active)
             .expect("activate provider session");
 
-        let requested_ceiling = if matches!(provider, "kimi" | "pi") {
-            // Pi's tool allowlist cannot enforce a workspace path
-            // boundary. The production adapter admits either read-only
-            // or explicit trusted full access; Kimi is likewise admitted
-            // only under its exact full-access callback mapping.
-            PermissionCeiling::FullAccess
-        } else {
-            PermissionCeiling::WorkspaceWrite
-        };
+        let requested_ceiling = PermissionCeiling::FullAccess;
         let mapping = crate::provider_adapter::map_permission(provider, requested_ceiling)
             .expect("provider permission mapping");
         assert_eq!(mapping.effective, requested_ceiling);

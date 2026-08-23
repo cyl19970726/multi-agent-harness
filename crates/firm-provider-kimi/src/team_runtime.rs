@@ -984,6 +984,7 @@ mod tests {
             provider_profile_ref: "profile-kimi-test".to_string(),
             permission_envelope_ref: "permission-kimi-test".to_string(),
             effective_permission_ceiling: PermissionCeiling::FullAccess,
+            workspace_cwd: Some("/tmp".to_string()),
             lifecycle: AgentSessionStatus::Idle,
             runtime_generation: 7,
             control_state: AgentSessionControlState {

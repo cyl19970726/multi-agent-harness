@@ -71,6 +71,17 @@ impl Validate for agentfirm_api::AgentSession {
             &self.permission_envelope_ref,
             "AgentSession.permission_envelope_ref",
         )?;
+        if let Some(workspace_cwd) = &self.workspace_cwd {
+            require_non_empty(workspace_cwd, "AgentSession.workspace_cwd")?;
+        }
+        if self.effective_permission_ceiling == agentfirm_api::PermissionCeiling::FullAccess
+            && self.workspace_cwd.is_none()
+        {
+            return Err(ValidationError::Invalid {
+                field: "AgentSession.workspace_cwd",
+                reason: "FullAccess requires an exact canonical workspace cwd",
+            });
+        }
         require_non_empty(&self.opened_at, "AgentSession.opened_at")?;
         require_non_empty(&self.last_active_at, "AgentSession.last_active_at")
     }

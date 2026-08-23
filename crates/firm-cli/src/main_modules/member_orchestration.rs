@@ -234,6 +234,7 @@ pub(crate) fn ensure_team_runtime_fabric(
                         .unwrap_or_else(|| format!("{}:default", member.provider)),
                     permission_envelope_ref: format!("agent-member:{}:permission", durable.id),
                     effective_permission_ceiling: permission_ceiling,
+                    workspace_cwd: member.provider_cwd_hint.clone(),
                     lifecycle: AgentSessionStatus::Cold,
                     runtime_generation: member.runtime_generation,
                     control_state: agent_session_control_state_for_profile(

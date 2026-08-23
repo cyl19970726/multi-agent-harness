@@ -57,16 +57,10 @@ receipt.
   explicitly selects external interactive ownership.
 - Operator views expose the exact Host AgentMember/MemberRun, ownership mode,
   delivery guarantee, queued actionable count, and the external pull warning.
-- A managed Host uses `ReadOnly` when the selected provider can prove it.
-  Kimi ACP cannot; it may retain an honestly frozen `FullAccess` ceiling only
-  with an explicit Host `provider_cwd_hint` distinct from the Team execution
-  root. Host coding still requires explicit Host-owned Work and an
-  independently reserved workspace. The active Host MemberRun is the durable
-  Store authority for that canonical cwd: the Store canonicalizes roots,
-  freezes `provider_cwd_hint` as immutable MemberRun provenance, rejects
-  conflicting initial/raw/dynamic admission under the same lock, and
-  revalidates the reservation before session materialization. This preserves
-  one driver per writable workspace without inventing a Kimi sandbox.
+- The original managed-Host permission and distinct-workspace consequence is
+  superseded by [ADR 0059](0059-trusted-development-full-access-and-explicit-cwd.md).
+  Host and Member now share the same trusted-development FullAccess policy;
+  role authority remains separate from provider permission.
 
 ## Acceptance
 
@@ -75,7 +69,6 @@ receipt.
 - External delivery never claims managed receipt semantics.
 - Host/Member runtime unification introduces no Work-containment authority or nested Team topology.
 - All four providers select the ordinary Team runtime binding for managed Hosts.
-- Managed Kimi Host admission fails before AgentSession materialization when
-  the Host workspace is absent, aliases the Team execution root, or is already
-  reserved by another active MemberRun.
+- Managed coding Host admission requires a frozen exact cwd and FullAccess
+  ceiling; sharing the Team root with explicitly bound Members is allowed.
 - Dynamic Workflow retirement, package boundaries, source-size ceiling, deterministic tests, and exact-SHA independent Review remain green.

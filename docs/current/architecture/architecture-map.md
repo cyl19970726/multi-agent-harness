@@ -67,7 +67,7 @@ execution are separate. Harness owns Work, WorkEvent, WorkDelivery, immutable
 Message, subscriptions, and per-recipient CanonicalMessageDelivery; one
 current `TeamSupervisorLease` generation owns delivery claims and live controls,
 while one selected execution driver owns provider cycles for a
-MemberRun/native session/writable Workspace. A provider receipt proves
+MemberRun/native session. Explicitly separate Sessions may share a cwd. A provider receipt proves
 transport acceptance, not semantic completion. Provider Goal satisfaction
 never implies Host acceptance. See
 [Member Continuation Model](member-continuation-model.md) and

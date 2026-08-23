@@ -17,7 +17,9 @@ fn member_run_snapshots_requested_provider_controls_before_start() {
         initial_work: None,
     };
 
-    let run = build_member_run_for_team(None, "team-run-controls", &member)
+    let cwd = std::fs::canonicalize(std::env::current_dir().expect("current dir"))
+        .expect("canonical current dir");
+    let run = build_member_run_for_team(None, "team-run-controls", &member, cwd.to_str())
         .expect("build ProviderRuntimeProjection");
 
     assert_eq!(run.model.as_deref(), Some("gpt-5.6-sol"));

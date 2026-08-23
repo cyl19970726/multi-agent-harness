@@ -337,6 +337,21 @@ pub(crate) fn agent_workspace_view(
     // coordination/Work facts and never that Member's native Session internals.
     let may_read_private_session =
         (selected_is_host && exact_host_identity) || (!selected_is_host && exact_selected_identity);
+    let current_agent_sessions = if may_read_private_session {
+        facts
+            .agent_sessions
+            .iter()
+            .filter(|session| session["execution_space_id"] == space_id)
+            .filter(|session| session["agent_member_id"] == selected_agent_id)
+            .filter(|session| session["lifecycle"] != "closed")
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let current_agent_session = match current_agent_sessions.as_slice() {
+        [session] => Some(*session),
+        _ => None,
+    };
     // The owner-only historical projection is decoded on demand. It is
     // independent from the volatile live overlay and never enters a ledger.
     let viewer_identity_id = identity
@@ -409,6 +424,8 @@ pub(crate) fn agent_workspace_view(
         "model_preference":if may_read_private_session {selected_member.and_then(|member|member["model_preference"].as_str())} else {None},
         "workspace_policy":if may_read_private_session {selected_member.and_then(|member|member["workspace_policy"].as_str())} else {None},
         "permission_ceiling":if may_read_private_session {selected_member.and_then(|member|member["permission_ceiling"].as_str())} else {None},
+        "effective_permission_ceiling":if may_read_private_session {current_agent_session.and_then(|session|session["effective_permission_ceiling"].as_str())} else {None},
+        "resolved_workspace_cwd":if may_read_private_session {current_agent_session.and_then(|session|session["workspace_cwd"].as_str()).or_else(||selected_member_run.and_then(|member|member["provider_cwd_hint"].as_str()))} else {None},
         "forbidden_actions":[],
         "forbidden_actions_projection":"not_modeled",
         "workspace_binding":if may_read_private_session {workspace_binding} else {None},
@@ -455,9 +472,32 @@ pub(crate) fn agent_workspace_view(
         })
         .collect::<Vec<_>>();
 
-    let selected_runtime_status = selected_member_run
-        .and_then(|member_run| member_run["runtime_status"].as_str().map(str::to_owned))
-        .or_else(|| run.map(|run| enum_string(&run.status)));
+    let selected_runtime_status = current_agent_session
+        .and_then(|session| session["lifecycle"].as_str().map(str::to_owned))
+        .or_else(|| {
+            selected_member_run
+                .and_then(|member_run| member_run["runtime_status"].as_str().map(str::to_owned))
+                .or_else(|| run.map(|run| enum_string(&run.status)))
+        });
+    let native_session_open_target = selected_member_run
+        .and_then(|member_run| {
+            serde_json::from_value::<crate::ProviderRuntimeProjection>(member_run.clone()).ok()
+        })
+        .and_then(|member_run| crate::native_session_open_target(&member_run).ok());
+    let current_session = current_agent_session.map(|session| {
+        json!({
+            "agent_session_id":session["id"],
+            "agent_session_generation":session["runtime_generation"],
+            "lifecycle":session["lifecycle"],
+            "runtime_residency":session["control_state"]["runtime_residency"],
+            "activity":session["control_state"]["activity"],
+            "provider":session["provider_kind"],
+            "effective_permission_ceiling":session["effective_permission_ceiling"],
+            "workspace_cwd":session["workspace_cwd"],
+            "native_session_ref":session["native_session_ref"],
+            "native_session_open_target":native_session_open_target,
+        })
+    });
     let selected = json!({
         "agent_member_ref":{"kind":"agent_member","id":selected_agent_id},
         "display_name":selected_member.and_then(|member|member["name"].as_str()).or_else(||selected_roster.and_then(|member|member["display_name"].as_str())).unwrap_or(if selected_is_host{"Host Agent"}else{"Agent"}),
@@ -465,7 +505,7 @@ pub(crate) fn agent_workspace_view(
         "organization_status":selected_member.and_then(|member|member["organization_status"].as_str()).unwrap_or("unknown"),
         "is_host":selected_is_host,
         "current_member_run_ref":if may_read_private_session {selected_member_run_id} else {None},
-        "provider":if may_read_private_session {selected_member_run.and_then(|run|run["provider"].as_str())} else {None},
+        "provider":if may_read_private_session {current_agent_session.and_then(|session|session["provider_kind"].as_str()).or_else(||selected_member_run.and_then(|run|run["provider"].as_str()))} else {None},
         "execution_mode":if may_read_private_session {selected_member_run.and_then(|run|run["execution_mode"].as_str())} else {None},
         "runtime_status":if may_read_private_session {selected_runtime_status} else {None},
         "runtime_generation":if may_read_private_session {selected_member_run.and_then(|run|run["runtime_generation"].as_u64())} else {None},
@@ -525,6 +565,7 @@ pub(crate) fn agent_workspace_view(
             "selected_agent":selected,
             "roster":roster,
             "session_event_projection":session_event_projection,
+            "current_session":current_session,
             "live_provider_activity":live_provider_activity,
             "messages":messages,
             "works":works,
@@ -549,6 +590,7 @@ pub(crate) fn agent_workspace_view(
             .as_object_mut()
             .expect("AgentWorkspace data object");
         data.remove("session_event_projection");
+        data.remove("current_session");
         data.remove("live_provider_activity");
     }
     Ok(response)

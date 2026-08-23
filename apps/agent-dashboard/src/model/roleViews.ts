@@ -401,7 +401,10 @@ interface AgentWorkspaceSelectedAgent {
   host_session_mode?:HostSessionMode|null;
 }
 interface AgentWorkspaceConfiguration {
-  description:string|null;prompt_ref:string|null;prompt_projection:string;skill_refs:string[];capabilities:string[];tool_refs:string[];tools_projection:string;provider_profile_ref:string|null;model_preference:string|null;workspace_policy:string|null;permission_ceiling:string|null;forbidden_actions:string[];forbidden_actions_projection:string;workspace_binding:RoleRecordSummary|null;
+  description:string|null;prompt_ref:string|null;prompt_projection:string;skill_refs:string[];capabilities:string[];tool_refs:string[];tools_projection:string;provider_profile_ref:string|null;model_preference:string|null;workspace_policy:string|null;permission_ceiling:string|null;effective_permission_ceiling:string|null;resolved_workspace_cwd:string|null;forbidden_actions:string[];forbidden_actions_projection:string;workspace_binding:RoleRecordSummary|null;
+}
+export interface AgentWorkspaceCurrentSession {
+  agent_session_id:string;agent_session_generation:number;lifecycle:string;runtime_residency:string;activity:string;provider:string;effective_permission_ceiling:string;workspace_cwd:string|null;native_session_ref:{native_session_id:string;provider:string;execution_mode:string}|null;native_session_open_target:{uri:string;desktop_session_id:string;provider:string;execution_mode:string}|null;
 }
 interface AgentWorkspaceDataBase {
   team:{team_id:string;display_name:string;team_revision:number;mission_id:string;host_agent_id:string;viewer_role:"host"|"member";status:string;latest_run_id:string|null};
@@ -414,6 +417,7 @@ interface AgentWorkspaceDataBase {
 }
 export type AgentWorkspacePrivateData=AgentWorkspaceDataBase&{
   projection_scope:"member_self_private"|"host_self_private";
+  current_session:AgentWorkspaceCurrentSession|null;
   session_event_projection:SessionEventProjection;
   live_provider_activity:LiveProviderActivity|null;
 };
@@ -422,7 +426,7 @@ export type AgentWorkspaceHostMemberPublicData=AgentWorkspaceDataBase&{
   selected_agent:AgentWorkspaceSelectedAgent&{current_member_run_ref:null;provider:null;execution_mode:null;runtime_status:null;runtime_generation:null};
   session_event_projection?:never;
   live_provider_activity?:never;
-  configuration:AgentWorkspaceConfiguration&{prompt_ref:null;tool_refs:[];provider_profile_ref:null;model_preference:null;workspace_policy:null;permission_ceiling:null;forbidden_actions:[];workspace_binding:null};
+  configuration:AgentWorkspaceConfiguration&{prompt_ref:null;tool_refs:[];provider_profile_ref:null;model_preference:null;workspace_policy:null;permission_ceiling:null;effective_permission_ceiling:null;resolved_workspace_cwd:null;forbidden_actions:[];workspace_binding:null};
 };
 export type AgentWorkspaceData=AgentWorkspacePrivateData|AgentWorkspaceHostMemberPublicData;
 export interface MemberWorkbenchData {
