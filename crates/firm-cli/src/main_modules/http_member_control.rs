@@ -670,9 +670,7 @@ pub(super) fn authenticated_host_answer_sender(
     actor: &harness_core::agentfirm_api::ActorRef,
     authn_source: &str,
 ) -> CliResult<TeamActorRef> {
-    use harness_core::agentfirm_api::{
-        ActorKind, AgentSessionStatus, TeamMembershipRole, TeamMembershipStatus,
-    };
+    use harness_core::agentfirm_api::ActorKind;
     let run = latest_team_run(store, team_run_id)?;
     let team = latest_teams(store)?
         .remove(&run.agent_team_id)
@@ -683,80 +681,14 @@ pub(super) fn authenticated_host_answer_sender(
             team.id, team.host_agent_id, actor.kind, actor.id
         )));
     }
-    let execution_space_id = team_run_execution_space_id(store, &run)?;
-    let placements = store
-        .fabric_team_memberships(&execution_space_id)?
-        .into_iter()
-        .filter(|membership| {
-            membership.team_id == team.id
-                && membership.agent_member_id == actor.id
-                && membership.node_id == team.node_id
-                && membership.role == TeamMembershipRole::Host
-                && membership.state == TeamMembershipStatus::Active
-        })
-        .collect::<Vec<_>>();
-    if placements.len() != 1 {
-        return Err(CliError::Usage(format!(
-            "UNAUTHORIZED_ACTOR: authenticated Host has {} active exact TeamMemberships in TeamRun Execution Space {}",
-            placements.len(), execution_space_id
-        )));
+    let binding =
+        store_conflict_as_usage(store.host_runtime_binding(team_run_id, current_unix_ms_u64()))?;
+    if binding.host_agent_member_id() != actor.id {
+        return Err(CliError::Usage(
+            "UNAUTHORIZED_ACTOR: authenticated actor is not the exact live Host runtime binding"
+                .into(),
+        ));
     }
-    if run.host_control_mode == HostControlMode::ExternalInteractive {
-        let current_sessions = store
-            .fabric_agent_sessions(&execution_space_id)?
-            .into_iter()
-            .filter(|session| {
-                session.agent_member_id == actor.id
-                    && !matches!(session.lifecycle, AgentSessionStatus::Closed)
-            })
-            .count();
-        if current_sessions != 0 {
-            return Err(CliError::Usage(
-                "EXTERNAL_HOST_SESSION_FORBIDDEN: external_interactive Host must not have a current AgentSession"
-                    .into(),
-            ));
-        }
-        return Ok(TeamActorRef {
-            kind: TeamActorKind::Host,
-            id: actor.id.clone(),
-            display_name: None,
-            authn_source: Some(authn_source.to_string()),
-        });
-    }
-    let sessions = store
-        .fabric_agent_sessions(&execution_space_id)?
-        .into_iter()
-        .filter(|session| {
-            session.agent_member_id == actor.id
-                && session.node_id == team.node_id
-                && !matches!(
-                    session.lifecycle,
-                    AgentSessionStatus::Closed | AgentSessionStatus::RecoveryRequired
-                )
-        })
-        .collect::<Vec<_>>();
-    let session = match sessions.as_slice() {
-        [session] => session,
-        [] => {
-            return Err(CliError::Usage(
-                "UNAUTHORIZED_ACTOR: authenticated Host has no current AgentSession".into(),
-            ))
-        }
-        _ => {
-            return Err(CliError::Usage(
-                "UNAUTHORIZED_ACTOR: authenticated Host has ambiguous AgentSessions".into(),
-            ))
-        }
-    };
-    store
-        .latest_node_daemon_lease(&session.node_id)?
-        .filter(|lease| {
-            lease.daemon_id == session.node_daemon_id
-                && lease.generation == session.node_daemon_generation
-                && lease.status == NodeDaemonLeaseStatus::Active
-                && lease.expires_unix_ms > current_unix_ms_u64()
-        })
-        .ok_or_else(|| CliError::Usage("NODE_DAEMON_GENERATION_FENCED".into()))?;
     Ok(TeamActorRef {
         kind: TeamActorKind::Host,
         id: actor.id.clone(),
@@ -947,15 +879,19 @@ pub(super) fn acknowledge_provider_request_as_host(
     team_run_id: &str,
     request: &TeamMessageProjection,
 ) -> CliResult<()> {
-    use harness_core::agentfirm_api::{
-        ActorKind, ActorRef, CanonicalMessageDeliveryStatus, RuntimeDispatchMode,
-    };
+    use harness_core::agentfirm_api::{ActorKind, ActorRef, CanonicalMessageDeliveryStatus};
     let run = latest_team_run(store, team_run_id)?;
-    let host_identity = latest_teams(store)?
-        .remove(&run.agent_team_id)
-        .map(|team| team.host_agent_id)
-        .ok_or_else(|| CliError::Usage("TeamRun references a missing AgentTeam".into()))?;
-    let execution_space_id = team_run_execution_space_id(store, &run)?;
+    let host_binding =
+        store_conflict_as_usage(store.host_runtime_binding(team_run_id, current_unix_ms_u64()))?;
+    let host_identity = host_binding.host_agent_member_id().to_string();
+    let execution_space_id = match &host_binding {
+        harness_application::HostRuntimeBinding::Managed(binding) => {
+            binding.agent_session.execution_space_id.clone()
+        }
+        harness_application::HostRuntimeBinding::ExternalInteractive(_) => {
+            team_run_execution_space_id(store, &run)?
+        }
+    };
     let matches = store
         .fabric_message_deliveries(&execution_space_id)?
         .into_iter()
@@ -964,7 +900,7 @@ pub(super) fn acknowledge_provider_request_as_host(
                 && delivery.recipient_agent_member_id.as_deref() == Some(host_identity.as_str())
         })
         .collect::<Vec<_>>();
-    let mut delivery = match matches.as_slice() {
+    let delivery = match matches.as_slice() {
         [delivery] => delivery.clone(),
         [] => {
             return Err(CliError::Usage(format!(
@@ -982,7 +918,10 @@ pub(super) fn acknowledge_provider_request_as_host(
     if delivery.status == CanonicalMessageDeliveryStatus::Acknowledged {
         return Ok(());
     }
-    if run.host_control_mode == HostControlMode::ExternalInteractive {
+    if matches!(
+        host_binding,
+        harness_application::HostRuntimeBinding::ExternalInteractive(_)
+    ) {
         store.acknowledge_external_message_delivery(
             &harness_core::agentfirm_api::MutationContext {
                 execution_space_id,
@@ -1001,107 +940,42 @@ pub(super) fn acknowledge_provider_request_as_host(
         )?;
         return Ok(());
     }
-    let sessions = store
-        .fabric_agent_sessions(&execution_space_id)?
-        .into_iter()
-        .filter(|session| {
-            session.agent_member_id == host_identity
-                && !matches!(
-                    session.lifecycle,
-                    harness_core::agentfirm_api::AgentSessionStatus::Closed
-                        | harness_core::agentfirm_api::AgentSessionStatus::RecoveryRequired
-                )
-        })
-        .collect::<Vec<_>>();
-    let session = match sessions.as_slice() {
-        [session] => session,
-        [] => return Err(CliError::Usage("Host has no current AgentSession".into())),
-        _ => {
-            return Err(CliError::Usage(
-                "Host has ambiguous current AgentSessions".into(),
-            ))
-        }
+    let harness_application::HostRuntimeBinding::Managed(binding) = host_binding else {
+        unreachable!("external Host returned after pull-only acknowledgement")
     };
-    let lease = store
-        .latest_node_daemon_lease(&session.node_id)?
-        .filter(|lease| {
-            lease.daemon_id == session.node_daemon_id
-                && lease.generation == session.node_daemon_generation
-                && lease.status == NodeDaemonLeaseStatus::Active
-                && lease.expires_unix_ms > current_unix_ms_u64()
-        })
-        .ok_or_else(|| CliError::Usage("NODE_DAEMON_GENERATION_FENCED".into()))?;
+    let session = &binding.agent_session;
+    let lease = &binding.node_daemon;
     let daemon = ActorRef {
         kind: ActorKind::Service,
         id: lease.daemon_id.clone(),
     };
     let claim_id = format!("host-interaction-resolve:{}", request.id);
-    if matches!(
-        delivery.status,
-        CanonicalMessageDeliveryStatus::Queued | CanonicalMessageDeliveryStatus::Routed
-    ) {
-        store.claim_message_for_provider(
-            &canonical_delivery_context(
-                &execution_space_id,
-                &lease.daemon_id,
-                "node_daemon.host_interaction.claim",
-                format!("{claim_id}:claim"),
-                delivery.version.saturating_sub(1),
-            ),
-            &delivery.id,
-            &session.node_id,
-            &lease.daemon_id,
-            lease.generation,
-            &claim_id,
-            RuntimeDispatchMode::QueueOnly,
-            &now_string(),
-        )?;
-        delivery = store
-            .fabric_message_deliveries(&execution_space_id)?
-            .into_iter()
-            .find(|candidate| candidate.id == delivery.id)
-            .ok_or_else(|| CliError::Usage("Host delivery disappeared after claim".into()))?;
+    if delivery.status != CanonicalMessageDeliveryStatus::ProviderReceived
+        || delivery.provider_receipt_id.is_none()
+        || delivery.recipient_session_id.as_deref() != Some(session.id.as_str())
+        || delivery.recipient_session_generation != Some(session.runtime_generation)
+        || delivery.claimed_node_daemon_generation != Some(lease.generation)
+    {
+        return Err(CliError::Usage(format!(
+            "HOST_PROVIDER_RECEIPT_REQUIRED: provider interaction {} was not genuinely received by the exact live Host AgentSession generation",
+            request.id
+        )));
     }
-    if delivery.status == CanonicalMessageDeliveryStatus::Claimed {
-        store.record_message_provider_receipt(
-            &canonical_delivery_context(
-                &execution_space_id,
-                &lease.daemon_id,
-                "node_daemon.host_interaction.receipt",
-                format!("{claim_id}:receipt"),
-                0,
-            ),
-            &delivery.id,
-            &session.node_id,
-            &lease.daemon_id,
-            lease.generation,
-            delivery.claim_id.as_deref().unwrap_or(&claim_id),
-            &format!("host-control-plane:{}", request.id),
-            &now_string(),
-        )?;
-        delivery = store
-            .fabric_message_deliveries(&execution_space_id)?
-            .into_iter()
-            .find(|candidate| candidate.id == delivery.id)
-            .ok_or_else(|| CliError::Usage("Host delivery disappeared after receipt".into()))?;
-    }
-    if delivery.status == CanonicalMessageDeliveryStatus::ProviderReceived {
-        store.acknowledge_message_delivery(
-            &harness_core::agentfirm_api::MutationContext {
-                execution_space_id,
-                authenticated_actor: ActorRef {
-                    kind: ActorKind::AgentMember,
-                    id: host_identity,
-                },
-                authority_actor: Some(daemon),
-                command_name: "agent_session.host_interaction.acknowledge".into(),
-                idempotency_key: format!("{claim_id}:ack"),
-                expected_version: 0,
-                request_fingerprint: None,
+    store.acknowledge_message_delivery(
+        &harness_core::agentfirm_api::MutationContext {
+            execution_space_id,
+            authenticated_actor: ActorRef {
+                kind: ActorKind::AgentMember,
+                id: host_identity,
             },
-            &delivery.id,
-            &now_string(),
-        )?;
-    }
+            authority_actor: Some(daemon),
+            command_name: "agent_session.host_interaction.acknowledge".into(),
+            idempotency_key: format!("{claim_id}:ack"),
+            expected_version: 0,
+            request_fingerprint: None,
+        },
+        &delivery.id,
+        &now_string(),
+    )?;
     Ok(())
 }

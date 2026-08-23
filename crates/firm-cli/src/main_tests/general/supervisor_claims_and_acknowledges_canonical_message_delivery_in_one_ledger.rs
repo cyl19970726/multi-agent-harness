@@ -139,6 +139,95 @@ fn supervisor_claims_and_acknowledges_canonical_message_delivery_in_one_ledger()
         .iter()
         .all(|message| message.id != claimed.id));
 
+    author_test_canonical_message(
+        &store,
+        &created,
+        &lease,
+        &lease.execution_space_id,
+        "canonical-host-provider-request",
+        &member.agent_member_id,
+        &host.agent_member_id,
+        harness_core::agentfirm_api::MessageKind::ProviderInteractionRequest,
+        "{\"interaction_type\":\"question\"}",
+        "canonical-host-provider-request-correlation",
+        None,
+        harness_core::agentfirm_api::ResponseIntent::ResponseRequired,
+    );
+    let provider_request = canonical_team_messages_for_run(&store, &created.team_run.id)
+        .expect("canonical messages")
+        .into_iter()
+        .find(|message| message.id == "canonical-host-provider-request")
+        .expect("provider request projection");
+    let missing_receipt =
+        acknowledge_provider_request_as_host(&store, &created.team_run.id, &provider_request)
+            .expect_err("HTTP Host answer cannot fabricate provider receipt");
+    assert!(missing_receipt
+        .to_string()
+        .contains("HOST_PROVIDER_RECEIPT_REQUIRED"));
+    let still_queued = store
+        .fabric_message_deliveries(&lease.execution_space_id)
+        .expect("queued Host delivery")
+        .into_iter()
+        .find(|delivery| delivery.message_id == provider_request.id)
+        .expect("Host delivery exists");
+    assert_eq!(
+        still_queued.status,
+        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Queued
+    );
+    assert!(still_queued.provider_receipt_id.is_none());
+
+    claim_canonical_messages_for_member(&ledger, &host)
+        .expect("real Host provider claim")
+        .into_iter()
+        .find(|message| message.id == provider_request.id)
+        .expect("provider request claimed for exact Host session");
+    let claimed_request = store
+        .fabric_message_deliveries(&lease.execution_space_id)
+        .expect("claimed Host delivery")
+        .into_iter()
+        .find(|delivery| delivery.message_id == provider_request.id)
+        .expect("claimed provider request delivery");
+    let host_binding = store
+        .host_runtime_binding(&created.team_run.id, current_unix_ms_u64())
+        .expect("exact managed Host binding");
+    let harness_application::HostRuntimeBinding::Managed(host_binding) = host_binding else {
+        panic!("test Team uses managed Host")
+    };
+    store
+        .record_message_provider_receipt(
+            &canonical_delivery_context(
+                &lease.execution_space_id,
+                &lease.node_daemon_id,
+                "node_daemon.test.host_provider_receipt",
+                "canonical-host-provider-request:receipt".into(),
+                0,
+            ),
+            &claimed_request.id,
+            &host_binding.agent_session.node_id,
+            &lease.node_daemon_id,
+            lease.node_daemon_generation,
+            claimed_request.claim_id.as_deref().expect("claim id"),
+            "provider-native-host-request-receipt",
+            &now_string(),
+        )
+        .expect("record genuine provider receipt");
+    acknowledge_provider_request_as_host(&store, &created.team_run.id, &provider_request)
+        .expect("exact Host acknowledges genuine provider receipt");
+    let acknowledged_request = store
+        .fabric_message_deliveries(&lease.execution_space_id)
+        .expect("acknowledged Host delivery")
+        .into_iter()
+        .find(|delivery| delivery.message_id == provider_request.id)
+        .expect("acknowledged provider request delivery");
+    assert_eq!(
+        acknowledged_request.status,
+        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Acknowledged
+    );
+    assert_eq!(
+        acknowledged_request.provider_receipt_id.as_deref(),
+        Some("provider-native-host-request-receipt")
+    );
+
     let host_actor = created.team_run.host_actor.clone().expect("Host actor");
     let work = store
         .insert_work(
