@@ -1,3 +1,4 @@
+use super::fabric_foundation::RuntimeBindingAdmission;
 use super::*;
 
 impl HarnessStore {
@@ -1307,7 +1308,7 @@ impl HarnessStore {
                 self.require_live_runtime_binding_unlocked(
                     &candidate,
                     &candidate_binding,
-                    false,
+                    RuntimeBindingAdmission::Invocation,
                     "agent_session",
                     session_id,
                     Some(session.version),

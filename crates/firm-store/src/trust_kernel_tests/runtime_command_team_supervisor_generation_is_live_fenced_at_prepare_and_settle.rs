@@ -25,6 +25,13 @@ fn runtime_command_team_supervisor_generation_is_live_fenced_at_prepare_and_sett
             identity("supervised-agent"),
         )
         .unwrap();
+    join_runtime_membership(
+        &store,
+        "membership-supervised-agent",
+        "team-supervisor",
+        "supervised-agent",
+        TeamMembershipRole::Member,
+    );
     let mut target = session("session-supervised", "supervised-agent");
     target.control_state.driver_ref = RuntimeDriverRef::TeamSupervisor {
         team_run_id: "run-supervisor".into(),
@@ -37,13 +44,65 @@ fn runtime_command_team_supervisor_generation_is_live_fenced_at_prepare_and_sett
             target.clone(),
         )
         .unwrap();
+    store
+        .legacy_import_create_trust_member_run_projection(
+            &context("host", "member_run.create", "member-run-supervised", 0),
+            MemberRun {
+                id: "member-run-supervised".into(),
+                agent_member_id: "supervised-agent".into(),
+                team_run_id: "run-supervisor".into(),
+                role_snapshot: "member".into(),
+                provider_profile_snapshot: None,
+                requested_controls: serde_json::json!({}),
+                effective_controls: serde_json::json!({}),
+                coordination_status: MemberCoordinationStatus::Active,
+                runtime_status: MemberRuntimeStatus::Idle,
+                runtime_generation: 1,
+                workspace_binding_id: None,
+                native_session: None,
+                version: 1,
+                started_at: "t1".into(),
+                last_event_at: None,
+                finished_at: None,
+            },
+        )
+        .unwrap();
 
-    let (command, admission) = runtime_command_fixture(
+    let (mut command, mut admission) = runtime_command_fixture(
         "supervisor-live-command",
         RuntimeCommandKind::OpenRuntime,
         &target,
         "open_runtime",
     );
+    command.binding.target_member_run_id = Some("member-run-supervised".into());
+    command.binding.target_member_run_generation = Some(1);
+    admission.request_fingerprint = Some(runtime_command_envelope_fingerprint(&command).unwrap());
+    let mut unbound = command.clone();
+    unbound.binding.target_member_run_id = None;
+    unbound.binding.target_member_run_generation = None;
+    let mut unbound_admission = admission.clone();
+    unbound_admission.request_fingerprint =
+        Some(runtime_command_envelope_fingerprint(&unbound).unwrap());
+    let before = store.canonical_operations().unwrap();
+    let error = store
+        .prepare_runtime_command(&unbound_admission, &unbound, current_unix_ms(), "t-unbound")
+        .expect_err("TeamSupervisor RuntimeCommand without MemberRun binding must fail closed");
+    assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
+    assert_eq!(store.canonical_operations().unwrap(), before);
+    for hostile_binding in [("member-run-foreign", 1), ("member-run-supervised", 2)] {
+        let mut hostile = command.clone();
+        hostile.binding.target_member_run_id = Some(hostile_binding.0.into());
+        hostile.binding.target_member_run_generation = Some(hostile_binding.1);
+        let mut hostile_admission = admission.clone();
+        hostile_admission.request_fingerprint =
+            Some(runtime_command_envelope_fingerprint(&hostile).unwrap());
+        let before = store.canonical_operations().unwrap();
+        let error = store
+            .prepare_runtime_command(&hostile_admission, &hostile, current_unix_ms(), "t-hostile")
+            .expect_err("foreign or stale MemberRun binding must fail before admission");
+        assert!(error.to_string().contains("MEMBER_RUN_GENERATION_FENCED"));
+        assert_eq!(store.canonical_operations().unwrap(), before);
+    }
     let accepted = store
         .prepare_runtime_command(&admission, &command, current_unix_ms(), "t-accepted")
         .unwrap();
@@ -109,18 +168,52 @@ fn runtime_command_team_supervisor_generation_is_live_fenced_at_prepare_and_sett
             identity("another-supervised-agent"),
         )
         .unwrap();
+    join_runtime_membership(
+        &store,
+        "membership-another-supervised-agent",
+        "team-supervisor",
+        "another-supervised-agent",
+        TeamMembershipRole::Member,
+    );
     store
         .create_agent_session(
             &service_context("session.create", "session-stale-supervisor", 0),
             stale.clone(),
         )
         .unwrap();
-    let (stale_command, stale_admission) = runtime_command_fixture(
+    store
+        .legacy_import_create_trust_member_run_projection(
+            &context("host", "member_run.create", "member-run-stale", 0),
+            MemberRun {
+                id: "member-run-stale".into(),
+                agent_member_id: "another-supervised-agent".into(),
+                team_run_id: "run-supervisor".into(),
+                role_snapshot: "member".into(),
+                provider_profile_snapshot: None,
+                requested_controls: serde_json::json!({}),
+                effective_controls: serde_json::json!({}),
+                coordination_status: MemberCoordinationStatus::Active,
+                runtime_status: MemberRuntimeStatus::Idle,
+                runtime_generation: 1,
+                workspace_binding_id: None,
+                native_session: None,
+                version: 1,
+                started_at: "t1".into(),
+                last_event_at: None,
+                finished_at: None,
+            },
+        )
+        .unwrap();
+    let (mut stale_command, mut stale_admission) = runtime_command_fixture(
         "supervisor-stale-command",
         RuntimeCommandKind::OpenRuntime,
         &stale,
         "open_runtime",
     );
+    stale_command.binding.target_member_run_id = Some("member-run-stale".into());
+    stale_command.binding.target_member_run_generation = Some(1);
+    stale_admission.request_fingerprint =
+        Some(runtime_command_envelope_fingerprint(&stale_command).unwrap());
     let before_prepare = store.canonical_operations().unwrap();
     let error = store
         .prepare_runtime_command(

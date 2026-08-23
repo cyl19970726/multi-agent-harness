@@ -378,15 +378,10 @@ fn execute_member_runtime_close<A: TeamRuntimeAdapter<Error = CliError>>(
     let close_admission = adapter
         .bind_authority_session(effect.target_session.clone(), &profile)
         .and_then(|_| {
-            let binding = canonical_runtime_binding(&effect.target_session);
             crate::runtime_adapter_contract::preflight_effect(
                 adapter.describe(),
                 &effect.target_session,
-                crate::runtime_adapter_contract::RuntimeFence {
-                    binding: &binding,
-                    target_node_daemon_id: &effect.target_session.node_daemon_id,
-                    target_node_daemon_generation: effect.target_session.node_daemon_generation,
-                },
+                effect.fence.clone(),
                 SemanticCapability::CloseRuntime,
                 &[],
             )
@@ -400,12 +395,7 @@ fn execute_member_runtime_close<A: TeamRuntimeAdapter<Error = CliError>>(
             adapter.provider()
         )));
     }
-    let binding = canonical_runtime_binding(&effect.target_session);
-    let close_receipt = match adapter.close_runtime(crate::runtime_adapter_contract::RuntimeFence {
-        binding: &binding,
-        target_node_daemon_id: &effect.target_session.node_daemon_id,
-        target_node_daemon_generation: effect.target_session.node_daemon_generation,
-    }) {
+    let close_receipt = match adapter.close_runtime(effect.fence.clone()) {
         Ok(receipt) => receipt,
         Err(
             error @ crate::runtime_adapter_contract::RuntimeContractError::CapabilityAdmissionDenied {
@@ -646,7 +636,9 @@ pub(crate) fn run_team_member_with_adapter<A: TeamRuntimeAdapter<Error = CliErro
             })?;
             let adapter_admission = adapter
                 .bind_authority_session(effect.target_session.clone(), profile)
-                .and_then(|()| preflight_start_cycle(adapter, &effect.target_session));
+                .and_then(|()| {
+                    preflight_start_cycle(adapter, &effect.target_session, &effect.fence)
+                });
             if let Err(error) = adapter_admission {
                 settle_provider_effect_not_applied(ledger, &effect, error.to_string())?;
                 requeue_managed_host_attentions(

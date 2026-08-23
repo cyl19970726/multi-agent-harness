@@ -11,12 +11,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use harness_core::agentfirm_api::{
-    AgentSession, NativeContinuationActivation, NativeContinuationProjection,
-    RuntimeCommandBinding, RuntimeEffectCertainty, RuntimePostconditionStatus,
+    AgentSession, MemberCoordinationStatus, MemberRun, NativeContinuationActivation,
+    NativeContinuationProjection, RuntimeCommandBinding, RuntimeCommandPhase, RuntimeCommandRecord,
+    RuntimeCommandStatus, RuntimeDriverRef, RuntimeEffectCertainty, RuntimePostconditionStatus,
 };
 use harness_core::{
-    ProviderBindingAdmission, ProviderCapabilityBinding, ProviderCapabilityEvidenceKind,
-    ProviderCapabilityStatus,
+    NodeDaemonLease, NodeDaemonLeaseStatus, ProviderBindingAdmission, ProviderCapabilityBinding,
+    ProviderCapabilityEvidenceKind, ProviderCapabilityStatus, TeamSupervisorLease,
+    TeamSupervisorLeaseStatus,
 };
 use thiserror::Error;
 
@@ -557,55 +559,246 @@ enum HardAdmission {
 // Exact command fence over canonical durable types
 // ---------------------------------------------------------------------------
 
-/// Process-local view of the exact durable command target. The binding itself
-/// remains the canonical [`RuntimeCommandBinding`].
-#[derive(Debug, Clone, Copy)]
-pub struct RuntimeFence<'a> {
-    pub binding: &'a RuntimeCommandBinding,
-    pub target_node_daemon_id: &'a str,
-    pub target_node_daemon_generation: u64,
+macro_rules! generation_type {
+    ($name:ident, $field:literal) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name(u64);
+
+        impl $name {
+            fn require(value: u64, fields: &mut Vec<String>) -> Option<Self> {
+                if value == 0 {
+                    fields.push($field.to_string());
+                    None
+                } else {
+                    Some(Self(value))
+                }
+            }
+
+            pub const fn get(self) -> u64 {
+                self.0
+            }
+        }
+    };
 }
 
-impl<'a> RuntimeFence<'a> {
-    pub fn validate_exact(&self, session: &AgentSession) -> Result<(), RuntimeContractError> {
+generation_type!(MemberRunGeneration, "member_run.runtime_generation");
+generation_type!(AgentSessionGeneration, "agent_session.runtime_generation");
+generation_type!(NodeDaemonGeneration, "node_daemon.generation");
+generation_type!(TeamSupervisorGeneration, "team_supervisor.generation");
+generation_type!(RuntimeDriverGeneration, "agent_session.driver_generation");
+
+/// Process-local proof that one already-admitted durable RuntimeCommand still
+/// targets the exact runtime authority observed at admission. Private fields
+/// deliberately prevent provider callers from rebuilding authority with a
+/// struct literal.
+#[derive(Debug, Clone)]
+pub struct RuntimeBindingFence {
+    command_id: String,
+    binding: RuntimeCommandBinding,
+    target_node_daemon_id: String,
+    target_node_daemon_generation: NodeDaemonGeneration,
+    member_run_id: String,
+    member_run_generation: MemberRunGeneration,
+    agent_session_generation: AgentSessionGeneration,
+    driver_generation: RuntimeDriverGeneration,
+    team_supervisor_generation: Option<TeamSupervisorGeneration>,
+}
+
+impl RuntimeBindingFence {
+    fn exact_mismatch_fields(
+        binding: &RuntimeCommandBinding,
+        target_node_daemon_id: &str,
+        target_node_daemon_generation: u64,
+        session: &AgentSession,
+    ) -> Vec<String> {
         let mut fields = Vec::new();
-        if self.binding.target_session_id.as_deref() != Some(session.id.as_str()) {
+        if binding.target_session_id.as_deref() != Some(session.id.as_str()) {
             fields.push("target_session_id".to_string());
         }
-        if self.binding.target_runtime_generation != Some(session.runtime_generation) {
+        if binding.target_runtime_generation != Some(session.runtime_generation) {
             fields.push("target_runtime_generation".to_string());
         }
-        if self.binding.target_driver_generation != Some(session.control_state.driver_generation) {
+        if binding.target_driver_generation != Some(session.control_state.driver_generation) {
             fields.push("target_driver_generation".to_string());
         }
-        if self.binding.target_driver != session.control_state.driver_ref {
+        if binding.target_driver != session.control_state.driver_ref {
             fields.push("target_driver".to_string());
         }
-        if self.target_node_daemon_id != session.node_daemon_id {
+        if target_node_daemon_id != session.node_daemon_id {
             fields.push("target_node_daemon_id".to_string());
         }
-        if self.target_node_daemon_generation != session.node_daemon_generation {
+        if target_node_daemon_generation != session.node_daemon_generation {
             fields.push("target_node_daemon_generation".to_string());
         }
-        if self.binding.composition_fingerprint.as_deref()
+        if binding.composition_fingerprint.as_deref()
             != session.control_state.composition_fingerprint.as_deref()
         {
             fields.push("composition_fingerprint".to_string());
         }
-        if self.binding.capability_fingerprint.as_deref()
+        if binding.capability_fingerprint.as_deref()
             != session.control_state.capability_fingerprint.as_deref()
         {
             fields.push("capability_fingerprint".to_string());
         }
-        if self.binding.permission_envelope_ref.as_deref()
+        if binding.permission_envelope_ref.as_deref()
             != Some(session.permission_envelope_ref.as_str())
         {
             fields.push("permission_envelope_ref".to_string());
         }
-        if self.binding.native_session_ref.as_ref() != session.native_session_ref.as_ref() {
+        if binding.native_session_ref.as_ref() != session.native_session_ref.as_ref() {
             fields.push("native_session_ref".to_string());
         }
+        fields
+    }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_admitted_command(
+        command: &RuntimeCommandRecord,
+        session: &AgentSession,
+        member_run: &MemberRun,
+        node_daemon: &NodeDaemonLease,
+        team_supervisor: Option<&TeamSupervisorLease>,
+        now_unix_ms: u64,
+    ) -> Result<Self, RuntimeContractError> {
+        let mut fields = Vec::new();
+        if command.status != RuntimeCommandStatus::Accepted
+            || command.phase != RuntimeCommandPhase::Prepared
+            || command.effect_certainty != RuntimeEffectCertainty::Unknown
+        {
+            fields.push("runtime_command.admission_state".to_string());
+        }
+        if command.target_session_id.as_deref() != Some(session.id.as_str())
+            || command.target_session_generation != Some(session.runtime_generation)
+        {
+            fields.push("runtime_command.target_session".to_string());
+        }
+        if command.binding.target_member_run_id.as_deref() != Some(member_run.id.as_str())
+            || command.binding.target_member_run_generation != Some(member_run.runtime_generation)
+        {
+            fields.push("runtime_command.target_member_run".to_string());
+        }
+        if command.execution_space_id != session.execution_space_id
+            || command.target_node_id != session.node_id
+        {
+            fields.push("runtime_command.session_scope".to_string());
+        }
+        if node_daemon.status != NodeDaemonLeaseStatus::Active
+            || node_daemon.expires_unix_ms <= now_unix_ms
+            || node_daemon.node_id != session.node_id
+            || node_daemon.daemon_id != session.node_daemon_id
+            || node_daemon.generation != session.node_daemon_generation
+            || command.target_node_daemon_id != node_daemon.daemon_id
+            || command.target_node_daemon_generation != node_daemon.generation
+        {
+            fields.push("node_daemon.current_lease".to_string());
+        }
+        if member_run.coordination_status != MemberCoordinationStatus::Active {
+            fields.push("member_run.coordination_status".to_string());
+        }
+        if member_run.agent_member_id != session.agent_member_id {
+            fields.push("member_run.agent_member_id".to_string());
+        }
+
+        let team_supervisor_generation = match &session.control_state.driver_ref {
+            RuntimeDriverRef::TeamSupervisor {
+                team_run_id,
+                team_supervisor_id,
+                team_supervisor_generation,
+            } => match team_supervisor {
+                Some(lease)
+                    if lease.status == TeamSupervisorLeaseStatus::Active
+                        && lease.expires_unix_ms > now_unix_ms
+                        && lease.team_run_id == *team_run_id
+                        && lease.team_run_id == member_run.team_run_id
+                        && lease.supervisor_id == *team_supervisor_id
+                        && lease.generation == *team_supervisor_generation
+                        && lease.execution_space_id == session.execution_space_id
+                        && lease.node_id == session.node_id
+                        && lease.node_daemon_id == node_daemon.daemon_id
+                        && lease.node_daemon_generation == node_daemon.generation =>
+                {
+                    TeamSupervisorGeneration::require(lease.generation, &mut fields)
+                }
+                _ => {
+                    fields.push("team_supervisor.current_lease".to_string());
+                    None
+                }
+            },
+            _ => None,
+        };
+
+        let target_node_daemon_generation =
+            NodeDaemonGeneration::require(node_daemon.generation, &mut fields);
+        let member_run_generation =
+            MemberRunGeneration::require(member_run.runtime_generation, &mut fields);
+        let agent_session_generation =
+            AgentSessionGeneration::require(session.runtime_generation, &mut fields);
+        let driver_generation =
+            RuntimeDriverGeneration::require(session.control_state.driver_generation, &mut fields);
+
+        fields.extend(Self::exact_mismatch_fields(
+            &command.binding,
+            &command.target_node_daemon_id,
+            command.target_node_daemon_generation,
+            session,
+        ));
+        fields.sort();
+        fields.dedup();
+        if !fields.is_empty() {
+            return Err(RuntimeContractError::FenceMismatch { fields });
+        }
+        Ok(Self {
+            command_id: command.id.clone(),
+            binding: command.binding.clone(),
+            target_node_daemon_id: command.target_node_daemon_id.clone(),
+            target_node_daemon_generation: target_node_daemon_generation
+                .expect("nonzero NodeDaemon generation was validated"),
+            member_run_id: member_run.id.clone(),
+            member_run_generation: member_run_generation
+                .expect("nonzero MemberRun generation was validated"),
+            agent_session_generation: agent_session_generation
+                .expect("nonzero AgentSession generation was validated"),
+            driver_generation: driver_generation
+                .expect("nonzero runtime driver generation was validated"),
+            team_supervisor_generation,
+        })
+    }
+
+    pub fn command_id(&self) -> &str {
+        &self.command_id
+    }
+
+    pub fn member_run_id(&self) -> &str {
+        &self.member_run_id
+    }
+
+    pub fn member_run_generation(&self) -> MemberRunGeneration {
+        self.member_run_generation
+    }
+
+    pub fn agent_session_generation(&self) -> AgentSessionGeneration {
+        self.agent_session_generation
+    }
+
+    pub fn node_daemon_generation(&self) -> NodeDaemonGeneration {
+        self.target_node_daemon_generation
+    }
+
+    pub fn driver_generation(&self) -> RuntimeDriverGeneration {
+        self.driver_generation
+    }
+
+    pub fn team_supervisor_generation(&self) -> Option<TeamSupervisorGeneration> {
+        self.team_supervisor_generation
+    }
+
+    pub fn validate_exact(&self, session: &AgentSession) -> Result<(), RuntimeContractError> {
+        let fields = Self::exact_mismatch_fields(
+            &self.binding,
+            &self.target_node_daemon_id,
+            self.target_node_daemon_generation.get(),
+            session,
+        );
         if fields.is_empty() {
             Ok(())
         } else {
@@ -928,51 +1121,57 @@ impl ReleaseReceipt {
 }
 
 /// Operational provider-neutral adapter. Durable authorization remains the
-/// RuntimeCommand/AgentSession types passed through [`RuntimeFence`].
+/// RuntimeCommand/AgentSession types passed through [`RuntimeBindingFence`].
 pub trait RuntimeAdapter {
     fn describe(&self) -> &RuntimeDescription;
 
     fn open_or_resume(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         native_session_ref: Option<&str>,
     ) -> Result<RuntimeObservation, RuntimeContractError>;
 
     fn execute_control(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         request: ControlRequest,
     ) -> Result<EffectReceipt, RuntimeContractError>;
 
     fn observe(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
     ) -> Result<RuntimeObservation, RuntimeContractError>;
 
     fn inspect_effect(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         effect_id: &str,
     ) -> Result<EffectInspection, RuntimeContractError>;
 
     fn reconcile(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         inspection: &EffectInspection,
     ) -> Result<ReconcileReceipt, RuntimeContractError>;
 
     fn close_runtime(
         &mut self,
-        _fence: RuntimeFence<'_>,
+        _fence: RuntimeBindingFence,
     ) -> Result<MemberRuntimeCloseReceipt, RuntimeContractError> {
         Err(RuntimeContractError::MemberCloseIncomplete {
             fields: vec!["binding has no close_runtime implementation".to_string()],
         })
     }
 
-    fn quiesce(&mut self, fence: RuntimeFence<'_>) -> Result<QuiesceReceipt, RuntimeContractError>;
+    fn quiesce(
+        &mut self,
+        fence: RuntimeBindingFence,
+    ) -> Result<QuiesceReceipt, RuntimeContractError>;
 
-    fn release(&mut self, fence: RuntimeFence<'_>) -> Result<ReleaseReceipt, RuntimeContractError>;
+    fn release(
+        &mut self,
+        fence: RuntimeBindingFence,
+    ) -> Result<ReleaseReceipt, RuntimeContractError>;
 }
 
 /// Shared fail-closed preflight. It returns only after both the exact command
@@ -980,7 +1179,7 @@ pub trait RuntimeAdapter {
 pub fn preflight_effect(
     description: &RuntimeDescription,
     session: &AgentSession,
-    fence: RuntimeFence<'_>,
+    fence: RuntimeBindingFence,
     capability: SemanticCapability,
     optional: &[SemanticCapability],
 ) -> Result<AdmissionDecision, RuntimeContractError> {

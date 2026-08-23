@@ -11,6 +11,8 @@
   "provider": "codex",
   "dispatch_mode": "start_if_idle",
   "binding": {
+    "target_member_run_id": "member-run-1",
+    "target_member_run_generation": 7,
     "target_session_id": "session-2",
     "target_runtime_generation": 3,
     "target_driver_generation": 4,

@@ -68,7 +68,7 @@ impl PiTeamRuntime {
 
     fn contract_preflight(
         &self,
-        fence: harness_runtime_contract::RuntimeFence<'_>,
+        fence: harness_runtime_contract::RuntimeBindingFence,
         capability: harness_runtime_contract::SemanticCapability,
     ) -> Result<
         harness_runtime_contract::AdmissionDecision,
@@ -331,7 +331,7 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
 
     fn open_or_resume(
         &mut self,
-        fence: harness_runtime_contract::RuntimeFence<'_>,
+        fence: harness_runtime_contract::RuntimeBindingFence,
         native_session_ref: Option<&str>,
     ) -> Result<
         harness_runtime_contract::RuntimeObservation,
@@ -365,7 +365,7 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
 
     fn execute_control(
         &mut self,
-        fence: harness_runtime_contract::RuntimeFence<'_>,
+        fence: harness_runtime_contract::RuntimeBindingFence,
         request: harness_runtime_contract::ControlRequest,
     ) -> Result<
         harness_runtime_contract::EffectReceipt,
@@ -487,7 +487,7 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
 
     fn observe(
         &mut self,
-        fence: harness_runtime_contract::RuntimeFence<'_>,
+        fence: harness_runtime_contract::RuntimeBindingFence,
     ) -> Result<
         harness_runtime_contract::RuntimeObservation,
         harness_runtime_contract::RuntimeContractError,
@@ -510,7 +510,7 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
 
     fn inspect_effect(
         &mut self,
-        fence: harness_runtime_contract::RuntimeFence<'_>,
+        fence: harness_runtime_contract::RuntimeBindingFence,
         _effect_id: &str,
     ) -> Result<
         harness_runtime_contract::EffectInspection,
@@ -525,7 +525,7 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
 
     fn reconcile(
         &mut self,
-        fence: harness_runtime_contract::RuntimeFence<'_>,
+        fence: harness_runtime_contract::RuntimeBindingFence,
         _inspection: &harness_runtime_contract::EffectInspection,
     ) -> Result<
         harness_runtime_contract::ReconcileReceipt,
@@ -540,7 +540,7 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
 
     fn close_runtime(
         &mut self,
-        fence: harness_runtime_contract::RuntimeFence<'_>,
+        fence: harness_runtime_contract::RuntimeBindingFence,
     ) -> Result<
         harness_runtime_contract::MemberRuntimeCloseReceipt,
         harness_runtime_contract::RuntimeContractError,
@@ -615,7 +615,7 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
 
     fn quiesce(
         &mut self,
-        fence: harness_runtime_contract::RuntimeFence<'_>,
+        fence: harness_runtime_contract::RuntimeBindingFence,
     ) -> Result<
         harness_runtime_contract::QuiesceReceipt,
         harness_runtime_contract::RuntimeContractError,
@@ -658,7 +658,7 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
         builder.record(
             QuiesceStep::FenceAdmission,
             RuntimePostconditionStatus::Satisfied,
-            "exact RuntimeFence admitted",
+            "exact RuntimeBindingFence admitted",
         )?;
         builder.record(
             QuiesceStep::InhibitContinuation,
@@ -693,7 +693,7 @@ impl harness_runtime_contract::RuntimeAdapter for PiTeamRuntime {
 
     fn release(
         &mut self,
-        fence: harness_runtime_contract::RuntimeFence<'_>,
+        fence: harness_runtime_contract::RuntimeBindingFence,
     ) -> Result<
         harness_runtime_contract::ReleaseReceipt,
         harness_runtime_contract::RuntimeContractError,

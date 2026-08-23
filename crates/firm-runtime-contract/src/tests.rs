@@ -2,11 +2,16 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use harness_core::agentfirm_api::{
-    AgentSessionControlState, AgentSessionStatus, MemberExecutionDriver, NativeContinuationBudget,
+    ActorKind, ActorRef, AgentSessionControlState, AgentSessionStatus, MemberCoordinationStatus,
+    MemberExecutionDriver, MemberRun, MemberRuntimeStatus, NativeContinuationBudget,
     NativeContinuationDefinition, NativeContinuationPhase, PermissionCeiling, RuntimeActivity,
-    RuntimeDriverRef, RuntimeResidency,
+    RuntimeCommandKind, RuntimeCommandPhase, RuntimeCommandRecord, RuntimeCommandStatus,
+    RuntimeDriverRef, RuntimeEffectCertainty, RuntimePostconditionStatus, RuntimeResidency,
 };
-use harness_core::{ProviderCapabilityEvidence, ProviderCapabilityEvidenceKind};
+use harness_core::{
+    NodeDaemonLease, NodeDaemonLeaseStatus, ProviderCapabilityEvidence,
+    ProviderCapabilityEvidenceKind, TeamSupervisorLease, TeamSupervisorLeaseStatus,
+};
 
 use super::*;
 
@@ -128,6 +133,8 @@ fn session() -> AgentSession {
 
 fn binding(session: &AgentSession) -> RuntimeCommandBinding {
     RuntimeCommandBinding {
+        target_member_run_id: Some("member-run-1".to_string()),
+        target_member_run_generation: Some(13),
         target_session_id: Some(session.id.clone()),
         target_runtime_generation: Some(session.runtime_generation),
         target_driver_generation: Some(session.control_state.driver_generation),
@@ -140,12 +147,98 @@ fn binding(session: &AgentSession) -> RuntimeCommandBinding {
     }
 }
 
-fn fence_view<'a>(binding: &'a RuntimeCommandBinding) -> RuntimeFence<'a> {
-    RuntimeFence {
-        binding,
-        target_node_daemon_id: "daemon-1",
-        target_node_daemon_generation: 3,
-    }
+fn try_fence_view(
+    binding: &RuntimeCommandBinding,
+) -> Result<RuntimeBindingFence, RuntimeContractError> {
+    let session = session();
+    let member = MemberRun {
+        id: "member-run-1".to_string(),
+        agent_member_id: session.agent_member_id.clone(),
+        team_run_id: "team-run-1".to_string(),
+        role_snapshot: "member".to_string(),
+        provider_profile_snapshot: None,
+        requested_controls: serde_json::json!({}),
+        effective_controls: serde_json::json!({}),
+        coordination_status: MemberCoordinationStatus::Active,
+        runtime_status: MemberRuntimeStatus::Idle,
+        runtime_generation: 13,
+        workspace_binding_id: None,
+        native_session: None,
+        version: 1,
+        started_at: "t0".to_string(),
+        last_event_at: None,
+        finished_at: None,
+    };
+    let daemon = NodeDaemonLease {
+        node_id: session.node_id.clone(),
+        daemon_id: session.node_daemon_id.clone(),
+        generation: session.node_daemon_generation,
+        instance_id: "instance-1".to_string(),
+        status: NodeDaemonLeaseStatus::Active,
+        acquired_unix_ms: 1,
+        renewed_unix_ms: 1,
+        expires_unix_ms: 100,
+        released_unix_ms: None,
+    };
+    let supervisor = TeamSupervisorLease {
+        team_run_id: member.team_run_id.clone(),
+        node_id: session.node_id.clone(),
+        node_daemon_id: daemon.daemon_id.clone(),
+        node_daemon_generation: daemon.generation,
+        execution_space_id: session.execution_space_id.clone(),
+        project_binding_id: "project-1".to_string(),
+        supervisor_id: "supervisor-1".to_string(),
+        generation: 12,
+        owner_process_id: 1,
+        owner_locator: "test".to_string(),
+        status: TeamSupervisorLeaseStatus::Active,
+        acquired_unix_ms: 1,
+        heartbeat_unix_ms: 1,
+        expires_unix_ms: 100,
+        released_unix_ms: None,
+    };
+    let command = RuntimeCommandRecord {
+        id: "command-1".to_string(),
+        execution_space_id: session.execution_space_id.clone(),
+        target_node_id: session.node_id.clone(),
+        target_node_daemon_id: daemon.daemon_id.clone(),
+        target_node_daemon_generation: daemon.generation,
+        authenticated_actor: ActorRef {
+            kind: ActorKind::Service,
+            id: daemon.daemon_id.clone(),
+        },
+        command: RuntimeCommandKind::StartCycle,
+        required_capability: "cycle.start".to_string(),
+        idempotency_key: "command-1".to_string(),
+        request_fingerprint: "fingerprint-1".to_string(),
+        status: RuntimeCommandStatus::Accepted,
+        phase: RuntimeCommandPhase::Prepared,
+        effect_certainty: RuntimeEffectCertainty::Unknown,
+        postcondition_status: RuntimePostconditionStatus::Unknown,
+        binding: binding.clone(),
+        precondition: Default::default(),
+        postcondition: Default::default(),
+        target_session_id: Some(session.id.clone()),
+        target_session_generation: Some(session.runtime_generation),
+        source_record_id: None,
+        result: None,
+        failure_code: None,
+        version: 1,
+        created_at: "t0".to_string(),
+        updated_at: "t0".to_string(),
+    };
+    RuntimeBindingFence::from_admitted_command(
+        &command,
+        &session,
+        &member,
+        &daemon,
+        Some(&supervisor),
+        2,
+    )
+}
+
+fn fence_view(binding: &RuntimeCommandBinding) -> RuntimeBindingFence {
+    try_fence_view(binding).expect("exact admitted runtime binding")
 }
 
 fn description(bindings: Vec<ProviderCapabilityBinding>) -> RuntimeDescription {
@@ -156,6 +249,17 @@ fn description(bindings: Vec<ProviderCapabilityBinding>) -> RuntimeDescription {
         capability_fingerprint: "capabilities-a".to_string(),
         capability_bindings: bindings,
     }
+}
+
+#[test]
+fn generation_domains_preserve_independent_admitted_values() {
+    let session = session();
+    let fence = fence_view(&binding(&session));
+    assert_eq!(fence.member_run_generation().get(), 13);
+    assert_eq!(fence.agent_session_generation().get(), 8);
+    assert_eq!(fence.node_daemon_generation().get(), 3);
+    assert_eq!(fence.driver_generation().get(), 12);
+    assert_eq!(fence.team_supervisor_generation().unwrap().get(), 12);
 }
 
 #[derive(Default)]
@@ -210,7 +314,7 @@ impl DeepSeekShapedAdapter {
 
     fn preflight(
         &self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         capability: SemanticCapability,
         optional: &[SemanticCapability],
     ) -> Result<AdmissionDecision, RuntimeContractError> {
@@ -231,7 +335,7 @@ impl RuntimeAdapter for DeepSeekShapedAdapter {
 
     fn open_or_resume(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         native_session_ref: Option<&str>,
     ) -> Result<RuntimeObservation, RuntimeContractError> {
         self.preflight(fence, SemanticCapability::OpenOrResume, &[])?;
@@ -247,7 +351,7 @@ impl RuntimeAdapter for DeepSeekShapedAdapter {
 
     fn execute_control(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         request: ControlRequest,
     ) -> Result<EffectReceipt, RuntimeContractError> {
         let admission = self.preflight(fence, request.intent.capability(), &[])?;
@@ -269,7 +373,7 @@ impl RuntimeAdapter for DeepSeekShapedAdapter {
 
     fn observe(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
     ) -> Result<RuntimeObservation, RuntimeContractError> {
         self.preflight(fence, SemanticCapability::Observe, &[])?;
         self.observation_bridge.calls += 1;
@@ -283,7 +387,7 @@ impl RuntimeAdapter for DeepSeekShapedAdapter {
 
     fn inspect_effect(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         effect_id: &str,
     ) -> Result<EffectInspection, RuntimeContractError> {
         self.preflight(fence, SemanticCapability::InspectEffect, &[])?;
@@ -298,7 +402,7 @@ impl RuntimeAdapter for DeepSeekShapedAdapter {
 
     fn reconcile(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         inspection: &EffectInspection,
     ) -> Result<ReconcileReceipt, RuntimeContractError> {
         self.preflight(fence, SemanticCapability::Reconcile, &[])?;
@@ -311,7 +415,10 @@ impl RuntimeAdapter for DeepSeekShapedAdapter {
         })
     }
 
-    fn quiesce(&mut self, fence: RuntimeFence<'_>) -> Result<QuiesceReceipt, RuntimeContractError> {
+    fn quiesce(
+        &mut self,
+        fence: RuntimeBindingFence,
+    ) -> Result<QuiesceReceipt, RuntimeContractError> {
         self.preflight(fence, SemanticCapability::Quiesce, &[])?;
         let mut builder = QuiesceReceiptBuilder::new();
         self.quiesce_log.clear();
@@ -324,7 +431,10 @@ impl RuntimeAdapter for DeepSeekShapedAdapter {
         Ok(receipt)
     }
 
-    fn release(&mut self, fence: RuntimeFence<'_>) -> Result<ReleaseReceipt, RuntimeContractError> {
+    fn release(
+        &mut self,
+        fence: RuntimeBindingFence,
+    ) -> Result<ReleaseReceipt, RuntimeContractError> {
         self.preflight(fence, SemanticCapability::Release, &[])?;
         self.lifecycle.require_quiesced()?;
         if self.released {
@@ -428,12 +538,16 @@ fn durable_continuation_definition_does_not_follow_activation() {
 fn stale_revision_driver_composition_and_capability_have_zero_effect() {
     enum Case {
         Revision,
+        MemberRun,
+        MemberGeneration,
         Driver,
         Composition,
         Capability,
     }
     for case in [
         Case::Revision,
+        Case::MemberRun,
+        Case::MemberGeneration,
         Case::Driver,
         Case::Composition,
         Case::Capability,
@@ -444,6 +558,10 @@ fn stale_revision_driver_composition_and_capability_have_zero_effect() {
         let mut expected = adapter.session.control_state.continuation.clone();
         match case {
             Case::Revision => expected.definition.revision = Some(6),
+            Case::MemberRun => {
+                durable_binding.target_member_run_id = Some("member-run-stale".to_string())
+            }
+            Case::MemberGeneration => durable_binding.target_member_run_generation = Some(7),
             Case::Driver => durable_binding.target_driver_generation = Some(11),
             Case::Composition => {
                 durable_binding.composition_fingerprint = Some("composition-old".to_string())
@@ -456,9 +574,18 @@ fn stale_revision_driver_composition_and_capability_have_zero_effect() {
             effect_id: "continuation-effect".to_string(),
             intent: ControlIntent::ResumeContinuation { expected },
         };
-        assert!(adapter
-            .execute_control(fence_view(&durable_binding), request)
-            .is_err());
+        match case {
+            Case::Revision => assert!(adapter
+                .execute_control(fence_view(&durable_binding), request)
+                .is_err()),
+            Case::MemberRun
+            | Case::MemberGeneration
+            | Case::Driver
+            | Case::Composition
+            | Case::Capability => {
+                assert!(try_fence_view(&durable_binding).is_err())
+            }
+        }
         assert_eq!(adapter.cycle_bridge.calls, 0);
         assert_eq!(adapter.continuation_bridge.calls, 0);
     }

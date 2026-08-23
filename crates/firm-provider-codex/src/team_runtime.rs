@@ -23,8 +23,8 @@ use harness_runtime_contract::ProviderTerminalFailure;
 use harness_runtime_contract::{
     AdmissionDecision, ControlIntent, ControlRequest, EffectInspection, EffectReceipt,
     MemberRuntimeCloseReceipt, QuiesceReceipt, QuiesceReceiptBuilder, QuiesceStep,
-    ReconcileReceipt, ReleaseReceipt, RuntimeContractError, RuntimeDescription, RuntimeFence,
-    SemanticCapability,
+    ReconcileReceipt, ReleaseReceipt, RuntimeBindingFence, RuntimeContractError,
+    RuntimeDescription, SemanticCapability,
 };
 use harness_runtime_contract::{
     CapabilityBinding, CapabilityStatus, ControlTransportReceipt, CycleControl,
@@ -202,7 +202,7 @@ impl<'a, B: CodexAppServerBridge> CodexTeamRuntime<'a, B> {
 
     fn preflight(
         &self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         capability: SemanticCapability,
     ) -> Result<AdmissionDecision, RuntimeContractError> {
         harness_runtime_contract::preflight_effect(
@@ -1075,7 +1075,7 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
 
     fn open_or_resume(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         native_session_ref: Option<&str>,
     ) -> Result<harness_runtime_contract::RuntimeObservation, RuntimeContractError> {
         self.preflight(fence, SemanticCapability::OpenOrResume)?;
@@ -1097,7 +1097,7 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
 
     fn execute_control(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         request: ControlRequest,
     ) -> Result<EffectReceipt, RuntimeContractError> {
         let capability = match &request.intent {
@@ -1248,7 +1248,7 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
 
     fn observe(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
     ) -> Result<harness_runtime_contract::RuntimeObservation, RuntimeContractError> {
         self.preflight(fence, SemanticCapability::Observe)?;
         self.bridge.ensure_transport_alive().map_err(bridge_error)?;
@@ -1265,7 +1265,7 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
 
     fn inspect_effect(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         _effect_id: &str,
     ) -> Result<EffectInspection, RuntimeContractError> {
         self.preflight(fence, SemanticCapability::InspectEffect)?;
@@ -1274,7 +1274,7 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
 
     fn reconcile(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
         _inspection: &EffectInspection,
     ) -> Result<ReconcileReceipt, RuntimeContractError> {
         self.preflight(fence, SemanticCapability::Reconcile)?;
@@ -1283,7 +1283,7 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
 
     fn close_runtime(
         &mut self,
-        fence: RuntimeFence<'_>,
+        fence: RuntimeBindingFence,
     ) -> Result<MemberRuntimeCloseReceipt, RuntimeContractError> {
         if self.runtime_closed {
             return Err(RuntimeContractError::AlreadyReleased);
@@ -1344,7 +1344,10 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
         Ok(receipt)
     }
 
-    fn quiesce(&mut self, fence: RuntimeFence<'_>) -> Result<QuiesceReceipt, RuntimeContractError> {
+    fn quiesce(
+        &mut self,
+        fence: RuntimeBindingFence,
+    ) -> Result<QuiesceReceipt, RuntimeContractError> {
         self.preflight(fence, SemanticCapability::Quiesce)?;
         self.settle_active_turn_for_close().map_err(bridge_error)?;
         let goal = self.bridge.read_thread_goal().map_err(bridge_error)?;
@@ -1369,7 +1372,7 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
         builder.record(
             QuiesceStep::FenceAdmission,
             RuntimePostconditionStatus::Satisfied,
-            "exact RuntimeFence admitted",
+            "exact RuntimeBindingFence admitted",
         )?;
         builder.record(
             QuiesceStep::InhibitContinuation,
@@ -1399,7 +1402,10 @@ impl<'a, B: CodexAppServerBridge> harness_runtime_contract::RuntimeAdapter
         Ok(receipt)
     }
 
-    fn release(&mut self, fence: RuntimeFence<'_>) -> Result<ReleaseReceipt, RuntimeContractError> {
+    fn release(
+        &mut self,
+        fence: RuntimeBindingFence,
+    ) -> Result<ReleaseReceipt, RuntimeContractError> {
         if self.runtime_closed {
             return Err(RuntimeContractError::AlreadyReleased);
         }

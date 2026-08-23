@@ -39,6 +39,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "target_member_run_id": {"type": ["string", "null"], "minLength": 1},
+        "target_member_run_generation": {"type": ["integer", "null"], "minimum": 1},
         "target_session_id": {"type": ["string", "null"]},
         "target_runtime_generation": {"type": ["integer", "null"], "minimum": 1},
         "target_driver_generation": {"type": ["integer", "null"], "minimum": 1},

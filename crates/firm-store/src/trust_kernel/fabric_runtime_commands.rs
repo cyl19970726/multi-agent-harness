@@ -1,3 +1,4 @@
+use super::fabric_foundation::RuntimeBindingAdmission;
 use super::*;
 
 impl HarnessStore {
@@ -240,7 +241,9 @@ impl HarnessStore {
                 self.require_live_runtime_binding_unlocked(
                     &session,
                     &command.binding,
-                    false,
+                    RuntimeBindingAdmission::RuntimeCommand {
+                        allow_native_session_attachment: false,
+                    },
                     "runtime_command",
                     &command.id,
                     Some(session.version),
@@ -646,10 +649,12 @@ impl HarnessStore {
                     self.require_live_runtime_binding_unlocked(
                         &session,
                         &record.binding,
-                        matches!(
-                            record.command,
-                            RuntimeCommandKind::StartSession | RuntimeCommandKind::OpenRuntime
-                        ),
+                        RuntimeBindingAdmission::RuntimeCommand {
+                            allow_native_session_attachment: matches!(
+                                record.command,
+                                RuntimeCommandKind::StartSession | RuntimeCommandKind::OpenRuntime
+                            ),
+                        },
                         "runtime_command",
                         command_id,
                         Some(record.version),
@@ -829,10 +834,12 @@ impl HarnessStore {
             self.require_live_runtime_binding_unlocked(
                 &session,
                 &record.binding,
-                matches!(
-                    record.command,
-                    RuntimeCommandKind::StartSession | RuntimeCommandKind::OpenRuntime
-                ),
+                RuntimeBindingAdmission::RuntimeCommand {
+                    allow_native_session_attachment: matches!(
+                        record.command,
+                        RuntimeCommandKind::StartSession | RuntimeCommandKind::OpenRuntime
+                    ),
+                },
                 "runtime_command",
                 command_id,
                 Some(record.version),

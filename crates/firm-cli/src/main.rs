@@ -139,6 +139,9 @@ use team_run_cli::*;
 #[path = "main_modules/provider_process_recovery.rs"]
 mod provider_process_recovery;
 use provider_process_recovery::*;
+#[path = "main_modules/runtime_binding_fence.rs"]
+mod runtime_binding_fence;
+use runtime_binding_fence::*;
 #[path = "main_modules/runtime_effects.rs"]
 mod runtime_effects;
 use runtime_effects::*;

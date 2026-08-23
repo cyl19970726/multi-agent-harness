@@ -179,14 +179,22 @@ authenticate and resolve authority
   -> persist Applied, Failed/NotApplied, or RecoveryRequired/Unknown
 ```
 
-DEV-31 tightens this into an exact binding fence for every provider/process
-effect: the prepared command records the target AgentSession id, runtime
-generation, execution-driver generation/ref, NativeSessionRef, permission
-envelope, composition fingerprint, capability fingerprint, preconditions, and
-postconditions. A command whose binding cannot be proven is rejected before the
-provider boundary. A provider ACK proves only transport acceptance; terminal,
-quiesce, release, and semantic postconditions require adapter observation
-evidence and are tracked separately from provider effect certainty.
+DEV-31 and DEV-68 tighten this into an exact binding fence for every
+provider/process effect: the prepared command records the target MemberRun id
+and adapter generation, AgentSession id and machine-runtime generation,
+execution-driver generation/ref, NodeDaemon generation, optional
+TeamSupervisor generation, NativeSessionRef, permission envelope, composition
+fingerprint, capability fingerprint, preconditions, and postconditions. These
+generation domains are distinct types and may advance independently; in
+particular, Close→Reopen advances MemberRun without fabricating a new
+AgentSession generation. Provider adapters receive only a private-field
+`RuntimeBindingFence` constructed from the already Accepted/Prepared canonical
+RuntimeCommand and the exact current leases. They cannot rebuild authority from
+a Session snapshot or public struct literal. A command whose binding cannot be
+proven is rejected before the provider boundary. A provider ACK proves only
+transport acceptance; terminal, quiesce, release, and semantic postconditions
+require adapter observation evidence and are tracked separately from provider
+effect certainty.
 
 Exact replay returns the original durable result and never repeats the effect.
 The same key with a changed provider, mode, payload, permission, Node, Space,
