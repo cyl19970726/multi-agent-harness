@@ -858,6 +858,7 @@
         "docs/current/integration/codex-message-delivery.md",
         "docs/current/integration/kimi.md",
         "docs/current/integration/claude.md",
+        "docs/current/integration/deepseek-harness.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md"
       ],
@@ -877,6 +878,54 @@
         {
           "kind": "decision",
           "ref": "docs/decisions/0031-interactive-provider-modes-and-version-drift.md"
+        }
+      ]
+    },
+    {
+      "path": "docs/current/integration/deepseek-harness.md",
+      "ownerRole": "provider-integration",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "DeepSeek Harness managed Agent Team provider",
+        "DeepSeek Harness native Cordis plugin composition",
+        "DeepSeek Harness session, receipt, lifecycle, and permission boundary"
+      ],
+      "dependsOn": [
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/architecture/member-continuation-model.md",
+        "docs/current/integration/README.md",
+        "docs/current/integration/native-session-storage.md",
+        "crates/firm-provider-deepseek/src/lib.rs",
+        "apps/deepseek-member-runner/cordis.yml",
+        "apps/deepseek-member-runner/contract/runner-v1.json",
+        "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
+        "docs/decisions/0032-provider-native-session-is-execution-truth.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance",
+        "check:provider-runtime-packages"
+      ],
+      "reviewAfter": "2026-09-23",
+      "lastVerifiedWith": [
+        "https://github.com/deepseek-ai/deepseek-harness/tree/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
+        "npm run check --prefix apps/deepseek-member-runner",
+        "cargo test -p firm-provider-deepseek",
+        "cargo test --workspace --all-targets --locked -- --test-threads=1",
+        "harness governance check"
+      ],
+      "reorgTrigger": "DeepSeek Harness plugin composition, exact package version, native Session API, provider receipt, lifecycle control, or sandbox policy changes.",
+      "authorityClass": "implementation_reference",
+      "implementationState": "partial",
+      "truthRefs": [
+        {
+          "kind": "api",
+          "ref": "crates/firm-provider-deepseek/src/lib.rs"
+        },
+        {
+          "kind": "runtime_evidence",
+          "ref": "https://github.com/cyl19970726/multi-agent-harness/issues/521"
         }
       ]
     },

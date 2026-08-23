@@ -8,6 +8,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   codex: "Codex",
   claude: "Claude Code",
   pi: "Pi",
+  deepseek_harness: "DeepSeek Harness",
 };
 
 /**
@@ -22,6 +23,7 @@ export const TEAM_MEMBER_PROVIDER_MODES: Array<{ provider: string; label: string
   { provider: "codex", label: "Codex", mode: "codex_app_server" },
   { provider: "claude", label: "Claude Code", mode: "claude_agent_sdk" },
   { provider: "pi", label: "Pi", mode: "pi_rpc" },
+  { provider: "deepseek_harness", label: "DeepSeek Harness", mode: "deepseek_sdk" },
 ];
 
 export function providerDisplayName(provider?: string | null): string {

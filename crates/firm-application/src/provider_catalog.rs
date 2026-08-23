@@ -6,6 +6,7 @@ use serde::Serialize;
 pub enum TeamRuntimeKind {
     Codex,
     Claude,
+    DeepSeek,
     Kimi,
     Pi,
 }
@@ -75,7 +76,7 @@ pub struct ProviderDescriptor {
     pub historical_modes: &'static [HistoricalProviderMode],
 }
 
-pub const PROVIDERS: [ProviderDescriptor; 4] = [
+pub const PROVIDERS: [ProviderDescriptor; 5] = [
     ProviderDescriptor {
         provider: "codex",
         team: TeamRuntimeBinding {
@@ -157,6 +158,21 @@ pub const PROVIDERS: [ProviderDescriptor; 4] = [
         standalone_node_session: false,
         historical_modes: &[],
     },
+    ProviderDescriptor {
+        provider: "deepseek_harness",
+        team: TeamRuntimeBinding {
+            execution_mode: "deepseek_sdk",
+            binding: TeamRuntimeKind::DeepSeek,
+        },
+        external_host_transport: None,
+        direct_delivery_compatibility: None,
+        event_decoder: false,
+        version_probe: true,
+        capacity_probe: true,
+        native_session_locator: true,
+        standalone_node_session: false,
+        historical_modes: &[],
+    },
 ];
 
 pub fn provider_descriptor(provider: &str) -> Option<&'static ProviderDescriptor> {
@@ -194,22 +210,30 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
-    fn catalog_is_closed_unique_and_complete_for_four_production_providers() {
-        assert_eq!(PROVIDERS.len(), 4);
+    fn catalog_is_closed_unique_and_complete_for_production_providers() {
+        assert_eq!(PROVIDERS.len(), 5);
         assert_eq!(
             PROVIDERS
                 .iter()
                 .map(|entry| entry.provider)
                 .collect::<BTreeSet<_>>(),
-            BTreeSet::from(["claude", "codex", "kimi", "pi"])
+            BTreeSet::from(["claude", "codex", "deepseek_harness", "kimi", "pi"])
         );
         for descriptor in PROVIDERS {
-            assert!(descriptor.event_decoder);
+            assert_eq!(
+                descriptor.event_decoder,
+                descriptor.provider != "deepseek_harness",
+                "DSH native transcript decoding is not part of the coordination adapter"
+            );
             assert!(descriptor.version_probe);
             assert!(descriptor.capacity_probe);
             assert!(descriptor.native_session_locator);
         }
         assert!(provider_descriptor("deepseek").is_none());
+        assert_eq!(
+            team_runtime_kind("deepseek_harness", Some("deepseek_sdk")),
+            Some(TeamRuntimeKind::DeepSeek)
+        );
     }
 
     #[test]

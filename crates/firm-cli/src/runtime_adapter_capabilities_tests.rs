@@ -8,6 +8,11 @@ fn binding_registry_is_the_closed_runner_dispatch_registry() {
         ("kimi", "kimi_acp", SharedTeamRuntimeKind::Kimi),
         ("codex", "codex_app_server", SharedTeamRuntimeKind::Codex),
         ("claude", "claude_agent_sdk", SharedTeamRuntimeKind::Claude),
+        (
+            "deepseek_harness",
+            "deepseek_sdk",
+            SharedTeamRuntimeKind::DeepSeek,
+        ),
     ] {
         assert_eq!(shared_team_runtime_kind(provider, Some(mode)), Some(kind));
         assert_eq!(shared_team_runtime_kind(provider, None), Some(kind));
@@ -185,10 +190,10 @@ fn kimi_capability_bindings_match_the_reviewed_acp_surface() {
 
 #[test]
 fn unknown_providers_without_a_binding_report_none() {
-    // DeepSeek needs no new core object to plug in later — until its
-    // bridge exists, the honest report is "no executable binding yet".
+    // The generic model label remains unregistered; the coding-agent provider
+    // has the explicit deepseek_harness identity above.
     assert!(capability_bindings_for("deepseek").is_none());
-    for provider in ["codex", "claude"] {
+    for provider in ["codex", "claude", "deepseek_harness"] {
         let bindings = capability_bindings_for(provider).expect("executable binding report");
         assert!(bindings.iter().any(|binding| {
             binding.capability == "close_runtime" && binding.status == CapabilityStatus::Supported

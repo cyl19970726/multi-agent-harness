@@ -79,6 +79,7 @@ fn host_only_run(
                         "claude" => "claude_agent_sdk",
                         "kimi" => "kimi_acp",
                         "pi" => "pi_rpc",
+                        "deepseek_harness" => "deepseek_sdk",
                         _ => "unknown_managed",
                     }
                 }
@@ -143,7 +144,7 @@ fn known_and_unknown_external_hosts_materialize_no_session_or_provider_effect() 
 }
 
 #[test]
-fn four_provider_managed_hosts_materialize_honest_isolated_sessions() {
+fn five_provider_managed_hosts_materialize_honest_isolated_sessions() {
     use harness_core::agentfirm_api::PermissionCeiling;
 
     for (provider, expected_ceiling) in [
@@ -151,6 +152,7 @@ fn four_provider_managed_hosts_materialize_honest_isolated_sessions() {
         ("claude", PermissionCeiling::ReadOnly),
         ("kimi", PermissionCeiling::FullAccess),
         ("pi", PermissionCeiling::ReadOnly),
+        ("deepseek_harness", PermissionCeiling::ReadOnly),
     ] {
         let (store, root) = temp_store(&format!("managed-host-{provider}"));
         let host_workspace = (provider == "kimi").then(|| isolated_host_worktree(root.as_path()));

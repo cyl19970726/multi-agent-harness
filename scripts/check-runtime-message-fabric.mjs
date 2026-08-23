@@ -209,7 +209,7 @@ for (const [label, text] of activeRuntimeSources) {
 if (server.includes("claim_round_triggering_messages_for") || server.includes("claim_next_work_for")) {
   failures.push("provider loops retain legacy TeamRun mailbox/work claim entry points");
 }
-for (const provider of ["codex", "claude", "kimi", "pi"]) {
+for (const provider of ["codex", "claude", "kimi", "pi", "deepseek_harness"]) {
   if (!server.includes(`\"provider\": \"${provider}\"`)) {
     failures.push(`missing durable RuntimeCommand settlement evidence for ${provider}`);
   }

@@ -23,7 +23,7 @@ mod dynamic_member_admission_revalidates_paused_local_identity_before_writing;
 #[path = "../general/execution_space_migration_no_replace_closes_final_check_publish_race.rs"]
 mod execution_space_migration_no_replace_closes_final_check_publish_race;
 #[path = "../general/four_provider_native_control_seam_is_durable_replay_safe_and_fail_closed.rs"]
-mod four_provider_native_control_seam_is_durable_replay_safe_and_fail_closed;
+mod five_provider_native_control_seam_is_durable_replay_safe_and_fail_closed;
 #[path = "../general/initial_member_admission_rejects_foreign_only_identity_without_any_durable_write.rs"]
 mod initial_member_admission_rejects_foreign_only_identity_without_any_durable_write;
 #[path = "../general/kimi_full_access_receipt_ignores_unrelated_provider_control_rows.rs"]

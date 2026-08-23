@@ -45,6 +45,7 @@ pub(super) fn provider_native_session_ref(
         "codex" => "codex_rollout",
         "kimi" => "kimi_code_session",
         "claude" => "claude_project_session",
+        "deepseek_harness" => "deepseek_harness_session",
         _ => "provider_native_session",
     };
     NativeSessionRef {
@@ -69,6 +70,7 @@ pub(super) fn provider_version_output(provider: &str) -> Result<String, String> 
         "codex" => "codex".to_string(),
         "claude" => "claude".to_string(),
         "pi" => resolve_pi_bin(),
+        "deepseek_harness" => "dsh".to_string(),
         other => other.to_string(),
     };
     let output = Command::new(&binary)
@@ -101,6 +103,25 @@ pub(super) fn provider_version_output(provider: &str) -> Result<String, String> 
 /// adapter. Live MemberRuns still replace this static package fact with
 /// `system(init).claude_code_version`.
 pub(super) fn team_member_provider_version_output(provider: &str) -> Result<String, String> {
+    if provider == "deepseek_harness" {
+        let cwd = std::env::current_dir()
+            .map_err(|error| format!("failed to resolve current directory: {error}"))?;
+        let runner = deepseek_harness_runner_path(&cwd).map_err(|error| error.to_string())?;
+        let package = runner
+            .parent()
+            .and_then(Path::parent)
+            .map(|root| root.join("node_modules/@deepseek-ai/dsh-agent/package.json"))
+            .ok_or_else(|| "cannot resolve DeepSeek Harness runner package root".to_string())?;
+        let bytes = fs::read(&package)
+            .map_err(|error| format!("failed to read {}: {error}", package.display()))?;
+        let json: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("failed to parse {}: {error}", package.display()))?;
+        return json
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| format!("{} has no version", package.display()));
+    }
     if provider != "claude" {
         return provider_version_output(provider);
     }
@@ -562,6 +583,17 @@ pub(super) fn provider_capacity_probe(
         "codex" => codex_capacity_probe(execution_mode, cwd, options),
         "claude" => claude_capacity_probe(execution_mode, cwd, options),
         "kimi" => kimi_capacity_probe(execution_mode),
+        "deepseek_harness" => {
+            let (observed_at, observed_unix_ms) = capacity_now();
+            ProviderCapacitySnapshot::unknown(
+                provider,
+                execution_mode,
+                observed_at,
+                observed_unix_ms,
+                ProviderCapacityEvidence::NotExposed,
+                "DSH 0.1.1-rc.2 exposes execution receipts but no reviewed account quota surface; capacity remains unknown until a real turn is attempted",
+            )
+        }
         other => {
             let (observed_at, observed_unix_ms) = capacity_now();
             ProviderCapacitySnapshot::unknown(

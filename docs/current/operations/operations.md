@@ -43,7 +43,7 @@ npx pnpm@9.15.4 check
 Current checks:
 
 - JSON parsing for schemas, docs, and examples;
-- provider-runtime package boundaries, the closed four-provider catalog, and
+- provider-runtime package boundaries, the closed five-provider catalog, and
   forbidden provider-to-CLI/Store/application dependency edges;
 - Work kernel/package direction, the 1,500-line maintained-file limit, and zero
   active Work-containment vocabulary outside an exact historical allowlist;
@@ -89,7 +89,7 @@ npx pnpm@9.15.4 acceptance:legacy-retirement
 It covers the Agent Team create/start,
 shared Works/WorkDelivery, Work-linked conversation, Host-facing MCP transport, the
 Dashboard read model and operator controls, plus deterministic persistent
-Codex app-server, Claude Agent SDK, Kimi ACP, and Pi RPC Team Member adapters, and the
+Codex app-server, Claude Agent SDK, Kimi ACP, Pi RPC, and DeepSeek Harness Team Member adapters, and the
 retired Mission/Wave legacy reads and retired-write errors. It also
 gates durable Supervisor generations, authenticated identity-first Message
 authoring, atomic per-recipient delivery

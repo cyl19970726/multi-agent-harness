@@ -315,7 +315,7 @@ export interface TeamRunMemberSpec {
   model?: string;
   effort?: string;
   serviceTier?: string;
-  executionMode?: "codex_app_server" | "kimi_acp" | "claude_agent_sdk" | "pi_rpc" | "external_interactive";
+  executionMode?: "codex_app_server" | "kimi_acp" | "claude_agent_sdk" | "pi_rpc" | "deepseek_sdk" | "external_interactive";
   /** Optional member-specific workspace override validated against project_root. */
   worktreeRef?: string;
   /** Paths the member may modify; empty/omitted means read-only. */

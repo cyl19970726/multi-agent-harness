@@ -129,6 +129,7 @@ VERSION_DIR="${INSTALL_BASE}/${VERSION}"
 VERSION_BIN="${VERSION_DIR}/harness"
 MARKETPLACE_SNAPSHOT="${VERSION_DIR}/marketplace"
 CLAUDE_RUNNER_INSTALL="${VERSION_DIR}/apps/claude-member-runner"
+DEEPSEEK_RUNNER_INSTALL="${VERSION_DIR}/apps/deepseek-member-runner"
 if [[ -L "${BIN_LINK}" ]]; then
   PREVIOUS_BIN="$(readlink "${BIN_LINK}")"
 fi
@@ -164,6 +165,23 @@ mkdir -p "$(dirname "${CLAUDE_RUNNER_INSTALL}")"
 cp -R "${REPO_ROOT}/apps/claude-member-runner" "${CLAUDE_RUNNER_INSTALL}"
 npm install \
   --prefix "${CLAUDE_RUNNER_INSTALL}" \
+  --omit=dev \
+  --no-audit \
+  --no-fund \
+  --ignore-scripts
+
+case "${DEEPSEEK_RUNNER_INSTALL}" in
+  "${VERSION_DIR}/"*) ;;
+  *)
+    echo "refusing to replace DeepSeek Harness runner outside ${VERSION_DIR}" >&2
+    exit 1
+    ;;
+esac
+rm -rf "${DEEPSEEK_RUNNER_INSTALL}"
+mkdir -p "$(dirname "${DEEPSEEK_RUNNER_INSTALL}")"
+cp -R "${REPO_ROOT}/apps/deepseek-member-runner" "${DEEPSEEK_RUNNER_INSTALL}"
+npm ci \
+  --prefix "${DEEPSEEK_RUNNER_INSTALL}" \
   --omit=dev \
   --no-audit \
   --no-fund \

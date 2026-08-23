@@ -1,7 +1,7 @@
 # Provider Runtime Package Crosswalk
 
 ```text
-status: DEV-58 landed; DEV-59 Host convergence amendment
+status: DEV-58 landed; DEV-59 Host convergence amendment; DEV-63 DeepSeek Harness amendment
 issues: https://github.com/cyl19970726/multi-agent-harness/issues/499,
   https://github.com/cyl19970726/multi-agent-harness/issues/501
 starting_revision: 68fd9d33178f48d107a3a28d8580079263ff3e55
@@ -15,8 +15,8 @@ Workflow records remain export, verify, and restore-read evidence only.
 
 | Surface | Current implementation truth at the starting revision | Target owner |
 | --- | --- | --- |
-| Agent Team runtime | Persistent `codex_app_server`, `claude_agent_sdk`, `kimi_acp`, and `pi_rpc` bindings in `firm-cli` | provider packages implementing `firm-runtime-contract`, driven by a provider-neutral supervisor |
-| Managed Team Host | Same persistent `codex_app_server`, `claude_agent_sdk`, `kimi_acp`, or `pi_rpc` binding as any managed participant | ordinary Team runtime binding, driven through the exact Host MemberRun/AgentSession by NodeDaemon |
+| Agent Team runtime | Persistent `codex_app_server`, `claude_agent_sdk`, `kimi_acp`, `pi_rpc`, and `deepseek_sdk` bindings in `firm-cli` | provider packages implementing `firm-runtime-contract`, driven by a provider-neutral supervisor |
+| Managed Team Host | Same persistent `codex_app_server`, `claude_agent_sdk`, `kimi_acp`, `pi_rpc`, or `deepseek_sdk` binding as any managed participant | ordinary Team runtime binding, driven through the exact Host MemberRun/AgentSession by NodeDaemon |
 | External interactive Host | User-owned provider session; detached AgentMember runtime with durable pull-only inbox | explicit `ExternalHostTransportBinding` compatibility transport; never a managed receipt source |
 | Direct `/v1/agents/*` delivery | Still-active compatibility routes use the old one-shot provider registry and message-delivery ledger | explicit compatibility application port until a separate accepted retirement decision; never represented as Dynamic Workflow or a Team binding |
 | Historical provider modes | `codex_exec`, `claude_cli`, `kimi_exec`, and old Pi records remain readable in profiles/native-session metadata | historical decoder only, except the exact current Host/direct-delivery call sites named above |
@@ -45,6 +45,7 @@ acceptance update.
 | `claude_agent_sdk.rs`, `claude_team_runtime.rs`, `apps/claude-member-runner` | Claude Rust bridge, Team binding, Node runner | current Team provider | runtime process, reviewed runner protocol/version gate, complete Team binding, and tests extracted to `firm-provider-claude`; CLI retains a narrow application error/trait adapter; versioned Node runner asset remains in `apps/claude-member-runner` |
 | `kimi_acp.rs`, `kimi_team_runtime.rs` | Kimi ACP transport and Team binding | current Team provider; explicit external transport also reuses ACP | ACP process/protocol and complete Team binding live in `firm-provider-kimi`; a managed Host consumes the Team binding, while only external compatibility dispatch consumes the separate transport |
 | `pi_rpc/` | Pi RPC client and Team binding | current Team provider | RPC process/session/prompt/steer/abort, native-session validation, permission argv admission, complete Team binding, and client tests extracted to `firm-provider-pi`; CLI retains a narrow application callback/error adapter |
+| `firm-provider-deepseek`, `apps/deepseek-member-runner` | DeepSeek Harness Cordis/AgentHandle bridge | current host-driven Team provider | exact-version plugin composition, native Session create/resume, inbox-splice receipt, cancel/close, sandbox-policy permission compilation, and owned runner transport live in the provider package and runner app; no transcript mirror or Goal plugin |
 | `main_tests/workflow_runtime_tests.rs` and child directory | 114 source files no longer referenced by any test root after retirement | unreachable Dynamic Workflow residue | deleted in DEV-58 |
 | `main_tests/codex_exec.rs` | compiled historical parser/retirement characterization, including a vacuous selector test | provider protocol tests mixed into CLI | meaningful parser/status/native-id cases moved beside the Codex compatibility decoder; redundant/vacuous CLI cases deleted |
 
@@ -53,7 +54,7 @@ acceptance update.
 ```text
 firm-core <- firm-runtime-contract
 firm-runtime-contract <- firm-runtime-supervisor
-firm-runtime-contract <- firm-provider-{codex,claude,kimi,pi}
+firm-runtime-contract <- firm-provider-{codex,claude,kimi,pi,deepseek}
 firm-core/store/runtime-contract/providers <- firm-application
 firm-application/providers/transports <- firm-cli
 ```
@@ -76,6 +77,8 @@ Forbidden edges:
    compatibility, event-decoder, probe, and historical-read capabilities.
 4. Extract the shared Team supervisor behind narrow ports.
 5. Move Codex, Claude, Kimi, and Pi one at a time without version upgrades.
+   DEV-63 later adds DeepSeek Harness as a separately reviewed fifth package;
+   it does not rewrite the completed DEV-58 migration history.
 6. Remove the temporary CLI contract re-export and provider-native protocol
    code from `firm-cli`.
 7. Run retirement, provider, repository, and clean-archive gates at one exact
@@ -99,6 +102,8 @@ Landed DEV-58 milestones:
   and deleted 114 unreachable post-retirement Workflow test sources;
 - `c7aec277`: established `firm-application` as the canonical four-provider
   descriptor and made Team selection/provider reporting derive from it;
+- DEV-63 extends that same closed descriptor to five providers with
+  `deepseek_harness` / `deepseek_sdk`; the DSH bridge remains provider-owned;
 - current transport slice: extracts provider-neutral process-group teardown,
   idle/wall timeouts, NDJSON collection, and stderr draining to
   `firm-runtime-host`; removes unused orphan-pidfile and live-filename arguments;
@@ -170,16 +175,17 @@ Landed DEV-58 milestones:
   provider-owned Host entry points. Claude rejects missing exact-session or
   non-read-only requests before effect and verifies returned session identity;
   Kimi owns ACP attach/prompt/receipt/text reduction and denies permission
-  callbacks. The Claude capacity canary and all four native permission
-  compilers are provider-owned. CLI-side native protocol test helpers and
+  callbacks. The original four native permission compilers are provider-owned;
+  DEV-63 adds the fifth DSH sandbox-policy compiler in `firm-provider-deepseek`.
+  CLI-side native protocol test helpers and
   superseded one-shot/process-guard fixtures are removed after equivalent
   provider/runtime-host tests pass.
 - current application-policy slice: moves provider-neutral Team round
   classification, terminal-control acknowledgement, zero-output progression,
   and circuit-breaker decisions into `firm-application`. The CLI loop now
   implements the durable coordination port rather than owning those policies.
-  The MCP tool contract includes all four current Team bindings, including
-  `pi_rpc`, and `check:provider-runtime-packages` continuously enforces the
+  The MCP tool contract includes all five current Team bindings, including
+  `pi_rpc` and `deepseek_sdk`, and `check:provider-runtime-packages` continuously enforces the
   closed catalog and forbidden crate edges.
 - current Claude wire-contract slice: makes
   `apps/claude-member-runner/contract/runner-v1.json` the single command/event

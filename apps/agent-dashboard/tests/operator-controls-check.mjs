@@ -174,11 +174,12 @@ async function main() {
   check(
     providerSource.includes("TEAM_MEMBER_PROVIDER_MODES")
       && providerSource.includes('"pi_rpc"')
+      && providerSource.includes('"deepseek_sdk"')
       && agentsSurfaceSource.includes("TEAM_MEMBER_PROVIDER_MODES.map")
       && teamsHomeSource.includes("TEAM_MEMBER_PROVIDER_MODES")
       && teamSource.includes("TEAM_MEMBER_PROVIDER_MODES")
       && missionSource.includes("TEAM_MEMBER_PROVIDER_MODES"),
-    "every creation form sources providers from the single TEAM_MEMBER_PROVIDER_MODES registry (incl. pi_rpc)",
+    "every creation form sources providers from the single TEAM_MEMBER_PROVIDER_MODES registry (incl. pi_rpc and deepseek_sdk)",
   );
   check(
     teamSource.includes('aria-label="Response intent"'),

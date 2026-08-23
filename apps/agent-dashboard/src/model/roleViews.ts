@@ -360,7 +360,7 @@ export type ProviderObservationPayload =
   | {type:"recovery";reason_code:string}
   | {type:"malformed";reason_code:string};
 export interface ProviderObservation {
-  schema_version:"agentfirm.provider_observation.v1"; observation_id:string; provider:"codex"|"claude"|"kimi"|"pi";
+  schema_version:"agentfirm.provider_observation.v1"; observation_id:string; provider:"codex"|"claude"|"kimi"|"pi"|"deepseek_harness";
   adapter_version:"agentfirm.provider_event_adapter.v1"; native_source_ref:string; agent_identity_id:string; agent_session_id:string;
   agent_session_generation:number; node_daemon_id:string; node_daemon_generation:number; provider_thread_id?:string|null;
   provider_turn_id?:string|null; provider_event_id?:string|null; ordering_position:number; causal_parent_id?:string|null;
@@ -377,7 +377,7 @@ export interface SessionEventProjection {
 }
 export interface LiveProviderActivityItem {
   runtime_event_locator:string; kind:"thinking"|"response_streaming"|"tool_started"|"tool_completed"|"tool_failed"|"interaction_waiting";
-  provider:"codex"|"claude"|"kimi"|"pi"; display_summary:string; emitted_unix_ms:number; expires_unix_ms:number;
+  provider:"codex"|"claude"|"kimi"|"pi"|"deepseek_harness"; display_summary:string; emitted_unix_ms:number; expires_unix_ms:number;
 }
 export interface LiveProviderActivity {
   schema_version:"agentfirm.live_provider_activity.v1"; durability:"volatile_process_memory"; replayable:false;
