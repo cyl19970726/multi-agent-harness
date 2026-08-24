@@ -44,6 +44,13 @@ fn supervisor_claims_and_acknowledges_canonical_message_delivery_in_one_ledger()
         lease.generation,
         Arc::new(AtomicBool::new(true)),
     );
+    assert_ne!(member.id, host.id, "ordinary Member and Host are distinct");
+    assert!(
+        claim_managed_host_attentions_for_member(&ledger, &member, true)
+            .expect("ordinary Member is a no-op before the Host session exists")
+            .is_empty(),
+        "ordinary Member must not resolve or claim the managed Host session"
+    );
     ensure_test_runtime_fabric(&store, &created, &lease);
     let run = latest_team_run(&store, &created.team_run.id).expect("read TeamRun");
     let members = latest_member_runs_in_append_order(&store)
@@ -293,6 +300,12 @@ fn supervisor_claims_and_acknowledges_canonical_message_delivery_in_one_ledger()
             member_context("managed-host-attention-started"),
         )
         .expect("member start emits batched Host status");
+    assert!(
+        claim_managed_host_attentions_for_member(&ledger, &member, true)
+            .expect("ordinary Member does not claim pending Host attention")
+            .is_empty(),
+        "pending HostAttention remains exclusive to the exact Host MemberRun"
+    );
     let claimed_attention = claim_managed_host_attentions_for_member(&ledger, &host, true)
         .expect("managed Host claims status attention")
         .pop()

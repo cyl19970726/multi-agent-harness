@@ -36,6 +36,10 @@ pub(super) fn managed_host_agent_session_for_member(
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,
 ) -> CliResult<Option<(String, harness_core::agentfirm_api::AgentSession)>> {
+    let host = store_conflict_as_usage(ledger.store.host_member_binding(&ledger.run_id))?;
+    if host.runtime.id != member.id {
+        return Ok(None);
+    }
     match store_conflict_as_usage(
         ledger
             .store
