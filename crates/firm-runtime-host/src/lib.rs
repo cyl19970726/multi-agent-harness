@@ -4,10 +4,11 @@
 //! stderr draining. Provider command construction and event interpretation stay
 //! in their provider packages.
 
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 #[derive(Debug)]
@@ -33,6 +34,83 @@ pub enum ProcessTransportError {
         context: String,
         stream: &'static str,
     },
+}
+
+fn owned_process_groups() -> &'static Mutex<HashSet<u32>> {
+    static GROUPS: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
+    GROUPS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Process-local registration for a child that is the leader of its own
+/// process group. Provider transports keep this guard next to their `Child`.
+/// Normal Close/Drop removes the pid; the NodeDaemon may drain the remaining
+/// exact registrations before its process exits and skips Rust destructors in
+/// a still-running Supervisor thread.
+#[derive(Debug)]
+pub struct OwnedProcessGroupRegistration {
+    pid: u32,
+    registered: bool,
+}
+
+impl OwnedProcessGroupRegistration {
+    pub fn new(pid: u32) -> Self {
+        owned_process_groups()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(pid);
+        Self {
+            pid,
+            registered: true,
+        }
+    }
+
+    pub fn release(&mut self) {
+        if self.registered {
+            owned_process_groups()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&self.pid);
+            self.registered = false;
+        }
+    }
+}
+
+impl Drop for OwnedProcessGroupRegistration {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ProcessGroupTermination {
+    pub pids: Vec<u32>,
+    pub signal_failures: Vec<(u32, i32)>,
+}
+
+/// Terminate only process groups registered by provider transports in this
+/// exact process. Draining the registry makes the operation idempotent.
+pub fn terminate_registered_process_groups() -> ProcessGroupTermination {
+    let pids = {
+        let mut groups = owned_process_groups()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        groups.drain().collect::<Vec<_>>()
+    };
+    let mut signal_failures = Vec::new();
+    #[cfg(unix)]
+    for pid in &pids {
+        let result = unsafe { libc::kill(-(*pid as libc::pid_t), libc::SIGKILL) };
+        if result == -1 {
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            if errno != libc::ESRCH {
+                signal_failures.push((*pid, errno));
+            }
+        }
+    }
+    ProcessGroupTermination {
+        pids,
+        signal_failures,
+    }
 }
 
 /// Kill the child process group, falling back to the immediate child.
@@ -200,5 +278,31 @@ mod tests {
         assert!(!run.process_success);
         assert!(run.wall_timed_out);
         assert!(!run.events.is_empty());
+    }
+
+    #[test]
+    fn registered_provider_group_is_terminated_exactly_once() {
+        use std::os::unix::process::CommandExt;
+
+        let mut command = shell("sleep 30");
+        command.process_group(0);
+        let mut child = command.spawn().expect("spawn owned provider group");
+        let pid = child.id();
+        let mut registration = OwnedProcessGroupRegistration::new(pid);
+
+        assert_eq!(
+            terminate_registered_process_groups(),
+            ProcessGroupTermination {
+                pids: vec![pid],
+                signal_failures: Vec::new(),
+            }
+        );
+        assert!(child
+            .wait()
+            .expect("reap owned provider group")
+            .code()
+            .is_none());
+        assert!(terminate_registered_process_groups().pids.is_empty());
+        registration.release();
     }
 }

@@ -52,7 +52,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use harness_runtime_host::kill_process_tree;
+use harness_runtime_host::{kill_process_tree, OwnedProcessGroupRegistration};
 
 pub type KimiResult<T> = Result<T, KimiError>;
 
@@ -185,6 +185,7 @@ impl PromptTimeouts {
 /// streams on the same stdout every frame arrives on).
 pub struct KimiAcpClient {
     child: Child,
+    owned_process_group: Option<OwnedProcessGroupRegistration>,
     stdin: Option<ChildStdin>,
     next_request_id: u64,
     /// In-flight request id → channel the reader thread delivers the matching
@@ -257,6 +258,7 @@ impl KimiAcpClient {
         });
         Self {
             child,
+            owned_process_group: None,
             stdin: Some(stdin),
             next_request_id: 2,
             pending,
@@ -308,6 +310,7 @@ impl KimiAcpClient {
         let mut child = cmd
             .spawn()
             .map_err(|error| CliError::Usage(format!("failed to spawn kimi acp: {error}")))?;
+        let owned_process_group = Some(OwnedProcessGroupRegistration::new(child.id()));
         let stdin = child
             .stdin
             .take()
@@ -373,6 +376,7 @@ impl KimiAcpClient {
 
         let mut client = Self {
             child,
+            owned_process_group,
             stdin: Some(stdin),
             next_request_id: 1,
             pending,
@@ -1073,6 +1077,9 @@ impl KimiAcpClient {
         self.prompt_active = false;
         self.settled_boundary_observed = true;
         self.shutdown_receipt = Some(shutdown.clone());
+        if let Some(group) = self.owned_process_group.as_mut() {
+            group.release();
+        }
         Ok(KimiAcpCloseReceipt {
             session_id,
             response_id,
@@ -1127,6 +1134,9 @@ impl KimiAcpClient {
         self.prompt_active = false;
         self.settled_boundary_observed = true;
         self.shutdown_receipt = Some(receipt.clone());
+        if let Some(group) = self.owned_process_group.as_mut() {
+            group.release();
+        }
         Ok(receipt)
     }
 
@@ -1145,6 +1155,9 @@ impl KimiAcpClient {
         }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
+        }
+        if let Some(group) = self.owned_process_group.as_mut() {
+            group.release();
         }
     }
 

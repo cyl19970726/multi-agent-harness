@@ -28,6 +28,7 @@ use crate::{
 
 mod control_protocol;
 mod recovery;
+mod shutdown;
 pub(crate) use recovery::reconcile_team_run_start_postcondition;
 
 const SIGINT: i32 = 2;
@@ -982,74 +983,6 @@ impl MultiTeamDaemon {
             }
         }
         Ok(())
-    }
-
-    /// Graceful shutdown: signal all managed contexts to stop, drain them,
-    /// and join threads with a deadline.
-    fn graceful_shutdown(&self) -> CliResult<()> {
-        eprintln!("[node-daemon] graceful shutdown initiated");
-
-        // Drain contexts from the registry.
-        let contexts: Vec<MultiTeamContext> = {
-            let mut guard = self
-                .contexts
-                .lock()
-                .map_err(|e| CliError::Usage(format!("context lock poisoned: {e}")))?;
-            std::mem::take(&mut *guard)
-        };
-
-        if contexts.is_empty() {
-            return Ok(());
-        }
-
-        eprintln!(
-            "[node-daemon] waiting for {} run(s) to finish...",
-            contexts.len()
-        );
-
-        // P0-1 fix: signal every managed context to stop by invalidating
-        // their heartbeat.  This causes drive_prepared_team_run to detect
-        // lease loss and exit its main loop promptly.
-        for ctx in &contexts {
-            ctx.heartbeat_valid.store(false, Ordering::Release);
-        }
-
-        // P0-3 fix: join threads with a deadline.  Since std::thread::JoinHandle
-        // lacks join_timeout, we poll is_finished() with a sleep loop.
-        const JOIN_DEADLINE_SECS: u64 = 30;
-        let deadline = Instant::now() + Duration::from_secs(JOIN_DEADLINE_SECS);
-
-        let mut failures = Vec::new();
-        for ctx in contexts {
-            let Some(thread) = ctx.thread else { continue };
-            loop {
-                if thread.is_finished() {
-                    if thread.join().is_err() {
-                        failures.push(format!(
-                            "{}/{} supervisor panicked during shutdown",
-                            ctx.execution_space_id, ctx.run_id
-                        ));
-                    }
-                    break;
-                }
-                if Instant::now() >= deadline {
-                    failures.push(format!(
-                        "{}/{} exceeded the shutdown deadline",
-                        ctx.execution_space_id, ctx.run_id
-                    ));
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(250));
-            }
-        }
-        if failures.is_empty() {
-            Ok(())
-        } else {
-            Err(CliError::Usage(format!(
-                "NODE_DAEMON_DRAIN_INCOMPLETE: {}",
-                failures.join("; ")
-            )))
-        }
     }
 }
 

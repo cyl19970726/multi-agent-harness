@@ -21,7 +21,7 @@ use harness_core::{
     ProviderCapacitySnapshot, ProviderCapacityState, ProviderCapacityWindow,
 };
 
-use harness_runtime_host::kill_process_tree;
+use harness_runtime_host::{kill_process_tree, OwnedProcessGroupRegistration};
 
 pub type CodexResult<T> = Result<T, CodexError>;
 
@@ -279,6 +279,7 @@ fn exact_steer_receipt(response: &serde_json::Value, expected_turn_id: &str) -> 
 
 pub struct CodexAppServerClient {
     child: Child,
+    owned_process_group: OwnedProcessGroupRegistration,
     stdin: BufWriter<ChildStdin>,
     next_request_id: u64,
     pending: Arc<Mutex<HashMap<u64, Sender<serde_json::Value>>>>,
@@ -421,6 +422,7 @@ impl CodexAppServerClient {
         let mut child = command.spawn().map_err(|error| {
             CliError::Usage(format!("failed to spawn codex app-server: {error}"))
         })?;
+        let owned_process_group = OwnedProcessGroupRegistration::new(child.id());
         let stdin =
             BufWriter::new(child.stdin.take().ok_or_else(|| {
                 CliError::Usage("codex app-server stdin unavailable".to_string())
@@ -480,6 +482,7 @@ impl CodexAppServerClient {
 
         let mut client = Self {
             child,
+            owned_process_group,
             stdin,
             next_request_id: 0,
             pending,
@@ -710,6 +713,7 @@ impl CodexAppServerClient {
                         .to_string(),
                 )
             })?;
+        self.owned_process_group.release();
         let stdout_reader_joined = if let Some(reader) = self.reader.take() {
             let deadline = Instant::now() + READER_SHUTDOWN_TIMEOUT;
             while !reader.is_finished() && Instant::now() < deadline {
@@ -1124,6 +1128,7 @@ impl Drop for CodexAppServerClient {
         if self.child.try_wait().ok().flatten().is_none() {
             kill_process_tree(&mut self.child);
         }
+        self.owned_process_group.release();
         if let Some(reader) = self.reader.take() {
             let deadline = Instant::now() + READER_SHUTDOWN_TIMEOUT;
             while !reader.is_finished() && Instant::now() < deadline {

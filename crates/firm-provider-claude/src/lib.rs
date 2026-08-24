@@ -1,14 +1,6 @@
-//! Claude Agent SDK binding for the provider-neutral Team runtime contract.
-//!
-//! This module owns only the process-local transport to
-//! `apps/claude-member-runner`. Durable identity, authorization, Work,
-//! Messages, and RuntimeCommands remain outside the adapter. One transport is
-//! one disposable runtime generation; the provider-native Claude session id
-//! is the stable resume point across generations.
-//!
-//! The exact reviewed composition is Claude Code 2.1.220 bundled by
-//! `@anthropic-ai/claude-agent-sdk` 0.3.220. A different package or init-event
-//! version fails before it can be reported as compatible.
+//! Claude Agent SDK transport; durable identity, Work, Messages, and
+//! RuntimeCommands remain outside it. Each disposable generation resumes the
+//! native session. Only Claude Code 2.1.220 with SDK 0.3.220 is reviewed.
 
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -17,6 +9,8 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+use harness_runtime_host::OwnedProcessGroupRegistration;
 
 use harness_core::agentfirm_api::{
     AgentSession, NativeContinuationActivation, RuntimeEffectCertainty, RuntimePostconditionStatus,
@@ -129,16 +123,21 @@ impl RunnerEvent {
     }
 }
 
-/// A child guard that owns the entire runner process group. A stale
-/// Supervisor generation cannot orphan the SDK/Claude Code descendants.
+/// Owns the runner group so stale Supervisors cannot orphan descendants.
 struct ClaudeRunnerChild {
     child: Child,
+    process_group: OwnedProcessGroupRegistration,
     armed: bool,
 }
 
 impl ClaudeRunnerChild {
     fn new(child: Child) -> Self {
-        Self { child, armed: true }
+        let pid = child.id();
+        Self {
+            child,
+            process_group: OwnedProcessGroupRegistration::new(pid),
+            armed: true,
+        }
     }
 
     fn id(&self) -> u32 {
@@ -149,6 +148,7 @@ impl ClaudeRunnerChild {
         let status = self.child.try_wait()?;
         if status.is_some() {
             self.armed = false;
+            self.process_group.release();
         }
         Ok(status)
     }
@@ -161,6 +161,7 @@ impl ClaudeRunnerChild {
         loop {
             if let Some(status) = self.child.try_wait()? {
                 self.armed = false;
+                self.process_group.release();
                 return Ok(Some(status));
             }
             if started.elapsed() >= timeout {
@@ -185,6 +186,7 @@ impl ClaudeRunnerChild {
         }
         let _ = self.child.wait();
         self.armed = false;
+        self.process_group.release();
     }
 }
 

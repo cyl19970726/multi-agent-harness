@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use std::os::unix::process::CommandExt;
 
 use harness_core::agentfirm_api::PermissionCeiling;
-use harness_runtime_host::kill_process_tree;
+use harness_runtime_host::{kill_process_tree, OwnedProcessGroupRegistration};
 
 mod capability_transport;
 pub use capability_transport::*;
@@ -96,6 +96,7 @@ pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct PiRpcClient {
     child: Child,
+    owned_process_group: OwnedProcessGroupRegistration,
     stdin: BufWriter<ChildStdin>,
     next_request_id: u64,
     /// Response waiters: string request id → oneshot sender.
@@ -290,6 +291,7 @@ impl PiRpcClient {
                 options.member_name
             ))
         })?;
+        let owned_process_group = OwnedProcessGroupRegistration::new(child.id());
 
         let stdin = BufWriter::new(
             child
@@ -352,6 +354,7 @@ impl PiRpcClient {
 
         let mut client = Self {
             child,
+            owned_process_group,
             stdin,
             next_request_id: 0,
             pending,
@@ -631,6 +634,7 @@ impl PiRpcClient {
         if !self.released {
             self.released = true;
             kill_process_tree(&mut self.child);
+            self.owned_process_group.release();
             if self
                 .child
                 .try_wait()

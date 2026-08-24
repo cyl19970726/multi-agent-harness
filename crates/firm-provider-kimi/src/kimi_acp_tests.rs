@@ -18,6 +18,7 @@ fn scripted_client() -> (KimiAcpClient, Sender<serde_json::Value>) {
     (
         KimiAcpClient {
             child,
+            owned_process_group: None,
             stdin: Some(stdin),
             next_request_id: 2,
             pending: Arc::new(Mutex::new(HashMap::new())),

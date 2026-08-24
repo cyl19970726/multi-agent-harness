@@ -18,6 +18,8 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use harness_runtime_host::OwnedProcessGroupRegistration;
+
 use harness_core::agentfirm_api::{
     AgentSession, NativeContinuationActivation, RuntimeEffectCertainty, RuntimePostconditionStatus,
 };
@@ -144,12 +146,18 @@ impl RunnerEvent {
 /// Supervisor generation cannot orphan the DSH runner descendants.
 struct DeepSeekRunnerChild {
     child: Child,
+    process_group: OwnedProcessGroupRegistration,
     armed: bool,
 }
 
 impl DeepSeekRunnerChild {
     fn new(child: Child) -> Self {
-        Self { child, armed: true }
+        let process_group = OwnedProcessGroupRegistration::new(child.id());
+        Self {
+            child,
+            process_group,
+            armed: true,
+        }
     }
 
     fn id(&self) -> u32 {
@@ -160,6 +168,7 @@ impl DeepSeekRunnerChild {
         let status = self.child.try_wait()?;
         if status.is_some() {
             self.armed = false;
+            self.process_group.release();
         }
         Ok(status)
     }
@@ -172,6 +181,7 @@ impl DeepSeekRunnerChild {
         loop {
             if let Some(status) = self.child.try_wait()? {
                 self.armed = false;
+                self.process_group.release();
                 return Ok(Some(status));
             }
             if started.elapsed() >= timeout {
@@ -196,6 +206,7 @@ impl DeepSeekRunnerChild {
         }
         let _ = self.child.wait();
         self.armed = false;
+        self.process_group.release();
     }
 }
 
