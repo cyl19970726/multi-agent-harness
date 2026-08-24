@@ -103,6 +103,7 @@ const appBase = `http://127.0.0.1:${vite.httpServer.address().port}`;
 const apiBase = "http://dev33.fixture";
 const browser = await chromium.launch({ headless: true });
 const unexpectedFixturePaths = [];
+let authenticatedEventReads = 0;
 
 function delay(ms) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
@@ -172,6 +173,16 @@ async function installCommonRoutes(page, snapshotHandler, writes) {
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
+    if (request.method() === "GET" && url.pathname === "/v1/events") {
+      authenticatedEventReads += 1;
+      assert.match(request.headers().accept ?? "", /text\/event-stream/);
+      assert.equal(request.headers()["x-agentfirm-token"], "dev33-token");
+      return route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: "event: snapshot\ndata: {}\n\n",
+      });
+    }
     if (request.method() === "POST") {
       writes.push({ path: url.pathname, at: Date.now() });
       return route.fulfill({
@@ -336,6 +347,7 @@ try {
   assert.equal(backoffMetrics.maxActive, 1, "failure recovery overlapped full snapshots");
   assert.ok(backoffMetrics.starts[2] - backoffMetrics.starts[1] >= 900, "first retry backoff was shorter than one second");
   assert.ok(backoffMetrics.starts[3] - backoffMetrics.starts[2] >= 1_900, "second retry backoff was shorter than two seconds");
+  assert.ok(authenticatedEventReads > 0, "exact-self provider activity did not open its authenticated SSE read");
   assert.equal(unexpectedFixturePaths.length, 0, `RoleView write surfaces requested unknown fixture paths: ${unexpectedFixturePaths.join(" | ")}`);
   assert.equal(roleHttpErrors.length, 0, `RoleView write surfaces produced HTTP errors: ${roleHttpErrors.join(" | ")}`);
   assert.equal(rolePageErrors.length, 0, `RoleView write surfaces produced browser errors: ${rolePageErrors.join(" | ")}; HTTP: ${roleHttpErrors.join(" | ")}`);
