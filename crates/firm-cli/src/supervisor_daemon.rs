@@ -27,6 +27,8 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 mod control_protocol;
+mod recovery;
+pub(crate) use recovery::reconcile_team_run_start_postcondition;
 
 const SIGINT: i32 = 2;
 const SIGTERM: i32 = 15;
@@ -73,6 +75,9 @@ struct MultiTeamContext {
     execution_space_id: String,
     project_binding_id: String,
     run_id: String,
+    daemon_generation: u64,
+    supervisor_id: String,
+    supervisor_generation: u64,
     heartbeat_valid: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<CliResult<()>>>,
     started_at: Instant,
@@ -150,6 +155,10 @@ pub(crate) struct MultiTeamDaemon {
     /// Latches an accepted worker that panicked or returned without proving
     /// command completion. Such a generation may drain but never Release.
     control_worker_failed: AtomicBool,
+    /// Volatile companion to the durable recovery MemberAction. It closes the
+    /// rescan window even when the recovery projection itself cannot be
+    /// written because the Execution Space is temporarily unavailable.
+    recovery_blocked_runs: Mutex<HashSet<(String, String)>>,
     #[cfg(test)]
     lease_ttl_override_ms: Option<u64>,
 }
@@ -244,6 +253,7 @@ impl MultiTeamDaemon {
             stop_requested: shutdown_sig,
             authority_shutdown: Arc::new(AtomicBool::new(false)),
             control_worker_failed: AtomicBool::new(false),
+            recovery_blocked_runs: Mutex::new(HashSet::new()),
             #[cfg(test)]
             lease_ttl_override_ms: None,
         });
@@ -557,17 +567,7 @@ impl MultiTeamDaemon {
             // work, then join every bounded control worker before releasing
             // this daemon generation.
             for worker in control_workers {
-                match worker.join() {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => {
-                        self.control_worker_failed.store(true, Ordering::SeqCst);
-                        eprintln!("[node-daemon] control worker failed while draining: {error}");
-                    }
-                    Err(_) => {
-                        self.control_worker_failed.store(true, Ordering::SeqCst);
-                        eprintln!("[node-daemon] control worker panicked while draining");
-                    }
-                }
+                self.observe_control_worker_result(worker.join(), "while draining");
             }
             let control_result = if self.control_worker_failed.load(Ordering::SeqCst) {
                 Err(CliError::Usage(
@@ -659,6 +659,17 @@ impl MultiTeamDaemon {
                 {
                     continue;
                 }
+                match self.team_run_recovery_is_blocking(&space.id, &store, &run.id) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(error) => {
+                        eprintln!(
+                            "[node-daemon] cannot inspect Supervisor recovery marker for {}/{}: {error}",
+                            space.id, run.id
+                        );
+                        continue;
+                    }
+                }
                 // Close freezes a MemberRun without completing its TeamRun.
                 // A Running TeamRun with no Active coordination member is
                 // therefore dormant, not orphaned runtime work. Re-adopting
@@ -701,6 +712,9 @@ impl MultiTeamDaemon {
                             managed_ids.insert((space.id.clone(), run.id.clone()));
                         }
                         Err(error) => {
+                            self.block_start_failure_if_unresolved(
+                                &space.id, &store, &run.id, &error,
+                            );
                             eprintln!(
                                 "[node-daemon] failed to adopt {}/{}: {error}",
                                 space.id, run.id
@@ -792,6 +806,8 @@ impl MultiTeamDaemon {
             .generation;
         ensure_team_runtime_fabric(&store, &body, &space.id, &self.daemon_id, daemon_generation)?;
         let registration = TeamSupervisorRegistration::start(&store, &run_id, Some(&space.id))?;
+        let supervisor_id = registration.supervisor_id.clone();
+        let supervisor_generation = registration.generation;
         bind_team_runtime_supervisor(
             &store,
             &body,
@@ -903,6 +919,9 @@ impl MultiTeamDaemon {
                 execution_space_id,
                 project_binding_id,
                 run_id,
+                daemon_generation,
+                supervisor_id,
+                supervisor_generation,
                 heartbeat_valid,
                 thread: Some(thread),
                 started_at: Instant::now(),
@@ -932,22 +951,28 @@ impl MultiTeamDaemon {
 
         *contexts = still_running;
 
-        for ctx in finished {
-            if let Some(thread) = ctx.thread {
+        for mut ctx in finished {
+            if let Some(thread) = ctx.thread.take() {
                 match thread.join() {
                     Ok(Ok(())) => {
+                        self.block_finished_supervisor_if_unresolved(&ctx);
                         eprintln!(
                             "[node-daemon] {}/{} completed",
                             ctx.execution_space_id, ctx.run_id
                         );
                     }
                     Ok(Err(e)) => {
+                        self.block_finished_supervisor_failure(&ctx, &e);
                         eprintln!(
                             "[node-daemon] {}/{} error: {e}",
                             ctx.execution_space_id, ctx.run_id
                         );
                     }
                     Err(_) => {
+                        self.block_finished_supervisor_failure(
+                            &ctx,
+                            &CliError::Usage("TEAM_SUPERVISOR_PANICKED".into()),
+                        );
                         eprintln!(
                             "[node-daemon] {}/{} panicked",
                             ctx.execution_space_id, ctx.run_id
@@ -1077,29 +1102,90 @@ static mut MT_SIGNAL_FLAG: Option<&'static AtomicBool> = None;
 
 /// Send an exact Execution Space + TeamRun start request to the local Node.
 /// Returns the response line on success.
+#[derive(Debug)]
+pub(crate) struct NodeDaemonStartRequestError {
+    source: std::io::Error,
+    request_may_have_been_accepted: bool,
+}
+
+impl NodeDaemonStartRequestError {
+    fn before_send(source: std::io::Error) -> Self {
+        Self {
+            source,
+            request_may_have_been_accepted: false,
+        }
+    }
+
+    fn after_send(source: std::io::Error) -> Self {
+        Self {
+            source,
+            request_may_have_been_accepted: true,
+        }
+    }
+
+    pub(crate) fn request_may_have_been_accepted(&self) -> bool {
+        self.request_may_have_been_accepted
+    }
+}
+
+impl std::fmt::Display for NodeDaemonStartRequestError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.source.fmt(formatter)
+    }
+}
+
 pub(crate) fn try_delegate_to_node_daemon(
     firm_home: &Path,
     node_id: &str,
     execution_space_id: &str,
     run_id: &str,
-) -> Result<String, std::io::Error> {
+) -> Result<String, NodeDaemonStartRequestError> {
     let socket_path = node_daemon_socket_path(firm_home, node_id);
-    let mut stream = UnixStream::connect(&socket_path)?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let mut stream =
+        UnixStream::connect(&socket_path).map_err(NodeDaemonStartRequestError::before_send)?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(NodeDaemonStartRequestError::before_send)?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .map_err(NodeDaemonStartRequestError::before_send)?;
 
     let cmd = serde_json::json!({
         "cmd": "start",
         "execution_space_id": execution_space_id,
         "run_id": run_id
     });
-    let cmd_str = serde_json::to_string(&cmd).map_err(std::io::Error::other)?;
-    writeln!(stream, "{cmd_str}")?;
-    stream.flush()?;
+    let cmd_str = serde_json::to_string(&cmd)
+        .map_err(std::io::Error::other)
+        .map_err(NodeDaemonStartRequestError::before_send)?;
+    // From the first write attempt onward, the daemon may have accepted the
+    // complete newline-delimited request even when the client observes only a
+    // later transport error. Every such result must be reconciled, never
+    // classified as NotApplied or blindly retried.
+    writeln!(stream, "{cmd_str}").map_err(NodeDaemonStartRequestError::after_send)?;
+    stream
+        .flush()
+        .map_err(NodeDaemonStartRequestError::after_send)?;
 
     let mut buf = String::new();
     let mut reader = std::io::BufReader::new(&mut stream);
-    reader.read_line(&mut buf)?;
+    reader
+        .read_line(&mut buf)
+        .map_err(NodeDaemonStartRequestError::after_send)?;
+    if buf.trim().is_empty() || !buf.ends_with('\n') {
+        return Err(NodeDaemonStartRequestError::after_send(
+            std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "NodeDaemon closed before returning a start result",
+            ),
+        ));
+    }
+    serde_json::from_str::<serde_json::Value>(buf.trim()).map_err(|error| {
+        NodeDaemonStartRequestError::after_send(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("NodeDaemon returned invalid start JSON: {error}"),
+        ))
+    })?;
     Ok(buf.trim().to_string())
 }
 
