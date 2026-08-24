@@ -125,6 +125,72 @@ impl OwnedProcessGroupRegistration {
             self.registered = false;
         }
     }
+
+    /// Inspect and, when terminal, reap the child while holding the same
+    /// registry mutex used by daemon shutdown. The pid cannot become reusable
+    /// between kernel reap and exact-token removal.
+    pub fn try_wait_and_release(
+        &mut self,
+        child: &mut std::process::Child,
+    ) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.try_reap_and_release_with(|| child.try_wait())
+    }
+
+    fn try_reap_and_release_with<T, E>(
+        &mut self,
+        operation: impl FnOnce() -> Result<Option<T>, E>,
+    ) -> Result<Option<T>, E> {
+        let mut groups = owned_process_groups()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let status = operation()?;
+        if status.is_some() {
+            self.release_locked(&mut groups);
+        }
+        Ok(status)
+    }
+
+    /// Reap a child and unregister its exact token as one linearized action.
+    pub fn wait_and_release(
+        &mut self,
+        child: &mut std::process::Child,
+    ) -> std::io::Result<std::process::ExitStatus> {
+        let mut groups = owned_process_groups()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let status = child.wait()?;
+        self.release_locked(&mut groups);
+        Ok(status)
+    }
+
+    /// Terminate and reap this exact registered process group without exposing
+    /// a reap-to-unregister pid-reuse window to daemon shutdown.
+    pub fn kill_and_reap(&mut self, child: &mut std::process::Child) {
+        let mut groups = owned_process_groups()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match child.try_wait() {
+            Ok(Some(_)) => {}
+            _ => {
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+        self.release_locked(&mut groups);
+    }
+
+    fn release_locked(&mut self, groups: &mut OwnedProcessGroups) {
+        if self.registered {
+            if groups.groups.get(&self.pid) == Some(&self.token) {
+                groups.groups.remove(&self.pid);
+            }
+            self.registered = false;
+        }
+    }
 }
 
 impl Drop for OwnedProcessGroupRegistration {
@@ -413,6 +479,44 @@ mod tests {
         let _ = child.wait().expect("reap late owned group");
 
         assert_eq!(terminate_registered_process_groups().pids, vec![pid]);
+        complete_registered_process_group_shutdown();
+    }
+
+    #[test]
+    fn shutdown_cannot_enter_between_reap_and_exact_unregister() {
+        let _test_lock = registry_test_lock();
+        let registration = OwnedProcessGroupRegistration::new(999_999);
+        let (reaped_tx, reaped_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let reaper = std::thread::spawn(move || {
+            let mut registration = registration;
+            registration
+                .try_reap_and_release_with(|| -> Result<Option<()>, ()> {
+                    reaped_tx.send(()).expect("publish kernel reap boundary");
+                    release_rx.recv().expect("release registry boundary");
+                    Ok(Some(()))
+                })
+                .expect("linearized reap")
+        });
+        reaped_rx.recv().expect("reaper entered registry boundary");
+        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+        let shutdown = std::thread::spawn(move || {
+            shutdown_tx
+                .send(terminate_registered_process_groups())
+                .expect("publish shutdown result");
+        });
+        assert!(matches!(
+            shutdown_rx.recv_timeout(Duration::from_millis(30)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        release_tx.send(()).expect("finish exact unregister");
+        assert_eq!(reaper.join().expect("join reaper"), Some(()));
+        assert!(shutdown_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("shutdown finished after unregister")
+            .pids
+            .is_empty());
+        shutdown.join().expect("join shutdown");
         complete_registered_process_group_shutdown();
     }
 }

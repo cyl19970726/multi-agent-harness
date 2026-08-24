@@ -215,6 +215,20 @@ pub struct KimiAcpClient {
 }
 
 impl KimiAcpClient {
+    fn try_wait_child(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        match self.owned_process_group.as_mut() {
+            Some(group) => group.try_wait_and_release(&mut self.child),
+            None => self.child.try_wait(),
+        }
+    }
+
+    fn kill_and_reap_child(&mut self) {
+        match self.owned_process_group.as_mut() {
+            Some(group) => group.kill_and_reap(&mut self.child),
+            None => kill_process_tree(&mut self.child),
+        }
+    }
+
     #[cfg(all(test, unix))]
     pub fn scripted_for_close_contract() -> Self {
         // One close request receives a real correlated JSON-RPC response. The
@@ -427,8 +441,7 @@ impl KimiAcpClient {
             .as_ref()
             .is_some_and(std::thread::JoinHandle::is_finished);
         let child_ended = self
-            .child
-            .try_wait()
+            .try_wait_child()
             .map_err(|error| CliError::Usage(format!("failed to inspect kimi acp: {error}")))?;
         if reader_ended || child_ended.is_some() {
             return Err(self.session_ended_error("idle supervisor"));
@@ -445,8 +458,7 @@ impl KimiAcpClient {
             .as_ref()
             .is_some_and(std::thread::JoinHandle::is_finished);
         let child_ended = self
-            .child
-            .try_wait()
+            .try_wait_child()
             .map_err(|error| CliError::Usage(format!("failed to inspect kimi acp: {error}")))?
             .is_some();
         let released = self.shutdown_receipt.is_some();
@@ -1023,7 +1035,7 @@ impl KimiAcpClient {
         drop(self.stdin.take());
         let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
         let status = loop {
-            match self.child.try_wait() {
+            match self.try_wait_child() {
                 Ok(Some(status)) => break status,
                 Ok(None) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(10));
@@ -1033,7 +1045,7 @@ impl KimiAcpClient {
                     // clean process disposal is unknown. Reap the owned tree
                     // for safety, then fail closed rather than returning a
                     // successful Close receipt.
-                    kill_process_tree(&mut self.child);
+                    self.kill_and_reap_child();
                     if let Some(reader) = self.reader.take() {
                         let _ = reader.join();
                     }
@@ -1077,9 +1089,6 @@ impl KimiAcpClient {
         self.prompt_active = false;
         self.settled_boundary_observed = true;
         self.shutdown_receipt = Some(shutdown.clone());
-        if let Some(group) = self.owned_process_group.as_mut() {
-            group.release();
-        }
         Ok(KimiAcpCloseReceipt {
             session_id,
             response_id,
@@ -1098,16 +1107,14 @@ impl KimiAcpClient {
             ));
         }
         let process_was_running = self
-            .child
-            .try_wait()
+            .try_wait_child()
             .map_err(|error| CliError::Usage(format!("failed to inspect kimi acp: {error}")))?
             .is_none();
         if process_was_running {
-            kill_process_tree(&mut self.child);
+            self.kill_and_reap_child();
         }
         let status = self
-            .child
-            .try_wait()
+            .try_wait_child()
             .map_err(|error| CliError::Usage(format!("failed to reap kimi acp: {error}")))?
             .ok_or_else(|| {
                 CliError::Usage(
@@ -1134,9 +1141,6 @@ impl KimiAcpClient {
         self.prompt_active = false;
         self.settled_boundary_observed = true;
         self.shutdown_receipt = Some(receipt.clone());
-        if let Some(group) = self.owned_process_group.as_mut() {
-            group.release();
-        }
         Ok(receipt)
     }
 
@@ -1147,17 +1151,18 @@ impl KimiAcpClient {
         if self.shutdown_receipt.is_some() {
             return;
         }
-        match self.child.try_wait() {
-            Ok(None) => kill_process_tree(&mut self.child),
+        match self.try_wait_child() {
+            Ok(None) => self.kill_and_reap_child(),
             _ => {
-                let _ = self.child.wait();
+                if let Some(group) = self.owned_process_group.as_mut() {
+                    let _ = group.wait_and_release(&mut self.child);
+                } else {
+                    let _ = self.child.wait();
+                }
             }
         }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
-        }
-        if let Some(group) = self.owned_process_group.as_mut() {
-            group.release();
         }
     }
 

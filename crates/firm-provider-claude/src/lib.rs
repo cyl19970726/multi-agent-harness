@@ -145,10 +145,9 @@ impl ClaudeRunnerChild {
     }
 
     fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
-        let status = self.child.try_wait()?;
+        let status = self.process_group.try_wait_and_release(&mut self.child)?;
         if status.is_some() {
             self.armed = false;
-            self.process_group.release();
         }
         Ok(status)
     }
@@ -159,9 +158,8 @@ impl ClaudeRunnerChild {
     ) -> std::io::Result<Option<std::process::ExitStatus>> {
         let started = Instant::now();
         loop {
-            if let Some(status) = self.child.try_wait()? {
+            if let Some(status) = self.process_group.try_wait_and_release(&mut self.child)? {
                 self.armed = false;
-                self.process_group.release();
                 return Ok(Some(status));
             }
             if started.elapsed() >= timeout {
@@ -175,18 +173,8 @@ impl ClaudeRunnerChild {
         if !self.armed {
             return;
         }
-        #[cfg(unix)]
-        unsafe {
-            // The child is its own process-group leader (see `spawn`).
-            libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL);
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = self.child.kill();
-        }
-        let _ = self.child.wait();
+        self.process_group.kill_and_reap(&mut self.child);
         self.armed = false;
-        self.process_group.release();
     }
 }
 
